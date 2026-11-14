@@ -62,15 +62,15 @@ import {
   registerOpenShellInstallationCleanups,
   waitForOpenShellRevisionActivation,
 } from "../helpers/openshell-kubernetes-real.mjs";
+import { boundedTeardown } from "../helpers/bounded-teardown.ts";
 import {
-  boundedTeardown,
   deleteNamespaceExplained,
   diagnosticDeadlineMs,
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
   retryKubectlRead,
   withinDiagnosticDeadline,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 import {
   assertGatewayPolicyRunSucceeded,
   openShellStaleRelay,

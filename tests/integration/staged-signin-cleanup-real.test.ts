@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { deleteOwnedK3dCluster } from "../../scripts/ci/cleanup.mjs";
+import { deleteOwnedK3dCluster } from "../../scripts/ci/cleanup.ts";
 import {
   assertLocalRehearsalDaemon,
   FixtureCommandError,
@@ -233,7 +233,7 @@ async function fixture(
           [
             "--input-type=module",
             "-e",
-            'import {cleanupState} from "./scripts/ci/cleanup.mjs"; await cleanupState(process.argv[1], JSON.parse(process.argv[2]));',
+            'import {cleanupState} from "./scripts/ci/cleanup.ts"; await cleanupState(process.argv[1], JSON.parse(process.argv[2]));',
             statePath,
             JSON.stringify({
               expectedStateSha256: cleanupAuthority.stateSha256,
@@ -399,7 +399,7 @@ async function fixture(
       cleanupOutcome = "unknown";
       const result = await execute(
         process.execPath,
-        ["scripts/ci/cleanup-staged-signin.mjs", planHash, preparedHash],
+        ["scripts/ci/cleanup-staged-signin.ts", planHash, preparedHash],
         {
           cwd: root,
           env: process.env,

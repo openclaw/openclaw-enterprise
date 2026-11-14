@@ -30,6 +30,7 @@ const signinChanges = [
   "catalog",
   "runtime",
   "catalog-source",
+  "historical-auth",
   "probe",
 ] as const;
 
@@ -121,6 +122,11 @@ async function checkWorkflowCommand(
   if (signin === "catalog-source") {
     // The catalog source alone must invalidate the reviewed reader contract.
     await writeFile(join(root, "scripts/migration-catalog.ts"), "// Unreviewed catalog input\n");
+  }
+  if (signin === "historical-auth") {
+    // The historical controller image copied this entry point into the production target.
+    const file = join(root, "scripts/auth-maintain.mjs");
+    await writeFile(file, (await readFile(file, "utf8")) + "\n// Unreviewed entry point change\n");
   }
   if (signin === "probe") {
     // The new script is a production build input even though the reviewed pair has only .mjs.

@@ -22,7 +22,7 @@ import {
   createRealKubernetesFixture,
   kubernetesHash as hash,
   productionGatewayMemoryLimit,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
 import { createGatewaySessionEvidence } from "./plugin-gateway-session-evidence.ts";
 import {
   optionalPluginProofModel,

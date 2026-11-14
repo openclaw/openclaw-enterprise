@@ -486,7 +486,18 @@ test(
         input: { durationSeconds: 86400, provider: "caller-selected" },
         status: 400,
       },
-      { name: "oversized control body", input: { padding: "x".repeat(17000) }, status: 413 },
+      {
+        name: "exact-limit control body reaches schema refusal",
+        // JSON adds 14 ASCII bytes: {"padding":""}. The unknown field is refused.
+        input: { padding: "x".repeat(16_384 - 14) },
+        status: 400,
+      },
+      {
+        name: "control body one UTF-8 byte over the limit",
+        // 14 + 16,369 ASCII bytes + 2 bytes for é = 16,385 bytes, but 16,384 JS characters.
+        input: { padding: "x".repeat(16_384 - 14 - 1) + "é" },
+        status: 413,
+      },
     ];
     for (const scenario of invalidInputs) {
       await t.test(scenario.name, async () => {

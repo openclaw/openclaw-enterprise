@@ -204,7 +204,7 @@ if printf '%s' "$*" | grep -q 'scripts/ci/prepare.mjs'; then
   exit 0
 fi
 if printf '%s' "$*" | grep -q 'scripts/ci/reset-k3d-model.mjs'; then touch '${resetCalled}'; exit 0; fi
-if printf '%s' "$*" | grep -q 'scripts/ci/cleanup.mjs'; then rm -f '${join(state, "state.json")}'; exit 0; fi
+if [ "$1" = scripts/ci/cleanup.ts ]; then rm -f '${join(state, "state.json")}'; exit 0; fi
 node_args="$*"
 /usr/bin/env -i PATH=/usr/bin:/bin INVOCATION='${invocation}' NODE_ARGS="$node_args" DOCKER_HOST="\${DOCKER_HOST:-}" OCC_DOCKER_BIN="$OCC_DOCKER_BIN" PODMAN_COMPOSE_PROVIDER="\${PODMAN_COMPOSE_PROVIDER:-}" OCC_K3D_DEMO_STATE="\${OCC_K3D_DEMO_STATE:-}" OCC_K3D_HARNESS="\${OCC_K3D_HARNESS:-}" OPENSHELL_HARNESS="\${OCC_TEST_OPENSHELL_HARNESS:-}" /bin/sh -c 'printf "{\\"args\\":\\"%s\\",\\"dockerHost\\":\\"%s\\",\\"containerBin\\":\\"%s\\",\\"composeProvider\\":\\"%s\\",\\"demoState\\":\\"%s\\",\\"harness\\":\\"%s\\",\\"openShellHarness\\":\\"%s\\"}\\n" "$NODE_ARGS" "$DOCKER_HOST" "$OCC_DOCKER_BIN" "$PODMAN_COMPOSE_PROVIDER" "$OCC_K3D_DEMO_STATE" "$OCC_K3D_HARNESS" "$OPENSHELL_HARNESS" > "$INVOCATION"'
 INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${${selectedHarness === "openclaw" ? "OCC_TEST_OPENSHELL_MODEL_BASE_URL" : "OCC_TEST_CODEX_OPENAI_BASE_URL"}:-}" KEY_PRESENT="$(test -n "$OPENAI_API_KEY" && printf true || printf false)" '${process.execPath}' -e '

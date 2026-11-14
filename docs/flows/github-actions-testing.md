@@ -160,7 +160,7 @@ Cluster-wide watches can include sibling namespaces under `fileConcurrency`.
 Failed starts log `Agent namespace activity unavailable`. Each producing lane
 uploads the artifact.
 
-Before Agent Pods exist, `tests/helpers/kubernetes-real.mjs:waitForDeploymentAvailable`
+Before Agent Pods exist, `tests/helpers/kubernetes-real.ts:waitForDeploymentAvailable`
 captures Deployment logs and Pod/events, retaining the last eight `containerLogs` records.
 Without runner capture, it emits a projected diagnostic. `unavailable` means a
 failed observation; missing records do not prove healthy startup.
@@ -244,7 +244,7 @@ Per-file cleanup releases databases; job cleanup removes owned resources,
 including Collector objects and logging data.
 Sign-in transitions and proof readers reject already-expired issuance observations.
 Cleanup errors fail except [QA image warnings](github-actions-testing/preparation.md).
-`cleanup-staged-signin.mjs` passes the prepared state digest and custody to
+`cleanup-staged-signin.ts` passes the prepared state digest and custody to
 `scripts/ci/cleanup.ts:cleanupState`: locked validation precedes exact server/network
 deletion and volume checks. A persisted mutation marker forbids fixture fallback
 without completed cleanup; verified pre-mutation refusals retain fallback authority.

@@ -7,7 +7,7 @@ import {
   createKubernetesClient,
   diagnosticDeadlineMs,
   withinDiagnosticDeadline,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
 
 // The caller owns the disposable namespace and registers its cleanup before installation.
 export async function prepareProductionHelmControlPlane({

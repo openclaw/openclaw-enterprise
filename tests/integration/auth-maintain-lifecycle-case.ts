@@ -132,7 +132,8 @@ export async function runAuthMaintenanceLifecycle(
       );
       assert.equal(output.profile, "legacy");
       assert.equal(output.users, 2);
-      const denied = await maintain(["status"], databaseUrl);
+      // The installed command requires the schema owner even for a status read.
+      const denied = await maintainScript(["status"], databaseUrl);
       assert.equal(denied.code, 1);
       assert.match(denied.stderr, /migration role/);
     },

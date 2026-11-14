@@ -1,27 +1,68 @@
-import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, type ChildProcess, type ExecFileOptions } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";
+import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import type { KubernetesComputeDriverOptions } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import type { KubernetesAuthentication } from "../../apps/controller/src/drivers/kubernetes/authentication.ts";
+import type { HarnessAuthSnapshot } from "../../packages/contracts/src/index.ts";
+import { asRecord, sha256Hex } from "../../packages/utils/src/index.ts";
+import { followContainerLog } from "./container-log-capture.ts";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
 import { kubectlGetJson } from "./kubernetes-api-read.ts";
-import { waitFor as pollFor } from "./wait-for.mjs";
-import { followContainerLog } from "./container-log-capture.ts";
+import { waitForResult } from "./wait-for.mjs";
 
 const execute = promisify(execFile);
 
-export function kubectlArguments({ kubeconfigPath, kubernetesContext }, args) {
-  return ["--kubeconfig", kubeconfigPath, "--context", kubernetesContext, ...args];
+type Selection = Parameters<typeof kubectlGetJson>[0];
+type Kubectl = (...args: string[]) => Promise<string>;
+type KubectlArguments = (args: readonly string[]) => string[];
+type DeadlineSleep = (
+  ms: number,
+  value: undefined,
+  options: { signal: AbortSignal },
+) => Promise<unknown>;
+
+type RetryOptions = {
+  attempts?: number;
+  firstDelayMs?: number;
+  sleep?: (ms: number) => Promise<unknown>;
+  log?: (message: string) => void;
+};
+
+type DiagnosticOptions = {
+  timeoutMs?: number;
+  sleep?: DeadlineSleep | undefined;
+};
+
+type ManifestOptions = { redactions?: readonly (string | undefined | null)[] };
+
+export function kubectlArguments(
+  { kubeconfigPath, kubernetesContext }: Selection,
+  args: readonly string[],
+) {
+  // Selection is optional while wiring the fixture. Commands use the selected kubeconfig and context.
+  return ["--kubeconfig", kubeconfigPath!, "--context", kubernetesContext!, ...args];
+}
+
+function commandError(error: unknown): {
+  name?: unknown;
+  stderr?: unknown;
+  stdout?: unknown;
+  message?: unknown;
+  code?: unknown;
+} {
+  return (typeof error === "object" && error !== null) || typeof error === "function" ? error : {};
 }
 
 // The deadline signal of the failure diagnostic running in this async context, if any.
-const diagnosticDeadline = new AsyncLocalStorage();
+const diagnosticDeadline = new AsyncLocalStorage<AbortSignal>();
 
 // Whether the failure diagnostic this code runs in has passed its deadline, so it should
 // write nothing more.
@@ -29,7 +70,11 @@ export function diagnosticDeadlinePassed() {
   return diagnosticDeadline.getStore()?.aborted === true;
 }
 
-async function kubectlFor(selection, args, options) {
+async function kubectlFor(
+  selection: Selection,
+  args: readonly string[],
+  options?: ExecFileOptions,
+) {
   // Inside a failure diagnostic, kubectl stops at its deadline (finding 1557).
   const signal = diagnosticDeadline.getStore();
   signal?.throwIfAborted();
@@ -40,6 +85,7 @@ async function kubectlFor(selection, args, options) {
   const { stdout } = await execute("kubectl", kubectlArguments(selection, args), {
     maxBuffer: 4 * 1024 * 1024,
     ...options,
+    encoding: "utf8",
     signal,
   });
   return stdout;
@@ -54,28 +100,29 @@ async function kubectlFor(selection, args, options) {
 const transientKubectlFailure =
   /^error: EOF$|"https?:\/\/[^"\s]+": EOF$|Unable to connect to the server|error dialing backend|websocket: close|unexpected EOF|connection reset by peer|connection refused|http2: client connection lost|TLS handshake timeout|i\/o timeout|the server is currently unable to handle the request|etcdserver: request timed out/m;
 
-export function isTransientKubectlFailure(error) {
+export function isTransientKubectlFailure(error: unknown) {
+  const { name, stderr = "" } = commandError(error);
   // A read a diagnostic deadline stopped is not retried, whatever kubectl wrote first.
-  if (error?.name === "AbortError") {
+  if (name === "AbortError") {
     return false;
   }
   // A spawn failure (ENOENT, EACCES) has empty stderr: kubectl never ran.
-  const stderr = String(error?.stderr ?? "");
-  return !/command terminated with exit code/.test(stderr) && transientKubectlFailure.test(stderr);
+  const output = String(stderr ?? "");
+  return !/command terminated with exit code/.test(output) && transientKubectlFailure.test(output);
 }
 
 // Retries a kubectl command that changes nothing in the cluster or in the
 // container (a get, or an exec that only reads) when the transport dropped.
 // Any other failure, and the last transient one, is thrown unchanged.
-export async function retryKubectlRead(
-  read,
+export async function retryKubectlRead<Result>(
+  read: () => Result | PromiseLike<Result>,
   {
     attempts = 4,
     firstDelayMs = 500,
     sleep = delay,
     log = (message) => process.stderr.write(`${message}\n`),
-  } = {},
-) {
+  }: RetryOptions = {},
+): Promise<Result> {
   let delayMs = firstDelayMs;
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -84,7 +131,7 @@ export async function retryKubectlRead(
       if (attempt >= attempts || !isTransientKubectlFailure(error)) {
         throw error;
       }
-      const reason = String(error.stderr).trim().split("\n").at(-1);
+      const reason = String(commandError(error).stderr).trim().split("\n").at(-1);
       log(
         `Transient kubectl failure (${reason}); retrying in ${delayMs} ms (attempt ${attempt + 1}/${attempts})`,
       );
@@ -105,9 +152,21 @@ export const diagnosticDeadlineMs = 60_000;
 // read it started is killed and a later one refused, so no read outlives the deadline or keeps
 // the test process alive, and the diagnostic checks diagnosticDeadlinePassed() before it
 // writes (finding 1557). A diagnostic nested in another one also stops at the outer deadline.
-export async function withinDiagnosticDeadline(
-  diagnostic,
-  { timeoutMs = diagnosticDeadlineMs, timedOut = "Diagnostic timed out", sleep = delay } = {},
+export function withinDiagnosticDeadline<Result, Timeout>(
+  diagnostic: (signal: AbortSignal) => Result | PromiseLike<Result>,
+  options: DiagnosticOptions & { timedOut: Timeout },
+): Promise<Awaited<Result> | Awaited<Timeout>>;
+export function withinDiagnosticDeadline<Result>(
+  diagnostic: (signal: AbortSignal) => Result | PromiseLike<Result>,
+  options?: DiagnosticOptions,
+): Promise<Awaited<Result> | string>;
+export async function withinDiagnosticDeadline<Result, Timeout>(
+  diagnostic: (signal: AbortSignal) => Result | PromiseLike<Result>,
+  {
+    timeoutMs = diagnosticDeadlineMs,
+    timedOut = "Diagnostic timed out",
+    sleep = delay,
+  }: DiagnosticOptions & { timedOut?: Timeout | string } = {},
 ) {
   const deadline = new AbortController();
   const outer = diagnosticDeadline.getStore();
@@ -130,9 +189,19 @@ export async function withinDiagnosticDeadline(
 // Controller startup can fail before any Compute-managed Agent Pod exists. Capture
 // that exact fixture namespace before teardown; the Agent watch cannot observe it.
 export async function waitForDeploymentAvailable(
-  context,
-  selection,
-  { namespace, deployment, container, labels },
+  context: TestContext,
+  selection: Selection,
+  {
+    namespace,
+    deployment,
+    container,
+    labels,
+  }: {
+    namespace: string;
+    deployment: string;
+    container: string;
+    labels: Readonly<Record<string, string>>;
+  },
 ) {
   const scope = ["--namespace", namespace];
   const log = followContainerLog({
@@ -166,10 +235,10 @@ export async function waitForDeploymentAvailable(
         { timeoutMs: 20_000, timedOut: "" },
       ),
     snapshot: async () => {
-      const read = (resource, extra = []) =>
+      const read = (resource: string, extra: readonly string[] = []) =>
         withinDiagnosticDeadline(
-          async () =>
-            JSON.parse(
+          async () => {
+            const value: unknown = JSON.parse(
               await kubectlFor(selection, [
                 "get",
                 resource,
@@ -179,7 +248,9 @@ export async function waitForDeploymentAvailable(
                 "json",
                 diagnosticRequestTimeout,
               ]),
-            ).items,
+            );
+            return resourceItems(value);
+          },
           { timeoutMs: 20_000, timedOut: null },
         ).catch(() => null);
       const [pods, events] = await Promise.all([
@@ -223,12 +294,20 @@ export async function waitForDeploymentAvailable(
 // deletion time. The listing runs within the diagnostic deadline and only adds to the delete's
 // own error; past the deadline it keeps what it read (finding 2028).
 export async function deleteNamespaceExplained(
-  kubectl,
-  namespace,
+  kubectl: Kubectl,
+  namespace: string,
   // The listing's own bound keeps the delete and the listing within teardownStepLimitMs, so the
   // teardown never abandons the step and loses the listing with it. `sleep` stands in for the
   // deadline's timer (withinDiagnosticDeadline's), so a test can hold it.
-  { timeout = "120s", listTimeoutMs = 40_000, sleep } = {},
+  {
+    timeout = "120s",
+    listTimeoutMs = 40_000,
+    sleep,
+  }: {
+    timeout?: string;
+    listTimeoutMs?: number;
+    sleep?: DeadlineSleep;
+  } = {},
 ) {
   try {
     return await kubectl(
@@ -240,17 +319,21 @@ export async function deleteNamespaceExplained(
       `--timeout=${timeout}`,
     );
   } catch (error) {
-    const read = [];
+    const read: string[] = [];
     const timedOut = Symbol("listing timed out");
-    const remains = await withinDiagnosticDeadline(
+    const remains = await withinDiagnosticDeadline<string, typeof timedOut>(
       () => describeNamespaceRemains(kubectl, namespace, read),
       { timeoutMs: listTimeoutMs, timedOut, sleep },
     ).then(
       (listed) =>
         listed === timedOut ? [...read, "listing what remains timed out"].join("\n  ") : listed,
-      (listError) => `listing what remains failed: ${listError?.message ?? listError}`,
+      (listError: unknown) =>
+        `listing what remains failed: ${String(commandError(listError).message ?? listError)}`,
     );
-    error.message = `${error.message}\nNamespace ${namespace} remains: ${remains}`;
+    const failure = commandError(error);
+    if (failure === error) {
+      failure.message = `${String(failure.message)}\nNamespace ${namespace} remains: ${remains}`;
+    }
     throw error;
   }
 }
@@ -264,43 +347,53 @@ const namespaceRemainsTemplate =
 // A kubectl read that printed what it could before failing (one unavailable aggregated API fails
 // discovery and a multi-kind get, but kubectl still prints the rest): its stdout, and its error's
 // first stderr line in `lines`.
-async function partialKubectlRead(kubectl, args, lines, what) {
+async function partialKubectlRead(
+  kubectl: Kubectl,
+  args: readonly string[],
+  lines: string[],
+  what: string,
+) {
   try {
     return { output: await kubectl(...args), complete: true };
   } catch (error) {
     // A read the deadline stopped is not a failed read: the listing reports its timeout instead,
     // and a line pushed here could race into that report.
-    if (error?.name === "AbortError" || diagnosticDeadlinePassed()) {
+    const { name, stderr, message, stdout } = commandError(error);
+    if (name === "AbortError" || diagnosticDeadlinePassed()) {
       throw error;
     }
-    const reason = String(error?.stderr || error?.message || error)
+    const reason = String(stderr || message || error)
       .trim()
-      .split("\n")[0]
-      .slice(0, 300);
+      .split("\n", 1)[0]
+      ?.slice(0, 300);
     lines.push(`${what} failed: ${reason}`);
-    return { output: String(error?.stdout ?? ""), complete: false };
+    return { output: String(stdout ?? ""), complete: false };
   }
 }
 
 // Pushes each line to `lines` as it is read, so a listing cut short by its deadline keeps them.
-async function describeNamespaceRemains(kubectl, namespace, lines) {
-  let state;
+async function describeNamespaceRemains(kubectl: Kubectl, namespace: string, lines: string[]) {
+  let state: unknown;
   try {
     state = JSON.parse(
       await kubectl("get", "namespace", namespace, "-o", "json", diagnosticRequestTimeout),
     );
   } catch (error) {
-    if (/\(NotFound\)/.test(String(error?.stderr ?? ""))) {
+    if (/\(NotFound\)/.test(String(commandError(error).stderr ?? ""))) {
       return "none (the Namespace is gone)";
     }
     throw error;
   }
+  const namespaceState = asRecord(state);
+  const status = asRecord(namespaceState?.status);
+  const finalizers = asRecord(namespaceState?.spec)?.finalizers;
+  const conditions: unknown[] = Array.isArray(status?.conditions) ? status.conditions : [];
   lines.push(
-    `phase ${state.status?.phase ?? "unknown"}, finalizers [${(state.spec?.finalizers ?? []).join(", ")}]`,
-    ...(state.status?.conditions ?? []).map(
-      (condition) =>
-        `condition ${condition.type}=${condition.status} ${condition.reason ?? ""}: ${condition.message ?? ""}`,
-    ),
+    `phase ${status?.phase ?? "unknown"}, finalizers [${Array.isArray(finalizers) ? finalizers.join(", ") : ""}]`,
+    ...conditions.map((value) => {
+      const condition = asRecord(value);
+      return `condition ${condition?.type}=${condition?.status} ${condition?.reason ?? ""}: ${condition?.message ?? ""}`;
+    }),
   );
   const discovery = await partialKubectlRead(
     kubectl,
@@ -351,13 +444,6 @@ async function describeNamespaceRemains(kubectl, namespace, lines) {
   return lines.join("\n  ");
 }
 
-export {
-  abandonedTeardownExitGraceMs,
-  boundedTeardown,
-  teardownStepLimitMs,
-  withBoundedTeardown,
-} from "./bounded-teardown.ts";
-
 const alreadyCreated = /^Error from server \(AlreadyExists\): /m;
 
 // A second delete of a Namespace that the dropped attempt already started removing.
@@ -371,13 +457,16 @@ export const namespaceAlreadyTerminating =
 // `applied` (by default AlreadyExists, for a create) means that attempt was
 // applied; before one it is thrown. That assumes nobody else writes the same
 // object, so use it only for names the test owns.
-export async function retryKubectlWrite(write, { applied = alreadyCreated, ...options } = {}) {
+export async function retryKubectlWrite<Result>(
+  write: () => Result | PromiseLike<Result>,
+  { applied = alreadyCreated, ...options }: RetryOptions & { applied?: RegExp } = {},
+): Promise<Result | ""> {
   let dropped = false;
   return retryKubectlRead(async () => {
     try {
       return await write();
     } catch (error) {
-      if (dropped && applied.test(String(error?.stderr ?? ""))) {
+      if (dropped && applied.test(String(commandError(error).stderr ?? ""))) {
         return "";
       }
       dropped ||= isTransientKubectlFailure(error);
@@ -394,22 +483,29 @@ export const PROBE_DENIED_EXIT_CODE = 42;
 // Returns the probe's denial report when kubectl exec ran the probe and the
 // probe itself reported a denial, otherwise undefined. A dropped exec stream, a
 // missing or crashing probe script, and a DNS or argument error are not denials.
-export function probeDenial(error) {
-  const stderr = String(error?.stderr ?? "");
+function isProbeDenial(
+  report: Record<string, unknown> | undefined,
+): report is Record<string, unknown> & { denied: true; code: string } {
+  return report?.denied === true && typeof report.code === "string";
+}
+
+export function probeDenial(error: unknown) {
+  const { code, stderr, stdout } = commandError(error);
   if (
-    error?.code !== PROBE_DENIED_EXIT_CODE ||
-    !stderr.includes(`command terminated with exit code ${PROBE_DENIED_EXIT_CODE}`)
+    code !== PROBE_DENIED_EXIT_CODE ||
+    !String(stderr ?? "").includes(`command terminated with exit code ${PROBE_DENIED_EXIT_CODE}`)
   ) {
     return undefined;
   }
   try {
-    const report = JSON.parse(
-      String(error.stdout ?? "")
+    const value: unknown = JSON.parse(
+      String(stdout ?? "")
         .trim()
         .split("\n")
-        .at(-1),
+        .at(-1) ?? "",
     );
-    return report?.denied === true && typeof report.code === "string" ? report : undefined;
+    const report = asRecord(value);
+    return isProbeDenial(report) ? report : undefined;
   } catch {
     return undefined;
   }
@@ -417,8 +513,12 @@ export function probeDenial(error) {
 
 // Runs a probe exec that is expected to be blocked. Transport drops are
 // retried like any read; the check passes only on the probe's own denial.
-export async function assertProbeDenied(description, run, options) {
-  let stdout;
+export async function assertProbeDenied(
+  description: string,
+  run: () => Promise<string>,
+  options?: RetryOptions,
+) {
+  let stdout: string;
   try {
     stdout = await retryKubectlRead(run, options);
   } catch (error) {
@@ -426,11 +526,11 @@ export async function assertProbeDenied(description, run, options) {
     if (denial !== undefined) {
       return denial;
     }
-    const detail = String(error?.stderr ?? "").trim() || error?.message;
-    throw new Error(
-      `${description}: the probe did not report a denial (exit ${error?.code}): ${detail}`,
-      { cause: error },
-    );
+    const { code, stderr, message } = commandError(error);
+    const detail = String(stderr ?? "").trim() || message;
+    throw new Error(`${description}: the probe did not report a denial (exit ${code}): ${detail}`, {
+      cause: error,
+    });
   }
   assert.fail(`${description} unexpectedly succeeded: ${String(stdout).trim()}`);
 }
@@ -439,7 +539,7 @@ export async function assertProbeDenied(description, run, options) {
 // (a Gateway container, the DNS fixture Pods).
 // "probe.mjs" fills process.argv[1], so the probe still reads its own arguments
 // from process.argv.slice(2).
-export function inlineProbeCommand(source, ...probeArguments) {
+export function inlineProbeCommand(source: string, ...probeArguments: unknown[]) {
   return [
     "node",
     "--input-type=module",
@@ -450,37 +550,53 @@ export function inlineProbeCommand(source, ...probeArguments) {
   ];
 }
 
+function resourceItems(value: unknown): unknown[] | undefined {
+  const items = asRecord(value)?.items;
+  if (items === undefined) {
+    return undefined;
+  }
+  assert.ok(Array.isArray(items), "Kubernetes list items must be an array");
+  return items;
+}
+
 export function createKubernetesClient({
   selection,
   kubectl = (...args) => kubectlFor(selection, args),
   waitTimeoutMs = 240_000,
   waitIntervalMs = 750,
+}: {
+  selection: Selection;
+  kubectl?: Kubectl;
+  waitTimeoutMs?: number;
+  waitIntervalMs?: number;
 }) {
-  const kubectlArgumentsForSelection = (args) => kubectlArguments(selection, args);
-  const resource = async (kind, name, namespace) => {
+  const kubectlArgumentsForSelection: KubectlArguments = (args) =>
+    kubectlArguments(selection, args);
+  const resource = async (kind: string, name: string, namespace?: string): Promise<unknown> => {
     const args = ["get", kind, name, "-o", "json"];
     if (namespace !== undefined) {
       args.push("--namespace", namespace);
     }
     return JSON.parse(await kubectl(...args));
   };
-  const resources = async (kind, namespace, ...args) =>
-    JSON.parse(await kubectl("get", kind, "--namespace", namespace, ...args, "-o", "json")).items;
-  // `operation` may also return false for "not yet".
-  const waitFor = (description, operation, timeoutMs = waitTimeoutMs) =>
-    pollFor(
-      description,
-      async () => {
-        const result = await operation();
-        return result === false ? undefined : result;
-      },
-      { timeoutMs, intervalMs: waitIntervalMs },
+  const resources = async (kind: string, namespace: string, ...args: string[]) => {
+    const value: unknown = JSON.parse(
+      await kubectl("get", kind, "--namespace", namespace, ...args, "-o", "json"),
     );
+    return resourceItems(value);
+  };
+  // `operation` may also return false for "not yet".
+  const waitFor = <Result>(
+    description: string | (() => string),
+    operation: () => Result | false | undefined | PromiseLike<Result | false | undefined>,
+    timeoutMs = waitTimeoutMs,
+  ): Promise<Result> =>
+    waitForResult(description, operation, { timeoutMs, intervalMs: waitIntervalMs });
 
   return {
     kubectlArguments: kubectlArgumentsForSelection,
     kubectl,
-    applyManifest: (manifest, options) =>
+    applyManifest: (manifest: string | Uint8Array, options?: ManifestOptions) =>
       applyManifest(kubectlArgumentsForSelection, manifest, options),
     resource,
     resources,
@@ -488,26 +604,30 @@ export function createKubernetesClient({
   };
 }
 
-async function applyManifest(kubectlArgumentsForSelection, manifest, { redactions = [] } = {}) {
+async function applyManifest(
+  kubectlArgumentsForSelection: KubectlArguments,
+  manifest: string | Uint8Array,
+  { redactions = [] }: ManifestOptions = {},
+) {
   const child = spawn("kubectl", kubectlArgumentsForSelection(["apply", "-f", "-"]), {
     stdio: ["pipe", "ignore", "pipe"],
   });
   let stderr = "";
-  child.stderr.setEncoding("utf8").on("data", (chunk) => {
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
     stderr = (stderr + chunk).slice(-4096);
   });
   // kubectl can reject its arguments before reading the manifest. Its exit status reports why.
   child.stdin.on("error", () => {});
   child.stdin.end(manifest);
-  const [status] = await once(child, "close");
+  const [status]: unknown[] = await once(child, "close");
   if (status !== 0) {
     throw new Error(`kubectl apply failed (${status}): ${redact(stderr, redactions)}`);
   }
 }
 
-function redact(value, redactions) {
+function redact(value: string, redactions: NonNullable<ManifestOptions["redactions"]>) {
   return redactions
-    .filter((secret) => typeof secret === "string" && secret.length > 0)
+    .filter((secret): secret is string => typeof secret === "string" && secret.length > 0)
     .reduce((current, secret) => current.split(secret).join("<redacted>"), value);
 }
 
@@ -520,7 +640,10 @@ export function explicitK3dSelection() {
   };
 }
 
-export async function validateExplicitK3dLoopbackContext(selection) {
+type KubeconfigCluster = { server: string } & Record<string, unknown>;
+type SelectedKubeconfig = { clusters: [{ name: string; cluster: KubeconfigCluster }] };
+
+export async function validateExplicitK3dLoopbackContext(selection: Selection) {
   const { kubeconfigPath, kubernetesContext } = selection;
   assert.ok(
     kubeconfigPath,
@@ -528,15 +651,13 @@ export async function validateExplicitK3dLoopbackContext(selection) {
   );
   assert.match(kubernetesContext ?? "", /^k3d-/, "a dedicated k3d-* context is required");
   // Flattening reads local files, where kubectl's API request timeout does not apply.
-  const configuration = JSON.parse(
+  const configuration: unknown = JSON.parse(
     await kubectlFor(selection, ["config", "view", "--minify", "--flatten", "-o", "json"], {
       timeout: 30_000,
       killSignal: "SIGKILL",
     }),
   );
-  assert.equal(configuration.contexts?.length, 1);
-  assert.equal(configuration.contexts[0].name, kubernetesContext);
-  assert.equal(configuration.clusters?.length, 1);
+  assertSelectedKubeconfig(configuration, kubernetesContext);
   const endpoint = new URL(configuration.clusters[0].cluster.server);
   assert.equal(endpoint.protocol, "https:");
   assert.ok(
@@ -547,7 +668,26 @@ export async function validateExplicitK3dLoopbackContext(selection) {
   return configuration;
 }
 
-export function kubernetesHash(value, length = 12) {
+function assertSelectedKubeconfig(
+  value: unknown,
+  context: string | undefined,
+): asserts value is SelectedKubeconfig {
+  const configuration = asRecord(value);
+  const contexts: unknown[] | undefined = Array.isArray(configuration?.contexts)
+    ? configuration.contexts
+    : undefined;
+  assert.equal(contexts?.length, 1);
+  assert.equal(asRecord(contexts?.[0])?.name, context);
+  const clusters: unknown[] | undefined = Array.isArray(configuration?.clusters)
+    ? configuration.clusters
+    : undefined;
+  assert.equal(clusters?.length, 1);
+  const selected = asRecord(clusters?.[0]);
+  assert.equal(typeof selected?.name, "string");
+  assert.equal(typeof asRecord(selected?.cluster)?.server, "string");
+}
+
+export function kubernetesHash(value: string, length = 12) {
   return sha256Hex(value, length);
 }
 
@@ -565,6 +705,13 @@ export function createKubernetesInstallationConfiguration({
   codexImage,
   cluster,
   codexSeccompProfile,
+}: {
+  authentication: KubernetesAuthentication;
+  platformNamespace: string;
+  gatewayImage: string | undefined;
+  codexImage: string | undefined;
+  cluster: string;
+  codexSeccompProfile?: string | undefined;
 }) {
   const configuration = createInstallationDriverConfiguration();
   const compute = configuration.drivers.compute.configuration;
@@ -572,38 +719,67 @@ export function createKubernetesInstallationConfiguration({
     requests: { cpu: "100m", memory: "256Mi" },
     limits: { cpu: "2", memory: "1Gi" },
   };
-  configuration.occ.cluster = cluster;
-  configuration.drivers.configuration.configuration.authentication =
-    structuredClone(authentication);
-  configuration.drivers.secret.configuration.authentication = structuredClone(authentication);
-  compute.authentication = structuredClone(authentication);
-  compute.images.gateway = gatewayImage;
-  compute.images.agent = codexImage;
-  // Disposable fixture clusters may use one node; production node isolation is separate proof.
-  compute.runtime.gatewayNodeSelector = JSON.parse(
+  const gatewayNodeSelector: unknown = JSON.parse(
     process.env.OCC_TEST_KUBERNETES_GATEWAY_NODE_SELECTOR ?? '{"kubernetes.io/os":"linux"}',
   );
-  if (codexSeccompProfile !== undefined) {
-    compute.runtime.codexSeccompProfile = codexSeccompProfile;
-  }
-  compute.resources.gateway = structuredClone(workload);
-  compute.resources.agent = {
-    ...structuredClone(workload),
-    limits: { ...workload.limits, memory: "2Gi" },
-  };
-  compute.resources.namespace.containerDefaults = structuredClone(workload);
-  compute.network.gatewayTrustedProxyCidrs = ["127.0.0.1/32"];
-  compute.network.gatewayClients = [
-    {
-      namespace: platformNamespace,
-      podLabels: { "app.kubernetes.io/name": "approved-gateway-client" },
+  // Keep the selected node labels available to the Driver's own configuration validation.
+  return {
+    ...configuration,
+    occ: { ...configuration.occ, cluster },
+    drivers: {
+      ...configuration.drivers,
+      configuration: {
+        ...configuration.drivers.configuration,
+        configuration: { authentication: structuredClone(authentication) },
+      },
+      compute: {
+        ...configuration.drivers.compute,
+        configuration: {
+          ...compute,
+          authentication: structuredClone(authentication),
+          images: { ...compute.images, gateway: gatewayImage, agent: codexImage },
+          resources: {
+            ...compute.resources,
+            gateway: structuredClone(workload),
+            agent: { ...structuredClone(workload), limits: { ...workload.limits, memory: "2Gi" } },
+            namespace: {
+              ...compute.resources.namespace,
+              containerDefaults: structuredClone(workload),
+            },
+          } satisfies KubernetesComputeDriverOptions["resources"],
+          network: {
+            ...compute.network,
+            gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
+            gatewayClients: [
+              {
+                namespace: platformNamespace,
+                podLabels: { "app.kubernetes.io/name": "approved-gateway-client" },
+              },
+            ],
+          } satisfies KubernetesComputeDriverOptions["network"],
+          runtime: {
+            ...compute.runtime,
+            gatewayNodeSelector,
+            ...(codexSeccompProfile === undefined ? {} : { codexSeccompProfile }),
+          },
+        },
+      },
+      secret: {
+        ...configuration.drivers.secret,
+        configuration: { authentication: structuredClone(authentication) },
+      },
     },
-  ];
-  return configuration;
+  };
 }
 
 /** Provision only a synthetic fixture credential through the actual owning Secret Driver. */
-export async function createKubernetesFixtureHarnessAuth({ authentication, namespaceId }) {
+export async function createKubernetesFixtureHarnessAuth({
+  authentication,
+  namespaceId,
+}: {
+  authentication: KubernetesAuthentication;
+  namespaceId: string;
+}) {
   const { KubernetesSecretDriver } =
     await import("../../apps/controller/src/drivers/secret/kubernetes/index.ts");
   const driver = new KubernetesSecretDriver({ authentication });
@@ -613,7 +789,7 @@ export async function createKubernetesFixtureHarnessAuth({ authentication, names
     method: "api_key",
     source: { kind: "secret", namespaceId, id: identity.id },
     secretDriverId: driver.id,
-  };
+  } satisfies HarnessAuthSnapshot;
   return {
     snapshot,
     context: {
@@ -631,7 +807,17 @@ export async function createKubernetesFixtureHarnessAuth({ authentication, names
   };
 }
 
-export async function assertGatewayModelTurn({ gatewayUrl, gatewayPassword, nonce, secrets = [] }) {
+export async function assertGatewayModelTurn({
+  gatewayUrl,
+  gatewayPassword,
+  nonce,
+  secrets = [],
+}: {
+  gatewayUrl: string;
+  gatewayPassword: string | undefined;
+  nonce: string;
+  secrets?: readonly (string | undefined)[];
+}) {
   assert.ok(gatewayPassword, "Kubernetes model probes require the loopback gateway password.");
   const endpoint = `${gatewayUrl}/v1/chat/completions`;
   const denied = await fetch(endpoint, {
@@ -667,9 +853,14 @@ export async function assertGatewayModelTurn({ gatewayUrl, gatewayPassword, nonc
     }
   }
   assert.equal(response.status, 200, `real provider-backed model turn failed: ${body}`);
-  const message = JSON.parse(body).choices?.[0]?.message;
+  const completion: unknown = JSON.parse(body);
+  const choices = asRecord(completion)?.choices;
+  const first: unknown = Array.isArray(choices) ? choices[0] : undefined;
+  const message = asRecord(asRecord(first)?.message);
   assert.equal(message?.role, "assistant");
-  assert.match(message?.content ?? "", new RegExp(nonce));
+  const content = message?.content ?? "";
+  assert.ok(typeof content === "string", "the assistant must return text");
+  assert.match(content, new RegExp(nonce));
 }
 
 export function createRealKubernetesFixture({
@@ -678,6 +869,10 @@ export function createRealKubernetesFixture({
   gatewayImage,
   codexImage,
   databaseUrl,
+}: Selection & {
+  gatewayImage?: string | undefined;
+  codexImage?: string | undefined;
+  databaseUrl?: string | undefined;
 }) {
   const selection = { kubeconfigPath, kubernetesContext };
   const kubernetes = createKubernetesClient({ selection });
@@ -691,6 +886,14 @@ export function createRealKubernetesFixture({
     clusterRole,
     clusterRoleBinding,
     context,
+  }: {
+    directory: string;
+    platformNamespace: string;
+    kubeconfig: SelectedKubeconfig;
+    account: string;
+    clusterRole: string;
+    clusterRoleBinding: string;
+    context: string;
   }) {
     await kubectl("create", "serviceaccount", account, "--namespace", platformNamespace);
     await kubectl(
@@ -716,7 +919,12 @@ export function createRealKubernetesFixture({
       }),
       { mode: 0o600 },
     );
-    return { account, authentication: { mode: "kubeconfig", kubeconfigPath: path, context } };
+    const authentication = {
+      mode: "kubeconfig",
+      kubeconfigPath: path,
+      context,
+    } satisfies KubernetesAuthentication;
+    return { account, authentication };
   }
 
   async function validatePrerequisites() {
@@ -750,10 +958,16 @@ export function createRealKubernetesFixture({
   }
 
   async function provisionAgentTransportSecret(
-    directory,
-    namespace,
-    agentId,
-    { gatewayPassword, legacyCombined = false } = {},
+    directory: string,
+    namespace: string,
+    agentId: string,
+    {
+      gatewayPassword,
+      legacyCombined = false,
+    }: {
+      gatewayPassword?: string | undefined;
+      legacyCombined?: boolean;
+    } = {},
   ) {
     const suffix = kubernetesHash(agentId);
     const tokenDirectory = join(directory, `tokens-${suffix}`);
@@ -768,10 +982,14 @@ export function createRealKubernetesFixture({
         }),
       ]);
       const owner = await kubernetes.resource("namespace", namespace);
-      const namespaceId = owner.metadata.labels["openclaw.dev/namespace"];
-      assert.ok(namespaceId, "transport source must belong to the resolved data-plane Namespace");
+      const metadata = asRecord(asRecord(owner)?.metadata);
+      const namespaceId = asRecord(metadata?.labels)?.["openclaw.dev/namespace"];
+      assert.ok(
+        typeof namespaceId === "string" && namespaceId,
+        "transport source must belong to the resolved data-plane Namespace",
+      );
       const target = namespace;
-      const bundles = legacyCombined
+      const bundles: [string, string[]][] = legacyCombined
         ? [[`openclaw-agent-transport-${suffix}`, ["app-server-token", "gateway-password"]]]
         : [
             [`openclaw-agent-transport-${suffix}`, ["app-server-token"]],
@@ -813,11 +1031,11 @@ export function createRealKubernetesFixture({
     return selectedGatewayPassword;
   }
 
-  async function startPortForward(namespace, serviceName) {
+  async function startPortForward(namespace: string, serviceName: string) {
     return startPortForwardTarget(namespace, `service/${serviceName}`, "0:8080");
   }
 
-  async function startPortForwardTarget(namespace, target, port) {
+  async function startPortForwardTarget(namespace: string, target: string, port: string) {
     const child = spawn(
       "kubectl",
       kubernetes.kubectlArguments([
@@ -832,14 +1050,13 @@ export function createRealKubernetesFixture({
       { stdio: ["ignore", "pipe", "pipe"] },
     );
     let stderr = "";
-    child.stderr.on("data", (chunk) => {
+    child.stderr.on("data", (chunk: Buffer) => {
       stderr = `${stderr}${chunk.toString()}`.slice(-2048);
     });
-    const url = await new Promise((resolve, reject) => {
+    const url = await new Promise<string>((resolve, reject) => {
       let settled = false;
       const timer = setTimeout(() => {
         void rejectAfterCleanup(
-          reject,
           new Error(`The production gateway port-forward did not become ready: ${stderr}`),
         );
       }, 30_000);
@@ -855,19 +1072,13 @@ export function createRealKubernetesFixture({
         child.off("exit", onExit);
         return true;
       };
-      const finish = (complete, value) => {
+      const rejectAfterCleanup = async (error: Error) => {
         if (!settle()) {
           return;
         }
-        complete(value);
-      };
-      const rejectAfterCleanup = async (reject, error) => {
-        if (!settle()) {
-          return;
-        }
-        const cleanupFailures = [];
+        const cleanupFailures: unknown[] = [];
         if (child.pid !== undefined) {
-          await stopPortForward(child, target).catch((cleanupError) => {
+          await stopPortForward(child, target).catch((cleanupError: unknown) => {
             cleanupFailures.push(cleanupError);
           });
         }
@@ -882,21 +1093,23 @@ export function createRealKubernetesFixture({
         }
         reject(error);
       };
-      const onStdout = (chunk) => {
+      const onStdout = (chunk: Buffer) => {
         const match = chunk.toString().match(/Forwarding from 127\.0\.0\.1:(\d+)/);
-        if (match !== null) {
-          finish(resolve, `http://127.0.0.1:${match[1]}`);
+        if (match !== null && settle()) {
+          resolve(`http://127.0.0.1:${match[1]}`);
         }
       };
-      const onError = (error) => void rejectAfterCleanup(reject, error);
-      const onExit = (code) =>
-        finish(reject, new Error(`Production gateway port-forward exited (${code}): ${stderr}`));
+      const onError = (error: Error) => void rejectAfterCleanup(error);
+      const onExit = (code: number | null) => {
+        if (settle()) {
+          reject(new Error(`Production gateway port-forward exited (${code}): ${stderr}`));
+        }
+      };
       child.stdout.on("data", onStdout);
       child.once("error", onError);
       child.once("exit", onExit);
     });
-    /** @type {Promise<void> | undefined} */
-    let stopping;
+    let stopping: Promise<void> | undefined;
     return {
       url,
       stop: () => {
@@ -906,7 +1119,7 @@ export function createRealKubernetesFixture({
     };
   }
 
-  async function stopPortForward(child, target) {
+  async function stopPortForward(child: ChildProcess, target: string) {
     if (child.exitCode !== null || child.signalCode !== null) {
       return;
     }
@@ -925,12 +1138,12 @@ export function createRealKubernetesFixture({
     throw new Error(`Timed out stopping Kubernetes port-forward for ${target}.`);
   }
 
-  async function waitForExit(exited, timeoutMs) {
-    let timer;
+  async function waitForExit(exited: Promise<unknown>, timeoutMs: number) {
+    let timer: NodeJS.Timeout | undefined;
     try {
       return await Promise.race([
         exited.then(() => true),
-        new Promise((resolve) => {
+        new Promise<boolean>((resolve) => {
           timer = setTimeout(() => resolve(false), timeoutMs);
           timer.unref();
         }),

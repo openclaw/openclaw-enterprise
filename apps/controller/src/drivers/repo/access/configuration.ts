@@ -1,5 +1,9 @@
 import type { ServiceConfig, ServiceLimits } from "./service-contracts.ts";
-import { hasControlCharacter, isCanonicalUnixSocketPath } from "./client-contracts.ts";
+import {
+  controlRequestBodyMaxBytes,
+  hasControlCharacter,
+  isCanonicalUnixSocketPath,
+} from "./client-contracts.ts";
 
 const defaults: ServiceLimits = Object.freeze({
   sessions: 16,
@@ -21,7 +25,7 @@ const defaults: ServiceLimits = Object.freeze({
   gitFetchExchangeMs: 300000,
   apiInputBytes: 1048576,
   apiResponseBytes: 8388608,
-  controlBodyBytes: 16384,
+  controlBodyBytes: controlRequestBodyMaxBytes,
   headerMs: 5000,
   connectMs: 5000,
   stallMs: 5000,
