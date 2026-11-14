@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-11-12
-last_updated_session: authoring-run/b3f389f0-d5ed-434d-930a-11b1f97eef2d
+updated: 2026-11-13
+last_updated_session: authoring-run/6f9b8960-1432-46e9-97af-330142c01422
 ---
 
 # Agent provisioning flow
@@ -130,12 +130,17 @@ Kubernetes Configuration requests.
 
 ### 4. Deployment becomes the lifecycle owner
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent`
+`packages/occ/src/index.ts:observeProvisioningDeployment`
 
-The job records its first Agent revision ID. `packages/occ/src/index.ts:observeProvisioningDeployment`
-defers work without consuming retries until that version activates or fails. The same handle reports
-success or the deployment’s safe error; meanwhile `progress` names its wait. Stop during rollout yields `REVISION_STOPPED`; Stop or deletion
-before handoff yields `PROVISIONING_CANCELLED` and says which happened. Status retains the Agent ID; both IDs survive restart.
+At handoff, provisioning saves the first Agent revision ID and stays `running`.
+Provisioning waits without using attempts. On success, PostgreSQL
+marks provisioning `succeeded`.
+If the claim has an audit attempt ID, PostgreSQL saves `openclaw.controller_work.completed`
+in the same transaction.
+
+The job reports the wait, success, or a safe deployment error. During rollout,
+Stop gives `REVISION_STOPPED`. Stop or Delete before handoff gives
+`PROVISIONING_CANCELLED` with its action. Agent and revision IDs survive restart.
 
 Create Agent (`apps/controller/src/console/agents/create.mts:waitForProvisioning`) polls the job.
 When a pending job names its Agent and first revision, Create gives the deployment read one
@@ -196,17 +201,16 @@ are [resent](configuration-driver.md#2-resolve-singleton-state-and-select-driver
 Only pre-record Configuration refusals roll back, deleting the written Configuration
 or marking it for later cleanup.
 
-Provisioning blocks conflicting edits and manual deployment. With audit enabled,
-Stop or Delete saves `openclaw.agents.provision.cancelled` with the cancellation.
-This record links the API request to the provisioning work. Handoff saves
-`openclaw.controller_work.completed` with the work result and claim ID. A stale
-worker cannot hand off deployment. After one worker lease, Agent deletion
-settles pending effects. It removes runtime credentials and saves the receipt
-with deletion, deferring without spending attempts. Deploy, Agent update, and
-runtime-credential requests return `409` until the stored lease expires, then
-settle the effect. Namespace deletion waits for queued or running work and
-effects without receipts. Namespace Secrets and completed Configurations
-remain available.
+Provisioning blocks conflicting edits and manual deployment. Stale workers
+cannot hand off. Stop or Delete saves `openclaw.agents.provision.cancelled`
+with cancellation if request audit is enabled or the claim has an audit
+attempt ID. The event saves `workId` and available request and attempt IDs.
+
+Agent deletion defers runtime credential removal for one lease without spending
+attempts. It saves the receipt with deletion. Deploy, Agent update, and
+runtime-credential requests return `409` until lease expiry, then settle
+the effect. Namespace deletion waits for queued or running work and effects
+without receipts. Namespace Secrets and completed Configurations remain.
 
 Requests have no delete API; Agent deletion removes its requests. Agent-less requests
 remain; for migration `0049` blockers, see [legacy bindings](../reference/settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
@@ -233,6 +237,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-13 16:01: Clarify provisioning audit. (authoring-run/6f9b8960-1432-46e9-97af-330142c01422 - e3e113d4111af1e467f10db2c6eef8e8d10a5b48)
 
 - 2026-11-13 12:50: Recheck provisioning authority and Secret ownership before provider use. (authoring-run/01a1d4f7-afbf-7f20-8109-a5f81d8b7d5b - a056cbd25)
 

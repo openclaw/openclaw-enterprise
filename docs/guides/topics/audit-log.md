@@ -76,6 +76,8 @@ waiting state would otherwise repeat. A terminal failure includes `final: true`.
 When provisioning succeeds, `openclaw.controller_work.completed` links its
 result to the claim. Stop and Delete link a provisioning cancellation to the
 caller and job in `openclaw.agents.provision.cancelled`.
+If the claim already has an audit record, Stop and Delete save the cancellation
+even when collection is off. The cancellation links to that claim.
 
 An explicit retry of failed work can reuse the work ID. Existing authorization
 denials and resource lifecycle evidence apply with either audit setting.

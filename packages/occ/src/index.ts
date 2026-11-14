@@ -14221,7 +14221,8 @@ export class OpenClawController {
           : "Provisioning was cancelled because the Agent was deleted.",
     });
     const requestId = this.requestAuditId.getStore();
-    if (cancelled === undefined || requestId === undefined) {
+    // A recorded claim still needs a result if request audit was disabled after the claim.
+    if (cancelled === undefined || (requestId === undefined && cancelled.attemptId === undefined)) {
       return;
     }
     await state.audit.append({
@@ -14235,7 +14236,7 @@ export class OpenClawController {
       action: CONTROLLER_WORK_AUDIT_ACTIONS.provisioningCancelled,
       resource: { kind: "agent", namespaceId: agent.namespaceId, id: agent.id },
       outcome: "success",
-      requestId,
+      ...(requestId === undefined ? {} : { requestId }),
       details: {
         workId: cancelled.workId,
         reasonCode,

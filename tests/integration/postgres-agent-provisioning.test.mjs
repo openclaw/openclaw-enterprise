@@ -4274,6 +4274,8 @@ test(
       const { workId, url } = target.admitted.data.provisioning;
       configurationId = await provisioningConfigurationId(fixture.pool, workId);
       const agentPath = `/namespaces/${target.namespace.id}/agents/${target.agentId}`;
+      // Turn collection off in the API while the original worker still holds the audited claim.
+      await fixture.restartApi({ controlPlaneAuditEnabled: false });
       const deleting = await fixture.request("DELETE", agentPath);
       assert.equal(deleting.status, 202, JSON.stringify(deleting.body));
       assert.equal(deleting.data.status, "deleting");
@@ -4286,6 +4288,25 @@ test(
         message: "Provisioning was cancelled because the Agent was deleted.",
       });
       assert.equal(cancelled.data.revisionId, undefined);
+
+      // The Delete request emits no request audit rows. It still closes the recorded claim.
+      const requestAudit = await fixture.pool.query(
+        `SELECT action FROM occ.audit_events
+         WHERE action IN ('openclaw.api.request.admitted', 'openclaw.api.request.result')
+           AND details->'__occAuditMetadata'->>'requestId' = $1`,
+        [deleting.body.meta.requestId],
+      );
+      assert.equal(requestAudit.rowCount, 0);
+      const linked = await fixture.pool.query(
+        `SELECT cancellation.resource_id, cancellation.details->'__occAuditMetadata'->>'requestId' AS request_id
+         FROM occ.audit_events AS cancellation
+         JOIN occ.audit_events AS claim ON claim.id = cancellation.details->>'attemptId'
+         WHERE cancellation.action = 'openclaw.agents.provision.cancelled'
+           AND cancellation.details->>'workId' = $1 AND claim.details->>'workId' = $1
+           AND claim.action = 'openclaw.controller_work.claimed'`,
+        [workId],
+      );
+      assert.deepEqual(linked.rows, [{ resource_id: target.agentId, request_id: null }]);
 
       // The write completes and records its receipt without the claim. The worker's next fence
       // finds the Agent deleting, so its pass ends before handoff; deletion then finishes.
