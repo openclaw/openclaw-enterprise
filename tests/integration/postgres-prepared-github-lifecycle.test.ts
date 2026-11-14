@@ -535,7 +535,8 @@ test(
             "SELECT id FROM occ.prepared_github_attempts WHERE source_id=$1 AND material_version=$2",
             [source.key.source.id, renewed.materialVersion],
           );
-          assert.equal(diagnostic.attemptId, attempt?.id);
+          assert.ok(attempt, "the renewed material has a persisted issuance attempt");
+          assert.equal(diagnostic.attemptId, attempt.id);
           assert.equal(diagnostic.httpStatus, 201);
           assert.equal(diagnostic.responseComplete, true);
           assert.equal(diagnostic.requestEndCalled, true);
