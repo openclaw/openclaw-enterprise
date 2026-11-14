@@ -495,7 +495,5 @@ test("mocked Kubernetes client refuses initial provisioning after Agent deployme
   assert.equal(created.length, 0);
 });
 
-// Run the actual generated bootstrap in a fresh process. No provider login is
-
 registerCodexLauncher();
 registerSharedAndTwoClusterTeardown();
