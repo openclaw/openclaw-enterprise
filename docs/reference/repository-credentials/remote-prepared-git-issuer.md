@@ -28,9 +28,15 @@ with repository bindings. Issuer startup requires the Agent record. You can
 start it before any revision, recipient witness, or token exists.
 
 To deploy with repository selections, save them on the enrolled Agent and
-deploy it. A guided provisioning request with repository selections returns
-`409 RESOURCE_CONFLICT` because it creates a new Agent and ServicePrincipal.
-Guided provisioning accepts requests without repository selections.
+deploy it. Ordinary deploy and first deploy return `409 RESOURCE_CONFLICT` for an
+Agent with repository selections outside the enrollment, before preparing its
+Configuration or checking Channel credentials. You can still recover a saved
+first-deployment receipt with current access to the Agent and Configuration.
+
+A fresh guided provisioning request with repository selections returns the same
+conflict before Configuration or Channel preparation because it creates a new
+Agent and ServicePrincipal. Guided provisioning accepts requests without
+repository selections.
 
 ## Configure and start the issuer
 

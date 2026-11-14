@@ -66,6 +66,7 @@ import { standingGitOrigin } from "../helpers/prepared-standing-git-peer.ts";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { databaseUrl, requiresPostgres, withPool } from "../helpers/postgres-database.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
+import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { injectJson } from "../helpers/inject-json.mjs";
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
@@ -1872,6 +1873,10 @@ test(
             ...compute,
             authentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
             network,
+            runtime: {
+              ...compute.runtime,
+              channels: { proxyUrl: "http://10.42.0.15:3128" },
+            },
             gatewayRouting: {
               hostname: "agents.example.test",
               gatewayName: "gateways",
@@ -2096,6 +2101,58 @@ test(
       deployment.registerDriver(secretDriver);
       deployment.selectDriver("secret", secretDriver.id);
       deployment.installDriver(owner, ["sandbox", "credential_proxy"]);
+      const configurationEffects = createTestConfigurationDriver({
+        id: "remote-provisioning-configuration",
+        exact: true,
+      });
+      const writes: { namespaceId: string; id: string }[] = [];
+      const configurationRead = configurationEffects.read;
+      let configurationReads = 0;
+      configurationEffects.read = (reference) => {
+        configurationReads++;
+        return configurationRead(reference);
+      };
+      const createExact = configurationEffects.createExact!;
+      let loseConfigurationReply = false;
+      configurationEffects.createExact = async (configuration) => {
+        const created = await createExact(configuration);
+        writes.push({ namespaceId: created.namespaceId, id: created.id });
+        if (loseConfigurationReply) {
+          throw new Error("Fixture lost the Configuration write response.");
+        }
+        return created;
+      };
+      const runtimeEffects = createRuntimeComputeDriver();
+      const runtimeAdmission = drivers.computeDriver;
+      let computePlanChecks = 0;
+      const compute: typeof runtimeEffects = {
+        ...runtimeEffects,
+        id: "remote-provisioning-compute",
+        validateAgentProvisioning(input) {
+          computePlanChecks++;
+          runtimeAdmission.validateAgentProvisioning!(input);
+        },
+        validateRepositoryCredentials:
+          runtimeAdmission.validateRepositoryCredentials!.bind(runtimeAdmission),
+        validateHarnessAuth: runtimeAdmission.validateHarnessAuth!.bind(runtimeAdmission),
+      };
+      // A real plan admitted before recipient enrollment remains readable and recoverable.
+      const { recipient: _recipient, ...priorAdmission } = drivers.repositoryAdmission!;
+      const prior = OpenClawController.forInstallation(
+        platform,
+        { state: f.state, backends: drivers.installation.backend },
+        priorAdmission,
+      );
+      registerCoreDrivers(prior, f.state);
+      prior.registerDriver(secretDriver);
+      prior.selectDriver("secret", secretDriver.id);
+      prior.installDriver(owner, ["sandbox", "credential_proxy"]);
+      for (const controller of [deployment, prior]) {
+        controller.registerDriver(configurationEffects);
+        controller.selectDriver("configuration", configurationEffects.id);
+        controller.registerDriver(compute);
+        controller.selectDriver("compute", compute.id);
+      }
       const configuration = await deployment.createConfiguration(actor.id, {
         namespaceId: enrollment.namespaceId,
         kind: "agent",
@@ -2133,49 +2190,6 @@ test(
         ),
         [],
       );
-      const configurationEffects = createTestConfigurationDriver({
-        id: "remote-provisioning-configuration",
-        exact: true,
-      });
-      const writes: { namespaceId: string; id: string }[] = [];
-      const createExact = configurationEffects.createExact!;
-      let loseConfigurationReply = false;
-      configurationEffects.createExact = async (configuration) => {
-        const created = await createExact(configuration);
-        writes.push({ namespaceId: created.namespaceId, id: created.id });
-        if (loseConfigurationReply) {
-          throw new Error("Fixture lost the Configuration write response.");
-        }
-        return created;
-      };
-      const runtimeEffects = createRuntimeComputeDriver();
-      const runtimeAdmission = drivers.computeDriver;
-      const compute = {
-        ...runtimeEffects,
-        id: "remote-provisioning-compute",
-        validateAgentProvisioning:
-          runtimeAdmission.validateAgentProvisioning!.bind(runtimeAdmission),
-        validateRepositoryCredentials:
-          runtimeAdmission.validateRepositoryCredentials!.bind(runtimeAdmission),
-        validateHarnessAuth: runtimeAdmission.validateHarnessAuth!.bind(runtimeAdmission),
-      };
-      // A real plan admitted before recipient enrollment remains readable and recoverable.
-      const { recipient: _recipient, ...priorAdmission } = drivers.repositoryAdmission!;
-      const prior = OpenClawController.forInstallation(
-        platform,
-        { state: f.state, backends: drivers.installation.backend },
-        priorAdmission,
-      );
-      registerCoreDrivers(prior, f.state);
-      prior.registerDriver(secretDriver);
-      prior.selectDriver("secret", secretDriver.id);
-      prior.installDriver(owner, ["sandbox", "credential_proxy"]);
-      for (const controller of [deployment, prior]) {
-        controller.registerDriver(configurationEffects);
-        controller.selectDriver("configuration", configurationEffects.id);
-        controller.registerDriver(compute);
-        controller.selectDriver("compute", compute.id);
-      }
       const auth = await createPostgresControllerAuth({
         pool: f.pool,
         installationId: platform.id,
@@ -2238,33 +2252,6 @@ test(
               [namespaceId],
             )
           ).rows[0];
-        const before = await counts();
-        for (const repository of [
-          { repositoryBindings: bindings },
-          {
-            repositoryAccess: {
-              defaultProfile: "github-repository",
-              repositories: [{ repositoryRef: "selected" }],
-            },
-          },
-        ]) {
-          const refused = await injectJson(app, "POST", path, {
-            session,
-            body: { ...request(), ...repository },
-          });
-          assert.equal(refused.statusCode, 409, refused.body);
-          assert.equal(refused.json().error.code, "RESOURCE_CONFLICT");
-          assert.match(
-            refused.json().error.message,
-            /no prepared repository credential enrollment/,
-          );
-          assert.deepEqual(await counts(), before);
-        }
-        assert.deepEqual(writes, []);
-        assert.deepEqual(runtimeEffects.calls, []);
-        assert.equal(peer.gh.issuesOfTokens.length, 0);
-        t.diagnostic("Both repository request forms returned 409 with zero new jobs or effects.");
-
         const admit = async (target: typeof app, body: object) => {
           const response = await injectJson(target, "POST", path, { session, body });
           assert.equal(response.statusCode, 202, response.body);
@@ -2278,6 +2265,188 @@ test(
           assert.equal(response.statusCode, 200, response.body);
           return response.json().data;
         };
+        // The real Slack Driver reads two bound Secrets and posts auth.test over its
+        // controlled transport. The ineligible requests must never start that work.
+        const slackBotValue = "xoxb-" + randomUUID();
+        const slackAppValue = "xapp-" + randomUUID();
+        const bot = await deployment.createSecret(actor.id, {
+          namespaceId,
+          name: "Channel bot fixture",
+          value: slackBotValue,
+        });
+        const slackApp = await deployment.createSecret(actor.id, {
+          namespaceId,
+          name: "Channel app fixture",
+          value: slackAppValue,
+        });
+        let providerPosts = 0;
+        const slack = new SlackChannelDriver(async (url, options) => {
+          const sent = new Request(url, options);
+          assert.equal(sent.url, "https://slack.com/api/auth.test");
+          assert.equal(sent.method, "POST");
+          assert.ok(sent.headers.get("authorization") === "Bearer " + slackBotValue);
+          providerPosts++;
+          return Response.json({ ok: true, bot_id: "B123", team_id: "T123" });
+        });
+        deployment.registerDriver(slack);
+        deployment.selectDriver("channel", slack.id);
+        const original = request();
+        const channelConfiguration = {
+          ...original.configuration,
+          values: {
+            ...original.configuration.values,
+            channels: {
+              slack: {
+                enabled: true,
+                mode: "socket",
+                appToken: "${APP_TOKEN}",
+                botToken: "${BOT_TOKEN}",
+              },
+            },
+          },
+          secretBindings: {
+            APP_TOKEN: { source: { kind: "secret" as const, namespaceId, id: slackApp.id } },
+            BOT_TOKEN: { source: { kind: "secret" as const, namespaceId, id: bot.id } },
+          },
+        };
+        const withChannel = { ...original, configuration: channelConfiguration };
+        const updated = await deployment.updateConfiguration(actor.id, {
+          namespaceId,
+          configurationId: configuration.id,
+          values: channelConfiguration.values,
+          secretBindings: channelConfiguration.secretBindings,
+        });
+        const deployPath = `/namespaces/${namespaceId}/agents/${otherAgent.id}`;
+        const firstIntent = {
+          key: "enrollment-fixture",
+          expectedConfigurationId: updated.id,
+          expectedGeneration: updated.generation,
+        };
+        const effectCounts = () => ({
+          configurationReads,
+          configurationWrites: writes.length,
+          secretCalls: secretDriver.calls.length,
+          providerPosts,
+          computePlanChecks,
+          computeRuntimeCalls: runtimeEffects.calls.length,
+          gitIssuances: peer.gh.issuesOfTokens.length,
+        });
+        const before = await counts();
+        const refusedEffects = effectCounts();
+        for (const [name, url, body] of [
+          ["repositoryBindings", path, { ...withChannel, repositoryBindings: bindings }],
+          [
+            "repositoryAccess",
+            path,
+            {
+              ...withChannel,
+              repositoryAccess: {
+                defaultProfile: "github-repository",
+                repositories: [{ repositoryRef: "selected" }],
+              },
+            },
+          ],
+          ["deploy", deployPath + "/deploy", {}],
+          ["deploy-first", deployPath + "/deploy-first", firstIntent],
+        ] as const) {
+          const beforeRequest = effectCounts();
+          const refused = await injectJson(app, "POST", url, { session, body });
+          assert.equal(refused.statusCode, 409, refused.body);
+          assert.equal(refused.json().error.code, "RESOURCE_CONFLICT");
+          assert.match(
+            refused.json().error.message,
+            /no prepared repository credential enrollment/,
+          );
+          assert.deepEqual(await counts(), before);
+          const afterRequest = effectCounts();
+          t.diagnostic(
+            `${name} 409: ${JSON.stringify({
+              configurationReads:
+                afterRequest.configurationReads - beforeRequest.configurationReads,
+              secretCalls: afterRequest.secretCalls - beforeRequest.secretCalls,
+              providerPosts: afterRequest.providerPosts - beforeRequest.providerPosts,
+              computePlanChecks: afterRequest.computePlanChecks - beforeRequest.computePlanChecks,
+            })}`,
+          );
+        }
+        assert.deepEqual(effectCounts(), refusedEffects);
+        // Agent deploy is granted, but without Configuration read neither deployment
+        // route may reveal whether the target matches the configured recipient.
+        const deployer = {
+          email: `fixture-${randomUUID()}@example.test`,
+          password: randomUUID(),
+        };
+        const deployerAccount = await auth.createAccount(deployer);
+        const deployerSeed = auth.principalSeed(deployerAccount, { grant: "none" });
+        await f.state.appendNativeIAMPrincipal(deployerSeed);
+        const deployRole = `role-${randomUUID()}`;
+        await f.pool.query(
+          "INSERT INTO occ.iam_roles(id, namespace_id, name, permissions) VALUES($1, $2, $3, $4::jsonb)",
+          [
+            deployRole,
+            namespaceId,
+            "Deploy fixture",
+            JSON.stringify([{ action: "deploy", resourceKind: "agent" }]),
+          ],
+        );
+        await f.pool.query(
+          `INSERT INTO occ.iam_access_bindings
+             (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
+           VALUES ($1, $2, $3, $4, 'agent', $5)`,
+          [
+            `binding-${randomUUID()}`,
+            namespaceId,
+            deployerSeed.principal.id,
+            deployRole,
+            otherAgent.id,
+          ],
+        );
+        const deployOnly = await signInToControllerApp(app, deployer);
+        for (const [route, body] of [
+          ["/deploy", {}],
+          ["/deploy-first", firstIntent],
+        ] as const) {
+          const denied = await injectJson(app, "POST", deployPath + route, {
+            session: deployOnly,
+            body,
+          });
+          assert.equal(denied.statusCode, 403, denied.body);
+          assert.equal(denied.json().error.code, "FORBIDDEN");
+          assert.match(denied.json().error.message, /Configuration read/);
+          assert.doesNotMatch(denied.body, /repository credential enrollment/);
+        }
+        const deniedProvision = await injectJson(app, "POST", path, {
+          session: deployOnly,
+          body: { ...withChannel, repositoryBindings: bindings },
+        });
+        assert.equal(deniedProvision.statusCode, 403, deniedProvision.body);
+        assert.equal(deniedProvision.json().error.code, "FORBIDDEN");
+        assert.doesNotMatch(deniedProvision.body, /repository credential enrollment/);
+        t.diagnostic(
+          "Unauthorized provisioning and both deploy routes returned 403 before enrollment or credential I/O.",
+        );
+        assert.deepEqual(await counts(), before);
+        assert.deepEqual(effectCounts(), refusedEffects);
+
+        const acceptedChannel = await admit(app, withChannel);
+        assert.equal(providerPosts, refusedEffects.providerPosts + 1);
+        assert.deepEqual(
+          secretDriver.calls.slice(refusedEffects.secretCalls).map(({ operation }) => operation),
+          ["withValue", "withValue"],
+        );
+        const afterAcceptance = effectCounts();
+        const afterChannelAdmission = await counts();
+        assert.deepEqual(await admit(app, withChannel), acceptedChannel);
+        assert.equal((await status(acceptedChannel.url)).status, "queued");
+        assert.equal(providerPosts, afterAcceptance.providerPosts);
+        assert.equal(secretDriver.calls.length, afterAcceptance.secretCalls);
+        const afterReplay = await counts();
+        assert.equal(afterReplay.jobs, afterChannelAdmission.jobs);
+        assert.equal(afterReplay.work, afterChannelAdmission.work);
+        t.diagnostic(
+          "No-repository provisioning: 202, two Secret reads and one provider POST. Replay and status add no credential I/O.",
+        );
+
         const claim = async (workId: string) => {
           const claimToken = randomUUID();
           const claimed = await f.pool.query(
@@ -2400,6 +2569,71 @@ test(
         assert.deepEqual(runtimeEffects.calls, []);
         t.diagnostic(
           "Saved work retained replay and status, fenced new writes, and cleaned up an earlier landed Configuration.",
+        );
+        // Admit a first deployment without repository selections, then save desired Git
+        // settings on that same Agent. New revisions now require enrollment, while
+        // the receipt for the original deployment remains recoverable.
+        const withoutProxy = OpenClawController.forInstallation(
+          platform,
+          { state: f.state, backends: drivers.installation.backend },
+          drivers.repositoryAdmission,
+        );
+        registerCoreDrivers(withoutProxy, f.state);
+        for (const driver of [configurationEffects, compute, secretDriver, slack]) {
+          withoutProxy.registerDriver(driver);
+          withoutProxy.selectDriver(driver.capability, driver.id);
+        }
+        withoutProxy.installDriver(owner, ["sandbox"]);
+        await deployment.updateAgent(actor.id, {
+          ...other,
+          configurationId: updated.id,
+          repositoryBindings: [],
+        });
+        const beforeFirstDeploy = effectCounts();
+        const receiptApp = appFor(withoutProxy);
+        const completed = await (async () => {
+          try {
+            return await injectJson(receiptApp, "POST", deployPath + "/deploy-first", {
+              session,
+              body: firstIntent,
+            });
+          } finally {
+            await receiptApp.close();
+          }
+        })();
+        assert.equal(completed.statusCode, 202, completed.body);
+        const afterFirstDeploy = effectCounts();
+        assert.equal(afterFirstDeploy.providerPosts, beforeFirstDeploy.providerPosts + 1);
+        await deployment.updateAgent(actor.id, {
+          ...other,
+          configurationId: updated.id,
+          repositoryBindings: bindings,
+        });
+        const afterRepositorySave = effectCounts();
+        const completedCounts = await counts();
+        const receiptPath = [
+          deployPath + "/deploy-first",
+          firstIntent.key,
+          firstIntent.expectedConfigurationId,
+          firstIntent.expectedGeneration,
+        ].join("/");
+        for (const [response, code] of [
+          [
+            await injectJson(app, "POST", deployPath + "/deploy-first", {
+              session,
+              body: firstIntent,
+            }),
+            202,
+          ],
+          [await injectJson(app, "GET", receiptPath, { session }), 200],
+        ] as const) {
+          assert.equal(response.statusCode, code, response.body);
+          assert.deepEqual(response.json().data, completed.json().data);
+        }
+        assert.deepEqual(effectCounts(), afterRepositorySave);
+        assert.deepEqual(await counts(), completedCounts);
+        t.diagnostic(
+          "First deploy validated Slack once. After Git selections changed, replay and recovery returned the saved receipt without new effects.",
         );
       } finally {
         await Promise.all([app.close(), priorApp.close()]);

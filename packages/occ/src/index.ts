@@ -3805,7 +3805,28 @@ export class OpenClawController {
     // The request fingerprint covers the original input and preparation choice, so retries
     // reuse the saved plan even if Installation routing changes.
     let reservedAgentId: string | undefined;
-    if (replay === undefined) {
+    let preparationRefusal: { error: unknown } | undefined;
+    if (
+      replay === undefined &&
+      this.installationRepositoryAdmission?.recipient !== undefined &&
+      (input.repositoryBindings !== undefined || input.repositoryAccess !== undefined)
+    ) {
+      try {
+        rejectCrossNamespaceSecretSources(
+          input.namespaceId,
+          configurationInput.secretBindings,
+          harnessAuth,
+        );
+        const { repositoryBindings } = this.repositorySettings(input.namespaceId, input);
+        // A new Agent cannot use the enrolled recipient. Check before preparing its
+        // Configuration or calling Drivers, then repeat admission under the Namespace lock.
+        this.requireRepositoryDeploymentRecipient(repositoryBindings?.length);
+      } catch (error) {
+        // Let an exact receipt that committed after the first lookup win under the lock.
+        preparationRefusal = { error };
+      }
+    }
+    if (replay === undefined && preparationRefusal === undefined) {
       if (configurationPreparation !== undefined) {
         reservedAgentId = this.nextIdentifier("agent");
         configurationInput = normalizeProvisioningConfiguration({
@@ -3871,6 +3892,9 @@ export class OpenClawController {
           await state.audit.append(auditEvent(result));
         }
         return result;
+      }
+      if (preparationRefusal !== undefined) {
+        throw preparationRefusal.error;
       }
 
       const workId = `agent-provisioning:${createHash("sha256")
@@ -13140,7 +13164,7 @@ export class OpenClawController {
           "The expected Configuration generation is unavailable. Recover the original first-deployment receipt after an uncertain result, then review the current Configuration before deploying.",
         );
       }
-      return { metadata };
+      return { agent, metadata };
     });
     if (initial.receipt !== undefined) {
       return initial.receipt;
@@ -13148,7 +13172,12 @@ export class OpenClawController {
     let preparation: FirstDeploymentGuard["preparation"];
     try {
       preparation = {
-        prepared: await this.prepareDeploymentChannels(principalId, target, initial.metadata),
+        prepared: await this.prepareDeploymentChannels(
+          principalId,
+          target,
+          initial.agent,
+          initial.metadata,
+        ),
       };
     } catch (error) {
       // A concurrent matching admission wins over a fresh-only preparation failure.
@@ -13290,7 +13319,7 @@ export class OpenClawController {
       id: input.agentId,
       namespaceId: input.namespaceId,
     });
-    const metadata = await this.read(async (state) => {
+    const { agent, metadata } = await this.read(async (state) => {
       const agent = await state.agents.findAgent(input.namespaceId, input.agentId);
       if (agent === undefined) {
         throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
@@ -13300,14 +13329,19 @@ export class OpenClawController {
         id: agent.configurationId,
         namespaceId: input.namespaceId,
       });
-      return state.configurations.findConfiguration(input.namespaceId, agent.configurationId);
+      const metadata = await state.configurations.findConfiguration(
+        input.namespaceId,
+        agent.configurationId,
+      );
+      return { agent, metadata };
     });
-    return this.prepareDeploymentChannels(principalId, input, metadata);
+    return this.prepareDeploymentChannels(principalId, input, agent, metadata);
   }
 
   private async prepareDeploymentChannels(
     principalId: string,
     input: DeployAgentInput,
+    agent: Readonly<Agent>,
     metadata:
       | Readonly<
           Pick<
@@ -13320,6 +13354,9 @@ export class OpenClawController {
     if (metadata?.kind !== "agent") {
       throw new ScopeViolationError("The Agent Configuration is unavailable.");
     }
+    // Both callers have authorized the exact Agent and Configuration. Refuse an
+    // ineligible recipient before backend or provider I/O and recheck under the Agent lock.
+    this.requireRepositoryDeploymentRecipient(agent.repositoryBindings?.length, agent);
     const namespaceId = input.namespaceId;
     const agentId = input.agentId;
     const configurationId = metadata.id;
