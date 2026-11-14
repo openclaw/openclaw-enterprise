@@ -316,7 +316,11 @@ test("installed Skipper receiver reports failures without exposing response cont
       assert.equal(result.stderr, "");
       assert.deepEqual(
         JSON.parse(result.stdout),
-        category ? { status, category } : { status, content: "reply" },
+        scenario === "transport"
+          ? { status, category, gatewayTransportCause: "socket-closed" }
+          : category
+            ? { status, category }
+            : { status, content: "reply" },
       );
       assert.ok(!result.stdout.includes(canary));
     });
@@ -834,6 +838,7 @@ test("installed Skipper failure retention preserves known checkpoints and withho
             gatewayChatPhase: "native-git",
             httpStatus: 0,
             gatewayCategory: "transport",
+            gatewayTransportCause: "socket-closed",
             runtimeSignal: "thread-start",
             modelRequestObservation: expected,
             lastTestCheckpoint: refused,
@@ -1307,6 +1312,7 @@ test("installed Skipper failure retention preserves known checkpoints and withho
       SKIPPER_GATEWAY_CATEGORY: "transport",
       SKIPPER_RUNTIME_SIGNAL: "thread-start\nprivate-canary",
       SKIPPER_MODEL_REQUEST_OBSERVATION: "32",
+      SKIPPER_GATEWAY_TRANSPORT_CAUSE: "unknown-private-canary",
     }).status,
     0,
   );
@@ -1314,6 +1320,7 @@ test("installed Skipper failure retention preserves known checkpoints and withho
   assert.equal(filtered.runtimeSignal, undefined);
   assert.equal(filtered.modelRequestObservation, undefined);
   assert.equal(filtered.gatewayCategory, "transport");
+  assert.equal(filtered.gatewayTransportCause, undefined);
   assert.equal(filtered.installedCleanup, "failed");
 
   // The writer independently validates the values received through the workflow environment.
@@ -1356,5 +1363,181 @@ test("installed Skipper failure retention preserves known checkpoints and withho
       },
     );
     assert.doesNotMatch(text, /synthetic-canary/);
+  }
+});
+
+test("installed Skipper retains only attributed evidence on rejected gateway requests", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "skipper-rejected-request-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const output = join(directory, "steps");
+  const ledger = join(directory, "ledger");
+  const original = process.env;
+  process.env = { ...original, GITHUB_ACTIONS: "true", GITHUB_OUTPUT: output };
+  t.after(() => {
+    process.env = original;
+  });
+  await writeFile(ledger, '{"phase":"native-command-started"}\n');
+  const marker = "private-canary";
+  const listening = { event: "listening" };
+  const matched = { event: "skipper-native-request", id: marker };
+  const before = [listening];
+  const after = [listening, matched];
+  const verify = async (failure: Error, expected: Record<string, unknown>) => {
+    const event = await reporter([
+      { type: "test:fail", data: { name: "gateway", details: { error: { cause: failure } } } },
+    ]).next();
+    const error = JSON.parse(String(event.value)).data.error;
+    const result = {
+      files: [
+        {
+          path: "tests/integration/skipper-prepared-git-installed.test.mjs",
+          tests: [{ status: "failed", error }],
+        },
+      ],
+    };
+    await writeFile(output, "");
+    await recordSkipperTestFailure(JSON.stringify(result), ledger, true);
+    const steps = await readFile(output, "utf8");
+    const environment = Object.fromEntries(
+      steps
+        .trim()
+        .split("\n")
+        .map((line) => {
+          const [key, value] = line.split("=");
+          assert.ok(key, "step output must have a key");
+          return [key.toUpperCase(), value];
+        }),
+    );
+    const receiptPath = join(directory, "receipt.json");
+    await rm(receiptPath, { force: true });
+    const writer = spawnSync(
+      process.execPath,
+      ["scripts/ci/skipper-failure-receipt.ts", receiptPath],
+      {
+        encoding: "utf8",
+        env: {
+          ...environment,
+          GITHUB_RUN_ID: "1",
+          GITHUB_RUN_ATTEMPT: "1",
+          GITHUB_SHA: sourceSha,
+          SKIPPER_STAGE: "selected-test",
+          SKIPPER_PROOF_OUTCOME: "failure",
+          SKIPPER_INSTALLED_CLEANUP: "failed",
+        },
+      },
+    );
+    assert.equal(writer.status, 0, writer.stderr);
+    const saved = await readFile(receiptPath, "utf8");
+    assert.doesNotMatch(steps + saved, /private-canary/);
+    assert.deepEqual(JSON.parse(saved), {
+      version: 1,
+      runId: "1",
+      attempt: "1",
+      sourceSha,
+      outcome: "failed",
+      lastStage: "selected-test",
+      lastTestCheckpoint: "native-command-started",
+      installedCleanup: "failed",
+      ...expected,
+    });
+  };
+  const options = {
+    marker,
+    gatewayChatPhase: "native-git",
+    sessionKey: marker,
+    checkpoint: async () => {},
+    runtimeLogs: async () => [],
+  };
+  for (const [name, first, second, observed] of [
+    ["matched", before, after, true],
+    ["stale", after, after, false],
+    ["foreign", before, [listening, { ...matched, id: marker + "-other" }], false],
+    ["restarted", before, [listening, listening, matched], false],
+    ["different prefix", before, [matched], false],
+    ["empty window", before, before, false],
+    ["malformed", before, [listening, {}, matched], false],
+    ["before unavailable", undefined, after, false],
+    ["after unavailable", before, undefined, false],
+  ] as const) {
+    await t.test(name, async () => {
+      const snapshots = [first, second];
+      const failure = Object.assign(new Error(marker), {
+        code: 23,
+        signal: "SIGTERM",
+        killed: true,
+      });
+      await assert.rejects(
+        sendSkipperChat({
+          ...options,
+          enter: async () => {
+            throw failure;
+          },
+          modelEvents: async () => {
+            const events = snapshots.shift();
+            if (!events) {
+              throw new Error(marker);
+            }
+            return events;
+          },
+        }),
+        (error: unknown) => error === failure,
+      );
+      assert.equal(failure.killed, true);
+      await verify(failure, {
+        testOperation: "gateway-exec",
+        gatewayExec: {
+          exitCode: 23,
+          signal: "SIGTERM",
+          ...(observed ? { modelRequestObservation: "observed" } : {}),
+        },
+      });
+    });
+  }
+  for (const [name, error, cause] of [
+    ["socket", { cause: { code: "UND_ERR_SOCKET" } }, "socket-closed"],
+    ["reset", { code: "ECONNRESET" }, "connection-reset"],
+    ["headers", { cause: { code: "UND_ERR_HEADERS_TIMEOUT" } }, "headers-timeout"],
+    ["unknown", { code: marker }, "other"],
+    ["nested", { cause: { cause: { code: "ECONNRESET" } } }, "other"],
+    ["deadline", undefined, undefined],
+  ] as const) {
+    await t.test(name, async () => {
+      const snapshots = [before, after];
+      let failure: Error | undefined;
+      await assert.rejects(
+        sendSkipperChat({
+          ...options,
+          modelEvents: async () => snapshots.shift(),
+          enter: async () => {
+            const stub = error ? "throw " + JSON.stringify(error) : "throw options.signal.reason";
+            const program = [
+              "const controller = new AbortController(); controller.abort();",
+              "AbortSignal.timeout = () => controller.signal;",
+              "globalThis.fetch = async (_, options) => {" + stub + "};",
+              "(" + inGateway.toString() + ')("private-canary", "private-canary");',
+            ].join("\n");
+            return (
+              await promisify(execFile)(process.execPath, ["-e", program], {
+                env: { OPENCLAW_GATEWAY_PASSWORD: marker },
+              })
+            ).stdout;
+          },
+        }),
+        (error: Error) => {
+          failure = error;
+          return true;
+        },
+      );
+      assert.ok(failure);
+      await verify(failure, {
+        testOperation: "gateway-chat",
+        gatewayChatPhase: "native-git",
+        gatewayCategory: cause ? "transport" : "client-deadline",
+        httpStatus: 0,
+        runtimeSignal: "no-known-signal",
+        modelRequestObservation: "observed",
+        ...(cause ? { gatewayTransportCause: cause } : {}),
+      });
+    });
   }
 });
