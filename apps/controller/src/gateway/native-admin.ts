@@ -6,9 +6,9 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import { unsupportedNativeGatewayAuthFields } from "./auth-fields.ts";
-import { deriveNativeAdminHost } from "./native-admin-host.mjs";
+import { deriveNativeAdminHost } from "./native-admin-host.ts";
 
-export { deriveNativeAdminHost } from "./native-admin-host.mjs";
+export { deriveNativeAdminHost };
 
 export interface NativeAdminAccessConfig {
   readonly enabled: boolean;

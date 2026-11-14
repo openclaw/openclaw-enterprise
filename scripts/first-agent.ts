@@ -9,11 +9,13 @@ import { Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { privateOwned } from "./lib/private-owned-path.mjs";
-import { findFirstAgentSecret, grantFirstAgentSecret } from "./first-agent-database.mjs";
+
 import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mts";
-import { deriveNativeAdminHost } from "../apps/controller/src/gateway/native-admin-host.mjs";
+import { deriveNativeAdminHost } from "../apps/controller/src/gateway/native-admin-host.ts";
 import { isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
+import { createFirstAgentApi, type FirstAgentApi } from "./first-agent-api.ts";
+import { findFirstAgentSecret, grantFirstAgentSecret } from "./first-agent-database.ts";
+import { collectFirstAgentDiagnostics } from "./first-agent-diagnostics.ts";
 import {
   FirstAgentModelError,
   firstAgentPriorPatPolicy,
@@ -23,9 +25,7 @@ import {
   selectFirstAgentModel,
   verifyFirstAgentModel,
 } from "./first-agent-model.mjs";
-
-import { createFirstAgentApi, type FirstAgentApi } from "./first-agent-api.ts";
-import { collectFirstAgentDiagnostics } from "./first-agent-diagnostics.ts";
+import { privateOwned } from "./lib/private-owned-path.ts";
 
 type Fields = Record<string, unknown>;
 type Harness = "openclaw" | "codex";
@@ -49,6 +49,15 @@ function fields(value: unknown, firstProperty: string): Fields {
 function text(value: unknown): string {
   if (typeof value !== "string") {
     throw new TypeError("Expected a string.");
+  }
+  return value;
+}
+
+const invalidDatabaseInput = "Invalid local database input.";
+
+function databaseInput(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error(invalidDatabaseInput);
   }
   return value;
 }
@@ -112,7 +121,7 @@ const failureState: { diagnostics?: () => Promise<string> } = {};
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function usage() {
-  return `Usage: node scripts/first-agent.mjs <name> [--harness openclaw|codex] [--control-ui] [--prompt <text>] [--replace-key]
+  return `Usage: node scripts/first-agent.ts <name> [--harness openclaw|codex] [--control-ui] [--prompt <text>] [--replace-key]
 
 Create and deploy an Agent in the local Kubernetes installation started by
 ./bin/occ dev up, then ask the actual model to return a random value.
@@ -434,10 +443,10 @@ async function loadLocalInstallation(harness: Harness, controlUi: boolean) {
   }
   loopbackOrigin(String(server), "https:");
 
-  const database = (sql: string, variables: Record<string, unknown>) => {
+  const database = (sql: string, variables: Record<string, string>) => {
     const args = Object.entries(variables).flatMap(([name, value]) => {
-      if (!/^[a-z_]+$/.test(name) || typeof value !== "string") {
-        throw new Error("Invalid local database input.");
+      if (!/^[a-z_]+$/.test(name)) {
+        throw new Error(invalidDatabaseInput);
       }
       return ["--set", `${name}=${value}`];
     });
@@ -1140,7 +1149,11 @@ async function main(options: Options) {
 
     let suppliedKey: string | undefined;
     if (!record.secretId) {
-      record.secretId = await findFirstAgentSecret(local.database, namespace.id, record.secretName);
+      record.secretId = await findFirstAgentSecret(
+        local.database,
+        databaseInput(namespace.id),
+        databaseInput(record.secretName),
+      );
       if (!record.secretId) {
         suppliedKey = await modelKey(authMethod);
         progress("Saving the model credential in the local platform Secret...");
@@ -1243,10 +1256,10 @@ async function main(options: Options) {
     if (credentialSource === undefined) {
       progress("Authorizing the Agent to use its exact model Secret...");
       await grantFirstAgentSecret(local.database, {
-        installationId: installation.id,
-        namespaceId: namespace.id,
-        agentId: agent.id,
-        secretId: secret.id,
+        installationId: local.key.meta.installationId,
+        namespaceId: databaseInput(namespace.id),
+        agentId: databaseInput(agent.id),
+        secretId: databaseInput(secret.id),
         actorId: local.key.data.servicePrincipalId,
       });
     } else {

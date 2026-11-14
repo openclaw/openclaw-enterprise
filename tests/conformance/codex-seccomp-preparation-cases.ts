@@ -521,7 +521,7 @@ export function registerSeccompPreparationCases() {
     for (const path of [
       "lib/assert-inside-directory.ts",
       "lib/codex-seccomp-k3d.ts",
-      "lib/private-owned-path.mjs",
+      "lib/private-owned-path.ts",
       "lib/codex-seccomp-profile.ts",
       "prepare-development-codex-seccomp.ts",
     ]) {

@@ -1,6 +1,33 @@
 import { createHash } from "node:crypto";
 
-export async function findFirstAgentSecret(database, namespaceId, secretName) {
+type Database = (sql: string, variables: Record<string, string>) => Promise<string>;
+
+type SecretGrant = {
+  installationId: string;
+  namespaceId: string;
+  agentId: string;
+  secretId: string;
+  actorId: string;
+};
+
+const grantErrors = new Map([
+  [
+    "actor_not_verified",
+    "The local bootstrap Service Principal is not an Installation administrator.",
+  ],
+  [
+    "ownership_not_verified",
+    "The Agent and Secret could not be verified in the ready local Namespace.",
+  ],
+  ["secret_operate_denied", "An IAM Restriction denies Agent access to this Secret."],
+  ["grant_conflict", "The local database could not verify or create the exact Agent Secret grant."],
+]);
+
+export async function findFirstAgentSecret(
+  database: Database,
+  namespaceId: string,
+  secretName: string,
+): Promise<string | undefined> {
   const result = await database(
     `SELECT secret.id
        FROM occ.secrets AS secret
@@ -12,19 +39,20 @@ export async function findFirstAgentSecret(database, namespaceId, secretName) {
     { namespace_id: namespaceId, secret_name: secretName },
   );
   const ids = result.trim().split(/\r?\n/u).filter(Boolean);
-  if (ids.length === 0) {
+  const [id] = ids;
+  if (id === undefined) {
     return undefined;
   }
-  if (ids.length !== 1 || !/^sec_[a-f\d-]+$/u.test(ids[0])) {
+  if (ids.length !== 1 || !/^sec_[a-f\d-]+$/u.test(id)) {
     throw new Error("The local database returned an unexpected Secret lookup result.");
   }
-  return ids[0];
+  return id;
 }
 
 export async function grantFirstAgentSecret(
-  database,
-  { installationId, namespaceId, agentId, secretId, actorId },
-) {
+  database: Database,
+  { installationId, namespaceId, agentId, secretId, actorId }: SecretGrant,
+): Promise<"granted"> {
   const suffix = createHash("sha256").update(agentId).update("\0").update(secretId).digest("hex");
   const result = await database(
     String.raw`BEGIN;
@@ -164,13 +192,7 @@ export async function grantFirstAgentSecret(
   if (status === "granted") {
     return status;
   }
-  const errors = {
-    actor_not_verified:
-      "The local bootstrap Service Principal is not an Installation administrator.",
-    ownership_not_verified:
-      "The Agent and Secret could not be verified in the ready local Namespace.",
-    secret_operate_denied: "An IAM Restriction denies Agent access to this Secret.",
-    grant_conflict: "The local database could not verify or create the exact Agent Secret grant.",
-  };
-  throw new Error(errors[status] ?? "The local database returned an unexpected IAM grant result.");
+  throw new Error(
+    grantErrors.get(status) ?? "The local database returned an unexpected IAM grant result.",
+  );
 }
