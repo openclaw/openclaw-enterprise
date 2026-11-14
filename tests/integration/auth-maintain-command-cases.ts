@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { authMaintain } from "../../scripts/auth-maintain.mjs";
+import { authMaintain } from "../../scripts/auth-maintain.ts";
 import {
   AUTH_MAINTAIN_COMMANDS,
   AUTH_MAINTAIN_USAGE,
@@ -45,14 +45,18 @@ function commandEnvironment(url: string | undefined, environment: NodeJS.Process
 }
 
 function commandResult({ code, stdout, stderr }: CommandCapture) {
-  const line = stdout.split("\n").find((entry) => entry.startsWith("{"));
-  const output: unknown = line === undefined ? undefined : JSON.parse(line);
-  return {
-    code,
-    output:
-      output === undefined ? undefined : record(output, "Expected an auth:maintain result object"),
-    stderr,
-  };
+  if (code === 1 || code === 64) {
+    assert.ok(stdout === "", `Expected empty auth:maintain stdout for exit ${code}`);
+    return { code, output: undefined, stderr };
+  }
+  assert.ok(/^[^\n]+\n$/.test(stdout), "Expected one auth:maintain result line on stdout");
+  let output: unknown;
+  try {
+    output = JSON.parse(stdout);
+  } catch {
+    throw new Error("Expected valid JSON from auth:maintain");
+  }
+  return { code, output: record(output, "Expected an auth:maintain result object"), stderr };
 }
 
 export function requiredOutput({ output }: ReturnType<typeof commandResult>) {
@@ -132,35 +136,35 @@ export function createAuthMaintainRunner(migrationUrl: string | undefined) {
     url = migrationUrl,
     environment: NodeJS.ProcessEnv = {},
   ) {
-    return waitForNewBackendsToClose(async () => {
-      const capture = await new Promise<CommandCapture>((resolve, reject) => {
-        execFile(
-          process.execPath,
-          ["scripts/auth-maintain.mjs", ...args],
-          {
-            cwd: repository,
-            env: commandEnvironment(url, environment),
-            encoding: "utf8",
-            timeout: 30_000,
-          },
-          (error, stdout, stderr) => {
-            if (error === null) {
-              resolve({ code: 0, stdout, stderr });
-            } else if (typeof error.code === "number" && !error.killed && !error.signal) {
-              resolve({ code: error.code, stdout, stderr });
-            } else {
-              reject(
-                new Error("auth:maintain did not exit with a command status", { cause: error }),
-              );
-            }
-          },
-        );
-      });
-      return commandResult(capture);
-    });
+    return waitForNewBackendsToClose(() =>
+      runAuthMaintainScript(args, commandEnvironment(url, environment)),
+    );
   }
 
   return { maintain, maintainScript, waitForNewBackendsToClose };
+}
+
+// Invoke the same direct Node entry point as the one-off Job to check its exit status.
+export async function runAuthMaintainScript(
+  args: readonly string[],
+  environment: NodeJS.ProcessEnv,
+) {
+  const capture = await new Promise<CommandCapture>((resolve, reject) => {
+    execFile(
+      process.execPath,
+      ["scripts/auth-maintain.ts", ...args],
+      { cwd: repository, env: environment, encoding: "utf8", timeout: 30_000 },
+      (error, stdout, stderr) => {
+        const code = error === null ? 0 : error.code;
+        if (typeof code === "number" && !error?.killed && !error?.signal) {
+          resolve({ code, stdout, stderr });
+        } else {
+          reject(new Error("auth:maintain did not exit with a command status"));
+        }
+      },
+    );
+  });
+  return commandResult(capture);
 }
 
 export function requiresWritersStopped() {

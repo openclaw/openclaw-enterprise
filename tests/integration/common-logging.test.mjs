@@ -21,7 +21,7 @@ import {
   OPERATION_REFUSAL_HINT_CODES,
   operationRefusalHintCode,
 } from "../../packages/occ/src/state/controller-work.ts";
-import { AUTH_MAINTAIN_COMMANDS } from "../../scripts/lib/auth-maintain-arguments.mjs";
+import { AUTH_MAINTAIN_COMMANDS } from "../../scripts/lib/auth-maintain-arguments.ts";
 import {
   loadInstallationConfiguration,
   loadOperationalLoggingConfiguration,
