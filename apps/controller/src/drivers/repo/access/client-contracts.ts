@@ -22,6 +22,10 @@ export function renderClientGhHosts(
 
 export const repositorySessionBearerSource = "[A-Za-z0-9_-]{43,256}";
 
+export function matchesRepositorySessionId(value: string): boolean {
+  return /^[A-Za-z0-9_-]{1,128}$/.test(value);
+}
+
 /** Check a Unix socket path's lexical form and UTF-8 byte limit. */
 export function isCanonicalUnixSocketPath(path: string): boolean {
   return isAbsolute(path) && resolve(path) === path && Buffer.byteLength(path) <= 103;

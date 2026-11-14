@@ -7,6 +7,7 @@ import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo
 import {
   hasControlCharacter,
   isCanonicalUnixSocketPath,
+  matchesRepositorySessionId,
   isValidGitClientConnection,
   normalizePushRefAllowlist,
   repositorySessionBearerSource,
@@ -66,7 +67,7 @@ const {
 } = createStatusWirePrimitives(unavailable);
 
 function sessionId(value: unknown): string {
-  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+  if (typeof value !== "string" || !matchesRepositorySessionId(value)) {
     return unavailable();
   }
   return value;
