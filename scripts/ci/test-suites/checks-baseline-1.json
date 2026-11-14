@@ -39,7 +39,7 @@
     "tests/integration/console-api.test.ts",
     "tests/integration/caller-denial-api.test.ts",
     "tests/conformance/kubernetes-preflight.test.ts",
-    "tests/conformance/kubernetes-client.test.mjs",
+    "tests/conformance/kubernetes-client.test.ts",
     "tests/conformance/kubernetes-api-read.test.ts",
     "tests/integration/configuration-controller.test.mjs",
     "tests/integration/configuration-body-limits.test.mjs",
@@ -271,7 +271,7 @@
       "path": "tests/conformance/kubernetes-preflight.test.ts"
     },
     {
-      "path": "tests/conformance/kubernetes-client.test.mjs"
+      "path": "tests/conformance/kubernetes-client.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-network-policy.test.mjs"

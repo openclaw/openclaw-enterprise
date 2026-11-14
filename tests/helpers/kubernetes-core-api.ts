@@ -7,7 +7,7 @@ import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/com
 
 // Shared parts of the in-memory CoreV1Api stand-ins that the Kubernetes Configuration and Secret
 // Driver tests use, and the clock and deadline controls for their request tests. The fakes are
-// not live SDK or cluster proof: tests/conformance/kubernetes-client.test.mjs covers transport.
+// not live SDK or cluster proof: tests/conformance/kubernetes-client.test.ts covers transport.
 
 // The error a fake call throws for a queued failure: an API status or error code, or "dropped".
 export function injectedFailure(failure: number | string, method: string) {
