@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { lookup } from "node:dns/promises";
 import pg from "pg";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 
@@ -40,7 +39,7 @@ export function optionalPluginProofModel(): string {
   );
 }
 
-function readDatabaseEndpoint(key: string) {
+function databaseIdentity(key: string): string {
   const url = requiredPluginProofEnv(key);
   let client: pg.Client;
   try {
@@ -50,37 +49,22 @@ function readDatabaseEndpoint(key: string) {
   }
   const { host, port, database } = client;
   assert.ok(database, `${key} must name a database.`);
-  return { host, port, database };
+  return JSON.stringify([host, port, database]);
 }
 
-async function requireSeparateDatabases(scenario: PluginProofScenario, databaseUrl?: string) {
+function requireSeparateDatabases(scenario: PluginProofScenario, databaseUrl?: string) {
   assert.ok(Object.hasOwn(scenarioDatabaseKeys, scenario), "unknown real plugin-driver scenario.");
   const databases = Object.entries(scenarioDatabaseKeys).map(([name, key]) => ({
     name,
-    ...readDatabaseEndpoint(key),
+    identity: databaseIdentity(key),
   }));
   assert.ok(
     databaseUrl === process.env[scenarioDatabaseKeys[scenario]],
     `${scenario} must use its scenario-specific database URL.`,
   );
 
-  const hasLocalhost = databases.some(({ host }) => host.toLowerCase() === "localhost");
-  const hasLoopbackLiteral = databases.some(({ host }) => host === "127.0.0.1" || host === "::1");
-  let localhostAddress: string | undefined;
-  if (hasLocalhost && hasLoopbackLiteral) {
-    // A dual-stack host can run separate servers on the same port. An alias
-    // with a single loopback address identifies the same endpoint as that address.
-    const addresses = await lookup("localhost", { all: true }).catch(() => []);
-    const first = addresses[0];
-    if (addresses.length === 1 && (first?.address === "127.0.0.1" || first?.address === "::1")) {
-      localhostAddress = first.address;
-    }
-  }
-
   const seen = new Map<string, string>();
-  for (const { name, host, port, database } of databases) {
-    const endpoint = host.toLowerCase() === "localhost" ? (localhostAddress ?? "localhost") : host;
-    const identity = JSON.stringify([endpoint, port, database]);
+  for (const { name, identity } of databases) {
     const first = seen.get(identity);
     assert.ok(
       first === undefined,
@@ -90,7 +74,7 @@ async function requireSeparateDatabases(scenario: PluginProofScenario, databaseU
   }
 }
 
-export async function selectPluginProofInputs({
+export function selectPluginProofInputs({
   scenario,
   pluginDriverId,
   databaseUrl,
@@ -107,7 +91,7 @@ export async function selectPluginProofInputs({
         gatewayImage);
 
   if (realPluginProofSelected) {
-    await requireSeparateDatabases(scenario, databaseUrl);
+    requireSeparateDatabases(scenario, databaseUrl);
   }
   return {
     kubeconfigPath,

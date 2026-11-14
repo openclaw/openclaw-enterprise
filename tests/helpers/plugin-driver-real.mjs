@@ -1756,7 +1756,7 @@ export async function createPluginDriverRealFixture(
   context,
   { scenario, pluginDriverId, databaseUrl, codexCredential, pluginDriverConfiguration = {} },
 ) {
-  const inputs = await selectPluginProofInputs({ scenario, pluginDriverId, databaseUrl });
+  const inputs = selectPluginProofInputs({ scenario, pluginDriverId, databaseUrl });
   const { gatewayImage, codexImage, databaseUrl: selectedDatabaseUrl } = inputs;
   const suffix = hash(`${proofPrefix}-${randomUUID()}`);
   const platformNamespace = `${proofPrefix}-${suffix}`;
