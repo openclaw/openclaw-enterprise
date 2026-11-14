@@ -3,13 +3,14 @@ import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { zstdCompressSync } from "node:zlib";
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
 import {
-  completedToolResult as findCompletedToolResult,
+  completedToolResult,
   expandTranscriptMessage,
-  sessionEvidenceScript,
-} from "../helpers/normal-agent-tools.mjs";
+} from "../helpers/normal-agent-transcript.ts";
+import { sessionEvidenceScript } from "../helpers/normal-agent-gateway-evidence.ts";
 import { repositoryFailureSummaryScript } from "../helpers/repository-native-journey.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
@@ -33,6 +34,7 @@ const toolResult = Type.Object({
 
 const sessionEvidence = Type.Object({
   promptReportSource: Type.String(),
+  userMarkerSeen: Type.Boolean(),
   promptToolNames: Type.Array(Type.String()),
   terminalAssistantMarkerSeen: Type.Boolean(),
   calls: Type.Array(toolCall),
@@ -45,19 +47,7 @@ const failureSummary = Type.Object({
   ),
 });
 
-type ToolCall = Omit<Static<typeof toolCall>, "operations">;
 type ToolResult = Static<typeof toolResult>;
-
-function completedToolResult(
-  trace: { calls: readonly ToolCall[]; results: readonly ToolResult[] },
-  call: Pick<ToolCall, "id" | "seq">,
-): ToolResult | undefined {
-  const result: unknown = findCompletedToolResult(trace, call);
-  if (result !== undefined) {
-    assert.ok(Check(toolResult, result), "invalid completed tool result");
-  }
-  return result;
-}
 
 const call = { id: "push", seq: 44, name: "exec" };
 const failure = { toolCallId: "push", seq: 45, isError: true };
@@ -82,6 +72,8 @@ test("missing, failed, stale and unrelated tool results do not prove completion"
     [{ ...success, toolCallId: "other" }],
     [{ ...success, seq: 43 }],
     [{ ...success, exitCode: 1 }],
+    [{ ...success, exitCode: null }],
+    [{ toolCallId: success.toolCallId, seq: success.seq, isError: false, status: "completed" }],
     [success, { ...failure, seq: 48 }],
     [{ ...success, status: "running" }],
   ]) {
@@ -254,10 +246,14 @@ test("installed evidence reader recognizes nested push and exact process complet
     ];
     for (const [seq, message] of records.entries()) {
       const event = JSON.stringify({ type: "message", message });
-      db.prepare("INSERT INTO transcript_events VALUES (?, ?, ?, NULL, ?)").run(
+      // Encode the prompt as zstd so acceptance must recover its marker from
+      // stored bytes. The separate bounded failure reader uses plain rows only.
+      const compressed = message.role === "user";
+      db.prepare("INSERT INTO transcript_events VALUES (?, ?, ?, ?, ?)").run(
         "session",
         seq,
-        event,
+        compressed ? null : event,
+        compressed ? zstdCompressSync(Buffer.from(event)) : null,
         Buffer.byteLength(event),
       );
     }
@@ -294,6 +290,7 @@ test("installed evidence reader recognizes nested push and exact process complet
   const trace: unknown = JSON.parse(result.stdout);
   assert.ok(Check(sessionEvidence, trace), "invalid session evidence");
   assert.equal(trace.promptReportSource, "run");
+  assert.equal(trace.userMarkerSeen, true);
   assert.deepEqual(trace.promptToolNames, ["exec"]);
   const push = trace.calls.find((value) => value.operations.includes("push"));
   assert.ok(push);

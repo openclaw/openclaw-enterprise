@@ -25,7 +25,8 @@ import {
   createNativeTopologyConfiguration,
   createTopologyPresetTemplate,
 } from "./topology-launch-configuration.ts";
-import { sessionEvidenceScript } from "./normal-agent-tools.mjs";
+import { parseGatewayObservation } from "./normal-agent-observation-receipts.ts";
+import { sessionEvidenceScript } from "./normal-agent-gateway-evidence.ts";
 import { withBoundedTeardown } from "../helpers/bounded-teardown.ts";
 import {
   assertGatewayModelTurn,
@@ -5828,7 +5829,7 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
     // chat.history's top-level toolResult rows alone do not cover that supported path.
     const readMemoryTrace = async () => {
       try {
-        return JSON.parse(
+        return parseGatewayObservation(
           await kubectl(
             "exec",
             gatewayPod,
@@ -5849,6 +5850,7 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
         throw new Error("Native Memory transcript observation failed.");
       }
     };
+    /** @param {ReturnType<typeof parseGatewayObservation>} trace */
     const observeMemoryTrace = (trace) => {
       evidence.historyAvailable = trace.exists === true;
       evidence.memoryToolInGatewayPrompt =
@@ -5918,7 +5920,8 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
               !result.isError &&
               result.matchesResult &&
               (trace.calls ?? []).some(
-                (call) => call.id === result.toolCallId && result.seq > call.seq,
+                (call) =>
+                  call.id !== undefined && call.id === result.toolCallId && result.seq > call.seq,
               ),
           )
             ? trace

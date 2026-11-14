@@ -3,10 +3,15 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   codexRepositoryEvidenceScript,
   codexRepositoryRequirementsScript,
-  completedToolResult,
-  expandTranscriptMessage,
-  sessionEvidenceScript,
-} from "./normal-agent-tools.mjs";
+} from "./normal-agent-codex-evidence.ts";
+import { completedToolResult, expandTranscriptMessage } from "./normal-agent-transcript.ts";
+import {
+  parseGatewayObservation,
+  parseNativeObservation,
+  parseNativePolicyObservation,
+  parseRepositoryFailureObservation,
+} from "./normal-agent-observation-receipts.ts";
+import { sessionEvidenceScript } from "./normal-agent-gateway-evidence.ts";
 import { submitRepositoryTaskScript } from "./repository-credentials-installed.mjs";
 import { parseNativeRolloutProvenance } from "./native-rollout-provenance.ts";
 
@@ -359,7 +364,7 @@ ${nativeCommands}`;
       try {
         const output = await exec(codexRepositoryRequirementsScript);
         observerStage = "response-parse";
-        requirements = JSON.parse(output);
+        requirements = parseNativePolicyObservation(output);
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
         requirements = {
@@ -387,11 +392,12 @@ ${nativeCommands}`;
       JSON.stringify(commandSpecs),
     ]);
     try {
-      return JSON.parse(output);
+      return parseNativeObservation(output);
     } catch {
       throw new Error("native observer returned unavailable metadata");
     }
   };
+  /** @type {ReturnType<typeof parseNativeObservation> | undefined} */
   let nativeTrace;
   if (dedicated) {
     try {
@@ -501,7 +507,7 @@ ${nativeCommands}`;
     }
   }
   const readTrace = async () =>
-    JSON.parse(
+    parseGatewayObservation(
       await exec(sessionEvidenceScript, [
         sessionKey,
         completionMarker,
@@ -582,9 +588,12 @@ ${nativeCommands}`;
     taskTransport,
     trace: diagnosticTrace,
   });
+  /** @type {ReturnType<typeof parseRepositoryFailureObservation> | { available: false, reason: string, toolResults?: undefined }} */
   let failureSummary;
   try {
-    failureSummary = JSON.parse(await exec(repositoryFailureSummaryScript, [sessionKey]));
+    failureSummary = parseRepositoryFailureObservation(
+      await exec(repositoryFailureSummaryScript, [sessionKey]),
+    );
   } catch {
     failureSummary = { available: false, reason: "bounded-summary-unavailable" };
   }
@@ -628,6 +637,8 @@ ${nativeCommands}`;
   assert.equal((await f.api("GET", agentPath)).activeRevisionId, revision.id);
   assert.equal((await readSession(attempt.sessionId)).state, "OPEN");
   if (dedicated) {
+    assert.ok(nativeTrace?.turnId, "native repository turn must have an identity");
+    assert.ok(trace.calls && trace.results, "missing Gateway transcript");
     const probe = nativeTrace.commands.find((command) =>
       command.operations.includes("sandboxProbe"),
     );
@@ -637,7 +648,7 @@ ${nativeCommands}`;
       "native sandbox unexpectedly read neighboring Codex state; outside-workspace write denial was not reached",
     );
     assert.ok(
-      probe?.status === "completed" && probe.exitCode === 0 && probe.sandboxDenied,
+      probe?.id && probe.status === "completed" && probe.exitCode === 0 && probe.sandboxDenied,
       "the actual native command must report an outside-workspace write denial",
     );
     const call = trace.calls.find(
@@ -671,11 +682,12 @@ ${nativeCommands}`;
   }
   const branchResponse = await observe("GET", `git/ref/heads/${branch}`, undefined, [200, 404]);
   if (readOnly) {
+    assert.ok(nativeTrace?.turnId, "native repository turn must have an identity");
     assert.equal(nativeTrace.status, "completed");
     assert.equal(trace.exists, true);
     assert.equal(trace.userMarkerSeen, true);
     assert.equal(trace.assistantError, false);
-    const mirroredTurn = trace.codexTurns.find(
+    const mirroredTurn = trace.codexTurns?.find(
       ({ turnPrefix }) => turnPrefix === nativeTrace.turnId,
     );
     assert.ok(
@@ -684,26 +696,29 @@ ${nativeCommands}`;
         mirroredTurn.toolCallMirrorSeen &&
         mirroredTurn.toolResultMirrorSeen,
     );
+    assert.ok(trace.calls && trace.results, "missing Gateway transcript");
+    const { calls, results } = trace;
+    const { commands, turnId } = nativeTrace;
     let previousCommand = -1;
     for (const operation of ["clone", "fetch", "readBase", "push"]) {
-      const matches = nativeTrace.commands.filter((command) =>
-        command.operations.includes(operation),
-      );
+      const matches = commands.filter((command) => command.operations.includes(operation));
       assert.equal(matches.length, 1, `${operation} must execute once in the native turn`);
-      const command = matches[0];
-      const commandIndex = nativeTrace.commands.indexOf(command);
+      /** @type {import("./normal-agent-observation-receipts.ts").NativeCommand | undefined} */
+      const command = matches.at(0);
+      assert.ok(command?.id, "the native command must have an identity");
+      const commandIndex = commands.indexOf(command);
       assert.ok(commandIndex > previousCommand, "read and denial operations must occur in order");
       previousCommand = commandIndex;
-      const call = trace.calls.find(
+      const call = calls.find(
         (entry) =>
           entry.id === command.id &&
           entry.name === "bash" &&
-          entry.mirrorIdentity === `${nativeTrace.turnId}:tool:${command.id}:call`,
+          entry.mirrorIdentity === `${turnId}:tool:${command.id}:call`,
       );
-      const result = trace.results.find(
+      const result = results.find(
         (entry) =>
           entry.toolCallId === command.id &&
-          entry.mirrorIdentity === `${nativeTrace.turnId}:tool:${command.id}:result`,
+          entry.mirrorIdentity === `${turnId}:tool:${command.id}:result`,
       );
       assert.ok(call && result && result.seq > call.seq, `${operation} must be mirrored`);
       if (operation === "push") {
@@ -770,7 +785,7 @@ ${nativeCommands}`;
     assert.equal(trace.exists, true);
     if (!dedicated) {
       assert.equal(trace.promptReportSource, "run");
-      assert.ok(trace.promptToolNames.includes("exec"));
+      assert.ok(trace.promptToolNames?.includes("exec"));
     }
     assert.equal(trace.userMarkerSeen, true);
     if (!dedicated) {
@@ -778,13 +793,21 @@ ${nativeCommands}`;
       assert.equal(trace.terminalAssistantMarkerSeen, true);
     }
     assert.equal(trace.assistantError, false);
-    let paired = trace.calls
-      .filter((call) => call.name === "exec")
-      .map((call) => ({ ...call, completion: completedToolResult(trace, call) }))
-      .filter((call) => call.completion);
+    assert.ok(trace.calls && trace.results, "missing Gateway transcript");
+    const calls = trace.calls;
+    const results = trace.results;
+    /** @type {{operations: string[] | undefined, completion: {commitShas?: string[], pullUrls?: string[]}}[]} */
+    let paired = calls.flatMap((call) => {
+      if (call.name !== "exec") {
+        return [];
+      }
+      const completion = completedToolResult({ calls, results }, call);
+      return completion ? [{ operations: call.operations, completion }] : [];
+    });
     if (dedicated) {
+      assert.ok(nativeTrace?.turnId, "native repository turn must have an identity");
       assert.equal(nativeTrace.status, "completed");
-      const mirroredTurn = trace.codexTurns.find(
+      const mirroredTurn = trace.codexTurns?.find(
         ({ turnPrefix }) => turnPrefix === nativeTrace.turnId,
       );
       assert.ok(
@@ -797,6 +820,7 @@ ${nativeCommands}`;
       paired = nativeTrace.commands
         .filter((command) => command.status === "completed" && command.exitCode === 0)
         .map((command) => {
+          assert.ok(command.id, "the native command must have an identity");
           const call = trace.calls.find(
             (call) =>
               call.id === command.id &&
@@ -818,21 +842,22 @@ ${nativeCommands}`;
     }
     for (const { operation } of commandSpecs) {
       assert.ok(
-        paired.some((call) => call.operations.includes(operation)),
+        paired.some((call) => call.operations?.includes(operation)),
         `successful standalone tool trace must account for ${operation}`,
       );
     }
     assert.ok(
       paired.some(
         (call) =>
-          call.operations.includes("readBase") && call.completion.commitShas.includes(baseSha),
+          call.operations?.includes("readBase") && call.completion.commitShas?.includes(baseSha),
       ),
       "a successful read identifies the independently observed base",
     );
     assert.ok(
       paired.some(
         (call) =>
-          call.operations.includes("readCommit") && call.completion.commitShas.includes(commitSha),
+          call.operations?.includes("readCommit") &&
+          call.completion.commitShas?.includes(commitSha),
       ),
       "the successful git rev-parse HEAD result must identify the independently observed commit",
     );
@@ -842,8 +867,8 @@ ${nativeCommands}`;
       assert.ok(
         paired.some(
           (call) =>
-            call.operations.includes("nativePr") &&
-            call.completion.pullUrls.includes(expectedPullUrl),
+            call.operations?.includes("nativePr") &&
+            call.completion.pullUrls?.includes(expectedPullUrl),
         ),
         "the successful native gh pr create result must identify this authorized repository PR",
       );
