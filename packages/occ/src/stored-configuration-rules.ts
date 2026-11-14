@@ -57,7 +57,7 @@ export function canSpell(literals: readonly string[], value: string): boolean {
  * The optional workspace files agents.defaults.skipOptionalBootstrapFiles may name. The pinned
  * OpenClaw (openclaw/openclaw `src/config/zod-schema.agent-defaults-base.ts` at the commit in
  * `deploy/runtime/openclaw-source.json`) refuses any other name, and Compute copies the setting
- * into native workspace setup. tests/integration/runtime-image-managed-files.test.mjs compares
+ * into native workspace setup. tests/integration/runtime-image-managed-files.test.ts compares
  * this list with the runtime image's config schema; update it when that pin changes.
  */
 export const OPTIONAL_BOOTSTRAP_FILES: readonly string[] = [
@@ -158,23 +158,27 @@ export function openClawSandboxProblem(
   values: Readonly<OpenClawConfigurationDocument>,
   options?: ConfigurationValidationOptions,
 ): string | undefined {
-  const entries = Object.entries(asObject(asObject(values.agents)?.entries) ?? {});
+  const entries = asObject(asObject(values.agents)?.entries) ?? {};
+  // For each setting, check the default first (no Agent ID), then each Agent's entry.
+  const ids: (string | undefined)[] = Object.keys(entries);
+  ids.unshift(undefined);
   for (const [defaults, setting, accepted, acceptedText] of OPENCLAW_SANDBOX_SETTINGS) {
-    const requirement = `must be ${acceptedText} or unset: ${OPENCLAW_SANDBOX_UNSUPPORTED}`;
-    // Every Agent's setting (no Agent ID), then each Agent's entry.
-    const scopes: (readonly [string | undefined, readonly string[]])[] = [
-      [undefined, [...defaults, ...setting]],
-      ...entries.map(([id]) => [id, ["agents", "entries", id, ...setting]] as const),
-    ];
-    for (const [id, path] of scopes) {
-      let parent: Readonly<Record<string, unknown>> | undefined = values;
-      for (const key of path.slice(0, -1)) {
-        parent = asObject(parent?.[key]);
+    const defaultPath = [...defaults, ...setting];
+    const name = setting.at(-1)!;
+    for (const id of ids) {
+      const scopePath = id === undefined ? defaultPath : setting;
+      let parent = id === undefined ? values : asObject(entries[id]);
+      for (let i = 0; i < scopePath.length - 1 && parent !== undefined; i++) {
+        parent = asObject(parent[scopePath[i]!]);
       }
-      const name = path.at(-1)!;
       if (parent === undefined || !Object.hasOwn(parent, name)) {
         continue;
       }
+      // Only Preset variable lookups need the full path of an entry's present setting.
+      const path =
+        options === undefined || id === undefined
+          ? scopePath
+          : ["agents", "entries", id, ...setting];
       const literals = options?.unresolved?.(path);
       const type = options?.unresolvedType?.(path);
       const allowed =
@@ -183,8 +187,9 @@ export function openClawSandboxProblem(
           : (type === undefined || type === "string") &&
             accepted.some((value) => canSpell(literals, value));
       if (!allowed) {
+        const requirement = `must be ${acceptedText} or unset: ${OPENCLAW_SANDBOX_UNSUPPORTED}`;
         return id === undefined
-          ? `Configuration setting ${path.join(".")} ${requirement}.`
+          ? `Configuration setting ${defaultPath.join(".")} ${requirement}.`
           : configurationFieldMessage(
               keyedSettingPath("agents.entries", id),
               (entry) => `Configuration setting ${entry}.${setting.join(".")} ${requirement}.`,

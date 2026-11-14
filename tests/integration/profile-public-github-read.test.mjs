@@ -41,7 +41,6 @@ function baseInput(overrides = {}) {
       gatewayClassName: "eg",
       gatewayApiKeySecretName: "occ-private-gateway-key",
       agentNativeAdminDomain: "agents.oce.example.internal",
-      sharedCookieDomain: "oce.example.internal",
       gatewayTrustedProxyCidrs: ["192.0.2.12/32"],
       pluginStatusProxySourceCidrs: ["192.0.2.13/32"],
       nodeSelector: { "oce-role": "control" },
@@ -81,29 +80,15 @@ function codexInput(overrides = {}) {
   };
 }
 
-function render(
-  profile,
-  input,
-  directory = fileTemporaryDirectory(`oce-profile-${profile}-`),
-  root = repository,
-  dnsServer,
-) {
+function render(profile, input, directory = fileTemporaryDirectory(`oce-profile-${profile}-`)) {
   const inputPath = join(directory, "input.json");
   writeFileSync(inputPath, `${JSON.stringify(input, null, 2)}\n`);
-  const dnsPreload = join(directory, "dns-preload.mjs");
-  if (dnsServer !== undefined) {
-    writeFileSync(
-      dnsPreload,
-      `import dns from "node:dns/promises"; dns.setServers([${JSON.stringify(dnsServer)}]);\n`,
-    );
-  }
   let summary;
   try {
     summary = execFileSync(
       process.execPath,
       [
-        ...(dnsServer === undefined ? [] : ["--import", dnsPreload]),
-        "scripts/render-installation-profile.mjs",
+        "scripts/render-installation-profile.ts",
         "--profile",
         profile,
         "--input",
@@ -111,7 +96,7 @@ function render(
         "--out-dir",
         directory,
       ],
-      { cwd: root, encoding: "utf8" },
+      { cwd: repository, encoding: "utf8" },
     );
   } catch (error) {
     error.profileRendererOutput = `${error.stdout ?? ""}${error.stderr ?? ""}`;

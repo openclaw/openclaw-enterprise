@@ -92,6 +92,7 @@ test(
         request_id: "request-1",
         sandbox_id: "immutable-sandbox-id",
         sandbox: "reusable-name",
+        workspace: "synthetic",
       },
       config: binding,
       target: {
@@ -107,18 +108,23 @@ test(
     assert.deepEqual(await invoke(client, "EvaluateHttpRequest", request, supervisor), {
       decision: 1,
     });
+    assert.ok(Number.isFinite(Date.parse(seen[0].deadlineAt)));
     assert.deepEqual(seen[0], {
       sandboxId: "immutable-sandbox-id",
       bindingId: "binding_0123456789abcdefghijklmn",
       requestId: "request-1",
+      workspace: "synthetic",
       target: {
         reportedScheme: "https",
         host: "api.example.test",
         port: 443,
         method: "GET",
         path: "/v1/status",
-        query: "absent_or_empty",
+        query: "",
       },
+      headers: [],
+      body: new Uint8Array(),
+      deadlineAt: seen[0].deadlineAt,
     });
     // The same unexpired bearer cannot retain an allowance after the grant is withdrawn.
     grant = false;
@@ -129,16 +135,10 @@ test(
     assert.equal(await evaluate(spoofed), 2, "token and sandbox disagree");
     assert.equal(await evaluate({}, gateway), 2, "gateway cannot act as a supervisor");
     for (const changed of [
-      { body: Buffer.from("payload") },
-      { target: { ...request.target, query: "scope=other" } },
-      {
-        target: {
-          ...request.target,
-          path: "/example/project.git/info/refs",
-          query: "service=git-upload-pack",
-        },
-      },
-      { target: { ...request.target, method: "POST" } },
+      { phase: 2 },
+      { context: { request_id: "missing-workspace", sandbox_id: "immutable-sandbox-id" } },
+      { target: { ...request.target, path: "/v1/status?scope=other" } },
+      { headers: [{ name: "Invalid-Header", value: "value" }] },
       { target: { ...request.target, scheme: "http" } },
     ]) {
       assert.equal(await evaluate(changed), 2);
@@ -216,7 +216,11 @@ test(
       const call = new Call(metadata, {
         phase: 1,
         middleware_name: registrationName,
-        context: { request_id: `request-${requests}`, sandbox_id: sandboxId },
+        context: {
+          request_id: `request-${requests}`,
+          sandbox_id: sandboxId,
+          workspace: "synthetic",
+        },
         // The server's decoder names the set oneof member, as the wire call would.
         config: {
           fields: {

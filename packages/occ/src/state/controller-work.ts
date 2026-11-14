@@ -2,16 +2,29 @@ import { immutableCopy, isNonEmptyString, isPositiveSafeInteger } from "@opencla
 import { isComputePreparationFailureEvidence } from "@openclaw-enterprise/contracts";
 import type { RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
 
+import {
+  CREDENTIAL_WITHDRAWAL_TARGET,
+  type ControllerWork,
+  type ControllerWorkKind,
+} from "../controller-work.ts";
+import {
+  repositoryExecutionRedeployMessage,
+  type DeploymentRepositoryAccessStatus,
+} from "../deployment-repository-access.ts";
 import { SandboxRepositoryRecipientUnverifiedError, ScopeViolationError } from "../errors.ts";
 import { recognizedRuntimeFailureValues, runtimeFailureCause } from "../runtime-failure-cause.ts";
 
 export { runtimeFailureCause };
+export { CREDENTIAL_WITHDRAWAL_TARGET } from "../controller-work.ts";
+export type {
+  ClaimedWork,
+  ControllerWork,
+  ControllerWorkKind,
+  ControllerWorkState,
+} from "../controller-work.ts";
+export { WorkClaimLostError } from "../errors.ts";
 
 export type { RuntimeFailureCause, RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
-
-export type ControllerWorkState = "queued" | "claimed" | "succeeded" | "failed_permanent";
-
-export type ControllerWorkKind = "lifecycle" | "provisioning";
 
 export type DeploymentStatus = "queued" | "running" | "succeeded" | "failed";
 
@@ -27,6 +40,7 @@ export interface DeploymentStatusResult {
   readonly agentId: string;
   readonly status: DeploymentStatus;
   readonly error: DeploymentStatusError | null;
+  readonly repositoryAccess?: DeploymentRepositoryAccessStatus;
   readonly warnings: readonly PluginDeploymentWarning[];
   readonly progress: {
     readonly lastAttempt: {
@@ -53,7 +67,7 @@ const FAILURE_CODE = /^[A-Z0-9_]{1,64}$/u;
 
 /** Public pending explanations never include arbitrary Driver or provider text. */
 export function deploymentProgressForWork(
-  work: Readonly<ControllerWork>,
+  work: Readonly<Pick<ControllerWork, "state" | "availableAt">>,
   attempt: ControllerWorkAttempt | undefined,
 ): DeploymentStatusResult["progress"] {
   if (work.state === "succeeded" || work.state === "failed_permanent") {
@@ -223,13 +237,6 @@ export interface PluginDeploymentWarning {
   readonly pluginId: string;
 }
 
-/**
- * Revision-scoped work that revokes credential sources from a running revision. It names the
- * revision but is not a deployment: it never prepares, activates, or supersedes it, and it owns
- * no repository-credential cleanup. The value is persisted in `controller_work.agent_target`.
- */
-export const CREDENTIAL_WITHDRAWAL_TARGET = "credentials_withdrawn";
-
 const CREDENTIAL_WITHDRAWAL_ACTION = "reconcile";
 
 /** One key per request, so a withdrawal never replaces the revision's deployment key. */
@@ -252,43 +259,6 @@ export function isCredentialWithdrawalWork(
   work: Pick<ControllerWork, "revisionId" | "agentTarget">,
 ): boolean {
   return work.revisionId !== undefined && work.agentTarget === CREDENTIAL_WITHDRAWAL_TARGET;
-}
-
-export interface ControllerWork {
-  readonly kind: ControllerWorkKind;
-  readonly idempotencyKey: string;
-  readonly namespaceId: string;
-  readonly agentId?: string;
-  readonly revisionId?: string;
-  readonly actorId: string;
-  readonly namespaceTarget?: "ready" | "deleted";
-  /** See `CREDENTIAL_WITHDRAWAL_TARGET` for the revision-scoped target. */
-  readonly agentTarget?:
-    "stopped" | "deleted" | "provisioned" | "sandbox_policy" | typeof CREDENTIAL_WITHDRAWAL_TARGET;
-  readonly state: ControllerWorkState;
-  readonly availableAt: Date;
-  readonly attemptCount: number;
-  readonly claimToken?: string;
-  readonly leaseExpiresAt?: Date;
-  /** Claim liveness judged by the State store's clock when it read this work. */
-  readonly leaseActive?: boolean;
-  readonly completedAt?: Date;
-  readonly reasonCode?: string;
-  readonly resultData?: Readonly<Record<string, unknown>>;
-  readonly createdAt: Date;
-  readonly updatedAt: Date;
-}
-
-export interface ClaimedWork extends ControllerWork {
-  readonly state: "claimed";
-  readonly claimToken: string;
-  readonly leaseExpiresAt: Date;
-  /**
-   * Milliseconds since `createdAt` when the claim was granted or renewed, by the State store's
-   * clock. `createdAt` is on that clock too, so subtracting it from the controller's clock would
-   * shift the age by their skew.
-   */
-  readonly ageMs: number;
 }
 
 /**
@@ -440,7 +410,7 @@ export function validateRuntimeFailureEvidence(value: unknown): RuntimeFailureEv
 
 /**
  * Validates failure data before it is recorded, and again when it is read back. A runtime
- * failure value outside the vocabulary in packages/contracts/src/runtime-failure.mjs is recorded,
+ * failure value outside the vocabulary in packages/contracts/src/runtime-failure.ts is recorded,
  * and read back, as UNRECOGNIZED rather than as served (findings 1660, 1674).
  */
 export function validateFailureData(
@@ -585,7 +555,7 @@ export function validateSuccessResultData(data: unknown): SuccessResultData | un
 }
 
 export function deploymentErrorForWork(
-  work: Readonly<ControllerWork>,
+  work: Readonly<Pick<ControllerWork, "state" | "reasonCode" | "resultData">>,
 ): DeploymentStatusError | null {
   if (work.state !== "failed_permanent" && !completedWithoutActivation(work)) {
     return null;
@@ -689,7 +659,9 @@ export function controllerWorkLeaseActive(
   );
 }
 
-function completedWithoutActivation(work: Readonly<ControllerWork>): boolean {
+function completedWithoutActivation(
+  work: Readonly<Pick<ControllerWork, "state" | "reasonCode">>,
+): boolean {
   return (
     work.state === "succeeded" &&
     work.reasonCode !== "REVISION_ACTIVATED" &&
@@ -724,6 +696,10 @@ function deploymentErrorMessage(code: string): string {
       return "The startup model check failed, but not for a rejected credential: for example an unknown model, bad provider settings, a TLS error, a rate limit, or, with Codex, an unreachable provider. Check these and the provider account, then deploy a new version.";
     case "RUNTIME_LOGIN_FAILED":
       return "Deployment runtime could not sign in to the model provider. Check the Agent's model credential (for an OAuth login, sign in again) and that the runtime can reach the provider, then deploy a new version.";
+    case "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE":
+      return "The Codex runtime’s managed requirements reply exceeds OCE’s 1 MiB limit. Ask the policy owner to reduce the requirements document, then deploy a new version.";
+    case "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE":
+      return "This Codex runtime’s managed permission policy does not allow the sandbox mode, named profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.";
     case "RUNTIME_STARTUP_FAILED":
       return "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.";
     case "EXECUTION_ADMISSION_WITHDRAWN":
@@ -755,7 +731,7 @@ function deploymentErrorMessage(code: string): string {
     case "REPOSITORY_GIT_SENDER_UNQUALIFIED":
       return "This version's repository Git delivery needs the git-write profile, and no OpenShell release is qualified for it, so it cannot start. Remove the binding, select a qualified installed sender, or use native prepared Git without a Sandbox, then deploy again.";
     case "REPOSITORY_GIT_PROFILE_UNSUPPORTED":
-      return "This version's repository Git delivery has no profile and cannot start: a Credential Proxy delivers only one binding with the git-write or github-installation profile. Keep one such binding, remove them all, or use native prepared Git, then deploy again.";
+      return "This version's Git delivery has no supported profile, so it cannot start. A Credential Proxy delivers github-repository bindings, or one git-write or github-installation binding. Change the bindings or use native prepared Git, then deploy again.";
     case "REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED":
       return "This revision's repository access deadline, fixed when the revision was admitted, has passed. Deploy again to admit a revision with a new deadline.";
     // Refusals the worker decides again on every pass (finding 1039). The status never names
@@ -798,6 +774,8 @@ function deploymentErrorMessage(code: string): string {
       return "The Sandbox Driver does not support this revision's Harness settings, such as plugins, network policy additions or ServiceAccount credentials. Change them, or ask an Installation administrator for a Driver that supports them, then deploy again.";
     case "SANDBOX_GATEWAY_UNAUTHORIZED":
       return "The Sandbox gateway refused the controller's identity, or the Workspace is gone, so cleanup is unconfirmed. Check the identity's token file and Workspace role and the gateway's signing-key refresh, then deploy, stop, delete or withdraw again.";
+    case "SANDBOX_POD_LABELS_NOT_PERMITTED":
+      return "The Sandbox gateway refuses this revision's Harness Pod labels. Ask an admin to allow them in the gateway configuration, then deploy again.";
     case "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT":
       return "Two credential sources the Agent binds use the same environment variable. Bind only one source per variable, for example one openai source and bearer-token sources with distinct env_var values, then deploy again.";
     case "CREDENTIAL_WITHDRAWN":
@@ -810,6 +788,8 @@ function deploymentErrorMessage(code: string): string {
       return "The protected egress provider this revision's Harness source was admitted with is no longer selected or available. Ask an Installation administrator to reselect it, or bind a source admitted under the selected provider, then deploy again.";
     case "CREDENTIAL_SOURCE_UNAVAILABLE":
       return "A credential source this revision lists is missing, being deleted, or changed since admission. Bind available sources, then deploy again.";
+    case "PLUGIN_DRIVER_MISMATCH":
+      return "This revision's Plugin Driver is unavailable for its Harness. Enable the matching Driver or update the Agent's selections, then deploy again.";
     case "SECRET_DRIVER_MISMATCH":
       return "The Installation no longer selects the Secret Driver this revision was admitted with. Bind Secrets created through the selected Secret Driver, or remove the old Secret bindings, then deploy again.";
     case "COMPUTE_DRIVER_MISMATCH":
@@ -848,6 +828,8 @@ function deploymentErrorMessage(code: string): string {
       return "The Installation's repository credential Driver cannot keep the session records this version's repository access needs. Ask an Installation administrator for a Driver that supports them, or remove the Agent's repository access, then deploy again.";
     case "REPOSITORY_EXECUTION_CLOSED":
       return "This version's standing repository access was closed, and the controller does not reopen it for the same version. Deploy again to restore repository access.";
+    case "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED":
+      return repositoryExecutionRedeployMessage;
     case "REPOSITORY_EXECUTION_CHANGED":
     case "REPOSITORY_EXECUTION_REPLACED":
       return "This version's runtime was replaced after the controller checked it for repository access, so the controller closed that access. Deploy again to restore repository access.";

@@ -4,10 +4,10 @@ import { createServer as createHttpsServer } from "node:https";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
-import { refusingPort } from "../helpers/available-port.mjs";
+import { refusingPort } from "../helpers/available-port.ts";
 import { signedLeaf } from "../helpers/certificates.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 
 // `oce-github pr-create` in OpenShell mode: each failure class prints its own line, so an
 // Agent or operator can tell a usage error, a local refusal, a route denial, a GitHub
@@ -15,7 +15,7 @@ import { listen } from "../helpers/listen.mjs";
 // establish the outcome of an earlier attempt.
 const helper = fileURLToPath(
   new URL(
-    "../../apps/controller/src/drivers/repo/github/credentials/client/draft-pr.ts",
+    "../../apps/controller/src/drivers/repo/github/access/client/draft-pr.ts",
     import.meta.url,
   ),
 );

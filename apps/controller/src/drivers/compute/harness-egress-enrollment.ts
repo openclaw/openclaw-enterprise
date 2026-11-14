@@ -1,4 +1,10 @@
 export const HARNESS_EGRESS_ENROLLMENT_PATH = "/openclaw/runtime/egress-enrollment";
+// Reserve the whole probe subtree for denials. Only the exact discovery path may leave the launcher.
+export const HARNESS_GIT_PROBE_PREFIX =
+  /^\/(?:[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+\.git\/)?oce-observe-request\//;
+const gitProbePath = new RegExp(
+  HARNESS_GIT_PROBE_PREFIX.source + /[0-9a-f]{32}\.git\/info\/refs$/.source,
+);
 
 // This runs in the generated Harness, before Codex, login or its first model probe. The transport
 // bearer may read this challenge; only Compute can sign its release.
@@ -104,7 +110,7 @@ function waitForHarnessEgressEnrollment(enrollment) {
         if (online && Object.hasOwn(release, "probePath")) {
           const {probePath, startupId} = release;
           if (probeSent || startupId !== challenge.startupId ||
-              !/^\/oce-observe-request\/[0-9a-f]{32}\.git\/info\/refs$/.test(probePath)) {
+              typeof probePath !== "string" || !${gitProbePath}.test(probePath)) {
             answer(409, {error: "stale_probe"});
             return;
           }
@@ -114,13 +120,29 @@ function waitForHarnessEgressEnrollment(enrollment) {
           const env = Object.fromEntries(Object.entries(process.env).filter(([k]) =>
             ["https_proxy","http_proxy","all_proxy","no_proxy","ssl_cert_file","ssl_cert_dir",
               "curl_ca_bundle"].includes(k.toLowerCase())));
-          const {stdout} = await require("node:util").promisify(require("node:child_process").execFile)(
-            "/usr/bin/curl", ["--disable", "--silent", "--proto", "=https", "--max-time", "10",
-              "--max-filesize", "4096", "--write-out", "\n%{http_code}", "--url",
-              "https://github.com" + probePath + "?service=git-upload-pack"],
-            {env, timeout: 12000, maxBuffer: 8192, encoding: "utf8"});
+          let stdout;
+          try {
+            ({stdout} = await require("node:util").promisify(require("node:child_process").execFile)(
+              "/usr/bin/curl", ["--disable", "--silent", "--proto", "=https", "--max-time", "10",
+                "--max-filesize", "4096", "--write-out", "\n%{http_code}", "--url",
+                "https://github.com" + probePath + "?service=git-upload-pack"],
+              {env, timeout: 12000, maxBuffer: 8192, encoding: "utf8"}));
+          } catch (failure) {
+            // Process output can contain proxy credentials or response content. Only a curl
+            // exit status is safe to return to the authenticated enrollment caller.
+            const code = failure?.code;
+            answer(400, {error: "probe_process_failed",
+              ...(Number.isInteger(code) && code > 0 && code <= 99 ? {code} : {})});
+            return;
+          }
           const split = stdout.lastIndexOf("\n");
-          const {error, middleware, reason_code:reasonCode} = JSON.parse(stdout.slice(0,split));
+          let error, middleware, reasonCode;
+          try {
+            ({error, middleware, reason_code:reasonCode} = JSON.parse(stdout.slice(0,split)));
+          } catch {
+            answer(400, {error: "probe_response_invalid"});
+            return;
+          }
           if (stdout.slice(split+1) !== "403" || error !== "middleware_denied" ||
               middleware !== "oce-prepared-git" || !/^oce_hook_[a-f0-9]{36}$/.test(reasonCode)) {
             answer(409, {error: "preview_not_observed"});

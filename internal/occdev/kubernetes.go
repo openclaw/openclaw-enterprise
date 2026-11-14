@@ -1,8 +1,10 @@
 package occdev
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -216,6 +218,10 @@ func dockerHubReference(reference string) (string, bool) {
 	}
 }
 
+// runtimeFirstBuildNote matches scripts/dev-up's note for the Docker profile.
+const runtimeFirstBuildNote = "Building the runtime image. With no build cache, this compiles Node.js from source first: " +
+	"15-60 minutes or longer, depending on CPUs and memory; later builds reuse the cache."
+
 func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string, error) {
 	image := r.setting("OCC_KUBERNETES_RUNTIME_IMAGE", "openclaw-enterprise-runtime:kubernetes-quickstart")
 	if r.env["OCC_KUBERNETES_RUNTIME_IMAGE"] != "" {
@@ -242,15 +248,50 @@ func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string
 			err != nil || len(source.BuildTimestamp) != 20 || timestamp.Format(time.RFC3339) != source.BuildTimestamp {
 			return "", fmt.Errorf("invalid %s: require a lowercase 40-character commit, 64-character archive SHA-256, and UTC build timestamp YYYY-MM-DDTHH:mm:ssZ", sourcePath)
 		}
-		if err := r.run(ctx, r.engine, "build", "-f", "deploy/runtime/Dockerfile",
-			"--build-arg", "OPENCLAW_COMMIT="+source.Commit,
-			"--build-arg", "OPENCLAW_SOURCE_SHA256="+source.SourceArchiveSHA256,
-			"--build-arg", "OPENCLAW_BUILD_TIMESTAMP="+source.BuildTimestamp,
-			"--tag", image, "."); err != nil {
+		args := []string{"build", "-f", "deploy/runtime/Dockerfile",
+			"--build-arg", "OPENCLAW_COMMIT=" + source.Commit,
+			"--build-arg", "OPENCLAW_SOURCE_SHA256=" + source.SourceArchiveSHA256,
+			"--build-arg", "OPENCLAW_BUILD_TIMESTAMP=" + source.BuildTimestamp}
+		if path := r.env["OCC_DEVELOPMENT_BUILD_CA_FILE"]; path != "" {
+			if err := validateBuildCAFile(path); err != nil {
+				return "", fmt.Errorf("OCC_DEVELOPMENT_BUILD_CA_FILE: %w", err)
+			}
+			args = append(args, "--secret", "id=build-ca,src="+path)
+		}
+		args = append(args, "--tag", image, ".")
+		// Startup keeps this tag, so its absence marks a first build on this
+		// engine, which is likely to compile Node.js with no build cache.
+		if _, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Id}}", image); err != nil {
+			fmt.Fprintln(r.opts.Out, runtimeFirstBuildNote)
+		}
+		if err := r.run(ctx, r.engine, args...); err != nil {
 			return "", err
 		}
 	}
 	return r.importDevelopmentImage(ctx, s, image)
+}
+
+// The engine parses --secret as comma-separated fields. Allow distribution CA
+// symlinks and spaces, but reject paths that could change the secret specification.
+func validateBuildCAFile(path string) error {
+	if !filepath.IsAbs(path) || strings.ContainsAny(path, ",\"\r\n") {
+		return fmt.Errorf("use an absolute path without commas, quotes, or line breaks")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("expected a regular file")
+	}
+	bundle, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if bytes.Contains(bundle, []byte("PRIVATE KEY-----")) || !x509.NewCertPool().AppendCertsFromPEM(bundle) {
+		return fmt.Errorf("expected a public PEM certificate bundle without a private key")
+	}
+	return nil
 }
 
 func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState, image string) (result string, resultErr error) {
@@ -292,18 +333,9 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 	if !strings.HasPrefix(platform, "linux/") {
 		return "", fmt.Errorf("development image must contain a Linux platform: %s", image)
 	}
-	// Docker's containerd image store cannot save a manifest-list reference
-	// as one complete image (see resolveDevelopmentImageSource), so point the
-	// staging tag at the platform child the list names for this host when there
-	// is one.
-	resolved, err := r.resolveDevelopmentImageSource(ctx, image, platform)
+	childStaged, err := r.stageDevelopmentPlatformChild(ctx, image, platform, selected)
 	if err != nil {
 		return "", err
-	}
-	if resolved != image {
-		if err := r.run(ctx, r.engine, "tag", resolved, selected); err != nil {
-			return "", err
-		}
 	}
 	// Images are imported concurrently, so each needs its own archive.
 	archive := filepath.Join(s.directory, developmentImportArchive(selected))
@@ -317,7 +349,7 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 	// child, keep the platform filter: it still works where the engine can
 	// resolve it, and names the failure otherwise.
 	saveArgs := []string{"image", "save"}
-	if r.engine == "docker" && resolved == image {
+	if r.engine == "docker" && !childStaged {
 		saveArgs = append(saveArgs, "--platform", platform)
 	}
 	saveArgs = append(saveArgs, "--output", archive, selected)
@@ -389,7 +421,7 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		gatewayClientNamespace = s.PlatformNamespace
 	}
 	resources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "256Mi"}, "limits": map[string]string{"cpu": "2", "memory": "2Gi"}}
-	// Memory matches the installation profiles (scripts/render-installation-profile.mjs):
+	// Memory matches the installation profiles (scripts/render-installation-profile.ts):
 	// requests cover measured use between turns and limits cover measured peaks.
 	// Gateways hold 2.3-2.4 GiB and peak at 2.8 GiB on their first turn; a dedicated
 	// Codex Gateway with native admin chat was OOM-killed at 2Gi. A Codex Harness held about
@@ -420,8 +452,8 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		compute := config["drivers"].(map[string]any)["compute"].(map[string]any)["configuration"].(map[string]any)
 		compute["runtime"].(map[string]any)["codexSeccompProfile"] = codexSeccompProfile
 	}
-	config["drivers"].(map[string]any)["plugin"] = map[string]any{
-		"id": "codex-plugin", "configuration": map[string]any{"catalogSource": "openai-curated"},
+	config["drivers"].(map[string]any)["plugin"] = []map[string]any{
+		{"id": "codex-plugin", "configuration": map[string]any{"catalogSource": "openai-curated"}},
 	}
 	if s.SandboxDriver == "none" {
 		config["presets"] = map[string]any{"includeDefaults": true}
@@ -454,15 +486,6 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			// Native OpenClaw uses Node; retain both architecture-specific Codex allowances.
 			"configuration": map[string]any{"binaries": append(openShellCodexBinaries(), "/usr/local/bin/node")},
 		}
-		if s.ProtectedEgress {
-			if s.egressKeyID == "" {
-				return fmt.Errorf("protected egress requires the generated OpenShell JWT key identifier")
-			}
-			config["drivers"].(map[string]any)["credential_proxy"] = developmentEgressConfiguration(s)
-			sandbox := config["drivers"].(map[string]any)["sandbox"].(map[string]any)["configuration"].(map[string]any)
-			gateway := sandbox["gateway"].(map[string]any)
-			gateway["networkPolicyResources"] = append(gateway["networkPolicyResources"].([]any), developmentAuthorityEgressPolicy(s))
-		}
 		config["backend"] = []any{openShellBackendConfiguration(s)}
 	}
 	data, err := yaml.Marshal(config)
@@ -491,9 +514,6 @@ func openShellCodexBinaries() []string {
 func openShellBackendConfiguration(s *developmentState) map[string]any {
 	if s.authenticatedOpenShell() {
 		drivers := map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID}
-		if s.ProtectedEgress {
-			drivers["credential_proxy"] = developmentEgressDriver
-		}
 		return map[string]any{
 			"id": "openshell", "type": "openshell",
 			"configuration": map[string]any{
@@ -534,8 +554,6 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 	return map[string]any{
 		"id": openShellSandboxID,
 		"configuration": map[string]any{
-			// Keep the existing delay before the first Gateway uses the route.
-			"startupDelayMs": 30000,
 			"gateway": map[string]any{
 				"workspaceMode": "operator",
 				"operatorNamespaceLabels": map[string]string{
@@ -586,7 +604,7 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 // control-plane profile selects a dedicated Codex runtime.
 func (r *runner) prepareDevelopmentCodexSandbox(ctx context.Context, state *developmentState, runtimeImage string, timeoutSeconds int) (string, error) {
 	fmt.Fprintln(r.opts.Out, "Verifying the dedicated Codex sandbox on the owned k3d node...")
-	command := r.command(ctx, "node", "scripts/prepare-development-codex-seccomp.mjs", state.directory, runtimeImage, strconv.Itoa(timeoutSeconds))
+	command := r.command(ctx, "node", "scripts/prepare-development-codex-seccomp.ts", state.directory, runtimeImage, strconv.Itoa(timeoutSeconds))
 	command.Stderr = r.opts.Err
 	output, err := command.Output()
 	if err != nil {

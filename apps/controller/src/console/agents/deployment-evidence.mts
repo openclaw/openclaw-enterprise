@@ -264,6 +264,11 @@ function transientReadError(error: unknown) {
   return status === undefined || status < 400 || status >= 500 || status === 408 || status === 429;
 }
 
+function fitsVertically(node: HTMLElement): boolean {
+  const { top, bottom, height } = node.getBoundingClientRect();
+  return height > 0 && top >= 0 && bottom <= window.innerHeight;
+}
+
 export function deploymentPending(status: string | null | undefined) {
   return status === "queued" || status === "running";
 }
@@ -514,18 +519,15 @@ export function createDeploymentStatusPanel(
   }
 
   function publish(poll: boolean, freshRecord = false) {
-    // Revealing a final refusal can push the next focused control off screen.
-    // Keep it visible only if the reader could see it before the poll completed.
+    // Automatically revealing evidence can push the next focused control off screen.
+    // Keep it visible only if the reader could see it before the disclosure opened.
     const focused = document.activeElement;
-    const position =
+    const keepFocusVisible =
       poll &&
-      error &&
-      !transientReadError(error) &&
       !details.open &&
       focused instanceof HTMLElement &&
-      section.parentElement?.contains(focused)
-        ? focused.getBoundingClientRect()
-        : null;
+      section.parentElement?.contains(focused) &&
+      fitsVertically(focused);
     render(freshRecord);
     onStatusChange({
       outcome: record ? deploymentOutcome(record) : null,
@@ -536,13 +538,11 @@ export function createDeploymentStatusPanel(
       overviewUnavailable,
     });
     if (
-      position &&
-      position.height > 0 &&
-      position.top >= 0 &&
-      position.bottom <= window.innerHeight &&
+      keepFocusVisible &&
       details.open &&
-      focused instanceof HTMLElement &&
-      document.activeElement === focused
+      focused.isConnected &&
+      document.activeElement === focused &&
+      !fitsVertically(focused)
     ) {
       focused.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
     }
@@ -598,6 +598,7 @@ export function createDeploymentStatusPanel(
         { className: "deployment-outcome" },
         `Recorded status: ${outcomeLabel(deploymentOutcome(record))}`,
       ),
+      repositoryAccessNotice(record),
       record.error ? deploymentResult(record, context) : null,
       record.warnings?.length
         ? statusBlock(
@@ -626,12 +627,13 @@ export function createDeploymentStatusPanel(
       return;
     }
     const outcome = record ? deploymentOutcome(record) : null;
-    const { cleanup, warnings } = record ?? {};
+    const { cleanup, warnings, repositoryAccess } = record ?? {};
     const readState = error ? (transientReadError(error) ? "transient" : "refused") : "read";
     const evidence = [
       outcome,
       cleanup?.status,
       warnings?.length,
+      repositoryAccess?.message,
       overviewUnavailable,
       readState,
     ].join("/");
@@ -641,6 +643,7 @@ export function createDeploymentStatusPanel(
           deploymentPending(outcome) ? "pending" : outcome,
           deploymentPending(cleanup?.status) ? "pending" : cleanup?.status,
           warnings?.length,
+          repositoryAccess?.message,
         ].join("/");
     const readerRefresh = !polling;
     if (evidence !== previousEvidence || (readerRefresh && error)) {
@@ -667,7 +670,8 @@ export function createDeploymentStatusPanel(
           (outcome !== "succeeded" && !late) ||
           overviewUnavailable ||
           cleanup ||
-          warnings?.length,
+          warnings?.length ||
+          repositoryAccess,
         );
       }
       previousEvidence = evidence;
@@ -972,6 +976,7 @@ export function createVersionDeploymentEvidence(
                     {},
                     `Recorded outcome: ${outcomeLabel(deploymentOutcome(status))}${error ? " · update delayed" : ""}`,
                   ),
+                  repositoryAccessNotice(status),
                   failureShownAbove && deploymentOutcome(status) === "failed"
                     ? element(
                         "p",
@@ -1056,4 +1061,10 @@ function readDeployment(context: DeploymentContext, path: string, revisionId: st
   return context.request(
     `${path}/deployments/${encodeURIComponent(revisionId)}`,
   ) as Promise<Deployment>;
+}
+
+function repositoryAccessNotice(record: Deployment): HTMLElement | null {
+  return record.repositoryAccess
+    ? statusBlock("warning", null, record.repositoryAccess.message, [], { role: null })
+    : null;
 }

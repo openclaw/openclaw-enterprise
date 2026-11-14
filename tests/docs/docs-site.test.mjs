@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import test from "node:test";
-import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.mjs";
+import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.ts";
 import {
   buildDocs,
   createDocsFixture,
@@ -363,7 +363,10 @@ test("docs build renders a ComputeDriver matrix block and rejects stale fallback
   );
   const stale = buildDocs(fixture, "--check");
   assert.notEqual(stale.status, 0, "Build accepted a stale ComputeDriver matrix fallback");
-  assert.match(stale.stderr + stale.stdout, /compute-matrix fallback is stale/);
+  assert.match(
+    stale.stderr + stale.stdout,
+    /compute-matrix fallback is stale; run node scripts\/generate-compute-matrix\.ts/,
+  );
 });
 
 for (const [kind, label] of [
@@ -383,7 +386,7 @@ for (const [kind, label] of [
     const before = `# Manual introduction\n\n<!-- ${kind}-matrix:start -->\nStale table\n<!-- ${kind}-matrix:end -->\n\nManual notes\n`;
     await writeFile(page, before);
     const run = (...args) =>
-      spawnSync(process.execPath, [join(root, `scripts/generate-${kind}-matrix.mjs`), ...args], {
+      spawnSync(process.execPath, [join(root, `scripts/generate-${kind}-matrix.ts`), ...args], {
         cwd: fixture,
         encoding: "utf8",
         timeout: 30_000,
@@ -391,13 +394,13 @@ for (const [kind, label] of [
 
     const invalid = run("--unknown");
     assert.equal(invalid.status, 1);
-    assert.ok(invalid.stderr.includes(`Usage: generate-${kind}-matrix.mjs [--check]`));
+    assert.ok(invalid.stderr.includes(`Usage: generate-${kind}-matrix.ts [--check]`));
     assert.equal(await readFile(page, "utf8"), before);
     const stale = run("--check");
     assert.equal(stale.status, 1);
     assert.ok(
       stale.stderr.includes(
-        `${label} matrix fallback is stale; run node scripts/generate-${kind}-matrix.mjs`,
+        `${label} matrix fallback is stale; run node scripts/generate-${kind}-matrix.ts`,
       ),
     );
     assert.equal(await readFile(page, "utf8"), before);

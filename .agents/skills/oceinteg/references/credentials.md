@@ -87,14 +87,20 @@ Run the following commands in Bash on the source machine. `REMOTE_HOST` is
 the approved SSH alias. `CODEX_TOKEN_FILE` and `GITHUB_APP_KEY_FILE` are the
 operator's existing protected files. Use `sha256sum` on Linux or `shasum` on
 macOS to compare the files without printing their contents or digests.
+Set `OCE_RUN_DIR` to the absolute path of this attempt's existing private operator directory. Keep
+the staging record outside the repository and any exported evidence bundle.
 
 ```bash
 set -euo pipefail
 set +x
 umask 077
+stage_record="${OCE_RUN_DIR:?set OCE_RUN_DIR to this run directory}/remote-stage"
+mkdir -m 700 -- "$stage_record"
+printf '%s\n' "$REMOTE_HOST" > "$stage_record/host"
 remote_dir=$(ssh -T "$REMOTE_HOST" \
   'umask 077; mkdir -p "$HOME/.cache/oceinteg" && cd "$HOME/.cache/oceinteg" && mktemp -d run.XXXXXXXX')
 [[ $remote_dir =~ ^run[.][a-zA-Z0-9]{8}$ ]]
+printf '%s\n' "$remote_dir" > "$stage_record/directory"
 
 stage_file() {
   local source=$1 name=$2 local_sum remote_sum
@@ -104,6 +110,7 @@ stage_file() {
   else
     local_sum=$(shasum -a 256 < "$source") || return 1
   fi
+  printf '%s\n' "$name" >> "$stage_record/attempted-files" || return 1
   remote_sum=$(ssh -T "$REMOTE_HOST" \
     "cd ~/.cache/oceinteg/$remote_dir && umask 077 && set -C && cat > './$name' && sha256sum < './$name'" \
     < "$source") || return 1
@@ -114,11 +121,13 @@ stage_file "$CODEX_TOKEN_FILE" codex-pat
 stage_file "$GITHUB_APP_KEY_FILE" github-app.pem
 ```
 
-Use a fresh directory if a transfer fails. Set the guide's input variables on
-the remote host to the corresponding files under
-`$HOME/.cache/oceinteg/<run-directory>`. Confirm mode 700 on the run directory
-and 600 on the files. Keep the SSH destination, run-directory name and ownership
-record privately for cleanup. Do not transfer the local credential store,
+If staging fails, stop before allocating a replacement. A lost SSH reply or a
+failed checksum can leave a copy on the host. Reconcile this attempt and
+complete the cleanup below before retrying.
+
+After both files verify, set the guide's input variables on the remote host to
+the corresponding files under `$HOME/.cache/oceinteg/<run-directory>`. Confirm
+mode 700 on the run directory and 600 on the files. Do not transfer the local credential store,
 Codex login directory or refresh tokens.
 
 For EKS, prefer an approved identity already available on the remote host.
@@ -129,7 +138,14 @@ Stage the run-specific shared credentials file through the same function. Bind
 remote operator host. Verify the account and role with
 `aws sts get-caller-identity` and check the source session's expiration before
 starting work. Use the normal authentication provider to renew an expired
-session. Remove only this run's staged copies after their consumers finish.
+session.
+
+When staging fails or the run ends, use the local staging record to identify
+the same verified host and run directory. Once the writers have stopped and no
+consumer needs the files, verify ownership, remove only this attempt's staged
+files and its empty directory, and confirm their absence. Preserve the source files and the private
+record. If the host, directory, or cleanup cannot be verified, mark cleanup
+pending and do not retry.
 
 ## Bind model and Slack credentials through Console
 

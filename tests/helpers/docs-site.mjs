@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.mjs";
+import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.ts";
 
 export const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -67,16 +67,16 @@ export async function writeComputeMatrixReadme(directory, matrix) {
 export function buildDocs(directory, ...args) {
   return spawnSync(
     process.execPath,
-    [join(repositoryRoot, "scripts/docs-site/build.mjs"), ...args],
+    [join(repositoryRoot, "scripts/docs-site/build.ts"), ...args],
     { cwd: directory, encoding: "utf8", timeout: 30_000 },
   );
 }
 
 /** Starts the docs preview on a free loopback port in `directory`. */
-export function spawnDocsPreview(directory) {
+export function spawnDocsPreview(directory, ...args) {
   return spawn(
     process.execPath,
-    [join(repositoryRoot, "scripts/docs-site/serve.mjs"), "--port", "0"],
+    [join(repositoryRoot, "scripts/docs-site/serve.ts"), "--port", "0", ...args],
     {
       cwd: directory,
       stdio: ["ignore", "pipe", "pipe"],

@@ -1,21 +1,31 @@
 ---
 tags: [human_verified]
+# Backfilled from the verification tag recorded in e22f558c0.
+last_verified: "2026-11-02"
 ---
 
 # Add Codex plugins to an OpenShell Agent
 
-Use the Console or API to discover Linear, enable it on your existing Codex Agent, and run a read through OpenClaw. The same Agent can have native Git access; a repository credential is optional for this procedure.
+Enable Linear on the Codex Agent you created during setup (`fred` in this example), then ask it to list teams. You can [add Git](../repository-credentials/openshell-git-push.md) to the same Agent before or after Linear. For dedicated OpenClaw Agents using managed CLI or hosted MCP plugins, see [Get started with managed OpenClaw plugins](../topics/openclaw-plugins.md).
 
 ## Before you start
 
-Complete one installation setup path: [local k3d](../deploy/local-setup.md), [Kubernetes](../deploy/kubernetes-setup.md), or [Amazon EKS](../deploy/eks-openshell-setup.md), including browser onboarding and reopening the same conversation. Continue in its Bash shell or source the private `session.sh` printed at the end of setup. Use the same Agent and model Secret. The service account must already have an authorized Linear connection. Selecting a plugin does not authorize a new connection.
+Use a ChatGPT service account with Codex plugins enabled and an authorized Linear connection. Deploy the Agent with that account’s token. An OpenAI API key cannot access plugins.
+
+Complete [Deploy your first Agent](../deploy/deploy-first-agent.md), including browser onboarding and reopening the same conversation. Continue in its Bash shell or source the private `session.sh` printed at the end of the guide. Use the same Agent and model Secret. Selecting a plugin does not authorize a new connection.
 
 ## 1. Enable Linear and redeploy
 
 <AccordionGroup>
 <Accordion title="Console">
 
-Open the same Agent’s draft and select **Plugins** → **Configure plugins**. Find Linear and enable it. Set approval for write actions with a human reviewer. Preserve the other selections, select **Save plugin selections**, then run `deployment_preflight` in the operator shell before selecting **Deploy new version**. Copy the `revision` ID from its Console URL and run `wait_deployment <deployment-id>` in that shell to prepare network rules and wait for success. See [Plugins tab](../console/configuration-plugins-and-files.md#plugins-tab) for required permissions.
+<Snippet file="../../snippets/openshell-quickstart/linear-console-selections.md" />
+
+In the operator shell, run `deployment_preflight` before you deploy the saved draft.
+
+<Snippet file="../../snippets/openshell-quickstart/console-deployment-actions.md" />
+
+Copy the deployment ID from the Console URL’s `revision` parameter. Run `wait_deployment <deployment-id>` in the same shell to apply the network rules and wait for fred’s new version.
 
 </Accordion>
 <Accordion title="CLI">
@@ -30,7 +40,7 @@ request GET "$base/credential-sources/${modelSource:?}" |
   jq -e --arg ns "$namespace" '.data|select(.type=="codex-pat" and .state=="ready" and .ownerCapability=="credential_gateway")|.secrets.access_token|select(.kind=="secret" and .namespaceId==$ns)' > "$RUN_DIR/catalog-secret-ref"
 cursor=""
 while true; do
-  jq --arg cursor "$cursor" '{secretRef:.,q:"linear"} +
+  jq --arg cursor "$cursor" '{harnessId:"codex",secretRef:.,q:"linear"} +
     (if $cursor=="" then {} else {cursor:$cursor} end)' "$RUN_DIR/catalog-secret-ref" |
     request POST "$base/agents/plugins" --data-binary @- > "$RUN_DIR/plugins"
   plugin=$(jq -r 'first(.data.plugins[]|select((.name|ascii_downcase)=="linear" and .available!=false)|.id) // empty' "$RUN_DIR/plugins")
@@ -64,27 +74,28 @@ deploy_and_wait
 
 ## 2. Verify a Linear read through OpenClaw
 
-Prepare one marked prompt so the result can be found in this Agent's transcript:
+In your operator shell, save a unique marker so you can find this turn in fred’s transcript if needed.
 
 ```bash
 linear_marker="linear-$(openssl rand -hex 8)"
-printf '%s\n' "$linear_marker" > "$RUN_DIR/linear-marker"
+printf '%s\n' "$linear_marker" | tee "$RUN_DIR/linear-marker"
 : > "$RUN_DIR/linear-run-id"
-printf 'Use the Linear plugin to list teams with limit 3. Make no changes. Return the tool name, team IDs and result, and include marker %s in your reply.\n' \
-  "$linear_marker" > "$RUN_DIR/linear-prompt"
 ```
-
-Send this prompt once to the deployed revision. Inspect the team IDs in the tool output and compare them with the final reply.
 
 <AccordionGroup>
 <Accordion title="Console">
 
-Select **Open Agent UI** for the same Agent. Paste the contents of `$RUN_DIR/linear-prompt`. Inspect the successful `codex_apps.linear.list_teams` tool result and compare the team IDs with the reply. If tool results are hidden, use the transcript procedure below; do not treat the reply alone as proof.
+<Snippet file="../../snippets/openshell-quickstart/console-open-agent.md" />
+
+<Snippet file="../../snippets/openshell-quickstart/console-linear-result.md" />
 
 </Accordion>
 <Accordion title="CLI">
 
 ```bash
+printf 'Use the Linear plugin to list teams with limit 3. Make no changes. Return the tool name, team IDs and result, and include marker %s in your reply.\n' \
+  "$linear_marker" > "$RUN_DIR/linear-prompt"
+
 # chat.send over wss://<private-gateway-host>/namespaces/$namespace/agents/$agent.
 turn "$RUN_DIR/linear-prompt" > "$RUN_DIR/linear-result"
 jq -er .runId "$RUN_DIR/linear-result" > "$RUN_DIR/linear-run-id"
@@ -112,7 +123,7 @@ linear_marker=$(cat "$RUN_DIR/linear-marker")
 linear_run_id=$(cat "$RUN_DIR/linear-run-id")
 
 read -r gateway_ns gateway_pod < <(
-  kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get pods -A \
+  kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get pods -n "${TENANT_NAMESPACE:?Resume the operator session}" \
     -l "openclaw.dev/agent=$agent" -o json |
     jq -er '[.items[] | select(.metadata.deletionTimestamp==null and
       (.metadata.name|startswith("gateway-")) and
@@ -127,6 +138,6 @@ kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" -n "$gateway_ns" \
 cat "$RUN_DIR/linear-transcript.json"
 ```
 
-The [transcript reader](../../snippets/openshell-quickstart/inspect-linear-transcript.mjs) opens the database read-only, finds the marked prompt, and matches a direct `codex_apps.linear.list_teams` call or its `dispatch_action` envelope to a successful result by tool-call ID in the same run. It returns that result and the terminal reply. Compare the team IDs in `results[].content` with `reply`. Keep this file private because it contains connected-account data. Code Mode calls are not decoded by this reader. Missing evidence is not success; check the selected Pod and marker without replaying the turn.
+The [transcript reader](../../snippets/openshell-quickstart/inspect-linear-transcript.mjs) opens the database read-only, finds the marked prompt, and matches a direct `codex_apps.linear.list_teams` call or its `dispatch_action` envelope to a successful result by tool-call ID in the same run. It returns that result and the terminal reply. Compare the team count (Console) or IDs (CLI) in `results[].content` with `reply`. Keep this file private because it contains connected-account data. Code Mode calls are not decoded by this reader. Missing evidence is not success; check the selected Pod and marker without replaying the turn.
 
 A successful turn includes `codex_apps.linear.list_teams` and a reply matching its result. If plugin installation fails, check the [plugin installation requirements](../../testing/openshell.md#codex-plugin-installation). You can now [add Git](../repository-credentials/openshell-git-push.md) to this same Agent, or [delete the Agent](../deploy/quickstart-delete-agent.md) and clean up the selected Installation.

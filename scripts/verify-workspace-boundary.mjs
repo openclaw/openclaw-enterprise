@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { verifyRepositoryCredentialBoundary } from "./verify-repository-credentials-boundary.mjs";
+import { verifyRepositoryCredentialBoundary } from "./verify-repository-credentials-boundary.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const activeApplications = ["controller"];

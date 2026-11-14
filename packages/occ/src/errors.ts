@@ -160,7 +160,13 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   readonly requestDiagnostic?: {
     readonly method: string;
     readonly grpcStatus: number;
-    readonly validationCategory: "POLICY_SAFETY" | "POLICY_MIDDLEWARE_VALIDATION" | "UNKNOWN";
+    readonly validationCategory:
+      | "POLICY_SAFETY"
+      | "POLICY_MIDDLEWARE_VALIDATION"
+      | "PVC_ADMISSION_LABELS"
+      | "CLASS_ADMISSION_LABELS"
+      | "RESOURCE_METADATA_FORBIDDEN"
+      | "UNKNOWN";
   };
 
   constructor(
@@ -172,6 +178,25 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
     if (requestDiagnostic !== undefined) {
       this.requestDiagnostic = Object.freeze({ ...requestDiagnostic });
     }
+  }
+}
+
+/** The database did not accept required audit evidence in the current transaction. */
+export class AuditAppendUnavailableError extends DependencyUnavailableError {
+  readonly reasonCode: "AUDIT_CAPACITY_EXCEEDED" | undefined;
+
+  constructor(reasonCode?: "AUDIT_CAPACITY_EXCEEDED") {
+    super("The platform audit write failed.");
+    this.name = "AuditAppendUnavailableError";
+    this.reasonCode = reasonCode;
+  }
+}
+
+/** A failed private runtime diagnostics transport read, without supplier details. */
+export class RuntimeDiagnosticsTransportError extends DependencyUnavailableError {
+  constructor() {
+    super("The private Gateway diagnostics transport is unavailable.");
+    this.name = "RuntimeDiagnosticsTransportError";
   }
 }
 
@@ -318,6 +343,22 @@ export class DeviceAuthorizationStartError extends Error {
   }
 }
 
+/**
+ * A definite browser authorization failure. `code` is implementation-owned and carries no
+ * provider text; `recoveryAction` tells OCC who acts next.
+ */
+export class BrowserAuthorizationError extends Error {
+  readonly code: string;
+  readonly recoveryAction: "retry" | "fix_configuration";
+
+  constructor(code: string, recoveryAction: BrowserAuthorizationError["recoveryAction"]) {
+    super("The browser authorization did not complete.");
+    this.name = "BrowserAuthorizationError";
+    this.code = /^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : "unclassified";
+    this.recoveryAction = recoveryAction;
+  }
+}
+
 /** Safe discovery outcomes carry no upstream response, credential, or error cause. */
 export class PluginDiscoveryError extends Error {
   readonly reason: "credentials_rejected" | "rate_limited" | "unavailable" | "invalid_response";
@@ -341,10 +382,33 @@ export class ChannelDirectoryError extends Error {
   }
 }
 
+export class WorkClaimLostError extends Error {
+  constructor() {
+    super("The controller work claim is missing, expired, or owned by another worker.");
+    this.name = "WorkClaimLostError";
+  }
+}
+
 export class ScopeViolationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ScopeViolationError";
+  }
+}
+
+/** A device login's private binding does not match the admitted request scope. */
+export class DeviceAuthorizationScopeMismatchError extends ScopeViolationError {
+  constructor() {
+    super("The login belongs to another actor or Agent scope.");
+    this.name = "DeviceAuthorizationScopeMismatchError";
+  }
+}
+
+/** A committed revision withdrawal permanently closes its repository session admission. */
+export class RepositorySessionWithdrawnError extends ScopeViolationError {
+  constructor() {
+    super("Repository session admission was withdrawn for this revision.");
+    this.name = "RepositorySessionWithdrawnError";
   }
 }
 
@@ -391,7 +455,7 @@ export class RepositoryBindingSelectionError extends ScopeViolationError {
     "Send repositoryAccess or repositoryBindings, not both. In repositoryAccess, list each repository once, at most 16, with a defaultProfile other than github-installation.";
   // The Driver refuses a whole selection without saying which entry; this text lists its rules.
   static readonly notApproved =
-    "These repository selections are not approved for this Namespace: each repository must be approved here for its profile and listed once, at most 16. Choose from the repository options, or ask an Installation administrator to approve it.";
+    "Choose up to 16 distinct repositories approved for this Namespace and profile. For github-repository, all selections must have the same configured permissions. Ask an Installation administrator to check the available options.";
 
   constructor(message: string = RepositoryBindingSelectionError.installationAccessAlone) {
     super(message);
@@ -648,17 +712,10 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
   }
 }
 
-/**
- * Finding 2360: with repository.openShell, the bundled OpenShell Credential Proxy's only
- * registration is the request-phase Git service, which never advertises the execution profile.
- * It delivers repository Git, so a Proxy-owned credential source (static, prepared or
- * credential-free metadata) or an Agent without a repository binding can never be admitted.
- * Source creation answered a generic 503 for this permanent configuration and such a deploy a
- * 503 or a bare 404; both now name the Installation settings.
- */
+/** The configured Git transport does not support protected credential-source admission. */
 export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
   static readonly description =
-    "With repository.openShell the Credential Proxy serves only repository Git, not Proxy-owned credential sources or Agents without repository access. Installation administrators can drop repository.openShell and drivers.credential_proxy, losing protected Git.";
+    "With repository.openShell the Credential Proxy serves only repository Git. Protected credential sources require a qualified execution profile. Ordinary model sources can use Credential Gateway without live adoption.";
 
   constructor() {
     super(CredentialProxyRepositoryOnlyError.description);
@@ -683,24 +740,30 @@ export class CredentialSourceUnprotectedError extends ResourceStateConflictError
   }
 }
 
+const REPOSITORY_GIT_PROFILE_UNSUPPORTED_MESSAGES = Object.freeze({
+  several:
+    "To use more than one repository, set each one to use its approved GitHub App permissions. API callers: set `profile` to `github-repository` for each entry in `repositoryBindings`.",
+  single:
+    "A Credential Proxy cannot deliver this repository's Git access level. Use `github-repository` or `git-write` for it, or ask an administrator to use native prepared Git without a Sandbox or Proxy, then deploy again.",
+});
+
 /**
- * Finding 2204: a Credential Proxy delivers repository Git only for one binding with a mapped
- * delivery profile (`git-write` or `github-installation`; `repositoryGitDeliveryProfile`).
- * Protected admission v4-v7 requires that profile, so a `git-read` or `git-full` binding, or
- * several bindings, could never start. Deploy refuses it with 409
- * REPOSITORY_GIT_PROFILE_UNSUPPORTED before reading the counterpart, instead of a generic 503 or
- * 500. The bundled OpenShell `configureRevision` repeats it and the worker fails it at once; that
- * is defence in depth, as PostgreSQL cannot read a stored revision of this shape. HTTP keeps
- * messages under 256 characters.
+ * Finding 2204: a Credential Proxy delivers repository Git for any number of `github-repository`
+ * bindings, or for one `git-write` or `github-installation` binding
+ * (`repositoryGitDeliveryProfile`). Protected admission v4-v7 requires a mapped profile, so a
+ * `git-read` or `git-full` binding, or several bindings that are not all `github-repository`,
+ * could never start. Deploy refuses it with 409 REPOSITORY_GIT_PROFILE_UNSUPPORTED before
+ * reading the counterpart, instead of a generic 503 or 500. The message depends on whether the
+ * selection holds several bindings. The bundled OpenShell `configureRevision` repeats it and the
+ * worker fails it at once; that is defence in depth, as PostgreSQL cannot read a stored revision
+ * of this shape. HTTP keeps messages under 256 characters.
  */
 export class RepositoryGitProfileUnsupportedError extends ResourceStateConflictError {
   static readonly code = "REPOSITORY_GIT_PROFILE_UNSUPPORTED";
-  static readonly description =
-    "A Credential Proxy delivers repository Git only for one git-write or github-installation binding, so this Agent's repository access cannot start. Keep one such binding, remove them, or use native prepared Git without a Sandbox or Proxy, then deploy again.";
   readonly code = RepositoryGitProfileUnsupportedError.code;
 
-  constructor() {
-    super(RepositoryGitProfileUnsupportedError.description);
+  constructor(bindingCount: number) {
+    super(REPOSITORY_GIT_PROFILE_UNSUPPORTED_MESSAGES[bindingCount > 1 ? "several" : "single"]);
     this.name = "RepositoryGitProfileUnsupportedError";
   }
 }
@@ -1010,6 +1073,13 @@ export class TransientDependencyError extends Error {
  * operator fixes that identity or grant, so Compute fails the Namespace step at once.
  * The message names only the provider's refusal code, never provider text.
  */
+export class SandboxNamespacePendingError extends Error {
+  constructor(message = "Sandbox Namespace resources have not converged.") {
+    super(message);
+    this.name = "SandboxNamespacePendingError";
+  }
+}
+
 export class SandboxNamespaceRefusedError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -1060,7 +1130,29 @@ export class ActivationPendingError extends Error {
 }
 
 /** An activation step that cannot complete for this revision. */
-export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
+export type ActivationFailedCode =
+  | "AGENT_GATEWAY_UNAUTHORIZED"
+  | "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE"
+  | "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE";
+
+const CODEX_PERMISSION_DENIALS = [
+  "sandbox-mode-denied",
+  "named-profile-denied",
+  "reviewer-denied",
+] as const;
+
+export type CodexPermissionDenial = (typeof CODEX_PERMISSION_DENIALS)[number];
+
+/** The selected Driver proved that this execution's repository access cannot be resumed.
+ * Missing evidence or a failed dependency read must not produce this terminal result. */
+export class RepositoryExecutionRequiresRedeployError extends Error {
+  readonly code = "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED";
+
+  constructor() {
+    super("Repository access cannot resume on this execution. Deploy a new revision.");
+    this.name = "RepositoryExecutionRequiresRedeployError";
+  }
+}
 
 /**
  * Compute preparation cannot complete for this revision. The worker records a
@@ -1085,20 +1177,35 @@ export class ComputePreparationFailedError extends Error {
 }
 
 /**
- * Activation found its workloads running but one of them can never complete
- * activation for this revision: the dedicated Gateway refuses its own in-Pod CLI
- * as unauthorized, so it cannot confirm its workspace node. The cause is fixed
- * by the admitted Configuration, so the worker fails the deployment with `code`
- * instead of waiting for the convergence deadline. The message stays in the
- * controller; status shows a fixed text.
+ * A workload cannot activate under its current configuration or managed policy.
+ * Preparation and activation can both discover the refusal. The worker fails
+ * deployment with `code` instead of waiting for the convergence deadline.
+ * Status uses fixed text; the error message stays in the controller. Operational
+ * diagnostics may retain the fixed Codex permission denial categories.
  */
 export class ActivationFailedError extends Error {
   readonly code: ActivationFailedCode;
+  readonly permissionDenials?: readonly CodexPermissionDenial[];
 
-  constructor(code: ActivationFailedCode, message: string) {
+  constructor(
+    code: ActivationFailedCode,
+    message: string,
+    permissionDenials?: readonly CodexPermissionDenial[],
+  ) {
     super(message);
     this.name = "ActivationFailedError";
     this.code = code;
+    if (
+      code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE" &&
+      permissionDenials !== undefined
+    ) {
+      const recognized = CODEX_PERMISSION_DENIALS.filter((denial) =>
+        permissionDenials.includes(denial),
+      );
+      if (recognized.length > 0) {
+        this.permissionDenials = Object.freeze(recognized);
+      }
+    }
   }
 }
 
@@ -1111,6 +1218,7 @@ export class SandboxRevisionUnsupportedError extends Error {
   readonly code:
     | "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED"
     | "SANDBOX_HARNESS_UNSUPPORTED"
+    | "SANDBOX_POD_LABELS_NOT_PERMITTED"
     | "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED";
 
   constructor(code: SandboxRevisionUnsupportedError["code"], message: string) {
@@ -1377,6 +1485,9 @@ export class CredentialSourceRegistrationConfigError extends ScopeViolationError
  */
 export class StoredCredentialSourceConfigError extends ResourceStateConflictError {
   static message(field: string): string {
+    if (field === "base_url") {
+      return "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must permit the destination selected by the Agent revision. Rebind and redeploy Agents, then delete the old source once unused.";
+    }
     return `This credential source's saved ${field} no longer meets the OpenShell Credential Gateway's rules, so it cannot be used. Create a new source with a valid ${field}, bind it in place of this one, then delete this one.`;
   }
 
@@ -1506,6 +1617,7 @@ const RETRY_LATER_MESSAGES = Object.freeze({
  * operator can fix (`proxyRegistration`) from its availability check.
  */
 export class RetryLaterError extends DependencyUnavailableError {
+  readonly retryAfterSeconds?: number;
   constructor(reason: "deviceLoginFailed", cause: unknown);
   constructor(reason: "registrationFence", seconds: number);
   constructor(reason: "proxyRegistration");
@@ -1516,6 +1628,9 @@ export class RetryLaterError extends DependencyUnavailableError {
       ),
     );
     this.name = "RetryLaterError";
+    if (reason === "registrationFence") {
+      this.retryAfterSeconds = Math.max(1, Math.ceil(Number(detail)));
+    }
     if (reason === "deviceLoginFailed") {
       this.cause = detail;
     }
@@ -1709,6 +1824,8 @@ export class RuntimeLogsError extends Error {
 export class PluginPolicyValidationError extends Error {
   /** The rejected plugin selection key, so HTTP can point at `/plugins/<id>`. */
   readonly pluginId?: string;
+  /** For `unknownPlugin`, the offered ID the rejected one leaves the version out of. */
+  readonly offeredId?: string;
 
   constructor(
     field?:
@@ -1716,9 +1833,11 @@ export class PluginPolicyValidationError extends Error {
       | "tools[id].reviewer"
       | "approvers"
       | "aliasedPlugin"
+      | "conflictingEnablementDefaults"
       | "unknownPlugin",
     driverId?: string,
     pluginId?: string,
+    offeredId?: string,
   ) {
     let message = "The supplied plugin policies are invalid.";
     if (field === "unknownPlugin") {
@@ -1728,9 +1847,14 @@ export class PluginPolicyValidationError extends Error {
       // the advice first.
       message = `A plugin selection names a plugin that the selected Plugin Driver${
         driverId === undefined ? "" : ` (${driverId})`
-      } does not offer${
-        pluginId === undefined ? "" : `: ${pluginId}`
-      }. Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.`;
+      } does not offer${pluginId === undefined ? "" : `: ${pluginId}`}. ${
+        offeredId === undefined
+          ? "Check each plugin ID and its Driver prefix against the catalog for the Agent's Harness."
+          : `Use ${offeredId}.`
+      }`;
+    } else if (field === "conflictingEnablementDefaults") {
+      message =
+        'These defaults conflict. Choose "Inherit default policy" for either "tools enabled by default" (toolDefaults.enabled) or "Destructive tools" (driverPolicy.destructiveEnabled), keeping the other. API clients: omit either field.';
     } else if (field === "aliasedPlugin") {
       message =
         'Two plugin selections name the same plugin (a native ID and its driver-prefixed ID, such as "diffs" and "occ-plugin:diffs"). Keep one selection per plugin.';
@@ -1748,6 +1872,9 @@ export class PluginPolicyValidationError extends Error {
     this.name = "PluginPolicyValidationError";
     if (field === "unknownPlugin" && pluginId !== undefined) {
       this.pluginId = pluginId;
+      if (offeredId !== undefined) {
+        this.offeredId = offeredId;
+      }
     }
   }
 

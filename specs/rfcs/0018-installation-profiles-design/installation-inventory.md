@@ -112,7 +112,7 @@ and plugin selection without rewriting existing saved presets. Custom templates
 remain optional `presets.files` entries.
 
 Source: [seeding](../../../packages/occ/src/index.ts),
-[existing preservation coverage](../../../tests/integration/presets-controller.test.mjs).
+[existing preservation coverage](../../../tests/integration/presets-controller.test.ts).
 
 ## Repository access
 
@@ -138,7 +138,7 @@ access, not just broker Pod health. Repository binding configures access; it doe
 not promise automatic checkout at startup.
 
 Live sessions/bearers reside in Maps in the
-[credential service](../../../apps/controller/src/drivers/repo/credentials/service.ts).
+[credential service](../../../apps/controller/src/drivers/repo/access/service.ts).
 The [worker](../../../apps/controller/src/worker/repository-credentials.ts) marks a
 missing previously open session invalidated and can reject recovery with
 `REPOSITORY_SESSION_RECOVERY_UNSAFE`. A durable OCC ledger does not restore broker
@@ -236,11 +236,11 @@ fresh disposable local Kubernetes and separately authorized EKS/general Kubernet
 | Operations         | Worker/Agent restart, storage retention, image upgrade/rollback boundaries, metrics scrape and collector delivery if enabled                                             |
 
 Relevant existing suites were inspected, not executed:
-[driver startup](../../../tests/integration/plugin-driver-startup.test.mjs),
-[discovery API](../../../tests/integration/plugin-discovery-api.test.mjs),
+[driver startup](../../../tests/integration/plugin-driver-startup.test.ts),
+[discovery API](../../../tests/integration/plugin-discovery-api.test.ts),
 [real status transport](../../../tests/integration/kubernetes-plugin-status-real.test.mjs),
 [native plugins](../../../tests/integration/plugin-driver-real.test.mjs),
-[PostgreSQL presets](../../../tests/integration/postgres-presets.test.mjs).
+[PostgreSQL presets](../../../tests/integration/postgres-presets.test.ts).
 Controlled upstreams prove API/IAM behavior; controlled status producers prove
 transport; native scenarios prove selected runtime behavior. None alone proves
 the proposed profiles are Helm-installed and operational on EKS.

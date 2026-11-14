@@ -5,7 +5,7 @@ import test from "node:test";
 
 import playwright from "playwright";
 
-import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
+import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.ts";
 import {
   buildDocs,
   createDocsFixture,

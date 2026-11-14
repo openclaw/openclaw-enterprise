@@ -1,7 +1,8 @@
+import { prepareProviderScope } from "../../apps/controller/src/drivers/repo/github/access/provider-transport/request-options.ts";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/installation-token-response.ts";
+import { validateInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/access/installation-token-response.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import { captureMetadata, dispatchMetadata } from "../helpers/github-metadata-exchange.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
@@ -17,11 +18,11 @@ import {
   fixtureInstallationId,
   fixtureAppId,
 } from "../fixtures/repository-credentials/github.mjs";
-import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts";
-import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/credentials/origin.ts";
-import { createGitHubWarmReader } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-reader.ts";
-import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
+import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/access/prepared-owner.ts";
+import { preparationIssuerAuthority } from "../../apps/controller/src/drivers/repo/github/access/origin.ts";
+import { createWarmTokenReader } from "../../apps/controller/src/backends/token-service/warm-reader.ts";
+import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/access/material.ts";
 
 // Real source/Agent/binding/deployment APIs, IAM, protected forwarder, preparation owner,
 // scoped GitHub issuance, HTTPS GET and actual last trailer. The test plays the enrolled supervisor and the store is in-memory;
@@ -70,7 +71,7 @@ test("consented protected repository read uses only exact, already prepared meta
           grant: { ...grant, id },
         };
         store = createPreparedStore(admission).connect();
-        reader = createGitHubWarmReader(store, clock.wallNow);
+        reader = createWarmTokenReader(store, clock.wallNow);
         owner = createGitHubPreparationOwner({
           admission,
           store,
@@ -82,11 +83,11 @@ test("consented protected repository read uses only exact, already prepared meta
           minimumValidityMs: 10000,
         });
       },
-      async readWarm(source, { signal, deadlineAt }) {
+      async resolve(reference, { signal, deadlineAt }) {
         signal.throwIfAborted();
         assert.ok(Date.parse(deadlineAt) > clock.wallNow());
         reads++;
-        assert.equal(source.origin, gh.origin);
+        assert.equal(reference.source.id, admission.familyId);
         const result = await reader.readWarm(admission);
         if (result.kind !== "warm") {
           return undefined;
@@ -95,12 +96,12 @@ test("consented protected repository read uses only exact, already prepared meta
           result.material;
         try {
           return {
-            value: Buffer.from(bytes).toString(),
+            accessToken: Buffer.from(bytes).toString(),
             materialVersion,
-            providerExpiresAt: new Date(providerExpiresAt).toISOString(),
+            expiresAt: new Date(providerExpiresAt).toISOString(),
             usableUntil: new Date(usableUntil).toISOString(),
             materialId: admission.familyId,
-            family: source.key.source,
+            family: reference.source,
             preparationAttemptId: attemptId,
             ownerEpoch: 1,
             inputVersion: admission.inputVersion,
@@ -254,6 +255,7 @@ test("consented protected repository read uses only exact, already prepared meta
   spelling = undefined;
   const captured = captureMetadata(f);
   const { ready } = await f.resolve(captured);
+  const checksBeforeWithdrawal = sendChecks;
   await store.transact(admission.familyId, (row) => {
     row.enabled = false;
   });
@@ -261,19 +263,23 @@ test("consented protected repository read uses only exact, already prepared meta
     (await f.authorize(f.permitRequest(captured, ready))).refused.code,
     f.refusalCode("DENIED"),
   );
-  assert.equal(sendChecks, 9);
-  assert.equal(gh.issuesOfTokens.length, 1, "no request may renew or issue");
+  assert.ok(sendChecks > checksBeforeWithdrawal, "dispatch rechecks the withdrawn grant");
+  assert.equal(gh.issuesOfTokens.length, 1, "the fixture issuer only prepared the one grant");
 });
 
 // Conformance only: synthetic strings exercise the shared wire envelope, not provider authentication.
 test("prepared GitHub metadata preserves the acquisition wire credential envelope", () => {
   const observedWallMs = Date.parse("2026-10-15T12:00:00Z");
   const policy = {
+    id: "metadata-grant",
+    isolationId: "namespace",
+    appId: fixtureAppId,
+    installationId: fixtureInstallationId,
+    profile: "metadata-read",
     repositoryId: fixtureRepositoryId,
     repository: fixtureRepository,
-    permissions: { metadata: "read" },
-    minimumValidityMs: 10000,
   };
+  const scope = prepareProviderScope("https://api.github.com", policy);
   const cases = [
     ...[1, 7, 8, 8192, 8193, 16384].map((length) => ({
       label: `length ${length}`,
@@ -298,12 +304,13 @@ test("prepared GitHub metadata preserves the acquisition wire credential envelop
       {
         token: value,
         expires_at: "2026-10-15T13:00:00Z",
-        permissions: policy.permissions,
+        permissions: { metadata: "read" },
         repositories: [{ id: Number(fixtureRepositoryId), full_name: fixtureRepository }],
       },
       "synthetic-custody-reference",
       observedWallMs,
-      policy,
+      scope,
+      10000,
     );
     assert.equal(decision.kind, accepted ? "validated" : "uncertain", label);
     if (accepted) {

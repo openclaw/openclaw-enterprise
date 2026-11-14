@@ -1,5 +1,6 @@
 import {
   ADMISSION_LIMIT_DETAILS,
+  POD_LABELS_NOT_PERMITTED_DETAILS,
   OpenShellAdmissionLimitError,
   OpenShellDeletionUnconfirmedError,
   OpenShellGatewayFailure,
@@ -15,7 +16,11 @@ import {
   statusCode,
 } from "./openshell-gateway-errors.ts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import { DependencyUnavailableError, gatewayEndpointRewritesIpv4 } from "@openclaw-enterprise/occ";
+import {
+  DependencyUnavailableError,
+  SandboxRevisionUnsupportedError,
+  gatewayEndpointRewritesIpv4,
+} from "@openclaw-enterprise/occ";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -28,6 +33,8 @@ import {
   getServiceDocument,
   postServiceDocument,
   serviceWebSocketHandshake,
+  serviceCodexReadinessStatus,
+  type OpenShellCodexReadiness,
   type OpenShellServiceDocument,
 } from "./openshell-service-transport.ts";
 import type {
@@ -148,8 +155,9 @@ export interface OpenShellProviderProfileEndpoint {
   readonly protocol: string;
   readonly path?: string;
   readonly access?: "NETWORK_ACCESS_PRESET_FULL" | "NETWORK_ACCESS_PRESET_READ_WRITE";
+  readonly mcp?: { readonly strict_tool_names: boolean; readonly versions: readonly string[] };
   readonly rules?: readonly {
-    readonly allow: { readonly method: string; readonly path: string };
+    readonly allow: { readonly method: string; readonly path?: string };
   }[];
 }
 
@@ -488,6 +496,13 @@ export interface OpenShellGatewayClient
     bearer: string,
     signal: AbortSignal,
   ): Promise<boolean>;
+  /** Reads the dedicated Codex process’s permission policy and, if needed, PAT status. */
+  serviceCodexReadinessStatus(
+    serviceUrl: string,
+    bearer: string,
+    requirePat: boolean,
+    signal: AbortSignal,
+  ): Promise<OpenShellCodexReadiness>;
   /** Read a profile in its Workspace, or pass null to request the platform profile. */
   getProviderProfile(
     workspace: string | null,
@@ -694,10 +709,42 @@ function createSandboxValidationCategory(
   error: unknown,
 ): NonNullable<DependencyUnavailableError["requestDiagnostic"]>["validationCategory"] {
   const details = asRecord(error)?.details;
+  if (method !== "CreateSandbox" || typeof details !== "string") {
+    return "UNKNOWN";
+  }
+  // b2069a2 maps the resource metadata lookup's Kubernetes 403 through the
+  // compute driver to INTERNAL. Keep the fixed reason without the resource name.
+  if (
+    grpcStatus === 13 &&
+    /^create sandbox failed: gateway is forbidden from reading metadata for (?:PersistentVolumeClaim '[a-z0-9-]{1,63}\/[a-z0-9.-]{1,253}'|(?:RuntimeClass|PriorityClass) '[a-z0-9.-]{1,253}') \(Kubernetes 403\); check gateway RBAC$/u.test(
+      details,
+    )
+  ) {
+    return "RESOURCE_METADATA_FORBIDDEN";
+  }
+  if (grpcStatus === 9) {
+    // b2069a2 resource_admission.rs reports the kind and name before a fixed label
+    // refusal. Classify the exact shape without retaining names or supplier text.
+    if (
+      /^PersistentVolumeClaim '[a-z0-9-]{1,63}\/[a-z0-9.-]{1,253}': external resource not admitted by required labels$/u.test(
+        details,
+      )
+    ) {
+      return "PVC_ADMISSION_LABELS";
+    }
+    if (
+      /^(?:RuntimeClass|PriorityClass) '[a-z0-9.-]{1,253}': external resource not admitted by required labels$/u.test(
+        details,
+      )
+    ) {
+      return "CLASS_ADMISSION_LABELS";
+    }
+    return "UNKNOWN";
+  }
   // Pinned supplier 246bac67400487c03595f7d883dd2b5256f4baf0:
   // grpc/validation.rs and middleware.rs wrap CreateSandbox policy errors with these exact
   // prefixes. Do not normalize text or match embedded prefixes: other validation stays unknown.
-  if (method !== "CreateSandbox" || grpcStatus !== 3 || typeof details !== "string") {
+  if (grpcStatus !== 3) {
     return "UNKNOWN";
   }
   if (details.startsWith("policy contains unsafe content: ")) {
@@ -1366,6 +1413,21 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     return serviceWebSocketHandshake(this.serviceTransportOptions(), serviceUrl, bearer, signal);
   }
 
+  async serviceCodexReadinessStatus(
+    serviceUrl: string,
+    bearer: string,
+    requirePat: boolean,
+    signal: AbortSignal,
+  ): Promise<OpenShellCodexReadiness> {
+    return serviceCodexReadinessStatus(
+      this.serviceTransportOptions(),
+      serviceUrl,
+      bearer,
+      requirePat,
+      signal,
+    );
+  }
+
   private serviceRootCertificate: Buffer | undefined;
 
   private serviceTransportOptions() {
@@ -1730,20 +1792,20 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       );
     } catch (error) {
       const { grpc } = await this.ensureClient();
-      if (statusCode(error) === grpc.status.ALREADY_EXISTS) {
+      const code = statusCode(error);
+      if (code === grpc.status.ALREADY_EXISTS) {
         throw new OpenShellSandboxAlreadyExistsError(request.name);
       }
-      const reason = openShellErrorReason(error, grpc.status.FAILED_PRECONDITION);
-      if (
-        statusCode(error) === grpc.status.FAILED_PRECONDITION &&
-        reason !== undefined &&
-        REPLAY_REFUSAL_REASONS.has(reason)
-      ) {
-        const details = asRecord(error)?.details;
-        throw new OpenShellRequestReplayRefusedError(
-          reason,
-          typeof details === "string" ? details : "request_id refused",
-        );
+      if (code === grpc.status.FAILED_PRECONDITION) {
+        const reason = openShellErrorReason(error, grpc.status.FAILED_PRECONDITION);
+        if (reason !== undefined && REPLAY_REFUSAL_REASONS.has(reason)) {
+          const details = asRecord(error)?.details;
+          throw new OpenShellRequestReplayRefusedError(
+            reason,
+            typeof details === "string" ? details : "request_id refused",
+          );
+        }
+        throw new OpenShellGatewayRequestFailure("CreateSandbox", error);
       }
       throw error;
     }
@@ -2018,7 +2080,8 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     if (typeof profile?.id !== "string" || profile.id !== id) {
       throw new OpenShellGatewayFailure("OpenShell GetProviderProfile returned another profile.");
     }
-    return storedProviderProfile(profile, profile.id);
+    // Protobuf omits empty repeated fields. Preserve every field that was returned.
+    return storedProviderProfile({ endpoints: [], credentials: [], ...profile }, profile.id);
   }
 
   async listProviderProfiles(
@@ -2663,6 +2726,20 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
                 details.startsWith(ADMISSION_LIMIT_DETAILS)
               ) {
                 reject(new OpenShellAdmissionLimitError(method, error));
+              } else if (
+                method === "CreateSandbox" &&
+                code === grpc.status.INVALID_ARGUMENT &&
+                typeof details === "string" &&
+                details.startsWith(POD_LABELS_NOT_PERMITTED_DETAILS)
+              ) {
+                // The gateway's configuration refuses these label keys on every create, so
+                // retrying cannot help; the operator must extend allowed_pod_labels.
+                reject(
+                  new SandboxRevisionUnsupportedError(
+                    "SANDBOX_POD_LABELS_NOT_PERMITTED",
+                    `OpenShell refused the Harness Pod labels ${details.slice(POD_LABELS_NOT_PERMITTED_DETAILS.length)}; add them to the gateway's Kubernetes driver allowed_pod_labels.`,
+                  ),
+                );
               } else if (
                 [
                   grpc.status.NOT_FOUND,

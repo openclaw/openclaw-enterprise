@@ -13,6 +13,7 @@ export const FormNamespaceFailed = story("createFormNamespaceFailed");
 export const FormNamespaceMissing = story("createFormNamespaceMissing");
 export const CreateForm = { ...story("createForm"), name: "OpenAI with Codex harness" };
 export const CreateNativeAdmin = story("createNativeAdmin");
+export const CreateMemberBrowserChat = story("createMemberBrowserChat");
 export const CreateNativeAdminSelected = story("createNativeAdminSelected");
 export const CreateNativeAdminDisabled = story("createNativeAdminDisabled");
 export const CreateSecretCreateNotPermitted = {
@@ -23,6 +24,7 @@ export const CreateSecretOperateDenied = {
   ...story("createSecretOperateDenied"),
   name: "Secret operate not permitted",
 };
+export const CreateRepositoryOnlyCredentialProxy = story("createRepositoryOnlyCredentialProxy");
 export const CreateRepositoryNotConfigured = {
   ...story("createRepositoryNotConfigured"),
   name: "Repository access not set up",
@@ -41,6 +43,16 @@ export const PluginsConfigured = {
 };
 export const PluginsCurated = story("createPluginsCurated");
 export const PluginsDiscovered = story("createPluginsDiscovered");
+export const PluginsShortWindow = {
+  ...story("createPluginsDiscovered", {
+    name: "Short window plugin picker",
+    frameWidth: "1440px",
+    frameHeight: "480px",
+    instructions:
+      "Scroll the catalog browser with setup collapsed and expanded, choose Calendar, and reach pagination.",
+  }),
+  name: "Short window plugin picker",
+};
 export const PluginsPrefetch = story("createPluginsPrefetch");
 export const PluginsSearchLoading = story("createPluginsSearchLoading");
 export const PluginsToolsLoading = story("createPluginsToolsLoading");
@@ -100,6 +112,8 @@ export const CreateDeploymentSuperseded = {
   name: "A newer deployment took over",
 };
 export const CreateDeploymentFailed = story("createDeploymentFailed");
+export const CreateMalformedProvisioningRevision = story("createMalformedProvisioningRevision");
+export const CreateMalformedProvisioningMessage = story("createMalformedProvisioningMessage");
 export const CreateDeploymentStopped = story("createDeploymentStopped");
 export const CreateProvisioningStopped = story("createProvisioningStopped");
 export const CreateUnsupportedProvisioning = {
@@ -115,6 +129,7 @@ export const CreatePresetMultiline = story("createPresetMultiline");
 export const CreatePresetMultilineApplied = story("createPresetMultilineApplied");
 export const CreateDedicatedOpenclaw = story("createDedicatedOpenclaw");
 export const CreateDedicatedCodexCredentialSource = story("createDedicatedCodexCredentialSource");
+export const CreateCredentialRegistrationRefused = story("createCredentialRegistrationRefused");
 export const CreateCredentialRegistrationUnknown = story("createCredentialRegistrationUnknown");
 export const CreateCredentialRegistrationMismatch = story("createCredentialRegistrationMismatch");
 export const CreateCredentialRegistrationCleanup = story("createCredentialRegistrationCleanup");
@@ -155,6 +170,7 @@ export const RepositoryDetails = story("createRepositoriesDetails");
 export const RepositoryDescriptionsPending = story("createRepositoriesDescriptionsPending");
 export const RepositoryHiddenCharacters = story("createRepositoriesHiddenCharacters");
 export const RepositoryLocaleSearch = story("createRepositoriesLocaleSearch");
+export const RepositoryNoMatches = story("createRepositoriesNoMatches");
 export const RepositoryContributor = {
   ...story("createRepositoriesContributor"),
   name: "Contributor without issue management",
@@ -196,6 +212,10 @@ export const CreatePresetInvalidField = {
   ...story("createPresetInvalidField"),
   name: "Preset with an invalid field",
 };
+export const CreatePresetNonTextPrimary = {
+  ...story("createPresetNonTextPrimary"),
+  name: "Preset with a non-text primary",
+};
 export const CreateCapabilitiesDenied = {
   ...story("createCapabilitiesDenied"),
   name: "Permission check failed",
@@ -210,7 +230,11 @@ export const CreateMember = {
 };
 export const CreateMemberGrantRefused = {
   ...story("createMemberGrantRefused"),
-  name: "Member Agent created, grant needs an administrator",
+  name: "Member Agent created, opens its draft",
+};
+export const CreateMemberCredentialGateway = {
+  ...story("createMemberCredentialGateway"),
+  name: "Member on a Credential Gateway Installation",
 };
 export const CreateRestricted = {
   ...story("createRestricted"),
@@ -369,3 +393,13 @@ export const PasswordSecretConflictPat = story("createPasswordSecretConflictPat"
 export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOAuth");
 
 export const CreateOAuthStartNavigation = story("createOAuthStartNavigation");
+
+export const SharedModelDestination = {
+  ...story("createSharedModelProviderSource"),
+  name: "Authorize shared model destination",
+};
+
+export const SharedModelDestinationRefusal = {
+  ...story("createSharedModelProviderRefusal"),
+  name: "Destination authorization refusal",
+};

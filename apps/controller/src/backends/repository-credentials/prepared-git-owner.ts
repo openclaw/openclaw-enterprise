@@ -1,43 +1,37 @@
+import type { RepositoryGitCustody } from "../../composition/repository-credentials/custody-selection.ts";
 import { repositoryApprovalFingerprint } from "@openclaw-enterprise/occ";
 import { createHash, createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
 import { open } from "node:fs/promises";
 import { constants } from "node:fs";
-import { isDeepStrictEqual } from "node:util";
 import type {
-  DriverRegistrationRef,
   PreparedGitHubUseRequest,
   PreparedGitHubInstallationUseRequest,
   PreparedGitHubRepositoryUseRequest,
   PreparedGitHubPullResult,
-  RepositoryGitInstallationFence,
 } from "@openclaw-enterprise/contracts";
 import type { PostgresPool } from "@openclaw-enterprise/occ";
-import type { Clock } from "../../drivers/repo/credentials/backend-contracts.ts";
-import { createSystemClock } from "../../drivers/repo/credentials/clock.ts";
+import type { Clock } from "../../drivers/repo/access/backend-contracts.ts";
+import { createSystemClock } from "../../drivers/repo/access/clock.ts";
 import {
   githubProviderOrigin,
   preparationIssuerAuthority,
-} from "../../drivers/repo/github/credentials/origin.ts";
-import { createGitHubKeyOwner } from "../../drivers/repo/github/credentials/material.ts";
-import { createGitHubPreparationOwner } from "../../drivers/repo/github/credentials/prepared-owner.ts";
-import { retirePreparedGitHubToken } from "../../drivers/repo/github/credentials/prepared-retirement.ts";
-import {
-  PreparedRepositoryGitStore,
-  type InstalledGitMaterial,
-} from "../../drivers/repo/github/credentials/prepared-repository-git.ts";
+} from "../../drivers/repo/github/access/origin.ts";
+import { createGitHubKeyOwner } from "../../drivers/repo/github/access/material.ts";
+import { createGitHubPreparationOwner } from "../../drivers/repo/github/access/prepared-owner.ts";
+import { retirePreparedGitHubToken } from "../../drivers/repo/github/access/prepared-retirement.ts";
+import { PreparedRepositoryGitStore } from "../../drivers/repo/github/access/prepared-repository-git.ts";
 import {
   validateGitHubRepositoryRegistry,
-  resolveGitHubRepositoryBinding,
+  resolveCurrentGitHubRepositoryBinding,
   resolveSelectedRepositoryGrant,
   resolveGitHubStandingApprovalScope,
   type GitHubRepositoryRegistry,
-} from "../../drivers/repo/github/credentials/registry.ts";
+} from "../../drivers/repo/github/access/registry.ts";
 import {
   protectedGitAdoption,
   installationGitAdoption,
   selectedGitAdoption,
-  type RepositoryGitRecipientEvidence,
-} from "../../drivers/repo/credentials/protected-repository-git-installation.ts";
+} from "../../drivers/repo/access/protected-repository-git-installation.ts";
 import { TokenService } from "../token-service/service.ts";
 import { servePrivateRepositoryRequest } from "./private-request-server.ts";
 
@@ -70,10 +64,8 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
     severity?: "info" | "error",
   ) => void;
   startWorker?: boolean;
-  /** The installation-selected Sandbox and Credential Proxy, not the repository issuer or a request field. */
-  protectedGitDriver?: DriverRegistrationRef;
-  /** Host-owned durable observer for this selection. A Driver cannot supply these queries. */
-  protectedGitEvidence?: RepositoryGitRecipientEvidence;
+  /** Private host selection; never derived from issuer configuration or a request. */
+  repositoryGitCustody: RepositoryGitCustody;
   tokenService?: TokenService;
 }
 
@@ -205,6 +197,11 @@ export async function startPreparedGitHubGitOwner(
   options: Options,
   clock: Clock = createSystemClock(),
 ) {
+  const custodySelection = options.repositoryGitCustody;
+  if (custodySelection === undefined) {
+    throw new Error("REPOSITORY_GIT_CUSTODY_REQUIRED");
+  }
+  const selected = custodySelection.kind === "selected";
   const registry = validateGitHubRepositoryRegistry(options.registry, options.backendId);
   for (const repo of registry.repositories) {
     if (
@@ -236,9 +233,20 @@ export async function startPreparedGitHubGitOwner(
     (session) => {
       const { driver, binding, namespaceId } = session;
       const { repositoryRef, profile } = binding;
+      if (session.standingApprovalId !== undefined) {
+        const scope = resolveGitHubStandingApprovalScope(registry, { namespaceId, binding });
+        if (
+          (profile === "github-repository" && session.bindings?.length !== 1) ||
+          !scope ||
+          session.standingApprovalScopeFingerprint !==
+            repositoryApprovalFingerprint({ namespaceId, agentId: session.agentId, binding, scope })
+        ) {
+          return;
+        }
+      }
       if (binding.profile === "github-repository") {
         if (
-          !options.protectedGitDriver ||
+          !selected ||
           driver.id !== options.driverId ||
           driver.implementation !== options.implementation ||
           !session.bindings
@@ -272,7 +280,7 @@ export async function startPreparedGitHubGitOwner(
         driver.id !== options.driverId ||
         driver.implementation !== options.implementation ||
         (installation
-          ? !options.protectedGitDriver ||
+          ? !selected ||
             access?.repositoryRef !== repositoryRef ||
             !access.namespaces.some(
               (p) => p.namespaceId === namespaceId && p.accessMode === "installation",
@@ -281,22 +289,8 @@ export async function startPreparedGitHubGitOwner(
       ) {
         return;
       }
-      if (session.standingApprovalId !== undefined) {
-        const scope = resolveGitHubStandingApprovalScope(registry, { namespaceId, binding });
-        if (
-          !scope ||
-          session.standingApprovalScopeFingerprint !==
-            repositoryApprovalFingerprint({ namespaceId, agentId: session.agentId, binding, scope })
-        ) {
-          return;
-        }
-      }
-      const admitted = resolveGitHubRepositoryBinding(registry, {
-        namespaceId,
-        repositoryRef,
-        profile,
-      });
-      if (!isDeepStrictEqual(binding, admitted)) {
+      const admitted = resolveCurrentGitHubRepositoryBinding(registry, namespaceId, binding);
+      if (!admitted) {
         return;
       }
       const common = { key: { source: { id: "repository-git:" + session.admissionId } }, session };
@@ -315,7 +309,7 @@ export async function startPreparedGitHubGitOwner(
       }
       return {
         ...common,
-        adoption: options.protectedGitDriver ? protectedGitAdoption : "prepared_repository_git",
+        adoption: selected ? protectedGitAdoption : "prepared_repository_git",
         grant: {
           ...grant,
           repositoryId: repo!.repositoryId,
@@ -327,9 +321,7 @@ export async function startPreparedGitHubGitOwner(
         ...(base && policy?.draftPullLimit === "none" ? { draftPullLimit: "none" as const } : {}),
       };
     },
-    options.protectedGitDriver ??
-      (options.controlSocket === undefined ? "unregistered" : undefined),
-    options.protectedGitEvidence,
+    custodySelection,
   );
   const stop = new AbortController();
   const use = (input: unknown, signal = stop.signal) =>
@@ -431,33 +423,9 @@ export async function startPreparedGitHubGitOwner(
     inspectTokenAttempt: (familyId: string, attemptId: string) =>
       store.inspectTokenAttempt(familyId, attemptId),
     // Deployment-only observation for the native broker; protected delivery observes its install.
-    ...(options.protectedGitDriver === undefined && options.controlSocket !== undefined
+    ...(custodySelection.kind === "native-broker" && options.controlSocket !== undefined
       ? { revisionMaterial: (revisionId: string) => store.revisionMaterial(revisionId) }
       : {}),
-    // Worker-only custody transfer to the verified OpenShell provider; never a control RPC.
-    readOpenShellMaterial(
-      revisionId: string,
-      signal: AbortSignal,
-      install?: RepositoryGitInstallationFence,
-    ) {
-      return store.readRecipientMaterial(
-        revisionId,
-        AbortSignal.any([signal, stop.signal]),
-        install,
-      );
-    },
-    // Internal authority callback only. Never expose it as a workload or token-disclosure RPC.
-    authorizeOpenShellRequest(
-      request: PreparedGitHubUseRequest,
-      installed: InstalledGitMaterial,
-      signal: AbortSignal,
-    ) {
-      return store.authorizeOpenShellRequest(
-        useRequest(request),
-        installed,
-        AbortSignal.any([signal, stop.signal]),
-      );
-    },
     maintain: () => maintenance.maintain(),
     async close() {
       stop.abort();

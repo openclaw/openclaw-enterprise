@@ -32,7 +32,7 @@ command; use this page as its migration inventory.
       [split-layout tenant](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations));
       the image helper's preflight stops before quiescence.
 - [ ] Before the window, render the candidate chart with your live values
-      (`helm template`) and
+      (`helm template --is-upgrade`) and
       [correct any value it refuses](production-upgrade-recovery.md#correct-values-the-candidate-refuses).
       The image helper renders again and runs its startup preflight before
       stopping anything.
@@ -48,7 +48,7 @@ command; use this page as its migration inventory.
       one of those paths, or to the OpenClaw commit or Codex version the
       Dockerfile pins, needs the new runtime image. For example, the repository
       credential client in
-      `apps/controller/src/drivers/repo/github/credentials/client/` is built into
+      `apps/controller/src/drivers/repo/github/access/client/` is built into
       the runtime image. Other controller source ships only in the controller
       image. This includes the Agent Pod specs that the controller renders, such
       as `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`:
@@ -56,9 +56,38 @@ command; use this page as its migration inventory.
 - [ ] Check controller/runtime compatibility. Upgrade the controller first when
       it supports the deployed runtime. Use a release-specific sequence when the
       versions cannot run together.
+- [ ] [Check operator access](#check-operator-access) while the incumbent serves traffic.
 - [ ] Freeze concurrent Helm changes, disable OCC autoscalers and restart automation,
-      and stop all other database writers through recovery. For runtime releases,
-      also stop Agent deployments and draft edits and resolve existing deployment work.
+      and stop all other database writers through recovery. Freeze Agent deployments
+      and settle existing deployment work for every release; also freeze draft edits
+      for runtime releases.
+
+### Check operator access
+
+Use the upgrade's OCC CLI, endpoint, CA and protected key file. Check the
+issuance record's expiry, if present, against the planned upgrade and recovery
+window. Before freezing writers, verify the Installation ID and fleet access.
+Set `BASELINE` to the intended release's
+[baseline directory](upgrade-baseline.md#record-the-release-and-its-configuration).
+
+```bash
+(
+  set -euo pipefail
+  installation_id=$(jq -er '.installationId | strings | select(length > 0)' \
+    "${BASELINE:?}/installation-secret.json")
+  /secure/occ/bin/occ --output json installation get |
+    jq -es --arg id "$installation_id" 'length == 1 and .[0].id == $id' >/dev/null
+  /secure/occ/bin/occ --output json installation deployment-inventory |
+    jq -es --arg id "$installation_id" \
+      'length == 1 and .[0].installationId == $id and (.[0].namespaces | type == "array")' >/dev/null
+)
+```
+
+Continue on exit zero, including for an empty fleet. If OCC rejects the key,
+obtain a current key from the Installation administrator and repeat both reads.
+For permission failures, check the [inventory grants](upgrade-baseline.md#record-the-occ-inventory).
+Resolve target or connection errors before maintenance. The helper rechecks the
+inventory before stopping writers.
 
 ### Check ReplicaSet capacity
 
@@ -111,6 +140,36 @@ values when checking manually. Do not replay Helm or delete history or data.
 Follow [upgrade recovery](production-upgrade-recovery.md) and preserve any
 existing helper or rollback owner's control.
 
+### Check Job object capacity
+
+For releases that create Jobs, check capacity before Helm. Reuse the Bash
+`kube` array above with the reviewed context and each namespace that receives
+Jobs. Use these read-only commands.
+
+```bash
+"${kube[@]}" get resourcequota -o yaml
+"${kube[@]}" get jobs.batch
+"${kube[@]}" get events --sort-by=.metadata.creationTimestamp
+```
+
+Apply the quota rules above for failed reads, absent limits, missing or stale
+status, and multiple quotas. For each applicable `count/jobs.batch` quota,
+check `spec.hard`, `status.hard` and `status.used`. Add the release's peak number
+of additional Job objects that can exist at once to `status.used`. The sum must
+fit within `status.hard`. Existing usage includes retained completed and failed
+Jobs. Include new Jobs that remain after completion or failure in the peak.
+Plan without relying on cleanup before creation. For example, a quota with a hard limit of 12
+and a used count of 9 leaves room for 3 Jobs. A release that needs 4 additional
+Jobs at once exceeds that limit. Ask the namespace owner about insufficient
+capacity.
+See Kubernetes [object count quota](https://kubernetes.io/docs/concepts/policy/resource-quotas/#quota-on-object-count).
+
+A successful server dry run of one request reserves no capacity. Diagnose a
+quota refusal from the Kubernetes API's rejection of the Job creation request
+naming `count/jobs.batch`, or a corresponding controller event recording that
+rejection. Observing a full quota alone does not prove a creation request was
+refused. Events can expire, and other admission checks can still reject creation.
+
 ## Record the starting state
 
 Create a private evidence directory and record these values before mutation.
@@ -130,20 +189,37 @@ Create a private evidence directory and record these values before mutation.
       controller or sidecar versions.
 - [ ] PVC names and UIDs, PV names, representative workspace file hashes,
       session counts, and gateway state. Back up volumes when recovery could
-      require restoring Agent data.
-- [ ] If recovery needs both PostgreSQL and Agent storage, capture the database
-      and affected volumes at one consistent point. Pause all relevant writers
-      throughout capture, or use storage tooling that guarantees consistency
-      across those stores. A PostgreSQL recovery window spanning two disk
-      snapshots does not prove their contents agree.
-      Before booking downtime, restore the database, Gateway state, and
-      workspaces together on an isolated copy. Before starting restored
-      services, block production traffic and outbound access to production
-      repository, channel, and model providers. A restored worker can otherwise
-      revoke credentials still in use or send live deliveries. Use isolated test
-      endpoints and credentials for checks that need a provider. Through the
-      restored application, verify a known Agent revision, reopen an existing
-      session, and check a known workspace file. Record the recovery time.
+      require restoring Agent data. For a streamed backup, compare source and
+      destination byte counts and SHA-256 digests for the same archive, and
+      confirm that the producer completed successfully. A zero exit status alone
+      does not prove that the full archive arrived. After an interruption, accept
+      the backup only if both byte counts match, both SHA-256 digests match, and
+      the producer completed successfully. Otherwise, retain the partial output
+      and diagnostics.
+- [ ] When recovery needs data from multiple stores, capture the required stores
+      at one consistent point. Include the selected Configuration Driver's
+      backing store when recovery needs current Configuration values. For the
+      Kubernetes Driver, capture the
+      [Configuration ConfigMaps](../../reference/configuration/kubernetes.md)
+      in their tenant storage namespaces using existing authorized access.
+      Pause all relevant writers throughout capture, or use storage tooling
+      that guarantees consistency across those stores. A PostgreSQL recovery
+      window spanning two disk snapshots does not prove their contents agree.
+      Before booking downtime, restore the database, Gateway state, workspaces,
+      and any required Configuration values together on an isolated copy.
+      Before starting restored services, block production traffic and outbound
+      access to production repository, channel, and model providers. A restored
+      worker can otherwise revoke credentials still in use or send live
+      deliveries. Use isolated test endpoints and credentials for checks that
+      need a provider. If you restored Configuration values, read a known saved
+      Configuration through the restored application by its exact Namespace and
+      Configuration IDs. Compare its generation and a representative nonsecret
+      value with the source baseline. Through the same application, verify a
+      known Agent revision and compare a nonsecret setting with that revision's
+      baseline. PostgreSQL stores the revision's immutable configuration
+      snapshot, which can differ from the current draft. Do not print or record
+      sensitive Configuration or Secret material. Reopen an existing session
+      and check a known workspace file. Record the recovery time.
 - [ ] Authentication origin, cookie domain, auth-secret identity, TLS material,
       bootstrap key storage, service-principal and service-key identities,
       repository registry metadata, broker sessions, and external provider or
@@ -184,8 +260,9 @@ and database migrations to retained volumes and local profile state.
 1. Install cluster prerequisites (on two clusters, upgrade the
    [execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart)
    first) and reconcile protected inputs without replacing retained data.
-2. Run the canonical migration preflight. Stop if the history is unsupported or
-   a required quiescence step is unresolved.
+2. Run the [upgrade preflight](production-upgrade.md#rehearse-before-the-maintenance-window),
+   including the candidate's canonical migration check. Stop on unsupported
+   history or an unresolved required quiescence step.
 3. Upgrade the controller, worker, and Console. Wait for database migration,
    bootstrap, authenticated API recovery, and worker readiness. The old API Pod
    stops first and finishes admitted requests within its 30-second grace
@@ -207,8 +284,8 @@ and database migrations to retained volumes and local profile state.
 - [ ] Namespace, Agent, Configuration, Preset, and Secret-metadata inventories
       contain the expected IDs. IAM, Backend, service-account, deployment-work,
       and audit-record inventories also reconcile. The controller-only helper
-      requests no deployments, but affected Agents' Pods can restart once on the
-      same image; check for versions affected by broker restart.
+      requests no deployments. Verify readiness after Agent Pod restarts and
+      check any replacement revisions needed after broker restart.
 - [ ] Persisted Preset templates match the intended source definitions. Missing
       defaults were created, intended same-name copies were updated in place,
       and obsolete copies were handled deliberately.
@@ -216,19 +293,23 @@ and database migrations to retained volumes and local profile state.
       are ready on the requested digest; stopped Agents were not started.
 - [ ] PVC and PV identities, workspace hashes, gateway state, and representative
       sessions match the baseline.
-- [ ] Authentication, audit, metrics, traces, and alert delivery still reach
-      their sinks.
-- [ ] A real model response succeeds for each execution mode and provider in
-      scope. Startup and Pod readiness alone do not prove model access.
-- [ ] Required Slack or other channel delivery, repository clone or write,
-      plugin tool policy, workspace access, and native admin UI each pass a
-      representative live check. Where plugin approval is required, verify an
-      approval and a denial through the intended reviewer. For installed integrations,
-      check negotiated capabilities through the authenticated connection before
-      the downstream smoke. For example, gateway capability negotiation does not
-      prove an actual repository operation.
+- [ ] The configured sign-in paths work and expected operations appear in the
+      audit ledger. Check that configured metrics, traces, and test alerts
+      reach their destinations.
+- [ ] For each execution mode and provider in use, verify the expected Agent
+      revision, allowed and denied gateway access, and a fresh reply from the
+      intended model provider.
+      For manual checks, follow [production workload verification](production-agents.md#verify-production-workloads).
+- [ ] Run a representative request for each workflow in use and
+      check its result at the destination. Include relevant channel delivery,
+      repository clone or write, plugin tool policy, workspace access, and
+      native admin UI. For installed integrations, verify negotiated
+      capabilities through the authenticated connection, then verify the
+      downstream operation. Where plugin approval is required, verify approval
+      and denial through the intended reviewer. See
+      [workflow verification](production-handoff.md#verify-the-deployed-workflow).
 - [ ] Where CredentialSources are enabled, confirm source status and Agent
-      bindings, then verify a real model response through the selected Gateway.
+      bindings and verify a real model reply through the selected Gateway.
 - [ ] Evidence contains the before/after inventory, rendered configuration,
       migration receipt, rollout status, deployment results, and any accepted
       exceptions, but no credential values.

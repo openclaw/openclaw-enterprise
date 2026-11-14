@@ -16,6 +16,8 @@ export const HeaderActions = story("agentHeaderActions");
 export const EarlierFailedVersion = story("earlierFailedVersion");
 export const EarlierSupersededVersion = story("earlierSupersededVersion");
 export const LongVersionHistory = story("longVersionHistory");
+export const RetainedHarnessHistory = story("retainedHarnessHistory");
+export const RetainedHarnessWithoutOverrides = story("retainedHarnessWithoutOverrides");
 export const FirstDeployment = story("draftAutomaticCredentials");
 export const ConfigurationEditor = { ...story("configurationEditor"), name: "Edit Configuration" };
 export const ConfigurationSaveRefused = story("configurationSaveRefused");
@@ -33,6 +35,7 @@ export const PluginPolicyListRefused = story("pluginPolicyListRefused");
 export const KubernetesEntryKeyVariantRefused = story("kubernetesEntryKeyVariantRefused");
 export const CodexPluginsDisabledRefused = story("codexPluginsDisabledRefused");
 export const TrustedProxyAllowUsersRefused = story("trustedProxyAllowUsersRefused");
+export const CodexGatewayPasswordMissingRefused = story("codexGatewayPasswordMissingRefused");
 export const KubernetesEntryKeyVariantChecking = story("kubernetesEntryKeyVariantChecking");
 export const KubernetesEntryKeyVariantCreateDenied = story("kubernetesEntryKeyVariantCreateDenied");
 export const GatewayPasswordAllowlistOmits = story("gatewayPasswordAllowlistOmits");
@@ -43,6 +46,10 @@ export const GatewaySafetyStrict = story("gatewaySafetyStrict");
 export const GatewaySafetyRejectSteering = story("gatewaySafetyRejectSteering");
 export const GatewaySafetyReader = story("gatewaySafetyReader");
 export const PluginsDraft = story("pluginsDraft");
+export const SlackMcpTools = {
+  ...story("slackMcpTools"),
+  name: "Choose tools for a connected Slack account",
+};
 export const PluginsPrefetchReturn = story("pluginsPrefetchReturn");
 export const PluginsUpdateDenied = story("pluginsUpdateDenied");
 export const DraftReader = story("draftReader");
@@ -64,7 +71,9 @@ export const InvalidConfigurationInvisibleCharacters = story(
 );
 export const InvalidConfigurationCurlyQuotes = story("invalidConfigurationCurlyQuotes");
 export const ConfigurationChangedElsewhereMerged = story("configurationChangedElsewhereMerged");
+export const ConfigurationConflictFocus = story("configurationConflictFocus");
 export const Admitted = story("admitted");
+export const RepositoryAccessRedeployRequired = story("repositoryAccessRedeployRequired");
 export const RepositoryDraft = {
   ...story("repositoryDraft"),
   name: "Repository access in new version",
@@ -78,6 +87,14 @@ export const DeploymentDeferred = story("deploymentDeferred");
 export const DeploymentRetrying = story("deploymentRetrying");
 export const DeploymentRunning = story("deploymentRunning");
 export const DeploymentRunningActivates = story("deploymentRunningActivates");
+export const DeploymentCompletionFocus = {
+  ...story("deploymentCompletionFocus", { openInNewTab: true }),
+  name: "Diagnostics focus when deployment completes",
+};
+export const DeploymentRefreshFocus = {
+  ...story("deploymentRefreshFocus", { openInNewTab: true }),
+  name: "Refresh deployment focus when a newer version appears",
+};
 export const DeploymentCompletesRereadFails = story("deploymentCompletesRereadFails");
 export const DeploymentStatusReadRecovers = {
   ...story("deploymentStatusReadRecovers"),
@@ -112,6 +129,8 @@ export const DeploymentModelProbeFailedConfigurationEditor = story(
 export const DeploymentFailedDeployAgain = story("deploymentFailedDeployAgain");
 export const DeploymentFailedDeployAgainUnreadable = story("deploymentFailedDeployAgainUnreadable");
 export const DeploymentFailedAdmissionUnavailable = story("deploymentFailedAdmissionUnavailable");
+export const DeploymentFailedCodexPolicy = story("deploymentFailedCodexPolicy");
+export const DeploymentFailedCodexRequirementsSize = story("deploymentFailedCodexRequirementsSize");
 export const DeploymentFailedStoredInconsistent = story("deploymentFailedStoredInconsistent");
 export const DeploymentModelProbeFailedDeployOnlyUnreadable = story(
   "deploymentModelProbeFailedDeployOnlyUnreadable",
@@ -119,7 +138,7 @@ export const DeploymentModelProbeFailedDeployOnlyUnreadable = story(
 export const DeploymentFailedAfterSelection = story("deploymentFailedAfterSelection");
 export const DeploymentStopped = story("deploymentStopped");
 export const DeploymentSuperseded = story("deploymentSuperseded");
-export const DeploymentSucceeded = story("deploymentSucceeded");
+export const DeploymentSucceeded = story("deploymentSucceeded", { openInNewTab: true });
 export const DeploymentUnavailable = story("deploymentUnavailable");
 export const DiagnosticsSuccess = story("diagnosticsSuccess");
 export const DiagnosticsFast = story("diagnosticsFast");
@@ -142,6 +161,7 @@ export const RuntimeLogsFailedRedeploy = story("runtimeLogsFailedRedeploy");
 export const RuntimeLogsFilteredDownload = story("runtimeLogsFilteredDownload");
 export const RuntimeLogsRateLimited = story("runtimeLogsRateLimited");
 export const RuntimeLogsRefreshRateLimited = story("runtimeLogsRefreshRateLimited");
+export const RuntimeLogsSourceSwitchAfterRateLimit = story("runtimeLogsSourceSwitchAfterRateLimit");
 export const RuntimeLogsDenied = story("runtimeLogsDenied");
 export const RuntimeLogPodReplaced = story("runtimeLogPodReplaced");
 export const RuntimeLogAccessLost = story("runtimeLogAccessLost");
@@ -153,6 +173,10 @@ export const RuntimeLogsReaderDownload = story("runtimeLogsReaderDownload");
 export const RuntimeLogsReaderNoPodDownload = story("runtimeLogsReaderNoPodDownload");
 export const RuntimeLogsClusterRbac = story("runtimeLogsClusterRbac");
 export const AgentMissing = { ...story("agentMissing"), name: "Agent unavailable" };
+export const AgentReadInterrupted = {
+  ...story("agentReadInterrupted", { openInNewTab: true }),
+  name: "Retry a direct Agent link",
+};
 export const ConfigurationError = {
   ...story("configurationError"),
   name: "Configuration unavailable",
@@ -161,9 +185,18 @@ export const ConfigurationReadDeniedReloadRefocus = {
   ...story("configurationReadDeniedReloadRefocus"),
   name: "Configuration read denied across reload and refocus",
 };
+export const ConfigurationReadInterruptedOnRefocus = {
+  ...story("configurationReadInterruptedOnRefocus", { openInNewTab: true }),
+  name: "Recover a Configuration read on tab return",
+};
+export const ConfigurationReadUnavailableOnRefocus = {
+  ...story("configurationReadUnavailableOnRefocus", { openInNewTab: true }),
+  name: "Retry an unavailable Configuration on tab return",
+};
 export const UnreadableAgentConfiguration = story("unreadableAgentConfiguration");
 export const UnreadableRevisionConfiguration = story("unreadableRevisionConfiguration");
 export const RevisionError = { ...story("revisionError"), name: "Revision history unavailable" };
+export const RevisionRejected = story("revisionRejected");
 export const DeployDenied = { ...story("deployDenied"), name: "Deployment denied" };
 export const TabLinkUnavailable = {
   ...story("tabLinkUnavailable"),
@@ -172,6 +205,10 @@ export const TabLinkUnavailable = {
 export const DeploySecretOperateDenied = {
   ...story("deploySecretOperateDenied"),
   name: "Deployment needs Secret operate",
+};
+export const DeploySecretOperateGrantedOnRefocus = {
+  ...story("deploySecretOperateGrantedOnRefocus", { openInNewTab: true }),
+  name: "Deployment regains Secret operate on refocus",
 };
 export const DeployInProgress = { ...story("deployInProgress"), name: "Deployment in progress" };
 export const DeployHoldsNavigation = {
@@ -263,6 +300,8 @@ export const PolicyDenialsReadDenied = story("policyDenialsReadDenied");
 export const PolicyDenialsLoading = story("policyDenialsLoading");
 export const PolicyDenialsNoCredential = story("policyDenialsNoCredential");
 export const PolicyDenialsProtected = story("policyDenialsProtected");
+export const PolicyDenialsWithheldOne = story("policyDenialsWithheldOne");
+export const PolicyDenialsWithheldMany = story("policyDenialsWithheldMany");
 
 export const ConfigurationInvalid = story("policyConfigurationInvalid");
 export const ConfigurationConflict = story("policyConfigurationConflict");
@@ -292,3 +331,8 @@ export const ConfigurationSaveReadDenied = {
   ...story("configurationSaveReadDenied"),
   name: "Configuration Save read denied",
 };
+
+export const HarnessOverrides = story("harnessOverrides");
+
+export const HarnessDeploymentPending = story("harnessDeploymentPending");
+export const HarnessDeploymentDenied = story("harnessDeploymentDenied");

@@ -39,7 +39,7 @@ import {
   advertisesOpenShellExecutionProfile,
   openShellExchangeCapabilities as capabilities,
 } from "./openshell-exchange-capabilities.ts";
-import { openAiStaticProvider } from "./openai-provider.ts";
+import { createOpenAiStaticProvider } from "./openai-provider.ts";
 import { openShellProtectedCodexArtifacts } from "../sandbox/openshell-codex-artifacts.ts";
 import { assertBoundedWorkspaceNodeRule } from "../sandbox/openshell-workspace-node-policy.ts";
 
@@ -233,6 +233,8 @@ export function openShellEgressConfiguration(
           `oce-egress-${index}`,
           {
             name: `oce-egress-${index}`,
+            // Managed OpenShell requires a binary match even for whole-execution inference.
+            ...(route.binding.grant.kind === "inference" ? { binaries: [{ path: "/**" }] } : {}),
             endpoints: [
               {
                 host: origin.hostname,
@@ -356,7 +358,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       sender: { id: `${selection.backend.id}/supervisor`, generation: 1 },
       resolver: { id: `${selection.id}/resolver`, generation: 1 },
       providers: [
-        openAiStaticProvider,
+        createOpenAiStaticProvider(),
         credentialFreeMetadataProvider,
         ...(selection.preparedProviders ?? []),
       ],
@@ -456,7 +458,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     if (context.plan.repositoryGit !== undefined && profile === undefined) {
       // Finding 2204: never check a Git plan's counterpart as an ordinary egress plan. Deploy
       // refuses it first; preparation repeats the refusal so the worker fails it at once.
-      throw new RepositoryGitProfileUnsupportedError();
+      throw new RepositoryGitProfileUnsupportedError(context.plan.repositoryGit.bindings.length);
     }
     await this.sourceControl.assertAvailable(context.signal, profile);
     return immutableCopy({

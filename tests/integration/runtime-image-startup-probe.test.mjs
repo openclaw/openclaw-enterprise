@@ -1,15 +1,16 @@
 // Runtime image startup smoke tests split from runtime-image-startup.test.mjs so
 // CI can run the files in parallel lanes: startup model probes and ephemeral
 // native worker reconnect from an expired replayed setup code. SIGTERM during
-// startup is in runtime-image-startup-termination.test.mjs; workspace node
+// startup is in runtime-image-startup-termination.test.ts; workspace node
 // enrollment and the inactive Slack approver startup check are in
 // runtime-image-native-worker.test.mjs.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import { describe, test } from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.mjs";
+import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.ts";
 import {
   imageTestOptions,
   runDocker,
@@ -128,6 +129,22 @@ async function assertProbeGatesStartup(t, kind, delayMs) {
     );
     assert.ok(run.first(events, observedValue("ready", true)).at >= answered.at);
     assert.equal(events.some(isRuntimeFailure), false);
+    if (kind === "codex") {
+      // Exercise resident HTTP readiness after the full wrapper's real Codex
+      // startup. Only the upstream model provider is substituted by this fixture.
+      const observed = await runDocker([
+        "exec",
+        run.containerName,
+        "node",
+        "-e",
+        "(async () => { const statuses = []; for (let index = 0; index < 3; index++) { " +
+          "const response = await fetch('http://127.0.0.1:18791/readyz', { signal: AbortSignal.timeout(5000) }); " +
+          "await response.text(); statuses.push(response.status); " +
+          "} console.log(JSON.stringify(statuses)); })()" +
+          ".catch(() => process.exit(1));",
+      ]);
+      assert.deepEqual(JSON.parse(observed.stdout), [200, 200, 200]);
+    }
     t.diagnostic(
       describeStartupProbeRun(`${kind}, ${delayMs} ms model turn, --cpus ${run.wrapper.cpus}`, run),
     );
@@ -211,11 +228,11 @@ describe("runtime image startup model probes", { concurrency: 2 }, () => {
         volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
       });
       const source = await readFile(
-        new URL("../fixtures/runtime-native-worker-restart.mjs", import.meta.url),
+        new URL("../fixtures/runtime-native-worker-restart.ts", import.meta.url),
         "utf8",
       );
       const { stdout } = await runDocker(
-        ["exec", containerName, "node", "--input-type=module", "-e", source],
+        ["exec", containerName, "node", "--input-type=module", "-e", stripTypeScriptTypes(source)],
         { timeout: 300_000 * imageSmokeTimeoutMultiplier },
       );
       const result = JSON.parse(stdout);

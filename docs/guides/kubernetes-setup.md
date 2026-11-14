@@ -1,10 +1,10 @@
 # Set up OpenClaw Enterprise on Kubernetes
 
-The complete [Kubernetes quickstart](deploy/kubernetes-setup.md) installs OpenShell, deploys one dedicated Codex Agent, and verifies onboarding in its Control UI. Choose the platform once, then use the shared Add Git and Add Plugin guides.
+Use the [Kubernetes quickstart](deploy/kubernetes-setup.md) to install OpenShell. Then deploy one dedicated Codex Agent and verify onboarding in its Control UI.
 
 ## What the install creates
 
-See [Kubernetes setup](deploy/kubernetes-setup.md) for the control plane, OpenShell and dedicated Agent workflow.
+See [Kubernetes setup](deploy/kubernetes-setup.md) for the control plane and OpenShell.
 
 ## Before you start
 
@@ -20,7 +20,7 @@ Continue with [Install OpenShell and bootstrap OCC](deploy/kubernetes-setup.md#2
 
 ## 3. Deploy and verify an Agent
 
-Complete [Agent setup](deploy/kubernetes-setup.md#4-connect-to-the-api-and-register-the-model-credential) and [browser onboarding](deploy/kubernetes-setup.md#7-complete-onboarding-in-the-control-ui).
+Finish the [Kubernetes installation](deploy/kubernetes-setup.md), then follow [Deploy your first Agent](deploy/deploy-first-agent.md) in the same shell.
 
 ## Next steps
 

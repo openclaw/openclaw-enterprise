@@ -1,26 +1,24 @@
 # Runtime image recipe
 
-Build a public local runtime image for the OpenClaw Enterprise quickstart and
-real-runtime integration tests. The image contains these runtime entrypoints:
+Build the OpenClaw Enterprise runtime image for local quickstart and integration
+tests. The image provides these entrypoints.
 
 - OpenClaw gateway: `node /app/openclaw.mjs`.
-- Dedicated OpenClaw node: `node /app/openclaw.mjs connect --target-file <private-file> --ephemeral`.
+- Dedicated OpenClaw node: `node /app/openclaw.mjs connect --target-file <private-file> --ephemeral --pair-or-reconnect`.
 - Dedicated Codex app-server: `codex app-server`.
 
-The image sets `NPM_CONFIG_UPDATE_NOTIFIER=false` so local npm commands do not
-start npm's background version check. This avoids unrelated network approval
-requests during commands such as `npm test`; package installation and explicit
-network requests still use the configured network policy.
+`NPM_CONFIG_UPDATE_NOTIFIER=false` disables npm's background version check.
+Package installation and explicit network requests still use the configured
+network policy.
 
-The Dockerfile builds OpenClaw from a verified public source archive, using its
-pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
-The selected upstream source pins stock Codex `0.164.0`. Both Codex entrypoints
-use that same installation and frozen upstream lockfile; no dependency downgrade
-or Codex binary patch is applied. The seccomp profile retains its existing syscall
-rules; version admission does not replace native startup and sandbox verification.
-Codex and Slack come from that same source. The selected commit contains
-the restricted workspace-node commands and saved-token-first pairing required by
-split storage; published `2026.9.5` packages do not contain that complete contract.
+The Dockerfile uses a verified public OpenClaw archive, its pinned package
+manager, frozen lockfile, and upstream Docker assembly. A registry mirror
+requires [separate Corepack and pnpm build secrets](../../docs/guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
+Both Codex entrypoints use stock Codex `0.164.0` from the frozen lockfile
+without dependency downgrades or binary patches. Verify native startup and
+sandbox behavior with the image's seccomp rules. Codex and Slack come from the same source, whose
+restricted workspace-node commands and persistent device identity support
+split storage. That contract requires a newer source than `2026.9.5`.
 
 OCE builds an unreleased OpenClaw commit that supports Gateway managed mode
 and the separate tool policy for dedicated Harnesses. Managed mode restricts
@@ -52,18 +50,16 @@ does the same.
 private Linux PID namespace stopped recover only Gateway records from that
 namespace. OC still compares its lock fingerprint before recovery. An
 unattributed owner requires operator confirmation.
-`openclaw-linux-private-store-setgid.patch` normalizes only an owner-only
-Linux directory newly created with inherited setgid before private-store
-admission. This lets native setup create its control, client and state stores
-under the Sandbox workspace without changing existing parent permissions or
-relaxing ownership and symlink checks. The build runs the owning private-store
-regressions with the patched source.
-`openclaw-plugin-config-startup-report.patch` (openclaw/openclaw#189392) makes
-startup name each invalid plugin setting and exit 78. Remove both bridges after
-selecting an OpenClaw commit that contains them.
-The source archive and patch hashes identify the resulting custom build.
+OpenClaw normalizes newly created owner-only Linux directories that inherit
+setgid and reports invalid plugin settings during startup. The build runs the
+upstream private-store regressions.
+`openclaw-node-setup-renewal.patch` adds `--pair-or-reconnect` for first enrollment
+or renewal under the same binding. Fresh setup comes first; a typed bootstrap rejection
+allows one validated saved-token retry. See [node enrollment](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
+for Gateway/TLS-pin checks, local credential retirement when switching targets,
+and pairing recovery. Remove this bridge when the selected source provides that contract.
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
-SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
+SHA-256; `scripts/build-runtime-assets.ts` holds that list, and a test checks it
 against the Dockerfile.
 
 Dedicated Gateways require the supporting source recorded in this recipe and
@@ -87,7 +83,9 @@ OCE does not write the retired `nodeHost.workerRuns.nativeInferenceConfig` field
 The selected source includes required placement activation, node-local
 model/workspace projection, and the Codex native-child relay. OCE advertises
 `pinned-runtime` native-worker support, so the Console offers Dedicated OpenClaw
-without a custom-image declaration. Deployment still requires a provisioning
+without a custom-image declaration. When the same node hosts an admitted MCP
+tool, the worker can call its MCP client locally. Tools that require Gateway
+policy hooks continue through the Gateway. Deployment still requires a provisioning
 SandboxDriver with networking, filesystem, and process containment.
 
 The images-runtime-startup lane runs the production Gateway and Harness
@@ -100,33 +98,29 @@ enrollment, containment, workspace access, or model execution.
 | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | Build base                                            | `docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a` |
 | OpenClaw commit, archive SHA-256, and build timestamp | [Source manifest](openclaw-source.json)                                                                           |
-| Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.164.0`                                                                                                 |
+| Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.164.0`                                                                                                         |
 | Matrix crypto native library                          | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
-The source's package version is `2026.10.8`; it does not identify this custom
-build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
-hash, every applied patch hash, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
-package identity, and the SHA-256 of `contents.json`, which inventories
-packaged files, modes, hashes, and symlinks after final-stage permission
-normalization. The final stage copies the assembled
-directory directly, without an intermediate compressed archive. Its pinned
-`node:24.22.1-bookworm-slim` base retains required runtime libraries, Git/SSH, GitHub CLI,
-Python, and process utilities. Both bases apply available Debian package updates
-during the build, including updates published after the pinned Node images.
-Build compilers stay in the full Bookworm stages.
-The repository credential client stage needs only Node and pnpm, so it builds on the
-slim base too. It compiles only the client's own sources without a type check, so
-other controller changes keep it cached; the service stage builds the full,
-type-checked workspace.
-Asset preparation installs plugin build dependencies in a disposable stage.
-The production stage selects upstream required bundled plugins plus Codex and
-Slack before installing dependencies for the target architecture with lifecycle
-scripts enabled and runs upstream postinstall, plugin pruning, import-closure,
-and native filesystem-addon checks. Extension tests, QA source, and documentation
-media are excluded; help text, skills, and runtime templates remain. A dependency
-walk removes unreachable pnpm store entries while retaining importer-specific
-versions and installed optional dependencies. Building
-requires registry access.
+The upstream package version is `2026.10.10`. Identify the custom build by
+`/opt/oce/runtime/provenance.json`. It records
+the source commit, archive, patch and lockfile hashes, package manager, plugins,
+architecture, Codex package identity, and SHA-256 of `contents.json`. That file
+lists packaged files, modes, hashes, and symlinks after permission normalization.
+
+The final stage copies the assembled directory directly into the pinned
+`node:24.22.1-bookworm-slim` base with runtime libraries, Git/SSH, GitHub CLI,
+Python, and process utilities. Both bases apply current Debian updates. The stock runtime excludes build
+compilers. Selecting Cargo adds the Rust compiler and a system linker. The slim-base repository credential
+client compiles only its own sources without typechecking. The service builds
+and typechecks the workspace.
+
+Building requires registry access. A disposable stage installs plugin build
+dependencies. The production stage selects required upstream plugins plus Codex
+and Slack, installs dependencies for the target architecture with lifecycle
+scripts enabled, and runs upstream postinstall, pruning, import-closure, and
+native filesystem-addon checks. Pruning removes tests, QA source, documentation
+media, and unreachable pnpm entries. It keeps help, skills, templates,
+importer-specific versions, and installed optional dependencies.
 
 ## Resolve OpenClaw build arguments
 
@@ -141,21 +135,24 @@ verification remains required.
 From the repository root, run this in Bash with Node.js 24 or newer:
 
 ```bash
-source_args="$(node scripts/lib/openclaw-source.mjs build-args)" || exit 1
+source_args="$(node scripts/lib/openclaw-source.ts build-args)" || exit 1
 openclaw_build_args=()
 while IFS= read -r argument; do
   openclaw_build_args+=(--build-arg "$argument")
 done <<< "$source_args"
 ```
 
-Keep this shell for the build. CI and the development launchers resolve the
-same manifest automatically. An explicitly selected prebuilt runtime image
-keeps its own identity. The separate [local OpenClaw checkout test path](../../docs/testing/openshell.md)
-builds its selected checkout and records that checkout's commit.
+Keep this shell for the build. CI and development launchers resolve the manifest
+automatically. [Local checkout tests](../../docs/testing/openshell.md) use their selected source.
+
+## Verify runtime source
+
+Local assembly omits broad suites. Run [source verification](../../docs/flows/container-publication.md#runtime-source-verification) for runtime changes.
 
 ## Build a local runtime image
 
-After [resolving the build arguments](#resolve-openclaw-build-arguments), run:
+For paired builds, see [QA prebuilds and caching](../../docs/testing/ci/qa-advisory.md#prebuild-local-qa-images).
+Otherwise [resolve build arguments](#resolve-openclaw-build-arguments) and run:
 
 ```bash
 docker build -f deploy/runtime/Dockerfile \
@@ -186,14 +183,17 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/554f0b886bde6c089578c49967227f8b50d1cf16/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/513c12703ad9a9161cc123e0b8ed4ecb811aa6b3/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
 existing core dependencies.
 The custom npm-distribution packer rejects that combination because it requires
-one shared dependency version. Alternate
-`NODE_BASE_IMAGE` values must provide Node.js 24.22.1 or newer within the 24 series.
+one shared dependency version.
+
+Node bases require 24.22.1 on Bookworm. See the
+[worker-termination repair](node/README.md) for validation and provenance.
+
 The Dedicated command and bundled plugin both resolve the same
 [Codex 0.164.0](https://github.com/openai/codex/releases/tag/rust-v0.164.0) installation.
 For multi-architecture builds, the frozen npm install selects the stock
@@ -277,16 +277,29 @@ references to its verified immutable digest. Separate gateway and Codex images
 require verification of that exact pair through the
 [Kubernetes runtime tests](../../docs/testing/kubernetes.md#kubernetes-model-turns-and-secrets).
 
+## Select optional native tools
+
+Edit [the download client list](additional-download-clients.json) in the source
+you plan to build. The default `[]` adds no tools. Select only the paths you
+need for Linux amd64 and arm64. For example, `["/opt/devtools/bin/go"]` adds Go.
+
+| Inventory path             | Installed tools                                                                  |
+| -------------------------- | -------------------------------------------------------------------------------- |
+| `/opt/devtools/bin/rustup` | Rustup 1.29.1                                                                    |
+| `/opt/devtools/bin/cargo`  | Cargo, `rustc`, `rustdoc`, and the Rust standard library at 1.95.0 with a linker |
+| `/opt/devtools/bin/go`     | Go 1.27.3, its standard library, and `gofmt`                                     |
+| `/opt/devtools/bin/bun`    | Bun 1.4.4                                                                        |
+
+The image exposes these tools on `PATH` with root-owned links in
+`/usr/local/bin`. Cargo uses the packaged Rust toolchain. Rustup manages its own
+toolchains. Rebuild the image and verify both architectures before using it.
+
 ## Verify both native architectures
 
-Dispatch **Check Native Container Images** (`container-check.yml`) on the branch
-to build and smoke controller and runtime on native AMD64 and ARM64 runners without
-publishing. It uses the same reusable preparation jobs as Enterprise Containers.
-Manual `CI` dispatches also call this native verification workflow, including on
-a branch before its first merge. See
-[shared CI settings](../../docs/release/configuration.md#build-settings) for native runner
-requirements and overrides. The workflow installs checksum-pinned kubectl, k3d,
-Helm, and yq for both Linux architectures before runtime verification.
+Run [Check Native Container Images](../../docs/release/containers.md#check-native-images-without-publication)
+for the selected commit. Require controller and runtime smoke on native AMD64
+and ARM64. For a custom release, follow the
+[protected publication procedure](../../docs/release/containers.md#prepare-and-publish).
 
 ## Verify the local image
 
@@ -309,15 +322,15 @@ set -a
 set +a
 OPENCLAW_ENTERPRISE_CI_STATE=/tmp/images-runtime-startup.json \
   node --test tests/integration/runtime-image-startup.test.mjs \
-    tests/integration/runtime-image-gateway-workspace.test.mjs \
+    tests/integration/runtime-image-gateway-workspace.test.ts \
     tests/integration/runtime-image-state-migration.test.mjs \
-    tests/integration/runtime-image-managed-files.test.mjs \
+    tests/integration/runtime-image-managed-files.test.ts \
     tests/integration/runtime-image-native-listener.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \
-    tests/integration/runtime-image-startup-termination.test.mjs \
-    tests/integration/runtime-image-gateway-unclean-restart.test.mjs \
-    tests/integration/runtime-image-gateway-retained-state.test.mjs \
-    tests/integration/runtime-image-gateway-peer.test.mjs \
+    tests/integration/runtime-image-startup-termination.test.ts \
+    tests/integration/runtime-image-gateway-unclean-restart.test.ts \
+    tests/integration/runtime-image-gateway-retained-state.test.ts \
+    tests/integration/runtime-image-gateway-peer.test.ts \
     tests/integration/runtime-image-native-worker.test.mjs
 ```
 
@@ -333,9 +346,10 @@ the installed Codex plugin successfully initializes the image's real Codex
 app-server, and the Kubernetes dedicated-gateway startup path publishes the
 bundled skills directory into `/home/node/openclaw-runtime-assets`. These checks
 run without external network access or provider credentials. The smoke also
-enrolls a real restricted workspace node, checks its exact seven-command inventory,
-and restarts it with the redeemed setup code and saved identity. It requires the
-original bootstrap completion to remain unchanged. These checks do not exercise
+enrolls a real restricted workspace node under the production supervisor with an
+inert Codex sibling. It requires exactly seven commands, retained identity across
+redeemed/expired-code restarts and file/envelope setup replacement, and one
+completion per setup. These checks do not exercise
 all workspace command payloads, make a model call, or establish a Slack connection.
 When running this suite from inside another container that talks to a host Docker
 daemon, mount the repository and any temporary fixture directory at the same
@@ -346,6 +360,10 @@ Before enabling Slack in an Installation, run the
 [live Slack test](../../docs/testing/slack.md#slack) with the verified image, projected
 credentials, and the required proxy configuration. It must prove a real mention,
 Codex turn, and gateway-authored reply; gateway readiness alone is insufficient.
+
+The runtime includes a Debian-compatible curl security backport for both curl
+and Git. See the [publication flow](../../docs/flows/container-publication.md)
+for its provenance, verification, and scanner limitations.
 
 ## Build provenance
 

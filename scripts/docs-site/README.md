@@ -12,8 +12,9 @@ from the repository root.
   revision `34bdf6d0321dffff0cc343ee48aa4c051547f70e`. The publisher mirror matched
   the current product parser at implementation time.
 - `vendor/docs-markdown.mjs` retains the shared parser, heading IDs and aliases,
-  frontmatter handling, and Markdown component support. Enterprise also emits GitHub-style heading aliases
-  through the pinned `github-slugger`, preserving existing API deep links.
+  frontmatter handling, and Markdown component support. Enterprise makes the pinned
+  `github-slugger` slug the canonical heading ID and keeps the parser's ID as an alias,
+  preserving existing deep links.
 - `vendor/mdx-ish.mjs` retains the publisher's component renderer, code highlighting,
   and Mermaid source markup. Its shared-parser import points to the sibling copy.
 - The MIT notice is retained in `vendor/LICENSE.openclaw`. The JetBrains Mono OFL notice accompanies
@@ -29,13 +30,16 @@ The configured package registry did not provide the publisher's
 
 ## Ownership and verification
 
-`build.mjs` discovers the authored corpus, applies `docs/docs.json` navigation,
+`build.ts` discovers the authored corpus, applies `docs/docs.json` navigation,
 validates links and anchors, emits Enterprise HTML and local assets, and leaves
 Pagefind indexing to the root `docs:build` command. `--check` validates without
 writing output. Paths resolve against Markdown source files; README pages map to
-folder indexes and links outside `docs/` point to the Enterprise GitHub source.
+folder indexes. Non-page files under `docs/assets/` and `docs/snippets/` use
+local URLs because the build copies these directories. Other non-page files,
+including `docs/docs.json`, and links outside `docs/` point to the Enterprise
+GitHub source.
 Fragments on those links must match a GitHub heading slug or HTML anchor in the
-target (`github-anchors.mjs`). HTML examples in code and comments do not create
+target (`github-anchors.ts`). HTML examples in code and comments do not create
 fragment targets. Parsed HTML elements contribute `id` targets; only `<a>` elements
 contribute `name` targets. `scripts/check-specs.mjs` applies the same check to
 spec links.
@@ -76,12 +80,12 @@ examples, while excluding frontmatter, HTML comments, Markdown syntax, and link
 destinations. Symlinks resolve to one real file so aliases cannot duplicate
 counts or bypass the limit.
 
-`serve.mjs` serves `dist/docs/` on `127.0.0.1` by default. MP4 walkthrough links open
+`serve.ts` serves `dist/docs/` on `127.0.0.1` by default. MP4 walkthrough links open
 in the browser player with the `video/mp4` media type. It accepts an optional
 `--port` for parallel local previews. `docs:dev` adds `--watch` to enable the
 development workflow described in [Local preview](../../docs/local-preview.md).
 
-`preview-build.mjs` polls source metadata, combines rapid edits, and runs the
+`preview-build.ts` polls source metadata, combines rapid edits, and runs the
 renderer followed by Pagefind in a new directory. The renderer's internal
 `--output` option accepts only a fresh directory under `dist/.docs-preview-*/`;
 it never removes an existing preview directory. After both commands succeed,
@@ -92,25 +96,27 @@ to the tabs. Shutdown stops the watcher and child processes and removes the
 temporary directories. The static server and standalone build do not load the
 refresh client.
 
-`site.mjs` owns mobile navigation, per-tab sidebar scroll restoration, local
+`site.mts` owns mobile navigation, per-tab sidebar scroll restoration, local
 Pagefind search, theme switching, code copying, heading links, Mermaid rendering,
-and Driver matrix filtering. Sidebar scroll uses session storage and leaves the
+and Driver matrix filtering. Heading links navigate to the generated heading ID
+with native browser history and also copy the URL when clipboard access is available.
+Sidebar scroll uses session storage and leaves the
 navigation at the default position when storage is unavailable. Driver matrix
 pages use custom replacement blocks around generated GitHub fallback tables:
 
 - `<!-- compute-matrix:start -->` / `<!-- compute-matrix:end -->` reads
   `docs/assets/compute-driver-matrix.json` and is regenerated with
-  `node scripts/generate-compute-matrix.mjs`.
+  `node scripts/generate-compute-matrix.ts`.
 - `<!-- plugin-matrix:start -->` / `<!-- plugin-matrix:end -->` reads
   `docs/assets/plugin-driver-matrix.json` and is regenerated with
-  `node scripts/generate-plugin-matrix.mjs`.
+  `node scripts/generate-plugin-matrix.ts`.
 
 Keep each fallback generated from the same JSON so GitHub Markdown remains
 useful without becoming a second fact owner. No assistant, community widget,
 translation pipeline, deployment command, or hosted API is included.
 
 For documentation or site presentation changes, run `pnpm docs:build` to build
-the site and its search index, `node scripts/docs-site/build.mjs --check` to
+the site and its search index, `node scripts/docs-site/build.ts --check` to
 check links and anchors without writing files, and `pnpm docs:check-length` for
 word limits. Inspect navigation and presentation in the browser. Run
 `pnpm openapi:check` with the controller workspace installed when changing the
@@ -124,7 +130,8 @@ installing controller dependencies. Do not add it to the TypeScript solution.
 ## Generated API documentation
 
 `pnpm openapi:generate` exports the registered Fastify routes and adds the
-explicit examples in `scripts/api-examples.mjs`. That catalog reuses synthetic
+explicit examples in `scripts/api-examples.ts` using `scripts/document-api-examples.ts`.
+That catalog reuses synthetic
 resource values and never imports test fixtures or live credentials. New
 operations, parameters and body-bearing responses must have examples; generation
 fails on missing coverage. Keep examples consistent with the owning route schemas

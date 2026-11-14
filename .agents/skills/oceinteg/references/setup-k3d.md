@@ -1,12 +1,29 @@
 # Set up local k3d with OpenShell
 
 Use [Set up OCE locally with OpenShell and Codex](../../../../docs/guides/deploy/local-setup.md)
-for `quickstart` and the dedicated OpenShell Codex baseline of `main`. Its guide
-owns tool installation, compatible image selection, gateway bootstrap,
-installation settings, model authentication, Agent creation, onboarding and
-session persistence. Follow the guide in order from its matching checkout.
+from the matching checkout. Choose the section for the requested scenario.
 
-## Follow the guides in order
+## Main
+
+Use a fresh cluster, private state directory and unused ports. Complete the local
+guide's Kubernetes and OpenShell setup, including authenticated Gateway
+bootstrap, trusted browser access and the Credential Gateway configuration.
+Finish the installation reload in the matching guide and verify Namespace
+readiness. Where **Prepare the operator session** performs the reload, complete
+that step; editing the configuration file alone does not apply it.
+
+Stop before the quickstart registers a model credential or creates its first
+Agent. In the ready Namespace, use [main's Standard Codex preset](./main.md#dedicated-codex-setup)
+in Console. Keep this installation's operator context separate from any
+previous quickstart Agent or session.
+
+Use a separate fresh [Kubernetes-only local installation](../../../../docs/guides/deploy/local-kubernetes-development.md)
+with the matching runtime and Plugin Driver for Standard OpenClaw. A local
+profile without OpenShell does not prove the dedicated OpenShell Codex case.
+
+## Quickstart
+
+Follow the full local guide in order:
 
 1. Resolve a fresh run directory, cluster name, unused API/browser/Kubernetes
    ports, immutable images and retention choice. Preserve unrelated clusters,
@@ -22,14 +39,10 @@ session persistence. Follow the guide in order from its matching checkout.
    in a fresh Bash shell, then follow the shared Git and plugin guides selected
    by the scenario. Keep the same Agent and installation throughout.
 
-For `main`, this establishes only its dedicated Codex baseline. Continue with
-main's additional preset, Slack, approval, permission and lifecycle cases.
-Its separate Standard OpenClaw branch needs a fresh installation using the
-supported [Kubernetes-only local profile](../../../../docs/guides/deploy/local-kubernetes-development.md)
-and matching runtime/Plugin Driver. A profile without OpenShell is a separate
-runtime result. A Codex quickstart pass does not prove that branch.
-
 ## Retain or dispose
+
+For `main`, follow [main's completion steps](./runtime-acceptance.md#completion)
+using its own Agent and installation records. For `quickstart`:
 
 Honor [the selected scenario's retention](./runtime-acceptance.md#completion).
 Keep running Agents and their required claims, forwards and services when

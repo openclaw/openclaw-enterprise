@@ -32,11 +32,13 @@ const (
 	openShellSupervisorRole         = "supervisor"
 	openShellNodePort               = 30051
 	openShellK3sImage               = "docker.io/rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657"
-	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:0.1.6@sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea"
-	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:0.1.6@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63"
-	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:0.1.6@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b"
+	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:0.1.8@sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4"
+	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:0.1.8@sha256:f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b"
+	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:0.1.8@sha256:deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1"
 	openShellAdmissionContainerPath = "/etc/openclaw-development/openshell-pod-security-admission.yaml"
-	openShellAllowedPodLabelsValue  = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]`
+	// Keep in step with OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST in the OpenShell Sandbox Driver;
+	// TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP compares them.
+	openShellAllowedPodLabelsValue = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]`
 )
 
 type openShellDevelopmentAssets struct {
@@ -146,26 +148,56 @@ func prepareOpenShellAdmission(directory string) (string, error) {
 	return path, nil
 }
 
-func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, timeout time.Duration) (*openShellDevelopmentAssets, error) {
+func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, timeout time.Duration) (_ *openShellDevelopmentAssets, resultErr error) {
+	started := time.Now()
+	operationStarted := started
+	stage := "openshell-image-selection"
+	var manifestOutcome manifestFailure
+	advance := func(next string) {
+		stage, operationStarted = next, time.Now()
+	}
+	defer func() {
+		// A failed operation can reflect sibling cancellation, not the primary cause.
+		// Never include its error, arguments or output in the timing record.
+		if resultErr == nil {
+			stage, operationStarted = "openshell-prepare", started
+		}
+		outcome := ""
+		if stage == "openshell-agent-sandbox-manifest" && resultErr != nil && manifestOutcome != "" {
+			outcome = "\n[occ-dev-outcome] stage=openshell-agent-sandbox-manifest outcome=" + string(manifestOutcome)
+		}
+		fmt.Fprintf(r.opts.Out, "\n[occ-dev-timing] stage=%s elapsed_ms=%d failed=%t%s\n", stage, time.Since(operationStarted).Milliseconds(), resultErr != nil, outcome)
+	}()
 	images, err := r.selectOpenShellImages(state.SandboxDriver)
 	if err != nil {
 		return nil, err
 	}
+	advance("openshell-image-validation")
 	if err := r.validateOpenShellImageRevisions(ctx, images); err != nil {
 		return nil, err
 	}
+	advance("openshell-assets-directory")
 	root := filepath.Join(state.directory, "openshell")
 	if err := os.Mkdir(root, 0700); err != nil {
 		return nil, err
 	}
+	advance("openshell-charts")
 	gatewayChart, workspaceChart, err := r.openShellCharts(ctx, root)
 	if err != nil {
 		return nil, err
 	}
-	manifest, err := r.agentSandboxManifest(ctx, root)
+	advance("openshell-agent-sandbox-manifest")
+	manifest, failure, err := r.agentSandboxManifest(ctx, root)
+	manifestOutcome = failure
 	if err != nil {
 		return nil, err
 	}
+	advance("openshell-agent-sandbox-image")
+	manifest, err = r.preloadAgentSandboxController(ctx, state, root, manifest)
+	if err != nil {
+		return nil, err
+	}
+	advance("openshell-runtime-class")
 	runtimeClass := filepath.Join(root, "runtime-class.yaml")
 	if err := exclusiveWrite(runtimeClass, []byte(strings.Join([]string{
 		"apiVersion: node.k8s.io/v1",
@@ -180,11 +212,13 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 	if err := r.run(ctx, "kubectl", "apply", "-f", runtimeClass); err != nil {
 		return nil, err
 	}
+	advance("openshell-agent-sandbox-apply")
 	if err := r.run(ctx, "kubectl", "apply", "-f", manifest); err != nil {
 		return nil, err
 	}
-	if err := r.run(ctx, "kubectl", "rollout", "status", "deployment/agent-sandbox-controller", "--namespace", "agent-sandbox-system", "--timeout", timeout.String()); err != nil {
-		r.captureAgentSandboxRollout(state)
+	advance("openshell-agent-sandbox-rollout")
+	if err := r.run(ctx, "kubectl", "rollout", "status", "deployment/"+agentSandboxName, "--namespace", agentSandboxNamespace, "--timeout", timeout.String()); err != nil {
+		r.captureAgentSandboxRollout(context.Background(), state)
 		return nil, err
 	}
 	assets := &openShellDevelopmentAssets{gatewayChart: gatewayChart}
@@ -192,6 +226,7 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 	if state.PlatformNamespace != "" {
 		gatewayNamespace = state.PlatformNamespace
 	}
+	advance("openshell-workspace-render")
 	assets.workspaceResources, err = r.renderOpenShellWorkspaceResources(ctx, workspaceChart, gatewayNamespace)
 	if err != nil {
 		return nil, err
@@ -205,7 +240,8 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 		{"sandbox", images.sandbox, &assets.sandboxImage},
 		{"supervisor", images.supervisor, &assets.supervisorImage},
 	} {
-		imported, err := r.importOpenShellImage(ctx, state, root, selected.component, selected.source, images.revision != "")
+		advance("openshell-" + selected.component + "-import")
+		imported, err := r.importOpenShellImage(ctx, state, root, selected.component, selected.source, images.revision != "", nil)
 		if err != nil {
 			return nil, err
 		}
@@ -265,54 +301,58 @@ func (r *runner) renderOpenShellWorkspaceResources(ctx context.Context, chart, g
 	return resources, nil
 }
 
-func (r *runner) importOpenShellImage(ctx context.Context, state *developmentState, root, component, source string, localOnly bool) (result string, resultErr error) {
-	if _, err := r.output(ctx, r.engine, "image", "inspect", source); err != nil {
-		if localOnly {
-			return "", fmt.Errorf("OpenShell candidate image must still exist locally at import: %s", source)
-		}
-		if err := r.run(ctx, r.engine, "pull", source); err != nil {
+func (r *runner) importOpenShellImage(ctx context.Context, state *developmentState, root, component, source string, localOnly bool, selected *nativeImageSelection) (result string, resultErr error) {
+	acquisition := source
+	platform := ""
+	id := ""
+	childStaged := false
+	if selected != nil {
+		var err error
+		acquisition, id, err = r.selectNativeImage(ctx, source, selected, localOnly)
+		if err != nil {
 			return "", err
 		}
+		platform = selected.platform
+	} else {
+		if _, err := r.output(ctx, r.engine, "image", "inspect", source); err != nil {
+			if localOnly {
+				return "", fmt.Errorf("OpenShell candidate image must still exist locally at import: %s", source)
+			}
+			if err := r.run(ctx, r.engine, "pull", source); err != nil {
+				return "", err
+			}
+		}
+		data, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", source)
+		if err != nil {
+			return "", err
+		}
+		platform = string(data)
+		if !strings.HasPrefix(platform, "linux/") {
+			return "", fmt.Errorf("OpenShell %s image must contain a Linux platform", component)
+		}
+		acquisition, err = r.resolveDevelopmentPlatformChild(ctx, source, platform)
+		if err != nil {
+			return "", err
+		}
+		childStaged = acquisition != source
+		held, err := r.inspectLocalImage(ctx, acquisition, "")
+		if err != nil {
+			return "", err
+		}
+		if held == nil {
+			return "", fmt.Errorf("OpenShell image disappeared before staging")
+		}
+		id = held.ID
 	}
 	stagingTag := "openclaw-development/openshell-" + component + ":" + state.Cluster
-	if _, err := r.output(ctx, r.engine, "image", "inspect", stagingTag); err == nil {
-		return "", fmt.Errorf("OpenShell development staging image already exists: %s", stagingTag)
-	}
-	if err := r.run(ctx, r.engine, "tag", source, stagingTag); err != nil {
+	// Intent precedes tag mutation, including commands whose outcome is unknown.
+	defer r.finishOpenShellImage(ctx, state, &resultErr)
+	if err := r.stageOpenShellImage(ctx, state, acquisition, stagingTag, id); err != nil {
 		return "", err
 	}
-	defer func() {
-		if _, err := r.output(context.WithoutCancel(ctx), r.engine, "image", "rm", stagingTag); err != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("remove OpenShell %s staging image: %w", component, err))
-		}
-	}()
-	// Use the name the engine recorded for the staging tag. Podman qualifies it
-	// with the `localhost` registry, and containerd stores whatever reference
-	// was imported, so the verification below has to look for that name.
 	recorded, err := r.engineImageReference(ctx, stagingTag)
 	if err != nil {
 		return "", err
-	}
-	platformData, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", source)
-	if err != nil {
-		return "", err
-	}
-	platform := string(platformData)
-	if !strings.HasPrefix(platform, "linux/") {
-		return "", fmt.Errorf("OpenShell %s image must contain a Linux platform", component)
-	}
-	// Docker's containerd image store cannot save a manifest-list reference
-	// as one complete image (see resolveDevelopmentImageSource), so point the
-	// staging tag at the platform child the list names for this host when there
-	// is one.
-	resolved, err := r.resolveDevelopmentImageSource(ctx, source, platform)
-	if err != nil {
-		return "", err
-	}
-	if resolved != source {
-		if err := r.run(ctx, r.engine, "tag", resolved, stagingTag); err != nil {
-			return "", err
-		}
 	}
 	archive := filepath.Join(root, component+"-image.tar")
 	defer func() {
@@ -325,7 +365,7 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	// child, keep the platform filter: it still works where the engine can
 	// resolve it, and names the failure otherwise.
 	saveArgs := []string{"image", "save"}
-	if r.engine == "docker" && resolved == source {
+	if r.engine == "docker" && !childStaged {
 		saveArgs = append(saveArgs, "--platform", platform)
 	}
 	saveArgs = append(saveArgs, "--output", archive, recorded)
@@ -372,12 +412,17 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	if err := r.run(ctx, r.engine, "exec", server, "ctr", "-n", "k8s.io", "images", "tag", imported, runtimeReference); err != nil {
 		return "", fmt.Errorf("register imported OpenShell %s image digest: %w", component, err)
 	}
+	if selected != nil {
+		if err := r.verifyNativeImportedImage(ctx, server, runtimeReference, selected.configDigest); err != nil {
+			return "", err
+		}
+	}
 	fmt.Fprintf(r.opts.Out, "OpenShell %s image: source=%s containerd=%s\n", component, source, runtimeReference)
 	return runtimeReference, nil
 }
 
-// Kubernetes-only installations always authenticate the Gateway, independently
-// of the optional static-inference authority. Compose keeps its existing profile.
+// Kubernetes-only installations always authenticate the Gateway.
+// Compose keeps its existing profile.
 func (state *developmentState) authenticatedOpenShell() bool {
 	return state.DeploymentMode == "k3d" && state.SandboxDriver == "openshell"
 }
@@ -402,11 +447,7 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 		}
 	}
 	args := []string{"upgrade", "--install", openShellGatewayService, assets.gatewayChart, "--namespace", namespace, "--kubeconfig", filepath.Join(state.directory, "kubeconfig"), "--kube-context", "k3d-" + state.Cluster, "--timeout", timeout.String()}
-	// The registry contacts OCC at startup. Install both releases before waiting
-	// for the protected Gateway; native PKI hooks still complete synchronously.
-	if !state.ProtectedEgress {
-		args = append(args, "--wait")
-	}
+	args = append(args, "--wait")
 	args = append(args, openShellGatewayValues(state, assets, gatewayValues)...)
 	if err := r.run(ctx, "helm", args...); err != nil {
 		return err

@@ -201,7 +201,9 @@ async function assertNativeNodeRouteAuthentication({
       () => requestGatewayHello({ url: nodeUrl, extraHeaders, native }),
       (error) => {
         assert.ok(error instanceof GatewayClientRequestError);
-        assert.equal(error.details?.authReason, "trusted_proxy_user_missing");
+        // The node route strips the required scope header, which native auth
+        // checks before the user header, including when both were forged.
+        assert.equal(error.details?.authReason, "trusted_proxy_missing_header_x-openclaw-scopes");
         return true;
       },
     );
@@ -215,10 +217,19 @@ async function assertNativeNodeRouteAuthentication({
       url: nodeUrl,
       native: { ...native, bootstrapToken: payload.bootstrapToken, preferBootstrapToken: true },
       onConnected: async (_client, hello) => {
-        assert.deepEqual(
-          await enrollment.observeSetup(url, setup.setupId, AbortSignal.timeout(15_000)),
-          { deviceId: deviceIdentity.deviceId, connected: true },
-          "Compute must observe the paired identity and its admitted file commands",
+        const receipt = await enrollment.observeSetup(
+          url,
+          setup.setupId,
+          AbortSignal.timeout(15_000),
+        );
+        assert.equal(receipt?.deviceId, deviceIdentity.deviceId);
+        // The Gateway confirms its local write asynchronously after hello.
+        // Neither receipt status is itself evidence of node possession.
+        assert.ok(["confirmed", "uncertain"].includes(receipt.delivery));
+        assert.equal(
+          await enrollment.isConnected(url, deviceIdentity.deviceId, AbortSignal.timeout(15_000)),
+          false,
+          "a bootstrap-authenticated session does not prove possession of the issued device token",
         );
         return hello;
       },
@@ -236,9 +247,9 @@ async function assertNativeNodeRouteAuthentication({
         deviceToken: hello.auth.deviceToken,
       },
       onConnected: async () => {
-        assert.equal(
-          await enrollment.isConnected(url, deviceIdentity.deviceId, AbortSignal.timeout(15_000)),
-          false,
+        await assert.rejects(
+          enrollment.isConnected(url, deviceIdentity.deviceId, AbortSignal.timeout(15_000)),
+          /missing required commands: file.create/,
           "Compute must not mark a node ready when attachment upload is unavailable",
         );
       },
@@ -250,13 +261,28 @@ async function assertNativeNodeRouteAuthentication({
         assert.equal(
           await enrollment.isConnected(url, deviceIdentity.deviceId, AbortSignal.timeout(15_000)),
           true,
-          "the saved identity is ready after all required file commands return",
+          "the unchanged seven-command node proves possession by authenticating with its issued token",
         );
         return hello;
       },
     });
     assert.equal(reconnected.auth?.role, "node");
     assert.deepEqual(reconnected.auth.scopes, []);
+    // Retirement must clear the fact; an earlier successful token connection
+    // must not establish readiness for a node that is now disconnected.
+    const retiredDeadline = Date.now() + 5_000;
+    let retired = false;
+    while (!retired && Date.now() < retiredDeadline) {
+      retired = !(await enrollment.isConnected(
+        url,
+        deviceIdentity.deviceId,
+        AbortSignal.timeout(5_000),
+      ));
+      if (!retired) {
+        await delay(50);
+      }
+    }
+    assert.equal(retired, true, "the retired token-authenticated session is no longer ready");
     await assert.rejects(
       () =>
         requestGatewayHello({

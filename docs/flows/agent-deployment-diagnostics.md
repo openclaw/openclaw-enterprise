@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-10-14
-last_updated_session: authoring-run/3ffec2d3-d528-40ec-98a6-f91d0ad55db4
+updated: 2026-11-14
+last_updated_session: authoring-run/927cdccf-0c9c-45b7-9e7c-4e5e39a43260
 ---
 
 # Agent deployment diagnostics flow
@@ -56,15 +56,26 @@ same resources, and selects the Compute Driver recorded in that version.
 ### 2. Read the current runtime
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.diagnoseAgentDeployment`
-checks the binding and owned Namespace, then reads each version Pod through
-the Kubernetes Pod proxy. Dedicated Gateways use their managed Gateway
-namespace; dedicated Harnesses use the tenant namespace. The Driver reads a
-private endpoint, then checks the Pod name, UID, and container ID again. Missing
-or replaced Pods produce `unknown` checks. Invalid endpoint data fails the
-request. Collection has a ten-second deadline and a 64 KiB response limit.
-The Driver's Kubernetes clients do not follow redirects. For a redirected Pod
-status response, the Driver requests body cancellation and fails the read without
-retrying.
+checks the binding and owned Namespace.
+`deployment-diagnostics.ts:collectDeploymentChecks` reads diagnostics and startup
+status concurrently for each runtime role under a shared ten-second deadline. In a
+two-cluster installation, dedicated Gateways use their managed Gateway namespace
+and dedicated Harnesses use the tenant namespace.
+
+`apps/controller/src/drivers/compute/kubernetes/private-status-proxy.ts:readPrivateStatusProxy`
+reads and decodes the private endpoint with a 64 KiB limit. A 404 or 503 means the
+endpoint is unavailable for this observation. A redirect fails the read and the
+Driver requests body cancellation without retrying. The Driver checks the Pod
+name, UID, and container ID again before using the decoded evidence. Missing or
+replaced Pods produce `unknown` checks. Invalid diagnostics data fails the
+request. When concurrent reads reach the shared deadline, the Driver can still
+classify a rejected Gateway diagnostics request before reporting a generic timeout.
+
+Before it generates the runtime programs, the Kubernetes renderer loads the
+shared failure vocabulary. `runtime-entrypoints.ts:isStringArray` requires a
+string at each position in the diagnostic check, code, and startup failure lists.
+An empty position or a value of another type stops the renderer from loading
+with `Invalid runtime failure vocabulary.`
 
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:PLUGIN_RUNTIME_HELPERS`
 calls `channels.status` through OpenClaw's public Gateway SDK on demand in the
@@ -90,13 +101,10 @@ private boundary accepts only real UTC timestamps, normalizing a valid whole-sec
 value to the public millisecond form. A failed, impossible-date, or otherwise
 invalid status read adds nothing.
 
-An [OpenShell](../reference/drivers/openshell-sandbox.md) Harness listens inside
-its Sandbox's own network namespace, not the Pod's, so the Kubernetes API
-answers Pod-proxy reads of its private port with `503`, which the Driver treats
-as not serving. Its `agent` `runtime-status` check is always `unknown` with code
-`UNAVAILABLE`, whether the Harness is healthy or holding a startup failure, and
-no held-failure check appears for it. Gateway checks, including a held Gateway
-failure, are unaffected.
+The Driver skips Harness Pod proxy reads when the revision's selected Sandbox
+Driver provisions the Harness. An [OpenShell](../reference/drivers/openshell-sandbox.md)
+Harness listens inside its own Sandbox network namespace. Its `agent` `runtime-status` check is `unknown` with code
+`UNAVAILABLE`. The Gateway can still report a held failure.
 
 Beside Compute's checks, `OpenClawController.diagnoseAgentDeployment` asks the
 version's Sandbox Driver for its record of a dedicated Harness Sandbox
@@ -112,10 +120,24 @@ Agent has no Sandbox, such as a stopped Agent's.
 
 `packages/occ/src/deployment-diagnostics.ts:deploymentDiagnostics` requires
 the requested Agent revision ID, valid timestamps, and at most 32 checks with component, check, and code values of 1 to 64 allowed characters. A
-component, check or code outside `packages/contracts/src/runtime-failure.mjs`
+component, check or code outside `packages/contracts/src/runtime-failure.ts`
 reads `UNRECOGNIZED`. Native Driver errors become `DEPENDENCY_UNAVAILABLE`
-without messages. Stored deployment status, startup evidence, plugin warnings
+without messages. A rejected private Gateway diagnostics Pod-proxy request instead
+retains the fixed `RuntimeDiagnosticsTransportError` class and message in the
+request-ID-correlated `http.dependency_unavailable` operator log. OCC reconstructs
+this error without supplier text or causes. The public response remains generic
+`503 DEPENDENCY_UNAVAILABLE`. This category identifies collection transport; it
+does not establish a channel failure or its network cause. Pod discovery, invalid
+endpoint data, redirects, and normal not-serving responses keep their existing
+handling. Stored deployment status, startup evidence, plugin warnings
 and Agent state stay unchanged.
+
+## Guarded first admission
+
+The [Configuration persistence flow](configuration-driver/persistence-and-revisions.md#guarded-first-admission)
+traces first-deployment admission and receipt recovery. That path ends when OCC
+commits an Agent revision and queues reconciliation. Diagnostics observes runtime
+state after admission.
 
 ## Debugging and Verification
 
@@ -132,15 +154,26 @@ and Agent state stay unchanged.
   Harness could not enroll with its egress proxy before the model check.
   An `agent` `state-migration` or `workspace-baseline` check with code
   `UNAVAILABLE` is a dedicated Harness or native worker held before Codex or its
-  node started: Doctor left its node state older, or `openclaw setup --baseline`
+  node started: Doctor did not complete maintenance, or `openclaw setup --baseline`
   failed. The log line names the cause and any invalid setting paths, and
   OpenClaw's own hints to run `openclaw doctor` are dropped, since the
-  Harness runs Doctor itself. Fix the cause, then deploy again.
+  Harness runs Doctor itself. A pending marker in the retained `state` directory preserves the repair requirement
+  across container replacements; fix the cause, then deploy again.
 - A `gateway` `gateway-state-lock` check with code `UNAVAILABLE` is a dedicated
   Gateway that OpenClaw refused to configure: an earlier Gateway process did not
   stop cleanly, and the restarted container cannot verify that the lock holder
   stopped. The log line quotes OpenClaw's holder description. Follow
   [unverifiable state owner recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
+- A dedicated Gateway held at `gateway-tool-policy` with code
+  `INCOMPATIBLE_RESPONSE` can have a runtime image provenance failure.
+  `apps/controller/src/drivers/compute/gateway-tool-policy.ts:requireGatewayToolPolicyRuntime`
+  runs in both Docker and Kubernetes launchers. Its fixed log message distinguishes
+  missing, unreadable, or malformed provenance from a source or commit that does
+  not match the controller's pinned OpenClaw source/revision. Use the OpenClaw
+  Enterprise (OCE) runtime image matching the controller. Neither message includes
+  supplied provenance values or read-error details. With matching provenance,
+  a policy refusal still names the required tool policy and Gateway tool allowlist.
+  These failures keep the Gateway stopped and unready.
 - A `gateway` `gateway-config` check with code `UNAVAILABLE` is a Kubernetes
   Gateway that exited before it served, and `openclaw config validate` reports
   its configuration invalid. A plugin entry whose `config` fails the plugin's
@@ -149,6 +182,24 @@ and Agent state stay unchanged.
   one, and never a value. Fix or remove those settings, then deploy again.
   A dedicated Gateway's tool policy step holds the same check before OpenClaw
   starts when no invalid setting belongs to the tool policy.
+- A `crash-loop` check with code `UNAVAILABLE` is a startup failure Kubernetes
+  Compute reads from Pod status, as it does `workspace-setup`; no runtime holds it
+  (`apps/controller/src/drivers/compute/kubernetes/index.ts:safeCrashLoopObservation`):
+  the role's container waits in `CrashLoopBackOff` after 3 consecutive
+  unexplained exits. The Gateway wrapper states that count in its termination
+  message (`runtime-entrypoints.ts:countUnexplainedExits`); readiness starts it
+  again at 1, and a deliberate restart (exit 75, `stopContainer`) clears it and
+  never counts; its `deliberate restart:` message counts 0 whatever the exit
+  code. Without a count, and for a Harness, the restart count plus one stands
+  in: in backoff the kubelet has not yet counted the restart it waits for.
+  The deployment fails with `RUNTIME_STARTUP_FAILED`; the record keeps no check,
+  but the runtime description shows the restart count and last exit code.
+- When a Codex startup check returns `model_not_found`, the worker saves that
+  code. Codex can omit the code from its error event. In that case, the probe
+  recognizes the provider’s HTTP 404 missing-model message for the requested model.
+  The Console names the model from the failed version. It directs editors to
+  Configuration and tells other viewers to ask an editor to choose a model.
+  If the viewer cannot redeploy the Agent, it tells them who can.
 - A dedicated Codex model check cause whose detail ends `-attempt2`, such as
   `turn-failed-attempt2`, means the check was retried once, after a timeout, a
   transient failure or a network or 5xx exit, and the second attempt failed that
@@ -191,9 +242,25 @@ and Agent state stay unchanged.
 
 ## Changelog
 
+- 2026-11-14 11:06: Reject missing positions in the lists embedded in generated runtime programs. (authoring-run/927cdccf-0c9c-45b7-9e7c-4e5e39a43260 - 08f8640d5503df1c98e9939ea5cce2763e9c4085)
+
+- 2026-11-12 20:29: Distinguish runtime image provenance failures from tool policy refusals in both generated launchers. (authoring-run/610ff967-1248-450d-a432-c62fe1e8ac7a - a627e44694987459dbbf9aa59a3d76b9a97f48a7)
+
+- 2026-11-11 02:04: Trace the private Pod proxy reader and shared diagnostics deadline. (authoring-run/e028dbec-8765-42b2-b94f-fafcd435d7bc - c5f99318f7e2495afac28ff7ec7b5f8e77891dfc)
+
+- 2026-11-10 23:59: Preserve a fixed private Gateway diagnostics transport category in operator logs. (authoring-run/028ba1b2-5a61-4135-8d59-b919ec55e0eb - 42ffbb69e04e306d32eddcec27e8ea3d9075ec42)
+
+- 2026-11-10 23:30: Count only consecutive unexplained Gateway exits toward a crash loop, from the wrapper's termination message. (crashloop-fix-2, finding 3041)
+
+- 2026-11-10 12:00: Fail a Kubernetes runtime container in a crash loop as check `crash-loop`; deliberate Gateway restarts exit 75. (crashloop-fail-fast, finding 3041)
+
+- 2026-11-04 07:41: Move the first-admission trace to the Configuration persistence owner and retain its diagnostics link. (authoring-run/06bc63c9-f110-4607-a058-a816a61dd579 - 6371064e)
+
 - 2026-10-31 15:00: Hold a dedicated Gateway's invalid settings outside its tool policy as check `gateway-config` instead of `gateway-tool-policy`. (fix-3045, finding 3045)
 
 - 2026-10-31 13:00: Hold a Kubernetes Gateway whose configuration OpenClaw refuses at startup as check `gateway-config`. (fix-3043b, finding 3043)
+
+- 2026-10-30 16:53: Document guarded first admission, receipt recovery, and how both controller calls bind authorization to the request captured on entry. (authoring-run/62495070-6f26-49ba-b4b9-e00ac1a9bccd - 460529c7)
 
 - 2026-10-29 15:00: Hold a dedicated Gateway's unverifiable Gateway state lock as check `gateway-state-lock` instead of `gateway-tool-policy`. (fix-2864, finding 2864)
 

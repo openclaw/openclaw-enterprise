@@ -43,5 +43,6 @@
       "archiveSha256": "9ae69d117cef895aa1c50b5859d7d3def45c5580886b25dc1c7f3cfe128ed0dd",
       "binarySha256": "ad84f12b8efd889f65bd7c45c4eb6152fa963f623394fdf50938b14c57b9b694"
     }
-  }
+  },
+  "runtimeDirectory": "/usr/local/lib/oce/plugins/google"
 }

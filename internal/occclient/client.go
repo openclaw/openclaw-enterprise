@@ -6,8 +6,20 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
+	"strings"
+	"time"
 )
+
+var uuidV4 = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+// IsTypedID reports whether value has the expected OCC prefix followed by a
+// lowercase version 4 UUID.
+func IsTypedID(value, prefix string) bool {
+	suffix, ok := strings.CutPrefix(value, prefix)
+	return ok && uuidV4.MatchString(suffix)
+}
 
 // RuntimeLogPage is one page of sanitized runtime log records. Records keep the
 // server's JSON so callers can re-emit them unchanged.
@@ -358,13 +370,115 @@ func (client *Client) ProvisionAgentRuntimeCredentials(namespaceID, agentID stri
 	)
 }
 
-// DeployAgent deploys an Agent and creates an immutable revision.
-func (client *Client) DeployAgent(namespaceID, agentID string) (any, error) {
+// DeployAgent deploys an Agent and creates an immutable revision. Without
+// overrides it sends no body, which OCC treats as no overrides; servers that
+// predate Harness overrides refuse any body.
+func (client *Client) DeployAgent(namespaceID, agentID string, overrides map[string]any) (any, error) {
+	var body any
+	if len(overrides) > 0 {
+		body = map[string]any{"harnessOverrides": overrides}
+	}
 	return client.send(
 		http.MethodPost,
 		[]string{"namespaces", namespaceID, "agents", agentID, "deploy"},
-		nil,
+		body,
 	)
+}
+
+// FirstDeploymentIntent identifies the reviewed saved Configuration and one caller intent.
+// Key is nonsecret and must be reused unchanged for exact recovery.
+type FirstDeploymentIntent struct {
+	HarnessOverrides        map[string]any `json:"harnessOverrides,omitempty"`
+	Key                     string         `json:"key"`
+	ExpectedConfigurationID string         `json:"expectedConfigurationId"`
+	ExpectedGeneration      int64          `json:"expectedGeneration"`
+}
+
+var firstDeploymentKey = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$`)
+
+// Validate checks each intent field before client construction or a request.
+func (intent FirstDeploymentIntent) Validate() error {
+	if !IsTypedID(intent.ExpectedConfigurationID, "cfg_") {
+		return fmt.Errorf("--configuration must be an exact Configuration ID")
+	}
+	if intent.ExpectedGeneration < 1 || intent.ExpectedGeneration > 9007199254740991 {
+		return fmt.Errorf("--generation must be a positive safe integer")
+	}
+	if !firstDeploymentKey.MatchString(intent.Key) {
+		return fmt.Errorf("--key must start with an ASCII letter or digit and contain 1–128 ASCII letters, digits, or ._~-")
+	}
+	return nil
+}
+
+// DeployAgentFirst admits only the first deployment of the reviewed Configuration.
+// It uses a distinct route, so older servers fail closed.
+func (client *Client) DeployAgentFirst(namespaceID, agentID string, intent FirstDeploymentIntent) (any, error) {
+	if err := intent.Validate(); err != nil {
+		return nil, err
+	}
+	receipt, err := client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents", agentID, "deploy-first"}, intent)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateFirstDeploymentReceipt(receipt, namespaceID, agentID, intent); err != nil {
+		return nil, err
+	}
+	return receipt, nil
+}
+
+// RecoverAgentFirstDeployment only reads the original admission. A nil result is
+// not evidence that an in-flight request failed. It must never trigger a redeploy.
+func (client *Client) RecoverAgentFirstDeployment(namespaceID, agentID string, intent FirstDeploymentIntent) (any, error) {
+	if err := intent.Validate(); err != nil {
+		return nil, err
+	}
+	query := url.Values{}
+	if intent.HarnessOverrides != nil {
+		encoded, err := json.Marshal(intent.HarnessOverrides)
+		if err != nil {
+			return nil, err
+		}
+		query.Set("harnessOverrides", string(encoded))
+	}
+	status, headers, body, err := client.executeQuery(http.MethodGet, []string{"namespaces", namespaceID, "agents", agentID, "deploy-first", intent.Key, intent.ExpectedConfigurationID, strconv.FormatInt(intent.ExpectedGeneration, 10)}, query, nil)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, client.apiError(status, headers, body)
+	}
+	receipt, err := decodeResponseData(status, body)
+	if err != nil || receipt == nil {
+		return nil, err
+	}
+	if err := validateFirstDeploymentReceipt(receipt, namespaceID, agentID, intent); err != nil {
+		return nil, err
+	}
+	return receipt, nil
+}
+
+// Both admission and recovery must identify the exact requested intent before
+// callers can treat the response as its receipt. Never echo an invalid payload.
+func validateFirstDeploymentReceipt(value any, namespaceID, agentID string, intent FirstDeploymentIntent) error {
+	receipt, ok := value.(map[string]any)
+	if !ok || len(receipt) != 6 {
+		return fmt.Errorf("OCC returned an invalid first-deployment receipt")
+	}
+	revision, _ := receipt["revisionId"].(string)
+	namespace, _ := receipt["namespaceId"].(string)
+	agent, _ := receipt["agentId"].(string)
+	configuration, _ := receipt["configurationId"].(string)
+	createdAt, _ := receipt["createdAt"].(string)
+	const timestampLayout = "2006-01-02T15:04:05.000Z"
+	created, timeErr := time.Parse(timestampLayout, createdAt)
+	if !IsTypedID(revision, "rev_") || !IsTypedID(namespace, "ns_") ||
+		!IsTypedID(agent, "agt_") || !IsTypedID(configuration, "cfg_") ||
+		namespace != namespaceID || agent != agentID || configuration != intent.ExpectedConfigurationID ||
+		receipt["configurationGeneration"] != float64(intent.ExpectedGeneration) ||
+		timeErr != nil || created.Format(timestampLayout) != createdAt {
+		return fmt.Errorf("OCC returned an invalid first-deployment receipt")
+	}
+	return nil
 }
 
 // AgentRevisionPage is one page of readable revision summaries, newest first.
@@ -418,8 +532,9 @@ func (client *Client) ListAgentRevisions(namespaceID, agentID string, limit int,
 // a later page may be empty if access changes. The loop also supports older servers.
 func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, error) {
 	cursor := ""
+	limit := 1
 	for {
-		page, err := client.ListAgentRevisions(namespaceID, agentID, 100, cursor)
+		page, err := client.ListAgentRevisions(namespaceID, agentID, limit, cursor)
 		if err != nil {
 			return nil, err
 		}
@@ -430,6 +545,8 @@ func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, err
 			return nil, nil
 		}
 		cursor = page.NextCursor
+		// Older servers may return empty pages across a gap in readable revisions.
+		limit = 100
 	}
 }
 

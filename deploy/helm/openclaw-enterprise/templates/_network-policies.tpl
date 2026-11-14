@@ -244,7 +244,7 @@ missing Slack proxy (OCC_API_HTTPS_EGRESS_OPEN).
 */}}
 {{- define "openclaw.api.httpsEgressOpen" -}}
 {{- $open := false -}}
-{{- range $name := list "github" "google" "oidc" -}}
+{{- range $name := list "google" "oidc" -}}
 {{- $provider := get $.Values.auth $name -}}
 {{- if and $provider $provider.enabled (empty $provider.egressCidrs) -}}
 {{- $open = true -}}

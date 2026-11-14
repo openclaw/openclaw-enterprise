@@ -47,20 +47,26 @@ and the supported binding steps.
 
 ## Dedicated Codex setup
 
-Use the selected platform reference below to follow the current installation
-quickstart for the dedicated OpenShell Codex baseline. Reuse its saved operator
-session and shared capability guides for applicable Git and Linear checks. The
-quickstart's one approved push is distinct from main's write-denial and
-contributor-access cases. Preserve main's original permissions, presets and
-assertions; do not count the quickstart as completion of this scenario. Use a
-separate supported installation for Standard OpenClaw or a different Driver.
+For Helm, follow the main steps for [local k3d](./setup-k3d.md#main) or
+[EKS](./setup-eks.md#main) until the configured installation and its Namespace are ready.
+In [Create Agent](../../../../docs/reference/console/create-and-deploy.md), choose
+**Standard Codex** and **Use Preset**. Bind the approved model with **Service
+Accounts** before enabling repository credentials. Select **Enable Native admin
+UI** for the browser checks. First deploy without plugins and verify the
+[Standard Codex baseline](./runtime-acceptance.md#standard-runtime-branches). If Console cannot bind the model or
+deploy the preset, record the failed step. Deploying a draft created by the
+quickstart API does not exercise preset creation.
+
+Continue with the SWE Agent, then the remaining runtime cases. Keep the
+read-only denial and separate contributor checks. Follow the
+[Compose setup](./setup-compose-k3d.md) for its distinct capability limits.
 
 ## Installation acceptance
 
 Record a separate result for each selected topology and follow its setup:
 [EKS with Helm OCC](./setup-eks.md), [k3d with Helm OCC](./setup-k3d.md),
 or [k3d with Compose OCC](./setup-compose-k3d.md). Never transfer a pass across
-topologies. The default Compose-only preview cannot deploy Agents; the explicit
+topologies. The Docker Compute preview cannot deploy Agents; the explicit
 Compose/Kubernetes profile is distinct and requires additional setup. Record
 its documented capability differences without counting substitutes as passes.
 

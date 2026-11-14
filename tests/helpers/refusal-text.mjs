@@ -19,8 +19,8 @@ export const agentPrincipalDenied = (agent, target, grant = "Secret operate") =>
 // A denial echoes the ID its request sent, so a real and an unknown ID get answers that match once
 // each answer's own ID is hidden: the text never says whether the resource exists.
 export const sentIdHidden = (text, id) => text.replaceAll(id, "<id>");
-// A create needs the collection grant, which no Role can hold: only an Installation
-// administrator creates one. `kinds` is the plural, such as "Secrets".
+// A create needs the collection grant, which only Roles from the Installation configuration
+// hold: an Installation administrator creates one. `kinds` is the plural, such as "Secrets".
 export const createDenied = (kind, namespaceId, kinds = `${kind}s`) =>
   `Not authorized: this needs ${kind} create in Namespace ${namespaceId}. Only an Installation administrator can create ${kinds}: ask one to create it.`;
 // The same create refused by a Restriction to a caller who administers the Installation, as the
@@ -37,7 +37,7 @@ export const GATEWAY_MANAGED_MODE_DENIED =
   "Not authorized: changing gatewayManagedMode needs Installation administer. Omit it, or ask an Installation administrator to change it.";
 // The native admin host names the grant but no Agent: the host, not the caller, names the Agent.
 export const NATIVE_ADMIN_DENIED =
-  "Not authorized: opening this Agent's native admin UI needs Agent administer on it. Ask an Installation administrator to grant it.";
+  "Not authorized: opening this Agent's browser UI needs Agent operate or administer on it. Ask an Installation administrator to grant it.";
 // An IAM AccessBinding subject that is an email, and one that is no eligible principal: an unknown
 // ID gets the same answer as an ineligible one (finding D753).
 export const BINDING_SUBJECT_EMAIL =
@@ -71,7 +71,7 @@ export const credentialSourceFieldRequired = (type, field) =>
     : `Credential source type ${type} requires ${field}: add it.`;
 // Agent save, provisioning and deploy (packages/occ/src/errors.ts RepositoryBindingSelectionError).
 export const REPOSITORY_SELECTION_NOT_APPROVED =
-  "These repository selections are not approved for this Namespace: each repository must be approved here for its profile and listed once, at most 16. Choose from the repository options, or ask an Installation administrator to approve it.";
+  "Choose up to 16 distinct repositories approved for this Namespace and profile. For github-repository, all selections must have the same configured permissions. Ask an Installation administrator to check the available options.";
 export const REPOSITORY_ACCESS_OR_BINDINGS =
   "Send repositoryAccess or repositoryBindings, not both. In repositoryAccess, list each repository once, at most 16, with a defaultProfile other than github-installation.";
 export const COMPUTE_REPOSITORY_UNSUPPORTED =
@@ -98,7 +98,7 @@ export const AGENT_DELETING = "The requested Agent is being deleted.";
 export const PROTECTED_SOURCE_EMBEDDED_AGENT =
   "config.agent_id names an embedded Agent, and a protected credential source serves only a dedicated Agent. Name a dedicated Agent in this Namespace.";
 export const protectedSourceTypeRefused = (type, types) =>
-  `The selected Credential Proxy cannot protect ${type} sources, and a Proxy protects every new source. Ask an Installation administrator, or create a type it protects: ${types}.`;
+  `The selected Credential Proxy cannot protect ${type} sources. Ask an Installation administrator, or create a type it protects: ${types}.`;
 export const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
   "Credential source Secrets cannot cross Namespaces.";
 // Withdrawal of a source the Agent's active revision does not use (409).
@@ -195,10 +195,8 @@ export const STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION = `This cancels a deployment i
 // The Agent is already requested to stop: Request Stop again only repeats the request (D815).
 export const STOP_REPEAT_CONFIRMATION = `This Agent is already requested to stop. This sends the stop request again; use it if an earlier stop did not finish. ${STOP_KEEPS}`;
 // The Agent page's Stop row, by whether Stop would cancel a first deployment in progress.
-export const STOP_CANCELS_FIRST_DEPLOYMENT =
-  "Cancels the deployment in progress. The Agent stays and can be deployed again.";
-export const STOP_RUNNING_VERSION =
-  "Stops the running version. The Agent stays and can be deployed again.";
+export const STOP_CANCELS_FIRST_DEPLOYMENT = "Cancels this deployment without deleting Agent data.";
+export const STOP_RUNNING_VERSION = "Stops the running version without deleting Agent data.";
 // Each version has its own AgentRevision read grant, so a reader who deploys still needs read on
 // each new version, granted after it exists.
 export const NEW_VERSIONS_READ =
@@ -389,6 +387,12 @@ export const kubernetesGatewayPasswordRequirement = (alias = "default") =>
   `must be the environment reference {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates`;
 export const KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT = kubernetesGatewayPasswordRequirement();
 export const KUBERNETES_GATEWAY_PASSWORD_REFUSAL = `Configuration setting gateway.auth.password ${KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT}.`;
+// A Dedicated Codex Configuration without gateway.auth.password, where the Installation applies the
+// workspace node at runtime: every activation failed AGENT_GATEWAY_UNAUTHORIZED (finding 3132), so
+// save, preflight, provisioning and deploy admission refuse it.
+export const kubernetesWorkspaceNodePasswordRefusal = (alias = "default") =>
+  `Configuration setting gateway.auth.password must be the environment reference {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"} on a Dedicated Codex Agent: its Gateway uses it to apply the workspace node.`;
+export const KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL = kubernetesWorkspaceNodePasswordRefusal();
 // Kubernetes Configuration save, provisioning and deploy admission refuse a trusted-proxy allowlist
 // and a device auto-approval the Gateway would refuse, naming no submitted identity (finding 3032).
 // The allowlist text says which identities match case-insensitively, so a case duplicate reads as
@@ -567,11 +571,11 @@ export const WORKSPACE_API_UNREACHABLE =
   "The request did not reach the API. Check your connection, then reload this file.";
 // A Stop that the API accepted for an Agent with a running version.
 export const STOP_REQUESTED =
-  "Stop requested. This Agent will not start again until you deploy a new version. The console does not show when its runtime finishes shutting down.";
+  "Stop requested. Deploy a new version to restart. Runtime shutdown is not verified here.";
 // A Stop that the API accepted while a first deployment was queued or in progress.
 export const STOP_REQUESTED_FIRST_DEPLOYMENT =
-  "Stop requested. The deployment in progress is cancelled, and this Agent will not start until you deploy a new version.";
-// The Stop panel with no version selected and no first deployment it cancelled.
+  "Deployment cancellation requested. Deploy a new version to restart.";
+// The Stop panel with no version selected and no first-deployment Stop requested here.
 export const STOPPED_NO_VERSION =
   "No version is selected. Deploy a new version to start this Agent.";
 // A Stop status read that failed: the prefix, then why (agents/stop.mts).
@@ -990,7 +994,7 @@ export const currentHarnessAuthDenied = (grant, target) =>
 // Native admin status for a caller without Agent administer, on an Installation with native admin
 // off: the grant alone would not open it (finding D762).
 export const nativeAdminOffDenied = (target) =>
-  `${callerDenied("Agent administer", target)} Native admin is also off on this Installation, so the grant alone would not open it.`;
+  `${callerDenied("Agent operate", target)} Native admin is also off on this Installation, so the grant alone would not open it.`;
 // A request path no route has (finding D764): a trailing slash says so; any other names no route.
 export const ROUTE_TRAILING_SLASH = "No API route has this path: remove the trailing slash.";
 export const ROUTE_NOT_FOUND = "No API route has this path. Check it against the API reference.";

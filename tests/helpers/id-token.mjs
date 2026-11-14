@@ -4,6 +4,7 @@ import { generateKeyPairSync, sign } from "node:crypto";
 // digest a test can each choose independently. Used by the ID-token verifier tests and by
 // the fake Google and OIDC providers in human-login-transport.mjs and production-sign-in.mjs.
 
+/** @param {string} kid */
 export function rsaSigningKey(kid, modulusLength = 2048) {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength });
   return {
@@ -13,6 +14,7 @@ export function rsaSigningKey(kid, modulusLength = 2048) {
   };
 }
 
+/** @param {unknown} value */
 export function encodeSegment(value) {
   return Buffer.from(typeof value === "string" ? value : JSON.stringify(value)).toString(
     "base64url",
@@ -21,6 +23,14 @@ export function encodeSegment(value) {
 
 // Returns token(payload, options): RS256 with `signingKey` named by its kid unless the
 // options replace the header, the private key or the digest.
+/**
+ * @param {ReturnType<typeof rsaSigningKey>} signingKey
+ * @returns {(payload: unknown, options?: {
+ *   header?: Record<string, unknown>,
+ *   key?: import("node:crypto").KeyObject,
+ *   algorithm?: string,
+ * }) => string}
+ */
 export function idTokenSigner(signingKey) {
   return (
     payload,

@@ -22,14 +22,17 @@ import {
   openShellProviderName,
   openShellWorkspaceName,
 } from "../../apps/controller/src/backends/openshell.ts";
-import { TransientDependencyError } from "../../packages/occ/src/index.ts";
+import {
+  SandboxRevisionUnsupportedError,
+  TransientDependencyError,
+} from "../../packages/occ/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
 import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
 import { agentClients } from "../helpers/egress-custody-observations.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { relaySockets } from "../helpers/socket-relay.mjs";
+import { relaySockets } from "../helpers/socket-relay.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const grpc = require("@grpc/grpc-js");
@@ -992,13 +995,26 @@ test("OpenShell client reports a refused CreateSandbox request_id from its Error
     );
     return { code: grpc.status.FAILED_PRECONDITION, details: `refused ${reason}`, metadata };
   };
+  const labelRefusal = "external resource not admitted by required labels";
+  const plainPreconditions = {
+    PLAIN: "provider 'x' not found",
+    PVC_LABELS: `PersistentVolumeClaim 'fixture/private-claim': ${labelRefusal}`,
+    CLASS_LABELS: `RuntimeClass 'private-class': ${labelRefusal}`,
+    REFLECTED: `reflected PersistentVolumeClaim 'fixture/private-claim': ${labelRefusal}`,
+  };
+  const metadataRefusal =
+    "create sandbox failed: gateway is forbidden from reading metadata for RuntimeClass 'private-class' (Kubernetes 403); check gateway RBAC";
   const server = new grpc.Server();
   server.addService(OpenShell.service, {
     CreateSandbox(call, callback) {
       const [reason, domain, code] = call.request.name.split("|");
+      if (reason === "CLASS_METADATA") {
+        callback({ code: grpc.status.INTERNAL, details: metadataRefusal });
+        return;
+      }
       callback(
-        reason === "PLAIN"
-          ? { code: grpc.status.FAILED_PRECONDITION, details: "provider 'x' not found" }
+        Object.hasOwn(plainPreconditions, reason)
+          ? { code: grpc.status.FAILED_PRECONDITION, details: plainPreconditions[reason] }
           : failure(reason, domain || undefined, code === undefined ? undefined : Number(code)),
       );
     },
@@ -1032,19 +1048,38 @@ test("OpenShell client reports a refused CreateSandbox request_id from its Error
       });
     }
     // Only OpenShell's own replay reasons are refusals; anything else is the handler's error.
-    for (const name of [
-      "REQUEST_OUTCOME_UNCERTAIN|example.com",
+    for (const [name, validationCategory] of [
+      ["REQUEST_OUTCOME_UNCERTAIN|example.com", "UNKNOWN"],
       // The details envelope must carry the same status code.
-      `REQUEST_OUTCOME_UNCERTAIN||${grpc.status.ABORTED}`,
-      "SANDBOX_INVALID",
-      "PLAIN",
+      [`REQUEST_OUTCOME_UNCERTAIN||${grpc.status.ABORTED}`, "UNKNOWN"],
+      ["SANDBOX_INVALID", "UNKNOWN"],
+      ["PLAIN", "UNKNOWN"],
+      ["PVC_LABELS", "PVC_ADMISSION_LABELS"],
+      ["CLASS_LABELS", "CLASS_ADMISSION_LABELS"],
+      ["REFLECTED", "UNKNOWN"],
     ]) {
       await assert.rejects(create(name), (error) => {
         assert.ok(!(error instanceof OpenShellRequestReplayRefusedError));
-        assert.equal(error.code, grpc.status.FAILED_PRECONDITION);
+        assert.ok(error instanceof DependencyUnavailableError);
+        assert.equal(error.message, "OpenShell CreateSandbox failed with gRPC status 9.");
+        assert.deepEqual(error.requestDiagnostic, {
+          method: "CreateSandbox",
+          grpcStatus: grpc.status.FAILED_PRECONDITION,
+          validationCategory,
+        });
         return true;
       });
     }
+    await assert.rejects(create("CLASS_METADATA"), (error) => {
+      assert.ok(error instanceof DependencyUnavailableError);
+      assert.equal(error.message, "OpenShell CreateSandbox failed with gRPC status 13.");
+      assert.deepEqual(error.requestDiagnostic, {
+        method: "CreateSandbox",
+        grpcStatus: grpc.status.INTERNAL,
+        validationCategory: "RESOURCE_METADATA_FORBIDDEN",
+      });
+      return true;
+    });
   } finally {
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));
@@ -1115,6 +1150,65 @@ test("OpenShell client holds only the durable admission limit as a transient dep
         return true;
       });
     }
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  }
+});
+
+test("OpenShell client fails a Harness Pod label refusal permanently", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    // The pinned gateway's Kubernetes driver refuses template label keys missing from its
+    // allowed_pod_labels with INVALID_ARGUMENT, naming the sorted keys.
+    CreateSandbox: (call, callback) =>
+      callback({ code: grpc.status.INVALID_ARGUMENT, details: call.request.name }),
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  const create = (details) =>
+    client.createSandbox(
+      {
+        name: details,
+        workspace: "tenant-workspace",
+        requestId: "0b3a6f52-6c8e-4d55-9a3c-4b8f2a1d7e90",
+        labels: {},
+        annotations: {},
+        spec: {},
+        serviceExposures: [],
+      },
+      AbortSignal.timeout(2_000),
+    );
+  try {
+    // The gateway configuration refuses the same keys on every create, so the worker must fail
+    // the deployment at once with a named code instead of retrying it as an outage.
+    await assert.rejects(
+      create(
+        "pod labels not permitted by the gateway's allowed_pod_labels: app.kubernetes.io/managed-by, openclaw.dev/agent",
+      ),
+      (error) => {
+        assert.ok(error instanceof SandboxRevisionUnsupportedError, String(error));
+        assert.ok(!(error instanceof DependencyUnavailableError));
+        assert.equal(error.code, "SANDBOX_POD_LABELS_NOT_PERMITTED");
+        assert.match(
+          error.message,
+          /Harness Pod labels app\.kubernetes\.io\/managed-by, openclaw\.dev\/agent; add them to the gateway's Kubernetes driver allowed_pod_labels/,
+        );
+        return true;
+      },
+    );
+    // Other create-time validation stays an ordinary retryable gateway failure.
+    await assert.rejects(create("driver_config.kubernetes: unknown field `env`"), (error) => {
+      assert.ok(!(error instanceof SandboxRevisionUnsupportedError), String(error));
+      assert.ok(error instanceof DependencyUnavailableError);
+      assert.match(error.message, /CreateSandbox failed with gRPC status 3/);
+      return true;
+    });
   } finally {
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));

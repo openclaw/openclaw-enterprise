@@ -19,11 +19,11 @@ the delivery contracts.
 
 ## Choose the path before changing an installation
 
-| Intended use               | Requirement and limit                                                                                                                                                                                           |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Protected static inference | Kubernetes Compute and the same installed Driver for Sandbox and Credential Proxy; explicit whole-execution authority. The bundled legacy OpenShell release cannot enforce it.                                  |
-| Prepared GitHub App access | Worker Token Service prepares credentials; OCC authorizes scope and lifetime; Credential Proxy installs and fences delivery. Protected delivery requires a qualified sender.                                    |
-| Native prepared Git        | A separate explicit Kubernetes/dedicated Codex path without Sandbox or Credential Proxy; it does not provide OpenShell isolation. See [native Git](../reference/repository-credentials/prepared-native-git.md). |
+| Intended use               | Requirement and limit                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Protected static inference | The bundled OpenShell Driver refuses new protected sources, live adoption and new revisions. Existing admitted revisions retain recovery and original-owner cleanup. Other Drivers require qualified whole-execution enforcement; see [protected static inference](../reference/credential-sources/protected-inference.md#bundled-openshell-admission). |
+| Prepared GitHub App access | Worker Token Service prepares credentials; OCC authorizes scope and lifetime; Credential Proxy installs and fences delivery. Protected delivery requires a qualified sender.                                                                                                                                                                            |
+| Native prepared Git        | A separate explicit Kubernetes/dedicated Codex path without Sandbox or Credential Proxy; it does not provide OpenShell isolation. See [native Git](../reference/repository-credentials/prepared-native-git.md).                                                                                                                                         |
 
 For a packaged Driver, select its Sandbox and Credential Proxy capabilities
 from the same registration. The [Driver selection guide](../reference/drivers/selection.md#select-a-protected-sender)
@@ -39,9 +39,15 @@ installation, including when a Gateway source or its owner must remain.
 For a reviewed development candidate, follow
 [local candidate image selection](deploy/local-openshell-images.md), including
 all three immutable OpenShell images, their source commit, and matching charts.
-Use its protected launch procedure only for the profile it prepares. It creates
-a development installation; production still requires its own trust and network setup.
+New local protected static-inference launches are retired. The launcher rejects
+`OCC_DEVELOPMENT_PROTECTED_EGRESS=1` and any presence of
+`OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` before effects, including with
+Kubernetes/OpenShell. Unset, empty or `0` protected-egress selections retain ordinary
+Gateway authentication. See the [retirement notice](deploy/local-openshell-images.md#select-the-protected-profile).
 
+The following bundled static authority configuration preserves existing admitted
+revisions and their authorization, withdrawal and cleanup. It does not re-enable
+new protected sources, live adoption or new revisions.
 For protected static inference, the Installation selects the same Driver ID in
 `backend[].drivers.credential_proxy` and `drivers.credential_proxy`. A bundled
 OpenShell authority selection has this shape:
@@ -159,7 +165,14 @@ by the running version.
 
 ## Register, authorize, and deploy an OpenAI static inference source
 
-These steps require qualified static enforcement. Use the built CLI from the
+The bundled OpenShell Driver rejects the source creation, live adoption and
+deployment operations below with `409 RESOURCE_CONFLICT`, including on existing
+installations. These steps require a [separately selected Driver](../reference/drivers/selection.md#select-a-protected-sender)
+that supports new protected static admission and has qualified static enforcement.
+For an existing bundled revision, keep its recorded owner and follow the
+[upgrade and withdrawal procedures](deploy/credential-proxy-upgrade.md).
+
+Use the built CLI from the
 repository root with `jq`, a ready Namespace, `OCC_URL`, `OCC_NAMESPACE`, and a
 private `OCC_SERVICE_KEY_FILE` for an authorized operator.
 
@@ -171,20 +184,8 @@ return here. Do not use that page's `codex-pat` variant for this profile, or fol
 its copied-key rotation and Agent-deleting cleanup as a live-adoption procedure.
 Retain `SOURCE_ID` and the Secret reference.
 
-With Credential Proxy selected, fresh `openai` registration is already live:
-
-```bash
-./bin/occ credential-source get "$SOURCE_ID" -o json
-```
-
-Require `ownerCapability: credential_gateway`, `egress.adoption: live` and
-`egress.retention: none`. Creation reads the versioned Secret without depositing
-a Gateway copy. The CLI's `GATEWAY STATUS ready` label does not prove such a copy
-exists. Keep the Gateway selected: live reads do not transfer ownership. A ready
-source alone does not prove installed enforcement.
-
-For an **existing unreferenced legacy or narrower source**, obtain the same
-consent, then explicitly adopt live reads instead:
+Registration creates a Gateway copy. Before binding the source to an Agent,
+explicitly adopt protected live reads with whole-execution consent:
 
 ```bash
 cat > source-adoption.json <<'JSON'
@@ -193,6 +194,10 @@ JSON
 ./bin/occ credential-source update "$SOURCE_ID" --file source-adoption.json
 ./bin/occ credential-source get "$SOURCE_ID" -o json
 ```
+
+Require `ownerCapability: credential_gateway`, `egress.adoption: live` and
+`egress.retention: none`. Keep the Gateway selected: adoption does not transfer
+ownership. A ready source alone does not prove installed enforcement.
 
 This update requires exact source `update` and `operate` on every referenced
 Secret, advances the source generation, and retains its Gateway owner. It does
@@ -330,14 +335,14 @@ existing Gateway refresh sources use their own
 
 ## Diagnose before retrying
 
-| Observation                                       | Action and recovery evidence                                                                                                                                                 |
-| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Source `failed`, `absent`, or missing credentials | Read `credential-source get` and its `reason`; correct the owning Secret or enrollment. Require a new successful real request, not just `ready`.                             |
-| Unavailable authority or lost installation        | Check peer TLS trust, selected Driver identity, network access, and current runtime. Keep access closed until the current installation is verified.                          |
-| Prepared material is pending or expired           | Check worker custody and issuer access. Requests and readiness cannot trigger issuance. Wait for worker recovery and verify a new allowed request within existing authority. |
-| Refresh reports `reauthorize`                     | Obtain new provider authorization through the source's supported enrollment; do not replay an old refresh token.                                                             |
-| Installation or send outcome is unknown           | Preserve the original operation and custody. Fence the old worker/recipient and reconcile through its owner; do not resend or fabricate success.                             |
-| Withdrawal remains `pending`                      | Inspect its reason and `withdrawalInProgress`; follow the withdrawal recovery procedure. Do not report revocation as complete.                                               |
+| Observation                                       | Action and recovery evidence                                                                                                                                                                                         |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source `failed`, `absent`, or missing credentials | Read `credential-source get` and its `reason`; correct the owning Secret or enrollment. Require a new successful real request, not just `ready`.                                                                     |
+| Unavailable authority or lost installation        | Check peer TLS trust, selected Driver identity, network access, and current runtime. Keep access closed until the current installation is verified.                                                                  |
+| Prepared material is pending or expired           | Check the Token Service’s issuer access. An authorized GitHub metadata request can start or join renewal until its deadline. Readiness checks and native Git broker requests still depend on background preparation. |
+| Refresh reports `reauthorize`                     | Obtain new provider authorization through the source's supported enrollment; do not replay an old refresh token.                                                                                                     |
+| Installation or send outcome is unknown           | Preserve the original operation and custody. Fence the old worker/recipient and reconcile through its owner; do not resend or fabricate success.                                                                     |
+| Withdrawal remains `pending`                      | Inspect its reason and `withdrawalInProgress`; follow the withdrawal recovery procedure. Do not report revocation as complete.                                                                                       |
 
 Public deployment status is not a token-custody ledger. If the selected owner
 cannot establish whether issuance, installation, or retirement completed, stop
