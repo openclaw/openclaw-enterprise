@@ -1076,6 +1076,25 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
     .getByRole("cell")
     .filter({ has: page.getByText("Allowed", { exact: true }) });
   assert.ok(await allowedCell.getByText(alsoAllowed, { exact: true }).isVisible());
+  const showHostRules = panel.getByRole("button", { name: "Show host rules", exact: true });
+  assert.equal(await showHostRules.count(), 0);
+  await search.fill(hostUrl + "/releases/aaaa");
+  assert.equal(await destinations.count(), 1, "a longer saved path still matches the search");
+  assert.ok(await showHostRules.isVisible(), "the URL itself has no exact rule");
+  await search.fill("https://PACKAGES.example.org/releases/unlisted-tool.tar.gz");
+  assert.equal(await destinations.count(), 0);
+  await filter.selectOption("off");
+  assert.equal(await showHostRules.count(), 0);
+  await filter.selectOption("allowed");
+  assert.ok(await showHostRules.isVisible(), "an unlisted archive can have an all-paths rule");
+  assert.equal(await panel.getByRole("status").filter({ hasText: "Show host rules" }).count(), 1);
+  await showHostRules.press("Enter");
+  assert.equal(await panel.getByRole("status").filter({ hasText: "Show host rules" }).count(), 0);
+  assert.equal(await search.inputValue(), hostUrl);
+  assert.equal(await filter.inputValue(), "allowed");
+  assert.equal(await hasFocus(search), true);
+  await destinations.getByText("HTTPS · 443 · All paths", { exact: true }).waitFor();
+  await filter.selectOption("all");
   for (const query of [
     hostUrl + archive.path.toUpperCase(),
     "https://packages.example.org:8443" + archive.path,
@@ -1083,6 +1102,18 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   ]) {
     await search.fill(query);
     assert.equal(await destinations.count(), 0, query);
+  }
+  for (const query of [
+    "http://packages.example.org/releases/unlisted-tool.tar.gz",
+    "https://packages.example.org:8443/releases/unlisted-tool.tar.gz",
+    hostUrl + "/releases/unlisted-tool.tar.gz?download=1",
+    hostUrl + "/releases/../unlisted-tool.tar.gz",
+    hostUrl + "/releases/%2e%2e/unlisted-tool.tar.gz",
+    "https://*.example.org/releases/unlisted-tool.tar.gz",
+    "https://packages.example.org@another.org/releases/unlisted-tool.tar.gz",
+  ]) {
+    await search.fill(query);
+    assert.equal(await showHostRules.count(), 0, query);
   }
   await search.fill("missing.example");
   assert.equal(await archiveRow.count(), 0);
@@ -1105,6 +1136,7 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   assert.equal(await hasFocus(path), true);
   assert.equal(pathRequests(requests, "POST", base + "/apply").length, 0);
   await path.fill(next.path);
+  await page.clock.install();
   await path.press("Enter");
   await panel.getByText("Pending confirmation", { exact: true }).waitFor();
   await nextRow
@@ -1131,8 +1163,12 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   );
   policy.application = { ...pending, state: "failed", reason: "PROTECTED_DOWNLOAD_UNCONFIRMED" };
   view.protectedDownloads = { state: "unavailable", reason: "installation-unconfirmed" };
-  await refresh.click();
+  await search.fill(hostUrl + "/releases/unlisted-tool.tar.gz");
+  await showHostRules.focus();
+  await page.clock.fastForward(3000);
   await panel.getByRole("alert").filter({ hasText: "Confirmation failed" }).waitFor();
+  assert.equal(await hasFocus(showHostRules), true);
+  await search.fill("");
   await panel.getByText("Receipt details", { exact: true }).press("Enter");
   await panel.getByText("PROTECTED_DOWNLOAD_UNCONFIRMED", { exact: true }).waitFor();
   await nextRow
@@ -1349,6 +1385,10 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   assert.equal(await add.count(), 0);
   assert.equal(await priorRow.getByRole("button", { name: "Enable" }).count(), 0);
   assert.equal(await priorRow.getByLabel(/^More actions for /).count(), 0);
+  // A viewer can inspect a saved host rule even when this revision has no confirmed access.
+  await search.fill(priorUrl + "/mirror/unlisted.gz");
+  await showHostRules.press("Enter");
+  await priorRow.getByText("Off on this revision", { exact: true }).waitFor();
   await search.fill(prior.host);
   const reread = responseTo(page, "GET", fixture.origin + base);
   await refresh.press("Enter");

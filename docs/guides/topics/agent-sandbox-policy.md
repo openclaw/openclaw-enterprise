@@ -84,6 +84,16 @@ it and name the grant. After a timeout or unconfirmed
 application, refresh and inspect the recorded state before another explicit
 request; do not assume the provider rejected the change.
 
+## Find the host rule for an unlisted archive
+
+On the running Agent’s **Network policy** tab, paste the full archive URL into
+**Search destinations** under **Protected downloads**. Choose **All access
+states** if the filter hides the host rule. If the message says there is no
+exact rule and the host has an all-paths rule, choose **Show host rules**. The
+search changes to the URL’s scheme, hostname, and port and keeps the selected
+access filter. Read **Confirmed access** on the **All paths** row for this
+revision’s download policy status.
+
 ## Check access after disabling a protected download
 
 On the running Agent’s **Network policy** tab, search for the hostname or archive

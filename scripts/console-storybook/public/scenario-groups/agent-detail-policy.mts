@@ -272,6 +272,7 @@ export function createAgentDetailPolicyScenarios({
                 steps: [
                   "In Protected downloads, search for no-match and check that No destinations match your search appears. Clear the search to see the host and /releases/tool.tar.gz again. Both are Allowed under Confirmed access.",
                   "Under Filter destinations, choose Off. The approved mirror appears with Enable. Choose All access states to return to the full list.",
+                  "Choose Allowed under Filter destinations and paste https://downloads.example.org/releases/unlisted-tool.tar.gz into Search destinations. The message says there is no exact rule and the host has an all-paths rule. Choose Show host rules. Check that the search changes to https://downloads.example.org:443, the filter stays on Allowed, and the All paths row shows Allowed under Confirmed access. Clear the search and choose All access states.",
                   "Choose Disable on the archive row. Wait for Confirmed. The archive still has Agent approval and shows Covered by host with https://downloads.example.org:443. The host stays Allowed.",
                   "Choose Add destination. Enter artifacts.example.net, keep HTTPS, leave Exact archive path empty, and choose Allow download. Wait for Confirmed and open Receipt details to see the change.",
                   "For artifacts.example.net, open the More actions menu (⋯) and choose Withdraw approval. Wait for Confirmed. Check that the added destination disappears and downloads.example.org stays Allowed. Reset story to repeat.",

@@ -737,6 +737,7 @@ export function renderAgentSandboxPolicy(
     title:
       "For a shared host, enter the exact path approved by the Installation. Omit query parameters and fragments.",
   });
+  const literalArchivePath = new RegExp(`^${archive.pattern}$`);
   const protocol = element(
     "select",
     { "aria-label": "Protocol" },
@@ -1062,6 +1063,16 @@ export function renderAgentSandboxPolicy(
     );
     const count = element("p", { className: "network-admin__count", role: "status" });
     const emptyMessage = element("p");
+    let matchingHostUrl = "";
+    const showHostRules = button(
+      "Show host rules",
+      () => {
+        downloadSearch.value = matchingHostUrl;
+        filterDestinations();
+        downloadSearch.focus();
+      },
+      { tone: "link", size: "sm", "data-download-control": "show-host-rules" },
+    );
     const reset = button(
       "Clear filters",
       () => {
@@ -1072,7 +1083,13 @@ export function renderAgentSandboxPolicy(
       },
       { tone: "link", size: "sm" },
     );
-    const empty = element("div", { className: "network-admin__empty" }, emptyMessage, reset);
+    const empty = element(
+      "div",
+      { className: "network-admin__empty" },
+      emptyMessage,
+      showHostRules,
+      reset,
+    );
     const entries: {
       row: HTMLTableRowElement;
       url: string;
@@ -1251,34 +1268,56 @@ export function renderAgentSandboxPolicy(
       const slash = query.indexOf("/", schemeEnd < 0 ? 0 : schemeEnd + 3);
       const hostTerm = (slash < 0 ? query : query.slice(0, slash)).toLowerCase();
       const pathTerm = slash < 0 ? "" : query.slice(slash);
+      // Check the pasted spelling before a URL parser can normalize dot segments or escapes.
+      const archiveLookup =
+        query === downloadSearch.value &&
+        /^https?:\/\/[a-z0-9.-]+(?::[0-9]+)?\//i.test(query) &&
+        pathTerm.length <= archive.maxLength &&
+        literalArchivePath.test(pathTerm);
+      matchingHostUrl = "";
       let matches = 0;
       for (const { row, destination, state } of entries) {
         const endpoint = origin(destination);
         const path = destination.path ?? "";
+        const sameOrigin =
+          hostTerm === endpoint || hostTerm === `${destination.scheme}://${destination.host}`;
+        const matchesState = accessFilter.value === "all" || state === accessFilter.value;
+        if (archiveLookup && sameOrigin && destination.path === undefined && matchesState) {
+          matchingHostUrl = endpoint;
+        }
         const matchesQuery =
           schemeEnd >= 0
-            ? (hostTerm === endpoint ||
-                hostTerm === `${destination.scheme}://${destination.host}`) &&
-              (pathTerm === "/" || path.startsWith(pathTerm))
+            ? sameOrigin && (pathTerm === "/" || path.startsWith(pathTerm))
             : path.includes(query) || (endpoint.includes(hostTerm) && path.startsWith(pathTerm));
-        row.hidden =
-          !matchesQuery || (accessFilter.value !== "all" && state !== accessFilter.value);
+        row.hidden = !matchesQuery || !matchesState;
         if (!row.hidden) {
           matches += 1;
         }
       }
       table.hidden = !matches;
-      empty.hidden = matches > 0;
+      showHostRules.hidden = !matchingHostUrl || scopes.has(matchingHostUrl + pathTerm);
+      empty.hidden = matches > 0 && showHostRules.hidden;
       count.textContent =
         query || accessFilter.value !== "all"
           ? `${matches} of ${entries.length} destinations`
           : `${matches} destination${matches === 1 ? "" : "s"}`;
+      if (!showHostRules.hidden) {
+        count.append(
+          element(
+            "span",
+            { className: "visually-hidden" },
+            " Choose Show host rules to inspect the all-paths rule.",
+          ),
+        );
+      }
       reset.hidden = scopes.size === 0;
-      emptyMessage.textContent = scopes.size
-        ? accessFilter.value === "all"
-          ? "No destinations match your search."
-          : "No destinations match these filters."
-        : "No download destinations.";
+      emptyMessage.textContent = !showHostRules.hidden
+        ? "No exact rule for this archive. This host has an all-paths rule."
+        : scopes.size
+          ? accessFilter.value === "all"
+            ? "No destinations match your search."
+            : "No destinations match these filters."
+          : "No download destinations.";
     }
     downloadSearch.oninput = filterDestinations;
     accessFilter.onchange = filterDestinations;

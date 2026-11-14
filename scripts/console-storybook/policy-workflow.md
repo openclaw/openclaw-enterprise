@@ -76,19 +76,26 @@ Open **Pages/Agent detail → Protected Downloads stay covered by a host rule**.
    to see the host and `/releases/tool.tar.gz` again. Both show **Allowed** under
    **Confirmed access**. Under **Filter destinations**, choose **Off** to see
    the approved mirror. Choose **All access states** to return to the full list.
-2. Paste `https://downloads.example.org/releases/tool.tar.gz` into **Search
+2. Under **Filter destinations**, choose **Allowed**. Paste
+   `https://downloads.example.org/releases/unlisted-tool.tar.gz` into **Search
+   destinations**. Check that the message says there is no exact rule and the
+   host has an all-paths rule. Choose **Show host rules**. The search changes to
+   `https://downloads.example.org:443` and the filter stays on **Allowed**.
+   Check that the **All paths** row shows **Allowed** under **Confirmed access**.
+   Clear the search and choose **All access states**.
+3. Paste `https://downloads.example.org/releases/tool.tar.gz` into **Search
    destinations**. Only the exact archive appears. Under **Allowed**, check for
    **Also allowed by host · https://downloads.example.org:443**. Choose
    **Disable** on that row and wait for **Confirmed**. The archive keeps its
    Agent approval and shows **Covered by host** with `https://downloads.example.org:443`.
-3. Open **More actions** (⋯) on the same archive and choose **Withdraw approval**.
+4. Open **More actions** (⋯) on the same archive and choose **Withdraw approval**.
    Wait for **Confirmed**, then choose **Refresh**. The archive shows **Off**,
    **No Agent approval**, and **Covered by host**. Clear the search to see
    **Allowed** on the host rule that still permits the archive.
-4. Choose **Add destination**. Enter `artifacts.example.net` in **Hostname**,
+5. Choose **Add destination**. Enter `artifacts.example.net` in **Hostname**,
    keep HTTPS, leave **Exact archive path** empty, and choose **Allow download**.
    Wait for **Confirmed**. Open **Receipt details** to see the change.
-5. On the new destination, open **More actions** (⋯) and choose **Withdraw approval**.
+6. On the new destination, open **More actions** (⋯) and choose **Withdraw approval**.
    Wait for **Confirmed**. The added destination disappears and
    `downloads.example.org` stays **Allowed**. Choose **Reset story** to repeat.
 
