@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type RequestListener } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,7 @@ import {
   createApi,
   createStepRecorder,
   observeAgentStop,
+  retirementWait,
   smokeSlotNames,
   stoppedGatewaySummary,
   waitFor,
@@ -114,6 +115,99 @@ test("smoke timing retains failure and omits pending branches and free-form data
     ],
   });
   pending.resolve();
+});
+
+test("smoke retirement notices report only reached Actions waits outside the v1 report", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-retirement-"));
+  const path = join(directory, "notices");
+  const sink = await open(path, "w");
+  t.after(async () => {
+    await sink.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const noticeStream: { fd: number } = process.stderr;
+  const originalNoticeFd = noticeStream.fd;
+
+  let clock = 100;
+  const now = () => clock;
+  const recorder = createStepRecorder(now);
+  const error = new Error("unpublished retirement diagnostic sentinel");
+  const result = { value: "unpublished retirement result sentinel" };
+  noticeStream.fd = sink.fd;
+  try {
+    await withEnvironment({ GITHUB_ACTIONS: undefined }, async () => {
+      assert.equal(await retirementWait("held sockets", () => result, now), result);
+    });
+    await withEnvironment({ GITHUB_ACTIONS: "true" }, async () => {
+      await assert.rejects(
+        retirementWait(
+          "unpublished unknown label sentinel",
+          () => {
+            throw error;
+          },
+          now,
+        ),
+        (reason) => reason === error,
+      );
+      await assert.rejects(
+        recorder.smokeStep("reader-retirement", async () => {
+          const returned = await retirementWait(
+            "held sockets",
+            () => {
+              clock = 107;
+              return result;
+            },
+            now,
+          );
+          assert.equal(returned, result);
+          await retirementWait(
+            "observeReaderPeer withdraw",
+            async () => {
+              clock = 120;
+              throw error;
+            },
+            now,
+          );
+          assert.fail("rejection must stop the retirement sequence");
+        }),
+        (reason) => reason === error,
+      );
+
+      await retirementWait(
+        "held sockets",
+        () => {
+          clock = Infinity;
+        },
+        now,
+      );
+      clock = 120;
+      noticeStream.fd = -1;
+      assert.equal(await retirementWait("held sockets", () => result, now), result);
+      await assert.rejects(
+        retirementWait(
+          "observeReaderPeer withdraw",
+          async () => {
+            throw error;
+          },
+          now,
+        ),
+        (reason) => reason === error,
+      );
+    });
+  } finally {
+    noticeStream.fd = originalNoticeFd;
+  }
+
+  assert.equal(
+    await readFile(path, "utf8"),
+    '::notice title=First Agent Smoke retirement wait::{"stage":"held-sockets","durationMs":7,"outcome":"ok"}\n' +
+      '::notice title=First Agent Smoke retirement wait::{"stage":"peer-withdrawal","durationMs":13,"outcome":"failed"}\n',
+  );
+  await recorder.writeTimingReport(directory);
+  assert.equal(
+    await readFile(join(directory, "first-agent-smoke-timing.json"), "utf8"),
+    '{"version":1,"rows":[{"phase":"reader-retirement","startMs":0,"endMs":20,"status":"failed"}]}\n',
+  );
 });
 
 test("chat proof accepts the deterministic assistant answer", () => {

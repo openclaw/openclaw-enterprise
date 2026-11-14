@@ -17,6 +17,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { writeSync } from "node:fs";
 import {
   appendFile,
   chmod,
@@ -1982,10 +1983,29 @@ process.stdin.on('data', () => { clearInterval(interval); agent.destroy(); proce
   return { child, done, count: () => (output.match(/^ok$/gm) ?? []).length, closed: () => closed };
 }
 
+const retirementWaitStages = new Map([
+  ["held sockets", "held-sockets"],
+  ["observeReaderPeer withdraw", "peer-withdrawal"],
+  ["old Harness Pod termination", "old-harness-pod-termination"],
+  ["retired sockets closed", "retired-sockets-closed"],
+  ["successor deploy", "successor-deploy"],
+  ["selected control after unselected probe", "selected-control-after-unselected-probe"],
+]);
+
 // One line per proveRetirement sub-wait, so a slow retirement step names its slow wait
 // (61fba7ca2 spent 357 s of that step in silence). Logged on failure too.
-async function retirementWait(name, operation) {
+/** @template T @param {string} name @param {() => T} operation */
+export async function retirementWait(name, operation, now = () => performance.now()) {
   const started = Date.now();
+  const stage = process.env.GITHUB_ACTIONS === "true" ? retirementWaitStages.get(name) : undefined;
+  let observedAt;
+  if (stage !== undefined) {
+    try {
+      observedAt = now();
+    } catch {
+      // A clock failure leaves the wait unobserved.
+    }
+  }
   let outcome = "FAILED";
   try {
     const result = await operation();
@@ -1995,6 +2015,20 @@ async function retirementWait(name, operation) {
     log(
       `reader retirement: ${name} ${outcome} at ${new Date().toISOString()} after ${Date.now() - started} ms`,
     );
+    if (observedAt !== undefined) {
+      try {
+        const durationMs = Math.round(now() - observedAt);
+        if (Number.isSafeInteger(durationMs) && durationMs >= 0) {
+          const notice = { stage, durationMs, outcome: outcome === "ok" ? "ok" : "failed" };
+          writeSync(
+            process.stderr.fd,
+            `::notice title=First Agent Smoke retirement wait::${JSON.stringify(notice)}\n`,
+          );
+        }
+      } catch {
+        // Optional timing must preserve the operation's result or rejection.
+      }
+    }
   }
 }
 
