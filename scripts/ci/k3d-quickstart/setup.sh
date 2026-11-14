@@ -29,6 +29,6 @@ workspace_check -f BOOTSTRAP.md
 
 save_session
 export agent namespace revision CONSOLE_ORIGIN
-node scripts/ci/k3d-quickstart/browser.mjs onboard
+node scripts/ci/k3d-quickstart/browser.ts onboard
 workspace_check ! -e BOOTSTRAP.md
 source "$RUN_DIR/setup-after-browser.sh"
