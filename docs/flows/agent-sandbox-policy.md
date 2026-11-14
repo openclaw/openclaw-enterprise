@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-13"
-last_updated_session: "authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c"
+updated: "2026-11-14"
+last_updated_session: "codex/01a1d8ae-1c75-7651-81c5-409d7a39f0fc"
 ---
 
 # Agent sandbox policy flow
@@ -88,20 +88,26 @@ repository admission can carry the Sandbox Driver's explicitly acknowledged
 identity, version and empty additions before runtime credential provisioning.
 That immutable snapshot remains ineligible for ordinary live apply.
 
-For a running protected Agent, the Console’s **Downloads** section reads the selected
-Sandbox and Credential Proxy Drivers. Both must confirm the same current Sandbox and
-policy before offering an edit. Installation administrators can approve a new hostname
-for this Agent. Delegated editors can enable or disable an approved destination.
-HTTP mirrors and shared archive paths must match the Installation’s `protectedDownloads`
-limits. The stock OpenShell pair reports that it lacks this capability.
+On a running protected Agent, **Network policy → Downloads** requires both the Sandbox
+and Credential Proxy Drivers to confirm the current Sandbox and policy. Stock OpenShell
+lacks this capability.
 
-**Allow download** saves the desired change and queues one operation on the active
-revision. The worker records its intent before the provider write. After a lost response
-it looks up that operation. The Console shows the previous confirmed destinations until
-both Drivers confirm the new policy on the same Sandbox and supervisor instance.
-A refusal before the provider write restores the earlier approval and desired lists.
-If the write outcome is unknown, the worker retains the original operation for
-reconciliation. Withdrawal follows the same path and applies to new connections.
+1. With policy editing enabled, enter the hostname (HTTPS, port 443). For a shared
+   host, enter the exact archive path allowed by the Installation’s `protectedDownloads`
+   limits. HTTP on port 80 requires a listed mirror.
+2. Choose **Allow download** to let approved clients read from this destination.
+   Edits require Agent `manage_policy` and SandboxPolicy `read` and `update`.
+   Approving a new hostname for this Agent also requires Installation `administer`.
+   Delegated editors can enable or disable approved destinations.
+3. Wait for confirmation. OCC saves the desired change and queues one operation on the
+   active revision. The Console shows the previous confirmed destinations until both
+   Drivers confirm the new policy on the same Sandbox and supervisor instance.
+
+The worker records intent before writing. A pre-write refusal restores the prior
+approval and desired lists. After an uncertain write, the worker retains and looks up
+the original operation. **Withdraw approval** requires Installation `administer` and
+removes access that depends on that approval. Confirmation stops new connections
+that relied on the approval. Existing transfers can finish.
 
 Protected Codex repository preparation compiles the revision's qualified artifact
 snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
@@ -201,35 +207,31 @@ metadata disables prefilling. An incomplete existing draft must be corrected
 before staging more grants. `ruleList` searches and pages explicit rules five at
 a time; row controls edit or remove local additions.
 
-`console/agents/sandbox-policy.mts:renderPolicy` places policy status and suggestions
-above the log. It shows three suggestions initially and expands the remaining
-candidates on request, independently of mutation authority. `openNetworkLimits`
-uses the policy view's ceiling in a separate read-only dialog. Defaults and
-version details stay in the main-page disclosure. The Network policy card also enables or disables Agent policy editing
-through the separately authorized editing operation. Mutation feedback appears in
-the card while the dialog is closed; a failed policy read retains its error and
-read recovery action. `renderEditor` manages rules without an editing toggle and
-keeps proposed rules local until preview. Its footer compares the draft with saved
-additions, including removals and restored values, to offer review, application,
-or Done. Saving a confirmed response closes the dialog and clears the completed
-selection. Review shows additions, updates, and removals from the controller-validated rules,
-with the previously saved policy available for comparison. Save sends the complete
-validated array with the reviewed policy version. Superseded preview and read responses
-cannot overwrite a newer draft. Policy reads use a separate sequence: an earlier response
-cannot invalidate a newer request. A pending application re-arms polling after
-the latest read, including a response discarded after a draft edit.
-An unreadable preview retains the draft for another review. The combined request
-must return the reviewed rules, the next version of this Agent’s policy and a
-fresh pending application for the selected running revision. Starting a write
-invalidates earlier policy reads and pauses polling. If the combined response is
-lost or does not match, the Console reads the policy again. An unsuccessful
-read leaves **Refresh policy** available in the open editor. A refused request
-keeps the edit local. After admission, the provider outcome remains pending
-until confirmed. **Save for later** only saves. **Apply saved rules** requires
-a clean draft and targets the existing saved version. `loadPolicy(true)` records explicit
-inspection of a failed application. Refresh issues only the policy GET; a separate
-Retry application action invokes the existing apply descriptor after inspection.
-The action remains subject to current permissions, lifecycle, and draft guards.
+`console/agents/sandbox-policy.mts:renderPolicy` shows status and three suggestions
+above the log. Readers can expand the remaining suggestions. `openNetworkLimits`
+shows the ceiling in a read-only dialog. The Network policy card shows defaults,
+version details, mutation feedback, read errors and recovery. Its editing switch
+requires separate authorization.
+
+`renderEditor` keeps edits local until preview. Its footer compares the draft with
+saved rules, including removals and restored values, to offer review, application
+or Done. Review compares controller-validated additions, updates and removals with
+the saved policy. An unreadable preview or refused request preserves the draft.
+Save sends the complete validated array and reviewed version. Confirmation closes
+the dialog and clears the selection.
+
+The Console discards superseded previews and reads. It sequences reads independently
+and resumes pending-application polling after the latest read, even if a draft edit
+invalidated the response. Starting a write invalidates earlier reads and pauses polling.
+**Save and apply** expects the reviewed rules, the next Agent policy version and a
+new pending application for the selected running revision. A lost or mismatched
+response triggers a policy read. If that fails, the editor offers **Refresh policy**.
+Provider confirmation establishes live access.
+
+**Save for later** saves the rules. **Apply saved rules** targets the saved version
+and requires a clean draft. After failure, Refresh reads the policy and
+`loadPolicy(true)` records inspection. **Retry application** invokes the apply
+descriptor after inspection, subject to current permissions, lifecycle and draft checks.
 
 `console/agents/sandbox-policy.mts:mutate` displays rejected saves as focused
 alerts and scrolls the reason into view after rendering. Ceiling rejection
@@ -237,13 +239,11 @@ preserves the attempted additions for correction without changing saved state.
 `console/navigation.mts:createNavigation` admits the `policy` tab in login
 destinations, preserving an Agent's Policy denials link after sign-in.
 
-The console reads the policy owner even when discovery returns no descriptor. This
-read establishes an unsupported capability or a permission refusal before log and
-suggestion reads continue under their own permissions. It cannot leave those reads
-waiting for a policy request that never starts. When the caller's permission answer
-reports `sandboxPolicyRead` as `false`, the console skips the policy and suggestion
-reads and says so; an unknown answer keeps the reads. A tab opened after the answer
-settled rereads it first, so a later grant applies. A version snapshot without
+Even without a discovery descriptor, the Console reads the policy owner to check
+capability and access. Log and suggestion reads use their own permissions.
+If `sandboxPolicyRead` is `false`, the tab skips policy and suggestion reads.
+An unknown answer allows the reads. Opening the tab rechecks a settled answer
+so later grants apply. A version snapshot without
 `sandboxDriverId` runs without a Sandbox, so the tab skips its log and suggestion reads
 and says no denials are recorded. A `RUNTIME_LOGS_SOURCE_UNAVAILABLE` answer shows the same.
 Then, and on the draft, which reads no log, the denial count, refresh, follow and filter
@@ -277,6 +277,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-14 06:12: Clarify protected download approval, confirmation and policy review. (codex/01a1d8ae-1c75-7651-81c5-409d7a39f0fc - d68863e5de057c7513eb581389561173031aa48d)
 
 - 2026-11-13 22:21: Reject policy saves that remove a pending application. (authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c - cf0370780b4e885e35ee463033b6926e5d3109ef)
 
