@@ -1,6 +1,6 @@
 ---
 created: 2026-09-27
-updated: 2026-11-05
+updated: 2026-11-14
 last_updated_session: authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e
 ---
 
@@ -61,17 +61,24 @@ platform state. A missing or foreign target is rejected before provider I/O.
 
 `packages/occ/src/index.ts:OpenClawController.lookupChannelDirectory`
 
-Production composition selects the bundled Slack ChannelDriver only when the
-API has an approved `OCC_CHANNEL_DIRECTORY_PROXY_URL`. Without it, an authorized
-lookup returns `501` before the Secret value is read. Development selects the
-Driver directly. In production the Driver tunnels requests to `slack.com:443`
-through the configured proxy. With the managed proxy enabled, Helm points the
-API at the `openclaw-enterprise-slack-proxy.<namespace>.svc` Service, sets that
-exact host in `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST`, and limits API egress
-to the proxy Pod selector. With an external literal IPv4 proxy, Helm limits API
-egress to that IP and port. The managed proxy accepts CONNECT only for Slack
-hostnames on port 443, while its NetworkPolicy allows upstream egress to public
-IPv4 addresses on TCP 443, excluding private and reserved ranges.
+Production composition selects the bundled Slack ChannelDriver. With the default
+Helm settings, the API contacts `slack.com:443` directly. If an operator configures
+a directory proxy, the Driver opens a CONNECT tunnel through it. For the managed
+proxy, Helm sets the Service URL and its trusted host in
+`OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST`. Operators own any API egress policy.
+The managed proxy accepts Slack hostnames on port 443. Its own NetworkPolicy
+permits public IPv4 destinations on TCP 443 and excludes private and reserved ranges.
+
+In `apps/controller/src/slack-proxy.mjs:createSlackProxyServer`, the managed
+proxy starts a 10-second wait when a write to the client is pending, even if
+the write buffer is below its high-water mark. The proxy clears the wait when
+all pending writes complete. A later pending write starts a new wait. A quiet
+tunnel has no write deadline. An upstream end, an upstream close, or a client
+close also clears the wait. If the wait expires with a write still pending,
+the proxy resets the client connection so a partial reply cannot appear
+complete. After a clean upstream end, a separate wait gives the client time
+to read the remaining bytes and close its side.
+
 The selected SecretDriver invokes `withValue` and verifies backend ownership.
 OCC rechecks grants and Secret backend identity after the read. It passes the
 token only in process to the ChannelDriver. The bundled Slack implementation
@@ -161,6 +168,12 @@ view.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 02:38: Trace direct and proxied API lookup. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - 847a1d6ae3599e6ddcac3e5a583d0e84eed3fcab)
+
+- 2026-11-14 00:08: Clarify pending client writes and fresh drain budgets in the accompanying Slack proxy correction. (authoring-run/7504b1da-810c-4ead-a42b-831ed5e9c3e8 - 3309c7be21ce3c3c0256eb470f294c75c2c771f1)
+
+- 2026-11-13 22:19: Document bounded client write stalls in the accompanying Slack proxy change. (authoring-run/38e47fe4-fe4c-4f85-9b86-3a9cca43424e - bf84c5566fc92f97e7f9a4f7ae1f4a5778a0e83c)
 
 - 2026-11-05 23:32: Trace direct Slack lookup from the API Server. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - 30037b3d8929ce73cb8f01dd0a9ec6ebf2d3fae6)
 
