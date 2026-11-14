@@ -6,6 +6,7 @@ import { stripVTControlCharacters } from "node:util";
 // names, database URLs) plus common token shapes is replaced.
 export const failureInputLimit = 16_384;
 const failureMessageLimit = 600;
+const credentialLineMask = "[redacted credential-bearing line]";
 const failureFrameLimit = 240;
 const minimumRedactedEnvLength = 8;
 // Runner and checkout metadata is public and shows up in ordinary messages
@@ -220,14 +221,22 @@ function redactShapes(text) {
 // After repeated nested captures, omission counts describe the current input,
 // so they only approximate how much original text was omitted.
 export function captureFailureText(text, secrets = []) {
-  // Remove whole keys and raw credential-bearing lines before a replacement can
-  // erase their marker and expose an unregistered value later on the same line.
-  let input = dropCredentialLines(stripControl(text).replace(privateKeyShape, "[redacted]"));
-  // Match known multi-line values before either window can remove their context.
-  for (const [value, name] of secrets) {
-    input = input.replaceAll(value, `[env:${name}]`);
+  // Match complete environment values before changing their multiline context.
+  // Preserve a credential marker as a fixed mask so its line's unregistered tail
+  // is still suppressed after environment replacement.
+  let input = text;
+  for (const [secret, name] of secrets) {
+    const replacement = namesCredential(stripControl(secret))
+      ? "Authorization: [redacted]"
+      : `[env:${name}]`;
+    input = input.replaceAll(secret, replacement);
   }
-  const value = redactShapes(input);
+  // Consume complete assignments before removing their opening lines; drop raw
+  // credential lines before token shapes can erase their markers.
+  const contextual = redactSecretAssignments(
+    stripControl(input).replace(privateKeyShape, "[redacted]"),
+  );
+  const value = redactShapes(dropCredentialLines(contextual));
   if (value.length <= failureInputLimit) {
     return value;
   }
@@ -328,7 +337,7 @@ export function isCredentialLine(line) {
 function dropCredentialLines(text) {
   return text
     ?.split("\n")
-    .map((line) => (namesCredential(line) ? "[redacted credential-bearing line]" : line))
+    .map((line) => (namesCredential(line) ? credentialLineMask : line))
     .join("\n");
 }
 
@@ -366,7 +375,6 @@ export function redactFailureDetail(error, secrets, root) {
 }
 
 const privateKeyEnd = /-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/u;
-const privateKeyLine = "[redacted credential-bearing line]";
 // Longer than any PEM key or ordinary PGP key block; an orphan END masks at most
 // this many lines above it.
 const orphanKeyLines = 1_024;
@@ -404,7 +412,7 @@ export function maskPrivateKeyLines(lines) {
   const masked = lines.map((line, index) => (clean[index].includes("OCSF-JSON") ? "" : line));
   const mask = (from, to) => {
     for (let index = Math.max(0, from); index <= to && index < masked.length; index += 1) {
-      masked[index] = privateKeyLine;
+      masked[index] = credentialLineMask;
     }
   };
   const end = privateKeyEnd.exec(text);

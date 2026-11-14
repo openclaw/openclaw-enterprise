@@ -2359,6 +2359,9 @@ test("run retains nested failures and complete context in diagnostics", async (t
     [
       'import test from "node:test";',
       'test("credential line", () => { throw new Error("before\\nBearer abcdefgh unrelated-runtime-value-12345\\nafter"); });',
+      'test("private assignment", () => { throw new Error("private assignment before\\n" + JSON.stringify({ private_key: { d: "fictional-private-field-not-a-key-0123" } }, null, 2) + "\\nprivate assignment after"); });',
+      'test("registered credential line", () => { throw new Error("before\\n" + process.env.CI_RUNNER_HEADER_FIXTURE + " unrelated-header-tail-0123\\nafter"); });',
+      'test("contextual environment boundary", () => { throw new Error("before\\n" + process.env.CI_RUNNER_CONTEXT_FIXTURE + "\\nafter"); });',
       'test("plain failure", () => { throw new Error("ordinary plain failure"); });',
       'test("nested cause", () => { throw new Error("ordinary wrapper", { cause: new Error("ordinary underlying failure") }); });',
       'test("aggregate failure", () => {',
@@ -2432,6 +2435,8 @@ test("run retains nested failures and complete context in diagnostics", async (t
     { ci: ["details"] },
   );
   const result = run(root, laneArgs(root, "details", statePath, resultsPath), {
+    CI_RUNNER_HEADER_FIXTURE: "Bearer abcdefgh",
+    CI_RUNNER_CONTEXT_FIXTURE: "k00000x\nprivate_key: {\nk00001x\n}\nk00002x",
     LONG_SYNTHETIC_ENVIRONMENT_FIXTURE_NAME: "fictional-value",
     CI_RUNNER_MULTILINE_FIXTURE: Array.from(
       { length: 500 },
@@ -2451,6 +2456,18 @@ test("run retains nested failures and complete context in diagnostics", async (t
     `${JSON.stringify(summary)}\n${result.stdout}\n${result.stderr}\n${text}`,
     /unrelated-runtime-value-12345/,
   );
+  assert.doesNotMatch(
+    `${JSON.stringify(summary)}\n${result.stdout}\n${result.stderr}\n${text}`,
+    /fictional-private-field-not-a-key-0123/,
+  );
+  assert.doesNotMatch(
+    `${JSON.stringify(summary)}\n${result.stdout}\n${result.stderr}\n${text}`,
+    /unrelated-header-tail-0123|k0000[012]x/,
+  );
+  const privateAssignment = record.tests.find(({ name }) => name === "private assignment");
+  assert.match(privateAssignment.message, /private assignment before/);
+  assert.match(privateAssignment.message, /private assignment after/);
+
   const details = new Map(record.tests.map((entry) => [entry.name, entry]));
   assert.equal(details.get("plain failure").message, "ordinary plain failure");
   assert.equal(details.get("plain failure").stack.includes("cause:"), false);

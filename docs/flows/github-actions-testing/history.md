@@ -207,5 +207,3 @@ This record preserves the dated changes to the GitHub Actions testing flow. See 
 - 2026-11-11 02:22: Persist defaults separately. (authoring-run/468c8b0e-17e2-4d4e-988e-f00f3434ccfa - 52faf13e94dab59c20c80b161169c1d32429da36)
 
 - 2026-11-11 02:08: Trace per-file environment precedence and preparation boundaries. (authoring-run/3950ed4c-e0a8-42f9-8fc0-6b5fa60d7d3a - 08c7419aea802667090483843a386071c13e9050)
-
-[GitHub Actions testing documentation history](github-actions-testing/history.md) preserves the older dated entries.

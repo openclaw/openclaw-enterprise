@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-14 21:15"
-last_updated_session: "authoring-run/43522968-bbfa-412f-b701-c1862347f735"
+updated: "2026-11-14 22:22"
+last_updated_session: "authoring-run/6cc19f0f-1d72-4307-92f3-33db595ddbd0"
 ---
 
 # GitHub Actions testing flow
@@ -208,7 +208,7 @@ and millisecond offsets enter [file receipts](../testing/ci/openshell-execution.
 not live logs. Readers bound partial records; parent byte limits apply first.
 Markers and separators stay out of failure tails. Timing and case accounting remain separate.
 
-Nested causes and AggregateError members suppress whole raw credential-bearing lines before shape replacement and head-and-tail windowing. Private keys are removed as whole blocks.
+Nested causes and AggregateError members match complete environment values and contextual assignments before raw credential-line filtering, token-shape replacement and head-and-tail windowing. Credential-bearing environment replacements keep a fixed marker until line filtering. Private keys are removed as whole blocks.
 
 Required cases must pass; skips and TODOs fail. Synthetic wrappers, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Results retain failure, timeout and cleanup outcomes.
 
@@ -305,6 +305,8 @@ awaits an approved resource ledger.
 
 ## Changelog
 
+- 2026-11-14 22:22: Preserve assignment and environment context before raw-line filtering. (authoring-run/6cc19f0f-1d72-4307-92f3-33db595ddbd0 - 1aaa74f56cee9e3232355e8f602a69f8ae9defa6)
+
 - 2026-11-14 21:15: Filter raw credential lines before reporter capture. (authoring-run/43522968-bbfa-412f-b701-c1862347f735 - de8494ace762aa5903fd1119b67bb493b4faa579)
 
 - 2026-11-14 13:17: Validate options. (authoring-run/d26b1f82-7e6f-460d-97d3-6a187c060e96 - cc06a6ec22b7071dc7913086a0d891da53d8f8be)
@@ -314,3 +316,5 @@ awaits an approved resource ledger.
 - 2026-11-12 04:19: Reconcile admission history. (authoring-run/8af5a8e8-5e42-409d-b53e-989087ed46ce - e17d59871db7fbdf53543e055236a849d33f9efd)
 
 - 2026-11-12 04:02: Repair admission diagnostics. (authoring-run/8403e2bb-cd27-449b-8ae7-ef78b7a05922 - 61ec16d5f18a8875213dd072b97384a880f82b25)
+
+[GitHub Actions testing documentation history](github-actions-testing/history.md) preserves the older dated entries.
