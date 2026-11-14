@@ -75,7 +75,7 @@ See the [settings reference](../reference/settings.md) for YAML shape and values
 `apps/controller/src/api-startup.ts:startApi`
 
 Worker (`apps/controller/src/worker.mjs`), bootstrap
-(`scripts/bootstrap-installation.mjs`), and migration (`scripts/migrate-production.mjs`)
+(`scripts/bootstrap-installation.mjs`), and migration (`scripts/migrate-production.ts`)
 use Pino at the selected level. The API disables Fastify request logging.
 Bootstrap and migration separate protocol success output from structured
 failures. Before Pino writes, `apps/controller/src/logging.ts:emitOccLogEvent`

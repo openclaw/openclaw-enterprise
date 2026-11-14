@@ -31,6 +31,8 @@ const signinChanges = [
   "runtime",
   "catalog-source",
   "historical-auth",
+  "historical-migration",
+  "typed-migration",
   "probe",
 ] as const;
 
@@ -127,6 +129,16 @@ async function checkWorkflowCommand(
     // The historical controller image copied this entry point into the production target.
     const file = join(root, "scripts/auth-maintain.mjs");
     await writeFile(file, (await readFile(file, "utf8")) + "\n// Unreviewed entry point change\n");
+  }
+  if (signin === "historical-migration") {
+    const file = join(root, "scripts/migrate-production.mjs");
+    await writeFile(
+      file,
+      (await readFile(file, "utf8")) + "\n// Unreviewed migration entry point\n",
+    );
+  }
+  if (signin === "typed-migration") {
+    await cp("scripts/migrate-production.ts", join(root, "scripts/migrate-production.ts"));
   }
   if (signin === "probe") {
     // The new script is a production build input even though the reviewed pair has only .mjs.

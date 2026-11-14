@@ -465,7 +465,7 @@ test(
             automountServiceAccountToken: false,
             restartPolicy: "Never",
             securityContext: record(template.securityContext),
-            containers: [{ ...migration, args: ["scripts/migrate-production.mjs"] }],
+            containers: [{ ...migration, args: ["scripts/migrate-production.ts"] }],
             volumes: array(template.volumes).filter((volume) =>
               mounts.has(string(record(volume).name)),
             ),

@@ -1,11 +1,21 @@
-import { migrateWithHistory, UnsupportedPostgresVersionError } from "./migration-history.mjs";
+import type { Pool } from "pg";
+import {
+  migrateWithHistory as executeMigration,
+  UnsupportedPostgresVersionError,
+} from "./migration-history.mjs";
 import { createPostgresPool } from "../packages/occ/src/state/postgres-pool.ts";
 import { createOccLogger, emitOccLogEvent } from "../apps/controller/src/logging.ts";
 // Not installation-config.ts: it loads every Driver, and this command runs once per migrated database.
 import { loadOperationalLoggingConfiguration } from "../apps/controller/src/composition/startup-file.ts";
 
+// Give the still-JavaScript executor a typed pool at this command's call boundary.
+const migrateWithHistory: (
+  pool: Pool,
+  options?: Parameters<typeof executeMigration>[1],
+) => ReturnType<typeof executeMigration> = executeMigration;
+
 const databaseUrl = process.env.OCC_MIGRATION_DATABASE_URL;
-let pool;
+let pool: Pool | undefined;
 let logger = createOccLogger({ component: "occ-migration", level: "info", destination: "stderr" });
 
 try {
@@ -41,19 +51,22 @@ try {
   emitOccLogEvent(logger, { event });
 } catch (error) {
   let code = "MIGRATION_FAILED";
+  let operatorMessage: string | undefined;
   if (error instanceof UnsupportedPostgresVersionError) {
     code = "MIGRATION_SERVER_UNSUPPORTED";
+    operatorMessage = error.message;
   } else if (
-    [
-      "MIGRATION_HISTORY_UNSUPPORTED",
-      "MIGRATION_HISTORY_NOT_EMPTY",
-      "MIGRATION_HISTORY_PENDING",
-    ].includes(error?.code)
+    error instanceof Error &&
+    "code" in error &&
+    (error.code === "MIGRATION_HISTORY_UNSUPPORTED" ||
+      error.code === "MIGRATION_HISTORY_NOT_EMPTY" ||
+      error.code === "MIGRATION_HISTORY_PENDING")
   ) {
     code = error.code;
+    operatorMessage = error.message;
   }
-  if (code !== "MIGRATION_FAILED") {
-    process.stderr.write(`${error.message}\n`);
+  if (operatorMessage !== undefined) {
+    process.stderr.write(`${operatorMessage}\n`);
   }
   emitOccLogEvent(logger, {
     event: "migration.failed",

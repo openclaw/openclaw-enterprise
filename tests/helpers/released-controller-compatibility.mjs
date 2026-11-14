@@ -117,13 +117,15 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
     image.reference,
     program,
   ];
-  const migrate = (image) =>
-    command(
-      args(image, "scripts/migrate-production.mjs", {
-        NODE_ENV: "development",
+  const migrate = (image, ...options) =>
+    command([
+      ...args(image, "--run", {
         OCC_MIGRATION_DATABASE_URL: migrationUrl.toString(),
       }),
-    );
+      "db:migrate",
+      "--",
+      ...options,
+    ]);
   const history = async () =>
     (
       await db.migrator.query(
@@ -301,11 +303,8 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
       migrate,
       history,
       before,
-      args,
-      command,
       observations,
       db,
-      migrationUrl,
     });
   } finally {
     // Reuse the repository owner label for interruption cleanup, and remove only
@@ -344,7 +343,7 @@ export async function assertReleasedControllerCompatibility(t, images, createDat
     t,
     images,
     createDatabase,
-    async ({ start, migrate, history, before, args, command, observations, migrationUrl }) => {
+    async ({ start, migrate, history, before, observations }) => {
       let released = await start(images.released, "released");
       const namespace = await released.request("before-migration", "work", {
         name: "Before migration",
@@ -389,13 +388,7 @@ export async function assertReleasedControllerCompatibility(t, images, createDat
         name: "Restart after candidate writes",
       });
       await released.stop();
-      const checked = await command([
-        ...args(images.candidate, "scripts/migrate-production.mjs", {
-          NODE_ENV: "development",
-          OCC_MIGRATION_DATABASE_URL: migrationUrl.toString(),
-        }),
-        "--check",
-      ]);
+      const checked = await migrate(images.candidate, "--check");
       const checkEvents = checked.stdout
         .trim()
         .split("\n")

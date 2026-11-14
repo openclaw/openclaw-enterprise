@@ -60,6 +60,10 @@ func TestInstallationDoctor(t *testing.T) {
 		success    bool
 		uid        string
 	}{
+		{"typed-install", 200, strings.Replace(job, migration, `"scripts/migrate-production.ts"`, 1), "Initialization Job (install hook): complete", true, ""},
+		{"typed-upgrade", 200, strings.Replace(upgrade, migration, `"scripts/migrate-production.ts"`, 1), "upgrade hook): complete", true, ""},
+		{"typed-command-override", 200, strings.Replace(job, `"name":"migration","args":[`+migration, `"name":"migration","command":["node"],"args":["scripts/migrate-production.ts"`, 1), "steps do not match", false, ""},
+		{"typed-wrong-path", 200, strings.Replace(upgrade, migration, `"./scripts/migrate-production.ts"`, 1), "steps do not match", false, ""},
 		{"install", 200, job, "Initialization Job (install hook): complete", true, ""},
 		{"unchecked-upgrade", 200, strings.Replace(unchecked, migration+`,"--expect-empty"`, migration, 1), "steps do not match", false, ""},
 		{"upgrade", 200, upgrade, "upgrade hook): complete", true, ""},

@@ -319,7 +319,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
                 {
                   name: "migration",
                   image,
-                  args: ["scripts/migrate-production.mjs"],
+                  args: ["scripts/migrate-production.ts"],
                   ...(initializationResources ? { resources: initializationResources } : {}),
                   securityContext: { capabilities: { drop: ["ALL"] } },
                 },
@@ -6387,7 +6387,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     assert.deepEqual(migrationPod.spec.containers[0], {
       ...migration,
       command: ["node"],
-      args: ["scripts/migrate-production.mjs", "--check"],
+      args: ["scripts/migrate-production.ts", "--check"],
     });
     assert.ok(
       migration.env.some(

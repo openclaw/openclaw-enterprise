@@ -2670,7 +2670,7 @@ test(
     const [check, migration] = pod.initContainers;
     assert.equal(check.name, "installation-check");
     assert.equal(migration.name, "migration");
-    assert.deepEqual(migration.args, ["scripts/migrate-production.mjs", "--expect-empty"]);
+    assert.deepEqual(migration.args, ["scripts/migrate-production.ts", "--expect-empty"]);
     assert.equal(pod.containers[0].name, "bootstrap");
     assert.deepEqual(pod.containers[0].args, ["scripts/bootstrap-installation.mjs"]);
     assert.ok(migration.env.some(({ name }) => name === "OCC_MIGRATION_DATABASE_URL"));

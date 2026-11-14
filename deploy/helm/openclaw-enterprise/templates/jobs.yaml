@@ -149,7 +149,7 @@ spec:
         - name: migration
           image: {{ .Values.images.controller | quote }}
           args:
-            - scripts/migrate-production.mjs
+            - scripts/migrate-production.ts
             {{- if .Release.IsInstall }}
             - --expect-empty
             {{- else if eq .Values.database.upgradeMigration "separate" }}

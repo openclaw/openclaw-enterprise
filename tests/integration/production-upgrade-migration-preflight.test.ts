@@ -15,7 +15,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 type Labels = Record<string, string | number | null>;
 type Resource = { kind: string; metadata: { name: string } };
-type Container = { name: string; envFrom?: unknown };
+type Container = { name: string; envFrom?: unknown; args?: unknown; command?: unknown };
 type Job = Resource & {
   metadata: { labels: Labels };
   spec: {
@@ -109,6 +109,29 @@ test(
           [{ name: "migration", envFrom: null }],
         );
         assert.equal(generated.spec.template.spec.initContainers, undefined);
+        assert.deepEqual(generated.spec.template.spec.containers[0]?.command, ["node"]);
+        assert.deepEqual(generated.spec.template.spec.containers[0]?.args, [
+          "scripts/migrate-production.ts",
+          "--check",
+        ]);
+
+        // A candidate from a historical chart must keep that image's real entry point.
+        migration.args = ["scripts/migrate-production.mjs", "--require-current"];
+        const historical: Job = JSON.parse(
+          (await generate(action, withInitializer(selected))).stdout,
+        );
+        assert.deepEqual(historical.spec.template.spec.containers[0]?.args, [
+          "scripts/migrate-production.mjs",
+          "--check",
+        ]);
+        migration.args = ["./scripts/migrate-production.ts"];
+        await refuses(action, withInitializer(selected), /invalid migration arguments/);
+        migration.args = ["scripts/migrate-production.ts", "--expect-empty", "unexpected"];
+        await refuses(action, withInitializer(selected), /invalid migration arguments/);
+        migration.args = ["scripts/migrate-production.ts"];
+        migration.command = ["sh"];
+        await refuses(action, withInitializer(selected), /invalid migration command/);
+        delete migration.command;
 
         // Count both release and component matches before validating their other labels.
         const duplicate = structuredClone(initializer);

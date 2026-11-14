@@ -217,7 +217,8 @@ Add `--preflight-only --evidence-dir "${UPGRADE_EVIDENCE}-preflight"` to either
 upgrade command. With writers active, it checks inputs, repository image pairs,
 Helm's server dry run, rendered Certificate admission, then startup and migration
 compatibility in temporary Jobs.
-The migration Job uses the candidate controller, initializer's migrator credential/CA, and `scripts/migrate-production.mjs --check`. Recognized pending history
+The migration Job runs the candidate image's migration entry with `--check` and
+the initializer's migrator credential and CA. Recognized pending history
 is allowed; migrations are not applied. The Helm hook rechecks history; separate
 migrations require completion with `--require-current`.
 

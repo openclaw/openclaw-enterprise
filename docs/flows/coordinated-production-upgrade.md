@@ -141,8 +141,8 @@ children. Job failure overrides child success.
 
 `migrationJob` selects one initialization Job by release and component. It refuses
 malformed labels and preserves the Job and Pod labels used by chart policies.
-`scripts/migrate-production.mjs --check` runs with the initializer's migration
-identity before shutdown. `scripts/migration-history.mjs:migrateWithHistory` checks
+Before shutdown, it runs the selected image's migration entry with `--check`
+and the migrator identity. `scripts/migration-history.mjs:migrateWithHistory` checks
 receipts, catalog, and grants under lock. Pending canonical history is allowed.
 Helm rechecks before migrating.
 

@@ -331,12 +331,16 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID, 
 	is := func(cs []container, name string, args ...string) bool {
 		return len(cs) == 1 && cs[0].Name == name && len(cs[0].Command) == 0 && slices.Equal(cs[0].Args, args)
 	}
-	const migrate = "scripts/migrate-production.mjs"
+	// Retained Jobs from older charts used the JavaScript entry point.
+	migration := func(flags ...string) bool {
+		return is(init, "migration", append([]string{"scripts/migrate-production.ts"}, flags...)...) ||
+			is(init, "migration", append([]string{"scripts/migrate-production.mjs"}, flags...)...)
+	}
 	var hook string
 	switch {
-	case checked && is(init, "migration", migrate, "--expect-empty"):
+	case checked && migration("--expect-empty"):
 		hook = "install"
-	case checked && expectedAttempt == "" && is(init, "migration", migrate):
+	case checked && expectedAttempt == "" && migration():
 		hook = "upgrade"
 	}
 	if hook == "" || !is(p.Containers, "bootstrap", "scripts/bootstrap-installation.mjs") {

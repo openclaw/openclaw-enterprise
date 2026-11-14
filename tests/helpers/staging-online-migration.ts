@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { join } from "node:path";
+import type { V1Job } from "../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js";
+import { protectedJSON } from "./production-rehearsal-custody.ts";
 import { assertRunningController, type rehearsePopulatedReturn } from "./staging-upgrade-return.ts";
 
 type Inputs = Pick<
@@ -193,13 +195,23 @@ export async function rehearseOnlineMigration({
     ],
     { cwd: candidate.checkout },
   );
-  const initializer = JSON.parse(await run("yq", ["-o=json", ".", "-"], { input: rendered }));
+  const initializer = protectedJSON<V1Job>(
+    await run("yq", ["-o=json", ".", "-"], { input: rendered }),
+  );
   assert.equal(initializer.kind, "Job");
-  const { spec } = initializer.spec.template;
-  const migration = spec.initContainers.find(({ name }: { name: string }) => name === "migration");
-  assert.equal(migration?.image, candidate.reference);
-  assert.deepEqual(migration.args, ["scripts/migrate-production.mjs"]);
-  const mounts = new Set((migration.volumeMounts ?? []).map(({ name }: { name: string }) => name));
+  const template = initializer.spec?.template;
+  const spec = template?.spec;
+  assert.ok(spec);
+  const migration = spec.initContainers?.find(({ name }) => name === "migration");
+  assert.ok(migration);
+  assert.equal(migration.image, candidate.reference);
+  // This rehearsal can render a candidate from before or after the entry point moved.
+  assert.equal(migration.args?.length, 1);
+  const [entry] = migration.args ?? [];
+  assert.ok(
+    entry === "scripts/migrate-production.ts" || entry === "scripts/migrate-production.mjs",
+  );
+  const mounts = new Set(migration.volumeMounts?.map(({ name }) => name));
   const job = "online-migration";
   const appName = `lock-${namespace}`;
   assert.match(appName, /^[a-z0-9-]{1,63}$/u);
@@ -247,7 +259,7 @@ export async function rehearseOnlineMigration({
         template: {
           metadata: {
             labels: {
-              ...initializer.spec.template.metadata.labels,
+              ...template?.metadata?.labels,
               ...custody.metadata(job).labels,
             },
           },
@@ -255,7 +267,7 @@ export async function rehearseOnlineMigration({
             ...spec,
             containers: [migration],
             initContainers: [],
-            volumes: (spec.volumes ?? []).filter(({ name }: { name: string }) => mounts.has(name)),
+            volumes: (spec.volumes ?? []).filter(({ name }) => mounts.has(name)),
           },
         },
       },

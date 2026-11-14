@@ -2,18 +2,17 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import test from "node:test";
 import { setTimeout } from "node:timers/promises";
 import { promisify } from "node:util";
 import pg from "pg";
+// Resolve Drizzle from the workspace package that owns the dependency.
+import { drizzle } from "../../packages/occ/node_modules/drizzle-orm/node-postgres/index.js";
+import { migrate } from "../../packages/occ/node_modules/drizzle-orm/node-postgres/migrator.js";
 import { migrationCatalog } from "../../scripts/migration-catalog.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 const exec = promisify(execFile);
-const dependency = createRequire(new URL("../../packages/occ/package.json", import.meta.url));
-const { drizzle } = dependency("drizzle-orm/node-postgres");
-const { migrate } = dependency("drizzle-orm/node-postgres/migrator");
 
 test(
   "Migration refuses PostgreSQL 16 before first installation or upgrade without exposing credentials",
@@ -96,7 +95,8 @@ test(
       "-v",
       "ON_ERROR_STOP=1",
     ]);
-    setup.child.stdin!.end(
+    assert.ok(setup.child.stdin);
+    setup.child.stdin.end(
       await readFile(new URL("../../migrations/init-local.sql", import.meta.url)),
     );
     await setup;
@@ -110,7 +110,10 @@ test(
     });
     client = new pg.Client({ connectionString: url });
     await client.connect();
-    assert.match((await client.query("SHOW server_version")).rows[0].server_version, /^16\./);
+    const { rows } = await client.query<Record<string, unknown>>("SHOW server_version");
+    const serverVersion = rows[0]?.server_version;
+    assert.ok(typeof serverVersion === "string");
+    assert.match(serverVersion, /^16\./);
 
     const run = async (connectionString: string, option?: string) => {
       try {
@@ -118,7 +121,7 @@ test(
           code: 0,
           ...(await exec(
             process.execPath,
-            ["scripts/migrate-production.mjs", ...(option ? [option] : [])],
+            ["scripts/migrate-production.ts", ...(option ? [option] : [])],
             {
               env: {
                 ...process.env,
@@ -198,12 +201,13 @@ test(
     badUrl.password = "private-migration-password";
     const rejected = await run(badUrl.toString(), "--check");
     assert.equal(rejected.stdout, "");
-    const events = rejected.stderr
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
+    const events = rejected.stderr.trim().split("\n");
     assert.equal(events.length, 1);
-    const { time, ...event } = events[0];
+    const [line] = events;
+    assert.ok(line);
+    const record: unknown = JSON.parse(line);
+    assert.ok(record && typeof record === "object" && "time" in record);
+    const { time, ...event } = record;
     assert.equal(typeof time, "string");
     assert.deepEqual(event, {
       severity: "ERROR",

@@ -928,7 +928,7 @@ async function runMigrationCheck(fixture, configPath) {
   try {
     const { stdout, stderr } = await execFileAsync(
       process.execPath,
-      ["scripts/migrate-production.mjs", "--check"],
+      ["scripts/migrate-production.ts", "--check"],
       {
         cwd: repositoryRoot,
         env: {
@@ -1259,7 +1259,7 @@ async function runHistoryCommand(db, mode = "development", flag, refusal) {
 }
 
 // The history cases migrate a few hundred databases. Run them in this process: the same
-// `migrateWithHistory` call on the same pool as `scripts/migrate-production.mjs`, with that
+// `migrateWithHistory` call on the same pool as `scripts/migrate-production.ts`, with that
 // command's outcome codes. The mode only selects the script (and its NODE_ENV logging),
 // never the migration; `runHistoryCommand` covers the process contract. flag and refusal
 // are as for runHistoryCommand: the command prints this same error.message on refusal.
