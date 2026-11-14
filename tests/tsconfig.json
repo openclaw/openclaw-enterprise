@@ -207,6 +207,7 @@
     "helpers/codex-gateway-supervisor.ts",
     "helpers/codex-runtime-helper-fixture.ts",
     "helpers/production-worker-chart.ts",
+    "helpers/staging-online-migration.ts",
     "helpers/controlled-tls-origin.ts",
     "helpers/controlled-tls-origin-scenario.ts",
     "fixtures/plugin-driver-preflight-database-child.ts",
