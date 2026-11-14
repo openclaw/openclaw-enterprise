@@ -1,4 +1,3 @@
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -25,70 +24,22 @@ import {
   productionGatewayMemoryLimit,
 } from "./kubernetes-real.mjs";
 import { createGatewaySessionEvidence } from "./plugin-gateway-session-evidence.ts";
+import {
+  optionalPluginProofModel,
+  requiredPluginProofEnv,
+  selectPluginProofInputs,
+} from "./plugin-driver-proof-inputs.ts";
 
 export { ConversationReplyError } from "./plugin-gateway-session-evidence.ts";
+export {
+  optionalPluginProofModel,
+  pluginProofSkipReason,
+  realPluginProofSelected,
+} from "./plugin-driver-proof-inputs.ts";
 
 const authSecret = "plugin-driver-real-auth-secret-32-bytes";
 const authBaseURL = "https://console.oce.localhost";
 const proofPrefix = "occ-plugin-01a08228";
-
-export const realPluginProofSelected = process.env.OCC_TEST_PLUGIN_DRIVER_REAL === "1";
-
-export function pluginProofSkipReason(scenario) {
-  const key = `OCC_TEST_PLUGIN_DRIVER_${scenario.toUpperCase()}_REAL`;
-  if (realPluginProofSelected || process.env[key] === "1") {
-    return false;
-  }
-  return `Set ${key}=1 or OCC_TEST_PLUGIN_DRIVER_REAL=1 with disposable k3d/PostgreSQL, immutable real runtime images, model credentials, injected CODEX_ACCESS_TOKEN for Codex proofs, curated plugin proof prompts.`;
-}
-
-function requiredPluginProofEnv(name, description = name) {
-  const value = process.env[name];
-  assert.ok(value && value.trim().length > 0, `${description} (${name}) is required.`);
-  return value;
-}
-
-export function optionalPluginProofModel() {
-  return (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
-    /^(?:openai|codex)\//,
-    "",
-  );
-}
-
-function selectPluginProofDatabaseUrl({ scenario, databaseUrl }) {
-  if (realPluginProofSelected) {
-    const scenarioKeys = {
-      openclaw: "OCC_TEST_PLUGIN_DRIVER_OPENCLAW_DATABASE_URL",
-      codex_linear: "OCC_TEST_PLUGIN_DRIVER_CODEX_LINEAR_DATABASE_URL",
-      codex_failure: "OCC_TEST_PLUGIN_DRIVER_CODEX_FAILURE_DATABASE_URL",
-    };
-    assert.ok(Object.hasOwn(scenarioKeys, scenario), "unknown real plugin-driver scenario.");
-    const databases = Object.entries(scenarioKeys).map(([name, key]) => {
-      const url = requiredPluginProofEnv(key);
-      let connection;
-      try {
-        connection = new pg.Client({ connectionString: url }).connectionParameters;
-      } catch {
-        assert.fail(`${key} must be a valid PostgreSQL connection URL.`);
-      }
-      assert.ok(connection.database, `${key} must name a database.`);
-      return [name, JSON.stringify([connection.host, connection.port, connection.database])];
-    });
-    assert.ok(
-      databaseUrl === process.env[scenarioKeys[scenario]],
-      `${scenario} must use its scenario-specific database URL.`,
-    );
-    for (let index = 0; index < databases.length; index += 1) {
-      for (let sibling = index + 1; sibling < databases.length; sibling += 1) {
-        assert.ok(
-          databases[index][1] !== databases[sibling][1],
-          `real plugin-driver scenarios ${databases[index][0]} and ${databases[sibling][0]} must use separate dedicated databases.`,
-        );
-      }
-    }
-  }
-  return databaseUrl ?? requiredPluginProofEnv("OCC_TEST_DATABASE_URL");
-}
 
 export function assertNoSecretMaterial(value, secrets, description) {
   const serialized = typeof value === "string" ? value : JSON.stringify(value);
@@ -1794,22 +1745,19 @@ export function createNativePluginAssertions({
   };
 }
 
+/**
+ * @param {{ after: (cleanup: () => Promise<void>) => void }} context
+ * @param {import("./plugin-driver-proof-inputs.ts").PluginProofInputOptions & {
+ *   codexCredential?: Awaited<ReturnType<typeof readCodexServiceAccountCredential>>,
+ *   pluginDriverConfiguration?: Record<string, unknown>,
+ * }} options
+ */
 export async function createPluginDriverRealFixture(
   context,
   { scenario, pluginDriverId, databaseUrl, codexCredential, pluginDriverConfiguration = {} },
 ) {
-  const kubeconfigPath = requiredPluginProofEnv("OCC_TEST_KUBERNETES_KUBECONFIG");
-  const kubernetesContext = requiredPluginProofEnv("OCC_TEST_KUBERNETES_CONTEXT");
-  const gatewayImage = requiredPluginProofEnv("OCC_TEST_KUBERNETES_GATEWAY_IMAGE");
-  const codexImage =
-    pluginDriverId === "codex-plugin"
-      ? (process.env.OCC_TEST_KUBERNETES_CODEX_IMAGE ??
-        requiredPluginProofEnv("OCC_TEST_KUBERNETES_AGENT_IMAGE", "Codex runtime image"))
-      : (process.env.OCC_TEST_KUBERNETES_CODEX_IMAGE ??
-        process.env.OCC_TEST_KUBERNETES_AGENT_IMAGE ??
-        gatewayImage);
-  const selectedDatabaseUrl = selectPluginProofDatabaseUrl({ scenario, databaseUrl });
-  const directory = await mkdtemp(join(tmpdir(), "occ-plugin-driver-real-"));
+  const inputs = selectPluginProofInputs({ scenario, pluginDriverId, databaseUrl });
+  const { gatewayImage, codexImage, databaseUrl: selectedDatabaseUrl } = inputs;
   const suffix = hash(`${proofPrefix}-${randomUUID()}`);
   const platformNamespace = `${proofPrefix}-${suffix}`;
   const credentials = {
@@ -1827,13 +1775,7 @@ export async function createPluginDriverRealFixture(
     startPortForward,
     startPortForwardTarget,
     applyManifest,
-  } = createRealKubernetesFixture({
-    kubeconfigPath,
-    kubernetesContext,
-    gatewayImage,
-    codexImage,
-    databaseUrl: selectedDatabaseUrl,
-  });
+  } = createRealKubernetesFixture(inputs);
 
   await validatePrerequisites();
   let worker;
@@ -1863,6 +1805,7 @@ export async function createPluginDriverRealFixture(
     }
   }
 
+  const directory = await mkdtemp(join(tmpdir(), "occ-plugin-driver-real-"));
   context.after(async () => {
     const failures = [];
     async function cleanup(operation) {
