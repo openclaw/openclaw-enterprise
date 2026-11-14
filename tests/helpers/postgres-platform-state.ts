@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -305,14 +305,48 @@ async function startController(
   child.stderr.on("data", (chunk: string) => (output += chunk));
 
   const origin = `http://127.0.0.1:${port}`;
+  const session = await waitForControllerSignIn(origin, child, () => output);
+  // Only the child can sign in, so it has bound the port; the reservation would otherwise
+  // keep taking (and resetting) a share of the connections.
+  await reservation.release();
+  return { child, origin, session, output: () => output };
+}
+
+export async function waitForControllerSignIn(
+  origin: string,
+  child: Pick<ChildProcess, "exitCode" | "signalCode">,
+  output: () => string,
+  signInTimeoutMs = 15_000,
+): Promise<Session> {
   const transport = createConsoleFixtureTransport(browserOrigin, origin);
-  const session = await waitFor<Session>(
-    () => `the durable OCC subprocess to become ready:\n${output}`,
+  let lastSignInStatus: number | undefined;
+  const controller = new AbortController();
+  const signInSignal = controller.signal;
+  const timer = setTimeout(() => controller.abort(), signInTimeoutMs);
+  return waitFor<Session>(
+    () =>
+      `the durable OCC subprocess to become ready:\n${output()}\nLast sign-in attempt: ${lastSignInStatus === undefined ? "no HTTP response" : `HTTP ${lastSignInStatus}`}`,
     async () => {
-      assert.equal(child.exitCode, null, `The durable OCC subprocess exited early:\n${output}`);
+      assert.equal(
+        child.exitCode ?? child.signalCode,
+        null,
+        `The durable OCC subprocess exited early:\n${output()}`,
+      );
+      if (signInSignal.aborted) {
+        return undefined;
+      }
       try {
         return await signInWithEmailPassword({
-          fetch: (input, init) => transport.fetchThroughLoopback(new Request(input, init)),
+          fetch: async (input, init) => {
+            lastSignInStatus = undefined;
+            const request = new Request(input, { ...init, signal: signInSignal });
+            // Retain the Request until transport settles so its dependent signal stays live.
+            const response = await transport.fetchThroughLoopback(request).finally(() => {
+              request.signal.throwIfAborted();
+            });
+            lastSignInStatus = response.status;
+            return response;
+          },
           origin: browserOrigin,
           email: adminEmail,
           password: adminPassword,
@@ -322,12 +356,8 @@ async function startController(
         return undefined;
       }
     },
-    { timeoutMs: 15_000, intervalMs: 40 },
-  );
-  // Only the child can sign in, so it has bound the port; the reservation would otherwise
-  // keep taking (and resetting) a share of the connections.
-  await reservation.release();
-  return { child, origin, session, output: () => output };
+    { timeoutMs: signInTimeoutMs, intervalMs: 40 },
+  ).finally(() => clearTimeout(timer));
 }
 
 async function spawnWorker(context: TestContext, { kubernetesDrivers = false } = {}) {

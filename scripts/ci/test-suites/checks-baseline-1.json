@@ -526,6 +526,9 @@
       "path": "tests/integration/startup-ipv6-loopback.test.mjs"
     },
     {
+      "path": "tests/integration/postgres-controller-readiness.test.ts"
+    },
+    {
       "path": "tests/integration/common-logging.test.mjs"
     },
     {
