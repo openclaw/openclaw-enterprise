@@ -31,7 +31,7 @@ const nodeBaseImage =
  *   timeout?: number,
  *   killSignal?: NodeJS.Signals,
  * }} CommandOptions
- * @typedef {import("node:child_process").ExecFileOptions & CommandOptions} LauncherCommandOptions
+ * @typedef {Pick<CommandOptions, "env" | "input" | "timeout">} LauncherCommandOptions
  * @typedef {{stdout: string, stderr: string}} CommandOutput
  * @typedef {(command: string, args: string[], options: CommandOptions) => Promise<CommandOutput>} RunCommand
  * @typedef {(args: string[], options?: CommandOptions) => Promise<CommandOutput>} DockerCommand
