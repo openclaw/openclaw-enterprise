@@ -12,7 +12,7 @@ import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs
 import {
   RenderRefusal,
   renderInstallationProfile,
-} from "../../scripts/render-installation-profile.mjs";
+} from "../../scripts/render-installation-profile.ts";
 
 import {
   profileComputeCases,
