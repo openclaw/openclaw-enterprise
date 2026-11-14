@@ -6,29 +6,34 @@ import pg from "pg";
 import { createPostgresAuthBinding } from "../../packages/occ/src/auth-persistence/postgres-auth-binding.ts";
 import * as canonicalSchema from "../../packages/occ/src/state/postgres-schema.ts";
 
-function forbidPoolIO(pool) {
-  const calls = [];
-  for (const method of ["connect", "query", "end"]) {
-    Object.defineProperty(pool, method, {
-      configurable: true,
-      value() {
-        calls.push(method);
-        throw new Error(`Unexpected pool ${method}`);
-      },
-    });
+function forbidPoolIO(pool: object) {
+  const calls: string[] = [];
+
+  function forbid(method: "connect" | "query" | "end") {
+    const fail = () => {
+      calls.push(method);
+      throw new Error(`Unexpected pool ${method}`);
+    };
+    Object.defineProperty(pool, method, { configurable: true, value: fail });
+    return fail;
   }
-  return calls;
+
+  const connect = forbid("connect");
+  const query = forbid("query");
+  const end = forbid("end");
+  return { calls, connect, query, end };
 }
 
 test("the real factory retains the caller pool and complete canonical schema without I/O", async () => {
   const pool = new pg.Pool({ max: 1 });
   // Caller-added properties must not make Drizzle interpret the pool as config.
   Object.assign(pool, { schema: {}, logger: false, connection: {}, client: {} });
-  const calls = forbidPoolIO(pool);
+  const { calls } = forbidPoolIO(pool);
   const pending = createPostgresAuthBinding(pool);
   assert.ok(pending instanceof Promise);
   const binding = await pending;
   assert.strictEqual(binding.schema, canonicalSchema);
+  assert.ok("$client" in binding.database);
   assert.strictEqual(binding.database.$client, pool);
   assert.strictEqual(binding.database._.fullSchema, canonicalSchema);
   assert.equal(pool.totalCount, 0);
@@ -38,11 +43,9 @@ test("the real factory retains the caller pool and complete canonical schema wit
 });
 
 test("structural wrappers and checked-out clients cannot replace a real pool", async () => {
-  const methods = {};
-  const calls = forbidPoolIO(methods);
-  const { connect, query, end } = methods;
+  const { calls, connect, query, end } = forbidPoolIO({});
   // Pool-like queries can dispatch BEGIN and writes on different clients.
-  const callers = {
+  const callers: Record<string, unknown> = {
     "connect/end wrapper": { connect, end },
     "querying wrapper": { connect, end, query },
     "checked-out client": { query, release() {} },
@@ -59,7 +62,12 @@ test("structural wrappers and checked-out clients cannot replace a real pool", a
     "connection URL": "postgresql://localhost/example",
   };
   for (const [name, caller] of Object.entries(callers)) {
-    await assert.rejects(createPostgresAuthBinding(caller), /requires a node-postgres Pool/, name);
+    // Exercise runtime validation with inputs the public signature rejects.
+    await assert.rejects(
+      createPostgresAuthBinding(caller as Parameters<typeof createPostgresAuthBinding>[0]),
+      /requires a node-postgres Pool/,
+      name,
+    );
   }
   assert.deepEqual(calls, []);
 });

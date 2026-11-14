@@ -1026,7 +1026,7 @@ export async function prepareCodexSeccompProfile() { return { profileName: "fixt
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (context.parentURL === ${JSON.stringify(prepareUrl)} &&
-        ["./routing.mjs", "./codex-seccomp.mjs"].includes(specifier)) {
+        ["./routing.mjs", "../lib/codex-seccomp-k3d.ts"].includes(specifier)) {
       return { url: import.meta.url, shortCircuit: true };
     }
     return nextResolve(specifier, context);

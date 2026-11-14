@@ -1,39 +1,56 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it, type TestContext } from "node:test";
 import { createServer } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { connect } from "node:net";
+import type { Duplex } from "node:stream";
 import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
+import type { Clock } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import type { CredentialServiceOwner } from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
+import type { BoundListeners } from "../../apps/controller/src/drivers/repo/access/server.ts";
+import type {
+  RepositoryCredentialSessionResult,
+  ServiceConfig,
+  ServiceLimits,
+} from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
+import type { GitHubTokenConfiguration } from "../../apps/controller/src/drivers/repo/github/access/types.ts";
+import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import {
   cleanEnvironment,
+  type createTlsMaterial,
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
+import type { GitHubFixture as RegistryGitHubFixture } from "../fixtures/repository-credentials/registry/provider.ts";
 import {
-  eventually,
   gatewayRequest,
   startTokenServiceScope,
 } from "../fixtures/repository-credentials/service.mjs";
 import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { listen } from "../helpers/listen.ts";
+import { waitFor } from "../helpers/wait-for.mjs";
 
 // Each case starts its own service, Git and GitHub fixtures and spends most of
 // its time waiting on stock Git children. The cases register here and run two at
 // a time in one suite at the end of the file: more at once starves the fixture's
 // 30 s per-command limit on an overloaded host.
-const cases = [];
-const test = (...registration) => cases.push(registration);
+type TestCase = [name: string, run: (t: TestContext) => Promise<void>];
+const cases: TestCase[] = [];
+const test = (...registration: TestCase) => cases.push(registration);
 // The bare repository has no such ref: `git rev-parse` exits 128.
 const missingRef = { message: "command failed (exit 128)" };
 
 // Stock Git must reach the gateway under its public HTTPS name. A CONNECT proxy
 // forwards only that name to the listener; TLS still terminates at the gateway.
-async function startGatewayProxy(resources, gatewayHost, gatewayPort) {
+async function startGatewayProxy(
+  resources: Pick<TestContext, "after">,
+  gatewayHost: string,
+  gatewayPort: number,
+) {
   const server = createServer((_, response) => response.writeHead(405).end());
   server.on("connect", (request, socket, head) => {
     if (request.url !== `${gatewayHost}:443`) {
@@ -47,10 +64,11 @@ async function startGatewayProxy(resources, gatewayHost, gatewayPort) {
       socket.pipe(upstream);
     });
     // A tunnel lives exactly as long as both ends, so gateway drain is not held open.
-    for (const [one, other] of [
+    const peers: [Duplex, Duplex][] = [
       [socket, upstream],
       [upstream, socket],
-    ]) {
+    ];
+    for (const [one, other] of peers) {
       one.once("close", () => other.destroy());
       one.on("error", () => other.destroy());
     }
@@ -58,11 +76,56 @@ async function startGatewayProxy(resources, gatewayHost, gatewayPort) {
   return `http://127.0.0.1:${await listen(resources, server)}`;
 }
 
-async function startTokenService(t, limits = {}, configuration = {}) {
-  const { resources, clock, tls, config, github } = await startTokenServiceScope(t, { limits });
-  const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
+type GitFixture = {
+  origin: string;
+  ref(name: string): Promise<string>;
+  trace: readonly { path: string; contentLength: string | undefined }[];
+};
+type GitHubFixture = Pick<
+  RegistryGitHubFixture,
+  "trace" | "errors" | "issuesOfTokens" | "authenticationAttempts"
+> & {
+  origin: string;
+  authorize(authorization?: string, boundary?: string): boolean;
+  acceptStatic(token: string): number;
+};
+
+async function startTokenService(
+  t: TestContext,
+  limits: Partial<ServiceLimits> = {},
+  configuration: Partial<GitHubTokenConfiguration> = {},
+) {
+  const scopeOptions = { limits, github: true };
+  const {
+    resources,
+    clock,
+    tls,
+    config,
+    github,
+  }: {
+    resources: Pick<TestContext, "after">;
+    clock: Clock;
+    tls: Awaited<ReturnType<typeof createTlsMaterial>>;
+    config: ServiceConfig;
+    github: GitHubFixture | undefined;
+  } = await startTokenServiceScope(t, scopeOptions);
+  assert.ok(github);
+  const git: GitFixture = await startGitSmartHttpFixture(resources, {
+    authorize: github.authorize,
+    tls,
+  });
   // Synthetic host token: the fake GitHub accepts it on git and REST without issuing it.
-  const { token, tokenIndex, service, listeners } = await startStaticTokenService(resources, {
+  const {
+    token,
+    tokenIndex,
+    service,
+    listeners,
+  }: {
+    token: string;
+    tokenIndex: number;
+    service: CredentialServiceOwner;
+    listeners: BoundListeners;
+  } = await startStaticTokenService(resources, {
     config,
     clock,
     tls,
@@ -75,27 +138,46 @@ async function startTokenService(t, limits = {}, configuration = {}) {
     new URL(config.gateway.publicOrigin).hostname,
     listeners.address.port,
   );
-  return { clock, tls, config, github, git, service, listeners, token, tokenIndex, proxy };
+  return { tls, config, github, git, service, listeners, token, tokenIndex, proxy };
 }
 
 // Git starts the credential helper and the hook dispatcher (for every hook, three times
 // per ref update) as Node children of an allowlisted environment, so the compile cache
 // is passed explicitly.
 const compileCache = await fileCompileCache("repository-credentials-github-token");
+type TokenFixture = Awaited<ReturnType<typeof startTokenService>>;
+type OpenedTokenFixture = TokenFixture & { opened: RepositoryCredentialSessionResult };
+type GatewayAnswer = { status: number | undefined; body: string };
 
-async function stockGit(t, fixture, opened) {
+async function gatewayStatus(
+  fixture: OpenedTokenFixture,
+  target: string,
+  options?: { method: string; body: { query: string } },
+): Promise<number> {
+  const response: unknown = await gatewayRequest(fixture, target, options);
+  assert.ok(response && typeof response === "object" && "status" in response);
+  assert.ok(typeof response.status === "number");
+  return response.status;
+}
+
+async function stockGit(
+  t: TestContext,
+  fixture: TokenFixture,
+  opened: RepositoryCredentialSessionResult,
+) {
   const material = await createNativeClientMaterial(t, [{ opened, repositoryRef: "fixture" }], {
     ca: fixture.tls.ca,
   });
   const home = await temporaryDirectory(t, "repository-token-home-");
-  const env = cleanEnvironment({
+  const env: NodeJS.ProcessEnv = cleanEnvironment({
     NODE_COMPILE_CACHE: compileCache,
     HOME: home,
     GIT_CONFIG_SYSTEM: join(material.root, "gitconfig"),
     HTTPS_PROXY: fixture.proxy,
   });
   delete env.GIT_CONFIG_NOSYSTEM;
-  return (args, options = {}) => run("/usr/bin/git", args, { env, cwd: home, ...options });
+  return (args?: readonly string[], options: Parameters<typeof run>[2] = {}) =>
+    run("/usr/bin/git", args, { env, cwd: home, ...options });
 }
 
 test("development token sessions clone, push allowed refs and call REST without issuing tokens", async (t) => {
@@ -152,30 +234,30 @@ test("development token sessions clone, push allowed refs and call REST without 
   );
 
   // REST uses Bearer <token> through the same session; GraphQL is denied for an OAuth token.
-  const repository = await gatewayRequest(session, "/repos/fixture/repository");
-  assert.equal(repository.status, 200);
-  assert.equal(github.trace.at(-1).tokenIndex, fixture.tokenIndex);
+  assert.equal(await gatewayStatus(session, "/repos/fixture/repository"), 200);
+  assert.equal(github.trace.at(-1)?.tokenIndex, fixture.tokenIndex);
   const traced = github.trace.length;
-  const graphql = await gatewayRequest(session, "/graphql", {
+  const graphql = await gatewayStatus(session, "/graphql", {
     method: "POST",
     body: { query: "{ viewer { login } }" },
   });
-  assert.equal(graphql.status, 400);
+  assert.equal(graphql, 400);
   assert.equal(github.trace.length, traced);
   assert.equal(github.issuesOfTokens.length, 0);
 
   // Closing releases the custody copy at once (expiry-only), without waiting an hour.
   service.close(opened.session.sessionId);
-  const disposed = await eventually(
-    () =>
-      service.status(opened.session.sessionId)?.state === "DISPOSED" &&
-      service.status(opened.session.sessionId),
-    { message: "token session did not dispose after close" },
+  const disposed = await waitFor(
+    "the token session to dispose after close",
+    () => {
+      const status = service.status(opened.session.sessionId);
+      return status?.state === "DISPOSED" ? status : undefined;
+    },
+    { timeoutMs: 3000, intervalMs: 10 },
   );
   assert.equal(disposed.cleanup.pending, 0);
   assert.equal(disposed.cleanup.uncertain, 0);
-  const afterClose = await gatewayRequest(session, "/repos/fixture/repository");
-  assert.equal(afterClose.status, 401);
+  assert.equal(await gatewayStatus(session, "/repos/fixture/repository"), 401);
   assert.deepEqual(github.errors, []);
 });
 
@@ -235,7 +317,12 @@ test("an oversized development token push is answered 413 before the token is us
   await assert.rejects(fixture.git.ref("refs/heads/agent/large"), missingRef);
 });
 
-async function committedCheckout(t, fixture, opened, label) {
+async function committedCheckout(
+  t: TestContext,
+  fixture: TokenFixture,
+  opened: RepositoryCredentialSessionResult,
+  label: string,
+) {
   const gitCommand = await stockGit(t, fixture, opened);
   const checkout = join(await temporaryDirectory(t, `repository-token-${label}-`), "checkout");
   await gitCommand(["clone", opened.client.gitRemote, checkout]);
@@ -249,9 +336,9 @@ async function committedCheckout(t, fixture, opened, label) {
 }
 
 // One receive-pack POST with a raw body, authenticated as Git authenticates to the gateway.
-function rawGatewayPost(fixture, target, body) {
+function rawGatewayPost(fixture: OpenedTokenFixture, target: string, body: Buffer) {
   const basic = Buffer.from(`gateway-session:${fixture.opened.bearer}`).toString("base64");
-  return new Promise((resolve, reject) => {
+  return new Promise<GatewayAnswer>((resolve, reject) => {
     const outgoing = httpsRequest(
       {
         hostname: "127.0.0.1",
@@ -268,8 +355,8 @@ function rawGatewayPost(fixture, target, body) {
         },
       },
       (incoming) => {
-        const chunks = [];
-        incoming.on("data", (chunk) => chunks.push(chunk));
+        const chunks: Buffer[] = [];
+        incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
         incoming.once("end", () =>
           resolve({ status: incoming.statusCode, body: Buffer.concat(chunks).toString() }),
         );
@@ -282,7 +369,7 @@ function rawGatewayPost(fixture, target, body) {
   });
 }
 
-const receivePacks = (fixture) =>
+const receivePacks = (fixture: TokenFixture) =>
   fixture.git.trace.filter((entry) => entry.path.endsWith("/git-receive-pack")).length;
 
 test("development token pushes admit UTF-8 branch names and match the allowlist byte for byte", async (t) => {
@@ -323,7 +410,7 @@ test("development token pushes admit UTF-8 branch names and match the allowlist 
 
   // Git accepts a refname that is not UTF-8 (argv cannot carry it, so a shell spells it).
   // Under an allowed prefix, the client hook and the gateway still refuse it.
-  const shell = (verify) =>
+  const shell = (verify: "--verify" | "--no-verify") =>
     gitCommand(
       [
         "-c",
@@ -342,12 +429,13 @@ test("development token pushes admit UTF-8 branch names and match the allowlist 
 
   // Git accepts invisible and direction-changing characters in a name; under an allowed
   // prefix both layers refuse them (Trojan Source). The hook names the code point.
-  for (const [code, character] of [
+  const invisibleCharacters: [code: string, character: string][] = [
     ["U+202E", "\u202e"],
     ["U+200B", "\u200b"],
     ["U+FEFF", "\ufeff"],
     ["U+2028", "\u2028"],
-  ]) {
+  ];
+  for (const [code, character] of invisibleCharacters) {
     const ref = `refs/heads/agent/a${character}b`;
     const refusedByHook = await gitCommand(["push", "origin", `HEAD:${ref}`], {
       cwd: checkout,
@@ -384,7 +472,7 @@ test("a development token push of more than 256 refs is refused with its own cod
   const fixture = await startTokenService(t);
   const opened = fixture.service.open({ durationSeconds: 3600, profile: "git-write" });
   const { gitCommand, checkout, commit } = await committedCheckout(t, fixture, opened, "many");
-  const refspecs = (count) =>
+  const refspecs = (count: number) =>
     Array.from({ length: count }, (_, index) => `HEAD:refs/heads/agent/many-${index}`);
   const before = receivePacks(fixture);
   const refused = await gitCommand(["push", "origin", ...refspecs(257)], {
@@ -400,8 +488,10 @@ test("a development token push of more than 256 refs is refused with its own cod
   const lines = refspecs(257).map(
     (_, index) => `${"0".repeat(40)} ${commit} refs/heads/agent/many-${index}`,
   );
-  lines[0] += "\0report-status";
-  const pktLine = (line) => {
+  const first = lines[0];
+  assert.ok(first);
+  lines[0] = first + "\0report-status";
+  const pktLine = (line: string) => {
     const payload = Buffer.from(line);
     return Buffer.concat([
       Buffer.from((payload.length + 4).toString(16).padStart(4, "0")),
@@ -414,7 +504,8 @@ test("a development token push of more than 256 refs is refused with its own cod
     Buffer.concat([...lines.map(pktLine), Buffer.from("0000")]),
   );
   assert.equal(answer.status, 413);
-  assert.deepEqual(JSON.parse(answer.body), {
+  const rejection: unknown = JSON.parse(answer.body);
+  assert.deepEqual(rejection, {
     error: {
       code: "push-ref-limit-exceeded",
       message: "A push may update at most 256 refs. Push the refs in smaller batches.",

@@ -6,7 +6,7 @@ import test from "node:test";
 import {
   codexBwrapAdditionalSyscalls,
   deriveCodexBwrapProfile,
-} from "../../scripts/lib/codex-seccomp-profile.mjs";
+} from "../../scripts/lib/codex-seccomp-profile.ts";
 import {
   fixture,
   repositoryRoot,

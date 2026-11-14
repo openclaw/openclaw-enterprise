@@ -30,7 +30,7 @@ The configured package registry did not provide the publisher's
 
 ## Ownership and verification
 
-`build.mjs` discovers the authored corpus, applies `docs/docs.json` navigation,
+`build.ts` discovers the authored corpus, applies `docs/docs.json` navigation,
 validates links and anchors, emits Enterprise HTML and local assets, and leaves
 Pagefind indexing to the root `docs:build` command. `--check` validates without
 writing output. Paths resolve against Markdown source files; README pages map to
@@ -96,7 +96,7 @@ to the tabs. Shutdown stops the watcher and child processes and removes the
 temporary directories. The static server and standalone build do not load the
 refresh client.
 
-`site.mjs` owns mobile navigation, per-tab sidebar scroll restoration, local
+`site.mts` owns mobile navigation, per-tab sidebar scroll restoration, local
 Pagefind search, theme switching, code copying, heading links, Mermaid rendering,
 and Driver matrix filtering. Heading links navigate to the generated heading ID
 with native browser history and also copy the URL when clipboard access is available.
@@ -116,7 +116,7 @@ useful without becoming a second fact owner. No assistant, community widget,
 translation pipeline, deployment command, or hosted API is included.
 
 For documentation or site presentation changes, run `pnpm docs:build` to build
-the site and its search index, `node scripts/docs-site/build.mjs --check` to
+the site and its search index, `node scripts/docs-site/build.ts --check` to
 check links and anchors without writing files, and `pnpm docs:check-length` for
 word limits. Inspect navigation and presentation in the browser. Run
 `pnpm openapi:check` with the controller workspace installed when changing the

@@ -40,8 +40,10 @@ type Checkpoint =
   | ["skipper_gateway_exec_exit_code", number]
   | ["skipper_gateway_exec_signal", string]
   | ["skipper_gateway_exec_code", string]
+  | ["skipper_gateway_exec_helper_entered", true]
   | ["skipper_http_status", number]
   | ["skipper_gateway_category", string]
+  | ["skipper_gateway_transport_cause", string]
   | ["skipper_runtime_signal", string]
   | ["skipper_model_request_observation", string]
   | ["skipper_stage", (typeof stages)[number] | `${typeof installerPrefix}${string}`]
@@ -110,8 +112,14 @@ export async function recordSkipperTestFailure(
     // Missing or malformed runner evidence does not establish an operation.
   }
   await recordSkipperCheckpoint("skipper_test_operation", diagnostic?.operation ?? "unknown");
+  if (diagnostic?.modelRequestObservation !== undefined) {
+    await recordSkipperCheckpoint(
+      "skipper_model_request_observation",
+      diagnostic.modelRequestObservation,
+    );
+  }
   if (diagnostic?.operation === "gateway-exec") {
-    const { exitCode, signal, code } = diagnostic;
+    const { exitCode, signal, code, helperEntered } = diagnostic;
     if (exitCode !== undefined) {
       await recordSkipperCheckpoint("skipper_gateway_exec_exit_code", exitCode);
     }
@@ -121,15 +129,13 @@ export async function recordSkipperTestFailure(
     if (code !== undefined) {
       await recordSkipperCheckpoint("skipper_gateway_exec_code", code);
     }
+    if (helperEntered) {
+      await recordSkipperCheckpoint("skipper_gateway_exec_helper_entered", helperEntered);
+    }
   }
   if (diagnostic?.operation === "gateway-chat") {
-    const {
-      gatewayChatPhase,
-      httpStatus,
-      gatewayCategory,
-      runtimeSignal,
-      modelRequestObservation,
-    } = diagnostic;
+    const { gatewayChatPhase, httpStatus, gatewayCategory, runtimeSignal, gatewayTransportCause } =
+      diagnostic;
     if (gatewayChatPhase) {
       await recordSkipperCheckpoint("skipper_gateway_chat_phase", gatewayChatPhase);
     }
@@ -139,8 +145,8 @@ export async function recordSkipperTestFailure(
     if (runtimeSignal !== undefined) {
       await recordSkipperCheckpoint("skipper_runtime_signal", runtimeSignal);
     }
-    if (modelRequestObservation !== undefined) {
-      await recordSkipperCheckpoint("skipper_model_request_observation", modelRequestObservation);
+    if (gatewayTransportCause !== undefined) {
+      await recordSkipperCheckpoint("skipper_gateway_transport_cause", gatewayTransportCause);
     }
     if (gatewayCategory !== undefined) {
       await recordSkipperCheckpoint("skipper_gateway_category", gatewayCategory);
@@ -200,6 +206,7 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
             // Accept only the canonical text emitted by the recorder.
             httpStatus: String(status) === statusText ? status : undefined,
             gatewayCategory: process.env.SKIPPER_GATEWAY_CATEGORY,
+            gatewayTransportCause: process.env.SKIPPER_GATEWAY_TRANSPORT_CAUSE,
             runtimeSignal: process.env.SKIPPER_RUNTIME_SIGNAL,
             modelRequestObservation: process.env.SKIPPER_MODEL_REQUEST_OBSERVATION,
           })
@@ -213,14 +220,20 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
             operation: testOperation,
             // Accept only the canonical text emitted by the recorder.
             exitCode: String(exitCode) === exitText ? exitCode : undefined,
+            modelRequestObservation: process.env.SKIPPER_MODEL_REQUEST_OBSERVATION,
             signal: process.env.SKIPPER_GATEWAY_EXEC_SIGNAL,
             code: process.env.SKIPPER_GATEWAY_EXEC_CODE,
+            helperEntered: process.env.SKIPPER_GATEWAY_EXEC_HELPER_ENTERED === "true",
           })
         : undefined;
     const gatewayExec = {
+      ...(execDiagnostic?.modelRequestObservation
+        ? { modelRequestObservation: execDiagnostic.modelRequestObservation }
+        : {}),
       ...(execDiagnostic?.exitCode !== undefined ? { exitCode: execDiagnostic.exitCode } : {}),
       ...(execDiagnostic?.signal !== undefined ? { signal: execDiagnostic.signal } : {}),
       ...(execDiagnostic?.code !== undefined ? { code: execDiagnostic.code } : {}),
+      ...(execDiagnostic?.helperEntered ? { helperEntered: execDiagnostic.helperEntered } : {}),
     };
     const receipt = {
       version: 1,
@@ -242,6 +255,9 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
               : {}),
             ...(gatewayChat?.gatewayCategory !== undefined
               ? { gatewayCategory: gatewayChat.gatewayCategory }
+              : {}),
+            ...(gatewayChat?.gatewayTransportCause
+              ? { gatewayTransportCause: gatewayChat.gatewayTransportCause }
               : {}),
             ...(gatewayChat?.runtimeSignal ? { runtimeSignal: gatewayChat.runtimeSignal } : {}),
             ...(gatewayChat?.modelRequestObservation

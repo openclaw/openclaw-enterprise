@@ -31,18 +31,6 @@
       "removeWhen": "Move shared runtime-entrypoint scripts into the provider-neutral compute runtime module and update both providers."
     },
     {
-      "rule": "http-to-provider",
-      "from": "apps/controller/src/http/errors.ts",
-      "to": "apps/controller/src/drivers/configuration/kubernetes/index.ts",
-      "specifier": "../drivers/configuration/kubernetes/index.ts",
-      "kind": "import",
-      "typeOnly": false,
-      "bindings": ["value:ConfigurationOwnershipError", "value:ConfigurationValidationError"],
-      "owner": "HTTP configuration boundary",
-      "reason": "HTTP currently imports semantic Configuration errors from the selected Kubernetes implementation.",
-      "removeWhen": "Move semantic Configuration errors into the neutral contract and update the HTTP importer."
-    },
-    {
       "rule": "domain-to-implementation",
       "from": "packages/occ/src/iam-policy-cleanup.ts",
       "to": "packages/occ/src/state/platform-state.ts",

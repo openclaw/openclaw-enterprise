@@ -719,9 +719,11 @@ jobs:
           SKIPPER_GATEWAY_EXEC_EXIT_CODE: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_exec_exit_code }}
           SKIPPER_GATEWAY_EXEC_SIGNAL: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_exec_signal }}
           SKIPPER_GATEWAY_EXEC_CODE: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_exec_code }}
+          SKIPPER_GATEWAY_EXEC_HELPER_ENTERED: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_exec_helper_entered }}
           SKIPPER_GATEWAY_CHAT_PHASE: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_chat_phase }}
           SKIPPER_HTTP_STATUS: ${{ steps.installed-skipper-proof.outputs.skipper_http_status }}
           SKIPPER_GATEWAY_CATEGORY: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_category }}
+          SKIPPER_GATEWAY_TRANSPORT_CAUSE: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_transport_cause }}
           SKIPPER_RUNTIME_SIGNAL: ${{ steps.installed-skipper-proof.outputs.skipper_runtime_signal }}
           SKIPPER_MODEL_REQUEST_OBSERVATION: ${{ steps.installed-skipper-proof.outputs.skipper_model_request_observation }}
           SKIPPER_LAST_TEST_CHECKPOINT: ${{ steps.installed-skipper-proof.outputs.skipper_last_test_checkpoint }}

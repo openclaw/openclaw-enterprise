@@ -82,7 +82,9 @@ import {
   ActivationPendingError,
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
+  AuditAppendUnavailableError,
   DependencyUnavailableError,
+  PostgresCommitOutcomeUnknownError,
   KubernetesSecretWriteForbiddenError,
   PersistedStateInvalidError,
   SandboxGatewayUnauthorizedError,
@@ -181,6 +183,7 @@ export interface ControllerWorkerOptions {
   readonly metrics?: OccMetrics;
   readonly pool: PostgresPool & PostgresQueryClient;
   readonly mode?: "development" | "production";
+  readonly controlPlaneAuditEnabled?: boolean;
   readonly drivers?: InstallationRuntimeDrivers;
   readonly computeDriver?: ComputeDriver;
   readonly sandboxDriver?: SandboxDriver;
@@ -919,6 +922,27 @@ function workLogFields(claim: ClaimedWork): {
   };
 }
 
+function workerPassErrorCode(error: unknown): string {
+  if (error instanceof WorkClaimLostError) {
+    return "CLAIM_LOST";
+  }
+  if (error instanceof PostgresCommitOutcomeUnknownError) {
+    return "COMMIT_OUTCOME_UNKNOWN";
+  }
+  if (
+    (error instanceof AuditAppendUnavailableError &&
+      error.reasonCode === "AUDIT_CAPACITY_EXCEEDED") ||
+    (error instanceof Error &&
+      "code" in error &&
+      error.code === "53400" &&
+      "constraint" in error &&
+      error.constraint === "control_plane_audit_capacity")
+  ) {
+    return "AUDIT_CAPACITY_EXCEEDED";
+  }
+  return "WORKER_UNAVAILABLE";
+}
+
 function validDriver(driver: ComputeDriver): boolean {
   return (
     typeof driver.id === "string" &&
@@ -1295,6 +1319,7 @@ export class ControllerWorker {
     this.queueOptions = {
       leaseDurationMs: this.leaseDurationMs,
       maxAttempts: this.maxAttempts,
+      controlPlaneAuditEnabled: options.controlPlaneAuditEnabled ?? this.mode === "development",
     };
     this.state = new PostgresPlatformState(options.pool, {
       workQueue: this.queueOptions,
@@ -1651,7 +1676,7 @@ export class ControllerWorker {
         } else {
           this.emit({
             event: "worker.error",
-            code: error instanceof WorkClaimLostError ? "CLAIM_LOST" : "WORKER_UNAVAILABLE",
+            code: workerPassErrorCode(error),
             ...(error instanceof ClaimLeaseLostError
               ? {
                   ...(claimed === undefined ? {} : workLogFields(claimed)),
@@ -2773,7 +2798,11 @@ export class ControllerWorker {
       }
       result = await this.observe(claim, namespace);
     } catch (error) {
-      if (error instanceof WorkClaimLostError) {
+      if (
+        error instanceof WorkClaimLostError ||
+        error instanceof AuditAppendUnavailableError ||
+        error instanceof PostgresCommitOutcomeUnknownError
+      ) {
         throw error;
       }
       result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };

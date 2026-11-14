@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-13"
-last_updated_session: authoring-run/195f17af-c4ed-4cc2-94a3-d6bfc4faca7c
+last_updated_session: "authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c"
 ---
 
 # Agent sandbox policy flow
@@ -131,7 +131,11 @@ authorized editing operation changes this flag.
 `packages/occ/src/state/postgres-state.ts` performs versioned updates. Agent
 creation creates its one policy through a database trigger. Constraints enforce
 ownership, document shape, immutable application identity, version transitions,
-and application revision ownership. Agent deletion cascades policy removal and
+and application revision ownership. The in-memory adapter and the PostgreSQL
+update trigger reject saves that remove a pending application, including saves
+that keep the current policy version. The worker can record the expected provider
+resource version and set the same application to `applied` or `failed`.
+Agent deletion cascades policy removal and
 cleans its exact IAM access.
 
 ### 2. Freeze deployment or enqueue live application
@@ -253,7 +257,8 @@ the policy read, only the network policy card states it; the suggestions card is
 - Compare the application revision with the active Agent revision and inspect
   attributable audit evidence before retrying a stale or unconfirmed request.
 - [PostgreSQL admission integration](../../tests/integration/postgres-agent-sandbox-policy.test.mjs)
-  exercises HTTP/IAM/storage; the [OpenShell runtime lane](../../tests/helpers/openshell-sandbox-workflows.mjs)
+  exercises HTTP/IAM/storage, application-role refusal of pending application
+  removal, and worker settlement; the [OpenShell runtime lane](../../tests/helpers/openshell-sandbox-workflows.mjs)
   owns real enforcement proof. Storybook proves simulated presentation only.
 - [Console batch browser tests](../../tests/browser/console-policy-denials.test.ts)
   cover selection across pages, stable Follow, deduplication, preservation of saved
@@ -272,6 +277,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-13 22:21: Reject policy saves that remove a pending application. (authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c - cf0370780b4e885e35ee463033b6926e5d3109ef)
 
 - 2026-11-13 21:02: Trace protected download approval, withdrawal, and confirmation on the running Agent. (authoring-run/195f17af-c4ed-4cc2-94a3-d6bfc4faca7c - 5bbb615eee0dc55be58393205de920220de88c55)
 

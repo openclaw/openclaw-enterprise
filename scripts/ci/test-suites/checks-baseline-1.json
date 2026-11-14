@@ -78,7 +78,7 @@
     "tests/conformance/openshell-harness-status.test.mjs",
     "tests/integration/bootstrap-volume.test.ts",
     "tests/integration/secret-driver-startup.test.ts",
-    "tests/conformance/kubernetes-configuration.test.mjs",
+    "tests/conformance/kubernetes-configuration.test.ts",
     "tests/conformance/occ-read.test.mjs",
     "tests/integration/controller-lifecycle.test.ts",
     "tests/conformance/configuration-occ.test.mjs",
@@ -93,10 +93,11 @@
     "tests/conformance/secret-gateway-delivery.test.mjs",
     "tests/conformance/runtime-logs-replay.test.ts",
     "tests/conformance/codex-seccomp-profile.test.ts",
-    "tests/conformance/kubernetes-ownership.test.mjs",
+    "tests/conformance/kubernetes-ownership.test.ts",
     "tests/conformance/service-account-driver.test.ts",
     "tests/conformance/iam.test.mjs",
     "tests/conformance/platform-state-memory.test.mjs",
+    "tests/conformance/sandbox-policy-persistence.test.ts",
     "tests/conformance/contracts.test.mjs",
     "tests/conformance/presets.test.ts",
     "tests/integration/production-healthcheck.test.mjs",
@@ -285,10 +286,10 @@
       "path": "tests/conformance/kubernetes-runtime-credentials.test.mjs"
     },
     {
-      "path": "tests/conformance/kubernetes-configuration.test.mjs"
+      "path": "tests/conformance/kubernetes-configuration.test.ts"
     },
     {
-      "path": "tests/conformance/kubernetes-ownership.test.mjs",
+      "path": "tests/conformance/kubernetes-ownership.test.ts",
       "expectedTests": ["sealed Namespace compares SDK-deserialized ingress exactly"]
     },
     {
@@ -339,6 +340,10 @@
     },
     {
       "path": "tests/conformance/platform-state-memory.test.mjs"
+    },
+    {
+      "path": "tests/conformance/sandbox-policy-persistence.test.ts",
+      "expectedTests": ["memory SandboxPolicy keeps pending custody until explicit settlement"]
     },
     {
       "path": "tests/conformance/pr-status.test.ts"

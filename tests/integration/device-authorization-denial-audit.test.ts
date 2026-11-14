@@ -5,6 +5,7 @@ import type { TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { API_REQUEST_AUDIT_ACTIONS } from "../../packages/contracts/src/index.ts";
 import type { AuditEvent, ResourceRef } from "../../packages/contracts/src/index.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
@@ -81,7 +82,18 @@ class DenialAuditSink extends InMemoryAuditSink {
   }
 }
 
-async function createFixture(t: TestContext) {
+async function createFixture(t: TestContext, { requestAudit = false } = {}) {
+  const originalFetch = globalThis.fetch;
+  const loopbackFetch: typeof fetch = (input, options) => {
+    const address = new URL(input instanceof Request ? input.url : input.toString());
+    assert.ok(
+      ["127.0.0.1", "[::1]", "localhost"].includes(address.hostname),
+      "the component proof must not contact a provider",
+    );
+    return originalFetch(input, options);
+  };
+  t.mock.method(globalThis, "fetch", loopbackFetch);
+
   const auditSink = new DenialAuditSink();
   const clock = createControlledClock();
   const secretDriver = createTestSecretDriver();
@@ -91,6 +103,7 @@ async function createFixture(t: TestContext) {
   });
   const fixture = await createConsoleAppFixture(t, {
     auditSink,
+    ...(requestAudit ? { durableRequestAuditSink: auditSink } : {}),
     secretDriver,
     credentialGatewayDriver: gateway,
     now: () => new Date(clock.wallNow()),
@@ -181,16 +194,6 @@ async function createFixture(t: TestContext) {
 }
 
 test("device login binding denials retain generic 404 and attributable fail-closed audit", async (t) => {
-  const originalFetch = globalThis.fetch;
-  const loopbackFetch: typeof fetch = (input, options) => {
-    const address = new URL(input instanceof Request ? input.url : input.toString());
-    assert.ok(
-      ["127.0.0.1", "[::1]", "localhost"].includes(address.hostname),
-      "the component proof must not contact a provider",
-    );
-    return originalFetch(input, options);
-  };
-  t.mock.method(globalThis, "fetch", loopbackFetch);
   const fixture = await createFixture(t);
   const owner = fixture.principal.id;
   const saved = await fixture.savedTarget("Saved login owner");
@@ -414,4 +417,56 @@ test("device login binding denials retain generic 404 and attributable fail-clos
   assert.equal(fixture.gateway.operations.length, beforeEffects);
   assert.ok(isDeepStrictEqual(await fixture.snapshot(item.login), beforeFailure));
   assertPublicOnly(unavailable.body, observed[0]!.excluded);
+});
+
+test("device login binding denials still require their own audit with request audit enabled", async (t) => {
+  const fixture = await createFixture(t, { requestAudit: true });
+  const owner = await fixture.savedTarget("Device login owner");
+  const item = {
+    label: "saved handle on a different Agent",
+    login: await fixture.start(owner),
+    target: await fixture.savedTarget("Other Agent"),
+    actorId: fixture.principal.id,
+  };
+  const eventsFor = (response: HttpResult) => {
+    const requestId = responseRequestId(response);
+    return fixture.auditSink.events.filter((event) => event.requestId === requestId);
+  };
+  const denied = await fixture.send("poll", item);
+  assert.equal(denied.status, 404);
+  assert.deepEqual(object(denied.body).error, genericNotFound);
+  const deniedEvents = eventsFor(denied);
+  assert.equal(deniedEvents.length, 3);
+  const [admission, denial, result] = deniedEvents;
+  assert.equal(admission?.action, API_REQUEST_AUDIT_ACTIONS.admitted);
+  assert.equal(denial?.kind, "authorization_denial");
+  assert.equal(denial.action, "openclaw.agents.device_authorization.poll");
+  assert.equal(denial.reasonCode, reasonCode);
+  assert.equal(denial.actorId, item.actorId);
+  assert.deepEqual(denial.resource, fixture.resource(item.target));
+  assert.equal(result?.action, API_REQUEST_AUDIT_ACTIONS.result);
+  assert.equal(result.outcome, "denied");
+  assert.equal(result.details?.statusCode, 404);
+
+  // Request evidence remains writable. It cannot replace the required device denial record.
+  const before = await fixture.snapshot(item.login);
+  const operations = fixture.gateway.operations.length;
+  fixture.auditSink.failing = true;
+  const unavailable = await fixture.send("poll", item);
+  assert.equal(unavailable.status, 503);
+  assert.equal(object(object(unavailable.body).error).code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(fixture.auditSink.attempts, 1);
+  assert.deepEqual(
+    eventsFor(unavailable).map(({ action, outcome, details }) => [
+      action,
+      outcome,
+      details?.statusCode,
+    ]),
+    [
+      [API_REQUEST_AUDIT_ACTIONS.admitted, "success", undefined],
+      [API_REQUEST_AUDIT_ACTIONS.result, "failure", 503],
+    ],
+  );
+  assert.deepEqual(await fixture.snapshot(item.login), before);
+  assert.equal(fixture.gateway.operations.length, operations);
 });

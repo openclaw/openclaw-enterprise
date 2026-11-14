@@ -1,8 +1,9 @@
-/* global Scalar */
+declare const Scalar: Pick<typeof import("@scalar/api-reference"), "createApiReference">;
+
 // Scalar reserves "api-reference" for automatic initialization.
 const root = document.getElementById("occ-api-explorer");
 if (root) {
-  const header = document.querySelector("body > header");
+  const header = document.querySelector("body > header")!;
   const updateHeaderOffset = () => {
     root.style.setProperty(
       "--scalar-custom-header-height",
@@ -37,7 +38,11 @@ if (root) {
   });
   const syncTheme = () => {
     const mode = theme();
-    const configuration = reference.getConfiguration();
+    // This explorer mounts Scalar with one source and a top-level theme.
+    const configuration = reference.getConfiguration() as Exclude<
+      ReturnType<typeof reference.getConfiguration>,
+      unknown[]
+    >;
     if (configuration.forceDarkModeState !== mode) {
       reference.updateConfiguration({
         ...configuration,

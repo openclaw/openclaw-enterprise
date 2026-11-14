@@ -1358,7 +1358,7 @@ export interface PlatformOperationReadRepository {
 }
 
 export interface PlatformOperationRepository extends PlatformOperationReadRepository {
-  append(operation: PlatformOperation): Promise<void>;
+  append(operation: PlatformOperation, requestId?: string): Promise<void>;
   /**
    * Requeue the exact deleting Agent's terminal teardown initiated by
    * `initiatingActorId`, assigning it to `actorId` (the same actor for a plain

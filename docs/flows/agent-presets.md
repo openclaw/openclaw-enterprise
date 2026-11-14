@@ -296,7 +296,7 @@ or an immutable saved version.
   Configuration IDs when investigating partial or uncertain outcomes.
 - [Controller integration coverage](../../tests/integration/presets-controller.test.ts)
   exercises the HTTP workflow, admission, isolation, and copy independence.
-  [PostgreSQL coverage](../../tests/integration/postgres-presets.test.mjs) exercises
+  [PostgreSQL coverage](../../tests/integration/postgres-presets.test.ts) exercises
   persistence; [browser coverage](../../tests/browser/console-agent-presets.test.ts)
   exercises the real selection form. Coverage names are not proof of a live model response.
 - The standard Preset's [clean-build network trace](../guides/topics/standard-codex-preset.md#build-network-allowlist)

@@ -1,11 +1,18 @@
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
+export type AgentSnapshot = {
+  present: string[];
+  environment: NodeJS.ProcessEnv;
+  surfaces: string[];
+  bytes: number;
+};
+
 // The trusted host scans this bounded snapshot in memory and never prints it:
 // the selected session bearer is legitimately present in these client files.
-const surfaces = [];
+const surfaces: string[] = [];
 let bytes = 0;
-async function walk(path) {
+async function walk(path: string): Promise<void> {
   const stat = await lstat(path);
   if (stat.isSymbolicLink()) {
     return;
@@ -30,7 +37,8 @@ for (const path of ["/dev/shm", "/run"]) {
   try {
     await walk(path);
   } catch (error) {
-    if (error.code !== "ENOENT" && error.code !== "EACCES") {
+    const { code } = error as NodeJS.ErrnoException;
+    if (code !== "ENOENT" && code !== "EACCES") {
       throw error;
     }
   }
@@ -43,7 +51,8 @@ for (const name of await readdir("/proc")) {
     try {
       surfaces.push(await readFile(`/proc/${name}/${file}`, "utf8"));
     } catch (error) {
-      if (error.code !== "ENOENT" && error.code !== "ESRCH") {
+      const { code } = error as NodeJS.ErrnoException;
+      if (code !== "ENOENT" && code !== "ESRCH") {
         throw error;
       }
     }
@@ -67,7 +76,7 @@ const forbidden = [
   "/app/dist/drivers/repo/github/access/factory.js",
   "/app/dist/drivers/repo/github/access/material.js",
 ];
-const present = [];
+const present: string[] = [];
 // The client shares only this pure validator with the service. Any other
 // common-owner module, directory or symlink still fails the delivered boundary.
 const commonDirectory = "/app/dist/drivers/repo/access";
@@ -85,9 +94,10 @@ for (const path of forbidden) {
     await lstat(path);
     present.push(path);
   } catch (error) {
-    if (error.code !== "ENOENT") {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
     }
   }
 }
-process.stdout.write(JSON.stringify({ surfaces, present, bytes, environment: process.env }));
+const snapshot: AgentSnapshot = { surfaces, present, bytes, environment: process.env };
+process.stdout.write(JSON.stringify(snapshot));

@@ -23,7 +23,7 @@ import {
   refusals,
   refusedStopWaits,
   startRefusedCandidate,
-} from "../helpers/postgres-worker-refused-candidate.mjs";
+} from "../helpers/postgres-worker-refused-candidate.ts";
 
 // Exclusive replacement and refused candidates: predecessor stops across pending passes and
 // maintenance, refused and self-failed exclusive candidates, refused deployments on shared
