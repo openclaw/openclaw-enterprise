@@ -4,7 +4,8 @@ import {
   assertSlackChannelDestination,
   verifySingleSlackDelivery,
 } from "../helpers/slack-delivery.mjs";
-import { sessionEvidenceScript } from "../helpers/normal-agent-tools.mjs";
+import { parseGatewayObservation } from "../helpers/normal-agent-observation-receipts.ts";
+import { sessionEvidenceScript } from "../helpers/normal-agent-gateway-evidence.ts";
 import {
   arrangeProductionTopology,
   assertDeniedConnection,
@@ -248,7 +249,7 @@ test(
         const keys = JSON.parse(await execGateway("node", "-e", probe));
         const matches = [];
         for (const key of keys.filter((key) => key.includes("slack"))) {
-          const proof = JSON.parse(
+          const proof = parseGatewayObservation(
             await execGateway(
               "node",
               "-e",

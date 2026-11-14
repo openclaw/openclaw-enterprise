@@ -581,7 +581,8 @@ test("QA command diagnostics retain the error while hiding generated and environ
   await t.test(
     "native failure metadata keeps fixed classes without echoing response or log values",
     async () => {
-      const { nativeTaskFailureSummary } = await import("../helpers/normal-agent-tools.mjs");
+      const { nativeTaskFailureSummary } =
+        await import("../helpers/normal-agent-native-diagnostics.ts");
       const summary = nativeTaskFailureSummary(
         "thread/start: Codex did not grant the requested permission profile. Authorization: Bearer native-private-value",
       );
@@ -593,6 +594,13 @@ test("QA command diagnostics retain the error while hiding generated and environ
         JSON.stringify(summary),
         /native-private-value|Authorization|Codex did not/,
       );
+      assert.deepEqual(
+        nativeTaskFailureSummary(" ".repeat(65_536) + "turn/start invalid api key"),
+        {
+          classes: ["unclassified"],
+          nativeMethod: "unknown",
+        },
+      );
       assert.deepEqual(nativeTaskFailureSummary("unrecognized private-native-message"), {
         classes: ["unclassified"],
         nativeMethod: "unknown",
@@ -602,8 +610,27 @@ test("QA command diagnostics retain the error while hiding generated and environ
   await t.test(
     "native requirements distinguish missing experimental fields from an explicit allowlist",
     async () => {
-      const { nativePolicyRequirementsSummary } = await import("../helpers/normal-agent-tools.mjs");
+      const { nativePolicyRequirementsSummary } =
+        await import("../helpers/normal-agent-native-diagnostics.ts");
       assert.deepEqual(nativePolicyRequirementsSummary({}), { available: false });
+      assert.deepEqual(nativePolicyRequirementsSummary({ requirements: null }), {
+        available: true,
+        requirementsPresent: false,
+      });
+      const malformed = nativePolicyRequirementsSummary({
+        requirements: {
+          allowedPermissionProfiles: { ":workspace": "true" },
+          defaultPermissions: "native-private-value",
+        },
+      });
+      assert.equal(malformed.profileAllowlistPresent, "unknown");
+      assert.equal(malformed.defaultProfileKind, "other-named");
+      assert.doesNotMatch(JSON.stringify(malformed), /native-private-value/);
+      assert.equal(
+        nativePolicyRequirementsSummary({ requirements: { allowedPermissionProfiles: null } })
+          .profileAllowlistPresent,
+        false,
+      );
       assert.equal(
         nativePolicyRequirementsSummary({ requirements: {} }).profileAllowlistPresent,
         "unknown",

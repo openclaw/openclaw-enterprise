@@ -7,7 +7,8 @@ import { loadYaml, dumpYaml, waitFor, yamlDocuments } from "./qa-utils.mjs";
 import { protectedText, grantQaSecret } from "./qa-secrets.mjs";
 import { slackApi } from "./harness-topology-k3d-real.mjs";
 import { allMessages, assertSlackBotAuthor, verifySingleSlackDelivery } from "./slack-delivery.mjs";
-import { sessionEvidenceScript } from "./normal-agent-tools.mjs";
+import { parseGatewayObservation } from "./normal-agent-observation-receipts.ts";
+import { sessionEvidenceScript } from "./normal-agent-gateway-evidence.ts";
 
 export async function prepareQaSlack(f) {
   const configuration = f.configuration.drivers.compute.configuration;
@@ -166,7 +167,7 @@ export async function verifyQaSlack(f, agent) {
     const keys = JSON.parse((await f.execRole(agent, "gateway", ["node", "-e", probe])).stdout);
     const matches = [];
     for (const key of keys.filter((key) => key.includes("slack"))) {
-      const proof = JSON.parse(
+      const proof = parseGatewayObservation(
         (
           await f.execRole(agent, "gateway", [
             "node",
@@ -266,8 +267,9 @@ async function verifyNativeSlackRoot(f, agent, slack, identity) {
     await delay(4_000);
   }
   assert.ok(reply, "native message tool must create its intended root message");
+  /** @param {string[]} tools @param {string} pattern */
   const read = async (tools, pattern) =>
-    JSON.parse(
+    parseGatewayObservation(
       (
         await f.execRole(agent, "gateway", [
           "node",
@@ -282,13 +284,19 @@ async function verifyNativeSlackRoot(f, agent, slack, identity) {
       ).stdout,
     );
   const discovered = await read([], reply.ts);
+  assert.ok(discovered.diagnostics, "missing Gateway tool inventory");
   const names = discovered.diagnostics.observedToolNames.filter((name) =>
     /(?:^|[_.])message$/.test(name),
   );
   assert.equal(names.length, 1, "root send must use the native message tool");
   const evidence = await read(names, reply.ts);
+  assert.ok(
+    evidence.calls && evidence.results && evidence.codexTurns,
+    "missing Gateway transcript",
+  );
   assert.equal(evidence.calls.length, 1, "native root send must be attempted only once");
   const call = evidence.calls[0];
+  assert.ok(call?.id, "the native message call must have an identity");
   const result = evidence.results.find((value) => value.toolCallId === call.id);
   assert.ok(
     result && !result.isError && result.matchesResult && result.seq > call.seq,
