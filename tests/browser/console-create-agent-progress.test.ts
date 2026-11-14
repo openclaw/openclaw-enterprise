@@ -282,7 +282,7 @@ test("a failed provisioning job marks its step failed and a retry starts the met
           workId: work.workId,
           status: "queued",
           phase: "configuration",
-          attemptCount: 2,
+          attemptCount: 0,
           updatedAt: work.updatedAt,
           url: work.url,
         },
