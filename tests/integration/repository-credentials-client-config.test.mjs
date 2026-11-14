@@ -383,10 +383,23 @@ test("generated native configuration selects exact endpoint authority through st
     assert.equal(result.stdout.includes(opened.bearer), false);
     assert.equal(result.stderr.includes(opened.bearer), false);
   }
+  const accepted = await run(
+    process.execPath,
+    [helper, "manifest", material.root, material.manifest.generation, "get"],
+    { env: clean(), input: protocol(undefined, "wwwauth[]=realm=café\n") },
+  );
+  assert.equal(accepted.code, 0);
+  assert.equal(accepted.stdout.includes(`password=${opened.bearer}\n`), true);
+  assert.equal(accepted.stderr, "");
   for (const input of [
     protocol() + "path=example/project.git\n",
     protocol().replace("\n\n", "\npath=example/project.git\n\n"),
-    "x=" + "a".repeat(17000) + "\n\n",
+    protocol(undefined, "wwwauth[]=" + "a".repeat(17000) + "\n"),
+    protocol(undefined, "wwwauth[]=realm=ca\tfé\n"),
+    protocol(undefined, "wwwauth[]=realm=ca\0fé\n"),
+    protocol(undefined, "wwwauth[]=realm=ca\x7ffé\n"),
+    protocol(undefined, "wwwauth[]\n"),
+    protocol() + "\n",
     protocol().replace("example/project.git", "example/project.git\r"),
   ]) {
     const result = await run(

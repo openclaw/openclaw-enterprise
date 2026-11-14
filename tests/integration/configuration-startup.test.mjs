@@ -2394,6 +2394,7 @@ test("closed Installation observes only its operator-bound Namespace, including 
 test("API and worker startup refuse fractional counted quotas before persistence", async (t) => {
   for (const [quota, expectedCode] of [
     [{ pods: "1.5" }, "DRIVER_CONFIGURATION_INVALID"],
+    [{ "services.nodeports": "1.5" }, "DRIVER_CONFIGURATION_INVALID"],
     [{ "count/deployments.apps": "1500m" }, "DRIVER_CONFIGURATION_INVALID"],
     [{ pods: "1000m", "requests.cpu": "500m" }, "PERSISTENCE_UNAVAILABLE"],
   ]) {

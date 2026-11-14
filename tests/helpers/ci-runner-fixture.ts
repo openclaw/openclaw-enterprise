@@ -146,6 +146,19 @@ export function writeRunnerManifest(
   return writeJson(join(root, filename), { version: 1, fileDurations, lanes, groups });
 }
 
+export async function writeRunnerLaneFiles(
+  root: string,
+  lane: string,
+  names: readonly string[],
+  source: string,
+) {
+  const files = names.map((name) => ({ path: `tests/integration/${name}.test.mjs` }));
+  for (const { path } of files) {
+    await writeFile(join(root, path), source);
+  }
+  await writeRunnerManifest(root, { lanes: { [lane]: { files } } });
+}
+
 export async function writeSingleFileRunnerLane(
   root: string,
   lane: string,
@@ -173,6 +186,15 @@ export async function writeFirstAgentCliFixture(root: string, cliBody: string) {
     await readFile(new URL("../../scripts/ci/failure-redaction.mjs", import.meta.url)),
   );
   await writeFile(join(root, "bin/occ"), `#!${process.execPath}\n${cliBody}`, { mode: 0o700 });
+}
+
+export function requireTestResult<T extends { name: string }>(
+  results: readonly T[],
+  name: string,
+): T {
+  const result = results.find((entry) => entry.name === name);
+  assert.ok(result, `Missing test result: ${name}`);
+  return result;
 }
 
 export function runnerArtifactPaths(root: string, name: string) {

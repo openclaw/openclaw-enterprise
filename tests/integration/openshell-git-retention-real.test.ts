@@ -9,6 +9,7 @@ import type {
   OpenShellProviderResponse,
   OpenShellStoredProviderProfile,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
 import {
@@ -135,14 +136,68 @@ test(
       workspace,
       checkpoint: evidence,
     } = fixture;
-    const { agent, revision, suffix, deadlineWallMs, readExecution, original, target, supervisor } =
-      await deployFiniteAgent(t, fixture);
     const modelKubectl = async (...args: (string | { input?: string; timeout?: number })[]) => {
       const options = args.pop();
       assert.ok(options && typeof options === "object");
       assert.ok(args.every((argument) => typeof argument === "string"));
       return fixture.kube(args, options);
     };
+    // The same Git-enabled Installation must also start a model-only Agent. This uses the
+    // ordinary API, real worker, Gateway attachment and a genuine model turn before Git starts.
+    const model = process.env.OCC_TEST_OPENAI_MODEL;
+    assert.ok(model);
+    const base = `/namespaces/${namespace.id}`;
+    const configuration = await fixture.request("POST", `${base}/configurations`, {
+      kind: "agent",
+      values: createHarnessConfiguration("codex", model),
+    });
+    const modelOnly = await fixture.request("POST", `${base}/agents`, {
+      name: `model-only-${randomUUID()}`,
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId: modelSource.id },
+      credentialSources: [{ sourceId: modelSource.id }],
+    });
+    const role = await fixture.request("POST", `${base}/iam/roles`, {
+      name: `model-only-${randomUUID()}`,
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    });
+    await fixture.request("POST", `${base}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: modelOnly.servicePrincipalId,
+      roleId: role.id,
+      resourceKind: "credential_source",
+      resourceId: modelSource.id,
+    });
+    const modelPath = `${base}/agents/${modelOnly.id}`;
+    await fixture.request("POST", `${modelPath}/runtime-credentials`, {});
+    const modelRevision = await fixture.request("POST", `${modelPath}/deploy`);
+    await observeUntil(
+      "model-only Agent startup",
+      t.signal,
+      async () => {
+        const deployment = await fixture.request(
+          "GET",
+          `${modelPath}/deployments/${modelRevision.id}`,
+        );
+        assert.notEqual(deployment.status, "failed");
+        return deployment.status === "succeeded" ? deployment : undefined;
+      },
+      600_000,
+    );
+    await verifyFirstAgentModel(modelKubectl, {
+      namespaceId: namespace.id,
+      agentId: modelOnly.id,
+      revisionId: modelRevision.id,
+      prompt: undefined,
+      apiKey: undefined,
+      expectProviderKey: false,
+    });
+    await fixture.request("POST", `${modelPath}/stop`);
+    t.diagnostic("Fresh Gateway model source completed a model-only turn with Git configured.");
+
+    const { agent, revision, suffix, deadlineWallMs, readExecution, original, target, supervisor } =
+      await deployFiniteAgent(t, fixture);
     const verifyModelTurn = async (stage: string) => {
       const before = origin.snapshot();
       assert.deepEqual((await readExecution()).identity, original.identity);

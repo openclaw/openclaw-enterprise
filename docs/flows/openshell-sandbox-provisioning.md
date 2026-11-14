@@ -98,14 +98,14 @@ graph TD
 `internal/occdev/kubernetes.go:writeInstallation`
 
 [downloadVerified](../../internal/occdev/openshell_assets.go) streams archives.
-[Go](../../internal/occdev/routing_manifest.go) and [CI](../../scripts/ci/routing.mjs) cap manifests at 32 MiB.
+[Go](../../internal/occdev/routing_manifest.go) and [CI](../../scripts/ci/routing.ts) cap manifests at 32 MiB.
 Only network errors or HTTP 408/429/5xx retry: up to eight cancelable 60-second attempts starting
 within 120 seconds. Retries remove incomplete `0600` archives, preserving existing files.
 
 Kubernetes-only uses PostgreSQL in `oce-system`, in-cluster authentication and
 [per-Agent HTTPS](../guides/deploy/local-setup.md). Compose uses PostgreSQL/OCC with k3d.
 
-`prepareOpenShell`/[installAgentSandbox](../../scripts/ci/openshell.mjs) verify native/descriptor identity
+`prepareOpenShell`/[installAgentSandbox](../../scripts/ci/openshell.ts) verify native/descriptor identity
 from cached children/indexes or exact-child pulls. Manifest/config/CRI checks precede apply
 (`Never`); CRI misses retry. Overrides remain intact.
 The [importer](../../internal/occdev/openshell_image.go) journals tag/engine-ID intent before creation.

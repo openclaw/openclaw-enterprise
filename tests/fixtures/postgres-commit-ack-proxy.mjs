@@ -4,7 +4,12 @@ import pg from "pg";
 
 // Real PostgreSQL transport faults: drop the server's COMMIT completion, or
 // pause the client's COMMIT request before forwarding it to the server.
-export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = false } = {}) {
+/**
+ * @param {string} databaseUrl
+ * @param {{port?: number, egressDispatch?: boolean, transactionStatement?: string}} [options]
+ */
+export async function commitAckProxy(databaseUrl, options = {}) {
+  const { port = 0, egressDispatch = false, transactionStatement } = options;
   const target = new URL(databaseUrl);
   // Resolve query-string and environment precedence with the same installed
   // driver as the caller. URL authority alone is not the effective destination.
@@ -56,6 +61,7 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
     let parsedDispatch = false;
     let selected;
     let updated;
+    let sawTransactionStatement = false;
     const close = () => {
       if (heldCommit?.upstream === upstream) {
         heldCommit = undefined;
@@ -81,6 +87,12 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
         }
         const frame = frontend.subarray(0, size);
         frontend = frontend.subarray(size);
+        if (!startup && transactionStatement !== undefined && frame[0] === 80) {
+          // Parse names a prepared statement without inspecting its Bind values.
+          const sqlOffset = frame.indexOf(0, 5) + 1;
+          const sql = frame.toString("utf8", sqlOffset, frame.indexOf(0, sqlOffset));
+          sawTransactionStatement ||= sql === transactionStatement;
+        }
         if (!startup && egressDispatch && frame[0] === 80) {
           // Parse. Match only the OCC authorization update, never a reservation or
           // an unrelated COMMIT. The product uses pg's unnamed extended query.
@@ -119,7 +131,8 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
           frame[0] === 81 &&
           frame.subarray(5, -1).toString().trim().toUpperCase() === "COMMIT" &&
           armed &&
-          (!egressDispatch || updated)
+          (!egressDispatch || updated) &&
+          (transactionStatement === undefined || sawTransactionStatement)
         ) {
           if (skipCommits > 0) {
             skipCommits -= 1;
@@ -166,6 +179,9 @@ export async function commitAckProxy(databaseUrl, { port = 0, egressDispatch = f
             dropped = updated;
           }
           updated = undefined;
+        }
+        if (frame[0] === 90 && frame[5] === 73) {
+          sawTransactionStatement = false;
         }
         if (
           egressDispatch &&

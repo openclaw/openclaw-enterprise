@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
+import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -26,8 +31,16 @@ const roster = {
   },
 };
 
-async function setup(t) {
-  const fixture = await createConsoleAppFixture(t);
+async function setup(t, options = {}) {
+  /** @type {import("../../packages/occ/src/index.ts").PlatformStateStore | undefined} */
+  let platformState;
+  const fixture = await createConsoleAppFixture(t, {
+    ...options,
+    wrapState(state) {
+      platformState = state;
+      return state;
+    },
+  });
   await fixture.bootstrap();
   const driver = new OCCPluginDriver();
   fixture.controller.registerDriver(driver);
@@ -45,11 +58,18 @@ async function setup(t) {
       body: { name: `preflight-agent-${created}`, configurationId: configuration.id, ...fields },
     });
   };
-  return { ...fixture, namespace, agents, validate, create };
+  const configurationIds = () => {
+    assert.ok(platformState);
+    // Configuration IDs have no public collection route. Observe the real Namespace repository
+    // in a transaction that performs no writes.
+    return platformState.transact((state) => state.namespaces.listConfigurationIds(namespace.id));
+  };
+  return { ...fixture, namespace, agents, validate, create, configurationIds };
 }
 
 test("Agent create preflight refuses what Agent create refuses, with its message, and saves nothing", async (t) => {
   const f = await setup(t);
+  const configurationsBefore = await f.configurationIds();
   const mutationsBefore = f.auditSink.events.filter((event) => event.kind === "mutation").length;
   const refusals = [
     // The plugin's every tool is denied (findings 508, 1848).
@@ -79,6 +99,7 @@ test("Agent create preflight refuses what Agent create refuses, with its message
     "Configuration setting agents.entries must hold only main, or be omitted, for initial workspace files: only the main Agent reads them.",
   );
   // The preflight wrote nothing: no Secret, Configuration or Agent, and no mutation audit row.
+  assert.deepEqual(await f.configurationIds(), configurationsBefore);
   assert.deepEqual((await f.request("GET", f.agents)).data, []);
   assert.deepEqual((await f.request("GET", `/namespaces/${f.namespace.id}/secrets`)).data, []);
   assert.equal(
@@ -113,8 +134,10 @@ test("Agent create preflight accepts what Agent create accepts", async (t) => {
     [{}, { plugins, initialWorkspaceFiles: files, executionMode: "embedded" }],
   ];
   for (const [index, [values, fields]] of accepted.entries()) {
+    const configurationsBefore = await f.configurationIds();
     const checked = await f.validate({ configuration: { kind: "agent", values }, ...fields });
     assert.equal(checked.status, 204, `${index}: ${JSON.stringify(checked.body)}`);
+    assert.deepEqual(await f.configurationIds(), configurationsBefore);
     const created = await f.create(values, {
       ...fields,
       ...(fields.initialWorkspaceFiles ? { workspaceDefaultsId: WORKSPACE_DEFAULTS_ID } : {}),
@@ -124,6 +147,154 @@ test("Agent create preflight accepts what Agent create accepts", async (t) => {
   // A body outside the create contract is refused as one. The name is part of it (finding 2420).
   const extra = await f.validate({ configuration: { kind: "agent", values: {} }, unknown: "x" });
   assert.equal(extra.status, 400, JSON.stringify(extra.body));
+});
+
+async function setupConfigurationAdmission(t) {
+  const root = await mkdtemp(join(tmpdir(), "occ-preflight-configuration-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const f = await setup(t, { configurationDriver: new FilesystemConfigurationDriver(root) });
+  const configurations = `/namespaces/${f.namespace.id}/configurations`;
+  const save = (configuration) => f.request("POST", configurations, { body: configuration });
+  const member = await f.createAccountWithPolicy("preflight-config-reader", (principal) => {
+    grantRole(f.policy, principal.id, {
+      id: "preflight-config-reader",
+      namespaceId: f.namespace.id,
+      permissions: { namespace: ["read"], agent: ["read"], configuration: ["read", "create"] },
+    });
+  });
+  const deniedSession = await f.signIn(member.credentials);
+  const nativeDocuments = async () =>
+    Promise.all(
+      (await readdir(root, { recursive: true })).sort().map(async (path) => {
+        const file = join(root, path);
+        const entry = await lstat(file);
+        if (entry.isFile()) {
+          return {
+            path,
+            kind: "file",
+            sha256: createHash("sha256")
+              .update(await readFile(file))
+              .digest("hex"),
+          };
+        }
+        return { path, kind: entry.isDirectory() ? "directory" : "other" };
+      }),
+    );
+  // Keep an existing native document in every snapshot, so an unaudited overwrite cannot hide
+  // behind an unchanged filename. Use the genuine HTTP save and keep document contents private.
+  const existing = await save({ kind: "agent", values: {} });
+  assert.equal(existing.status, 201, JSON.stringify(existing.body));
+  assert.ok((await f.configurationIds()).includes(existing.data.id));
+  assert.ok(
+    (await nativeDocuments()).some(
+      (entry) =>
+        entry.path === `${f.namespace.id}/${existing.data.id}.json` && entry.kind === "file",
+    ),
+  );
+  const snapshot = async () => ({
+    configurations: await f.configurationIds(),
+    nativeDocuments: await nativeDocuments(),
+    agents: (await f.request("GET", f.agents)).data,
+    secrets: (await f.request("GET", `/namespaces/${f.namespace.id}/secrets`)).data,
+    accessBindings: await f.addedAccessBindings(f.namespace.id),
+    mutations: f.auditSink.events.filter((event) => event.kind === "mutation").length,
+  });
+  const withoutWrites = async (operation) => {
+    const before = await snapshot();
+    const result = await operation();
+    assert.deepEqual(await snapshot(), before);
+    return result;
+  };
+  const expectRefused = async (configuration, message) => {
+    const refused = await withoutWrites(() => f.validate({ configuration }));
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.deepEqual(refused.body.error, { code: "INVALID_REQUEST", message });
+    const saved = await withoutWrites(() => save(configuration));
+    assert.equal(saved.status, 400, JSON.stringify(saved.body));
+    assert.deepEqual(saved.body.error, refused.body.error);
+
+    // Agent create authorization still answers before the Configuration refusal.
+    const denied = await withoutWrites(async () => {
+      const auditStart = f.auditSink.events.length;
+      const result = await f.validate({ configuration }, { session: deniedSession });
+      assertWriteAuthorizationDenial(
+        f.auditSink.events.slice(auditStart),
+        {
+          principalId: member.principal.id,
+          action: "openclaw.agents.validate",
+          grant: "create",
+          resource: { kind: "agent", id: f.namespace.id, namespaceId: f.namespace.id },
+        },
+        "openclaw.agents.validate",
+      );
+      return result;
+    });
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+    assert.deepEqual(denied.body.error, {
+      code: "FORBIDDEN",
+      message: createDenied("Agent", f.namespace.id),
+    });
+  };
+  const expectAccepted = async (configuration) => {
+    const checked = await withoutWrites(() => f.validate({ configuration }));
+    assert.equal(checked.status, 204, JSON.stringify(checked.body));
+    const saved = await save(configuration);
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    // The real save proves that both independent Configuration inventories are live.
+    assert.ok((await f.configurationIds()).includes(saved.data.id));
+    assert.ok(
+      (await readdir(root, { recursive: true })).includes(
+        `${f.namespace.id}/${saved.data.id}.json`,
+      ),
+    );
+  };
+  return { ...f, save, withoutWrites, expectRefused, expectAccepted };
+}
+
+test("Agent create preflight applies the required Configuration Driver admission", async (t) => {
+  const f = await setupConfigurationAdmission(t);
+  // An empty string is harmless, but only the real Configuration Driver rejects this native
+  // credential slot. Compare the public errors so a different 400 cannot satisfy the case.
+  await f.expectRefused(
+    { kind: "agent", values: { cron: { webhookToken: "" } } },
+    "Configuration field /cron/webhookToken holds a credential value inline, where a reference is required. Make the value a ${NAME} reference or a SecretRef.",
+  );
+  // Plain native values and a supported reference still pass admission and save.
+  await f.expectAccepted({ kind: "agent", values: {} });
+  await f.expectAccepted({
+    kind: "agent",
+    values: { cron: { webhookToken: "${PREFLIGHT_WEBHOOK_TOKEN}" } },
+  });
+});
+
+test("Agent create preflight checks Configuration Secret Namespace scope without reading saved Secrets", async (t) => {
+  const f = await setupConfigurationAdmission(t);
+  const secret = await f.createSecret(
+    f.namespace.id,
+    "preflight-webhook-token",
+    "synthetic-preflight-webhook-token",
+  );
+  const own = { kind: "secret", namespaceId: f.namespace.id, id: secret.id };
+  const foreign = { ...own, namespaceId: `ns_${randomUUID()}` };
+  const missing = { ...own, id: `sec_${randomUUID()}` };
+  const configurationFor = (source) => ({
+    kind: "agent",
+    values: { cron: { webhookToken: "${PREFLIGHT_WEBHOOK_TOKEN}" } },
+    secretBindings: {
+      PREFLIGHT_WEBHOOK_TOKEN: { source, delivery: { type: "env" } },
+    },
+  });
+  await f.expectRefused(configurationFor(foreign), "Secret references cannot cross Namespaces.");
+
+  // A missing same-Namespace source passes the request-only check. Only the actual write
+  // reads the saved Secret and returns 404; preflight must not reveal whether it exists.
+  const unsavedSource = configurationFor(missing);
+  const planned = await f.withoutWrites(() => f.validate({ configuration: unsavedSource }));
+  assert.equal(planned.status, 204, JSON.stringify(planned.body));
+  const missingSave = await f.withoutWrites(() => f.save(unsavedSource));
+  assert.equal(missingSave.status, 404, JSON.stringify(missingSave.body));
+  assert.equal(missingSave.body.error.code, "NOT_FOUND");
+  await f.expectAccepted(configurationFor(own));
 });
 
 test("Agent create preflight refuses a caller without Agent create as Agent create does", async (t) => {

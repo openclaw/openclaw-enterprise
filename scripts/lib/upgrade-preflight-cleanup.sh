@@ -75,7 +75,7 @@ cleanup_preflight() {
         consumers_stopped=0
         break
       fi
-      if ! remaining=$(node scripts/upgrade-startup-preflight.mjs remaining \
+      if ! remaining=$(node scripts/upgrade-startup-preflight.ts remaining \
         "$evidence_dir/preflight-cleanup-job.json" "$uid" "$evidence_dir/preflight-cleanup-pods.json" \
         "$evidence_dir/preflight-cleanup-child.json" "$child_uid" 2>>"$evidence_dir/preflight-cleanup.err"); then
         consumers_stopped=0

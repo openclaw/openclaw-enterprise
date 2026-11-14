@@ -1,4 +1,10 @@
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
+import { validateAuthSecret } from "../auth/configuration.ts";
+import {
+  CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
+  controlPlaneAuditDatabaseOptions,
+  postgresAgentAuditState,
+} from "./control-plane-audit.ts";
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
@@ -70,6 +76,7 @@ export interface ProductionConfig {
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
   readonly agentRuntimeLogsEnabled?: boolean;
+  readonly controlPlaneAuditEnabled?: boolean;
   /** Receives each composition phase's wall-clock duration, in order, for the startup log. */
   readonly onStartupPhase?: (phase: ProductionStartupPhase, durationMs: number) => void;
 }
@@ -93,6 +100,7 @@ export async function composeProduction(
   if (config.mode !== "production") {
     throw new Error("Production OCC composition requires explicit production mode.");
   }
+  validateAuthSecret(config.authSecret);
   const {
     installation,
     computeDriver,
@@ -128,8 +136,10 @@ export async function composeProduction(
     phaseStartedAt = now;
   };
 
+  const auditEnabled = config.controlPlaneAuditEnabled === true;
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
+    ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
   });
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
@@ -137,6 +147,7 @@ export async function composeProduction(
     closeResources(exchange, protectedDriver, preparedGitHub, database);
   try {
     const state = new PostgresPlatformState(pool, {
+      ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
       preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
     });
     const persistedInstallation = await state.loadInstallation();
@@ -215,6 +226,7 @@ export async function composeProduction(
         ...installationControllerOptions(config.drivers.installation),
         namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
+        ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
         ...(config.drivers.pluginSourceReader === undefined
           ? {}
@@ -375,6 +387,9 @@ export async function composeProduction(
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       resolveHarness: resolveApprovedProductionHarness,
       auditSink: state.auditSink,
+      ...(auditEnabled
+        ? { durableRequestAuditSink: state.auditSink, agentAuditCursorSecret: config.authSecret }
+        : {}),
       backendSummaries: backendSummariesFromDefinitions(installation.backend),
       ...(installation.observability === undefined
         ? {}

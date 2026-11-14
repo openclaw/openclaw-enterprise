@@ -84,6 +84,7 @@
 
 ### Agents
 
+- [`listAgentAuditEvents`](../api.md#get-namespacesnamespaceidagentsagentidauditevents): List audit metadata for one Agent.
 - [`listAgentRepositoryOptions`](../api.md#get-namespacesnamespaceidagentsagentidrepositoryoptions): List approved repository choices for updating one Agent.
 - [`listAgents`](../api.md#get-namespacesnamespaceidagents): List authorized Agents in one exact Namespace.
 - [`listAgentStandingApprovals`](../api.md#get-namespacesnamespaceidagentsagentidrepositoryapprovals): Read attributable repository approvals and removed generations for one Agent.

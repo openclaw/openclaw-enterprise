@@ -138,3 +138,7 @@ An embedded caller can set `ControllerAppOptions.maxBodyBytes` to a positive
 integer for the general limit and Agent/Preset write overrides. Standard
 development composition uses the factory defaults and offers no environment
 override; workspace writes retain their fixed operation budget.
+
+PostgreSQL development enables [Control Plane audit](../../guides/topics/audit-log.md)
+by default. Set `OCC_CONTROL_PLANE_AUDIT_ENABLED=false` on both the API and worker
+to switch off the additional request and work records and the Agent audit API.

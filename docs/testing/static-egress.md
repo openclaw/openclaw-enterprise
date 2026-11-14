@@ -212,7 +212,8 @@ supervisor enforcement or bypass prevention.
 ## Check connected request admission without a runtime
 
 ```sh
-node --test tests/integration/egress-connected-preflight.test.mjs
+node --test tests/integration/egress-connected-preflight.test.mjs \
+  tests/integration/egress-connected-lifecycle-preflight.test.ts
 ```
 
 `checks-baseline-2` checks serialized bytes through Fastify parsing, authentication

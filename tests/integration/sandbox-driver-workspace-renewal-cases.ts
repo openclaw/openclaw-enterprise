@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import type {
-  OpenShellGatewayClient,
-  OpenShellSandboxResponse,
-  OpenShellServiceResponse,
-} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import type { OpenShellSandboxResponse } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type {
   HarnessWorkloadRequirements,
   SandboxNamespaceContext,
@@ -15,17 +11,13 @@ import {
   completeWorkspaceRevision,
   type SandboxFixtureRevision,
 } from "./sandbox-driver-revision-fixture.ts";
+import {
+  workspaceNodeSetupSecret,
+  workspaceNodeSetupSecretData,
+} from "./sandbox-driver-workspace-node-setup-fixture.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
-type Gateway = Omit<
-  ReturnType<typeof workspaceGatewayClient>,
-  "createSandbox" | "getSandbox" | "getService"
-> &
-  Pick<OpenShellGatewayClient, "createSandbox" | "getSandbox"> & {
-    getService: () => Promise<
-      Pick<OpenShellServiceResponse, "targetPort" | "authorizationMode" | "url"> | undefined
-    >;
-  };
+type Gateway = ReturnType<typeof workspaceGatewayClient>;
 type RuntimeFixture = {
   context: SandboxNamespaceContext & {
     kubernetes: {
@@ -116,21 +108,13 @@ export function registerSandboxDriverWorkspaceRenewalCases({
       let desiredSetup: Omit<typeof renewedSetup, "tlsFingerprint"> & {
         tlsFingerprint: string | undefined;
       } = renewedSetup;
-      context.kubernetes.read = async ({ metadata }) => {
-        const renewedCode = Buffer.from(JSON.stringify(desiredSetup)).toString("base64url");
-        return {
-          apiVersion: "v1",
-          kind: "Secret",
-          metadata: {
-            ...metadata,
-            labels: {
-              "openclaw.dev/namespace": context.namespace.id,
-              "openclaw.dev/agent": revision.agentId,
-            },
-          },
-          data: { setupCode: Buffer.from(renewedCode).toString("base64") },
-        };
-      };
+      context.kubernetes.read = async ({ metadata }) =>
+        workspaceNodeSetupSecret(
+          metadata,
+          context.namespace.id,
+          revision.agentId,
+          workspaceNodeSetupSecretData(desiredSetup),
+        );
 
       // Changing or removing the trust anchor is not renewal authority, even for
       // an expired setup. JSON serialization omits the undefined fingerprint.

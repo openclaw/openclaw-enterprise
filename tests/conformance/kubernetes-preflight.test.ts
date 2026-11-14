@@ -134,7 +134,10 @@ test("single-cluster preflight refuses legacy split storage on a later namespace
     assert.equal(cursor, "next-page");
     return { items: [legacy] };
   };
-  await assert.rejects(fixture.driver.preflight(), /Existing split-layout Gateway storage/);
+  await assert.rejects(
+    fixture.driver.preflight(),
+    /Existing split-layout Gateway storage.*scripts\/split-layout-adopt\.ts/u,
+  );
   assert.equal(pages, 2, "upgrade detection must inspect every namespace page");
   assert.deepEqual(legacy, original, "preflight must not alter legacy storage ownership");
 });

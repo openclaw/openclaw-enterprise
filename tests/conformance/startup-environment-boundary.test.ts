@@ -11,7 +11,7 @@ import { parsers } from "prettier/plugins/typescript";
 // from server.mjs or scripts/bootstrap-installation.mjs must read `env`.
 const parameterizedSources = [
   "apps/controller/src/api-startup.mjs",
-  "scripts/lib/bootstrap-configuration.mjs",
+  "scripts/lib/bootstrap-configuration.ts",
 ];
 
 type AstNode = Record<string, unknown> & { type: string };
