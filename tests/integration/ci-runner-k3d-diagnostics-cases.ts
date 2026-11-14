@@ -22,7 +22,7 @@ import {
 } from "../helpers/ci-runner-k3d-fixture.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
-const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.ts");
 
 function parseJson(text: string): unknown {
   return JSON.parse(text);
@@ -395,7 +395,7 @@ export async function checkBoundedAgentNamespaceActivity(t: TestContext) {
 }
 
 export async function checkMixedPrecisionEventOrder() {
-  const { projectContainerLog } = await import("../../scripts/ci/k3d-diagnostics.mjs");
+  const { projectContainerLog } = await import("../../scripts/ci/k3d-diagnostics.ts");
   const { older, newer } = mixedPrecisionEventBoundary({
     namespace: "occ-agent-a",
     pod: "harness-0",

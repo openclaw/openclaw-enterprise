@@ -17,7 +17,7 @@ The controlled tests use disposable fixtures and do not use ambient GitHub crede
 ## Run controlled tests
 
 ```sh
-node scripts/verify-repository-credentials-boundary.mjs
+node scripts/verify-repository-credentials-boundary.ts
 node --test tests/conformance/repository-credentials-fixture-ownership.test.ts \
   tests/conformance/repository-credentials-backend-conformance.test.ts
 node --test tests/integration/repository-credentials-git.test.ts \
@@ -56,7 +56,7 @@ For native selection and routing, run:
 
 ```sh
 node --test tests/integration/repository-credentials-client-config.test.ts \
-  tests/integration/repository-credentials-router.test.mjs
+  tests/integration/repository-credentials-router.test.ts
 ```
 
 ### Protected repository metadata reads
@@ -80,9 +80,9 @@ Build before running the source and materialization checks:
 ```sh
 pnpm build
 node --test tests/integration/repository-credentials-admission.test.mjs \
-  tests/integration/repository-credentials-driver.test.mjs \
+  tests/integration/repository-credentials-driver.test.ts \
   tests/integration/repository-runtime-materialization.test.ts \
-  tests/integration/repository-credentials-router.test.mjs
+  tests/integration/repository-credentials-router.test.ts
 ```
 
 For durable session and recovery checks, prepare a migrated disposable database
@@ -105,7 +105,7 @@ and clock skew; it asserts material erasure without a revocation request.
 pnpm credentials:build
 node --test tests/integration/repository-credentials-package.test.ts
 REPOSITORY_CREDENTIALS_APP_ROOT="$PWD/.build/repository-credentials/client/dist" \
-  node --test tests/integration/repository-credentials-router.test.mjs
+  node --test tests/integration/repository-credentials-router.test.ts
 ```
 
 This verifies the emitted service and client without workspace source or runtime
@@ -202,7 +202,7 @@ these expected values from the release selection, not from the receipt being che
 From that release checkout, run:
 
 ```sh
-node scripts/ci/run-tests.mjs aggregate skipper-prepared-git-installed \
+node scripts/ci/run-tests.ts aggregate skipper-prepared-git-installed \
   --results-dir /path/to/results --release-selection /path/to/release.json
 ```
 

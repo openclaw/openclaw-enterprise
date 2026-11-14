@@ -45,6 +45,9 @@ import {
   spawnResult,
   type RecoveryTools,
 } from "./production-upgrade-recovery-tools.ts";
+import { createDoctorPodFixture } from "./upgrade-doctor-observations.ts";
+
+const doctorPod = createDoctorPodFixture<unknown>(runtime);
 
 function containerName(spec: unknown): unknown {
   return optionalField(optionalField(optionalField(spec, "containers"), 0), "name");
@@ -170,23 +173,13 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
       return value;
     };
     // The replacement revision's ready gateway Pod; an OOM kill shows in its restart history.
-    const gatewayPod = () => ({
-      metadata: { namespace: "tenant", name: "gateway", uid: "gateway-uid" },
-      spec: { containers: [{ name: "gateway", image: runtime }] },
-      status: {
-        phase: "Running",
-        conditions: [{ type: "Ready", status: "True" }],
-        containerStatuses: [
-          {
-            name: "gateway",
-            restartCount: state.gatewayRestarts ?? 0,
-            lastState: state.gatewayRestarts
-              ? { terminated: { reason: state.gatewayLastReason ?? "OOMKilled" } }
-              : {},
-          },
-        ],
-      },
-    });
+    const gatewayPod = () =>
+      doctorPod({
+        restartCount: state.gatewayRestarts ?? 0,
+        lastTerminationReason: state.gatewayRestarts
+          ? (state.gatewayLastReason ?? "OOMKilled")
+          : undefined,
+      });
     if (tool === "node") {
       // Pair cases exercise upgrade orchestration after a successful qualification. The
       // separately selected real-image test verifies compatibility itself.

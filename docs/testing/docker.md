@@ -49,7 +49,7 @@ resources and verifies that `occ dev down` preserves the database volume unless
 ## Driver regressions
 
 ```sh
-node --test tests/conformance/docker-compute.test.mjs
+node --test tests/conformance/docker-compute.test.ts
 OCC_TEST_DOCKER_TOKEN_RETRY=1 NODE_BASE_IMAGE=node:24-bookworm \
   node --test tests/integration/docker-compute-token-retry.test.mjs
 ```
@@ -222,7 +222,7 @@ probe and an old broker without durable-admission capability. Then run:
 ```sh
 umask 077
 pair_state_dir=$(mktemp -d)
-node scripts/ci/run-tests.mjs run image-pair-qualification \
+node scripts/ci/run-tests.ts run image-pair-qualification \
   --state "$pair_state_dir/state.json" --results "$pair_state_dir/results.json"
 ```
 

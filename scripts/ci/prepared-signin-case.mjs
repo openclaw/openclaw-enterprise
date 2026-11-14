@@ -14,6 +14,10 @@ export const caseName =
 
 // The outer Linux supervisor owns descendant settlement. The CI runner owns
 // reporter parsing, skip/todo checks and timeouts; only this case may qualify.
+/**
+ * @param {string} root
+ * @param {import("./run-tests.ts").PreparedSigninRunFile} runFile
+ */
 export async function runPreparedSigninCase(root, runFile) {
   const e = process.env;
   assertHostedSigninJob(e);
@@ -37,7 +41,13 @@ export async function runPreparedSigninCase(root, runFile) {
   e.GOTOOLCHAIN = "local";
   // A previous run may have changed the fixture even when it produced no result.
   await mkdir(e.TMPDIR, { mode: 0o700 });
-  const file = { path: relativePath, expectedTests: [caseName], requiredEnv: [], optionalEnv: [] };
+  const file = {
+    path: relativePath,
+    expectedTests: [caseName],
+    env: {},
+    requiredEnv: [],
+    optionalEnv: [],
+  };
   const lane = {
     name: "staging-signin",
     requiredEnv: [],
@@ -48,7 +58,7 @@ export async function runPreparedSigninCase(root, runFile) {
       OCC_TEST_SIGNIN_PREPARED_SHA256: preparedHash,
     },
   };
-  const result = await runFile(root, lane, file, null, null);
+  const result = await runFile(root, lane, file);
   const ok =
     result.status === "passed" &&
     result.nodeExitCode === 0 &&

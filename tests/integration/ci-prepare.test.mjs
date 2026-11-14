@@ -129,7 +129,7 @@ test("focused first-Agent preparation leaves installation to Local Setup and ref
     const result = await spawnResult(
       process.execPath,
       [
-        join(repositoryRoot, "scripts/ci/run-tests.mjs"),
+        join(repositoryRoot, "scripts/ci/run-tests.ts"),
         "run",
         "openshell",
         "--root",
@@ -2404,7 +2404,7 @@ assert.equal(commands, 0);
   });
 
   // GitHub refuses NODE_OPTIONS in $GITHUB_ENV with an ##[error] annotation that reads like the
-  // lane's failure. run-tests.mjs applies the lane's env to each test process itself.
+  // lane's failure. run-tests.ts applies the lane's env to each test process itself.
   test("lane preparation does not export the lane's NODE_OPTIONS to GITHUB_ENV", async (t) => {
     const root = await fixture(t);
     const statePath = join(root, "state.json");

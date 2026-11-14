@@ -24,7 +24,7 @@ import {
   recordSkipperCheckpoint,
   recordSkipperTestFailure,
 } from "../../scripts/ci/skipper-failure-receipt.ts";
-import reporter from "../../scripts/ci/reporter.mjs";
+import reporter from "../../scripts/ci/reporter.ts";
 import { createSkipperPreparedComputeEvents } from "../fixtures/skipper-prepared-compute-model.mjs";
 import { inGateway, sendSkipperChat } from "../helpers/skipper-prepared-compute.mjs";
 
@@ -101,7 +101,7 @@ test("aggregate qualifies only the independently selected Skipper image set with
   function produce(file: string, overrides: NodeJS.ProcessEnv = {}) {
     const result = spawnSync(
       process.execPath,
-      ["scripts/ci/first-agent-smoke.mjs", "release-selection", file],
+      ["scripts/ci/first-agent-smoke.ts", "release-selection", file],
       {
         encoding: "utf8",
         timeout: 30_000,
@@ -137,7 +137,7 @@ test("aggregate qualifies only the independently selected Skipper image set with
   assert.deepEqual(JSON.parse(await readFile(control, "utf8")), selection);
   await assert.rejects(readFile(summary), { code: "ENOENT" });
   await assert.rejects(readFile(exported), { code: "ENOENT" });
-  const args = ["scripts/ci/run-tests.mjs", "aggregate", lane, "--results-dir", directory];
+  const args = ["scripts/ci/run-tests.ts", "aggregate", lane, "--results-dir", directory];
   async function aggregate(evidence: unknown, expected: unknown = selection, mode = "qualify") {
     await writeFile(join(directory, lane + ".json"), JSON.stringify(evidence));
     if (mode !== "produced") {

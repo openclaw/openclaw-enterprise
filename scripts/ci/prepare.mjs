@@ -22,7 +22,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
+import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.ts";
 import { loadTestSuites } from "./test-suites.ts";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
 import { openShellHarnessError, openShellRequiredEnv } from "./openshell-model-inputs.mjs";
@@ -48,7 +48,7 @@ import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
 import { ownedName, randomSuffix, slug } from "./resource-names.ts";
 import { registryImage } from "./fixture-support-images.mjs";
 import { pullImage } from "./image-pull.ts";
-import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
+import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.ts";
 import { imageInventory, laneImagesResourceKind } from "./lane-images.ts";
 import { imageConfigDigest } from "./image-config-digest.ts";
 import { verifyPreloadedAgentSandbox } from "./agent-sandbox.ts";
@@ -426,7 +426,7 @@ async function prepareTogether(operations, concurrency = operations.length) {
 
 // The Actions runner refuses NODE_OPTIONS in $GITHUB_ENV, compared without case, and logs an
 // ##[error] for it. A lane's own env, such as the checks lanes' heap limit, needs no export:
-// run-tests.mjs sets it on each test process.
+// run-tests.ts sets it on each test process.
 const GITHUB_ENV_REFUSED = new Set(["NODE_OPTIONS"]);
 
 async function appendGithubEnv(path, env) {
@@ -884,7 +884,7 @@ const ciPostgresSettings = Object.freeze([
 ]);
 
 // Administrative SQL on the lane's server, over its published port (postgres-admin.ts). A
-// failed database step carries the closed diagnostic contract run-tests.mjs reports.
+// failed database step carries the closed diagnostic contract run-tests.ts reports.
 async function postgresAdmin(server, { database, statements, stage }) {
   try {
     await runPostgresAdmin({ port: server.port, database, statements });

@@ -38,6 +38,12 @@ import {
   type RecoveryState,
 } from "../helpers/production-upgrade-recovery-state.ts";
 import { runtime } from "../helpers/production-upgrade-recovery-tools.ts";
+import {
+  createDoctorPodFixture,
+  embeddedDoctorNamespace,
+} from "../helpers/upgrade-doctor-observations.ts";
+
+const doctorPod = createDoctorPodFixture(runtime);
 
 function readUpgradeFailure(error: unknown) {
   assert.ok(error instanceof Error);
@@ -65,17 +71,6 @@ function doctorTargets(contents: string) {
       assert.ok(target, "expected a Doctor target record");
       return target;
     });
-}
-
-function embeddedAgent(id: string) {
-  return {
-    id,
-    status: "active",
-    desiredRuntimeState: "running",
-    executionMode: "embedded",
-    activeRevisionId: "rev_old",
-    deploymentInProgress: false,
-  } as const;
 }
 
 export function registerWriterHandoffCases({
@@ -753,13 +748,7 @@ export function registerWriterHandoffCases({
           : "an unknown outcome";
     test(`an Agent deploy answered with ${name} is ${outcome}`, async (t) => {
       const f = await fixture(t, {
-        inventoryNamespaces: [
-          {
-            id: "ns_test",
-            status: "ready",
-            agents: [embeddedAgent("agt_ok"), embeddedAgent("agt_test")],
-          },
-        ],
+        inventoryNamespaces: [embeddedDoctorNamespace("agt_ok", "agt_test")],
         names: { ns_test: "Support", agt_ok: "Accepted", agt_test: "Mail triage" },
       });
       const state = await f.state();
@@ -924,13 +913,7 @@ export function registerWriterHandoffCases({
       // A poll that finds the deadline passed reads nothing; the timeout still names B's last
       // read (0 MiB), not "unknown".
       const f = await fixture(t, {
-        inventoryNamespaces: [
-          {
-            id: "ns_test",
-            status: "ready",
-            agents: [embeddedAgent("agt_a"), embeddedAgent("agt_b")],
-          },
-        ],
+        inventoryNamespaces: [embeddedDoctorNamespace("agt_a", "agt_b")],
       });
       // Gateway A has room at once; gateway B never does before the 3 s timeout. A's Doctor
       // runs past the timeout.
@@ -1170,32 +1153,27 @@ export function registerWriterHandoffCases({
     "OpenClaw Doctor reports unknown restart history unless Ready and post-read observations are comparable",
     { concurrency: true },
     async (t) => {
-      const pod = (count = 0) => ({
-        metadata: { namespace: "tenant", name: "gateway", uid: "gateway-uid" },
-        spec: { containers: [{ name: "gateway", image: runtime }] },
-        status: {
-          phase: "Running",
-          conditions: [{ type: "Ready", status: "True" }],
-          containerStatuses: [{ name: "gateway", restartCount: count, lastState: {} }],
-        },
-      });
-      const ready = pod();
+      const ready = doctorPod();
       const withoutRows = {
         ...ready,
         status: { phase: ready.status.phase, conditions: ready.status.conditions },
       };
-      const replacement = pod();
-      replacement.metadata.uid = "replacement-uid";
+      const replacement = doctorPod({ uid: "replacement-uid" });
       // Only Pod states the Kubernetes API returns: container statuses not reported, a Pod
       // replaced under the same name (new UID), and a lower restart count.
       const cases = [
-        ["missing Ready row", withoutRows, pod()],
-        ["missing post row", pod(), withoutRows],
-        ["replacement Pod", pod(), replacement],
-        ["decreased count", pod(2), pod(1)],
-        ["additional restart without reason", pod(), pod(1), "restart"],
-        ["true zero", pod(), pod(), true],
-        ["unchanged nonzero", pod(3), pod(3), true],
+        ["missing Ready row", withoutRows, doctorPod()],
+        ["missing post row", doctorPod(), withoutRows],
+        ["replacement Pod", doctorPod(), replacement],
+        ["decreased count", doctorPod({ restartCount: 2 }), doctorPod({ restartCount: 1 })],
+        [
+          "additional restart without reason",
+          doctorPod(),
+          doctorPod({ restartCount: 1 }),
+          "restart",
+        ],
+        ["true zero", doctorPod(), doctorPod(), true],
+        ["unchanged nonzero", doctorPod({ restartCount: 3 }), doctorPod({ restartCount: 3 }), true],
       ] as const;
       const runs: Promise<void>[] = [];
       for (const [name, ready, after, comparable] of cases) {
@@ -1243,27 +1221,12 @@ export function registerWriterHandoffCases({
     "a gateway changed after a passing Doctor fails the upgrade and resume checks its replacement",
     { concurrency: true },
     async (t) => {
-      const pod = ({
-        name = "gateway",
-        uid = "gateway-uid",
-        phase = "Running",
-        ready = true,
-      } = {}) => ({
-        metadata: { namespace: "tenant", name, uid },
-        spec: { containers: [{ name: "gateway", image: runtime }] },
-        status: {
-          phase,
-          conditions: [{ type: "Ready", status: ready ? "True" : "False" }],
-          containerStatuses: [{ name: "gateway", restartCount: 0, lastState: {} }],
-        },
-      });
       // The Deployment's replacement Pod, Ready on the new revision.
-      const replacement = pod({ name: "gateway-2", uid: "gateway-2-uid" });
+      const replacement = doctorPod({ name: "gateway-2", uid: "gateway-2-uid" });
       // The kubelet ends an evicted Pod and keeps it (phase Failed, reason Evicted).
-      const failed = pod({ phase: "Failed", ready: false });
-      const evicted = { ...failed, status: { ...failed.status, reason: "Evicted" } };
+      const evicted = doctorPod({ phase: "Failed", ready: false, reason: "Evicted" });
       // On the dogfood cluster the evicted gateway ended with phase Succeeded.
-      const ended = pod({ phase: "Succeeded", ready: false });
+      const ended = doctorPod({ phase: "Succeeded", ready: false });
       const afterEviction = { revisionPods: [evicted, replacement] };
       const cases = [
         ["evicted", afterEviction, /was evicted \(phase Failed\)/],
@@ -1275,7 +1238,7 @@ export function registerWriterHandoffCases({
         ["deleted", { revisionPods: [replacement] }, /no longer exists \(evicted or deleted\)/],
         [
           "replaced under the same name",
-          { gatewayAfter: pod({ uid: "gateway-uid-2" }) },
+          { gatewayAfter: doctorPod({ uid: "gateway-uid-2" }) },
           /was replaced by a new Pod with the same name/,
         ],
         [
@@ -1283,7 +1246,7 @@ export function registerWriterHandoffCases({
           { gatewayRestarts: 1, gatewayLastReason: "Error" },
           /restarted 1 time\(s\) \(last termination: Error\)/,
         ],
-        ["not Ready", { gatewayAfter: pod({ ready: false }) }, /is not Ready/],
+        ["not Ready", { gatewayAfter: doctorPod({ ready: false }) }, /is not Ready/],
       ] satisfies [string, Record<string, unknown>, RegExp][];
       const runs: Promise<void>[] = [];
       for (const [name, afterDoctor, change] of cases) {
@@ -1316,7 +1279,7 @@ export function registerWriterHandoffCases({
       await Promise.all(runs);
       // A gateway can still report Ready while its deletion is in progress.
       // Resume must run Doctor in its replacement without waiting for garbage collection.
-      const ready = pod();
+      const ready = doctorPod();
       const retiring = {
         ...ready,
         metadata: { ...ready.metadata, deletionTimestamp: "2026-01-01T00:00:00Z" },
@@ -1356,21 +1319,6 @@ export function registerWriterHandoffCases({
       // wait requires both. Node memory pressure during the Doctors evicts only the agent Pod
       // (finding 2755): Doctor in the untouched gateway passes, but the upgrade must name the
       // agent Pod instead of reporting success, and resume checks the replacement.
-      const agentPod = ({
-        name = "agent",
-        uid = "agent-uid",
-        phase = "Running",
-        ready = true,
-      } = {}) => ({
-        metadata: { namespace: "tenant", name, uid },
-        spec: { containers: [{ name: "agent", image: runtime }] },
-        status: {
-          phase,
-          ...(phase === "Failed" ? { reason: "Evicted" } : {}),
-          conditions: [{ type: "Ready", status: ready ? "True" : "False" }],
-          containerStatuses: [{ name: "agent", restartCount: 0, lastState: {} }],
-        },
-      });
       const dedicated = await fixture(t, {
         inventoryNamespaces: [
           {
@@ -1390,12 +1338,17 @@ export function registerWriterHandoffCases({
         ],
       });
       await updateDoctorFixtureState(dedicated, {
-        revisionPods: [pod(), agentPod()],
+        revisionPods: [doctorPod(), doctorPod({ containerName: "agent" })],
         afterDoctor: {
           revisionPods: [
-            pod(),
-            agentPod({ phase: "Failed", ready: false }),
-            agentPod({ name: "agent-2", uid: "agent-2-uid" }),
+            doctorPod(),
+            doctorPod({
+              containerName: "agent",
+              phase: "Failed",
+              ready: false,
+              reason: "Evicted",
+            }),
+            doctorPod({ containerName: "agent", name: "agent-2", uid: "agent-2-uid" }),
           ],
         },
       });
@@ -1438,13 +1391,7 @@ export function registerWriterHandoffCases({
   // one at a time: each ends before the next gateway's memory check and Doctor start.
   test("OpenClaw Doctor runs in one gateway at a time", async (t) => {
     const f = await fixture(t, {
-      inventoryNamespaces: [
-        {
-          id: "ns_test",
-          status: "ready",
-          agents: [embeddedAgent("agt_a"), embeddedAgent("agt_b"), embeddedAgent("agt_c")],
-        },
-      ],
+      inventoryNamespaces: [embeddedDoctorNamespace("agt_a", "agt_b", "agt_c")],
     });
     await updateDoctorFixtureState(f, { doctorSpanMs: 500 });
     await f.run();

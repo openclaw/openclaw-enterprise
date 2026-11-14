@@ -100,7 +100,7 @@ For local command coverage, run:
 
 ```sh
 node --test tests/integration/staging-qualification.test.ts
-node scripts/ci/run-tests.mjs audit
+node scripts/ci/run-tests.ts audit
 ```
 
 The command test uses local Git history and independent GitHub and Docker
@@ -171,9 +171,11 @@ staging installation; no application, model or operator-cluster credentials are 
 
 Both controllers and the unchanged runtime must be reachable by their verified
 public digest from the node. The job also checks the exact PostgreSQL and Node
-support images. It builds the fixture CLI and selects the chart from the trusted
-workflow checkout. The two image generations share a populated database and
-one issuer across replacements.
+support images. It builds the fixture CLI from the trusted workflow checkout.
+For the reviewed v3 pair, the job copies that checkout's chart and sets the
+worker probes to the command present in both historical images. The initial
+installation and the OIDC configuration upgrade use the same copy. The two
+image generations share a populated database and one issuer across replacements.
 
 For two compatible v3 releases, the case checks forward and return replacement
 with live, one-use collection and replay refusal. The job refuses unreviewed
@@ -205,12 +207,14 @@ success receipt or invented suite results.
 The single-release job provides **container startup qualification on amd64**,
 not an installation or rollout. The installed private Git test lane builds a
 separate repository-service image and a runtime with a test CA through
-[first-agent-smoke](../../scripts/ci/first-agent-smoke.mjs); the two-image
+[first-agent-smoke](../../scripts/ci/first-agent-smoke.ts); the two-image
 publication receipt cannot supply that installation unchanged. Full Integration
 and QA Advisory retain their existing installation and provider requirements.
 
 For an installed sign-in rehearsal, use `staging-signin-qualification.json` as
-the success receipt. The pair inputs alone do not establish an installed result.
+the success receipt. If the selected case reports failure, the runner writes a
+private `case-result.json` with the case counts and the supervisor records its
+exit and descendant status. The case failure leaves qualification blocked.
 
 This workflow does not promote to production or prove staging readiness,
 installed Agent workflows, or arm64 behavior.

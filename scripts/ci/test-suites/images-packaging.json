@@ -98,6 +98,8 @@
         "production native examples satisfy the current Helm, Installation, and PVC schemas",
         "production Helm values example renders the backendless default chart",
         "the production Helm chart supports explicit routing opt-out with ordered bootstrap",
+        "the staged sign-in chart preserves the historical worker probes for both Helm operations",
+        "the production image executes the chart worker probes as the worker user",
         "the plugin request guard installs beside OpenShell without control-plane access",
         "the optional ChatGPT Backend isolates admin credentials, tenant Secrets, and provider egress to the API",
         "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
@@ -168,6 +170,7 @@
     {
       "path": "tests/integration/oidc-ca-trust.test.ts",
       "expectedTests": [
+        "packaged OIDC CA programs match their TypeScript sources and chart commands",
         "OIDC CA chart wiring adds trust only to the API and preserves Gateway selection",
         "OIDC CA chart refuses partial, malformed and disabled configuration",
         "OIDC CA reserves the assembled API CA mount from database.caMountPath",

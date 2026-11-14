@@ -10,7 +10,7 @@ import { createSystemClock } from "../../apps/controller/src/drivers/repo/access
 import {
   PREPARED_REPOSITORY_DIRECTORY,
   REPOSITORY_CONTROL_SOCKET,
-} from "../../scripts/lib/prepared-repository-installation.mjs";
+} from "../../scripts/lib/prepared-repository-installation.ts";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import {

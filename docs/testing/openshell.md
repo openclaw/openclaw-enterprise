@@ -46,7 +46,7 @@ To qualify one Agent after repository-binding removal, set `file` to
 `tests/integration/openshell-git-finite-removal-real.test.ts`. Follow the lane
 prerequisites below; pass `--selected-file "$file"` to
 `scripts/ci/prepare.mjs --lane openshell`, then `--file "$file"` to
-`scripts/ci/run-tests.mjs run openshell`, using the same private `--state "$state"`.
+`scripts/ci/run-tests.ts run openshell`, using the same private `--state "$state"`.
 Always run `node scripts/ci/cleanup.ts --state "$state"`, even after preparation
 or execution fails. The fixture owns a disposable Kubernetes control plane and
 PostgreSQL, a real OpenShell deployment, and a controlled HTTPS Git issuer. It requires
@@ -238,7 +238,7 @@ fi
 export OCC_OPENSHELL_TEST_ROOT="$(mktemp -d)"
 node scripts/ci/prepare.mjs --lane openshell \
   --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
-node scripts/ci/run-tests.mjs run openshell \
+node scripts/ci/run-tests.ts run openshell \
   --state "$OCC_OPENSHELL_TEST_ROOT/state.json" \
   --results "$OCC_OPENSHELL_TEST_ROOT/results.json"
 ```

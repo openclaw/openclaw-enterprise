@@ -4,8 +4,8 @@ import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs
 
 test("the redactor removes URL userinfo of any shape and multi-line private keys", async () => {
   const { failureSecrets, redactFailure, redactLogLine, redactOutputLine, redactOutputLines } =
-    await import("../../scripts/ci/failure-redaction.mjs");
-  const { projectContainerLog } = await import("../../scripts/ci/k3d-diagnostics.mjs");
+    await import("../../scripts/ci/failure-redaction.ts");
+  const { projectContainerLog } = await import("../../scripts/ci/k3d-diagnostics.ts");
   const secrets = failureSecrets([{ JOB_ONLY_KEY: "jobonlyopaque123" }]);
   // Synthetic userinfo: a password with "/", one with an unescaped "@", a hex one,
   // and a user-only token.
@@ -177,7 +177,7 @@ test("the redactor removes secrets inside escaped JSON and keys from filtered lo
     redactOutputLine,
     redactFailureDetail,
     redactLogLine,
-  } = await import("../../scripts/ci/failure-redaction.mjs");
+  } = await import("../../scripts/ci/failure-redaction.ts");
   const secrets = failureSecrets([{}]);
   // A JSON document embedded in a log string escapes its quotes, once or more (finding 1551).
   // Synthetic values only; none is in the env or has a known token shape.
@@ -267,7 +267,7 @@ test("the redactor removes secrets inside escaped JSON and keys from filtered lo
 
 test("secret redaction preserves JSON quoting, not pieces of the quoted value", async () => {
   const { redactLogLine, redactFailureDetail } =
-    await import("../../scripts/ci/failure-redaction.mjs");
+    await import("../../scripts/ci/failure-redaction.ts");
   const redacted = "[redacted]";
   // Serialize actual values instead of guessing how many backslashes the log contains.
   for (const value of [
@@ -301,7 +301,7 @@ test("secret redaction preserves JSON quoting, not pieces of the quoted value", 
 
 test("a quoted auth header keeps the failure text after it", async () => {
   const { failureSecrets, redactFailure, redactLogLine } =
-    await import("../../scripts/ci/failure-redaction.mjs");
+    await import("../../scripts/ci/failure-redaction.ts");
   const secrets = failureSecrets([{}]);
   const assertion = "\nexpected status 503, got 200\ndecisive: gateway refused the turn";
   // Synthetic values. The auth-scheme value used to take the closing quote, so the quoted
@@ -347,7 +347,7 @@ test("a quoted auth header keeps the failure text after it", async () => {
 });
 
 test("the redactor removes structured, multi-word and short secret values", async () => {
-  const { failureSecrets, redactLogLine } = await import("../../scripts/ci/failure-redaction.mjs");
+  const { failureSecrets, redactLogLine } = await import("../../scripts/ci/failure-redaction.ts");
   const secrets = failureSecrets([{}]);
   // Synthetic values only (finding 1559).
   for (const [line, expected] of [

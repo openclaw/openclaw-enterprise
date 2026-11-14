@@ -44,7 +44,7 @@ export function projectFullIntegrationOpenShell(manifest: {
     groups === null ||
     !("full" in groups) ||
     !Array.isArray(groups.full) ||
-    groups.full.filter((lane) => lane === "openshell").length !== 1 ||
+    groups.full.filter((lane: unknown) => lane === "openshell").length !== 1 ||
     policyLane in otherLanes ||
     installerLane in otherLanes ||
     "openshell" in groups

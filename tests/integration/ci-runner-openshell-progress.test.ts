@@ -17,7 +17,7 @@ import {
 
 const repositoryUrl = new URL("../../", import.meta.url);
 const repositoryRoot = fileURLToPath(repositoryUrl);
-const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.ts");
 
 async function reportingFixture(t: TestContext, lane: "failure" | "progress") {
   const root = await createRunnerFixture(t);

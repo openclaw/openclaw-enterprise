@@ -34,6 +34,8 @@
     "*.ts",
     "ci/**/*.ts",
     "lib/**/*.ts",
+    "../deploy/helm/src/*.ts",
+    "../deploy/runtime/native-tools/fetch.ts",
     "docs-site/compute-matrix.ts",
     "docs-site/serve.ts",
     "docs-site/preview-build.ts",

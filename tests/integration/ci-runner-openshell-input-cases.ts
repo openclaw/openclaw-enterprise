@@ -76,7 +76,7 @@ async function readOpenShellLane(): Promise<OpenShellLane> {
 
 async function copyBrowserFixture(root: string) {
   await writeFile(join(root, browserFile), await readFile(join(repositoryRoot, browserFile)));
-  for (const path of ["scripts/ci/failure-redaction.mjs", "scripts/ci/agent-sandbox.ts"]) {
+  for (const path of ["scripts/ci/failure-redaction.ts", "scripts/ci/agent-sandbox.ts"]) {
     await symlink(join(repositoryRoot, path), join(root, path));
   }
   for (const path of ["apps", "node_modules", "tests/helpers"]) {

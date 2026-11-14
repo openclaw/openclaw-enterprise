@@ -8,7 +8,7 @@
 // (finding 3191). OCE channels accept named accounts (`channels.slack.accounts`), so the scope
 // includes the account. Without a channel there is nothing to isolate, and "main" keeps recall
 // across a browser-only Agent's conversations.
-// scripts/first-agent-model.mjs runs this module without installed workspace packages: keep it
+// scripts/first-agent-model.ts runs this module without installed workspace packages: keep it
 // free of imports and of TypeScript syntax that type stripping cannot erase.
 
 type ConfigurationObject = Readonly<Record<string, unknown>>;

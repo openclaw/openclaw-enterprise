@@ -315,9 +315,9 @@ jobs:
       - name: Lint workflow definitions
         run: actionlint .github/workflows/*.yml
       - name: Audit suite manifest and workflows
-        run: node scripts/ci/run-tests.mjs audit
+        run: node scripts/ci/run-tests.ts audit
       - name: Audit the Full Integration OpenShell view
-        run: OCC_CI_SUITE_VIEW=full-integration node scripts/ci/run-tests.mjs audit
+        run: OCC_CI_SUITE_VIEW=full-integration node scripts/ci/run-tests.ts audit
       - uses: ./.github/actions/setup-pnpm-store-cache
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -591,10 +591,10 @@ jobs:
           OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: ${{ needs.runtime-artifact.outputs.producer-attempt }}
           ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
           ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
-        run: node scripts/ci/first-agent-smoke.mjs images
+        run: node scripts/ci/first-agent-smoke.ts images
       - name: Install, deploy, chat, stop and start
         id: smoke
-        run: node scripts/ci/first-agent-smoke.mjs run
+        run: node scripts/ci/first-agent-smoke.ts run
       - name: Show Docker Hub pull endpoints
         if: ${{ !cancelled() }}
         run: bash scripts/ci/docker-hub-mirror.sh report
@@ -743,7 +743,7 @@ jobs:
           EXPECTED_LANES: ${{ needs.impact.outputs.lanes }}
         run: |
           if [ "$EXPECTED_MODE" = tests ]; then
-            node scripts/ci/run-tests.mjs aggregate ci --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json" --lanes "$EXPECTED_LANES"
+            node scripts/ci/run-tests.ts aggregate ci --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json" --lanes "$EXPECTED_LANES"
           else
-            node scripts/ci/run-tests.mjs aggregate ci --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
+            node scripts/ci/run-tests.ts aggregate ci --results-dir "$RUNNER_TEMP/results" --needs "$RUNNER_TEMP/needs.json"
           fi

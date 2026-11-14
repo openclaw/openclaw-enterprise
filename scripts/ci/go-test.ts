@@ -1,4 +1,4 @@
-// Runs the Go CLI tests for CI and fails on any skipped test, as run-tests.mjs does for
+// Runs the Go CLI tests for CI and fails on any skipped test, as run-tests.ts does for
 // Node files: without -v, `go test` prints "ok" for a package whose tests all skipped.
 import { execFile, spawn, type ChildProcessByStdio } from "node:child_process";
 import { createInterface } from "node:readline";

@@ -253,6 +253,15 @@ test(
         "staging harness checkout must be clean",
       );
     }
+    let chartDirectory;
+    if (stagedSignin) {
+      const { stageSigninChart } = await import("../helpers/production-worker-chart.ts");
+      chartDirectory = await stageSigninChart({
+        harnessRoot,
+        directory,
+        plan: stagedSignin.signinPlan,
+      });
+    }
     const supportIdentities =
       support && (await support.inspectSigninSupport(run, supportReferences));
     if (rehearsalSelected) {
@@ -512,6 +521,44 @@ test(
           metadata: { name, labels: { "oce-test": suffix } },
         });
       }
+      if (upgradeSelected) {
+        // The initial Helm install uses the incumbent image. The forward upgrade
+        // will use the chart from the candidate release checkout.
+        const { initialUpgradeChart, inspectWorkerProbe } =
+          await import("../helpers/production-worker-chart.ts");
+        const pod = "incumbent-worker-probe";
+        await apply({
+          apiVersion: "v1",
+          kind: "Pod",
+          metadata: metadata(pod, system),
+          spec: {
+            restartPolicy: "Never",
+            automountServiceAccountToken: false,
+            securityContext: podSecurity,
+            containers: [
+              {
+                name: "inspect",
+                image: images.controller,
+                imagePullPolicy: "Never",
+                command: inspectWorkerProbe,
+                securityContext: { ...securityContext, readOnlyRootFilesystem: true },
+                resources,
+              },
+            ],
+          },
+        });
+        await kubectl(
+          "-n",
+          system,
+          "wait",
+          "--for=jsonpath={.status.phase}=Succeeded",
+          "pod/" + pod,
+          "--timeout=90s",
+        );
+        const extension = (await kubectl("-n", system, "logs", pod)).trim();
+        chartDirectory = await initialUpgradeChart(harnessRoot, directory, extension);
+        await kubectl("-n", system, "delete", "pod", pod, "--wait=true", "--timeout=60s");
+      }
       if (signinSelected) {
         const { prepareMaterialization } = await import("../helpers/signin/materialization.mjs");
         const { providerDns } = await import("../helpers/signin/dns.mjs");
@@ -526,7 +573,7 @@ test(
         materialization = await prepareMaterialization({
           providerMaterial,
           supportIdentities,
-          chartDirectory: join(harnessRoot, "deploy/helm/openclaw-enterprise"),
+          chartDirectory,
           system,
           release,
           directory,
@@ -569,6 +616,7 @@ test(
         suffix,
         configuration,
         ...materialization?.helmOptions,
+        chartDirectory,
         authBaseURL: signinSelected
           ? "https://console.signin-rehearsal.test"
           : `https://console.oce.localhost:${port}`,

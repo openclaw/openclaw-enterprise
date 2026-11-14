@@ -684,7 +684,7 @@ func (r *runner) waitReady(ctx context.Context, s *developmentState, url string,
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return false, nil
 		}
-		_, err = r.composeOutput(ctx, s, "exec", "-T", "worker-kubernetes", "node", "scripts/production-healthcheck.mjs", "worker", "ready")
+		_, err = r.composeOutput(ctx, s, "exec", "-T", "worker-kubernetes", "node", "scripts/production-healthcheck.ts", "worker", "ready")
 		return err == nil, nil
 	})
 }

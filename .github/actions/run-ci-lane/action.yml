@@ -92,7 +92,7 @@ runs:
         CI_SELECTED_LANE: ${{ inputs.lane }}
         OCC_CI_SUITE_VIEW: ${{ inputs.suite-view }}
         CI_SELECTED_TEST_FILE: ${{ inputs.test-file }}
-      run: node scripts/ci/run-tests.mjs check-selection "$CI_SELECTED_LANE" --file "$CI_SELECTED_TEST_FILE"
+      run: node scripts/ci/run-tests.ts check-selection "$CI_SELECTED_LANE" --file "$CI_SELECTED_TEST_FILE"
     - name: Select installer image preparation
       id: image-mode
       shell: bash
@@ -308,7 +308,7 @@ runs:
       shell: bash
       env:
         OPENCLAW_CI_HEADROOM_LANE: ${{ inputs['suite-view'] == 'full-integration' && 'openshell' || inputs.lane }}
-      run: node scripts/ci/repository-platform-headroom.mjs
+      run: node scripts/ci/repository-platform-headroom.ts
     - name: Expose image cache credentials
       id: image-cache
       if: (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || steps.image-mode.outputs.source-build == 'true' || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-otel' || inputs.lane == 'slack' || inputs.lane == 'production-tui' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'
@@ -439,7 +439,7 @@ runs:
           # runner receive it directly so it can stop its detached test processes.
           launch=(exec)
         fi
-        "${launch[@]}" node scripts/ci/run-tests.mjs run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json" "${selection[@]}"
+        "${launch[@]}" node scripts/ci/run-tests.ts run "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --results "$RUNNER_TEMP/results/${{ inputs.lane }}.json" "${selection[@]}"
     - name: Show last memory samples
       if: (failure() || cancelled()) && inputs.lane == 'k3d-fixture-configuration'
       continue-on-error: true

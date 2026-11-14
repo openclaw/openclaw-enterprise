@@ -32,6 +32,23 @@ RUN --mount=type=secret,id=build-ca,required=false \
     sh /tmp/curl/build.sh
 RUN --network=none sh /tmp/curl/verify.sh
 
+FROM node-build-base AS native-tool-archives
+WORKDIR /build
+COPY scripts/ci/download-pinned.sh scripts/ci/download-pinned.sh
+COPY scripts/lib/runtime-download-clients.ts scripts/lib/runtime-download-clients.ts
+COPY deploy/runtime/additional-download-clients.json deploy/runtime/additional-download-clients.json
+COPY deploy/runtime/native-tools/fetch.ts deploy/runtime/native-tools/fetch.ts
+RUN --mount=type=secret,id=build-ca,required=false \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
+    node deploy/runtime/native-tools/fetch.ts
+
+FROM node-build-base AS native-tools
+RUN --network=none \
+    --mount=type=bind,from=native-tool-archives,source=/archives,target=/archives \
+    --mount=type=bind,source=deploy/runtime/native-tools/install.sh,target=/tmp/install-native-tools.sh \
+    sh /tmp/install-native-tools.sh
+
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS node-runtime-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 RUN apt-get update --error-on=any && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
@@ -128,18 +145,17 @@ ENV OPENCLAW_BUILD_TIMESTAMP=${OPENCLAW_BUILD_TIMESTAMP}
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 COPY deploy/runtime/openclaw-source.json /tmp/openclaw-source.json
-COPY scripts/lib/openclaw-source.mjs /tmp/lib/openclaw-source.mjs
 COPY scripts/lib/openclaw-source.ts /tmp/lib/openclaw-source.ts
 RUN --mount=type=secret,id=build-ca,required=false \
     set -eu; \
-    node /tmp/lib/openclaw-source.mjs verify /tmp/openclaw-source.json; \
+    node /tmp/lib/openclaw-source.ts verify /tmp/openclaw-source.json; \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     curl --fail --location --silent --show-error \
       "https://codeload.github.com/openclaw/openclaw/tar.gz/${GIT_COMMIT}" -o /tmp/openclaw-source.tar.gz; \
     printf '%s  /tmp/openclaw-source.tar.gz\n' "$OPENCLAW_SOURCE_SHA256" | sha256sum --check --strict; \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
-# Record every patch applied here in appliedPatches in scripts/build-runtime-assets.mjs,
+# Record every patch applied here in appliedPatches in scripts/build-runtime-assets.ts,
 # which writes provenance; runtime-assets.test.mjs compares the two.
 # TODO: Remove this bridge patch when OpenClaw supports networkProxy.readOnlyPaths.
 COPY deploy/runtime/openclaw-codex-read-only-paths.patch /tmp/openclaw-codex-read-only-paths.patch
@@ -149,8 +165,9 @@ RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp
 COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
 RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-full-access-profile.patch
-COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
-RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
+COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
+RUN node /tmp/build-runtime-assets.ts inputs /source /inputs \
+    && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts
 
 # @matrix-org/matrix-sdk-crypto-nodejs downloads its native library from GitHub during
 # install, with no retry or checksum. Fetch the pinned library with the retrying,
@@ -393,8 +410,7 @@ for (const plugin of ["codex", "slack"]) {
   }
 }
 NODE
-COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
-COPY scripts/lib/openclaw-source.mjs /tmp/lib/openclaw-source.mjs
+COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 COPY scripts/lib/openclaw-source.ts /tmp/lib/openclaw-source.ts
 COPY --from=openclaw-source /tmp/openclaw-source.json /tmp/openclaw-source.json
 RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verification/scripts \
@@ -402,8 +418,9 @@ RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verifi
     node scripts/docker/copy-bootstrap-scripts.mjs /tmp/openclaw-runtime-bootstrap \
     && rm -rf scripts \
     && mv /tmp/openclaw-runtime-bootstrap/scripts scripts \
-    && node /tmp/build-runtime-assets.mjs package /source /out /tmp/openclaw-source.json \
-    && node /verification/scripts/check-package-dist-imports.mjs /source
+    && node /tmp/build-runtime-assets.ts package /source /out /tmp/openclaw-source.json \
+    && node /verification/scripts/check-package-dist-imports.mjs /source \
+    && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts /tmp/openclaw-source.json
 
 FROM node-runtime-base AS runtime
 
@@ -425,12 +442,14 @@ WORKDIR /app
 
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 
+COPY --from=native-tools /out/ /
 RUN --mount=type=bind,from=curl-packages,source=/out,target=/tmp/curl-packages \
-    apt-get update --error-on=any \
+    if [ -x /opt/devtools/bin/cargo ]; then set -- gcc libc6-dev; else set --; fi \
+    && apt-get update --error-on=any \
     && candidate="$(apt-cache policy curl | sed -n 's/^  Candidate: //p')" \
     && expected="$(cat /tmp/curl-packages/debian-version)" \
     && { [ "$candidate" = "$expected" ] || { echo "Refresh the curl backport: Debian candidate is $candidate, source is $expected" >&2; exit 1; }; } \
-    && apt-get install -y --no-install-recommends tini git ca-certificates openssh-client libstdc++6 libgomp1 python3 procps /tmp/curl-packages/*.deb \
+    && apt-get install -y --no-install-recommends tini git ca-certificates openssh-client libstdc++6 libgomp1 python3 procps "$@" /tmp/curl-packages/*.deb \
     && mkdir -p /usr/share/doc/curl/oce \
     && cp /tmp/curl-packages/*.sha256 /usr/share/doc/curl/oce/ \
     && rm -rf /var/lib/apt/lists/*
@@ -485,11 +504,12 @@ RUN mkdir -p node_modules/.bin \
     && ln -s ../openclaw/openclaw.mjs node_modules/.bin/openclaw \
     && ln -s ../openclaw/node_modules/@openai/codex/bin/codex.js node_modules/.bin/codex
 
-COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
-COPY scripts/lib/openclaw-source.mjs /tmp/lib/openclaw-source.mjs
+COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 COPY scripts/lib/openclaw-source.ts /tmp/lib/openclaw-source.ts
 
-RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw /home/node/.codex/generated_images \
+RUN --mount=type=bind,source=scripts/lib/runtime-download-clients.ts,target=/tmp/lib/runtime-download-clients.ts \
+    --mount=type=bind,source=deploy/runtime/additional-download-clients.json,target=/tmp/additional-download-clients.json \
+    mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw /home/node/.codex/generated_images \
   && chown node:node /home/node/.codex /home/node/.codex/generated_images \
   && chmod 700 /home/node/.codex /home/node/.codex/generated_images \
   && cp -R node_modules/openclaw/dist/extensions/slack/skills/. ./plugin-skills/ \
@@ -515,8 +535,8 @@ RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw
   && rm -rf "$codex_home" \
   && test -f /app/dist/extensions/codex/openclaw.plugin.json \
   && test -f /app/dist/extensions/slack/openclaw.plugin.json \
-  && node /tmp/build-runtime-assets.mjs inventory /app/node_modules/openclaw /opt/oce/runtime /usr/local/share/oce-node/provenance.json \
-  && rm /tmp/build-runtime-assets.mjs /tmp/lib/openclaw-source.mjs /tmp/lib/openclaw-source.ts
+  && node /tmp/build-runtime-assets.ts inventory /app/node_modules/openclaw /opt/oce/runtime /usr/local/share/oce-node/provenance.json /tmp/additional-download-clients.json \
+  && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts
 
 RUN /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
 

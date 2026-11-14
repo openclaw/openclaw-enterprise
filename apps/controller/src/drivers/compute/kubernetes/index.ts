@@ -36,7 +36,7 @@ import {
 import {
   compareResourceQuantities,
   hasIntegerQuotaPrecision,
-  isResourceQuantity,
+  isNonNegativeResourceQuantity,
 } from "./resource-quantities.ts";
 import {
   asRecord,
@@ -3697,7 +3697,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           "Namespace quota resource",
           "resources.namespace.quota",
         );
-        if (!isResourceQuantity(value) || (compareResourceQuantities(value, "0") ?? 0) < 0) {
+        if (!isNonNegativeResourceQuantity(value)) {
           throw configurationConstraintFailure(
             `Namespace quota resource ${key} must be a non-negative Kubernetes quantity string, such as 4 or 8Gi.`,
             "/resources/namespace/quota",

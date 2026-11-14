@@ -227,7 +227,7 @@ and a free, bindable `127.0.0.1:443`. Run only one Keycloak lane per host.
 ```sh
 state="$PWD/.ci-state/keycloak-oidc.json"
 node scripts/ci/prepare.mjs --lane keycloak-oidc --state "$state" &&
-  node scripts/ci/run-tests.mjs run keycloak-oidc --state "$state" --results "$PWD/.ci-state/results.json"
+  node scripts/ci/run-tests.ts run keycloak-oidc --state "$state" --results "$PWD/.ci-state/results.json"
 node scripts/ci/cleanup.ts --state "$state"
 ```
 
@@ -282,7 +282,7 @@ node scripts/ci/prepare.mjs \
   --lane gateway-routing \
   --state "$RUNNER_TEMP/state/gateway-routing.json" \
   --github-env "$GITHUB_ENV" &&
-node scripts/ci/run-tests.mjs run gateway-routing \
+node scripts/ci/run-tests.ts run gateway-routing \
   --state "$RUNNER_TEMP/state/gateway-routing.json" \
   --results "$RUNNER_TEMP/results/gateway-routing.json"
 ```
@@ -313,9 +313,8 @@ enrollment, Git, or OpenShell.
 
 ## Production TUI tests
 
-The opt-in Helm test exercises production API and native TUI revision cutover
-with a real model on disposable k3d. Allow 4 GiB or more per gateway container.
-Missing prerequisites fail a selected test.
+This Helm test exercises production API and native TUI revision cutover with a real
+model on disposable k3d. Each gateway container needs at least 4 GiB.
 
 ### Production TUI Helm test environment
 
@@ -329,8 +328,7 @@ In a [private environment file](README.md#requirements-and-credentials), set:
 - `OPENAI_API_KEY`: existing authorized credential; optionally set
   `OCC_TEST_OPENAI_MODEL` (default `gpt-6-astra`).
 
-Ordinary teardown requests Helm uninstall and namespace deletion. It suppresses
-command errors and returns without waiting for namespace deletion. Verify resource absence separately.
+Teardown requests Helm uninstall and asynchronous namespace deletion, suppressing errors. Verify resource removal.
 `OCC_TEST_PRODUCTION_TUI_KEEP=1` retains the setup for rehearsal with
 `attach.sh` and `proof.json`. Require a completed run for proof.
 
@@ -341,20 +339,20 @@ OCC_TEST_PRODUCTION_TUI_REAL=1 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/production-tui-k3d-real.test.mjs
 ```
 
-Select both `OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE` and
-`OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE` for independent upgrades.
-One input fails. Omitting both skips upgrades.
+For independent upgrades, set both `OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE`
+and `OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE`. One input fails. Omit both to skip upgrades.
 
 ### Run an isolated upgrade qualification lane
 
-This lane requires an explicit `OCC_TEST_OPENAI_MODEL`. Select compatible prior
-controller and runtime digests and distinct reviewed candidate digests. Verify
-provenance separately. Install Docker, k3d, kubectl, Helm, yq, and Go to build OCC.
+Set `OCC_TEST_OPENAI_MODEL`. Verify provenance for compatible prior and distinct
+reviewed candidate controller and runtime digests. A disposable Pod selects the
+incumbent image’s worker probe for installation. The upgrade uses the candidate
+chart. Install Docker, k3d, kubectl, Helm, yq, and Go.
 
 ```sh
 run_dir="$(mktemp -d)"
 node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.mjs --lane production-tui --state "$run_dir/state.json" && \
-  TMPDIR="$run_dir" node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.mjs run production-tui \
+  TMPDIR="$run_dir" node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.ts run production-tui \
     --state "$run_dir/state.json" --results "$run_dir/results.json"
 ```
 
