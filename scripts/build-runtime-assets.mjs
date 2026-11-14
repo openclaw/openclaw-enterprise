@@ -50,6 +50,10 @@ const appliedPatches = [
     file: "openclaw-node-setup-renewal.patch",
     sha256: "b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538",
   },
+  {
+    file: "openclaw-chat-main-session-start.patch",
+    sha256: "483c9c4ec832d0a5b0e016106c817a01d1fbd5b53693b08be7b9c18873e782e4",
+  },
 ];
 const [command, sourceRoot, output, manifestPath] = process.argv.slice(2);
 const root = await realpath(sourceRoot);

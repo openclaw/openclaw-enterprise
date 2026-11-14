@@ -29,8 +29,8 @@ The tool policy limits model turns in both modes. When a child spawns, OpenClaw
 waits for placement started by session creation and rechecks the parent's
 authority before dispatch. The source also preserves shared host-module links
 during plugin capture and handles bundled WebAssembly and directory assets.
-Until [OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724) or
-an equivalent implementation is available upstream, the build applies its
+Until upstream ships [OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724)
+or an equivalent, the build applies its
 `readOnlyPaths` compatibility change as
 `openclaw-codex-read-only-paths.patch`. This preserves the restricted Codex
 filesystem profile required by the repository broker and selected plugins.
@@ -38,16 +38,15 @@ The selected source preserves `on-request` when plugins use MCP elicitation,
 reconnects `connect --ephemeral` with saved device credentials after its setup
 code expires, and retains the original caller's authority while required-worker
 placement continues after session creation is acknowledged. Scope, role, and
-profile revocation still stop dispatch. The OpenClaw build stage applies the
-checksum-verified `openclaw-required-worker-authority-regression.patch`
-and runs the real Gateway public-RPC cases without network access. The cases
-cover placement before and after acknowledgement, disconnect, and committed
-role, scope, and profile revocation.
+profile revocation still stop dispatch. The build applies
+`openclaw-required-worker-authority-regression.patch` and runs its Gateway
+public-RPC cases offline: placement before and after acknowledgement,
+disconnect, and committed role, scope, and profile revocation.
 The build also applies `openclaw-codex-full-access-profile.patch`, which selects
 the native full-access Codex profile, and
 `openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation
-after the Control UI's access is refused. Remove each when the pinned OpenClaw
-does the same.
+after the Control UI's access is refused. Remove each once upstream does the
+same.
 `openclaw-terminated-gateway-namespace.patch` lets a supervisor that verified a
 private Linux PID namespace stopped recover only Gateway records from that
 namespace. OC still compares its lock fingerprint before recovery. An
@@ -60,6 +59,8 @@ or renewal under the same binding. Fresh setup comes first; a typed bootstrap re
 allows one validated saved-token retry. See [node enrollment](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 for Gateway/TLS-pin checks, local credential retirement when switching targets,
 and pairing recovery. Remove this bridge when the selected source provides that contract.
+`openclaw-chat-main-session-start.patch` (OpenClaw #197151) lets chat-only members start
+an Agent's unused main conversation.
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
 against the Dockerfile.
