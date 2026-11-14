@@ -493,7 +493,7 @@ export function registerCompleteLifecycleCases() {
           join(root, file),
           `import { writeFile } from "node:fs/promises";
 import test from "node:test";
-test(${JSON.stringify(name)}, () => writeFile(${JSON.stringify(marker)}, "ran"));
+test(${JSON.stringify(name)}, () => writeFile("ran", "ran"));
 `,
         );
         await writeRunnerManifest(
