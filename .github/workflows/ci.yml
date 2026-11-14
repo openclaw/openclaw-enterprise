@@ -591,10 +591,10 @@ jobs:
           OCC_CI_RUNTIME_ARTIFACT_ATTEMPT: ${{ needs.runtime-artifact.outputs.producer-attempt }}
           ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
           ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
-        run: node scripts/ci/first-agent-smoke.mjs images
+        run: node scripts/ci/first-agent-smoke.ts images
       - name: Install, deploy, chat, stop and start
         id: smoke
-        run: node scripts/ci/first-agent-smoke.mjs run
+        run: node scripts/ci/first-agent-smoke.ts run
       - name: Show Docker Hub pull endpoints
         if: ${{ !cancelled() }}
         run: bash scripts/ci/docker-hub-mirror.sh report

@@ -11,7 +11,7 @@ import { connect } from "node:net";
 // loopback, and it also observes the wrapper from outside: when the native
 // process accepts connections, what the private runtime and plugin status
 // report, and what the runtime's HTTP readiness endpoint decides. The first-Agent smoke
-// (scripts/ci/first-agent-smoke.mjs) runs it without observation on an address
+// (scripts/ci/first-agent-smoke.ts) runs it without observation on an address
 // the cluster resolves api.openai.com to. Every line it prints is one JSON event
 // with an epoch timestamp.
 const mode = process.env.PROBE_ENDPOINT_MODE; // "answer" | "reject" | "hang"

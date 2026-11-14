@@ -31,7 +31,7 @@ import {
   run,
   startLocalSetup,
   workDirectory,
-} from "./first-agent-smoke.mjs";
+} from "./first-agent-smoke.ts";
 
 const env = process.env;
 const lane = "skipper-prepared-git-installed";

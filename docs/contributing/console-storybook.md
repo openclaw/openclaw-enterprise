@@ -43,7 +43,7 @@ URL as before.
 Node resolves imports literally, including imports inside an `.mts` file. Point
 Node callers of a standalone module directly at its `.mts` source. The first-agent
 CLI (`scripts/first-agent.ts`), model helper (`scripts/first-agent-model.ts`), and CI
-smoke script (`scripts/ci/first-agent-smoke.mjs`) all import
+smoke Agent checks (`scripts/ci/first-agent-smoke/agents.ts`) all import
 `agents/starter-model.mts` directly.
 Test browser behavior through the served `.mjs` URLs, where the controller
 resolves the whole module graph.

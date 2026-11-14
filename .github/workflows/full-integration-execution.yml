@@ -695,10 +695,10 @@ jobs:
         env:
           ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
           ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
-        run: node scripts/ci/first-agent-smoke.mjs prepared-git-images
+        run: node scripts/ci/first-agent-smoke.ts prepared-git-images
       - name: Record independent checkout image selection
         timeout-minutes: 1
-        run: node scripts/ci/first-agent-smoke.mjs release-selection "$RUNNER_TEMP/skipper-release-selection.json"
+        run: node scripts/ci/first-agent-smoke.ts release-selection "$RUNNER_TEMP/skipper-release-selection.json"
       - name: Prove native private Git and withdrawal on the same installed Agent
         id: installed-skipper-proof
         env:
