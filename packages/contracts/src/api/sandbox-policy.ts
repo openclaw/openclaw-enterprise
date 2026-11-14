@@ -1,7 +1,12 @@
 import { DriverConfigurationDescriptorSchema } from "./driver-configurations.ts";
 import { Type } from "typebox";
 import { AgentId, NamespaceId, RevisionId, Meta } from "./common.ts";
-import { SandboxNetworkGrantSchema, SandboxNetworkGrantsSchema } from "../sandbox-policy.ts";
+import {
+  ProtectedDownloadDestinationSchema,
+  ProtectedDownloadDestinationsSchema,
+  SandboxNetworkGrantSchema,
+  SandboxNetworkGrantsSchema,
+} from "../sandbox-policy.ts";
 
 export const SandboxPolicyParams = Type.Object(
   {
@@ -21,7 +26,18 @@ export const SandboxPolicyRevisionParams = Type.Object(
 );
 
 export const SandboxPolicyVersion = Type.Integer({ minimum: 1, maximum: 2147483647 });
-export const SandboxPolicyApplicationSchema = Type.Object(
+const DownloadAction = Type.Union([
+  Type.Literal("approve-and-enable"),
+  Type.Literal("enable"),
+  Type.Literal("disable"),
+  Type.Literal("withdraw-approval"),
+]);
+const DownloadChange = Type.Object(
+  { action: DownloadAction, destination: ProtectedDownloadDestinationSchema },
+  { additionalProperties: false },
+);
+export type ProtectedDownloadEdit = Type.Static<typeof DownloadChange>;
+const ordinaryApplication = Type.Object(
   {
     id: Type.String({ format: "uuid" }),
     revisionId: RevisionId,
@@ -34,6 +50,23 @@ export const SandboxPolicyApplicationSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+export const SandboxPolicyApplicationSchema = Type.Union([
+  ordinaryApplication,
+  Type.Object(
+    {
+      ...ordinaryApplication.properties,
+      kind: Type.Literal("protected_downloads"),
+      ...DownloadChange.properties,
+    },
+    { additionalProperties: false },
+  ),
+]);
+const appliedFields = {
+  revisionId: RevisionId,
+  policyVersion: SandboxPolicyVersion,
+  providerVersion: Type.String(),
+  appliedAt: Type.String(),
+};
 export const SandboxPolicySchema = Type.Object(
   {
     id: Type.String({ pattern: "^sbp_[0-9a-f-]{36}$" }),
@@ -43,16 +76,21 @@ export const SandboxPolicySchema = Type.Object(
     additions: SandboxNetworkGrantsSchema,
     application: Type.Optional(SandboxPolicyApplicationSchema),
     applied: Type.Optional(
-      Type.Object(
-        {
-          revisionId: RevisionId,
-          policyVersion: SandboxPolicyVersion,
-          providerVersion: Type.String(),
-          appliedAt: Type.String(),
-        },
-        { additionalProperties: false },
-      ),
+      Type.Union([
+        Type.Object(appliedFields, { additionalProperties: false }),
+        Type.Object(
+          {
+            ...appliedFields,
+            kind: Type.Literal("protected_downloads"),
+            operationId: Type.String({ format: "uuid" }),
+            confirmedDownloadDestinations: ProtectedDownloadDestinationsSchema,
+          },
+          { additionalProperties: false },
+        ),
+      ]),
     ),
+    approvedDownloadDestinations: Type.Optional(ProtectedDownloadDestinationsSchema),
+    downloadDestinations: Type.Optional(ProtectedDownloadDestinationsSchema),
   },
   { additionalProperties: false },
 );
@@ -64,13 +102,50 @@ export const SandboxPolicyViewResponse = Type.Object(
   {
     data: Type.Object(
       {
-        policy: SandboxPolicySchema,
+        policy: Type.Object(
+          {
+            ...SandboxPolicySchema.properties,
+            approvedDownloadDestinations: ProtectedDownloadDestinationsSchema,
+            downloadDestinations: ProtectedDownloadDestinationsSchema,
+          },
+          { additionalProperties: false },
+        ),
         configuration: Type.Optional(DriverConfigurationDescriptorSchema),
         editingEnabled: Type.Boolean(),
         protectedExecution: Type.Boolean({
           description:
             "True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed.",
         }),
+        protectedDownloads: Type.Optional(
+          Type.Union(
+            [
+              Type.Object(
+                {
+                  state: Type.Literal("unavailable"),
+                  reason: Type.Union([
+                    Type.Literal("installation-disabled"),
+                    Type.Literal("no-active-protected-revision"),
+                    Type.Literal("unsupported-driver-pair"),
+                    Type.Literal("installation-unconfirmed"),
+                  ]),
+                },
+                { additionalProperties: false },
+              ),
+              Type.Object(
+                {
+                  state: Type.Literal("verified"),
+                  revisionId: RevisionId,
+                  canApprove: Type.Boolean(),
+                },
+                { additionalProperties: false },
+              ),
+            ],
+            {
+              description:
+                "Protected download checks for the active revision. Verification does not grant access.",
+            },
+          ),
+        ),
         ceiling: SandboxNetworkGrantsSchema,
         defaults: Type.Union([Type.Null(), Type.Record(Type.String(), Type.Unknown())]),
         defaultsRevisionId: Type.Optional(RevisionId),
@@ -102,6 +177,7 @@ export const SandboxPolicyViewResponse = Type.Object(
   },
   { additionalProperties: false },
 );
+export type SandboxPolicyMutationWire = Type.Static<typeof SandboxPolicyResponse>["data"];
 export type SandboxPolicyViewWire = Type.Static<typeof SandboxPolicyViewResponse>["data"];
 
 export const SandboxPolicyUpdateBody = Type.Object(
@@ -112,18 +188,28 @@ export const SandboxPolicyValidateBody = Type.Object(
   { expectedVersion: SandboxPolicyVersion, additions: Type.Unknown() },
   { additionalProperties: false },
 );
-export const SandboxPolicyApplyBody = Type.Object(
-  {
-    expectedVersion: SandboxPolicyVersion,
-    revisionId: RevisionId,
-    additions: Type.Optional(SandboxNetworkGrantsSchema),
-  },
-  {
-    additionalProperties: false,
-    description:
-      "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
-  },
-);
+export const SandboxPolicyApplyBody = Type.Union([
+  Type.Object(
+    {
+      expectedVersion: SandboxPolicyVersion,
+      revisionId: RevisionId,
+      additions: Type.Optional(SandboxNetworkGrantsSchema),
+    },
+    {
+      additionalProperties: false,
+      description:
+        "Omit additions to apply the saved version. Supply the complete additions array (empty to clear) to save the next version and queue its application in one transaction.",
+    },
+  ),
+  Type.Object(
+    {
+      expectedVersion: SandboxPolicyVersion,
+      revisionId: RevisionId,
+      downloadChange: DownloadChange,
+    },
+    { additionalProperties: false },
+  ),
+]);
 export const SandboxPolicyEditingBody = Type.Object(
   { enabled: Type.Boolean() },
   { additionalProperties: false },

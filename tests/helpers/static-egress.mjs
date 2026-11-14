@@ -410,7 +410,7 @@ async function buildStaticEgressFixture(
       }
       callback(null, {
         revision: {
-          version: 1,
+          version: observed.evidence?.policy_version ?? 1,
           status: 2,
           policy: observed.policy,
           policy_hash: observed.policyHash,
@@ -420,7 +420,7 @@ async function buildStaticEgressFixture(
         loaded_policy_observation: observed.observation
           ? { ...observed.observation, enforcement: observed.evidence }
           : undefined,
-        active_version: 1,
+        active_version: observed.evidence?.policy_version ?? 1,
       });
     },
     DeleteSandbox(call, callback) {
@@ -825,6 +825,7 @@ async function buildStaticEgressFixture(
   // This is an authenticated gateway-observation fixture, not supervisor execution proof.
   observed.sandbox = {
     id: sandboxId,
+    resource_version: "1",
     name: ref.resourceName,
     phase: "SANDBOX_PHASE_READY",
     annotations: {

@@ -125,11 +125,22 @@ export class ProtectedExecutionDriver {
     if (preview && !stage) {
       return false;
     }
-    const installed = await this.observe(context, wiring);
+    // A later enrollment on the same execution must verify the published policy.
+    // The initial wiring describes only the immutable launch policy.
+    const current = this.proxy.observeDownloadEnforcement
+      ? await custody.currentEgressInstallation?.()
+      : undefined;
+    const published = current?.downloadPolicyVersion === undefined ? undefined : current;
+    if (published && !isDeepStrictEqual(wiring?.plan, context.plan)) {
+      return false;
+    }
+    const installed = published ?? (await this.observe(context, wiring));
     if (!installed || !(await ready())) {
       return false;
     }
-    await custody.recordEgressInstallation!(installed);
+    if (!published) {
+      await custody.recordEgressInstallation!(installed);
+    }
     if (!(await this.verify(context, installed))) {
       return false;
     }

@@ -267,7 +267,8 @@ interface RequiredPermission {
     | "read_logs_alternative"
     | "bound_credential_source"
     | "unless_consent_owner"
-    | "saved_sandbox_policy_additions";
+    | "saved_sandbox_policy_additions"
+    | "protected_download_approval";
 }
 
 interface DocumentedFastifySchema extends FastifySchema {
@@ -632,6 +633,12 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
               action: "read" as const,
               resourceKind: "sandbox_policy" as const,
               scope: "requested" as const,
+            },
+            {
+              action: "administer" as const,
+              resourceKind: "installation" as const,
+              scope: "installation" as const,
+              condition: "protected_download_approval" as const,
             },
           ]
         : []),
@@ -1155,6 +1162,9 @@ function permissionDescription(
           return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth, before and after the update.`;
         }
         return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth.`;
+      }
+      if (condition === "protected_download_approval") {
+        return `Requires ${action} permission on the ${name} only when downloadChange.action is approve-and-enable or withdraw-approval.`;
       }
       if (condition === "saved_sandbox_policy_additions") {
         return operation?.operationId === "updateAgent"

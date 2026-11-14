@@ -3,8 +3,11 @@ import type {
   AgentRuntimeLogPageWire,
   DriverConfigurationDescriptor,
   JSONSchema,
+  ProtectedDownloadDestination,
+  ProtectedDownloadEdit,
   RuntimeLogRecord,
   SandboxNetworkGrant,
+  SandboxPolicyMutationWire,
   SandboxPolicyRecommendations,
   SandboxPolicyViewWire,
 } from "@openclaw-enterprise/contracts";
@@ -15,7 +18,15 @@ import {
   configurationErrors,
   configurationAction,
 } from "../configuration-fields.mjs";
-import { button, dismissOnBackdrop, element, mayReturnFocus } from "../dom.mjs";
+import {
+  button,
+  dismissOnBackdrop,
+  element,
+  field,
+  mayReturnFocus,
+  setFieldError,
+  validateOnSubmit,
+} from "../dom.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
 import {
   askForGrant,
@@ -654,6 +665,25 @@ export function renderAgentSandboxPolicy(
   let policyTimer: number | undefined;
   const current = () => context.isCurrent();
   const protectedExecution = () => view?.protectedExecution === true;
+  function protectedDownloadNotice() {
+    const status = view?.protectedExecution && view.protectedDownloads;
+    if (!status) {
+      return undefined;
+    }
+    if (status.state === "verified") {
+      return `The Sandbox and Credential Proxy Drivers passed protected download checks for revision ${status.revisionId}. Downloads use the protected policy.`;
+    }
+    switch (status.reason) {
+      case "installation-disabled":
+        return "Protected downloads are off for this Installation. Ask an Installation administrator to review the download policy.";
+      case "no-active-protected-revision":
+        return "Protected download checks need an active protected revision. Check the Agent’s deployment status.";
+      case "unsupported-driver-pair":
+        return "The selected Sandbox and Credential Proxy Drivers do not support protected downloads together. Ask an Installation administrator to review the selected Drivers.";
+      case "installation-unconfirmed":
+        return "The Drivers have not confirmed the protected download policy for the active revision. Check the revision status and refresh the policy.";
+    }
+  }
   const hasEditAuthority = () =>
     view?.configuration?.actions?.save?.available &&
     view?.editingEnabled &&
@@ -672,6 +702,649 @@ export function renderAgentSandboxPolicy(
     view.capability?.live &&
     agent.activeRevisionId === revisionId &&
     agent.desiredRuntimeState === "running";
+
+  const downloadSearch = element("input", {
+    type: "search",
+    className: "network-admin__search",
+    "aria-label": "Search destinations",
+    placeholder: "Search host, path, or URL",
+  });
+  const accessFilter = element(
+    "select",
+    { className: "network-admin__filter", "aria-label": "Filter destinations" },
+    element("option", { value: "all" }, "All access states"),
+    element("option", { value: "allowed" }, "Allowed"),
+    element("option", { value: "off" }, "Off"),
+    element("option", { value: "unconfirmed" }, "Unconfirmed"),
+  );
+  let descendingDestinations = false;
+  let addingDownload = false;
+  const hostname = element("input", {
+    required: true,
+    maxlength: 253,
+    placeholder: "downloads.example.org",
+    autocomplete: "off",
+    spellcheck: "false",
+    pattern: "[A-Za-z0-9.\\-]+",
+    title: "Enter a hostname without a URL, port or wildcard.",
+  });
+  const archive = element("input", {
+    maxlength: 2048,
+    placeholder: "/releases/tool.tar.gz",
+    autocomplete: "off",
+    spellcheck: "false",
+    pattern: "(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._~+:@\\-]+)+",
+    title:
+      "For a shared host, enter the exact path approved by the Installation. Omit query parameters and fragments.",
+  });
+  const protocol = element(
+    "select",
+    { "aria-label": "Protocol" },
+    element("option", { value: "https" }, "HTTPS · 443"),
+    element("option", { value: "http" }, "HTTP · 80 (approved mirror)"),
+  );
+  // Keep field nodes (including validation errors and input values) across policy reads.
+  const downloadFields = [
+    field({ label: "Hostname", control: hostname }),
+    field({ label: "Protocol", control: protocol }),
+    field({
+      label: "Exact archive path",
+      control: archive,
+      help: "Required for shared hosts. Omit query parameters and fragments.",
+    }),
+  ];
+  const verifiedHere = () =>
+    view?.protectedExecution === true &&
+    view.protectedDownloads?.state === "verified" &&
+    view.protectedDownloads.revisionId === revisionId &&
+    agent.activeRevisionId === revisionId &&
+    agent.desiredRuntimeState === "running";
+  const canChangeDownloads = () =>
+    current() &&
+    verifiedHere() &&
+    canEdit() &&
+    view?.configuration?.actions.apply?.available === true;
+  const canApproveDownloads = () =>
+    view?.protectedDownloads?.state === "verified" && view.protectedDownloads.canApprove;
+  function changeDownload(
+    action: ProtectedDownloadEdit["action"],
+    destination: ProtectedDownloadDestination,
+    fromForm = false,
+  ) {
+    if (
+      !canChangeDownloads() ||
+      !view?.configuration ||
+      ((action === "approve-and-enable" || action === "withdraw-approval") &&
+        !canApproveDownloads())
+    ) {
+      return;
+    }
+    const { configuration, policy } = view;
+    const endpoint = configurationAction(configuration, "apply");
+    void mutate(
+      async () => {
+        let saved: SandboxPolicyMutationWire;
+        try {
+          saved = (await context.request(endpoint.href, {
+            method: endpoint.method,
+            expectedStatus: 202,
+            body: {
+              expectedVersion: policy.version,
+              revisionId,
+              downloadChange: { action, destination },
+            },
+          })) as SandboxPolicyMutationWire;
+        } catch (error) {
+          if (requestFailure(error).status === 409 && current()) {
+            await loadPolicy();
+          }
+          throw error;
+        }
+        const op = saved?.application;
+        if (
+          saved?.id !== policy.id ||
+          saved.agentId !== agent.id ||
+          saved.namespaceId !== agent.namespaceId ||
+          saved.version !== policy.version + 1 ||
+          !op ||
+          !("kind" in op) ||
+          op.kind !== "protected_downloads" ||
+          op.state !== "pending" ||
+          !op.id ||
+          op.id === policy.application?.id ||
+          op.revisionId !== revisionId ||
+          op.policyVersion !== saved.version ||
+          op.action !== action ||
+          !sameValue(op.destination, destination)
+        ) {
+          throw unconfirmedApply;
+        }
+        if (current()) {
+          if (fromForm) {
+            addingDownload = false;
+            hostname.value = "";
+            archive.value = "";
+            protocol.value = "https";
+          }
+          await loadPolicy();
+        }
+      },
+      false,
+      (error) => {
+        const failure = requestFailure(error);
+        return [
+          failure.code,
+          failure.serverMessage ||
+            errorText(error, "changing protected downloads", POLICY_APPLY_GRANT),
+        ]
+          .filter(Boolean)
+          .join(" · ");
+      },
+      true,
+    );
+  }
+
+  function renderDownloads(model: SandboxPolicyViewWire) {
+    const { policy, protectedDownloads } = model;
+    const applied = policy.applied;
+    const latestReceipt =
+      applied && "kind" in applied && applied.kind === "protected_downloads" ? applied : undefined;
+    // A different revision's receipt is diagnostic evidence only. It grants no row access here.
+    const receipt = latestReceipt?.revisionId === revisionId ? latestReceipt : undefined;
+    const application = policy.application;
+    const latestOp =
+      application && "kind" in application && application.kind === "protected_downloads"
+        ? application
+        : undefined;
+    const op = latestOp?.revisionId === revisionId ? latestOp : undefined;
+    const verified = verifiedHere();
+    const currentReceipt =
+      verified &&
+      !unknownOutcome &&
+      receipt &&
+      receipt.policyVersion === policy.version &&
+      (!op || (op.state === "applied" && op.id === receipt.operationId));
+    const baselineOff = verified && !unknownOutcome && !receipt && (!op || op.state === "applied");
+    const writable = canChangeDownloads();
+    const origin = (d: ProtectedDownloadDestination) => `${d.scheme}://${d.host}:${d.port}`;
+    const format = (d: ProtectedDownloadDestination) => origin(d) + (d.path ?? "");
+    const confirmed = receipt?.confirmedDownloadDestinations ?? [];
+    const confirmedUrls = new Set(confirmed.map(format));
+    const approved = new Set(policy.approvedDownloadDestinations.map(format));
+    const desired = new Set(policy.downloadDestinations.map(format));
+    const scopes = new Map(
+      [...policy.approvedDownloadDestinations, ...policy.downloadDestinations, ...confirmed].map(
+        (d) => [format(d), d],
+      ),
+    );
+    // The exact rule can disappear before its withdrawal settles. Keep the latest request's
+    // target in view while pending, or while its matching receipt confirms a covering host.
+    if (
+      op?.action === "withdraw-approval" &&
+      op.policyVersion === policy.version &&
+      op.destination.path &&
+      agent.activeRevisionId === revisionId &&
+      (op.state === "pending" || (currentReceipt && confirmedUrls.has(origin(op.destination))))
+    ) {
+      scopes.set(format(op.destination), op.destination);
+    }
+    function receiptStatus() {
+      if (op?.state === "failed") {
+        return ["Confirmation failed", "danger"];
+      }
+      if (op?.state === "pending") {
+        return ["Pending confirmation", "warning"];
+      }
+      if (currentReceipt) {
+        return ["Confirmed", "success"];
+      }
+      if (baselineOff) {
+        return ["Off on this revision", "neutral"];
+      }
+      if (receipt) {
+        return ["Previous confirmation", "warning"];
+      }
+      return ["Unconfirmed", "warning"];
+    }
+    const [label, tone] = receiptStatus();
+    const panel = element("section", { "aria-label": "Downloads", className: "network-admin" });
+    const refresh = button("Refresh", () => void loadPolicy(true), {
+      tone: "ghost",
+      size: "sm",
+      "aria-label": "Refresh download status",
+      disabled: mutation,
+      "data-download-control": "refresh",
+    });
+    panel.append(
+      element(
+        "header",
+        { className: "network-admin__header" },
+        element(
+          "div",
+          { className: "network-admin__heading" },
+          element("h3", {}, "Protected downloads"),
+          element(
+            "span",
+            {
+              className: "network-admin__status",
+              "data-tone": tone,
+              role: tone === "danger" ? "alert" : "status",
+            },
+            label,
+          ),
+        ),
+        refresh,
+      ),
+    );
+
+    const tools = element(
+      "div",
+      { className: "collection-toolbar network-admin__tools" },
+      downloadSearch,
+      accessFilter,
+    );
+    panel.append(tools);
+    if (writable) {
+      const form = element("form", {
+        className: "network-admin__form sandbox-download-form",
+        id: "network-admin-add-destination",
+        "aria-label": "Add destination",
+        autocomplete: "off",
+        hidden: !addingDownload,
+      });
+      const open = button(
+        "Add destination",
+        () => {
+          addingDownload = true;
+          form.hidden = false;
+          open.hidden = true;
+          open.setAttribute("aria-expanded", "true");
+          hostname.focus();
+        },
+        {
+          tone: "primary",
+          hidden: addingDownload,
+          "aria-controls": form.id,
+          "aria-expanded": String(addingDownload),
+          "data-download-control": "add",
+        },
+      );
+      tools.append(open);
+      const cancel = button(
+        "Cancel",
+        () => {
+          addingDownload = false;
+          form.reset();
+          setFieldError(hostname, "");
+          setFieldError(archive, "");
+          form.hidden = true;
+          open.hidden = false;
+          open.setAttribute("aria-expanded", "false");
+          open.focus();
+        },
+        { "data-download-control": "cancel" },
+      );
+      form.append(
+        element(
+          "p",
+          { className: "network-admin__form-note" },
+          canApproveDownloads()
+            ? "New approvals apply only to this Agent."
+            : "Choose a destination covered by Agent or Installation approval.",
+        ),
+        ...downloadFields,
+        element(
+          "div",
+          { className: "network-admin__form-actions" },
+          cancel,
+          element(
+            "button",
+            {
+              type: "submit",
+              className: "button button--primary",
+              "data-download-control": "submit",
+            },
+            "Allow download",
+          ),
+        ),
+      );
+      validateOnSubmit(form);
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const d: ProtectedDownloadDestination = {
+          host: hostname.value.toLowerCase(),
+          ...(archive.value ? { path: archive.value } : {}),
+          ...(protocol.value === "http"
+            ? { scheme: "http", port: 80 }
+            : { scheme: "https", port: 443 }),
+        };
+        changeDownload(
+          canApproveDownloads() && !approved.has(format(d)) ? "approve-and-enable" : "enable",
+          d,
+          true,
+        );
+      });
+      panel.append(form);
+    }
+
+    const rows = element("tbody");
+    const direction = element("span", { "aria-hidden": "true" });
+    const sort = button(
+      "Destination",
+      () => {
+        descendingDestinations = !descendingDestinations;
+        sortDestinations();
+      },
+      {
+        className: "network-admin__sort",
+        "aria-label": "Sort by destination",
+        "data-download-control": "sort",
+      },
+    );
+    sort.append(direction);
+    const hostHeading = element("th", { scope: "col" }, sort);
+    const table = element(
+      "table",
+      { className: "network-admin__table", "aria-label": "Download destinations" },
+      element(
+        "thead",
+        {},
+        element(
+          "tr",
+          {},
+          hostHeading,
+          ...["Requested", "Confirmed access", "Actions"].map((name) =>
+            element("th", { scope: "col" }, name),
+          ),
+        ),
+      ),
+      rows,
+    );
+    const count = element("p", { className: "network-admin__count", role: "status" });
+    const emptyMessage = element("p");
+    const reset = button(
+      "Clear filters",
+      () => {
+        downloadSearch.value = "";
+        accessFilter.value = "all";
+        filterDestinations();
+        downloadSearch.focus();
+      },
+      { tone: "link", size: "sm" },
+    );
+    const empty = element("div", { className: "network-admin__empty" }, emptyMessage, reset);
+    const entries: {
+      row: HTMLTableRowElement;
+      url: string;
+      destination: ProtectedDownloadDestination;
+      state: string;
+    }[] = [];
+    for (const [url, d] of scopes) {
+      const exact = confirmedUrls.has(url);
+      const covered = d.path !== undefined && confirmedUrls.has(origin(d));
+      let access = baselineOff ? "Off on this revision" : "Unconfirmed";
+      let accessTone = baselineOff ? "neutral" : "warning";
+      if (receipt) {
+        const last = exact
+          ? currentReceipt
+            ? "Allowed"
+            : "On"
+          : covered
+            ? "Covered by host"
+            : "Off";
+        access = currentReceipt ? last : `Last confirmed ${last.toLowerCase()}`;
+        accessTone = currentReceipt ? (exact || covered ? "success" : "neutral") : "warning";
+      }
+      const state =
+        currentReceipt && (exact || covered)
+          ? "allowed"
+          : currentReceipt || baselineOff
+            ? "off"
+            : "unconfirmed";
+      const actions = element("div", { className: "network-admin__actions" });
+      if (writable) {
+        if (!exact && (approved.has(url) || desired.has(url))) {
+          actions.append(
+            button("Enable", () => changeDownload("enable", d), {
+              size: "sm",
+              "aria-label": `Enable ${url}`,
+              "data-download-control": `enable ${url}`,
+            }),
+          );
+        }
+        if (exact) {
+          actions.append(
+            button("Disable", () => changeDownload("disable", d), {
+              size: "sm",
+              "aria-label": `Disable ${url}`,
+              "data-download-control": `disable ${url}`,
+            }),
+          );
+        }
+      }
+      const menu = element(
+        "div",
+        { className: "network-admin__menu", popover: "auto" },
+        element("strong", {}, "Destination details"),
+        element("code", {}, url),
+      );
+      const withdraw = writable && canApproveDownloads() && approved.has(url);
+      const removeFromDesired = writable && !exact && desired.has(url);
+      if (writable && approved.has(url)) {
+        menu.append(
+          element(
+            "p",
+            {},
+            d.path
+              ? "Disabling this rule keeps its approval. An enabled host rule can still allow this path."
+              : "Disabling this rule keeps its approval.",
+          ),
+        );
+      }
+      if (removeFromDesired) {
+        menu.append(
+          button("Remove from desired", () => changeDownload("disable", d), {
+            size: "sm",
+            "aria-label": `Remove from desired destinations: ${url}`,
+            "data-download-control": `disable ${url}`,
+          }),
+        );
+      }
+      if (withdraw) {
+        menu.append(
+          element(
+            "p",
+            {},
+            "Withdrawing removes this Agent’s approval and access that depends on it.",
+          ),
+          button("Withdraw approval", () => changeDownload("withdraw-approval", d), {
+            size: "sm",
+            tone: "danger",
+            "aria-label": `Withdraw approval for ${url}`,
+            "data-download-control": `withdraw ${url}`,
+          }),
+        );
+      }
+      const menuName = `${withdraw || removeFromDesired ? "More actions" : "Destination details"} for ${url}`;
+      const more = element(
+        "button",
+        {
+          type: "button",
+          className: "button button--ghost network-admin__more",
+          "data-download-control": `more ${url}`,
+          "aria-label": menuName,
+          title: menuName,
+        },
+        element("span", { "aria-hidden": "true" }, "⋯"),
+      );
+      more.popoverTargetElement = menu;
+      actions.append(more, menu);
+      const host = element("strong", { className: "network-admin__host" });
+      for (const label of d.host.split(".")) {
+        if (host.hasChildNodes()) {
+          host.append(".", element("wbr"));
+        }
+        host.append(label);
+      }
+      const row = element(
+        "tr",
+        { className: "sandbox-download-row" },
+        element(
+          "td",
+          { "data-label": "Destination" },
+          element(
+            "div",
+            { className: "network-admin__destination" },
+            host,
+            d.path ? element("span", { className: "network-admin__path" }, d.path) : null,
+            element(
+              "span",
+              { className: "network-admin__protocol" },
+              `${d.scheme.toUpperCase()} · ${d.port}${d.path ? "" : " · All paths"}`,
+            ),
+          ),
+        ),
+        element(
+          "td",
+          { "data-label": "Requested" },
+          element(
+            "span",
+            { className: "network-admin__requested" },
+            desired.has(url) ? "On" : "Off",
+          ),
+          element(
+            "span",
+            { className: "network-admin__secondary" },
+            approved.has(url) ? "Agent-approved" : "No Agent approval",
+          ),
+        ),
+        element(
+          "td",
+          { "data-label": "Confirmed access" },
+          element("span", { className: "network-admin__access", "data-tone": accessTone }, access),
+          covered && (!exact || currentReceipt)
+            ? element(
+                "span",
+                { className: "network-admin__secondary" },
+                exact ? `Also allowed by host · ${origin(d)}` : origin(d),
+              )
+            : null,
+        ),
+        element("td", { "data-label": "Actions" }, actions),
+      );
+      entries.push({ row, destination: d, url, state });
+    }
+    function sortDestinations() {
+      hostHeading.setAttribute("aria-sort", descendingDestinations ? "descending" : "ascending");
+      direction.textContent = descendingDestinations ? "↓" : "↑";
+      entries.sort((a, b) => {
+        const order =
+          a.destination.host.localeCompare(b.destination.host) || a.url.localeCompare(b.url);
+        return descendingDestinations ? -order : order;
+      });
+      rows.replaceChildren(...entries.map(({ row }) => row));
+    }
+    sortDestinations();
+    function filterDestinations() {
+      const query = downloadSearch.value.trim();
+      const schemeEnd = query.indexOf("://");
+      const slash = query.indexOf("/", schemeEnd < 0 ? 0 : schemeEnd + 3);
+      const hostTerm = (slash < 0 ? query : query.slice(0, slash)).toLowerCase();
+      const pathTerm = slash < 0 ? "" : query.slice(slash);
+      let matches = 0;
+      for (const { row, destination, state } of entries) {
+        const endpoint = origin(destination);
+        const path = destination.path ?? "";
+        const matchesQuery =
+          schemeEnd >= 0
+            ? (hostTerm === endpoint ||
+                hostTerm === `${destination.scheme}://${destination.host}`) &&
+              (pathTerm === "/" || path.startsWith(pathTerm))
+            : path.includes(query) || (endpoint.includes(hostTerm) && path.startsWith(pathTerm));
+        row.hidden =
+          !matchesQuery || (accessFilter.value !== "all" && state !== accessFilter.value);
+        if (!row.hidden) {
+          matches += 1;
+        }
+      }
+      table.hidden = !matches;
+      empty.hidden = matches > 0;
+      count.textContent =
+        query || accessFilter.value !== "all"
+          ? `${matches} of ${entries.length} destinations`
+          : `${matches} destination${matches === 1 ? "" : "s"}`;
+      reset.hidden = scopes.size === 0;
+      emptyMessage.textContent = scopes.size
+        ? accessFilter.value === "all"
+          ? "No destinations match your search."
+          : "No destinations match these filters."
+        : "No download destinations.";
+    }
+    downloadSearch.oninput = filterDestinations;
+    accessFilter.onchange = filterDestinations;
+    filterDestinations();
+    panel.append(element("div", { className: "network-admin__table-wrap" }, table, empty));
+
+    const details = element("dl");
+    function detail(name: string, value: string) {
+      details.append(element("dt", {}, name), element("dd", {}, value));
+    }
+    detail("Viewed revision", revisionId);
+    detail("Saved policy", `v${policy.version}`);
+    if (latestReceipt) {
+      detail(
+        receipt ? "Last confirmed receipt" : "Receipt from another revision",
+        `v${latestReceipt.policyVersion} · ${latestReceipt.revisionId}`,
+      );
+      detail("Confirmed at", latestReceipt.appliedAt);
+      detail("Provider version", latestReceipt.providerVersion);
+      detail("Receipt operation", latestReceipt.operationId);
+    } else {
+      detail("Receipt", "No confirmed download policy for this revision.");
+    }
+    if (latestOp) {
+      detail(
+        op ? "Latest request" : "Request on another revision",
+        `${latestOp.state} · v${latestOp.policyVersion} · ${latestOp.revisionId}`,
+      );
+      detail("Change", `${latestOp.action} · ${format(latestOp.destination)}`);
+      detail("Requested at", latestOp.requestedAt);
+      detail("Request operation", latestOp.id);
+      if (latestOp.reason) {
+        detail("Reason", latestOp.reason);
+      }
+    }
+    if (protectedDownloads?.state === "verified") {
+      detail("Driver verification", `Verified for ${protectedDownloads.revisionId}`);
+    }
+    let explanation;
+    if (protectedDownloads?.state !== "verified") {
+      explanation = protectedDownloadNotice() ?? "Protected download verification is unavailable.";
+    } else if (!verified) {
+      explanation = "Open the current running revision to change downloads.";
+    } else if (!model.editingEnabled) {
+      explanation = "Turn on Policy editing to change downloads.";
+    } else if (unknownOutcome) {
+      explanation = "Refresh download status to check the last change.";
+    } else if (!writable && !mutation && policy.application?.state !== "pending") {
+      explanation = notIncluded("changing protected downloads", POLICY_APPLY_GRANT);
+    }
+    panel.append(
+      element(
+        "footer",
+        { className: "network-admin__footer" },
+        count,
+        element(
+          "details",
+          { className: "network-admin__details" },
+          element("summary", { "data-download-control": "receipt" }, "Receipt details"),
+          details,
+        ),
+        explanation ? element("p", {}, explanation) : null,
+      ),
+    );
+    return panel;
+  }
 
   function denied(record: RuntimeLogRecord): record is LogLine {
     return (
@@ -1792,7 +2465,8 @@ export function renderAgentSandboxPolicy(
             element(
               "p",
               { role: "status", className: "sandbox-policy-protected" },
-              "Protected execution uses Credential Proxy routes. You can remove saved network rules, but cannot add new ones. Saving does not change the running revision.",
+              protectedDownloadNotice() ??
+                "Protected execution uses Credential Proxy routes. You can remove saved network rules, but cannot add new ones. Saving does not change the running revision.",
             ),
             ...(policy.additions.length > 0 && !editingEnabled
               ? [
@@ -1858,7 +2532,7 @@ export function renderAgentSandboxPolicy(
         ...(apply ? { revisionId } : {}),
         ...(reviewedRules === undefined ? {} : { additions: reviewedRules }),
       },
-    })) as Policy | null;
+    })) as SandboxPolicyMutationWire | null;
     if (
       saved?.id !== policy.id ||
       saved.agentId !== agent.id ||
@@ -1878,7 +2552,13 @@ export function renderAgentSandboxPolicy(
     if (apply && current()) {
       feedback.textContent = `Policy v${saved.version} saved. Application to the current revision is pending. Enforcement is confirmed only after the provider loads this policy.`;
     }
-    return saved;
+    // Ordinary mutations return only the ordinary rules. Keep the separately
+    // read download scopes when updating this already-authorized view.
+    return {
+      ...saved,
+      approvedDownloadDestinations: policy.approvedDownloadDestinations,
+      downloadDestinations: policy.downloadDestinations,
+    };
   }
 
   function applySavedPolicy() {
@@ -1932,7 +2612,11 @@ export function renderAgentSandboxPolicy(
         void policySupported();
         return;
       }
-      if (wasPending && view.policy.application?.state !== "pending") {
+      if (
+        wasPending &&
+        view.policy.application?.state !== "pending" &&
+        !(view.policy.application && "kind" in view.policy.application)
+      ) {
         feedback.textContent = "Policy refreshed.";
         if (view.policy.application?.state === "applied") {
           feedback.textContent = "Policy application confirmed by the Sandbox provider.";
@@ -1989,6 +2673,10 @@ export function renderAgentSandboxPolicy(
   }
 
   function policyEditingExplanation() {
+    const protectedNotice = protectedDownloadNotice();
+    if (protectedNotice) {
+      return [element("p", { className: "hint sandbox-editing-explanation" }, protectedNotice)];
+    }
     if (!view?.editingEnabled) {
       return [
         element(
@@ -2050,6 +2738,17 @@ export function renderAgentSandboxPolicy(
       }
       return;
     }
+    // A policy refresh rebuilds the card. Keep the search, form and disclosures usable during polling.
+    const active =
+      document.activeElement instanceof HTMLElement &&
+      policySummary.contains(document.activeElement) &&
+      document.activeElement.closest(".network-admin")
+        ? document.activeElement
+        : undefined;
+    const receiptOpen = policySummary.querySelector(".network-admin__details[open]") !== null;
+    const openMenuKey = policySummary.querySelector<HTMLElement>(
+      ".network-admin__more:has(+ :popover-open)",
+    )?.dataset.downloadControl;
     manageButton.disabled = mutation || !view;
     manageButton.textContent = view?.editingEnabled ? "Manage rules" : "View rules";
     const controls = element("div", { className: "sandbox-policy-controls" });
@@ -2093,6 +2792,13 @@ export function renderAgentSandboxPolicy(
         if (policy.application?.state === "failed") {
           return { label: "Application unconfirmed", tone: "warning" };
         }
+        if (
+          applied &&
+          "operationId" in applied &&
+          (!verifiedHere() || policy.application?.id !== applied.operationId)
+        ) {
+          return { label: "Application unconfirmed", tone: "warning" };
+        }
         if (applied?.policyVersion === policy.version) {
           return { label: "Applied", tone: "success" };
         }
@@ -2124,14 +2830,18 @@ export function renderAgentSandboxPolicy(
             element(
               "strong",
               {},
-              `${policy.additions.length} explicit ${policy.additions.length === 1 ? "rule" : "rules"}`,
+              `${policy.additions.length} ${view.protectedExecution ? "general network" : "explicit"} ${policy.additions.length === 1 ? "rule" : "rules"}`,
             ),
-            element("span", { "aria-hidden": "true" }, "·"),
-            element(
-              "span",
-              { className: "badge", "data-tone": presentation.tone, role: "status" },
-              presentation.label,
-            ),
+            ...(!view.protectedExecution || (policy.application && !("kind" in policy.application))
+              ? [
+                  element("span", { "aria-hidden": "true" }, "·"),
+                  element(
+                    "span",
+                    { className: "badge", "data-tone": presentation.tone, role: "status" },
+                    presentation.label,
+                  ),
+                ]
+              : []),
           ),
           button("View network limits", openNetworkLimits, {
             tone: "link",
@@ -2180,17 +2890,43 @@ export function renderAgentSandboxPolicy(
             ),
           ),
         ),
-        ...policyEditingExplanation(),
+        ...(view.protectedExecution ? [renderDownloads(view)] : policyEditingExplanation()),
         ...(unknownOutcome
           ? [
               element(
                 "p",
                 { role: "alert" },
-                "The last change could not be confirmed. Open Manage rules and refresh policy before changing access.",
+                "The last change could not be confirmed. Refresh the policy before changing access.",
               ),
             ]
           : []),
       );
+    }
+    const downloadControl = (key: string) =>
+      policySummary.querySelector<HTMLElement>(`[data-download-control="${CSS.escape(key)}"]`);
+    const receiptDetails = downloadControl("receipt")?.closest("details");
+    if (receiptOpen && receiptDetails) {
+      receiptDetails.open = true;
+    }
+    const trigger = openMenuKey && downloadControl(openMenuKey);
+    if (
+      trigger instanceof HTMLButtonElement &&
+      trigger.popoverTargetElement instanceof HTMLElement &&
+      !trigger.closest("[hidden]")
+    ) {
+      trigger.popoverTargetElement.showPopover({ source: trigger });
+    }
+    if (active) {
+      const replacement = active.isConnected
+        ? active
+        : active.dataset.downloadControl && downloadControl(active.dataset.downloadControl);
+      const target =
+        replacement && !replacement.closest("[hidden]") && !replacement.matches(":disabled")
+          ? replacement
+          : downloadControl("refresh");
+      (target && !target.matches(":disabled") ? target : downloadSearch).focus({
+        preventScroll: true,
+      });
     }
     const currentPolicy = view?.policy;
     const application = currentPolicy?.application;
@@ -2242,7 +2978,7 @@ export function renderAgentSandboxPolicy(
         text: "The Sandbox confirmed these rules are active. Earlier denials remain in the historical log.",
       };
     }
-    if (outcome) {
+    if (outcome && (!application || !("kind" in application) || unknownOutcome)) {
       const actions = element("div", { className: "sandbox-outcome-actions" });
       if (outcome.title === "Saved for later" && !hasProposedChanges() && canApplySavedPolicy()) {
         actions.append(

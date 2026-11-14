@@ -9,7 +9,11 @@ import {
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
-import type { SandboxPolicyRepository, StoredCredentialWithdrawal } from "./platform-state.ts";
+import type {
+  SandboxPolicyRepository,
+  ProtectedDownloadRecovery,
+  StoredCredentialWithdrawal,
+} from "./platform-state.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseError } from "pg";
@@ -593,7 +597,7 @@ const currentEgressInstallation = `SELECT COALESCE((
   SELECT policy_observed FROM occ.credential_delivery_reductions r
   WHERE r.revision_id=e.revision_id AND r.policy_observed IS NOT NULL
   ORDER BY (r.policy_observed #>> '{plan,generation}')::bigint DESC LIMIT 1
-), installation) AS installation FROM occ.egress_installations e`;
+), download_installation, installation) AS installation FROM occ.egress_installations e`;
 
 const CREDENTIAL_WITHDRAWAL_COLUMNS = `namespace_id, agent_id, revision_id, credential_source_id,
   state, requested_by, requested_at, completed_at, last_reason, last_attempt_at`;
@@ -2927,7 +2931,32 @@ export class PostgresPlatformState implements PlatformStateStore {
           expected,
           next,
         ),
+      publishDownloadInstallation: async (expected, successor, operationId) => {
+        const { namespaceId, agentId, revisionId } = expected.plan.execution;
+        const result = await client.query(
+          `UPDATE occ.egress_installations e SET download_installation=$1::jsonb
+           FROM occ.agents a, occ.sandbox_policies p
+           WHERE (e.namespace_id,e.agent_id,e.revision_id)=($2,$3,$4)
+             AND (a.namespace_id,a.id,a.active_revision_id)=(e.namespace_id,e.agent_id,e.revision_id)
+             AND a.status='active' AND a.desired_runtime_state='running'
+             AND (p.namespace_id,p.agent_id)=(a.namespace_id,a.id)
+             AND p.document#>>'{application,kind}'='protected_downloads'
+             AND p.document#>>'{application,id}'=$6 AND p.document#>>'{application,revisionId}'=e.revision_id
+             AND p.document#>>'{application,writeState}'='dispatched'
+             AND p.document#>>'{application,state}' IN ('pending','failed')
+             AND coalesce(e.download_installation,e.installation)=$5::jsonb
+             AND NOT EXISTS (SELECT FROM occ.credential_delivery_reductions r
+               WHERE r.revision_id=e.revision_id AND r.policy_request IS NOT NULL)`,
+          [successor, namespaceId, agentId, revisionId, expected, operationId],
+        );
+        return result.rowCount === 1;
+      },
       recordEgressInstallation: async (installation) => {
+        if (installation.downloadPolicyVersion !== undefined) {
+          throw new ResourceStateConflictError(
+            "A download successor cannot establish a launch installation.",
+          );
+        }
         const execution = installation.plan.execution;
         const inserted = await client.query(
           `INSERT INTO occ.egress_installations (sender_id, sandbox_id, namespace_id, revision_id, installation, agent_id)
@@ -3538,7 +3567,102 @@ export class PostgresPlatformState implements PlatformStateStore {
       return found;
     };
 
+    const retainDownloadRecovery = async (policy: SandboxPolicy, persist: boolean) => {
+      const application = policy.application;
+      if (
+        application?.kind !== "protected_downloads" ||
+        application.state !== "failed" ||
+        application.writeState !== "dispatched"
+      ) {
+        return false;
+      }
+      const result = await client.query(
+        persist
+          ? "SELECT occ.preserve_protected_download_recovery($1,$2,$3,$4,occ.protected_download_recovery_payload($5::jsonb)) AS accepted"
+          : "SELECT occ.can_retain_protected_download_recovery($1,$2,$3,$4,occ.protected_download_recovery_payload($5::jsonb)) AS accepted",
+        [
+          policy.namespaceId,
+          policy.agentId,
+          `agent:${policy.agentId}:reconcile:sandbox_policy:${application.id}`,
+          application.requestedBy,
+          JSON.stringify(policy),
+        ],
+      );
+      return rows(result.rows)[0]?.accepted === true;
+    };
     const sandboxPolicies: SandboxPolicyRepository = {
+      canRetainProtectedDownloadRecovery: (policy) => retainDownloadRecovery(policy, false),
+      retainProtectedDownloadRecovery: (policy) => retainDownloadRecovery(policy, true),
+      protectedDownloadTargetAvailable: async (
+        namespaceId,
+        agentId,
+        revisionId,
+        sandboxId,
+        instanceId,
+      ) => {
+        const result = await client.query(
+          `SELECT 1 FROM occ.controller_work
+           WHERE protected_download_recovery IS NOT NULL AND namespace_id = $1 AND agent_id = $2
+             AND (protected_download_recovery->>'revisionId' = $3
+               OR protected_download_recovery#>>'{expected,sandboxId}' = $4
+               OR protected_download_recovery#>>'{expected,instanceId}' = $5)
+           LIMIT 1`,
+          [namespaceId, agentId, revisionId, sandboxId, instanceId],
+        );
+        return result.rows.length === 0;
+      },
+      nextProtectedDownloadRecovery: async (afterWorkKey) => {
+        const result = await client.query(
+          `SELECT idempotency_key, namespace_id, agent_id, actor_id FROM (
+             SELECT idempotency_key, namespace_id, agent_id, actor_id FROM occ.controller_work
+             WHERE protected_download_recovery IS NOT NULL
+             UNION ALL
+             SELECT w.idempotency_key, w.namespace_id, w.agent_id, w.actor_id
+             FROM occ.sandbox_policies p
+             JOIN occ.agents a ON (a.namespace_id, a.id) = (p.namespace_id, p.agent_id)
+               AND a.active_revision_id = p.document#>>'{application,revisionId}'
+             JOIN occ.controller_work w ON (w.namespace_id, w.agent_id) = (p.namespace_id, p.agent_id)
+               AND w.idempotency_key = 'agent:' || p.agent_id || ':reconcile:sandbox_policy:' || (p.document#>>'{application,id}')
+               AND w.actor_id = p.document#>>'{application,requestedBy}'
+             WHERE p.document#>>'{application,kind}' = 'protected_downloads'
+               AND p.document#>>'{application,state}' = 'failed'
+               AND p.document#>>'{application,writeState}' = 'dispatched'
+               AND a.sandbox_policy_editing AND a.status = 'active' AND a.desired_runtime_state = 'running'
+               AND w.state = 'failed_permanent' AND w.agent_target = 'sandbox_policy'
+               AND w.protected_download_recovery IS NULL
+           ) AS candidates WHERE idempotency_key > $1 ORDER BY idempotency_key LIMIT 1`,
+          [afterWorkKey ?? ""],
+        );
+        const row = rows(result.rows)[0];
+        return (
+          row && {
+            workKey: text(row, "idempotency_key"),
+            namespaceId: text(row, "namespace_id"),
+            agentId: text(row, "agent_id"),
+            actorId: text(row, "actor_id"),
+          }
+        );
+      },
+      findProtectedDownloadRecovery: async (namespaceId, agentId, workKey, actorId) => {
+        const result = await client.query(
+          `SELECT protected_download_recovery FROM occ.controller_work
+           WHERE namespace_id = $1 AND agent_id = $2 AND idempotency_key = $3
+             AND ($4::text IS NULL OR actor_id = $4) AND protected_download_recovery IS NOT NULL`,
+          [namespaceId, agentId, workKey, actorId ?? null],
+        );
+        const row = rows(result.rows)[0];
+        return (
+          row &&
+          immutableCopy(row.protected_download_recovery as unknown as ProtectedDownloadRecovery)
+        );
+      },
+      clearProtectedDownloadRecovery: async (namespaceId, agentId, workKey, actorId, expected) => {
+        const result = await client.query(
+          "SELECT occ.clear_protected_download_recovery($1,$2,$3,$4,$5::jsonb) AS cleared",
+          [namespaceId, agentId, workKey, actorId, JSON.stringify(expected)],
+        );
+        return rows(result.rows)[0]?.cleared === true;
+      },
       find: async (namespaceId, agentId) => {
         const row = rows(
           (
@@ -3552,9 +3676,17 @@ export class PostgresPlatformState implements PlatformStateStore {
           ? undefined
           : immutableCopy(row.document as unknown as SandboxPolicy);
       },
-      save: async (policy, expectedVersion) => {
+      save: async (
+        policy,
+        expectedVersion,
+        expectedApplicationId,
+        expectedApplicationState = "pending",
+      ) => {
         const result = await client.query(
-          "UPDATE occ.sandbox_policies SET version = $4, document = $5::jsonb WHERE namespace_id = $1 AND agent_id = $2 AND id = $3 AND version = $6 RETURNING document",
+          `UPDATE occ.sandbox_policies SET version = $4, document = $5::jsonb
+           WHERE namespace_id = $1 AND agent_id = $2 AND id = $3 AND version = $6
+             AND ($7::text IS NULL OR (document#>>'{application,id}' = $7 AND document#>>'{application,state}' = $8))
+           RETURNING document`,
           [
             policy.namespaceId,
             policy.agentId,
@@ -3562,6 +3694,8 @@ export class PostgresPlatformState implements PlatformStateStore {
             policy.version,
             JSON.stringify(policy),
             expectedVersion,
+            expectedApplicationId ?? null,
+            expectedApplicationState,
           ],
         );
         const row = rows(result.rows)[0];

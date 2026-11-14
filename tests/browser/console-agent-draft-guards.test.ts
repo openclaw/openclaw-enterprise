@@ -577,7 +577,7 @@ test("A refused policy read offers no Retry", async (t) => {
   assert.equal(await tab.getByText("null", { exact: true }).count(), 0);
 });
 
-// The page read its answer before a policy read grant. Opening Policy denials compares the
+// The page read its answer before a policy read grant. Opening Network policy compares the
 // remembered denial with a fresh answer, which is not audited, so the policy shows on the first
 // visit instead of only after a reload (finding 2454).
 test("A policy read grant after the page loaded shows the policy on the first visit", async (t) => {
@@ -631,7 +631,7 @@ test("A policy read grant after the page loaded shows the policy on the first vi
   await settlePageRequests(page);
 
   role.permissions.push({ action: "read", resourceKind: "sandbox_policy" });
-  await page.getByRole("tab", { name: "Policy denials", exact: true }).click();
+  await page.getByRole("tab", { name: "Network policy", exact: true }).click();
   const tab = page.locator(".sandbox-policy");
   await tab.getByText("0 explicit rules", { exact: true }).waitFor();
   await settlePageRequests(page);
@@ -953,6 +953,448 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
   assert.deepEqual(unchanged.additions, [grant]);
 });
 
+test("Protected Downloads submits one scoped change and keeps desired and confirmed access separate", async (t) => {
+  const {
+    fixture,
+    namespace: rawNamespace,
+    agent: rawAgent,
+    base,
+  }: PolicyConsoleFixture = await createPolicyConsole(t);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(rawAgent);
+  const seeded = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const revisionId = text(record(seeded.revision).id);
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 390, height: 844 } },
+  });
+  const prior = { scheme: "http", host: "deb.debian.org", port: 80 };
+  const next = {
+    scheme: "https",
+    host: prior.host,
+    port: 443,
+    path: "/tools/tool.tar.gz",
+  };
+  const host = { scheme: "https", host: "packages.example.org", port: 443 };
+  const archive = { ...host, path: "/releases/" + "a".repeat(100) + ".tar.gz" };
+  const hostUrl = "https://packages.example.org:443";
+  const archiveUrl = hostUrl + archive.path;
+  const priorUrl = "http://deb.debian.org:80";
+  const original = await fixture.request("GET", base);
+  const view = record(original.data);
+  const policy = record(view.policy);
+  view.protectedExecution = true;
+  view.protectedDownloads = { state: "verified", revisionId, canApprove: true };
+  record(record(record(view.configuration).actions).apply).available = true;
+  Object.assign(policy, {
+    approvedDownloadDestinations: [prior, host, archive],
+    downloadDestinations: [prior, host, archive],
+    applied: {
+      kind: "protected_downloads",
+      operationId: crypto.randomUUID(),
+      revisionId,
+      policyVersion: 1,
+      appliedAt: "2026-01-02T12:00:00Z",
+      providerVersion: "1",
+      confirmedDownloadDestinations: [prior, host, archive],
+    },
+  });
+  const requests = apiRequests(page, fixture.origin);
+  // The stock fixture has no qualified pair. Supply the public policy responses to exercise
+  // the browser's authenticated mutation, readback and error presentation independently.
+  await page.route(fixture.origin + base, (route) => route.fulfill({ json: { data: view } }));
+  const pending = {
+    kind: "protected_downloads",
+    id: crypto.randomUUID(),
+    revisionId,
+    policyVersion: 2,
+    action: "approve-and-enable",
+    destination: next,
+    state: "pending",
+    requestedAt: "2026-01-02T12:01:00Z",
+    requestedBy: "admin",
+  };
+  await page.route(fixture.origin + base + "/apply", (route) => {
+    Object.assign(policy, {
+      version: 2,
+      approvedDownloadDestinations: [prior, host, archive, next],
+      downloadDestinations: [prior, host, archive, next],
+      application: pending,
+    });
+    return route.fulfill({ status: 202, json: { data: policy } });
+  });
+  await loginThroughForm(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revisionId, "policy"),
+  );
+  const panel = page.getByRole("region", { name: "Downloads", exact: true });
+  const search = panel.getByRole("searchbox", { name: "Search destinations" });
+  const filter = panel.getByRole("combobox", { name: "Filter destinations" });
+  const refresh = panel.getByRole("button", { name: "Refresh download status", exact: true });
+  const confirmation = panel.getByRole("status").filter({ hasText: /^Confirmed$/ });
+  const add = panel.getByRole("button", { name: "Add destination", exact: true });
+  const submit = panel.getByRole("button", { name: "Allow download", exact: true });
+  const hostname = panel.getByLabel("Hostname", { exact: true });
+  const path = panel.getByLabel(/Exact archive path/);
+  const priorRow = panel
+    .getByRole("row")
+    .filter({ has: page.getByText("HTTP · 80 · All paths", { exact: true }) });
+  const archiveRow = panel.getByRole("row").filter({ hasText: archive.path });
+  const nextRow = panel.getByRole("row").filter({ hasText: next.path });
+  await archiveRow.waitFor();
+  const disableArchive = panel.getByRole("button", { name: `Disable ${archiveUrl}`, exact: true });
+  await disableArchive.waitFor();
+  await panel.getByRole("button", { name: `Disable ${hostUrl}`, exact: true }).waitFor();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const sort = panel.getByRole("button", { name: "Sort by destination" });
+  const destinations = panel.getByRole("row").filter({ has: page.getByRole("cell") });
+  const firstDestination = destinations.first().getByRole("cell").first();
+  await sort.press("Enter");
+  await firstDestination.getByText(host.host, { exact: true }).waitFor();
+  await sort.press("Enter");
+  await firstDestination.getByText(prior.host, { exact: true }).waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(
+    await archiveRow.evaluate((row) => {
+      const rect = row.getBoundingClientRect();
+      return (
+        rect.right <= document.documentElement.clientWidth && row.scrollWidth <= row.clientWidth
+      );
+    }),
+    "the exact archive path and its actions fit on a phone",
+  );
+  await search.fill("PACKAGES.EXAMPLE");
+  assert.equal(await priorRow.count(), 0);
+  await archiveRow.waitFor();
+  await search.fill("aaaaa");
+  assert.equal(await panel.getByRole("row").filter({ hasText: host.host }).count(), 1);
+  await search.fill("https://PACKAGES.example.org" + archive.path);
+  assert.equal(await archiveRow.count(), 1);
+  assert.equal(await destinations.count(), 1);
+  const alsoAllowed = `Also allowed by host · ${hostUrl}`;
+  const allowedCell = archiveRow
+    .getByRole("cell")
+    .filter({ has: page.getByText("Allowed", { exact: true }) });
+  assert.ok(await allowedCell.getByText(alsoAllowed, { exact: true }).isVisible());
+  for (const query of [
+    hostUrl + archive.path.toUpperCase(),
+    "https://packages.example.org:8443" + archive.path,
+    "http://packages.example.org" + archive.path,
+  ]) {
+    await search.fill(query);
+    assert.equal(await destinations.count(), 0, query);
+  }
+  await search.fill("missing.example");
+  assert.equal(await archiveRow.count(), 0);
+  await panel.getByText("No destinations match your search.", { exact: true }).waitFor();
+  await filter.selectOption({ label: "Allowed" });
+  await panel.getByText("0 of 3 destinations", { exact: true }).waitFor();
+  await panel.getByRole("button", { name: "Clear filters" }).press("Enter");
+  await priorRow.waitFor();
+  assert.equal(await filter.inputValue(), "all");
+  assert.equal(await hasFocus(search), true);
+  await add.press("Enter");
+  assert.equal(await hasFocus(hostname), true);
+  await hostname.fill("https://invalid.example");
+  await submit.press("Enter");
+  assert.equal(await hasFocus(hostname), true);
+  assert.equal(pathRequests(requests, "POST", base + "/apply").length, 0);
+  await hostname.fill(next.host);
+  await path.fill("/release/tool.tar.gz?token=value");
+  await path.press("Enter");
+  assert.equal(await hasFocus(path), true);
+  assert.equal(pathRequests(requests, "POST", base + "/apply").length, 0);
+  await path.fill(next.path);
+  await path.press("Enter");
+  await panel.getByText("Pending confirmation", { exact: true }).waitFor();
+  await nextRow
+    .getByRole("cell")
+    .filter({ hasText: "Agent-approved" })
+    .getByText("On", { exact: true })
+    .waitFor();
+  await nextRow.getByText("Last confirmed off", { exact: true }).waitFor();
+  await filter.selectOption({ label: "Allowed" });
+  await panel.getByText("0 of 4 destinations", { exact: true }).waitFor();
+  await filter.selectOption({ label: "Unconfirmed" });
+  await nextRow.waitFor();
+  await filter.selectOption({ label: "All access states" });
+  assert.equal(await submit.count(), 0);
+  assert.deepEqual(
+    pathRequests(requests, "POST", base + "/apply").map((r) => r.body),
+    [
+      {
+        expectedVersion: 1,
+        revisionId,
+        downloadChange: { action: "approve-and-enable", destination: next },
+      },
+    ],
+  );
+  policy.application = { ...pending, state: "failed", reason: "PROTECTED_DOWNLOAD_UNCONFIRMED" };
+  view.protectedDownloads = { state: "unavailable", reason: "installation-unconfirmed" };
+  await refresh.click();
+  await panel.getByRole("alert").filter({ hasText: "Confirmation failed" }).waitFor();
+  await panel.getByText("Receipt details", { exact: true }).press("Enter");
+  await panel.getByText("PROTECTED_DOWNLOAD_UNCONFIRMED", { exact: true }).waitFor();
+  await nextRow
+    .getByRole("cell")
+    .filter({ hasText: "Agent-approved" })
+    .getByText("On", { exact: true })
+    .waitFor();
+  await nextRow.getByText("Last confirmed off", { exact: true }).waitFor();
+  assert.equal(await panel.getByRole("button", { name: "Withdraw approval" }).count(), 0);
+  // Restore the qualified view for a delegated editor. The actual stock fixture still has no
+  // protected pair: exercise the authenticated HTTP refusal and check the form survives it.
+  policy.application = { ...pending, state: "applied" };
+  policy.applied = {
+    ...record(policy.applied),
+    operationId: pending.id,
+    policyVersion: 2,
+    confirmedDownloadDestinations: [prior, host, archive, next],
+  };
+  view.protectedDownloads = { state: "verified", revisionId, canApprove: false };
+  await refresh.click();
+  await confirmation.waitFor();
+  await nextRow.getByText("Allowed", { exact: true }).waitFor();
+  assert.equal(await nextRow.getByText(/^Also allowed by host/).count(), 0);
+  // A transient verification failure can outlast the operation that already settled.
+  view.protectedDownloads = { state: "unavailable", reason: "installation-unconfirmed" };
+  await page.reload();
+  await panel.getByText("Previous confirmation", { exact: true }).waitFor();
+  assert.equal(await refresh.count(), 1);
+  assert.equal(await panel.getByRole("button", { name: "Allow download" }).count(), 0);
+  view.protectedDownloads = { state: "verified", revisionId, canApprove: false };
+  await refresh.click();
+  await confirmation.waitFor();
+  assert.equal(pathRequests(requests, "POST", base + "/apply").length, 1);
+  await priorRow.getByLabel(/^Destination details for /).press("Enter");
+  assert.equal(await priorRow.getByRole("button", { name: "Withdraw approval" }).count(), 0);
+  await page.unroute(fixture.origin + base + "/apply");
+  await priorRow.getByRole("button", { name: `Disable ${priorUrl}`, exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "RESOURCE_CONFLICT" }).waitFor();
+  assert.deepEqual(pathRequests(requests, "POST", base + "/apply").at(-1)?.body, {
+    expectedVersion: 2,
+    revisionId,
+    downloadChange: { action: "disable", destination: prior },
+  });
+  view.protectedDownloads = { state: "verified", revisionId, canApprove: true };
+  await page.reload();
+  const more = priorRow.getByLabel(/^More actions for /);
+  await more.press("Enter");
+  const withdraw = priorRow.getByRole("button", {
+    name: `Withdraw approval for ${priorUrl}`,
+    exact: true,
+  });
+  await withdraw.focus();
+  await page.keyboard.press("Escape");
+  assert.equal(await withdraw.isVisible(), false);
+  assert.equal(await hasFocus(more), true);
+  await more.press("Space");
+  await withdraw.press("Enter");
+  await page.getByRole("alert").filter({ hasText: "RESOURCE_CONFLICT" }).waitFor();
+  assert.deepEqual(pathRequests(requests, "POST", base + "/apply").at(-1)?.body, {
+    expectedVersion: 2,
+    revisionId,
+    downloadChange: { action: "withdraw-approval", destination: prior },
+  });
+  const removed = {
+    ...pending,
+    id: crypto.randomUUID(),
+    policyVersion: 3,
+    action: "disable",
+    destination: archive,
+  };
+  await page.route(fixture.origin + base + "/apply", (route) => {
+    Object.assign(policy, {
+      version: 3,
+      downloadDestinations: [prior, host, next],
+      application: removed,
+    });
+    return route.fulfill({ status: 202, json: { data: policy } });
+  });
+  const writesBeforeDisable = pathRequests(requests, "POST", base + "/apply").length;
+  await disableArchive.click();
+  await panel.getByText("Pending confirmation", { exact: true }).waitFor();
+  assert.deepEqual(pathRequests(requests, "POST", base + "/apply").at(-1)?.body, {
+    expectedVersion: 2,
+    revisionId,
+    downloadChange: { action: "disable", destination: archive },
+  });
+  await archiveRow.getByText("Last confirmed on", { exact: true }).waitFor();
+  assert.equal(await archiveRow.getByText(alsoAllowed, { exact: true }).count(), 0);
+  await archiveRow
+    .getByRole("cell")
+    .filter({ hasText: "Agent-approved" })
+    .getByText("Off", { exact: true })
+    .waitFor();
+  policy.application = { ...removed, state: "applied" };
+  policy.applied = {
+    ...record(policy.applied),
+    operationId: removed.id,
+    policyVersion: 3,
+    confirmedDownloadDestinations: [prior, host, next],
+  };
+  await refresh.click();
+  await confirmation.waitFor();
+  const enableArchive = archiveRow.getByRole("button", {
+    name: `Enable ${archiveUrl}`,
+    exact: true,
+  });
+  await enableArchive.waitFor();
+  assert.equal(await disableArchive.count(), 0);
+  await filter.selectOption({ label: "Allowed" });
+  const coverage = archiveRow.getByRole("cell").filter({ hasText: /Covered by host/i });
+  await coverage.getByText(hostUrl, { exact: true }).waitFor();
+  await filter.selectOption({ label: "All access states" });
+  await page.unroute(fixture.origin + base + "/apply");
+
+  const withdrawn = {
+    ...removed,
+    id: crypto.randomUUID(),
+    policyVersion: 4,
+    action: "withdraw-approval",
+  };
+  await page.route(fixture.origin + base + "/apply", (route) => {
+    Object.assign(policy, {
+      version: 4,
+      approvedDownloadDestinations: [prior, host, next],
+      application: withdrawn,
+    });
+    return route.fulfill({ status: 202, json: { data: policy } });
+  });
+  await panel.getByRole("button", { name: `More actions for ${archiveUrl}`, exact: true }).click();
+  await panel
+    .getByRole("button", { name: `Withdraw approval for ${archiveUrl}`, exact: true })
+    .click();
+  await panel.getByText("Pending confirmation", { exact: true }).waitFor();
+  await archiveRow.getByText("Last confirmed covered by host", { exact: true }).waitFor();
+  assert.equal(pathRequests(requests, "POST", base + "/apply").length, writesBeforeDisable + 2);
+  assert.deepEqual(pathRequests(requests, "POST", base + "/apply").at(-1)?.body, {
+    expectedVersion: 3,
+    revisionId,
+    downloadChange: { action: "withdraw-approval", destination: archive },
+  });
+  policy.application = { ...withdrawn, state: "applied" };
+  policy.applied = {
+    ...record(policy.applied),
+    operationId: withdrawn.id,
+    policyVersion: 4,
+  };
+  await refresh.click();
+  await confirmation.waitFor();
+  await coverage.getByText(hostUrl, { exact: true }).waitFor();
+  await archiveRow.getByText("No Agent approval", { exact: true }).waitFor();
+  await archiveRow.getByText("Off", { exact: true }).waitFor();
+  assert.equal(await enableArchive.count(), 0);
+  assert.equal(await disableArchive.count(), 0);
+  assert.equal(await archiveRow.getByRole("button", { name: /^More actions/ }).count(), 0);
+  await page.reload();
+  await confirmation.waitFor();
+  await search.fill("https://packages.example.org" + archive.path);
+  await coverage.getByText(hostUrl, { exact: true }).waitFor();
+  assert.equal(await destinations.count(), 1);
+  await page.unroute(fixture.origin + base + "/apply");
+
+  // A replacement revision must start without the previous operation's private archive row.
+  const replacement = await fixture.seedActiveAgentRevision(namespace.id, agent.id, revisionId);
+  const replacementRevisionId = text(record(replacement.revision).id);
+  view.protectedDownloads = { state: "unavailable", reason: "installation-unconfirmed" };
+  await page.goto(detailUrl(fixture, namespace.id, agent.id, replacementRevisionId, "policy").href);
+  await priorRow.getByText("Unconfirmed", { exact: true }).waitFor();
+  assert.equal(await archiveRow.count(), 0);
+  view.protectedDownloads = {
+    state: "verified",
+    revisionId: replacementRevisionId,
+    canApprove: false,
+  };
+  await refresh.click();
+  await filter.selectOption({ label: "Off" });
+  await priorRow.getByText("Off on this revision", { exact: true }).waitFor();
+  assert.equal(await archiveRow.count(), 0);
+  await priorRow.getByRole("button", { name: `Enable ${priorUrl}`, exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "RESOURCE_CONFLICT" }).waitFor();
+  assert.deepEqual(pathRequests(requests, "POST", base + "/apply").at(-1)?.body, {
+    expectedVersion: 4,
+    revisionId: replacementRevisionId,
+    downloadChange: { action: "enable", destination: prior },
+  });
+
+  await add.press("Enter");
+  await hostname.fill(prior.host);
+  await panel.getByLabel("Protocol", { exact: true }).selectOption("http");
+  const denied = responseTo(page, "POST", fixture.origin + base + "/apply");
+  await submit.click();
+  const response = await denied;
+  assert.equal(response.status(), 409);
+  const refusal = record(record(await response.json()).error);
+  await page
+    .getByRole("alert")
+    .filter({ hasText: text(refusal.code) })
+    .waitFor();
+  assert.deepEqual(pathRequests(requests, "POST", base + "/apply").at(-1)?.body, {
+    expectedVersion: 4,
+    revisionId: replacementRevisionId,
+    downloadChange: { action: "enable", destination: prior },
+  });
+  assert.equal(await hostname.inputValue(), prior.host);
+
+  record(record(record(view.configuration).actions).apply).available = false;
+  view.protectedDownloads = {
+    state: "verified",
+    revisionId: replacementRevisionId,
+    canApprove: false,
+  };
+  const writesBeforeRefresh = pathRequests(requests, "POST", base + "/apply").length;
+  await page.reload();
+  await priorRow.waitFor();
+  assert.equal(await add.count(), 0);
+  assert.equal(await priorRow.getByRole("button", { name: "Enable" }).count(), 0);
+  assert.equal(await priorRow.getByLabel(/^More actions for /).count(), 0);
+  await search.fill(prior.host);
+  const reread = responseTo(page, "GET", fixture.origin + base);
+  await refresh.press("Enter");
+  assert.equal((await reread).status(), 200);
+  await priorRow.waitFor();
+  assert.equal(await search.inputValue(), prior.host);
+  assert.equal(await hasFocus(refresh), true);
+  // A later withdrawal on this revision has only an HTTP host grant for this hostname.
+  // That receipt cannot cover the HTTPS archive, even though their hostnames match.
+  const httpHost = { ...host, scheme: "http", port: 80 };
+  const httpArchive = { ...httpHost, path: "/mirror/index.gz" };
+  const later = {
+    ...withdrawn,
+    id: crypto.randomUUID(),
+    revisionId: replacementRevisionId,
+    policyVersion: 9,
+    state: "applied",
+  };
+  Object.assign(policy, {
+    version: 9,
+    approvedDownloadDestinations: [httpHost, httpArchive],
+    downloadDestinations: [httpHost, httpArchive],
+    application: later,
+    applied: {
+      ...record(policy.applied),
+      revisionId: replacementRevisionId,
+      policyVersion: 9,
+      operationId: later.id,
+      confirmedDownloadDestinations: [httpHost, httpArchive],
+    },
+  });
+  await search.fill("");
+  await refresh.click();
+  await confirmation.waitFor();
+  assert.equal(await archiveRow.count(), 0);
+  await panel
+    .getByRole("row")
+    .filter({ hasText: "HTTP · 80 · All paths" })
+    .getByText("Allowed", { exact: true })
+    .waitFor();
+  await search.fill("http://packages.example.org/mirror/index.gz");
+  assert.equal(await destinations.count(), 1);
+  await destinations.getByText(httpArchive.path, { exact: true }).waitFor();
+  assert.equal(pathRequests(requests, "POST", base + "/apply").length, writesBeforeRefresh);
+});
+
 test("Agent policy under protected execution offers only removal of saved network rules", async (t) => {
   const {
     fixture,
@@ -963,7 +1405,7 @@ test("Agent policy under protected execution offers only removal of saved networ
   const namespace = resource(rawNamespace);
   const agent = agentFields(rawAgent);
   // Rules saved before protected execution applied block every protected deploy. This fixture
-  // selects no Credential Proxy, so only the view's protectedExecution flag is set on the read;
+  // selects no Credential Proxy, so the read supplies the protected view for an unsupported pair;
   // the removal itself goes through real HTTP, IAM and OCC admission.
   const saved = await fixture.request("PUT", base, {
     body: { expectedVersion: 1, additions: [delegatedPolicyGrant] },
@@ -978,6 +1420,10 @@ test("Agent policy under protected execution offers only removal of saved networ
     const response = await route.fetch();
     const body = record(await response.json());
     record(body.data).protectedExecution = true;
+    record(body.data).protectedDownloads = {
+      state: "unavailable",
+      reason: "unsupported-driver-pair",
+    };
     await route.fulfill({ response, json: body });
   });
   const requests = apiRequests(page, fixture.origin);
@@ -988,13 +1434,11 @@ test("Agent policy under protected execution offers only removal of saved networ
   const readResponse = await read;
   t.diagnostic(`Policy GET status: ${readResponse.status()}`);
   assert.equal(readResponse.status(), 200);
+  const driverNotice =
+    "The selected Sandbox and Credential Proxy Drivers do not support protected downloads together.";
+  await page.getByText(driverNotice, { exact: false }).waitFor();
   await page.getByRole("button", { name: "Manage rules", exact: true }).click();
-  await page
-    .getByText(
-      "Protected execution uses Credential Proxy routes. You can remove saved network rules, but cannot add new ones. Saving does not change the running revision.",
-      { exact: true },
-    )
-    .waitFor();
+  await page.getByRole("dialog").getByText(driverNotice, { exact: false }).waitFor();
   // Neither adding a rule nor widening a saved rule is available under protected execution.
   assert.equal(
     await page.getByRole("button", { name: "Add rule", exact: true }).isVisible(),

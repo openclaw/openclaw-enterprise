@@ -6317,3 +6317,404 @@ html:has(#create-agent-form) {
     min-height: 300px;
   }
 }
+
+/* The policy card owns the section surface. Only the destination collection needs a frame. */
+.network-admin {
+  container-type: inline-size;
+  min-width: 0;
+  margin-block: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--color-border);
+}
+.network-admin :where(h3, p, dl, dd) {
+  margin: 0;
+}
+.network-admin__header,
+.network-admin__heading,
+.network-admin__footer,
+.network-admin__actions,
+.network-admin__form-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.network-admin__header,
+.network-admin__footer {
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.network-admin__heading {
+  flex-wrap: wrap;
+}
+.network-admin h3 {
+  margin: 0;
+  color: var(--color-text-strong);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  line-height: var(--text-xl--line-height);
+  letter-spacing: var(--tracking-tight);
+}
+.network-admin__status,
+.network-admin__access {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  font-weight: var(--weight-semibold);
+}
+.network-admin__status {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.network-admin__status::before,
+.network-admin__access::before {
+  content: "";
+  align-self: center;
+  flex: none;
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: currentColor;
+}
+.network-admin__status[data-tone="success"] {
+  background: var(--color-success-subtle);
+}
+.network-admin__status[data-tone="warning"] {
+  background: var(--color-warning-subtle);
+}
+.network-admin__status[data-tone="danger"] {
+  background: var(--color-danger-subtle);
+}
+.network-admin [data-tone="success"] {
+  color: var(--color-success);
+}
+.network-admin [data-tone="warning"] {
+  color: var(--color-warning);
+}
+.network-admin [data-tone="danger"] {
+  color: var(--color-danger);
+}
+.network-admin [data-tone="neutral"] {
+  color: var(--color-text-muted);
+}
+.network-admin__tools {
+  display: grid;
+  grid-template-columns: minmax(10rem, 24rem) auto 1fr;
+  gap: var(--space-2);
+  margin-block: var(--space-3);
+}
+.network-admin__tools > input[type="search"] {
+  min-width: 0;
+  max-width: none;
+}
+.network-admin__tools > button {
+  justify-self: end;
+}
+.network-admin__table-wrap {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.network-admin__table {
+  width: 100%;
+  table-layout: fixed;
+  border-spacing: 0;
+  text-align: start;
+}
+.network-admin__table th {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  background: var(--color-surface-2);
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+  text-align: start;
+}
+.network-admin__table th:first-child {
+  width: 38%;
+  border-start-start-radius: var(--radius-md);
+}
+.network-admin__table th:last-child {
+  width: 18%;
+  border-start-end-radius: var(--radius-md);
+  text-align: end;
+}
+.network-admin__table td {
+  padding: var(--space-3);
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+.network-admin__table :is(td, th):first-child {
+  padding-inline-start: var(--space-4);
+}
+.network-admin__table :is(td, th):last-child {
+  padding-inline-end: var(--space-4);
+}
+.network-admin__sort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0;
+  min-height: var(--space-6);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-strong);
+  font-weight: var(--weight-semibold);
+}
+.network-admin__table tr + tr td {
+  border-top: 1px solid var(--color-border);
+}
+.network-admin__table tbody tr:is(:hover, :focus-within) {
+  background: var(--color-surface-hover);
+}
+.network-admin__host,
+.network-admin__requested {
+  color: var(--color-text-strong);
+  font-weight: var(--weight-semibold);
+}
+.network-admin__host {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.network-admin__path,
+.network-admin__protocol,
+.network-admin__secondary {
+  display: block;
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+  overflow-wrap: anywhere;
+}
+.network-admin__protocol,
+.network-admin__secondary {
+  margin-block-start: var(--space-1);
+}
+.network-admin__path,
+.network-admin__menu code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.network-admin__path {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.network-admin__actions,
+.network-admin__form-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.network-admin__more {
+  display: grid;
+  place-items: center;
+  width: var(--control-h-sm);
+  min-height: var(--control-h-sm);
+  padding: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-xl);
+  line-height: var(--text-xl--line-height);
+}
+.network-admin__more:has(+ :popover-open) {
+  background: var(--color-surface-2);
+}
+.network-admin__menu:popover-open {
+  display: grid;
+  inset: auto;
+  position-area: bottom span-left;
+  position-try-fallbacks: flip-block;
+  margin: var(--space-1) 0;
+  gap: var(--space-2);
+  width: min(21rem, 84cqi);
+  max-block-size: min(calc(100% - var(--space-2)), 70dvh);
+  overflow: auto;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-2);
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+  text-align: start;
+}
+.network-admin__menu code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.network-admin__menu button {
+  justify-self: start;
+}
+.network-admin__empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-1);
+  padding: var(--space-6);
+  color: var(--color-text-muted);
+}
+.network-admin__footer {
+  flex-wrap: wrap;
+  margin-block-start: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+}
+.network-admin__footer > p:not(.network-admin__count),
+.network-admin__details[open] {
+  flex-basis: 100%;
+}
+.network-admin__details {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.network-admin__details summary {
+  width: fit-content;
+  padding-block: var(--space-1);
+  color: var(--color-link);
+  cursor: pointer;
+}
+.network-admin__details dl {
+  display: grid;
+  grid-template-columns: minmax(6rem, auto) minmax(0, 1fr);
+  gap: var(--space-2) var(--space-4);
+  margin-block-start: var(--space-2);
+  padding: var(--space-3);
+  border-inline-start: 2px solid var(--color-border);
+}
+.network-admin__details dt {
+  font-weight: var(--weight-semibold);
+}
+.network-admin__form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.7fr) minmax(0, 1.2fr);
+  gap: var(--space-3);
+  align-items: start;
+  margin-block: 0 var(--space-4);
+  padding: var(--space-4);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.network-admin__form-note,
+.network-admin__form-actions {
+  grid-column: 1 / -1;
+}
+.network-admin__form .field,
+.network-admin__form :is(input, select) {
+  min-width: 0;
+}
+.network-admin__form .field {
+  margin: 0;
+}
+.network-admin__form-note {
+  color: var(--color-text-muted);
+}
+@container (max-width: 660px) {
+  .network-admin__tools {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .network-admin__tools > input[type="search"],
+  .network-admin__form > * {
+    grid-column: 1 / -1;
+  }
+  .network-admin__table,
+  .network-admin__table thead,
+  .network-admin__table tbody {
+    display: block;
+  }
+  .network-admin__table thead tr {
+    display: block;
+    border-bottom: 1px solid var(--color-border);
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    background: var(--color-surface-2);
+  }
+  .network-admin__table th:first-child {
+    display: block;
+    width: auto;
+    padding: 0 var(--space-3);
+    border: 0;
+    background: transparent;
+  }
+  .network-admin__table th:not(:first-child) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .network-admin__sort,
+  .network-admin__actions button,
+  .network-admin__header button,
+  .network-admin__tools > :is(button, select, input),
+  .network-admin__details summary {
+    min-height: var(--touch-min);
+  }
+  .network-admin__more {
+    width: var(--touch-min);
+  }
+  .network-admin__actions {
+    gap: var(--space-1);
+  }
+  .network-admin__actions > button:not(.network-admin__more) {
+    padding-inline: var(--space-2);
+  }
+  .network-admin__table tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) min(44%, 8rem);
+    gap: var(--space-3) var(--space-2);
+    padding: var(--space-3);
+  }
+  .network-admin__table tr + tr {
+    border-top: 1px solid var(--color-border);
+  }
+  .network-admin__table tr + tr td,
+  .network-admin__table tbody td {
+    display: block;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+  }
+  .network-admin__table td:first-child {
+    grid-column: 1;
+    grid-row: 1;
+    padding: 0;
+  }
+  .network-admin__table td:last-child {
+    grid-column: 2;
+    grid-row: 1;
+    padding: 0;
+  }
+  .network-admin__table td:nth-child(2)::before,
+  .network-admin__table td:nth-child(3)::before {
+    display: block;
+    content: attr(data-label);
+    margin-bottom: var(--space-1);
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+    line-height: var(--text-sm--line-height);
+  }
+  .network-admin__menu {
+    max-width: calc(100cqi - var(--space-8));
+  }
+  .network-admin__details summary {
+    align-content: center;
+  }
+}
+@container (max-width: 300px) {
+  .network-admin__tools {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .network-admin__tools > button {
+    justify-self: stretch;
+  }
+  .network-admin__table td:first-child,
+  .network-admin__table td:last-child {
+    grid-column: 1 / -1;
+    grid-row: auto;
+  }
+}

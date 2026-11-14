@@ -3850,12 +3850,19 @@ function networkPolicyGrant() {
   };
 }
 
-async function networkPolicyFixture(t, { admitRevision = true } = {}) {
+async function networkPolicyFixture(t, { admitRevision = true, enableDownloads = false } = {}) {
   const grant = networkPolicyGrant();
   const f = await staticEgressFixture(t, {
     admitRevision,
     appFactory: (context, options) =>
-      createConsoleAppFixture(context, { ...options, sandboxNetworkPolicyCeiling: [grant] }),
+      createConsoleAppFixture(context, {
+        ...options,
+        sandboxNetworkPolicyCeiling: [grant],
+        ...(enableDownloads && {
+          recordOperations: true,
+          protectedDownloads: { executablePaths: ["/usr/bin/curl"] },
+        }),
+      }),
   });
   return { f, grant };
 }
@@ -3910,6 +3917,236 @@ test("protected admission refuses an Agent's network policy additions instead of
   assert.equal(revision.sandboxPolicy, undefined);
 });
 
+function controlledDownloadBaseline(f) {
+  const sandboxId = f.installation.sandboxId;
+  const { instanceId, configurationId, policyHash } = f.installation.enforcement;
+  const baseline = {
+    state: "ready",
+    fence: {
+      sandboxId,
+      instanceId,
+      configurationId,
+      peer: { keyId: f.installation.enforcement.peerKeyId },
+      installationLimitsHash: createHash("sha256")
+        .update('{"executablePaths":["/usr/bin/curl"]}')
+        .digest("hex"),
+      effectivePolicyHash: policyHash,
+      sourcePolicyHash: f.observed.policyHash,
+      policyVersion: f.revision.egressPlan.generation,
+      providerResourceVersion: "1",
+    },
+  };
+  const readBaseline = async (context, _previous, _desired) => {
+    assert.equal(context.revision.id, f.revision.id);
+    const observed = await f.egress.observeDownloadEnforcement(
+      context,
+      sandboxId,
+      baseline.fence.policyVersion,
+    );
+    return observed?.configurationId === baseline.fence.configurationId
+      ? structuredClone(baseline)
+      : { state: "unconfirmed" };
+  };
+  const unexpectedWrite = () => assert.fail("A status read cannot mutate provider policy.");
+  f.sandboxDriver.protectedDownloadPolicy = {
+    version: 1,
+    async prepare(context, previous, desired) {
+      const result = await readBaseline(context, previous, desired);
+      if (result.state !== "ready") {
+        return result;
+      }
+      const source = { ...f.attachment.configuration, desired };
+      return {
+        ...result,
+        source,
+        sourcePolicyHash: createHash("sha256").update(JSON.stringify(source)).digest("hex"),
+      };
+    },
+    apply: unexpectedWrite,
+    readReceipt: unexpectedWrite,
+    observe: unexpectedWrite,
+  };
+  f.egress.protectedDownloadPolicy = { version: 1, prepare: readBaseline, verify: unexpectedWrite };
+  return { baseline, readBaseline };
+}
+
+test("ordinary edits preserve confirmed approvals and a fresh withdrawal requalifies changed Installation limits", async (t) => {
+  const { f } = await networkPolicyFixture(t, { enableDownloads: true });
+  const { baseline } = controlledDownloadBaseline(f);
+  const { base, view } = await enableNetworkPolicyEditing(f);
+  assert.deepEqual(view.policy.approvedDownloadDestinations, []);
+  assert.deepEqual(view.policy.downloadDestinations, []);
+  const destination = {
+    scheme: "https",
+    host: "archives.example.org",
+    port: 443,
+    path: "/go/toolchain-v1.zip",
+  };
+  await f.controller.transact(async (unit) => {
+    const policy = await unit.sandboxPolicies.find(f.namespace.id, f.agent.id);
+    assert.ok(policy);
+    assert.equal(policy.approvedDownloadDestinations, undefined);
+    assert.equal(policy.downloadDestinations, undefined);
+    await assert.rejects(
+      unit.sandboxPolicies.save(
+        { ...policy, approvedDownloadDestinations: [destination] },
+        policy.version,
+      ),
+      /Invalid SandboxPolicy version transition/,
+    );
+    await assert.rejects(
+      unit.sandboxPolicies.save(
+        {
+          ...policy,
+          version: policy.version + 1,
+          downloadDestinations: [destination, destination],
+        },
+        policy.version,
+      ),
+      /Invalid protected download destinations/,
+    );
+    assert.deepEqual(await unit.sandboxPolicies.find(f.namespace.id, f.agent.id), policy);
+  });
+  // Seed a completed grant admitted under the previous Installation settings.
+  // The current HTTP process must requalify the same enforcement to withdraw it.
+  const priorVersion = view.policy.version + 1;
+  const operationId = crypto.randomUUID();
+  await f.controller.transact(async ({ sandboxPolicies, credentialSources }) => {
+    const current = await sandboxPolicies.find(f.namespace.id, f.agent.id);
+    const expected = {
+      ...baseline.fence,
+      installationLimitsHash: createHash("sha256")
+        .update('{"executablePaths":["/bin/curl"]}')
+        .digest("hex"),
+    };
+    const pending = {
+      ...current,
+      version: priorVersion,
+      approvedDownloadDestinations: [destination],
+      downloadDestinations: [destination],
+      application: {
+        kind: "protected_downloads",
+        id: operationId,
+        revisionId: f.revision.id,
+        policyVersion: priorVersion,
+        requestedBy: f.principal.id,
+        requestedAt: new Date().toISOString(),
+        action: "approve-and-enable",
+        state: "pending",
+        destination,
+        priorDesiredDownloadDestinations: [],
+        priorApprovedDownloadDestinations: [],
+        previousDownloadDestinations: [],
+        desiredDownloadDestinations: [destination],
+        desiredSourcePolicyHash: "b".repeat(64),
+        expected,
+        writeState: "prepared",
+      },
+    };
+    assert.ok(await sandboxPolicies.save(pending, current.version));
+    const dispatched = { ...pending.application, writeState: "dispatched" };
+    assert.ok(
+      await sandboxPolicies.save(
+        { ...pending, application: dispatched },
+        priorVersion,
+        operationId,
+      ),
+    );
+    const version = expected.policyVersion + 1;
+    const hash = pending.application.desiredSourcePolicyHash;
+    const loaded = structuredClone(f.observed.policy);
+    loaded.network_policies.download = {
+      binaries: [{ path: "/bin/curl" }],
+      endpoints: [{ host: destination.host, ports: [destination.port] }],
+    };
+    Object.assign(f.observed, { policy: loaded, policyHash: hash });
+    Object.assign(f.observed.evidence, { policy_hash: hash, policy_version: version });
+    Object.assign(f.observed.observation, { effective_policy: loaded, source_policy_hash: hash });
+    const enforcement = await f.egress.observeDownloadEnforcement(
+      { ...f.context, signal: t.signal },
+      f.installation.sandboxId,
+      version,
+    );
+    assert.ok(enforcement);
+    assert.ok(
+      await credentialSources.publishDownloadInstallation(
+        f.installation,
+        { ...f.installation, enforcement, downloadPolicyVersion: version },
+        operationId,
+      ),
+    );
+    Object.assign(baseline.fence, {
+      providerResourceVersion: "2",
+      configurationId: enforcement.configurationId,
+      policyVersion: version,
+      sourcePolicyHash: hash,
+      effectivePolicyHash: enforcement.policyHash,
+    });
+    const providerVersion = String(baseline.fence.policyVersion);
+    assert.ok(
+      await sandboxPolicies.save(
+        {
+          ...pending,
+          application: {
+            ...dispatched,
+            state: "applied",
+            providerVersion,
+            acknowledgedWrite: {
+              state: "committed",
+              operationId,
+              sandboxId: expected.sandboxId,
+              policyVersion: baseline.fence.policyVersion,
+              sourcePolicyHash: baseline.fence.sourcePolicyHash,
+            },
+          },
+          applied: {
+            kind: "protected_downloads",
+            operationId,
+            revisionId: f.revision.id,
+            policyVersion: priorVersion,
+            providerVersion,
+            appliedAt: new Date().toISOString(),
+            confirmedDownloadDestinations: [destination],
+            fence: { ...baseline.fence, installationLimitsHash: expected.installationLimitsHash },
+          },
+        },
+        priorVersion,
+        operationId,
+      ),
+    );
+  });
+  // An editor with ordinary policy-update authority can clear ordinary rules without
+  // disclosing or revoking the separate administrator-approved download scope.
+  const cleared = await f.request("PUT", base, {
+    body: { expectedVersion: priorVersion, additions: [] },
+  });
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  assert.equal(Object.hasOwn(cleared.data, "approvedDownloadDestinations"), false);
+  assert.equal(Object.hasOwn(cleared.data, "downloadDestinations"), false);
+  const reread = (await f.request("GET", base)).body.data.policy;
+  assert.equal(reread.version, priorVersion + 1);
+  assert.deepEqual(reread.approvedDownloadDestinations, [destination]);
+  assert.deepEqual(reread.downloadDestinations, [destination]);
+  const withdrawn = await f.request("POST", `${base}/apply`, {
+    body: {
+      expectedVersion: reread.version,
+      revisionId: f.revision.id,
+      downloadChange: { action: "withdraw-approval", destination },
+    },
+  });
+  assert.equal(withdrawn.status, 202, JSON.stringify(withdrawn.body));
+  assert.deepEqual(withdrawn.data.downloadDestinations, []);
+  assert.deepEqual(withdrawn.data.approvedDownloadDestinations, []);
+  const stored = await f.controller.transact(({ sandboxPolicies }) =>
+    sandboxPolicies.find(f.namespace.id, f.agent.id),
+  );
+  assert.equal(
+    stored.application.expected.installationLimitsHash,
+    baseline.fence.installationLimitsHash,
+  );
+  assert.deepEqual(stored.application.previousDownloadDestinations, [destination]);
+});
+
 test("the policy endpoint refuses additions and live application while the active revision is protected", async (t) => {
   // Fail early: the same rule createRevision and the worker enforce is refused at save and
   // apply time, with the Credential Proxy named, and the policy view says so up front.
@@ -3918,6 +4155,10 @@ test("the policy endpoint refuses additions and live application while the activ
   const { base, view } = await enableNetworkPolicyEditing(f);
   assert.equal(view.editingEnabled, true);
   assert.equal(view.protectedExecution, true);
+  assert.deepEqual(view.protectedDownloads, {
+    state: "unavailable",
+    reason: "installation-disabled",
+  });
   // The protected revision admitted no Agent policy snapshot, so no revision owns defaults.
   assert.equal(view.defaultsRevisionId, undefined);
   const version = view.policy.version;
@@ -3949,12 +4190,182 @@ test("the policy endpoint refuses additions and live application while the activ
   assert.equal((await f.request("GET", base)).body.data.policy.application, undefined);
 });
 
+test("protected download status requires support from both installed drivers", async (t) => {
+  const { f } = await networkPolicyFixture(t, {
+    enableDownloads: true,
+  });
+  const response = await f.request(
+    "GET",
+    `/namespaces/${f.namespace.id}/agents/${f.agent.id}/sandbox-policy/networking`,
+  );
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  assert.deepEqual(response.body.data.protectedDownloads, {
+    state: "unavailable",
+    reason: "unsupported-driver-pair",
+  });
+  // A controlled pair supplies preparation receipts to exercise the controller's agreement
+  // and committed-custody checks. The stock OpenShell transport has no such capability.
+  const { baseline, readBaseline } = controlledDownloadBaseline(f);
+  const readStatus = async () => {
+    const result = await f.request(
+      "GET",
+      `/namespaces/${f.namespace.id}/agents/${f.agent.id}/sandbox-policy/networking`,
+    );
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    return result.body.data.protectedDownloads;
+  };
+  assert.deepEqual(await readStatus(), {
+    state: "verified",
+    revisionId: f.revision.id,
+    canApprove: false,
+  });
+  f.egress.protectedDownloadPolicy.prepare = async (context, previous, desired) => {
+    const checked = await readBaseline(context, previous, desired);
+    return { ...checked, fence: { ...checked.fence, providerResourceVersion: "2" } };
+  };
+  const unconfirmed = { state: "unavailable", reason: "installation-unconfirmed" };
+  assert.deepEqual(await readStatus(), unconfirmed, "the two baseline fences must agree");
+  f.egress.protectedDownloadPolicy.prepare = readBaseline;
+  const limitsHash = baseline.fence.installationLimitsHash;
+  baseline.fence.installationLimitsHash = "f".repeat(64);
+  assert.deepEqual(await readStatus(), unconfirmed, "both peers must qualify the current limits");
+  baseline.fence.installationLimitsHash = limitsHash;
+  const peer = baseline.fence.peer;
+  baseline.fence.peer = { keyId: "other-peer" };
+  assert.deepEqual(await readStatus(), unconfirmed, "the pair must identify the installed peer");
+  baseline.fence.peer = peer;
+  baseline.fence.sandboxId = "other-sandbox";
+  assert.deepEqual(await readStatus(), unconfirmed, "agreement must identify committed custody");
+});
+
+test("protected download apply admits an exact Agent grant once and refuses unqualified, mixed or unauthorized changes", async (t) => {
+  const { f } = await networkPolicyFixture(t, { enableDownloads: true });
+  const { base, view } = await enableNetworkPolicyEditing(f);
+  const destination = { scheme: "https", port: 443, host: "toolchains.example.org" };
+  const body = {
+    expectedVersion: view.policy.version,
+    revisionId: f.revision.id,
+    downloadChange: { action: "approve-and-enable", destination },
+  };
+  const apply = (requestBody, session) =>
+    f.request("POST", `${base}/apply`, { body: requestBody, session });
+  assert.equal((await apply({ ...body, additions: [] })).status, 400);
+  const unsupported = await apply(body);
+  assert.equal(unsupported.status, 409, JSON.stringify(unsupported.body));
+  assert.match(unsupported.body.error.message, /unsupported-driver-pair/);
+  const { baseline, readBaseline } = controlledDownloadBaseline(f);
+  const member = await f.createNamespaceMember("download-editor", f.namespace.id, [
+    ["read", "agent"],
+    ["manage_policy", "agent"],
+    ["read", "sandbox_policy"],
+    ["update", "sandbox_policy"],
+  ]);
+  const session = await f.signIn(member.credentials);
+  const delegatedView = await f.request("GET", base, { session });
+  assert.equal(delegatedView.data.configuration.actions.apply.available, true);
+  assert.equal(delegatedView.data.protectedDownloads.canApprove, false);
+  assert.equal((await apply(body, session)).status, 403);
+  const outside = await apply(
+    { ...body, downloadChange: { action: "enable", destination } },
+    session,
+  );
+  assert.equal(outside.status, 409, JSON.stringify(outside.body));
+  assert.match(outside.body.error.message, /outside.*delegation/);
+  const unchanged = await apply({
+    ...body,
+    downloadChange: { action: "withdraw-approval", destination },
+  });
+  assert.equal(unchanged.status, 409);
+  assert.equal(unchanged.body.error.code, "SANDBOX_POLICY_DOWNLOAD_UNCHANGED");
+  const mirror = await apply({
+    ...body,
+    downloadChange: {
+      action: "approve-and-enable",
+      destination: { ...destination, scheme: "http", port: 80 },
+    },
+  });
+  assert.equal(mirror.status, 409);
+  assert.match(mirror.body.error.message, /limits/);
+  // The Proxy can qualify a status read while declining the proposed destination.
+  f.egress.protectedDownloadPolicy.prepare = async (context, previous, desired) =>
+    desired.some((entry) => entry.host === destination.host)
+      ? { state: "unconfirmed" }
+      : readBaseline(context, previous, desired);
+  assert.equal((await f.request("GET", base)).data.protectedDownloads.state, "verified");
+  assert.equal((await apply(body)).status, 409);
+  assert.equal((await f.request("GET", base)).data.policy.version, body.expectedVersion);
+  f.egress.protectedDownloadPolicy.prepare = readBaseline;
+  const admitted = await apply(body);
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const operation = admitted.data.application;
+  assert.deepEqual(admitted.data.downloadDestinations, [destination]);
+  assert.deepEqual(admitted.data.approvedDownloadDestinations, [destination]);
+  assert.equal(admitted.data.version, body.expectedVersion + 1);
+  assert.equal(operation.kind, "protected_downloads");
+  assert.equal(operation.action, "approve-and-enable");
+  assert.equal(operation.state, "pending");
+  const stored = await f.controller.transact((unit) =>
+    unit.sandboxPolicies.find(f.namespace.id, f.agent.id),
+  );
+  const candidateHash = createHash("sha256")
+    .update(JSON.stringify({ ...f.attachment.configuration, desired: [destination] }))
+    .digest("hex");
+  assert.equal(stored.application.desiredSourcePolicyHash, candidateHash);
+  assert.ok(!Object.hasOwn(stored.application, "source"));
+  assert.ok(!Object.hasOwn(operation, "expected"));
+  assert.ok(!JSON.stringify(admitted.data).includes(candidateHash));
+  assert.ok(!JSON.stringify(admitted.data).includes(baseline.fence.sourcePolicyHash));
+  assert.equal((await apply(body)).status, 409);
+  assert.deepEqual((await f.request("GET", base)).data.policy, admitted.data);
+  const queued = await f.controller.transact((unit) => unit.operations.list());
+  assert.equal(
+    queued.filter(
+      (item) =>
+        item.operationId === operation.id &&
+        item.target === "sandbox_policy" &&
+        item.resourceId === f.agent.id,
+    ).length,
+    1,
+  );
+  const events = await f.controller.transact((unit) => unit.audit.list());
+  assert.equal(events.filter((event) => event.details?.applicationId === operation.id).length, 1);
+
+  // A failed policy head and enqueue intent in memory cannot prove that the old writer is fenced.
+  await f.controller.transact(async ({ sandboxPolicies }) => {
+    const dispatched = { ...stored.application, writeState: "dispatched" };
+    await sandboxPolicies.save(
+      { ...stored, application: dispatched },
+      stored.version,
+      operation.id,
+    );
+    const failed = await sandboxPolicies.save(
+      {
+        ...stored,
+        application: { ...dispatched, state: "failed", reason: "SANDBOX_POLICY_UNCONFIRMED" },
+      },
+      stored.version,
+      operation.id,
+    );
+    assert.ok(failed);
+    assert.equal(await sandboxPolicies.canRetainProtectedDownloadRecovery(failed), false);
+    assert.equal(await sandboxPolicies.retainProtectedDownloadRecovery(failed), false);
+    assert.deepEqual(await sandboxPolicies.find(f.namespace.id, f.agent.id), failed);
+  });
+});
+
 test("the policy endpoint refuses additions before an Agent's first protected deploy", async (t) => {
   // Finding 2053, fail early: with the Credential Proxy selected, the next deploy is protected
   // and would refuse saved additions, so save refuses them before any revision exists.
-  const { f, grant } = await networkPolicyFixture(t, { admitRevision: false });
+  const { f, grant } = await networkPolicyFixture(t, {
+    admitRevision: false,
+    enableDownloads: true,
+  });
   const { base, view } = await enableNetworkPolicyEditing(f);
   assert.equal(view.protectedExecution, true, "no revision yet; the next one is protected");
+  assert.deepEqual(view.protectedDownloads, {
+    state: "unavailable",
+    reason: "no-active-protected-revision",
+  });
   const version = view.policy.version;
   const refused = await f.request("PUT", base, {
     body: { expectedVersion: version, additions: [grant] },

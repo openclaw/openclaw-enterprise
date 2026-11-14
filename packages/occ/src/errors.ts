@@ -672,6 +672,13 @@ export class SandboxNetworkPolicyConflictError extends ResourceStateConflictErro
   }
 }
 
+export class ProtectedDownloadUnchangedError extends ResourceStateConflictError {
+  constructor() {
+    super("The requested download and approval state is already saved.");
+    this.name = "ProtectedDownloadUnchangedError";
+  }
+}
+
 const PROTECTED_EXECUTION_NETWORK_POLICY_MESSAGES = {
   save: "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
   apply:

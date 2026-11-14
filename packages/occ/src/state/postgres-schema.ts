@@ -1,4 +1,7 @@
-import type { CredentialPolicyReductionState } from "./platform-state.ts";
+import type {
+  CredentialPolicyReductionState,
+  ProtectedDownloadRecovery,
+} from "./platform-state.ts";
 import type {
   InitialWorkspaceFiles,
   ProtectedEgressSource,
@@ -1277,6 +1280,9 @@ export const controllerWork = occSchema.table(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     reasonCode: text("reason_code"),
     resultData: jsonb("result_data").$type<Record<string, unknown>>(),
+    protectedDownloadRecovery: jsonb(
+      "protected_download_recovery",
+    ).$type<ProtectedDownloadRecovery>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
   },
@@ -1451,6 +1457,9 @@ export const controllerWork = occSchema.table(
         )
       )`,
     ),
+    index("controller_work_protected_download_recovery_idx")
+      .on(table.idempotencyKey)
+      .where(sql`${table.protectedDownloadRecovery} IS NOT NULL`),
     index("controller_work_ready")
       .on(table.availableAt, table.createdAt, table.idempotencyKey)
       .where(sql`${table.state} = 'queued'`),
@@ -1835,9 +1844,23 @@ export const egressInstallations = occSchema.table(
     revisionId: text("revision_id").notNull(),
     agentId: text("agent_id").notNull(),
     installation: jsonb("installation").$type<EgressInstallation>().notNull(),
+    downloadInstallation: jsonb("download_installation").$type<EgressInstallation>(),
   },
   (table) => [
     primaryKey({ columns: [table.senderId, table.sandboxId] }),
+    check(
+      "egress_installations_download_identity",
+      sql`download_installation IS NULL OR (
+        installation->'plan'->'repositoryGit' IS NULL
+        AND download_installation - ARRAY['enforcement','downloadPolicyVersion'] = installation - 'enforcement'
+        AND (download_installation->'enforcement') - ARRAY['configurationId','policyHash'] =
+            (installation->'enforcement') - ARRAY['configurationId','policyHash']
+        AND jsonb_typeof(download_installation->'downloadPolicyVersion') = 'number'
+        AND (download_installation->>'downloadPolicyVersion')::bigint BETWEEN 1 AND 4294967295
+        AND length(download_installation#>>'{enforcement,configurationId}') > 0
+        AND download_installation#>>'{enforcement,policyHash}' ~ '^[a-f0-9]{64}$'
+      ) IS TRUE`,
+    ),
     check(
       "egress_installations_check",
       sql`length(${table.senderId}) BETWEEN 1 AND 200 AND length(${table.sandboxId}) BETWEEN 1 AND 200`,
@@ -2357,6 +2380,12 @@ export const sandboxPolicies = occSchema.table(
   },
   (table) => [
     unique("sandbox_policies_agent_unique").on(table.namespaceId, table.agentId),
+    index("sandbox_policies_protected_download_confirmation_idx").on(
+      table.agentId,
+      table.namespaceId,
+    ).where(sql`${table.document}#>>'{application,kind}' = 'protected_downloads'
+        AND ${table.document}#>>'{application,state}' = 'failed'
+        AND ${table.document}#>>'{application,writeState}' = 'dispatched'`),
     foreignKey({
       name: "sandbox_policies_agent_owner",
       columns: [table.namespaceId, table.agentId],

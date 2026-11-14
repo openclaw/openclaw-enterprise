@@ -233,6 +233,7 @@ test("Agent and CredentialSource operations document the permissions they check"
     ["createAgent", "gateway_managed_mode_disabled"],
     ["validateAgentCreate", "gateway_managed_mode_disabled"],
     ["updateAgent", "gateway_managed_mode_changed"],
+    ["applyAgentSandboxPolicy", "protected_download_approval"],
   ] as const) {
     assert.deepEqual(
       installationGrants(operationId),

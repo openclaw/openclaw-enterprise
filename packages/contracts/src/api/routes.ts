@@ -1848,8 +1848,9 @@ export const occApiRoutes = [
     iamAction: "manage_policy",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary:
-      "Queue policy application to the running Agent revision, optionally replacing saved additions",
+    summary: "Apply network policy changes to a running Agent revision",
+    description:
+      "Supply expectedVersion and revisionId. For ordinary network policy, omit additions to apply the saved version or supply the complete additions array to replace it. For a protected Agent, supply one downloadChange with an action and destination. The protected form excludes additions.",
     tags: ["Agents"],
     schema: {
       params: SandboxPolicyParams,

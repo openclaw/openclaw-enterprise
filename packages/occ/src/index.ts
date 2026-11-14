@@ -109,6 +109,32 @@ export type {
   EgressStreamLease,
   EgressStreamProgress,
 } from "@openclaw-enterprise/contracts";
+import {
+  protectedDownloadSourcesCurrent,
+  protectedDownloadProfileCurrent,
+  prepareProtectedDownloadPair,
+  protectedDownloadDriverPair,
+  protectedDownloadChangeAdmitted,
+  protectedDownloadTargetMatches,
+  projectProtectedDownloadEdit,
+  protectedDownloadRevisionReceipt,
+  unresolvedProtectedDownload,
+  protectedDownloadAdmissionBase,
+} from "./protected-download-policy.ts";
+
+export {
+  projectProtectedDownloadEdit,
+  protectedDownloadSourcesCurrent,
+  protectedDownloadProfileCurrent,
+  prepareProtectedDownloadPair,
+  protectedDownloadDriverPair,
+  protectedDownloadLimitsHash,
+  protectedDownloadPeerMatches,
+  protectedDownloadBaselineMatches,
+  protectedDownloadChangeAdmitted,
+  protectedDownloadScopeCovers,
+  protectedDownloadTargetMatches,
+} from "./protected-download-policy.ts";
 import { InstalledDriver } from "./installed-driver.ts";
 
 export { InstalledDriver } from "./installed-driver.ts";
@@ -131,11 +157,16 @@ import {
 import type {
   SandboxPolicy,
   SandboxFacet,
+  ProtectedDownloadLimits,
+  ProtectedDownloadEdit,
+  ProtectedDownloadDestination,
   SandboxNetworkGrant,
   SandboxPolicySnapshot,
   SandboxPolicyRecommendations,
 } from "@openclaw-enterprise/contracts";
 import {
+  validProtectedDownloadDestinations,
+  parseProtectedDownloadLimits,
   validateSandboxNetworkGrants,
   sandboxNetworkGrantsWithinCeiling,
 } from "@openclaw-enterprise/contracts";
@@ -369,6 +400,7 @@ import {
   SavedRepositorySelectionError,
   ResourceConflictError,
   ResourceStateConflictError,
+  ProtectedDownloadUnchangedError,
   ProtectedExecutionNetworkPolicyError,
   SandboxNetworkPolicyConflictError,
   RuntimeCredentialsForbiddenByClusterError,
@@ -561,6 +593,7 @@ export {
   SandboxGatewayUnavailableError,
   SandboxNamespaceRefusedError,
   SandboxNamespacePendingError,
+  ProtectedDownloadUnchangedError,
   ProtectedExecutionNetworkPolicyError,
   SandboxNetworkPolicyConflictError,
   SandboxRevisionUnsupportedError,
@@ -871,6 +904,7 @@ export interface ControllerOptions {
   };
   readonly preparedTokens?: TokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
+  readonly protectedDownloads?: ProtectedDownloadLimits;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
   readonly iamConfiguration?: InstallationIAMConfiguration;
@@ -2308,6 +2342,7 @@ export class OpenClawController {
   readonly installation: Readonly<Installation>;
   private readonly configurations = new DriverConfigurationRegistry();
 
+  private readonly protectedDownloads: ProtectedDownloadLimits | undefined;
   private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
   private readonly iamConfiguration?: InstallationIAMConfiguration;
   private readonly authorization?: ControllerOptions["authorize"];
@@ -2362,6 +2397,10 @@ export class OpenClawController {
       options.sandboxNetworkPolicyCeiling ?? [],
       "/sandboxNetworkPolicyCeiling",
     );
+    this.protectedDownloads =
+      options.protectedDownloads === undefined
+        ? undefined
+        : immutableCopy(parseProtectedDownloadLimits(options.protectedDownloads));
     this.sandboxNetworkPolicyCeiling = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
     if (options.iamConfiguration !== undefined) {
       this.iamConfiguration = options.iamConfiguration;
@@ -11525,7 +11564,10 @@ export class OpenClawController {
       if (
         previous === undefined ||
         previous.version !== expectedVersion ||
-        previous.application?.state === "pending"
+        previous.application?.state === "pending" ||
+        (previous.application?.kind === "protected_downloads" &&
+          previous.application.writeState === "dispatched" &&
+          previous.application.state === "failed")
       ) {
         throw new ResourceStateConflictError(
           "The policy changed or an application is still pending. Reload before editing.",
@@ -11606,6 +11648,152 @@ export class OpenClawController {
     return !(await this.ordinaryModelBinding(state, agent));
   }
 
+  private async protectedDownloadStatus(
+    namespace: Readonly<Namespace>,
+    agent: Readonly<Agent>,
+    revision: Readonly<AgentRevision> | undefined,
+    policy: Readonly<SandboxPolicy>,
+    desired?: readonly ProtectedDownloadDestination[],
+  ) {
+    if (!this.protectedDownloads) {
+      return { state: "unavailable", reason: "installation-disabled" } as const;
+    }
+    if (
+      namespace.status !== "ready" ||
+      agent.status !== "active" ||
+      agent.desiredRuntimeState !== "running" ||
+      agent.executionMode !== "dedicated" ||
+      !revision ||
+      revision.id !== agent.activeRevisionId ||
+      revision.executionAdmission.mode !== "protected"
+    ) {
+      return { state: "unavailable", reason: "no-active-protected-revision" } as const;
+    }
+    const unsupported = { state: "unavailable", reason: "unsupported-driver-pair" } as const;
+    const unconfirmed = { state: "unavailable", reason: "installation-unconfirmed" } as const;
+    let owner: InstalledDriver;
+    try {
+      owner = this.selectedProxyOwner();
+    } catch (error) {
+      if (error instanceof DriverSelectionError) {
+        return unsupported;
+      }
+      throw error;
+    }
+    const pair = protectedDownloadDriverPair(owner);
+    if (!pair) {
+      return unsupported;
+    }
+    const { sandbox, proxy, sandboxPolicy, proxyPolicy } = pair;
+    const plan = revision.egressPlan;
+    const unresolved = unresolvedProtectedDownload(policy);
+    if (
+      !plan ||
+      this.transactionContext.getStore() !== undefined ||
+      (unresolved && (unresolved.state !== "failed" || unresolved.revisionId === revision.id))
+    ) {
+      return unconfirmed;
+    }
+    const installed = await this.read((state) =>
+      state.credentialSources.findRevisionEgressInstallation(namespace.id, revision.id),
+    );
+    try {
+      const compute = this.selectedDriver("compute");
+      if (
+        !installed ||
+        (unresolved &&
+          (installed.sandboxId === unresolved.expected.sandboxId ||
+            installed.enforcement.instanceId === unresolved.expected.instanceId)) ||
+        !protectedDownloadTargetMatches(
+          this.installation.id,
+          namespace,
+          agent,
+          revision,
+          owner,
+          compute,
+          installed,
+        )
+      ) {
+        return unconfirmed;
+      }
+      const signal = AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS);
+      if (!(await protectedDownloadProfileCurrent(proxy, plan, signal))) {
+        return unsupported;
+      }
+      const placement = await this.credentialNamespace(namespace);
+      const prepared = await prepareProtectedDownloadPair(
+        {
+          namespace: placement,
+          revision,
+          plan,
+          signal,
+          protectedDownloadLimits: this.protectedDownloads,
+        },
+        pair,
+        installed,
+        policy.applied,
+        desired,
+      );
+      if (prepared.state !== "ready") {
+        return prepared.state === "unsupported" ? unsupported : unconfirmed;
+      }
+      const current = await this.read(async (state) => ({
+        oldWriterFenced:
+          !unresolved || (await state.sandboxPolicies.canRetainProtectedDownloadRecovery(policy)),
+        targetAvailable: await state.sandboxPolicies.protectedDownloadTargetAvailable(
+          namespace.id,
+          agent.id,
+          revision.id,
+          prepared.prepared.fence.sandboxId,
+          prepared.prepared.fence.instanceId,
+        ),
+        sourcesCurrent: await protectedDownloadSourcesCurrent(state.credentialSources, revision),
+        policy: await state.sandboxPolicies.find(namespace.id, agent.id),
+        namespace: await state.namespaces.findNamespace(namespace.id),
+        agent: await state.agents.findAgent(namespace.id, agent.id),
+        installed: await state.credentialSources.findRevisionEgressInstallation(
+          namespace.id,
+          revision.id,
+        ),
+      }));
+      if (
+        this.selectedProxyOwner() !== owner ||
+        this.selectedDriver("compute") !== compute ||
+        sandbox.protectedDownloadPolicy !== sandboxPolicy ||
+        proxy.protectedDownloadPolicy !== proxyPolicy ||
+        proxy.observeDownloadEnforcement !== pair.observeEnforcement ||
+        current.namespace?.status !== "ready" ||
+        current.agent?.activeRevisionId !== revision.id ||
+        current.agent.servicePrincipalId !== revision.servicePrincipalId ||
+        current.agent.executionMode !== "dedicated" ||
+        current.agent.status !== "active" ||
+        current.agent.desiredRuntimeState !== "running" ||
+        !current.oldWriterFenced ||
+        !current.targetAvailable ||
+        !current.sourcesCurrent ||
+        !isDeepStrictEqual(current.policy, policy) ||
+        !isDeepStrictEqual(current.installed, installed)
+      ) {
+        return unconfirmed;
+      }
+      return {
+        state: "verified",
+        revisionId: revision.id,
+        installed,
+        owner,
+        compute,
+        sandboxPolicy,
+        proxyPolicy,
+        observeEnforcement: pair.observeEnforcement,
+        previous: prepared.previous,
+        expected: prepared.prepared.fence,
+        desiredSourcePolicyHash: prepared.prepared.sourcePolicyHash,
+      } as const;
+    } catch {
+      return unconfirmed;
+    }
+  }
+
   async getAgentSandboxPolicy(
     principalId: string,
     namespaceId: string,
@@ -11619,8 +11807,8 @@ export class OpenClawController {
       id: `sbp_${agentId.slice(4)}`,
       namespaceId,
     });
-    return this.read(async (state) => {
-      await this.exactNamespace(state, namespaceId);
+    const { namespace, agent, revision, view } = await this.read(async (state) => {
+      const namespace = await this.exactNamespace(state, namespaceId);
       const agent = await state.agents.findAgent(namespaceId, agentId);
       const policy = await state.sandboxPolicies.find(namespaceId, agentId);
       if (agent === undefined || policy === undefined) {
@@ -11636,7 +11824,7 @@ export class OpenClawController {
         revision?.sandboxPolicy?.defaults ??
         driver?.admitNetworkPolicy?.([], policy.version).defaults ??
         null;
-      return {
+      const view = {
         policy,
         configuration: await this.policyConfigurationDescriptor(
           principalId,
@@ -11660,7 +11848,38 @@ export class OpenClawController {
               deployedPolicyVersion: revision.sandboxPolicy.version,
             }),
       };
+      return { namespace, agent, revision, view };
     });
+    if (!view.protectedExecution) {
+      return view;
+    }
+    const status = await this.protectedDownloadStatus(namespace, agent, revision, view.policy);
+    if (status.state === "unavailable") {
+      return { ...view, protectedDownloads: status };
+    }
+    const authorization = await this.authorizationDecision(principalId, "administer", {
+      kind: "installation",
+      id: this.installation.id,
+    });
+    const configuration = view.configuration;
+    const apply = configuration?.actions.apply;
+    const canApply = configuration?.actions.save?.available === true;
+    return {
+      ...view,
+      policy: protectedDownloadAdmissionBase(view.policy),
+      ...(configuration &&
+        apply && {
+          configuration: {
+            ...configuration,
+            actions: { ...configuration.actions, apply: { ...apply, available: canApply } },
+          },
+        }),
+      protectedDownloads: {
+        state: "verified" as const,
+        revisionId: status.revisionId,
+        canApprove: canApply && authorization.decision.allowed,
+      },
+    };
   }
 
   // TODO: Replace this temporary admission switch with the platform Guardrails primitive.
@@ -11925,7 +12144,10 @@ export class OpenClawController {
       if (
         previous === undefined ||
         previous.version !== expectedVersion ||
-        previous.application?.state === "pending"
+        previous.application?.state === "pending" ||
+        (previous.application?.kind === "protected_downloads" &&
+          previous.application.writeState === "dispatched" &&
+          previous.application.state === "failed")
       ) {
         throw new ResourceStateConflictError(
           "The policy changed or an application is still pending. Reload before editing.",
@@ -11950,6 +12172,12 @@ export class OpenClawController {
           agentId,
           version: expectedVersion + 1,
           additions: admitted.additions,
+          ...(previous.approvedDownloadDestinations !== undefined && {
+            approvedDownloadDestinations: previous.approvedDownloadDestinations,
+          }),
+          ...(previous.downloadDestinations !== undefined && {
+            downloadDestinations: previous.downloadDestinations,
+          }),
           ...(previous.applied === undefined ? {} : { applied: previous.applied }),
         },
         expectedVersion,
@@ -11957,6 +12185,182 @@ export class OpenClawController {
       if (updated === undefined) {
         throw new ResourceStateConflictError("The policy changed.");
       }
+      return updated;
+    });
+  }
+
+  async applyAgentProtectedDownload(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    facet: SandboxFacet,
+    expectedVersion: number,
+    revisionId: string,
+    change: ProtectedDownloadEdit,
+    audit: (policy: Readonly<SandboxPolicy>) => AuditEvent,
+  ): Promise<Readonly<SandboxPolicy>> {
+    this.requireIndependentMutation("Protected download admission");
+    this.requireNetworkPolicyFacet(facet);
+    const authorize = async () => {
+      await this.authorize(principalId, "manage_policy", {
+        kind: "agent",
+        id: agentId,
+        namespaceId,
+      });
+      const target = {
+        kind: "sandbox_policy" as const,
+        id: `sbp_${agentId.slice(4)}`,
+        namespaceId,
+      };
+      await this.authorize(principalId, "read", target);
+      await this.authorize(principalId, "update", target);
+      if (change.action === "approve-and-enable" || change.action === "withdraw-approval") {
+        await this.authorize(principalId, "administer", {
+          kind: "installation",
+          id: this.installation.id,
+        });
+      }
+    };
+    await authorize();
+    const stale = () =>
+      new ResourceStateConflictError(
+        "The Agent, revision, editing setting, or policy changed. Reload before applying.",
+      );
+    const { namespace, agent, revision, policy } = await this.read(async (state) => ({
+      namespace: await this.exactNamespace(state, namespaceId),
+      agent: await state.agents.findAgent(namespaceId, agentId),
+      policy: await state.sandboxPolicies.find(namespaceId, agentId),
+      revision: await state.revisions.findRevision(namespaceId, agentId, revisionId),
+    }));
+    if (
+      !agent?.sandboxPolicyEditing ||
+      agent.activeRevisionId !== revisionId ||
+      !revision ||
+      policy?.version !== expectedVersion ||
+      policy.application?.state === "pending"
+    ) {
+      throw stale();
+    }
+    const limits = this.protectedDownloads;
+    if (!limits) {
+      throw new ResourceStateConflictError(
+        "Protected download change unavailable: installation-disabled.",
+      );
+    }
+    const base = protectedDownloadAdmissionBase(policy);
+    const projection = projectProtectedDownloadEdit(
+      base,
+      protectedDownloadRevisionReceipt(policy.applied, revisionId)?.confirmedDownloadDestinations ??
+        [],
+      change,
+      limits.delegatedDestinations ?? [],
+    );
+    if (projection.status === "outside-scope") {
+      throw new ResourceStateConflictError(
+        "This destination is outside the Agent's download delegation.",
+      );
+    }
+    const desired = projection.target;
+    const approved = projection.policy.approvedDownloadDestinations ?? [];
+    const status = await this.protectedDownloadStatus(namespace, agent, revision, policy, desired);
+    if (status.state !== "verified") {
+      throw new ResourceStateConflictError(
+        `Protected download change unavailable: ${status.reason}.`,
+      );
+    }
+    if (projection.status === "unchanged") {
+      throw new ProtectedDownloadUnchangedError();
+    }
+    if (
+      !validProtectedDownloadDestinations(projection.policy.downloadDestinations ?? []) ||
+      !validProtectedDownloadDestinations(approved) ||
+      !protectedDownloadChangeAdmitted(limits, revision, change, status.previous, desired, approved)
+    ) {
+      throw new ResourceStateConflictError(
+        "This destination is outside the protected download limits or delegation.",
+      );
+    }
+    return this.transact(async (state) => {
+      const lockedNamespace = await this.lockNamespace(state, namespaceId);
+      const lockedAgent = await state.agents.lockAgent(namespaceId, agentId);
+      const current = await state.sandboxPolicies.find(namespaceId, agentId);
+      const currentRevision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
+      const installed = await state.credentialSources.findRevisionEgressInstallation(
+        namespaceId,
+        revisionId,
+      );
+      if (!(await protectedDownloadSourcesCurrent(state.credentialSources, revision))) {
+        throw stale();
+      }
+      if (
+        !(await state.sandboxPolicies.protectedDownloadTargetAvailable(
+          namespaceId,
+          agentId,
+          revisionId,
+          status.expected.sandboxId,
+          status.expected.instanceId,
+        )) ||
+        (unresolvedProtectedDownload(policy) &&
+          !(await state.sandboxPolicies.retainProtectedDownloadRecovery(policy)))
+      ) {
+        throw stale();
+      }
+      await authorize();
+      if (
+        !isDeepStrictEqual(namespace, lockedNamespace) ||
+        !isDeepStrictEqual(agent, lockedAgent) ||
+        !isDeepStrictEqual(current, policy) ||
+        !isDeepStrictEqual(revision, currentRevision) ||
+        !isDeepStrictEqual(installed, status.installed) ||
+        this.selectedProxyOwner() !== status.owner ||
+        this.selectedDriver("compute") !== status.compute ||
+        status.owner.require("sandbox").protectedDownloadPolicy !== status.sandboxPolicy ||
+        status.owner.require("credential_proxy").observeDownloadEnforcement !==
+          status.observeEnforcement ||
+        status.owner.require("credential_proxy").protectedDownloadPolicy !== status.proxyPolicy
+      ) {
+        throw stale();
+      }
+      const id = crypto.randomUUID();
+      const version = expectedVersion + 1;
+      const updated = await state.sandboxPolicies.save(
+        {
+          ...projection.policy,
+          version,
+          application: {
+            kind: "protected_downloads",
+            id,
+            revisionId,
+            policyVersion: version,
+            requestedBy: principalId,
+            requestedAt: this.timestamp(),
+            state: "pending",
+            action: change.action,
+            destination: change.destination,
+            priorDesiredDownloadDestinations: base.downloadDestinations ?? [],
+            priorApprovedDownloadDestinations: base.approvedDownloadDestinations ?? [],
+            previousDownloadDestinations: status.previous,
+            desiredDownloadDestinations: desired,
+            desiredSourcePolicyHash: status.desiredSourcePolicyHash,
+            expected: status.expected,
+            writeState: "prepared",
+          },
+        },
+        expectedVersion,
+      );
+      if (!updated) {
+        throw stale();
+      }
+      await this.record(state, {
+        kind: "agent",
+        action: "reconcile",
+        target: "sandbox_policy",
+        namespaceId,
+        resourceId: agentId,
+        actorId: principalId,
+        operationId: id,
+      });
+      await state.audit.append(audit(updated));
       return updated;
     });
   }

@@ -300,6 +300,9 @@ export const PolicyDenialsReadDenied = story("policyDenialsReadDenied");
 export const PolicyDenialsLoading = story("policyDenialsLoading");
 export const PolicyDenialsNoCredential = story("policyDenialsNoCredential");
 export const PolicyDenialsProtected = story("policyDenialsProtected");
+export const ProtectedDownloadCoverage = story("protectedDownloadCoverage");
+export const ProtectedDownloadViewer = story("protectedDownloadViewer");
+export const ProtectedDownloadPreviousRevision = story("protectedDownloadPreviousRevision");
 export const PolicyDenialsWithheldOne = story("policyDenialsWithheldOne");
 export const PolicyDenialsWithheldMany = story("policyDenialsWithheldMany");
 

@@ -1,7 +1,7 @@
 # Review policy denials and change one Agent's network access
 
 Open an Agent in the OCE console, select its running version, and choose
-**Policy denials**. You need the Agent's existing Sandbox log permissions to see
+**Network policy**. You need the Agent's existing Sandbox log permissions to see
 observed denials. A version that runs without a Sandbox records none, and the tab
 says so. On an Installation that selects no Sandbox Driver, the tab says that
 instead, and policy changes, including turning editing on, are refused. Policy reads and changes have independent permissions; see the
@@ -83,6 +83,58 @@ GitHub goes only through the Git route, so save, binding, deploy and apply refus
 it and name the grant. After a timeout or unconfirmed
 application, refresh and inspect the recorded state before another explicit
 request; do not assume the provider rejected the change.
+
+## Check access after disabling a protected download
+
+On the running Agent’s **Network policy** tab, search for the hostname or archive
+path under **Protected downloads**, then choose **Disable** on the exact rule.
+Wait for **Confirmed**. **Requested** now shows **Off** for that rule. If
+**Confirmed access** shows **Covered by host**, the current revision’s receipt
+still includes a rule for all paths on the named host. Withdrawing the archive’s
+approval also leaves that broader rule in effect.
+
+To stop access, review the other downloads that depend on the host rule before
+disabling it. Wait for confirmation. On a supporting Sandbox and Credential
+Proxy pair, try a fresh connection from the same shell to verify the outcome.
+An existing transfer may finish.
+
+For **Pending confirmation**, **Unconfirmed**, or **Confirmation failed**, choose
+**Refresh**, then open **Receipt details**. Match the latest request and its receipt
+to the change and revision you submitted. If you cannot match them, the outcome of
+your change is still unknown. See [protected download approvals and status](../../reference/sandbox-policies.md#downloads-on-a-running-protected-agent).
+
+## Retire a protected download edit before upgrade
+
+Run the [candidate preflight](../deploy/production-upgrade.md#rehearse-before-the-maintenance-window)
+with the previous API and worker still running. Its migration Job runs
+`scripts/migrate-production.mjs --check` before writers stop. If the check reports
+a protected download edit, record the Namespace, Agent, revision, and operation IDs.
+
+1. Keep the previous controller, database, and original Sandbox available. On the
+   Agent's **Network policy** tab, refresh **Protected downloads** and open **Receipt details**.
+   Match **Receipt operation** and its revision to the reported IDs. If a follow-on
+   is pending or unconfirmed, match **Request operation** to the reported ID and wait
+   for the receipt for that same operation. An earlier confirmation cannot settle it.
+   For retained work, the previous worker reads the superseded operation separately.
+   Ask your platform operator to match the successful
+   `openclaw.agents.sandbox_policy.reconciliation` audit event to both reported IDs
+   through [approved audit access](audit-log.md#access-and-limitations).
+2. A 0079 controller cannot confirm its current operation after permanent failure.
+   Keep the original runtime and database and give the IDs to the Driver and release
+   maintainers. If they supply a qualified intermediate release through 0080 that
+   supports this Driver pair, use its normal upgrade procedure and let its worker
+   confirm the original request. If the Sandbox or its receipt is unavailable, keep
+   the upgrade on hold for compatible recovery. Refresh reads status. Resubmitting
+   the edit creates a different operation.
+3. After settlement, use **Stop Agent** on the previous release. Wait until the Agent
+   has no active revision. An accepted stop can still be cleaning up the original
+   Sandbox. A completed deployment that already replaced the reported revision also
+   satisfies retirement. Check replacement Driver support before stopping an Agent
+   that must resume service.
+4. Repeat the candidate preflight for each reported operation. When the migration Job
+   exits successfully with `migration.checked`, follow the [production upgrade procedure](../deploy/production-upgrade.md).
+   To resume a stopped Agent, [deploy a new version](../../reference/agents/deployment.md#stop-and-resume).
+   Verify a signed model request, then enable the saved downloads intended for that revision.
 
 ## CLI
 

@@ -4723,6 +4723,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (snapshot.driverId !== this.id || snapshot.implementation !== this.implementation) {
       throw new Error("Unsupported policy snapshot.");
     }
+    if (context.revision.executionAdmission.mode === "protected") {
+      throw new Error("Live policy observation is unavailable for protected execution.");
+    }
     const { client, request, sandbox } = await this.policyTarget(context);
     if (client.getPolicyStatus === undefined) {
       throw new Error("Policy status is unavailable.");

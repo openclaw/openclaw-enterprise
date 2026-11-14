@@ -1,3 +1,4 @@
+import type { ProtectedDownloadEdit } from "@openclaw-enterprise/contracts";
 import { RuntimeLogLimiter } from "./runtime-logs.ts";
 import type {
   SandboxNetworkGrant,
@@ -8,19 +9,38 @@ import type { ResourceHandlers } from "./types.ts";
 
 const recommendationLimiter = new RuntimeLogLimiter();
 
-function policyBody(policy: Readonly<SandboxPolicy>) {
+function policyBody(policy: Readonly<SandboxPolicy>, includeProtectedScope = true) {
   const application = policy.application;
+  const applied = policy.applied;
   return {
     id: policy.id,
     namespaceId: policy.namespaceId,
     agentId: policy.agentId,
     version: policy.version,
     additions: policy.additions,
-    ...(policy.applied === undefined ? {} : { applied: policy.applied }),
+    ...(applied &&
+      (includeProtectedScope || applied.kind !== "protected_downloads") && {
+        applied: {
+          revisionId: applied.revisionId,
+          policyVersion: applied.policyVersion,
+          providerVersion: applied.providerVersion,
+          appliedAt: applied.appliedAt,
+          ...(applied.kind === "protected_downloads" && {
+            kind: applied.kind,
+            operationId: applied.operationId,
+            confirmedDownloadDestinations: applied.confirmedDownloadDestinations,
+          }),
+        },
+      }),
     ...(application === undefined
       ? {}
       : {
           application: {
+            ...(application.kind === "protected_downloads" && {
+              kind: application.kind,
+              action: application.action,
+              destination: application.destination,
+            }),
             id: application.id,
             revisionId: application.revisionId,
             policyVersion: application.policyVersion,
@@ -85,7 +105,14 @@ export const sandboxPolicyHandlers = {
       namespaceId: view.policy.namespaceId,
     });
     reply.send({
-      data: { ...view, policy: policyBody(view.policy) },
+      data: {
+        ...view,
+        policy: {
+          ...policyBody(view.policy),
+          approvedDownloadDestinations: view.policy.approvedDownloadDestinations ?? [],
+          downloadDestinations: view.policy.downloadDestinations ?? [],
+        },
+      },
       meta: { requestId: request.id },
     });
   },
@@ -149,7 +176,7 @@ export const sandboxPolicyHandlers = {
       );
       return updated;
     });
-    reply.send({ data: policyBody(policy), meta: { requestId: request.id } });
+    reply.send({ data: policyBody(policy, false), meta: { requestId: request.id } });
   },
   async applyAgentSandboxPolicy({
     controller,
@@ -161,6 +188,39 @@ export const sandboxPolicyHandlers = {
     request,
     mutationEvent,
   }) {
+    if (body!.downloadChange !== undefined) {
+      const change = body!.downloadChange as ProtectedDownloadEdit;
+      const policy = await controller.applyAgentProtectedDownload(
+        context.actorId,
+        namespaceId,
+        params.agentId!,
+        params.facet as SandboxFacet,
+        body!.expectedVersion as number,
+        body!.revisionId as string,
+        change,
+        (updated) =>
+          mutationEvent(
+            { kind: "sandbox_policy", id: updated.id, namespaceId },
+            {
+              policyVersion: updated.version,
+              agentId: updated.agentId,
+              revisionId: updated.application!.revisionId,
+              applicationId: updated.application!.id,
+              action: change.action,
+              destination: change.destination,
+            },
+          ),
+      );
+      reply.status(202).send({
+        data: {
+          ...policyBody(policy),
+          approvedDownloadDestinations: policy.approvedDownloadDestinations ?? [],
+          downloadDestinations: policy.downloadDestinations ?? [],
+        },
+        meta: { requestId: request.id },
+      });
+      return;
+    }
     const policy = await controller.transact(async (unit) => {
       const updated = await controller.applyAgentSandboxPolicy(
         context.actorId,

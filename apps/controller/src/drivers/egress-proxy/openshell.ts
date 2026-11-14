@@ -547,6 +547,23 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         });
   }
 
+  async observeDownloadEnforcement(
+    context: ProxyRevisionContext,
+    sandboxId: string,
+    policyVersion: number,
+  ): Promise<EgressInstallation["enforcement"] | undefined> {
+    this.assertPlan(context);
+    if (
+      context.plan.repositoryGit ||
+      !Number.isInteger(policyVersion) ||
+      policyVersion < 1 ||
+      policyVersion > 0xffffffff
+    ) {
+      return undefined;
+    }
+    return (await this.loadedPolicy(context, sandboxId))?.enforcement(policyVersion);
+  }
+
   async verifyInstallation(
     context: ProxyRevisionContext,
     installation: EgressInstallation,
@@ -563,6 +580,14 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     }
     // Compare the same live registration, effective configuration and recipient. In the
     // observed preview this is a fresh observation, not a stock lock against operator changes.
+    if (installation.downloadPolicyVersion !== undefined) {
+      const current = await this.observeDownloadEnforcement(
+        context,
+        installation.sandboxId,
+        installation.downloadPolicyVersion,
+      );
+      return current !== undefined && isDeepStrictEqual(current, installation.enforcement);
+    }
     const observed = await this.loadedPolicy(context, installation.sandboxId);
     return isDeepStrictEqual(await observed?.enforcement(), installation.enforcement);
   }
@@ -576,39 +601,48 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     const client = this.backend.client.clientForNamespace(ref.namespaceName);
     const workspace = openShellWorkspaceName(context.namespace);
     const name = ref.resourceName;
-    const existing = await client.getSandbox({ workspace, name }, context.signal);
+    const read = () => client.getSandbox({ workspace, name }, context.signal);
+    const existing = await read();
+    const resourceVersion = revisionNumber(existing?.resourceVersion);
     if (
-      !existing ||
-      (expectedSandboxId !== undefined &&
-        (existing.id !== expectedSandboxId || !client.getSandboxPolicyStatus))
+      !existing?.id ||
+      resourceVersion === undefined ||
+      resourceVersion === "0" ||
+      (expectedSandboxId !== undefined && existing.id !== expectedSandboxId) ||
+      !client.getSandboxPolicyStatus
     ) {
       return undefined;
     }
     this.assertOwned(existing.annotations, context);
-    if (!existing.id || !client.getSandboxPolicyStatus) {
-      return undefined;
-    }
     const status = await client.getSandboxPolicyStatus(workspace, name, context.signal);
     const sandboxId = existing.id;
     return {
       status,
       sandboxId,
-      enforcement: () =>
-        context.plan.repositoryGit
+      enforcement: async (version = context.plan.generation) => {
+        const witness = context.plan.repositoryGit
           ? context.plan.repositoryGitAuthorization === "request-hook-observed" &&
             context.revision.executionAdmission.version === 6 &&
             workspace === this.options.observedHookPreviewWorkspace
-            ? this.previewEnforcement?.(context, sandboxId)
+            ? await this.previewEnforcement?.(context, sandboxId)
             : this.mandatoryEnforcement
-              ? this.mandatoryEnforcement(context, sandboxId)
+              ? await this.mandatoryEnforcement(context, sandboxId)
               : this.repositoryGitEnforcement(context, status, sandboxId)
-          : enforcementEvidence(
-              status,
-              sandboxId,
-              context.plan.generation,
-              context.revision.id,
-              this.options,
-            ),
+          : enforcementEvidence(status, sandboxId, version, context.revision.id, this.options);
+        if (!witness) {
+          return undefined;
+        }
+        // Status is queried by name and carries no Sandbox object CAS. Require the
+        // same immutable ID and positive GetSandbox metadata.resource_version on
+        // both sides. Metadata-only churn also invalidates this observation. A
+        // later check can confirm once the object is stable.
+        const current = await read();
+        if (current?.id !== sandboxId || current.resourceVersion !== resourceVersion) {
+          return undefined;
+        }
+        this.assertOwned(current.annotations, context);
+        return witness;
+      },
     };
   }
 

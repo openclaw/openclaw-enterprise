@@ -42,6 +42,7 @@
     "tests/integration/postgres-controller-work-targets.test.mjs",
     "tests/integration/postgres-transaction-commit.test.mjs",
     "tests/integration/postgres-agent-sandbox-policy.test.mjs",
+    "tests/integration/postgres-protected-download-policy.test.ts",
     "tests/integration/postgres-static-egress.test.mjs",
     "tests/integration/postgres-static-retired-admission.test.ts",
     "tests/integration/postgres-prepared-token-service.test.ts",
@@ -593,6 +594,9 @@
       "expectedTests": [
         "explicit protected credential-free metadata: both gates, false selections, lost COMMIT and last withdrawal"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-protected-download-policy.test.ts"
     },
     {
       "path": "tests/integration/postgres-agent-sandbox-policy.test.mjs",
