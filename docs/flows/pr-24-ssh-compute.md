@@ -196,7 +196,7 @@ retire, which frees its gateway port.
 
 ## Debugging and Verification
 
-- Run `node --test tests/conformance/ssh-compute.test.mjs tests/integration/ssh-compute-startup.test.mjs`.
+- Run `node --test tests/conformance/ssh-compute.test.ts tests/integration/ssh-compute-startup.test.ts`.
   These exercise the real driver/helper with SSH and systemd fixtures, plus
   configuration loading and worker construction. Account-command fixtures do
   not prove OS isolation. These tests also do not prove live SSH, systemd,

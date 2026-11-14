@@ -49,7 +49,7 @@ resources and verifies that `occ dev down` preserves the database volume unless
 ## Driver regressions
 
 ```sh
-node --test tests/conformance/docker-compute.test.mjs
+node --test tests/conformance/docker-compute.test.ts
 OCC_TEST_DOCKER_TOKEN_RETRY=1 NODE_BASE_IMAGE=node:24-bookworm \
   node --test tests/integration/docker-compute-token-retry.test.mjs
 ```

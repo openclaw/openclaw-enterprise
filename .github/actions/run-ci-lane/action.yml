@@ -308,7 +308,7 @@ runs:
       shell: bash
       env:
         OPENCLAW_CI_HEADROOM_LANE: ${{ inputs['suite-view'] == 'full-integration' && 'openshell' || inputs.lane }}
-      run: node scripts/ci/repository-platform-headroom.mjs
+      run: node scripts/ci/repository-platform-headroom.ts
     - name: Expose image cache credentials
       id: image-cache
       if: (inputs.lane == 'openshell' || inputs['suite-view'] == 'full-integration') || steps.image-mode.outputs.source-build == 'true' || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-otel' || inputs.lane == 'slack' || inputs.lane == 'production-tui' || inputs.lane == 'images-packaging' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'

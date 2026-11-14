@@ -1345,7 +1345,7 @@ test("Kubernetes admission supports dedicated Codex repositories for every profi
 // deployment had stopped the running revision (finding 2350). Configuration save does not know
 // which Agents use the Configuration, so Agent save, provisioning and deployment refuse it, with
 // the text preparation uses. A deny of the broker host itself stays with preparation, the only
-// step that knows the host (tests/conformance/repository-runtime-material.test.mjs).
+// step that knows the host (tests/conformance/repository-runtime-material.test.ts).
 const brokerProxyRefusals = [
   ["disabled", { enabled: false }, BROKER_PROXY_DISABLED],
   ["unknown mode", { enabled: true, mode: "offline" }, BROKER_PROXY_MODE],
