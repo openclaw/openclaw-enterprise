@@ -76,7 +76,7 @@ first-run bootstrap guidance does not consume the nonce prompt.
 The test separates production installation, service-key-authenticated provisioning, and
 conversations for each version into named stages. Shared scoped Kubernetes commands,
 resource lookups, and polling come from
-`tests/helpers/kubernetes-real.mjs:createKubernetesClient`; the production test
+`tests/helpers/kubernetes-real.ts:createKubernetesClient`; the production test
 retains its credential-redacting process runner. One `nativeTuiArgv` builder
 supplies the valid and denied TUI checks and the generated interactive attach
 script, keeping client authentication and environment handling consistent.

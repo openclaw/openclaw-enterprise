@@ -23,7 +23,7 @@ import {
   inlineProbeCommand,
   retryKubectlRead,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 import { kubectlGetJson } from "../helpers/kubernetes-api-read.ts";
 import { waitForResult } from "../helpers/wait-for.mjs";
 
