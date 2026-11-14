@@ -2,8 +2,50 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { assertInsideDirectory } from "../lib/assert-inside-directory.ts";
+
+interface ArtifactSource {
+  name: string;
+  url: string | URL | Request;
+}
+
+interface PinnedArtifact extends ArtifactSource {
+  version: string;
+  path: string;
+  sha256: string;
+}
+
+interface ArtifactDownload {
+  artifact: PinnedArtifact;
+  directory: string;
+}
+
+interface FetchRetryOptions {
+  attempts?: number;
+  firstDelayMs?: number;
+  maxDelayMs?: number;
+  budgetMs?: number;
+  attemptTimeoutMs?: number;
+}
+
+interface RoutingCluster {
+  name: string;
+  directory: string;
+  kubeconfig: string;
+  context: string;
+  disabledK3sAddons?: string | readonly string[] | null | undefined;
+}
+
+// The command's completion or rejection matters. Its output is unused.
+type ExecFile = (command: string, args: string[]) => void;
+
+interface RoutingPreparation {
+  cluster: RoutingCluster;
+  execFile: ExecFile;
+  downloadArtifact?: (request: ArtifactDownload) => string | PromiseLike<string>;
+}
 
 const envoyGateway = Object.freeze({
   name: "Envoy Gateway",
@@ -42,7 +84,7 @@ const certManagerCrds = Object.freeze([
 
 const caSubject = "/CN=OCC disposable routing test CA";
 
-function assertCluster(cluster) {
+function assertCluster(cluster: RoutingCluster): RoutingCluster {
   assert.equal(typeof cluster?.name, "string", "cluster.name must be provided.");
   assert.match(
     cluster.name,
@@ -73,18 +115,18 @@ function assertCluster(cluster) {
   return { ...cluster, directory, kubeconfig: resolve(cluster.kubeconfig) };
 }
 
-function namespacedKubectlArgs(cluster, args) {
-  return ["--kubeconfig", cluster.kubeconfig, "--context", cluster.context, ...args];
+async function kubectl(cluster: RoutingCluster, execFile: ExecFile, ...args: string[]) {
+  await execFile(process.env.OCC_KUBECTL_BIN ?? "kubectl", [
+    "--kubeconfig",
+    cluster.kubeconfig,
+    "--context",
+    cluster.context,
+    ...args,
+  ]);
 }
 
-async function kubectl(cluster, execFile, ...args) {
-  return await execFile(
-    process.env.OCC_KUBECTL_BIN ?? "kubectl",
-    namespacedKubectlArgs(cluster, args),
-  );
-}
-
-async function writePrivateFile(path, data, mode = 0o600) {
+async function writePrivateFile(path: string, data: string | Uint8Array) {
+  const mode = 0o600;
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(temp, data, { mode });
   await chmod(temp, mode);
@@ -92,7 +134,7 @@ async function writePrivateFile(path, data, mode = 0o600) {
   await chmod(path, mode);
 }
 
-function sha256(data) {
+function sha256(data: Uint8Array) {
   return createHash("sha256").update(data).digest("hex");
 }
 
@@ -104,7 +146,7 @@ class ManifestSizeError extends Error {
   }
 }
 
-async function readManifestBytes(chunks) {
+async function readManifestBytes(chunks: AsyncIterable<Uint8Array> | Iterable<Uint8Array>) {
   let bytes = Buffer.alloc(0);
   let length = 0;
   for await (const chunk of chunks) {
@@ -146,16 +188,32 @@ const transientNetworkCodes = new Set([
   "UND_ERR_BODY_TIMEOUT",
 ]);
 
-export function isTransientFetchError(error) {
-  if (error?.name === "TimeoutError") {
+function hasErrorProperty<Key extends "name" | "cause" | "errors" | "code">(
+  value: unknown,
+  key: Key,
+): value is Record<Key, unknown> {
+  return (
+    value !== null && (typeof value === "object" || typeof value === "function") && key in value
+  );
+}
+
+function errorCode(error: unknown) {
+  return hasErrorProperty(error, "code") ? error.code : undefined;
+}
+
+export function isTransientFetchError(error: unknown): boolean {
+  if (hasErrorProperty(error, "name") && error.name === "TimeoutError") {
     return true;
   }
   // fetch wraps the socket error in `cause`; a multi-address connect failure
   // is an AggregateError that lists one error per address.
-  const cause = error?.cause;
-  return [cause, ...(Array.isArray(cause?.errors) ? cause.errors : [])].some((entry) =>
-    transientNetworkCodes.has(entry?.code),
-  );
+  const cause = hasErrorProperty(error, "cause") ? error.cause : undefined;
+  const errors = hasErrorProperty(cause, "errors") ? cause.errors : undefined;
+  const entries: readonly unknown[] = Array.isArray(errors) ? errors : [];
+  return [cause, ...entries].some((entry) => {
+    const code = errorCode(entry);
+    return typeof code === "string" && transientNetworkCodes.has(code);
+  });
 }
 
 // Same retry rule as scripts/ci/download-pinned.sh: transient network errors
@@ -163,21 +221,21 @@ export function isTransientFetchError(error) {
 // 20 s cap; schedule only when the delay fits the 120 s budget). Other errors
 // and HTTP statuses fail at once. The caller verifies the checksum, never retried.
 export async function fetchPinnedBytes(
-  artifact,
+  artifact: ArtifactSource,
   {
     attempts = 8,
     firstDelayMs = 2_000,
     maxDelayMs = 20_000,
     budgetMs = 120_000,
     attemptTimeoutMs = 60_000,
-  } = {},
+  }: FetchRetryOptions = {},
 ) {
   const started = Date.now();
   let delayMs = Math.min(firstDelayMs, maxDelayMs);
   for (let attempt = 1; ; attempt += 1) {
-    let failure;
-    let cause;
-    let transient;
+    let failure: string;
+    let cause: unknown;
+    let transient: boolean;
     try {
       const response = await fetch(artifact.url, {
         signal: AbortSignal.timeout(attemptTimeoutMs),
@@ -190,10 +248,15 @@ export async function fetchPinnedBytes(
       transient = transientHttpStatus.test(String(response.status));
     } catch (error) {
       cause = error;
-      failure =
-        error instanceof ManifestSizeError
-          ? "manifest exceeds its 32 MiB size limit"
-          : (error.cause?.code ?? error.name ?? "network error");
+      const code = hasErrorProperty(error, "cause") ? errorCode(error.cause) : undefined;
+      const name = hasErrorProperty(error, "name") ? error.name : undefined;
+      if (error instanceof ManifestSizeError) {
+        failure = "manifest exceeds its 32 MiB size limit";
+      } else if (typeof code === "string" || typeof code === "number") {
+        failure = String(code);
+      } else {
+        failure = typeof name === "string" ? name : "network error";
+      }
       transient = isTransientFetchError(error);
     }
     if (!transient || attempt >= attempts || Date.now() - started + delayMs > budgetMs) {
@@ -209,10 +272,10 @@ export async function fetchPinnedBytes(
   }
 }
 
-export async function downloadPinnedArtifact({ artifact, directory }) {
+export async function downloadPinnedArtifact({ artifact, directory }: ArtifactDownload) {
   const destination = join(directory, artifact.path);
   assertInsideDirectory(directory, destination, `${artifact.name} manifest`);
-  let cached;
+  let cached: FileHandle | undefined;
   try {
     cached = await open(
       destination,
@@ -231,7 +294,7 @@ export async function downloadPinnedArtifact({ artifact, directory }) {
       return destination;
     }
   } catch (error) {
-    if (error.code !== "ENOENT") {
+    if (errorCode(error) !== "ENOENT") {
       throw error;
     }
   } finally {
@@ -249,7 +312,7 @@ export async function downloadPinnedArtifact({ artifact, directory }) {
   return destination;
 }
 
-async function createPrivateTestCa({ directory, execFile }) {
+async function createPrivateTestCa(directory: string, execFile: ExecFile) {
   const caDirectory = join(directory, "test-ca");
   assertInsideDirectory(directory, caDirectory, "test CA directory");
   await rm(caDirectory, { recursive: true, force: true });
@@ -283,7 +346,7 @@ async function createPrivateTestCa({ directory, execFile }) {
   return { certPath, keyPath };
 }
 
-async function waitForCrds(cluster, execFile, crds) {
+async function waitForCrds(cluster: RoutingCluster, execFile: ExecFile, crds: readonly string[]) {
   for (const crd of crds) {
     await kubectl(cluster, execFile, "wait", "--for=create", `crd/${crd}`, "--timeout=180s");
     await kubectl(
@@ -297,7 +360,12 @@ async function waitForCrds(cluster, execFile, crds) {
   }
 }
 
-async function rolloutDeployments(cluster, execFile, namespace, deployments) {
+async function rolloutDeployments(
+  cluster: RoutingCluster,
+  execFile: ExecFile,
+  namespace: string,
+  deployments: readonly string[],
+) {
   for (const deployment of deployments) {
     await kubectl(
       cluster,
@@ -312,7 +380,12 @@ async function rolloutDeployments(cluster, execFile, namespace, deployments) {
   }
 }
 
-async function applyControllers({ cluster, execFile, certManagerManifest, envoyGatewayManifest }) {
+async function applyControllers(
+  cluster: RoutingCluster,
+  execFile: ExecFile,
+  certManagerManifest: string,
+  envoyGatewayManifest: string,
+) {
   await kubectl(cluster, execFile, "apply", "-f", certManagerManifest);
   await waitForCrds(cluster, execFile, certManagerCrds);
   await rolloutDeployments(cluster, execFile, certManager.namespace, certManager.deployments);
@@ -342,7 +415,7 @@ export async function prepareGatewayRouting({
   cluster,
   execFile,
   downloadArtifact = downloadPinnedArtifact,
-}) {
+}: RoutingPreparation) {
   assert.equal(typeof execFile, "function", "prepareGatewayRouting requires an execFile callback.");
   const ownedCluster = assertCluster(cluster);
   // K3s installs the Gateway API CRDs with Traefik, and applyControllers waits for them, so
@@ -360,13 +433,8 @@ export async function prepareGatewayRouting({
     downloadArtifact({ artifact: certManager, directory }),
     downloadArtifact({ artifact: envoyGateway, directory }),
   ]);
-  const ca = await createPrivateTestCa({ directory, execFile });
-  await applyControllers({
-    cluster: ownedCluster,
-    execFile,
-    certManagerManifest,
-    envoyGatewayManifest,
-  });
+  const ca = await createPrivateTestCa(directory, execFile);
+  await applyControllers(ownedCluster, execFile, certManagerManifest, envoyGatewayManifest);
 
   return {
     env: {
