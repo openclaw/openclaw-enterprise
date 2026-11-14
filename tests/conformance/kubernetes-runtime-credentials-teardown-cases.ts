@@ -16,6 +16,9 @@ import {
   runtimeSecret,
 } from "./kubernetes-runtime-credentials-fixture.ts";
 
+// The deletion worker stops the Agent and marks it for deletion before calling the Driver.
+const deletingBinding = { namespace, agent: { ...agent, status: "deleting" } } as const;
+
 export function registerEarlyTeardown(): void {
   test("mocked Kubernetes client deletes every owned Agent runtime credential Secret idempotently", async () => {
     const first = credentialFixture();
@@ -29,11 +32,11 @@ export function registerEarlyTeardown(): void {
     };
     const fixture = credentialFixture({ secrets });
 
-    await fixture.driver.deleteAgentRuntimeCredentials(binding());
+    await fixture.driver.deleteAgentRuntimeCredentials(deletingBinding);
     assert.deepEqual(fixture.deleted, [`transport-${digest(agent.id)}`]);
 
     // A retry after partial or complete teardown observes absence and converges.
-    await fixture.driver.deleteAgentRuntimeCredentials(binding());
+    await fixture.driver.deleteAgentRuntimeCredentials(deletingBinding);
     assert.equal(fixture.deleted.length, 1);
   });
 
@@ -55,14 +58,14 @@ export function registerEarlyTeardown(): void {
     nodeBinding.metadata.uid = "binding-uid";
     const configMaps = { [name]: nodeBinding };
     const fixture = credentialFixture({ configMaps });
-    await fixture.driver.deleteAgentRuntimeCredentials(binding());
+    await fixture.driver.deleteAgentRuntimeCredentials(deletingBinding);
     assert.deepEqual(configMaps, {});
     assert.deepEqual(
       fixture.calls.filter((call) => call.kind === "deleteConfigMap").map(({ name }) => name),
       [name],
     );
     // A retry observes absence and converges.
-    await fixture.driver.deleteAgentRuntimeCredentials(binding());
+    await fixture.driver.deleteAgentRuntimeCredentials(deletingBinding);
   });
 
   for (const runtime of [true, false]) {
@@ -92,7 +95,7 @@ export function registerEarlyTeardown(): void {
       const fixture = credentialFixture({ claims, runtime });
 
       // Recovery cannot depend on the transport Secret surviving earlier teardown.
-      await fixture.driver.deleteAgentRuntimeCredentials(binding());
+      await fixture.driver.deleteAgentRuntimeCredentials(deletingBinding);
       assert.deepEqual(Object.keys(claims), []);
       assert.deepEqual(
         fixture.calls
@@ -101,7 +104,7 @@ export function registerEarlyTeardown(): void {
           .sort(),
         owned.map(({ metadata }) => metadata.name).sort(),
       );
-      await fixture.driver.deleteAgentRuntimeCredentials(binding());
+      await fixture.driver.deleteAgentRuntimeCredentials(deletingBinding);
       assert.equal(
         fixture.calls.filter((call) => call.kind === "deleteClaim").length,
         owned.length,
@@ -113,7 +116,7 @@ export function registerEarlyTeardown(): void {
     const absent = credentialFixture({ runtime: false, namespaceReadStatus: 404 });
 
     // A draft Agent can be deleted before Namespace provisioning creates any workload storage.
-    await absent.driver.deleteAgentRuntimeCredentials(binding());
+    await absent.driver.deleteAgentRuntimeCredentials(deletingBinding);
     assert.deepEqual(
       absent.calls.map(({ kind }) => kind),
       ["listNamespace", "readNamespace"],
@@ -123,7 +126,7 @@ export function registerEarlyTeardown(): void {
     await assert.rejects(
       wrongBinding.driver.deleteAgentRuntimeCredentials({
         namespace,
-        agent: { ...agent, namespaceId: "another-namespace" },
+        agent: { ...deletingBinding.agent, namespaceId: "another-namespace" },
       }),
       ResourceConflictError,
     );
@@ -131,7 +134,7 @@ export function registerEarlyTeardown(): void {
 
     const denied = credentialFixture({ runtime: false, namespaceReadStatus: 403 });
     await assert.rejects(
-      denied.driver.deleteAgentRuntimeCredentials(binding()),
+      denied.driver.deleteAgentRuntimeCredentials(deletingBinding),
       /backend is not authorized/,
     );
     assert.deepEqual(
@@ -168,7 +171,7 @@ export function registerSharedAndTwoClusterTeardown(): void {
 
   test("Agent deletion is idempotent after its shared namespace disappears", async () => {
     const fixture = credentialFixture({ namespaceReadStatus: 404 });
-    await fixture.driver.deleteAgentRuntimeCredentials(binding());
+    await fixture.driver.deleteAgentRuntimeCredentials(deletingBinding);
     assert.equal(
       fixture.calls.some(({ kind }) => kind === "deleteClaim" || kind === "deleteSecret"),
       false,
@@ -185,7 +188,7 @@ export function registerSharedAndTwoClusterTeardown(): void {
     claim.metadata.uid = "retained-gateway-claim";
     const claims = { [claim.metadata.name]: claim };
     const fixture = credentialFixture({ twoCluster: true, claims, namespaceReadStatus: 404 });
-    await fixture.driver.deleteAgentRuntimeCredentials(binding());
+    await fixture.driver.deleteAgentRuntimeCredentials(deletingBinding);
     assert.deepEqual(Object.keys(claims), []);
   });
 
@@ -210,7 +213,7 @@ export function registerSharedAndTwoClusterTeardown(): void {
       secret.metadata.uid = `${target}-transport-uid`;
       const secrets = { [target]: secret };
       const fixture = credentialFixture({ claims, secrets });
-      const current = { namespace, agent: { ...agent, executionMode } };
+      const current = { namespace, agent: { ...deletingBinding.agent, executionMode } };
       await fixture.driver.deleteAgentRuntimeCredentials(current);
       assert.deepEqual(
         Object.keys(claims),

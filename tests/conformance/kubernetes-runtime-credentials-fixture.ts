@@ -29,7 +29,7 @@ export const agent = Object.freeze({
   name: "Runtime credential Agent",
   configurationId: "cfg_runtime_00000000-0000-4000-8000-000000000001",
   backendId: null,
-  desiredRuntimeState: "running",
+  desiredRuntimeState: "stopped",
   status: "active",
   harnessAuth: null,
   gatewayManagedMode: true,
