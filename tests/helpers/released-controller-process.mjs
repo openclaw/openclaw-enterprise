@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { createFastifyApp } from "/app/apps/controller/src/index.ts";
-import { createPostgresControllerAuth } from "/app/apps/controller/src/auth/index.ts";
+import * as controllerAuth from "/app/apps/controller/src/auth/index.ts";
 import { resolveApprovedHarness } from "/app/apps/controller/src/composition/production-harness.ts";
 import { PostgresPlatformState, OpenClawController } from "/app/packages/occ/src/index.ts";
 import { createControllerWorker } from "/app/apps/controller/src/worker.ts";
@@ -19,6 +19,12 @@ const state = new PostgresPlatformState(pool);
 const installation = await state.loadInstallation();
 const candidate = process.env.OCC_TEST_CONTROLLER_ROLE === "candidate";
 const configuredIAM = process.env.OCC_TEST_CONTROLLER_IAM === "1";
+const baseURL = process.env.OCC_AUTH_BASE_URL;
+const agentDomain = process.env.OCC_AGENT_NATIVE_ADMIN_DOMAIN;
+assert.ok(
+  baseURL && agentDomain,
+  "The image must receive its selected browser origin and Agent domain.",
+);
 const preparedTokens = candidate
   ? new (await import("/app/apps/controller/src/backends/token-service/service.ts")).TokenService()
   : undefined;
@@ -43,11 +49,23 @@ const controller = new OpenClawController(installation, {
 const iamDriver = new NativeIAMDriver(state, { id: "compatibility-iam" });
 controller.registerDriver(iamDriver);
 controller.selectDriver("iam", iamDriver.id);
-const auth = await createPostgresControllerAuth({
+const provisionAuthAccount = configuredIAM
+  ? controllerAuth.createPostgresAuthAccountProvisioner?.({
+      state,
+      installationId: installation.id,
+    })
+  : undefined;
+if (configuredIAM) {
+  assert.ok(
+    provisionAuthAccount,
+    "Configured IAM requires the image's PostgreSQL account provisioner.",
+  );
+}
+const auth = await controllerAuth.createPostgresControllerAuth({
   mode: "development",
   installationId: installation.id,
-  baseURL: "https://console.oce.localhost",
-  agentDomain: "agents.oce.localhost",
+  baseURL,
+  agentDomain,
   secret: "local-compatibility-session-secret-32-bytes",
   pool,
 });
@@ -84,25 +102,6 @@ const worker = createControllerWorker({
   emit: (event) => console.log(JSON.stringify({ workerEvent: event })),
 });
 await worker.start();
-let provisionAuthAccount;
-if (configuredIAM) {
-  const { PostgresHumanAuthentication } = await import("/app/packages/occ/src/index.ts");
-  const { betterAuthIssuer } = await import("/app/apps/controller/src/auth/index.ts");
-  const { validateAuthAccountPrincipalSeed } = await import("/app/packages/iam/src/index.ts");
-  const human = new PostgresHumanAuthentication(
-    state,
-    installation.id,
-    betterAuthIssuer(installation.id),
-  );
-  provisionAuthAccount = async (seed, auditEvent, prepared, external) => {
-    validateAuthAccountPrincipalSeed(
-      seed,
-      await state.loadNativeIAMState(installation.id),
-      installation.id,
-    );
-    await human.provisionPasswordAccount(prepared, seed, auditEvent, external);
-  };
-}
 const app = createFastifyApp({
   ...(provisionAuthAccount ? { provisionAuthAccount } : {}),
   controller,
@@ -128,7 +127,7 @@ try {
     .filter((x) => !/Max-Age=0(?:;|$)/i.test(x))
     .map((x) => x.split(";")[0])
     .join("; ");
-  const headers = { host: "127.0.0.1", origin: "https://console.oce.localhost", cookie };
+  const headers = { host: "127.0.0.1", origin: baseURL, cookie };
   const session = await app.inject({ method: "GET", url: "/api/auth/session", headers });
   assert.equal(session.statusCode, 200, session.body);
   const accountId = session.json().data.user.id;
