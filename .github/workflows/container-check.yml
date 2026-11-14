@@ -164,7 +164,7 @@ jobs:
         if: ${{ matrix.image == 'runtime' && matrix.arch == 'amd64' && vars.CONTAINER_AMD64_RUNNER == 'ubuntu-24.04' }}
         env:
           OPENCLAW_CI_HEADROOM_LANE: container-runtime-build
-        run: node scripts/ci/repository-platform-headroom.mjs
+        run: node scripts/ci/repository-platform-headroom.ts
       - name: Set up persistent Blacksmith Buildx cache
         if: ${{ startsWith(matrix.runner, 'blacksmith-') }}
         uses: useblacksmith/setup-docker-builder@06dd9c83a5d541274d2e3ac67625560979275267 # v2.3.0
