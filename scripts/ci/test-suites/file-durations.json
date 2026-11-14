@@ -85,7 +85,7 @@
     "tests/conformance/kubernetes-prepared-repository.test.mjs": 500,
     "tests/conformance/kubernetes-provider-harness.test.mjs": 10600,
     "tests/conformance/kubernetes-real-kubectl.test.ts": 9900,
-    "tests/conformance/kubernetes-runtime-credentials.test.mjs": 1800,
+    "tests/conformance/kubernetes-runtime-credentials.test.ts": 1800,
     "tests/conformance/kubernetes-secret-driver.test.ts": 400,
     "tests/conformance/module-boundaries.test.ts": 4000,
     "tests/conformance/module-policy.test.mjs": 3700,

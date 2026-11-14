@@ -72,7 +72,7 @@
     "tests/conformance/socket-directory.test.ts",
     "tests/conformance/temporary-directory.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
-    "tests/conformance/kubernetes-runtime-credentials.test.mjs",
+    "tests/conformance/kubernetes-runtime-credentials.test.ts",
     "tests/conformance/openshell-gateway-wire.test.mjs",
     "tests/conformance/openshell-provider-profile-wire.test.ts",
     "tests/conformance/oauth-connection.test.mjs",
@@ -286,7 +286,7 @@
       "path": "tests/conformance/k3d-failure-diagnostics.test.ts"
     },
     {
-      "path": "tests/conformance/kubernetes-runtime-credentials.test.mjs"
+      "path": "tests/conformance/kubernetes-runtime-credentials.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-configuration.test.ts"
