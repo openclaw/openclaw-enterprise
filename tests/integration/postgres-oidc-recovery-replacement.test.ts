@@ -97,8 +97,9 @@ test(
       ),
       ["second", "third", "member"],
     );
-    const settings = {
-      ...oidcUpgradeSettings(admin.id),
+    const settings = oidcUpgradeSettings(admin.id);
+    const recoveryOnly = {
+      ...settings,
       OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only",
     };
     app = await composeApp(settings, { passwordSlowLaneFloors: slowLane });
@@ -140,6 +141,23 @@ test(
     const currentHolder = () => {
       assert.ok(holder, "a replacement committed");
       return holder;
+    };
+    const flood = (label: string) =>
+      authOperation("spend the password budgets", () =>
+        assertReservedLane(activeApp(), { origin, holder: currentHolder(), former: admin, label }),
+      );
+    const restart = async (passwordPolicy: typeof settings) => {
+      const log = memoryLogger();
+      await activeApp().close();
+      app = undefined;
+      app = await composeApp(passwordPolicy, {
+        logger: log.logger,
+        passwordSlowLaneFloors: slowLane,
+      });
+      const logged: readonly unknown[] = log.events;
+      return logged
+        .map((entry) => text(record(entry).event))
+        .filter((event) => event.startsWith("authentication."));
     };
     await t.test(
       "guarded replacement refuses stale, unauthorized and non-admin moves",
@@ -231,6 +249,11 @@ test(
     });
 
     await t.test("a created administrator moves it between accounts it covers", async () => {
+      // With all passwords enabled, the former holder retains its administrator reservation.
+      assert.deepEqual(await flood("online-all"), { fresh: 429, former: 200, holder: 200 });
+      // Apply recovery-only before the delegated move so its new password designation
+      // must take effect on the running controller.
+      await restart(recoveryOnly);
       const previous = currentHolder();
       const next = previous === second ? third : second;
       const moved = await replace(secondHeaders, {
@@ -254,14 +277,7 @@ test(
         // The former holder still administers the Installation. Recovery-only checks that
         // only the newly designated account keeps a usable password after the move.
         const other = await passwordSignIn(activeApp(), origin, admin, address());
-        const lane = await authOperation("spend the online password budgets", () =>
-          assertReservedLane(activeApp(), {
-            origin,
-            holder: current,
-            former: admin,
-            label: "online",
-          }),
-        );
+        const lane = await flood("online-recovery-only");
         assert.equal(lane.holder, 200, "the current holder can sign in after the flood");
         assert.equal(other.statusCode, 401, "the former holder's password is refused");
         assert.equal(lane.fresh, 429);
@@ -287,35 +303,27 @@ test(
         const current = currentHolder();
         const before = await readRecovery(adminHeaders);
         assert.equal(before.userId, current.id);
-        await activeApp().close();
-        app = undefined;
-        const log = memoryLogger();
-        app = await composeApp(settings, { logger: log.logger, passwordSlowLaneFloors: slowLane });
-        const logged: readonly unknown[] = log.events;
-        assert.deepEqual(
-          logged
-            .map((entry) => text(record(entry).event))
-            .filter((event) => event.startsWith("authentication.")),
-          // The fixture has no trusted proxy and some accounts still lack an external identity.
-          [
-            "authentication.recovery-seed-warning",
-            "authentication.sign-in-limit-warning",
-            "authentication.password-sign-in-warning",
-          ],
+        const restartWarnings = [
+          "authentication.recovery-seed-warning",
+          "authentication.sign-in-limit-warning",
+        ];
+        assert.deepEqual(await restart(settings), restartWarnings);
+        const formerHeaders = await authOperation("sign in the former holder after restart", () =>
+          signedInHeaders(activeApp(), origin, admin, address()),
         );
+        assert.deepEqual(await readRecovery(formerHeaders), before);
+        assert.deepEqual(await flood("restarted-all"), { fresh: 429, former: 200, holder: 200 });
+        // Recovery-only also reports accounts without an attached external identity.
+        assert.deepEqual(await restart(recoveryOnly), [
+          ...restartWarnings,
+          "authentication.password-sign-in-warning",
+        ]);
         assert.deepEqual(await designations(), [before]);
         const holderHeaders = await authOperation("sign in the stored holder after restart", () =>
           signedInHeaders(activeApp(), origin, current, address()),
         );
         assert.deepEqual(await readRecovery(holderHeaders), before);
-        const lane = await authOperation("spend the restarted password budgets", () =>
-          assertReservedLane(activeApp(), {
-            origin,
-            holder: current,
-            former: admin,
-            label: "restarted",
-          }),
-        );
+        const lane = await flood("restarted-recovery-only");
         assert.deepEqual(lane, { fresh: 429, former: 429, holder: 200 });
       },
     );
