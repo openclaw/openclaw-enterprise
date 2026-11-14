@@ -12,15 +12,11 @@ Authenticated API requests create, read, replace, or delete exact Namespace-owne
 native OpenClaw configuration documents through the selected bundled or installed
 Configuration Driver. The bundled Kubernetes implementation persists each
 document in a tenant-owned ConfigMap.
-Each Configuration requires immutable `kind: "agent"` and a server-managed
-generation; documents preserve unresolved inline SecretRefs without interpreting
-them. Agent deployment authorizes the separate Secret bindings, applies any
-selected Sandbox Driver transformation, and saves the validated values in the
-Agent revision. Configuration identity, kind, generation, and Secret
-references are recorded separately. This flow stops when OCC persists that
-version and hands off workload reconciliation; the selected Compute Driver
-then owns the Agent gateway, while worker execution and secret resolution remain
-outside this flow's scope.
+Configurations preserve unresolved inline SecretRefs and have immutable
+`kind: "agent"` and server-managed generation. Deployment authorizes separate Secret bindings,
+applies the selected Sandbox transformation, and saves validated values in an
+Agent revision. OCC records identity, kind, generation, and Secret references
+separately. Compute owns Gateway reconciliation. This excludes worker execution and secret resolution.
 
 ## Entry Points
 
@@ -143,6 +139,11 @@ Channel Driver. `kind`, `generation`, and ownership remain server-owned.
 Gateway-password variables; Configuration writes
 and deployment require concrete references. Malformed, generation-mismatched,
 or ownership-invalid ConfigMaps fail with `503`.
+
+Kubernetes Compute validates [required header names](../reference/drivers/kubernetes-compute/gateway-authentication.md)
+(`gateway.auth.trustedProxy.requiredHeaders`) at Configuration save. Partial Preset
+saves check literal fragments with valid stand-ins.
+
 Authorization denial fails with `403`, a missing exact resource with `404`, an
 Agent dependency conflict with `409`, and unavailable IAM or storage with
 `503`. OCC checks `operate` on each bound Secret, including bindings retained when
@@ -239,6 +240,8 @@ its optional integration is skipped.
 - 2026-11-11 21:03: Trace text validation and denial ID lookup. (authoring-run/f2efc59c-e63d-4f5b-a392-e38ad865f04d - dfbdd7bfa6ccfba7d3d2e6b28f2770988c0cfc0d)
 
 - 2026-11-10 23:35: Trace Preset Gateway-password placeholder admission and final concrete validation. (authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d - 60cf8f904c39918ddd5b23a42fa2d7591c2eb193)
+
+- 2026-11-10 20:02: Document trusted-proxy header validation at Configuration and Preset save. (authoring-run/33560e14-9724-4c9d-922d-049dfdace344 - 7db6741a6e6eadb48ef0fcb059ae7224b3485782)
 
 - 2026-11-04 08:08: Distinguish network dial failures and invalid receipts in CLI recovery hints. (authoring-run/8886e590-0aa5-4c8a-8665-2e58d1c639cc - 8c2a1e4a)
 

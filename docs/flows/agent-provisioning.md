@@ -91,9 +91,9 @@ After an Installation selects another Secret Driver, request, status and retry a
 
 OCC applies Configuration rules before Channel credential validation. Its Secret callbacks recheck provisioning grants before storage and after I/O, then confirm current same-Namespace backend and selected-Driver ownership before provider use. Slack accepts whole `${NAME}` environment references and checks token roles and bot authentication. This does not pin Secret versions or revalidate queued work. OCC validates Namespace repository selections before queueing. Undeliverable bindings, including Sandbox repositories, retain Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup`; Compute delegates validation or refuses unsupported placement before staging. Deployment checks the Harness topology.
 
-OCC stores the accepted request and deduplication fingerprint in `agent_provisioning_work`, then queues `controller_work` with `work_kind = 'provisioning'`. Configuration and Agent creation happen later. The same actor, Namespace and request ID return the existing work; changed input conflicts.
+OCC stores the accepted request and deduplication fingerprint in `agent_provisioning_work`, then queues `controller_work` with `work_kind = 'provisioning'`. Configuration and Agent creation follow. Reusing actor, Namespace and request ID returns existing work; changed input conflicts.
 
-The `202` response contains `data.provisioning`, with the work ID and status URL. Public progress exposes result IDs and safe errors without input values or backend credentials.
+`202` returns the work ID and status URL in `data.provisioning`. Public progress exposes result IDs and safe errors without input values or backend credentials.
 
 ### 3. The worker creates resources and credentials
 
@@ -115,17 +115,16 @@ Compute prepares runtime credentials without loopback HTTP. Kubernetes
 create-only provisioning. Failure retains them and blocks configured success or
 first revision admission.
 `kubernetesGatewayConfigurationDocument` defaults to machine-only trusted-proxy
-administration and preserves human identities/scopes. Provisioning and
-deploy admission reject an invalid `allowUsers` or malformed `deviceAutoApprove` (Configuration
-save also refuses both), unknown or padded operator scopes, blank or padded identity keys,
-grants for identities outside `allowUsers`, malformed `requiredHeaders`, and human
-admission with admin device scopes, including whitespace; human allowlists render
-`x-openclaw-scopes` as required. With private status, `validateConfiguration`
-also refuses a Codex Configuration without `gateway.auth.password`, which the
-workspace node check signs in with. These refusals precede workload replacement.
-Human ingress and its network policy remain operator-managed; no OCE human
-account is required. See [Gateway authentication](../reference/drivers/kubernetes-compute/gateway-authentication.md).
-Provisioning supplies no Gateway token or trust override; losing its claim cancels
+administration and preserves explicit human identities/scopes. Configuration save,
+provisioning and deploy admission reject invalid `allowUsers` or `deviceAutoApprove`.
+Admission rejects unknown or padded operator scopes, blank or padded identity keys,
+grants outside `allowUsers`, and human admission with admin device scopes, even with whitespace.
+Human allowlists require `x-openclaw-scopes`. Compute validates resolved `requiredHeaders`
+at provisioning, deployment admission and Gateway rendering. For private status, `validateConfiguration` requires
+`gateway.auth.password` for Codex workspace node sign-in. Refusals precede workload replacement. Operators manage
+[human ingress and network policy](../reference/drivers/kubernetes-compute/gateway-authentication.md)
+without OCE human accounts.
+Provisioning supplies neither Gateway token nor trust override. Claim loss cancels
 Kubernetes Configuration requests.
 
 ### 4. Deployment becomes the lifecycle owner
@@ -247,6 +246,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 - 2026-11-12 07:02: Verify Kubernetes credentials after creation. (authoring-run/388069bb-c78c-4541-98c1-3ed46dc565ec - 25608d82659d7094e267a8dd106b728a5ccaca7b)
 
 - 2026-11-10 23:12: Explain how the deployment summary shows a recorded wait at handoff. (authoring-run/8df1087c-23a7-43b9-8a29-537fd34e2d6e - cdd1e754e36d)
+
+- 2026-11-10 20:02: Trace validation of resolved trusted-proxy header names at admission and Gateway rendering. (authoring-run/33560e14-9724-4c9d-922d-049dfdace344 - 7db6741a6e6eadb48ef0fcb059ae7224b3485782)
 
 - 2026-11-10 19:32: Explain when Create opens the first deployment and how it follows the job if the deployment read fails. (authoring-run/a1d8ded8-9b07-4489-a86a-3cf43cf3891b - fb0fb0f46331)
 

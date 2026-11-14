@@ -289,6 +289,9 @@
       "path": "tests/conformance/kubernetes-configuration.test.ts"
     },
     {
+      "path": "tests/conformance/kubernetes-required-headers.test.ts"
+    },
+    {
       "path": "tests/conformance/kubernetes-ownership.test.ts",
       "expectedTests": ["sealed Namespace compares SDK-deserialized ingress exactly"]
     },
@@ -421,6 +424,9 @@
     },
     {
       "path": "tests/integration/configuration-controller.test.mjs"
+    },
+    {
+      "path": "tests/integration/kubernetes-trusted-proxy-configuration.test.ts"
     },
     {
       "path": "tests/integration/configuration-body-limits.test.mjs"

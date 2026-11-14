@@ -216,6 +216,7 @@ import {
   requireChannelTopology,
   requireCodexPlugin,
   refuseInvalidTrustedProxyIdentities,
+  refuseInvalidTrustedProxyRequiredHeaders,
   refuseKubernetesPluginEntryKeyVariants,
   refuseUnreadablePluginSecretInputs,
   requirePluginSecretInputs,
@@ -4898,6 +4899,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const trustedProxy = asRecord(asRecord(asRecord(configuration.gateway)?.auth)?.trustedProxy);
     if (trustedProxy !== undefined) {
       refuseInvalidTrustedProxyIdentities(trustedProxy, callerSettingError, options);
+      refuseInvalidTrustedProxyRequiredHeaders(trustedProxy, callerSettingError, options);
     }
     if (dedicatedCodex && this.appliesWorkspaceNodeAtRuntime()) {
       requireWorkspaceNodeGatewayPassword(configuration, callerSettingError);
@@ -13819,18 +13821,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       );
     }
     const requiredHeaders = trustedProxy.requiredHeaders;
-    if (
-      requiredHeaders !== undefined &&
-      (!Array.isArray(requiredHeaders) ||
-        requiredHeaders.some(
-          (header) => typeof header !== "string" || header === "" || header.trim() !== header,
-        ))
-    ) {
-      throw new GatewaySettingFailure(
-        "gateway.auth.trustedProxy.requiredHeaders",
-        "must be an array of nonblank, trimmed header names when set",
-      );
-    }
+    refuseInvalidTrustedProxyRequiredHeaders(
+      trustedProxy,
+      (setting, requirement) => new GatewaySettingFailure(setting, requirement),
+    );
     if (
       this.options.gatewayRouting !== undefined &&
       Array.isArray(requiredHeaders) &&
