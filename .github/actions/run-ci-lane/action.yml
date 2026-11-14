@@ -103,7 +103,7 @@ runs:
       run: |
         node --input-type=module <<'NODE'
         import { appendFileSync } from 'node:fs';
-        import { loadTestSuites } from './scripts/ci/test-suites.mjs';
+        import { loadTestSuites } from './scripts/ci/test-suites.ts';
         import { isOpenShellLane } from './scripts/ci/openshell-full-integration.ts';
         const view = process.env.OCC_CI_SUITE_VIEW;
         const name = process.env.CI_SELECTED_LANE;

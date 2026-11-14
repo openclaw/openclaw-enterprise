@@ -33,6 +33,8 @@ on:
       - scripts/build-repository-credentials.ts
       - scripts/ci/download-pinned.sh
       - scripts/ci/prepare.mjs
+      - scripts/ci/test-suites.ts
+      - scripts/ci/openshell-full-integration.ts
       - scripts/ci/resource-names.ts
       - scripts/ci/test-suites/images-packaging.json
       - scripts/lib/**

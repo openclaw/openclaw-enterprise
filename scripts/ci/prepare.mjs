@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
-import { loadTestSuites } from "./test-suites.mjs";
+import { loadTestSuites } from "./test-suites.ts";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
 import { openShellHarnessError, openShellRequiredEnv } from "./openshell-model-inputs.mjs";
 import {

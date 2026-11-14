@@ -24,7 +24,7 @@ import {
   waitMilliseconds,
 } from "../../scripts/ci/full-integration-reuse.ts";
 import { projectSkipperRunnerReceipt } from "../../scripts/ci/skipper-release.ts";
-import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
+import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
 
 async function reuseFixture() {
   const rows = (await selectFreshLanes([], "skipped")).matrix.filter(

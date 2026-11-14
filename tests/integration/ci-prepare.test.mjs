@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, test } from "node:test";
 import { runInNewContext } from "node:vm";
-import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
+import { loadTestSuites } from "../../scripts/ci/test-suites.ts";
 import { prepareCodexSeccompProfile } from "../../scripts/lib/codex-seccomp-k3d.ts";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.ts";
 import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prepare.mjs";
@@ -1867,6 +1867,8 @@ process.exit(73);
     for (const input of [
       ".dockerignore",
       "scripts/ci/prepare.mjs",
+      "scripts/ci/test-suites.ts",
+      "scripts/ci/openshell-full-integration.ts",
       "scripts/ci/resource-names.ts",
       "scripts/ci/test-suites/images-packaging.json",
       ".github/workflows/ci-image-cache.yml",
