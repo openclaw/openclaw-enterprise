@@ -9,6 +9,7 @@ import { isRecord } from "./reporter-diagnostics.ts";
 // allowlisted shape below is retained in ordinary results.
 const measurementPrefix = "openclaw-ci-measurement ";
 const openShellStageMeasurementKind = "openshell-stage";
+const openShellPluginStageKind = "openshell-plugin-stage";
 const openShellSandboxMeasurementKind = "openshell-sandbox-phase";
 const openShellPolicyCheckKind = "openshell-network-policy-check";
 const openShellFixtureTeardownKind = "openshell-fixture-teardown";
@@ -142,6 +143,10 @@ function isCount(value: unknown): value is number {
   return isSafeInteger(value) && value >= 0;
 }
 
+export function isOpenShellPluginStage(stage: unknown): stage is "installation" | "exposure-auth" {
+  return stage === "installation" || stage === "exposure-auth";
+}
+
 // Undefined identifies ordinary diagnostics. Null keeps rejected measurements
 // out of the raw failure output, including when parsing or projection throws.
 export function parseMeasurementDiagnostic(message: string): object | null | undefined {
@@ -219,6 +224,14 @@ function safeMeasurement(value: unknown): object | undefined {
       stage !== "exposure-auth" &&
       Boolean(openShellProgress({ kind, stage, outcome }));
     return safeStageMeasurement(value, allowedStage, 7_200_000);
+  }
+  if (value.kind === openShellPluginStageKind) {
+    const { kind, stage, outcome } = value;
+    return Object.keys(value).length === 3 &&
+      isOpenShellPluginStage(stage) &&
+      openShellProgress({ kind: openShellStageMeasurementKind, stage, outcome })
+      ? { kind, stage, outcome }
+      : undefined;
   }
   if (value.kind === openShellSandboxMeasurementKind) {
     return safeStageMeasurement(value, isAllowed(value.stage, openShellSandboxStages), 2_400_000);
