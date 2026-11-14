@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type RequestListener } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
@@ -114,6 +116,41 @@ test("smoke timing retains failure and omits pending branches and free-form data
     ],
   });
   pending.resolve();
+});
+
+test("the Actions smoke command reports no retirement waits when image setup is missing", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-retirement-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const script = fileURLToPath(new URL("../../scripts/ci/first-agent-smoke.mjs", import.meta.url));
+  const output = join(directory, "output");
+  const env = {
+    GITHUB_ACTIONS: "true",
+    RUNNER_TEMP: directory,
+    OCC_FIRST_AGENT_SMOKE_DIRECTORY: directory,
+  };
+  // The empty work directory fails the real command before the retirement phase.
+  for (const sink of [output, directory]) {
+    const command = spawnSync(process.execPath, [script, "run"], {
+      encoding: "utf8",
+      env: { ...env, GITHUB_OUTPUT: sink },
+      timeout: 10_000,
+    });
+    assert.ifError(command.error);
+    assert.equal(command.status, 1);
+    assert.match(command.stderr, /first-agent-smoke: Error: Run .* images.* first/);
+    assert.doesNotMatch(
+      command.stderr + command.stdout,
+      /::notice title=First Agent Smoke retirement wait::/,
+    );
+    assert.deepEqual(
+      JSON.parse(await readFile(join(directory, "first-agent-smoke-timing.json"), "utf8")),
+      { version: 1, rows: [] },
+    );
+  }
+  assert.equal(
+    await readFile(output, "utf8"),
+    'retirement-notices={"status":"unreached","completed":0,"rows":[]}\n',
+  );
 });
 
 test("chat proof accepts the deterministic assistant answer", () => {
