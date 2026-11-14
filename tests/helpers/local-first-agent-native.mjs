@@ -70,7 +70,7 @@ const providerCodes = new Set([
 const responseHeaderMarkers = new Set(["none", "provider-like", "openshell-policy", "mixed"]);
 // The upfront 401 body's form and its error.code and error.type, each from a closed
 // set ("other" off-set); the message never reaches the log. They mirror the sets in
-// runtime-entrypoints.ts; runtime-model-probe-settlement.test.mjs pins that.
+// runtime-entrypoints.ts; runtime-model-probe-settlement.test.ts pins that.
 export const bodyShapes = new Set([
   "json-error-code",
   "json-error-no-code",
