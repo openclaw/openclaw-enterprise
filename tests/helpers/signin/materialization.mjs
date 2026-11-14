@@ -10,7 +10,7 @@ import { caAndLeaf } from "../certificates.mjs";
 import { ownPortForward } from "../port-forward-cleanup.ts";
 import { fixtureFetch } from "./custody-probes.mjs";
 
-const modules = ["oidc-provider-server.mjs", "oidc-provider.mjs", "id-token.mjs"];
+const modules = ["oidc-provider-server.ts", "oidc-provider.ts", "id-token.mjs"];
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const providerName = "signin-rehearsal-oidc";
 const host = "idp.signin-rehearsal.test";
@@ -187,7 +187,7 @@ export async function prepareMaterialization({
           name: "provider",
           image: images.node,
           imagePullPolicy: "Never",
-          command: ["node", "/fixture/oidc-provider-server.mjs", "/fixture"],
+          command: ["node", "/fixture/oidc-provider-server.ts", "/fixture"],
           env: [
             { name: "OIDC_LISTEN_HOST", value: "0.0.0.0" },
             { name: "OIDC_LISTEN_PORT", value: "8443" },

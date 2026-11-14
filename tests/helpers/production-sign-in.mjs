@@ -23,7 +23,7 @@ import {
 import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
 import { createReadyComputeDriver } from "./development.mjs";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
-import { createOidcProvider } from "./oidc-provider.mjs";
+import { createOidcProvider } from "./oidc-provider.ts";
 import { databaseUrl as testDatabaseUrl } from "./postgres-database.mjs";
 import { composeProduction } from "./password-hasher.mjs";
 
@@ -531,7 +531,7 @@ export async function googleSignIn(
 /**
  * Installs the shared synthetic OIDC protocol on this test's fetch transport.
  * @param {import("node:test").TestContext} t
- * @param {{ clientId: string, clientSecret: string, issuer?: typeof fixtureOidcIssuer, tokenAuth?: string }} options
+ * @param {Omit<import("./oidc-provider.ts").OidcProviderOptions, "issuer"> & { issuer?: typeof fixtureOidcIssuer }} options
  */
 export function fakeOidc(t, { issuer = fixtureOidcIssuer, ...options } = {}) {
   const fixture = createOidcProvider({ issuer, ...options });
