@@ -10,10 +10,7 @@ import { promisify } from "node:util";
 
 import { redactFailure } from "../../scripts/ci/failure-redaction.mjs";
 import { selectFirstAgentModel, verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
-import {
-  WORKSPACE_DEFAULTS,
-  WORKSPACE_DEFAULTS_ID,
-} from "../../packages/contracts/src/workspace-defaults.mjs";
+import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {

@@ -168,7 +168,7 @@ function verifiedStorybook(tested: string) {
   const entries = git("ls-tree", tested, "--", workflow, preparer).toString("utf8");
   return (
     entries ===
-      `100644 blob 08676f57d84dcdec23bb01aae2ebed6c1882f9f2\t${workflow}\n` +
+      `100644 blob ad55f3c6ecfb551d76984ffd901abe3dfeb9c170\t${workflow}\n` +
         `100644 blob 47cc6129264ecdfb5271be15c51441e48e990323\t${preparer}\n` &&
     hasPackageScript(
       tested,

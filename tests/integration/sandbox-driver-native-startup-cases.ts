@@ -10,11 +10,11 @@ import {
   OpenShellSandboxDriver,
   type OpenShellSandboxDriverOptions,
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { requireConfiguration } from "../../packages/contracts/src/index.ts";
 import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
-} from "../../packages/contracts/src/workspace-defaults.mjs";
+  requireConfiguration,
+} from "../../packages/contracts/src/index.ts";
 import { SandboxWorkspaceSetupRefusedError } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createOpenShellInstallationConfiguration } from "../helpers/openshell-kubernetes-real.mjs";
