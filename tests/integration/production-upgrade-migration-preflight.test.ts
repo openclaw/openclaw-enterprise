@@ -109,23 +109,18 @@ test(
           [{ name: "migration", envFrom: null }],
         );
         assert.equal(generated.spec.template.spec.initContainers, undefined);
-        assert.deepEqual(generated.spec.template.spec.containers[0]?.command, ["node"]);
-        assert.deepEqual(generated.spec.template.spec.containers[0]?.args, [
-          "--run",
-          "db:migrate:production",
-          "--",
-          "--check",
-        ]);
+        const [probe] = generated.spec.template.spec.containers;
+        assert.ok(probe);
+        assert.deepEqual(probe.command, ["node"]);
+        assert.deepEqual(probe.args, ["--run", "db:migrate:production", "--", "--check"]);
 
         // A candidate from a historical chart must keep that image's real entry point.
         migration.args = ["scripts/migrate-production.mjs", "--require-current"];
-        const historical: Job = JSON.parse(
+        const historical: unknown = JSON.parse(
           (await generate(action, withInitializer(selected))).stdout,
         );
-        assert.deepEqual(historical.spec.template.spec.containers[0]?.args, [
-          "scripts/migrate-production.mjs",
-          "--check",
-        ]);
+        probe.args = ["scripts/migrate-production.mjs", "--check"];
+        assert.deepEqual(historical, generated);
         migration.args = ["--run", "db:migrate", "--"];
         await refuses(action, withInitializer(selected), /invalid migration arguments/);
         migration.args = ["--run", "db:migrate:production", "--", "--expect-empty", "unexpected"];

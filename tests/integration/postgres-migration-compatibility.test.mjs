@@ -1198,8 +1198,8 @@ async function installProviderCompletedHistory(db) {
 // The real migration command. pnpm's own startup costs about 1 s of CPU per call, so run each
 // package.json script's exact text through `sh` with this Node first on PATH, as pnpm does.
 // The "Drizzle second migration" case still runs both commands through `corepack pnpm`,
-// every prepared CI database is migrated that way, and the Helm migration Job runs the
-// script file directly. Each refusal code and both scripts keep a command case here.
+// every prepared CI database is migrated that way, and Helm uses the production task
+// in the selected controller image. Each refusal code and both tasks keep a command case here.
 const migrationScripts = readFile(join(repositoryRoot, "package.json"), "utf8").then(
   (text) => JSON.parse(text).scripts,
 );

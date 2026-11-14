@@ -146,7 +146,7 @@ ports must differ. The Compute Driver rejects malformed IPv4 hostnames and
 numeric/hexadecimal sandbox suffixes. See [refused values](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
 
 On install and upgrade, `deploy/helm/openclaw-enterprise/files/check-installation.mjs`
-validates Installation offline before migration, bootstrap and API rollout.
+validates Installation offline before `db:migrate:production`, bootstrap and API rollout.
 It uses `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure`
 and the API/worker filter `apps/controller/src/logging.ts:configurationLogDetails`: at most 32 field
 diagnostics, without submitted values, except
@@ -159,8 +159,7 @@ to the hook, API and worker. `requireChartGatewayRouting` compares the Kubernete
 Compute Gateway name, Gateway and Envoy namespaces, and effective hostname.
 A mismatch reports the field without its value.
 
-The hook runs the selected controller image’s `db:migrate:production` task.
-It keeps the release name and bounds its suffix to 63 characters. Both
+The hook keeps the release name and bounds its suffix to 63 characters. Both
 database containers optionally mount the CA. Helm validates distinct application and
 migration Secret keys against Kubernetes syntax before use. `installation.key`
 and `executionCluster.kubeconfigKey` must be Secret keys at most 253 characters,
