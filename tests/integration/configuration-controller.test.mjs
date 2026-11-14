@@ -1696,7 +1696,7 @@ test("Configuration save and deployment refuse OpenClaw's $include directive", a
   // change. Configuration rules and Compute read the document as written, so an include would add
   // settings no rule checked, such as a gateway.auth.mode Kubernetes Compute refuses, from a file
   // in the Gateway's config directory. Every save path, Agent save and deployment refuse it at any
-  // depth; configuration-occ.test.mjs proves the paths the refusal names.
+  // depth; configuration-occ.test.ts proves the paths the refusal names.
   const context = await kubernetesRuleFixture("compute-include-integration", ...configurationRules);
   const agent = await storedRowAgent(context, runtimeSelected, {
     name: "Config include consumer",
@@ -1809,7 +1809,7 @@ test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE
   // not have: a Configuration that turned the sandbox on saved and deployed, then failed every
   // turn. Finding 2773: exec host "sandbox" sends shell commands to that sandbox, so each one
   // failed. Every save path, Agent save and deployment run the rule, for the defaults and for one
-  // Agent's entry, which overrides them; configuration-occ.test.mjs proves each refused and
+  // Agent's entry, which overrides them; configuration-occ.test.ts proves each refused and
   // accepted value.
   const context = await kubernetesRuleFixture("compute-sandbox-integration", ...configurationRules);
   const { configurationDriver } = context;

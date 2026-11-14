@@ -8,7 +8,7 @@ import type { SandboxDriver, SandboxFacet } from "@openclaw-enterprise/contracts
  * this value: tests/integration/runtime-image-startup.test.mjs only checks that the
  * image accepts the configuration native OpenClaw renders, and schema acceptance does
  * not qualify the flow. Flip it by hand, together with the assertion in
- * tests/conformance/configuration-occ.test.mjs and the native worker notes in
+ * tests/conformance/configuration-occ-sandbox-cases.ts and the native worker notes in
  * docs/reference/harness-execution.md and deploy/runtime/README.md.
  */
 export const PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS: boolean = true;
