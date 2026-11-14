@@ -28,7 +28,8 @@ private evidence directory and `.upgrade-lock`. Before proceeding:
    kubeconfig path and contents, context, namespace and release from
    `parameters.json`. Current credentials must still authorize the cleanup.
 
-The command requires Python 3, Node.js, `jq`, `kubectl` and `mktemp`. Kubernetes
+The command requires Python 3, Node.js matching the release checkout's
+`package.json` engine range, `jq`, `kubectl` and `mktemp`. Kubernetes
 access must permit reading and deleting the recorded Jobs, Secrets and
 NetworkPolicies, plus listing Pods and reading any recorded child Pod. No OCC
 service key or candidate image is required. Cleanup does not run Helm, migrate

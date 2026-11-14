@@ -22,6 +22,7 @@
     "tests/integration/production-upgrade-signal-lock.test.ts",
     "tests/integration/codex-model-probe.test.mjs",
     "tests/integration/production-image-upgrade-recovery.test.mjs",
+    "tests/integration/production-upgrade-migration-preflight.test.ts",
     "tests/integration/upgrade-preflight-state.test.ts",
     "tests/integration/docker-compute-token-retry.test.mjs",
     "tests/integration/workspace-setup-runtime.test.ts",
@@ -75,6 +76,12 @@
     },
     {
       "path": "tests/integration/production-image-upgrade-recovery.test.mjs"
+    },
+    {
+      "path": "tests/integration/production-upgrade-migration-preflight.test.ts",
+      "expectedTests": [
+        "migration preflight preserves labels and refuses ambiguous initialization Jobs"
+      ]
     },
     {
       "path": "tests/integration/upgrade-preflight-state.test.ts"

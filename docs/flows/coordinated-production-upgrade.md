@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-14"
-last_updated_session: "authoring-run/837cd51d-17ce-4c24-ad13-20197e634e9c"
+last_updated_session: "authoring-run/9b1d4770-fd45-4533-9bc4-99395d39837a"
 ---
 
 # Production image upgrade flow
@@ -134,33 +134,32 @@ Changed immutable data requires a successor. Mutable changes require a Kubernete
 self-review of named-Secret update access: denial stops preparation; inconclusive
 review warns and continues. Replacement still requires update permission.
 Rendered Certificates require server-side dry-run admission.
-`scripts/upgrade-startup-preflight.mjs` copies controller images, environment,
-mounts and service accounts into single-Pod Jobs: candidate Secret, no retries,
-deadline. `preflight_startup` refuses changed UIDs or multiple children.
-Job failure overrides child success.
+`scripts/upgrade-startup-preflight.ts` builds single-Pod Jobs with the candidate
+Secret, controller image, environment, mounts, and service account. Jobs have a
+deadline and zero retries. `preflight_startup` refuses changed UIDs or multiple
+children. Job failure overrides child success.
 
-`scripts/migrate-production.mjs --check` uses the initializer's migration container,
-environment, mounts and Pod identity before preflight success or shutdown.
-`scripts/migration-history.mjs:migrateWithHistory` checks receipts/catalog/grants under
-lock without applying migrations. Pending canonical history is allowed. Helm rechecks.
+`migrationJob` selects one initialization Job by release and component. It refuses
+malformed labels and preserves the Job and Pod labels used by chart policies.
+`scripts/migrate-production.mjs --check` runs with the initializer's migration
+identity before shutdown. `scripts/migration-history.mjs:migrateWithHistory` checks
+receipts, catalog, and grants under lock. Pending canonical history is allowed.
+Helm rechecks before migrating.
 
-API `apps/controller/src/composition/console-theme.ts:loadConsoleTheme` rejects invalid
-bundles; workers skip themes. Both use `loadStartupConfigurationSnapshot` and
-`loadInstallationConfiguration` without database access. If the selected OpenShell
-Backend uses `bearerTokenFile`, each Job checks that its process can read the
-configured regular file. The check uses file metadata and permissions and leaves
-the token contents unread.
-`connectionPlan` preserves only recognized chart entrypoints. For private OIDC CA
-trust it retains the chart-owned database preload, CA argv position and CA
-assembler/mounts; unknown plans refuse. Both entrypoints require a PostgreSQL URL.
-Each writer Job uses the candidate's `createPostgresPool` and rendered
-`OCC_DATABASE_URL` to select at most two IDs from `occ.installation` in a read-only
-transaction. Exactly one must match the authenticated API/startup-Secret ID.
-Statement and lock timeouts are five seconds; authentication through cleanup has
-a 15-second deadline. Fixed diagnostics distinguish identity refusal from an
-incomplete check; neither exposes rows or connection errors. Nothing bootstraps.
-Both application connections are checked; the separate migrator's identity and
-data continuity remain unproved.
+`apps/controller/src/composition/console-theme.ts:loadConsoleTheme` checks API
+theme bundles. Both writers use `loadStartupConfigurationSnapshot` and
+`loadInstallationConfiguration` without database access. For OpenShell
+`bearerTokenFile`, each Job checks file type and readability without reading the token.
+
+`connectionPlan` refuses unknown chart entrypoints. Private OIDC CA trust retains
+the chart's database preload, CA argument, and assembler mounts. Both writer Jobs
+require `OCC_DATABASE_URL`. The candidate's `createPostgresPool` reads up to two
+`occ.installation` IDs in a read-only transaction. Exactly one must match the
+authenticated API/startup-Secret ID. Statement and lock timeouts are five seconds.
+Authentication through cleanup has a 15-second deadline. Fixed diagnostics
+distinguish refusal from an incomplete check without exposing connection errors
+or rows. The Jobs check writer connections. Migrator identity and data continuity
+remain unverified.
 
 Before further quiescence or Helm submission, `preflight_resume` runs all three
 Jobs in one `upgrade-preflight-resume.*` attempt: migration history plus API/worker
@@ -391,6 +390,8 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 07:25: Trace initialization Job selection and migration Pod label validation. (authoring-run/9b1d4770-fd45-4533-9bc4-99395d39837a - ba5b0832956ac3ad93695aab92db952f388ae7da)
 
 - 2026-11-14 06:52: Trace the broker exit before socket readiness. (authoring-run/837cd51d-17ce-4c24-ad13-20197e634e9c - ba5b0832956ac3ad93695aab92db952f388ae7da)
 

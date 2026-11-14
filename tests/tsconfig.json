@@ -57,6 +57,7 @@
     "integration/runtime-image-codex-auth-mount-case.ts",
     "integration/runtime-image-gateway-probe-cleanup-case.ts",
     "integration/egress-connected-gateway-preflight-cases.ts",
+    "integration/production-upgrade-preflight-draft-budget.ts",
     "integration/runtime-image-bundled-codex-case.ts",
     "integration/runtime-image-dedicated-assets-case.ts",
     "integration/sandbox-workspace-gateway-fixture.ts",
