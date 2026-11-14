@@ -310,7 +310,7 @@ published or disposed session. Disposal wakes shutdown waiters.
 
 ## Emitted packaging
 
-`scripts/build-repository-credentials.mjs` follows the credential entrypoints in
+`scripts/build-repository-credentials.ts` follows the credential entrypoints in
 the controller's emitted tree into separate service/client artifacts.
 
 | Artifact context                        | Runtime entrypoints beneath `dist/`                                                   |
