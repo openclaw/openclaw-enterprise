@@ -222,8 +222,24 @@ node scripts/ci/run-tests.mjs run image-pair-qualification \
   --state "$pair_state_dir/state.json" --results "$pair_state_dir/results.json"
 ```
 
-The lane requires all four images and fails on skipped cases. It checks protocol
-compatibility, not cluster behavior or a live Agent workflow.
+The lane requires all four images and fails on skipped cases. It exercises the
+admission protocol in Docker. The test starts the older broker independently with
+prepared-git inputs to determine which refusal the upgrade command must report.
+If it exits before its control socket opens, the test starts the same image with
+its historical projected inputs.
+It uses a disposable, unregistered App key and a container with no external
+network. It checks the exact HTTP 404 response, then adds only the prepared-git
+authority arguments and verifies that the broker exits before opening the socket.
+The upgrade command uses prepared-git inputs for every invocation.
+
+If cancellation leaves an `oce-old-pair-*` directory under the test's temporary
+directory, read its `owner.json`. The `testOwner` field records the host, PID and
+process start time. On that host, confirm the process has exited or the PID has
+a different start time. For a remaining `oce-old-pair-<probeOwner>` container,
+verify its `org.openclaw.test.owner` and `openclaw.upgrade-probe` labels match
+`testOwner` and `probeOwner`, and its bind mounts point into that directory.
+Remove the container by ID and remove that directory. Leave the fixture in place
+if ownership is uncertain.
 
 ## Runtime image startup test environment
 

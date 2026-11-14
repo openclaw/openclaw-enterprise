@@ -2072,7 +2072,7 @@ esac
 `,
       // This test proves chart endpoint preservation, not image compatibility.
       node: `#!/usr/bin/env bash
-if [[ "$1" == scripts/upgrade-repository-image-probe.mjs ]]; then
+if [[ "$1" == scripts/upgrade-repository-image-probe.ts ]]; then
   [[ $# == 4 ]] || exit 92
   printf '%s|%s|%s\\n' "$2" "$3" "$4" >> "$TEST_PROBE_CALLS"
   printf '{"fixture":true}\\n'
