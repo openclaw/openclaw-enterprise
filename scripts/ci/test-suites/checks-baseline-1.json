@@ -28,7 +28,7 @@
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.mjs",
     "tests/integration/presets-controller.test.ts",
-    "tests/integration/plugin-discovery-api.test.mjs",
+    "tests/integration/plugin-discovery-api.test.ts",
     "tests/integration/openshell-plugin-source-reader.test.ts",
     "tests/integration/runtime-credentials-api.test.ts",
     "tests/integration/secret-api.test.mjs",
@@ -498,7 +498,7 @@
       ]
     },
     {
-      "path": "tests/integration/plugin-discovery-api.test.mjs"
+      "path": "tests/integration/plugin-discovery-api.test.ts"
     },
     {
       "path": "tests/integration/openshell-plugin-source-reader.test.ts",

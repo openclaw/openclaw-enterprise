@@ -243,7 +243,7 @@
     "tests/integration/password-sign-in-admission.test.ts": 2700,
     "tests/integration/password-sign-in-audit.test.ts": 3100,
     "tests/integration/password-sign-in-policy.test.ts": 600,
-    "tests/integration/plugin-discovery-api.test.mjs": 1800,
+    "tests/integration/plugin-discovery-api.test.ts": 1800,
     "tests/integration/plugin-driver-real-preflight.test.ts": 400,
     "tests/integration/plugin-driver-startup.test.ts": 800,
     "tests/integration/postgres-agent-deletion-audit.test.ts": 2000,
