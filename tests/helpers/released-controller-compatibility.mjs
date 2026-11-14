@@ -40,6 +40,23 @@ const authProbe = `
 `;
 const authSecret = "local-compatibility-session-secret-32-bytes";
 
+function normalizedRepositoryDigest(reference) {
+  const match = /^([^@]+)@(sha256:[a-f0-9]{64})$/.exec(reference);
+  if (!match) {
+    return undefined;
+  }
+  const [, name, digest] = match;
+  const tagSeparator = name.lastIndexOf(":");
+  const repository = tagSeparator > name.lastIndexOf("/") ? name.slice(0, tagSeparator) : name;
+  const slash = repository.indexOf("/");
+  const first = slash === -1 ? "" : repository.slice(0, slash);
+  const hasRegistry = first === "localhost" || /[.:A-Z]/.test(first);
+  const registry = hasRegistry && first !== "index.docker.io" ? first : "docker.io";
+  const path = hasRegistry ? repository.slice(slash + 1) : repository;
+  const qualifiedPath = registry === "docker.io" && !path.includes("/") ? `library/${path}` : path;
+  return `${registry}/${qualifiedPath}@${digest}`;
+}
+
 async function withReleasedControllerFixture(t, images, createDatabase, scenario) {
   const owner = `controller-compatibility-${randomUUID()}`;
   const label = `org.openclaw.compatibility=${owner}`;
@@ -59,12 +76,16 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
     }
   }
   for (const image of Object.values(images)) {
-    assert.match(image.reference, /@sha256:[a-f0-9]{64}$/);
+    const selectedIdentity = normalizedRepositoryDigest(image.reference);
+    assert.ok(selectedIdentity, "Controller selection must include an immutable SHA-256 digest.");
     assert.match(image.revision, /^[a-f0-9]{40}$/);
     const inspected = JSON.parse((await command(["image", "inspect", image.reference])).stdout);
     assert.equal(inspected.length, 1);
+    // Docker can shorten Docker Hub names and omit the tag in RepoDigests.
     assert.ok(
-      inspected[0].RepoDigests.includes(image.reference),
+      inspected[0].RepoDigests.some(
+        (value) => normalizedRepositoryDigest(value) === selectedIdentity,
+      ),
       "Inspected controller digest differs from selection.",
     );
     assert.equal(inspected[0].Config.Labels["org.opencontainers.image.revision"], image.revision);
