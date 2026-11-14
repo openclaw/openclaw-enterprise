@@ -18,6 +18,8 @@ Retire `CredentialGatewayDriver` and `CredentialRefreshDriver` as Installation c
 
 The validated bundled `repository.openShell` Git-only installation retains a scoped compatibility exception: fresh static model sources use the separately selected Credential Gateway, with or without authorized Git repositories. New plugin, refresh and OAuth enrollments do not qualify. This does not extend to execution-authority configurations or general installed packages. Prepared and credential-free sources still require protection. Existing sources and refreshes keep their recorded owners until supported drain; selection does not transfer ownership. The OpenShell gateway service is distinct from the deprecated OCE `CredentialGatewayDriver` capability.
 
+[Proposed amendment: recheck the selected Secret reader before each storage read](secret-read-selection.md).
+
 ![Proposed protected egress: Sandbox prevents bypass; a trusted sender checks current authority, resolves a credential if needed, and sends the request](assets/overview.svg)
 
 [Diagram source](assets/overview.mmd)
