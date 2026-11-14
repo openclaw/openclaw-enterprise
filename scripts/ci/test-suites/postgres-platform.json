@@ -753,6 +753,10 @@
       "expectedTests": ["PostgreSQL readiness shares only in-flight application-pool work"]
     },
     {
+      "path": "tests/integration/postgres-metrics-listener-capacity.test.ts",
+      "expectedTests": ["metrics listener bounds PostgreSQL scrape waiters and pipelined responses"]
+    },
+    {
       "path": "tests/integration/postgres-private-secret-create.test.ts",
       "expectedTests": [
         "a refused Installation-private create removes only its exact Kubernetes object",

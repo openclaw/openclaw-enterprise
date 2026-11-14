@@ -25,8 +25,15 @@ The default metrics port 9464 remains available.
 The listener serves no sessions or resource operations and does not invoke IAM.
 Network isolation protects the aggregate operational data. Exposition uses
 Prometheus text, `Cache-Control: no-store`, and the client content type. Other
-paths return 404; other methods on `/metrics` return 405. Connections are limited
-to 16, with five-second socket/request handling limits. No public ingress.
+paths return 404; other methods on `/metrics` return 405. The listener admits
+at most 16 concurrent scrapes and 16 admitted responses per connection, plus
+at most one closing refusal. Host and Expect refusals share this response limit.
+A scrape keeps its slot until collection settles and its response finishes or
+its socket closes. Overflow receives at most one 503 with `Connection: close`; further
+pipelined requests terminate that connection. The connection also closes after
+one second if the refusal cannot drain. Earlier queued responses can be lost.
+The listener retains its 16-connection cap and five-second socket/request limits.
+No public ingress.
 
 ## Application families
 

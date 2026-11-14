@@ -121,12 +121,13 @@ kubeconfig/chart/values, checks release states and syncs intent and its director
 A failed stdout notice preserves and names intent, stopping before dispatch or
 Helm. Otherwise it syncs the unknown marker and starts Helm.
 `observeInstallationJob` records the first recognized attempt-matched Job UID
-(installs only). Helm's outcome stays separate; final report write errors fail
-the command without changing that outcome or replaying install.
+(installs only). Final report write errors fail the command without changing
+Helm's separate outcome or replaying install.
 
 Reported template failures add static [offline-render guidance](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff),
-including settings for the suffix refusal. Stderr stays in memory (4 MiB); excess is discarded without affecting Helm. Raw diagnostics are never
-printed or saved. Receipt and recovery decisions stay unchanged.
+including suffix-refusal settings. Stderr stays in memory (4 MiB); excess is discarded
+without affecting Helm. Raw diagnostics are never printed or saved. Receipt and
+recovery decisions stay unchanged.
 
 `deploy/helm/openclaw-enterprise/templates/bootstrap-networkpolicies.yaml:1`
 installs isolation before the Job; it and later policies grant configured
@@ -221,32 +222,35 @@ secrets before Driver construction or PostgreSQL access. `composeProduction` and
 the auth factory repeat it. Endpoints include `/healthz` and `/readyz`.
 `apps/controller/src/composition/postgres-readiness.ts:createPostgresReadinessCheck`
 shares one application-pool `SELECT 1` per instance across overlapping `GET` and
-implicit `HEAD` probes until PostgreSQL settles. Disconnects cannot release it;
-later probes query afresh.
-The startup probe allows 120 one-second failures; readiness has a one-second
-timeout. Worker exec probes run Node under its CPU limit; 24 five-second startup failures
-allow two minutes.
+implicit `HEAD` probes until PostgreSQL settles despite disconnects; later probes query afresh.
+API startup allows 120 one-second failures; readiness has a one-second timeout.
+Worker exec probes run Node under its CPU limit; 24 five-second failures allow
+two minutes.
+
+`apps/controller/src/metrics/listener.ts:startMetricsListener` retains scrape slots
+until collection settles and the response finishes or socket closes.
+[Host/Expect share capacity](../reference/metrics.md#configuration-and-access).
 
 `apps/controller/src/index.ts:createFastifyApp`
 
 On `SIGTERM`, the API stops accepting connections and drains requests with
 `Connection: close`, avoiding the 72-second keep-alive wait. Its single `Recreate`
 replica has no peer or `preStop`; the 30-second grace cuts off unfinished requests.
-Logs show `shutdown.started` (`signal`), then `shutdown.completed` (`durationMs`),
-or `shutdown.failed` (exit 1). Only `shutdown.started` means an interrupted drain.
+Logs progress from `shutdown.started` (`signal`) to `shutdown.completed` (`durationMs`)
+or `shutdown.failed` (exit 1). A lone `shutdown.started` means interrupted drain.
 
-The PostgreSQL API compositions close the exchange binding, protected Driver,
-prepared GitHub owner, and database in order, continuing after a close fails.
-Shutdown reports the first failure, wrapping a falsey thrown value as an error
-with the original value as its cause. Failed startup preserves the startup error.
-The exchange binding is independent of the protected Driver. See
-`apps/controller/src/composition/production.ts:composeProduction` and
+PostgreSQL API compositions close the exchange binding, protected Driver,
+prepared GitHub owner, and database in order despite failures.
+Shutdown reports the first failure; errors wrap falsey thrown values as their
+cause. Startup errors survive cleanup.
+Exchange binding and protected Driver are independent:
+`apps/controller/src/composition/production.ts:composeProduction`;
 `apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`.
 
-The worker closes the repository Git sender binding, prepared Git owner, receipt
-listener, metrics, and prepared GitHub owner in order, continuing after a close
-fails, then stops its loop and database. A listener left open would keep the Pod
-running until its grace ends. Any failure logs `worker.error` `SHUTDOWN_FAILED`
+The worker closes its repository Git sender binding, prepared Git owner, receipt
+listener, metrics, and prepared GitHub owner in order despite failures, then stops
+its loop and database. Open listeners keep the Pod running until grace expires.
+Failures log `worker.error` `SHUTDOWN_FAILED`
 (exit 1). See `apps/controller/src/worker/shutdown.ts:closeWorkerComposition`.
 
 Nonempty `controlPlane.nodeSelector` places API, worker, migration and bootstrap
@@ -283,12 +287,12 @@ that Pod egress to the proxy's exact `/32` and TCP port. The proxy must permit
 CONNECT to `slack.com:443`. The empty default renders no rule and leaves
 production Slack directory lookup unavailable with manual exact-ID entry.
 
-The Kubernetes Compute Driver queries the API server version and verifies
-authenticated Namespace access. Below the supported 1.35 baseline, the API logs
+The Kubernetes Compute Driver checks the API server version and authenticated
+Namespace access. Below supported version 1.35, the API logs
 `compute.preflight-warning` with both versions and continues. An invalid version
 response, unreachable API, or failed Namespace access fails preflight.
 
-The worker independently validates production settings, opens the same
+The worker validates production settings, opens the same
 application-role database, loads selected Drivers, validates IAM, runs Compute
 preflight with the same advisory warning, emits `worker.started`, and polls
 durable Namespace/AgentRevision work. Readiness requires fresh queue-health
@@ -303,7 +307,7 @@ With `repository` selected, both processes load the same registry and construct
 `drivers.repo`. API startup performs no control operation and loads no App key.
 With prepared repository Git, the worker reads the App key at startup and exits
 before readiness with `PREPARED_GITHUB_APP_KEY_INVALID` if it cannot sign.
-The worker owns session lifecycle; API readiness remains database-backed.
+The worker owns session lifecycle.
 
 `apps/controller/src/composition/repository-credentials/projected-inputs.ts:prepareProjectedInputs`
 
@@ -325,11 +329,9 @@ Fresh bootstrap [checks both output paths](../reference/authentication/service-a
 
 `internal/occclient/client.go:Client.GetInstallation`
 
-After Helm readiness, retrieve
-`initial-admin-service-key.json` from protected bootstrap storage through an
-approved reader path into an owner-readable file. A completed Job is
-not an exec endpoint, and the API and worker cannot retrieve this file for the
-operator.
+After Helm readiness, retrieve `initial-admin-service-key.json` through an approved
+reader path from protected bootstrap storage into an owner-readable file.
+A completed Job is not an exec endpoint; API and worker cannot retrieve this file.
 
 `occ installation get` reads the protected key file
 and displays the Installation. Its `ID` must match the key
@@ -344,10 +346,10 @@ until tenant deployment/TUI procedures run.
 
 ## Debugging and Verification
 
-- `scripts/prepare-bootstrap-volume` should exit `0` only for a fresh claim with
-  no bootstrap output files and UID/GID `1000`, mode `0700` root state.
+- `scripts/prepare-bootstrap-volume` exits `0` only for fresh claims without
+  bootstrap output files and UID/GID `1000`, mode `0700` root state.
 - `kubectl -n openclaw-system wait --for=condition=complete job/oce-initialization`
-  should succeed before API and worker rollout checks.
+  must succeed before API/worker rollout checks.
 - `pnpm db:migrate:production --check` reports the accepted database history
   without applying SQL. `MIGRATION_HISTORY_UNSUPPORTED` needs the database
   inspected; initialization never repairs its ledger.
@@ -364,29 +366,29 @@ until tenant deployment/TUI procedures run.
   `/runtime/gatewayStorageClassName` requires a Kubernetes DNS-subdomain name.
   `apps/controller/src/api-startup.mjs:startupFailureFields` passes these diagnostics
   to `server.mjs`.
-- `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
-  first check for unsafe output storage, existing outputs, database-role
+- Start with `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap`
+  for unsafe output storage, existing outputs, database-role
   failures, auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
   administrator/IAM mismatch.
-- Changing an external startup Secret alone does not restart the API or worker;
-  run an explicit rollout and repeat readiness plus authenticated proof.
-- `tests/integration/production-kubernetes-packaging.test.mjs` renders the
-  chart; it does not prove deployment or model execution.
+- An external startup Secret change does not restart API/worker; explicitly roll
+  out and repeat readiness and authenticated proof.
+- `tests/integration/production-kubernetes-packaging.test.mjs` renders the chart
+  without proving deployment or model execution.
 - `tests/integration/installation-handoff-k3d-real.test.ts` exercises the CLI with
   rendered Jobs, real named-Job RBAC, and replacement UIDs; suspended Jobs avoid
   migration/bootstrap execution. See [Kubernetes tests](../testing/kubernetes.md).
 
 ## Related docs
 
-- [Deployment guide: production](../guides/deploy.md#production)
-- [Settings reference](../reference/settings.md)
+- [Production deployment](../guides/deploy.md#production)
+- [Settings](../reference/settings.md)
 - [Kubernetes Compute Driver](../reference/drivers/kubernetes-compute.md)
 - [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
-- [Repository credential setup](../guides/repository-credentials.md)
-- [Controller worker execution flow](controller-worker.md)
-- [Production TUI flow](production-tui.md)
-- [Local password authentication flow](local-password-authentication.md)
-- [Authoritative platform design](../design.md)
+- [Repository credentials](../guides/repository-credentials.md)
+- [Controller worker](controller-worker.md)
+- [Production TUI](production-tui.md)
+- [Local password authentication](local-password-authentication.md)
+- [Platform design](../design.md)
 
 ## Manual Notes
 
@@ -398,9 +400,19 @@ until tenant deployment/TUI procedures run.
 
 - 2026-11-13: Document the opt-in check of an existing Installation and its bootstrap administrator. (authoring-run/b1c2409a-da5e-4236-9fd6-3e89f1773b94 - 3c8ee8b97066d1e82a4ba9f95ad6d6f6afea5df8)
 
+- 2026-11-12 21:23: Preserve metrics admission and migration history guidance in the merged startup flow. (authoring-run/9f8b5513-b8e6-4dfc-a9d6-6166d530a714 - 32d85576e6ffa0e42af6357e39d5856b8a669921)
+
 - 2026-11-12 09:45: Skip completed writable DDL; preserve read-only refusal. (authoring-run/eedb034b-cdad-4526-af11-0ce3490e267a - 11e22a5dc95b54a4fd7eb05e68a06f732033e7f8)
 
+- 2026-11-12 08:08: Preserve metrics admission while incorporating current startup guidance. (authoring-run/55f350ab-6738-4e2d-9a2b-fb3a3f02ad26 - 818e0a96ef7c7dca60dffb8b7209a0ae36745fcb)
+
 - 2026-11-12 06:35: Document static Helm template refusal guidance without changing recovery. (authoring-run/da0f3f3f-c550-48b6-8ef4-60e3f2d1b973 - 64358aae61847dea8a3834fbe06bed079b5727cc)
+
+- 2026-11-11 17:55: Release metrics sockets. (authoring-run/ba89e4f8-7809-490b-b98f-c8032300a4c1 - 755ebc38280f84b3ec420cc0b2a475ed1fb2be0a)
+
+- 2026-11-11 17:38: Count implicit metrics responses. (authoring-run/36f5ccfa-01c1-4cdb-b694-2692e3715fd6 - 755ebc38280f84b3ec420cc0b2a475ed1fb2be0a)
+
+- 2026-11-11 17:15: Bound metrics pipelines. (authoring-run/bec1d5fe-2f91-4072-a8ee-b716656390ef - 755ebc38280f84b3ec420cc0b2a475ed1fb2be0a)
 
 - 2026-11-11 17:05: Coalesce database readiness. (authoring-run/89773c17-5c87-4c2d-aa19-3b5a0af84b68 - 755ebc38280f84b3ec420cc0b2a475ed1fb2be0a)
 
