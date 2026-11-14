@@ -32,7 +32,10 @@ function singleFile(archive, filename, maxBytes) {
   assert.ok(Number.isSafeInteger(size) && size <= maxBytes);
   const end = 512 + Math.ceil(size / 512) * 512;
   assert.ok(end + 1024 <= archive.length);
-  assert.ok(archive.subarray(512 + size).every((byte) => byte === 0));
+  assert.ok(
+    archive.subarray(512 + size).every((byte) => byte === 0),
+    "Image file archive contains nonzero padding or additional data.",
+  );
   return archive.subarray(512, 512 + size);
 }
 
@@ -157,6 +160,7 @@ export async function extractImageFile({
   cleanup,
   image,
   platform = /** @type {string | undefined} */ (undefined),
+  pullNever = false,
   filename,
   destination,
   maxBytes = /** @type {number | undefined} */ (undefined),
@@ -182,6 +186,7 @@ export async function extractImageFile({
         "--label",
         `${ownershipLabel}=${resource.ownershipToken}`,
         ...(platform ? ["--platform", platform] : []),
+        ...(pullNever ? ["--pull=never"] : []),
         image,
         "/bin/true",
       ])

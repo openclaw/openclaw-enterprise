@@ -1,7 +1,7 @@
 # Runtime image recipe
 
-Build a public local runtime image for the OpenClaw Enterprise quickstart and
-real-runtime integration tests. The image contains these runtime entrypoints:
+Build the OpenClaw Enterprise runtime image for local quickstart and integration
+tests. The image provides these entrypoints.
 
 - OpenClaw gateway: `node /app/openclaw.mjs`.
 - Dedicated OpenClaw node: `node /app/openclaw.mjs connect --target-file <private-file> --ephemeral --pair-or-reconnect`.
@@ -11,16 +11,14 @@ real-runtime integration tests. The image contains these runtime entrypoints:
 Package installation and explicit network requests still use the configured
 network policy.
 
-The Dockerfile builds OpenClaw from a verified public source archive, using its
-pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
-For a package registry mirror, supply the separate Corepack and pnpm build
-secrets described in [the image build guide](../../docs/guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
-The selected upstream source pins stock Codex `0.164.0`. Both Codex entrypoints
-use this installation and frozen lockfile without dependency downgrades or binary patches. The seccomp profile retains its existing syscall
-rules; version admission does not replace native startup and sandbox verification.
-Codex and Slack come from that same source. Its restricted workspace-node commands
-and persistent device identity support split storage; published `2026.9.5` packages
-do not contain that complete contract.
+The Dockerfile uses a verified public OpenClaw archive, its pinned package
+manager, frozen lockfile, and upstream Docker assembly. A registry mirror
+requires [separate Corepack and pnpm build secrets](../../docs/guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
+Both Codex entrypoints use stock Codex `0.164.0` from the frozen lockfile
+without dependency downgrades or binary patches. Verify native startup and
+sandbox behavior with the image's seccomp rules. Codex and Slack come from the same source, whose
+restricted workspace-node commands and persistent device identity support
+split storage. That contract requires a newer source than `2026.9.5`.
 
 OCE builds an unreleased OpenClaw commit that supports Gateway managed mode
 and the separate tool policy for dedicated Harnesses. Managed mode restricts
@@ -103,30 +101,26 @@ enrollment, containment, workspace access, or model execution.
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.164.0`                                                                                                         |
 | Matrix crypto native library                          | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
-The source's package version is `2026.10.10`; it does not identify this custom
-build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
-hash, every applied patch hash, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
-package identity, and the SHA-256 of `contents.json`, which inventories
-packaged files, modes, hashes, and symlinks after final-stage permission
-normalization. The final stage copies the assembled
-directory directly, without an intermediate compressed archive. Its pinned
-`node:24.22.1-bookworm-slim` base retains required runtime libraries, Git/SSH, GitHub CLI,
-Python, and process utilities. Both bases apply available Debian package updates
-during the build, including updates published after the pinned Node images.
-Build compilers stay in the full Bookworm stages.
-The repository credential client stage needs only Node and pnpm, so it builds on the
-slim base too. It compiles only the client's own sources without a type check, so
-other controller changes keep it cached; the service stage builds the full,
-type-checked workspace.
-Asset preparation installs plugin build dependencies in a disposable stage.
-The production stage selects upstream required bundled plugins plus Codex and
-Slack before installing dependencies for the target architecture with lifecycle
-scripts enabled and runs upstream postinstall, plugin pruning, import-closure,
-and native filesystem-addon checks. Extension tests, QA source, and documentation
-media are excluded; help text, skills, and runtime templates remain. A dependency
-walk removes unreachable pnpm store entries while retaining importer-specific
-versions and installed optional dependencies. Building
-requires registry access.
+The upstream package version is `2026.10.10`. Identify the custom build by
+`/opt/oce/runtime/provenance.json`. It records
+the source commit, archive, patch and lockfile hashes, package manager, plugins,
+architecture, Codex package identity, and SHA-256 of `contents.json`. That file
+lists packaged files, modes, hashes, and symlinks after permission normalization.
+
+The final stage copies the assembled directory directly into the pinned
+`node:24.22.1-bookworm-slim` base with runtime libraries, Git/SSH, GitHub CLI,
+Python, and process utilities. Both bases apply current Debian updates. The stock runtime excludes build
+compilers. Selecting Cargo adds the Rust compiler and a system linker. The slim-base repository credential
+client compiles only its own sources without typechecking. The service builds
+and typechecks the workspace.
+
+Building requires registry access. A disposable stage installs plugin build
+dependencies. The production stage selects required upstream plugins plus Codex
+and Slack, installs dependencies for the target architecture with lifecycle
+scripts enabled, and runs upstream postinstall, pruning, import-closure, and
+native filesystem-addon checks. Pruning removes tests, QA source, documentation
+media, and unreachable pnpm entries. It keeps help, skills, templates,
+importer-specific versions, and installed optional dependencies.
 
 ## Resolve OpenClaw build arguments
 
@@ -283,16 +277,29 @@ references to its verified immutable digest. Separate gateway and Codex images
 require verification of that exact pair through the
 [Kubernetes runtime tests](../../docs/testing/kubernetes.md#kubernetes-model-turns-and-secrets).
 
+## Select optional native tools
+
+Edit [the download client list](additional-download-clients.json) in the source
+you plan to build. The default `[]` adds no tools. Select only the paths you
+need for Linux amd64 and arm64. For example, `["/opt/devtools/bin/go"]` adds Go.
+
+| Inventory path             | Installed tools                                                                  |
+| -------------------------- | -------------------------------------------------------------------------------- |
+| `/opt/devtools/bin/rustup` | Rustup 1.29.1                                                                    |
+| `/opt/devtools/bin/cargo`  | Cargo, `rustc`, `rustdoc`, and the Rust standard library at 1.95.0 with a linker |
+| `/opt/devtools/bin/go`     | Go 1.27.3, its standard library, and `gofmt`                                     |
+| `/opt/devtools/bin/bun`    | Bun 1.4.4                                                                        |
+
+The image exposes these tools on `PATH` with root-owned links in
+`/usr/local/bin`. Cargo uses the packaged Rust toolchain. Rustup manages its own
+toolchains. Rebuild the image and verify both architectures before using it.
+
 ## Verify both native architectures
 
-Dispatch **Check Native Container Images** (`container-check.yml`) on the branch
-to build and smoke controller and runtime on native AMD64 and ARM64 runners without
-publishing. It uses the same reusable preparation jobs as Enterprise Containers.
-Manual `CI` dispatches also call this native verification workflow, including on
-a branch before its first merge. See
-[shared CI settings](../../docs/release/configuration.md#build-settings) for native runner
-requirements and overrides. The workflow installs checksum-pinned kubectl, k3d,
-Helm, and yq for both Linux architectures before runtime verification.
+Run [Check Native Container Images](../../docs/release/containers.md#check-native-images-without-publication)
+for the selected commit. Require controller and runtime smoke on native AMD64
+and ARM64. For a custom release, follow the
+[protected publication procedure](../../docs/release/containers.md#prepare-and-publish).
 
 ## Verify the local image
 
