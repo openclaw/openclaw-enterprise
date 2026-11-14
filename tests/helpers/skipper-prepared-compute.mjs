@@ -544,6 +544,26 @@ function modelRequestObservation(before, after, gatewayChatPhase, marker) {
     : "unavailable";
 }
 
+// Called only after the request observation verified both snapshots and their common prefix.
+function modelFixtureSelectedTerminalSuccess(before, after, marker) {
+  if (before.some((event) => event.id === marker)) {
+    return false;
+  }
+  const decisions = after
+    .slice(before.length)
+    .filter(
+      (event) =>
+        event.id === marker &&
+        ["skipper-native-request", "skipper-native-result"].includes(event.event),
+    );
+  return (
+    decisions.length === 2 &&
+    decisions[0].event === "skipper-native-request" &&
+    decisions[1].event === "skipper-native-result" &&
+    decisions[1].modelFixtureSelectedTerminalSuccess === true
+  );
+}
+
 export async function sendSkipperChat({
   gatewayChatPhase,
   marker,
@@ -635,6 +655,12 @@ export async function sendSkipperChat({
       httpStatus: status,
       runtimeSignal,
       modelRequestObservation: observation,
+      modelFixtureSelectedTerminalSuccess:
+        gatewayChatPhase === "native-git" &&
+        category === "transport" &&
+        status === 0 &&
+        observation === "observed" &&
+        modelFixtureSelectedTerminalSuccess(before, after, marker),
     }),
   });
   await checkpoint("gateway-chat-refused", {

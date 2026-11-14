@@ -3956,6 +3956,9 @@ for (const embedded of [true, false]) {
         terminated: { exitCode, reason: "Error", finishedAt, ...(message ? { message } : {}) },
       },
     });
+    const runtimePodStatus = (name, options) => ({
+      containerStatuses: [container(name, options)],
+    });
     const exits = (count) => `consecutive unexplained exits: ${count}`;
     const runtimeFailureWith = async (statuses) => {
       observed = statuses;
@@ -3978,7 +3981,7 @@ for (const embedded of [true, false]) {
           : [{ exitCode: 75 }, { message: exits(1) }]),
       ]) {
         const failed = await runtimeFailureWith({
-          [role]: { containerStatuses: [container(role, options)] },
+          [role]: runtimePodStatus(role, options),
         });
         assert.deepEqual(failed.runtimeFailure, {
           component: role,
@@ -3992,33 +3995,26 @@ for (const embedded of [true, false]) {
         ...(role === "gateway"
           ? [
               // The wrapper stops its container on purpose, as for a changed Harness peer.
-              ["deliberate restarts", { containerStatuses: [container(role, { exitCode: 75 })] }],
+              ["deliberate restarts", runtimePodStatus(role, { exitCode: 75 })],
               // A deliberate restart killed while it stops exits with another status.
               [
                 "a killed deliberate restart",
-                {
-                  containerStatuses: [
-                    container(role, {
-                      exitCode: 137,
-                      restartCount: 5,
-                      message: "deliberate restart: harness-peer-changed",
-                    }),
-                  ],
-                },
+                runtimePodStatus(role, {
+                  exitCode: 137,
+                  restartCount: 5,
+                  message: "deliberate restart: harness-peer-changed",
+                }),
               ],
               // Two deliberate restarts, then two unexplained exits.
               [
                 "two consecutive unexplained exits",
-                { containerStatuses: [container(role, { restartCount: 4, message: exits(2) })] },
+                runtimePodStatus(role, { restartCount: 4, message: exits(2) }),
               ],
             ]
           : []),
-        ["two exits", { containerStatuses: [container(role, { restartCount: 1 })] }],
-        ["a running restart", { containerStatuses: [container(role, { waiting: null })] }],
-        [
-          "a pull back-off",
-          { containerStatuses: [container(role, { waiting: "ImagePullBackOff" })] },
-        ],
+        ["two exits", runtimePodStatus(role, { restartCount: 1 })],
+        ["a running restart", runtimePodStatus(role, { waiting: null })],
+        ["a pull back-off", runtimePodStatus(role, { waiting: "ImagePullBackOff" })],
         [
           "an init container or sidecar",
           {
@@ -4033,7 +4029,7 @@ for (const embedded of [true, false]) {
       // A Pod being deleted, as an old revision's during a rollout, never counts.
       state.terminatingRole = role;
       const terminating = await runtimeFailureWith({
-        [role]: { containerStatuses: [container(role)] },
+        [role]: runtimePodStatus(role),
       });
       state.terminatingRole = undefined;
       assert.equal(terminating.runtimeFailure, undefined, `${role}: terminating`);
@@ -4045,7 +4041,7 @@ for (const embedded of [true, false]) {
       throw Object.assign(new Error("container is not running"), { statusCode: 400 });
     };
     const unread = await runtimeFailureWith({
-      gateway: { containerStatuses: [container("gateway")] },
+      gateway: runtimePodStatus("gateway"),
     });
     clients.core.connectGetNamespacedPodProxyWithPath = connect;
     assert.equal(unread.runtimeFailure?.check, "crash-loop");
@@ -5048,7 +5044,7 @@ test("namespace resolver selects exact, secure external ownership using a transp
 });
 
 // A released split-layout Installation adopts each `oce-gateways-<hash>` storage namespace as
-// its tenant namespace in place (scripts/split-layout-adopt.mjs): the storage namespace gains
+// its tenant namespace in place (scripts/split-layout-adopt.ts): the storage namespace gains
 // the tenant label and the old Harness namespace loses it. Canonical Secrets, Configurations
 // and Gateway state keep their namespace and UIDs, so both resolvers must accept the adopted
 // name, but only while it still carries its own storage label.
@@ -17082,39 +17078,37 @@ test("resource requests must fit their limits before Namespace or workload prepa
   }
 });
 
+function optionsWithRuntime(overrides) {
+  return options({
+    runtime: {
+      transportSecretPrefix: "transport",
+      gatewayStorageClassName: "local-path",
+      ...overrides,
+    },
+  });
+}
+
 test("transport secret prefix must produce a DNS-safe credential Secret name", () => {
   for (const transportSecretPrefix of ["Bad_Prefix", "bad prefix", `${"a".repeat(242)}`]) {
     assert.throws(
       () =>
         requireConfiguration(
           KubernetesComputeDriver,
-          options({
-            runtime: { transportSecretPrefix, gatewayStorageClassName: "local-path" },
-          }),
+          optionsWithRuntime({ transportSecretPrefix }),
         ),
       SharedConfigurationValidationError,
     );
   }
   requireConfiguration(
     KubernetesComputeDriver,
-    options({
-      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
-    }),
+    optionsWithRuntime({ transportSecretPrefix: "transport" }),
   );
 });
 
 test("real gateways require an explicit SQLite-compatible storage class", () => {
   for (const gatewayStorageClassName of [undefined, "", " "]) {
     assert.throws(
-      () =>
-        createKubernetesComputeDriver(
-          options({
-            runtime: {
-              transportSecretPrefix: "transport",
-              gatewayStorageClassName,
-            },
-          }),
-        ),
+      () => createKubernetesComputeDriver(optionsWithRuntime({ gatewayStorageClassName })),
       SharedConfigurationValidationError,
     );
   }
@@ -17128,29 +17122,18 @@ test("gateway storage class names must be Kubernetes resource names", () => {
     "a".repeat(254),
   ]) {
     assert.throws(
-      () =>
-        createKubernetesComputeDriver(
-          options({
-            runtime: {
-              transportSecretPrefix: "transport",
-              gatewayStorageClassName,
-            },
-          }),
-        ),
+      () => createKubernetesComputeDriver(optionsWithRuntime({ gatewayStorageClassName })),
       SharedConfigurationValidationError,
     );
   }
   for (const gatewayStorageClassName of ["a".repeat(253), "gp3.encrypted"]) {
     assert.doesNotThrow(() =>
-      createKubernetesComputeDriver(
-        options({ runtime: { transportSecretPrefix: "transport", gatewayStorageClassName } }),
-      ),
+      createKubernetesComputeDriver(optionsWithRuntime({ gatewayStorageClassName })),
     );
   }
 });
 
 test("Gateway storage capacity rejects invalid configuration before cluster operations", () => {
-  const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
   for (const gatewayStorageSizeGiB of [
     0,
     -1,
@@ -17162,7 +17145,7 @@ test("Gateway storage capacity rejects invalid configuration before cluster oper
     "100",
     null,
   ]) {
-    const configured = options({ runtime: { ...runtime, gatewayStorageSizeGiB } });
+    const configured = optionsWithRuntime({ gatewayStorageSizeGiB });
     assert.throws(
       () => requireConfiguration(KubernetesComputeDriver, configured),
       SharedConfigurationValidationError,
@@ -17173,7 +17156,7 @@ test("Gateway storage capacity rejects invalid configuration before cluster oper
     );
   }
   for (const gatewayStorageSizeGiB of [1, 65536]) {
-    const configured = options({ runtime: { ...runtime, gatewayStorageSizeGiB } });
+    const configured = optionsWithRuntime({ gatewayStorageSizeGiB });
     requireConfiguration(KubernetesComputeDriver, configured);
     assert.doesNotThrow(() => createKubernetesComputeDriver(configured));
   }

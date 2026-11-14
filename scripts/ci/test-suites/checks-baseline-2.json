@@ -104,7 +104,7 @@
     "tests/integration/password-sign-in-policy.test.ts",
     "tests/integration/compute-singleton-worker.test.mjs",
     "tests/integration/worker-shutdown.test.ts",
-    "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
+    "tests/conformance/postgres-transaction-unknown-commit.test.ts",
     "tests/integration/oidc-id-token.test.mjs",
     "tests/integration/repository-credentials-shutdown.test.mjs",
     "tests/conformance/repository-transactions.test.mjs",
@@ -120,7 +120,7 @@
     "tests/conformance/runtime-probe-cpu-counter.test.ts",
     "tests/conformance/runtime-gateway-state-migration.test.mjs",
     "tests/conformance/node-test-summary.test.ts",
-    "tests/conformance/repository-material-store.test.mjs",
+    "tests/conformance/repository-material-store.test.ts",
     "tests/conformance/plugin-runtime-templates.test.ts",
     "tests/integration/ci-logging.test.ts",
     "tests/integration/ci-go-test.test.ts",
@@ -132,9 +132,8 @@
     "tests/integration/runtime-ai-package-relocation.test.ts",
     "tests/integration/runtime-node-build-jobs.test.ts",
     "tests/integration/openclaw-source.test.ts",
-    "tests/conformance/repository-client-environment.test.mjs",
-    "tests/conformance/repository-credentials-tool-evidence.test.mjs",
-    "tests/integration/client-address.test.mjs",
+    "tests/conformance/repository-credentials-tool-evidence.test.ts",
+    "tests/integration/client-address.test.ts",
     "tests/integration/full-integration-preflight.test.mjs",
     "tests/integration/container-promote.test.ts",
     "tests/conformance/controller-stop-yields.test.ts",
@@ -186,7 +185,7 @@
       "path": "tests/integration/controlled-tls-origin.test.ts"
     },
     {
-      "path": "tests/integration/tls-peer-certificate.test.mjs"
+      "path": "tests/integration/tls-peer-certificate.test.ts"
     },
     {
       "path": "tests/helpers/socket-relay.test.mjs"
@@ -274,6 +273,7 @@
     {
       "path": "tests/integration/ci-runner-case-enforcement.test.ts",
       "expectedTests": [
+        "unknown selection options fail before running tests or writing receipts",
         "focused runs retain case enforcement and cleanup but cannot complete a full lane",
         "run fails missing expected tests, skipped expected tests, skips, todos, and missing required env"
       ]
@@ -468,8 +468,15 @@
       "path": "tests/conformance/postgres-transaction-commit.test.mjs"
     },
     {
-      "path": "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
-      "expectedTests": ["lost COMMIT response returns unknown without waiting for a hung rollback"]
+      "path": "tests/conformance/postgres-transaction-unknown-commit.test.ts",
+      "expectedTests": [
+        "lost COMMIT response returns unknown without waiting for a hung rollback",
+        "IAM work escaped from a commit transaction cannot acquire another client",
+        "IAM work escaped from a rollback transaction cannot acquire another client",
+        "IAM work escaped from a unknown transaction cannot acquire another client",
+        "a BEGIN abandoned by the client query timeout discards the connection",
+        "a SELECT abandoned by the client query timeout discards the connection"
+      ]
     },
     {
       "path": "tests/integration/native-admin-access.test.mjs",
@@ -532,7 +539,7 @@
       "path": "tests/conformance/repository-credentials-ownership-boundaries.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-tool-evidence.test.mjs"
+      "path": "tests/conformance/repository-credentials-tool-evidence.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-fixture-ownership.test.ts",
@@ -602,10 +609,7 @@
       "path": "tests/conformance/repository-credentials-registry.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-client-environment.test.mjs"
-    },
-    {
-      "path": "tests/conformance/repository-material-store.test.mjs",
+      "path": "tests/conformance/repository-material-store.test.ts",
       "expectedTests": [
         "expiry during Secret read refuses to create material",
         "earliest expiry during first creation prevents the next creation and leaves cleanup possible",
@@ -705,7 +709,7 @@
       "path": "tests/integration/password-sign-in-policy.test.ts"
     },
     {
-      "path": "tests/integration/client-address.test.mjs"
+      "path": "tests/integration/client-address.test.ts"
     },
     {
       "path": "tests/integration/password-sign-in-admission.test.ts"

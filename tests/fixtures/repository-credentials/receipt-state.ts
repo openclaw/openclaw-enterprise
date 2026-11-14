@@ -1,21 +1,41 @@
-import { InMemoryPlatformState } from "../../../packages/occ/src/index.ts";
+import type { TestContext } from "node:test";
+import type { RepositoryRevisionState } from "@openclaw-enterprise/contracts";
+import {
+  InMemoryPlatformState,
+  type RepositorySessionPhase,
+} from "../../../packages/occ/src/index.ts";
 import { startRepositoryReceiptServer } from "../../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
+import type { ServiceConfig } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
+import type { RepositorySessionCaseBuilders } from "../../conformance/repository-session-state-cases.ts";
 import {
   seedSessionRevision,
   sessionAttempt,
 } from "../../conformance/repository-sessions.contract.mjs";
 
+const buildAttempt: RepositorySessionCaseBuilders["sessionAttempt"] = sessionAttempt;
+
+interface ReceiptFixture {
+  readonly namespaceId?: string | undefined;
+  readonly backendId: string;
+  readonly config: {
+    readonly gateway: Pick<ServiceConfig["gateway"], "controlSocket">;
+  };
+}
+
 // This uses the actual in-memory State adapter; PostgreSQL behavior is covered
 // separately by the restricted-role broker receipt integration suite.
-export async function startReceiptState(t, fixture, bindings, deadlineWallMs) {
+export async function startReceiptState(
+  t: Pick<TestContext, "after">,
+  fixture: ReceiptFixture,
+  bindings: RepositoryRevisionState["bindings"],
+  deadlineWallMs: RepositoryRevisionState["deadlineWallMs"],
+) {
   const state = new InMemoryPlatformState();
   const driver = { id: "repository-credentials", implementation: "github" };
   const { revision } = await seedSessionRevision(
     state,
     { driver, deadlineWallMs, bindings },
-    {
-      namespaceId: fixture.namespaceId,
-    },
+    { namespaceId: fixture.namespaceId },
   );
   const listener = await startRepositoryReceiptServer({
     state,
@@ -28,10 +48,10 @@ export async function startReceiptState(t, fixture, bindings, deadlineWallMs) {
   return {
     state,
     revision,
-    prepare(admissionId, repositoryRef, durationSeconds) {
+    prepare(admissionId: string, repositoryRef: string, durationSeconds: number) {
       return state.transact((unit) =>
         unit.repositorySessions.createAttempt(
-          sessionAttempt(revision, {
+          buildAttempt(revision, {
             admissionId,
             repositoryRef,
             durationSeconds,
@@ -40,7 +60,12 @@ export async function startReceiptState(t, fixture, bindings, deadlineWallMs) {
         ),
       );
     },
-    advance(admissionId, expectedPhase, phase, sessionId) {
+    advance(
+      admissionId: string,
+      expectedPhase: RepositorySessionPhase,
+      phase: RepositorySessionPhase,
+      sessionId?: string,
+    ) {
       return state.transact((unit) =>
         unit.repositorySessions.advanceAttempt({
           admissionId,

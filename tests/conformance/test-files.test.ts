@@ -17,7 +17,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { stopProcess } from "../helpers/stop-process.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -25,13 +25,13 @@ const runner = join(root, "scripts/test-files.ts");
 const env = { ...process.env };
 delete env.NODE_TEST_CONTEXT;
 
-function fixture(t) {
+function fixture(t: TestContext) {
   mkdirSync(join(root, ".build"), { recursive: true });
   const dir = mkdtempSync(join(root, ".build/test-files-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   return {
     dir,
-    put(name, code) {
+    put(name: string, code: string) {
       const file = join(dir, name);
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, code);
@@ -40,7 +40,7 @@ function fixture(t) {
   };
 }
 
-function invoke(args, cwd = root) {
+function invoke(args: string[], cwd = root) {
   return spawnSync(process.execPath, [runner, ...args], {
     cwd,
     env,
@@ -98,7 +98,7 @@ test("preserves assertion and process-exit failures", (t) => {
       "import test from 'node:test'; test('fails', () => { throw Error('real assertion failure'); });",
     ],
     ["exit", "process.exitCode = 7;"],
-  ]) {
+  ] as const) {
     const result = invoke(["--", f.put(`${name}.test.mjs`, code)]);
     assert.equal(result.status, 1, result.stdout + result.stderr);
     assert.match(result.stdout, /not ok/);
@@ -186,7 +186,7 @@ test("forwards filters and built-in reporters with fresh process isolation", (t)
   }
 });
 
-for (const signal of ["SIGTERM", "SIGINT"]) {
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
   test(
     `forwards ${signal} cancellation and retains leaked-handle lifecycle evidence`,
     { timeout: 15000 },
@@ -209,14 +209,16 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
       const output = createInterface({ input: child.stdout });
       child.stderr.resume();
       const closed = once(child, "close");
-      let testPid;
+      let testPid: number | undefined;
       t.after(async () => {
         output.close();
         await stopProcess(child, { signal: "SIGKILL" });
         if (testPid) {
           try {
             process.kill(testPid, "SIGKILL");
-          } catch {}
+          } catch {
+            // Cleanup remains best effort when the test child is no longer available.
+          }
         }
       });
       // Wait for the passing result and output from the leaked interval itself.
@@ -237,6 +239,7 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
       }
       child.stdout.resume();
       assert.ok(testPid, "real test child remains live through its leaked interval");
+      const liveTestPid = testPid;
       assert.ok(passed, "the passing assertion was reported before cancellation");
       assert.equal(child.exitCode, null);
       assert.equal(child.signalCode, null);
@@ -244,7 +247,7 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
       const [code, observedSignal] = await closed;
       assert.equal(code, null);
       assert.equal(observedSignal, signal);
-      assert.throws(() => process.kill(testPid, 0), { code: "ESRCH" });
+      assert.throws(() => process.kill(liveTestPid, 0), { code: "ESRCH" });
       testPid = undefined;
     },
   );
