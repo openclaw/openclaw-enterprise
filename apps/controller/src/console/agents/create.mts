@@ -506,6 +506,9 @@ async function cancelledAgentState(request: CreateRequest, namespaceId: string, 
 
 // An outage, unlike the Installation's shape, needs no administrator change (finding 1624). Agent
 // save and deploy answer 503 for every harness until the selected Sandbox Driver returns.
+// The provisioning API's refusal for a deleted resource names its kind and ID.
+const DELETED_PROVISIONING_RESOURCE =
+  /^(Secret|Credential source|ServiceAccount) ([^,]+), which this provisioning request uses, was deleted\./;
 const SANDBOX_DRIVER_OUTAGE =
   "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an Installation administrator if it persists.";
 // Without native worker support the Installation does not say why (finding 1612), unless it
@@ -3786,6 +3789,22 @@ function renderAgentForm(
         if (terminal?.failed || differentPlan || unrecoverableRequest) {
           provisioningRequestId = createClientRequestId();
           requestAdmitted = false;
+          if (unrecoverableRequest) {
+            // The refusal names the deleted resource: drop the cached reference that matches
+            // it, so the unlocked form submits a replacement instead of the deleted ID again.
+            // The saved credential disables its inputs stickily, so they reset with it.
+            const deleted = DELETED_PROVISIONING_RESOURCE.exec(error.serverMessage ?? "");
+            if (deleted?.[1] === "Secret" && savedSecret?.id === deleted[2]) {
+              savedSecret = undefined;
+              authMethod.disabled = false;
+              apiKey.disabled = false;
+            } else if (
+              deleted?.[1] === "Credential source" &&
+              savedCredentialSource?.id === deleted[2]
+            ) {
+              savedCredentialSource = undefined;
+            }
+          }
         }
         admittedAttempt = requestAdmitted && attempt.statusUrl ? attempt : undefined;
       }
