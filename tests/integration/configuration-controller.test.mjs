@@ -266,7 +266,17 @@ async function saveFixture(t, computeDriver = createReadyComputeDriver("compute-
   await context.controller.transact((state) =>
     state.namespaces.transitionNamespaceStatus(id, "provisioning", "ready"),
   );
-  return { ...context, root, stored: () => readdir(join(root, id)).catch(() => []) };
+  return {
+    ...context,
+    root,
+    stored: () =>
+      readdir(join(root, id)).catch((error) => {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+          return [];
+        }
+        throw error;
+      }),
+  };
 }
 
 async function request(
