@@ -196,6 +196,7 @@
     "helpers/production-upgrade-dispatch-restore.ts",
     "helpers/production-upgrade-preflight-cleanup.ts",
     "helpers/production-upgrade-retained-fleet-preflight.ts",
+    "helpers/upgrade-doctor-observations.ts",
     "helpers/compute-credential-catalog.ts",
     "helpers/kubernetes-openshell-network-policy.ts",
     "helpers/provisioning-repository-status.ts",

@@ -56,6 +56,10 @@ import {
   registerPreflightCleanupTests,
 } from "../helpers/production-upgrade-preflight-cleanup.ts";
 import { registerRetainedFleetPreflightTests } from "../helpers/production-upgrade-retained-fleet-preflight.ts";
+import {
+  createDoctorPodFixture,
+  embeddedDoctorNamespace,
+} from "../helpers/upgrade-doctor-observations.ts";
 import { registerUpgradePreflightDraftBudgetTest } from "./production-upgrade-preflight-draft-budget.ts";
 
 // Every case owns its command server, state, and evidence directory. Three sibling
@@ -84,6 +88,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     process.env.OCC_UPGRADE_SCRIPT ?? join(repository, "scripts/upgrade-production-images");
   const controller = `registry.example.invalid/controller@sha256:${"a".repeat(64)}`;
   const runtime = `registry.example.invalid/runtime@sha256:${"b".repeat(64)}`;
+  const doctorPod = createDoctorPodFixture(runtime);
   const newController = `registry.example.invalid/controller@sha256:${"e".repeat(64)}`;
   const newBroker = `registry.example.invalid/broker@sha256:${"f".repeat(64)}`;
   const oldRuntime = `registry.example.invalid/runtime@sha256:${"c".repeat(64)}`;
@@ -524,23 +529,13 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     };
     const fileArg = (name) => args[args.indexOf(name) + 1];
     // The replacement revision's ready gateway Pod; an OOM kill shows in its restart history.
-    const gatewayPod = () => ({
-      metadata: { namespace: "tenant", name: "gateway", uid: "gateway-uid" },
-      spec: { containers: [{ name: "gateway", image: runtime }] },
-      status: {
-        phase: "Running",
-        conditions: [{ type: "Ready", status: "True" }],
-        containerStatuses: [
-          {
-            name: "gateway",
-            restartCount: state.gatewayRestarts ?? 0,
-            lastState: state.gatewayRestarts
-              ? { terminated: { reason: state.gatewayLastReason ?? "OOMKilled" } }
-              : {},
-          },
-        ],
-      },
-    });
+    const gatewayPod = () =>
+      doctorPod({
+        restartCount: state.gatewayRestarts ?? 0,
+        lastTerminationReason: state.gatewayRestarts
+          ? (state.gatewayLastReason ?? "OOMKilled")
+          : undefined,
+      });
     if (tool === "node") {
       // Pair cases exercise upgrade orchestration after a successful qualification. The
       // separately selected real-image test verifies compatibility itself.
@@ -4260,20 +4255,10 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     // start while a Doctor still runs in a serving gateway. Doctor's own exit status, not
     // an exit code quoted on its stderr, classifies its failure.
     test("a Doctor memory timeout keeps the evidence lock until every started Doctor ends", async (t) => {
-      const agent = (id) => ({
-        id,
-        status: "active",
-        desiredRuntimeState: "running",
-        executionMode: "embedded",
-        activeRevisionId: "rev_old",
-        deploymentInProgress: false,
-      });
       // A poll that finds the deadline passed reads nothing; the timeout still names B's last
       // read (0 MiB), not "unknown".
       const f = await fixture(t, {
-        inventoryNamespaces: [
-          { id: "ns_test", status: "ready", agents: [agent("agt_a"), agent("agt_b")] },
-        ],
+        inventoryNamespaces: [embeddedDoctorNamespace("agt_a", "agt_b")],
       });
       // Gateway A has room at once; gateway B never does before the 3 s timeout. A's Doctor
       // runs past the timeout.
@@ -4487,29 +4472,24 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     "OpenClaw Doctor reports unknown restart history unless Ready and post-read observations are comparable",
     { concurrency: true },
     async (t) => {
-      const pod = (count = 0) => ({
-        metadata: { namespace: "tenant", name: "gateway", uid: "gateway-uid" },
-        spec: { containers: [{ name: "gateway", image: runtime }] },
-        status: {
-          phase: "Running",
-          conditions: [{ type: "Ready", status: "True" }],
-          containerStatuses: [{ name: "gateway", restartCount: count, lastState: {} }],
-        },
-      });
-      const withoutRows = pod();
+      const withoutRows = doctorPod();
       delete withoutRows.status.containerStatuses;
-      const replacement = pod();
-      replacement.metadata.uid = "replacement-uid";
+      const replacement = doctorPod({ uid: "replacement-uid" });
       // Only Pod states the Kubernetes API returns: container statuses not reported, a Pod
       // replaced under the same name (new UID), and a lower restart count.
       const cases = [
-        ["missing Ready row", withoutRows, pod()],
-        ["missing post row", pod(), withoutRows],
-        ["replacement Pod", pod(), replacement],
-        ["decreased count", pod(2), pod(1)],
-        ["additional restart without reason", pod(), pod(1), "restart"],
-        ["true zero", pod(), pod(), true],
-        ["unchanged nonzero", pod(3), pod(3), true],
+        ["missing Ready row", withoutRows, doctorPod()],
+        ["missing post row", doctorPod(), withoutRows],
+        ["replacement Pod", doctorPod(), replacement],
+        ["decreased count", doctorPod({ restartCount: 2 }), doctorPod({ restartCount: 1 })],
+        [
+          "additional restart without reason",
+          doctorPod(),
+          doctorPod({ restartCount: 1 }),
+          "restart",
+        ],
+        ["true zero", doctorPod(), doctorPod(), true],
+        ["unchanged nonzero", doctorPod({ restartCount: 3 }), doctorPod({ restartCount: 3 }), true],
       ];
       const runs = [];
       for (const [name, ready, after, comparable] of cases) {
@@ -4557,27 +4537,13 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     "a gateway changed after a passing Doctor fails the upgrade and resume checks its replacement",
     { concurrency: true },
     async (t) => {
-      const pod = ({
-        name = "gateway",
-        uid = "gateway-uid",
-        phase = "Running",
-        ready = true,
-      } = {}) => ({
-        metadata: { namespace: "tenant", name, uid },
-        spec: { containers: [{ name: "gateway", image: runtime }] },
-        status: {
-          phase,
-          conditions: [{ type: "Ready", status: ready ? "True" : "False" }],
-          containerStatuses: [{ name: "gateway", restartCount: 0, lastState: {} }],
-        },
-      });
       // The Deployment's replacement Pod, Ready on the new revision.
-      const replacement = pod({ name: "gateway-2", uid: "gateway-2-uid" });
+      const replacement = doctorPod({ name: "gateway-2", uid: "gateway-2-uid" });
       // The kubelet ends an evicted Pod and keeps it (phase Failed, reason Evicted).
-      const evicted = pod({ phase: "Failed", ready: false });
+      const evicted = doctorPod({ phase: "Failed", ready: false });
       evicted.status.reason = "Evicted";
       // On the dogfood cluster the evicted gateway ended with phase Succeeded.
-      const ended = pod({ phase: "Succeeded", ready: false });
+      const ended = doctorPod({ phase: "Succeeded", ready: false });
       const afterEviction = { revisionPods: [evicted, replacement] };
       const cases = [
         ["evicted", afterEviction, /was evicted \(phase Failed\)/],
@@ -4589,7 +4555,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
         ["deleted", { revisionPods: [replacement] }, /no longer exists \(evicted or deleted\)/],
         [
           "replaced under the same name",
-          { gatewayAfter: pod({ uid: "gateway-uid-2" }) },
+          { gatewayAfter: doctorPod({ uid: "gateway-uid-2" }) },
           /was replaced by a new Pod with the same name/,
         ],
         [
@@ -4597,7 +4563,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
           { gatewayRestarts: 1, gatewayLastReason: "Error" },
           /restarted 1 time\(s\) \(last termination: Error\)/,
         ],
-        ["not Ready", { gatewayAfter: pod({ ready: false }) }, /is not Ready/],
+        ["not Ready", { gatewayAfter: doctorPod({ ready: false }) }, /is not Ready/],
       ];
       const runs = [];
       for (const [name, afterDoctor, change] of cases) {
@@ -4630,7 +4596,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       await Promise.all(runs);
       // A gateway can still report Ready while its deletion is in progress.
       // Resume must run Doctor in its replacement without waiting for garbage collection.
-      const retiring = pod();
+      const retiring = doctorPod();
       retiring.metadata.deletionTimestamp = "2026-01-01T00:00:00Z";
       const f = await fixture(t, { agent: true });
       await updateDoctorFixtureState(f, { afterDoctor: { revisionPods: [retiring, replacement] } });
@@ -4670,21 +4636,6 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       // wait requires both. Node memory pressure during the Doctors evicts only the agent Pod
       // (finding 2755): Doctor in the untouched gateway passes, but the upgrade must name the
       // agent Pod instead of reporting success, and resume checks the replacement.
-      const agentPod = ({
-        name = "agent",
-        uid = "agent-uid",
-        phase = "Running",
-        ready = true,
-      } = {}) => ({
-        metadata: { namespace: "tenant", name, uid },
-        spec: { containers: [{ name: "agent", image: runtime }] },
-        status: {
-          phase,
-          ...(phase === "Failed" ? { reason: "Evicted" } : {}),
-          conditions: [{ type: "Ready", status: ready ? "True" : "False" }],
-          containerStatuses: [{ name: "agent", restartCount: 0, lastState: {} }],
-        },
-      });
       const dedicated = await fixture(t, {
         inventoryNamespaces: [
           {
@@ -4704,12 +4655,17 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
         ],
       });
       await updateDoctorFixtureState(dedicated, {
-        revisionPods: [pod(), agentPod()],
+        revisionPods: [doctorPod(), doctorPod({ containerName: "agent" })],
         afterDoctor: {
           revisionPods: [
-            pod(),
-            agentPod({ phase: "Failed", ready: false }),
-            agentPod({ name: "agent-2", uid: "agent-2-uid" }),
+            doctorPod(),
+            doctorPod({
+              containerName: "agent",
+              phase: "Failed",
+              ready: false,
+              reason: "Evicted",
+            }),
+            doctorPod({ containerName: "agent", name: "agent-2", uid: "agent-2-uid" }),
           ],
         },
       });
@@ -4749,22 +4705,8 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
   // Doctors in several gateways on one node can together exhaust its memory, so they run
   // one at a time: each ends before the next gateway's memory check and Doctor start.
   test("OpenClaw Doctor runs in one gateway at a time", async (t) => {
-    const agent = (id) => ({
-      id,
-      status: "active",
-      desiredRuntimeState: "running",
-      executionMode: "embedded",
-      activeRevisionId: "rev_old",
-      deploymentInProgress: false,
-    });
     const f = await fixture(t, {
-      inventoryNamespaces: [
-        {
-          id: "ns_test",
-          status: "ready",
-          agents: [agent("agt_a"), agent("agt_b"), agent("agt_c")],
-        },
-      ],
+      inventoryNamespaces: [embeddedDoctorNamespace("agt_a", "agt_b", "agt_c")],
     });
     await updateDoctorFixtureState(f, { doctorSpanMs: 500 });
     await f.run();
