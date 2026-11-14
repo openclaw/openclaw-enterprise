@@ -2821,7 +2821,7 @@ test("explicit live adoption still requires a qualified Proxy", async (t) => {
 
 // Runs one worker pass for a pending application whose provider write is refused by `apply`.
 // `observe` answers the worker's provider reads, calls counted in `applied` for each write.
-async function policyWorkerPass({ apply, observe }) {
+async function policyWorkerPass({ apply, observe, signal = AbortSignal.timeout(5_000) }) {
   const grant = {
     id: "git-direct",
     binary: "/usr/bin/git",
@@ -2894,6 +2894,7 @@ async function policyWorkerPass({ apply, observe }) {
     applied++;
     throw apply();
   };
+  let failure;
   const outcome = await reconcileSandboxPolicy(
     {
       configurations,
@@ -2907,7 +2908,7 @@ async function policyWorkerPass({ apply, observe }) {
       iam: { id: "iam", authorize: async () => ({ allowed: true }) },
       installationId: "ins-2144",
       ceiling: [grant],
-      signal: AbortSignal.timeout(5_000),
+      signal,
       maxAttempts: 5,
       deadlineMs: 600_000,
       leaseDurationMs: 30_000,
@@ -2920,8 +2921,10 @@ async function policyWorkerPass({ apply, observe }) {
       attemptCount: 1,
       ageMs: 0,
     },
-  );
-  return { applied, outcome, outcomes, policy };
+  ).catch((error) => {
+    failure = error;
+  });
+  return { applied, outcome, outcomes, policy, failure };
 }
 
 test("the policy worker fails a Driver's named policy refusal at once", async () => {
@@ -2983,4 +2986,23 @@ test("the policy worker accepts a write that landed although the response failed
   assert.equal(outcome, "success");
   assert.deepEqual(outcomes, ["complete"]);
   assert.equal(policy.application.state, "applied");
+});
+
+test("the policy worker rolls back when shutdown interrupts the recovery read", async () => {
+  // A replacement worker can still confirm the write, so the pass must not close the application.
+  const shutdown = new AbortController();
+  const { outcomes, policy, failure } = await policyWorkerPass({
+    signal: shutdown.signal,
+    apply: () => new Error("connection reset"),
+    observe: (writes) => {
+      if (writes === 0) {
+        return { resourceVersion: "1", policyVersion: "1", state: "applied", matches: false };
+      }
+      shutdown.abort();
+      throw new Error("read aborted");
+    },
+  });
+  assert.equal(failure?.message, "read aborted");
+  assert.deepEqual(outcomes, []);
+  assert.equal(policy.application.state, "pending");
 });

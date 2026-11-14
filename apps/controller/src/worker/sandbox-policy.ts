@@ -274,7 +274,11 @@ export async function reconcileSandboxPolicy(
         await renew();
         current = await driver
           .observeNetworkPolicy(context(), policy.application.snapshot)
-          .catch(() => undefined);
+          .catch((readError) => {
+            if (options.signal.aborted) {
+              throw readError;
+            }
+          });
       }
       if (current?.matches) {
         observation = current;
