@@ -857,6 +857,7 @@ test("the installed Skipper model requires terminal success and keeps failure di
     const model = await controlledModel(t);
     const initial = toolCall(model.next());
     assert.equal(model.result(initial, output), "SKIPPER_INCOMPLETE_skipper-test");
+    assert.equal(model.observations.at(-1).modelFixtureSelectedTerminalSuccess, undefined);
     assert.doesNotMatch(JSON.stringify(model.observations), /private-error-canary/);
     assert.equal(
       model.observations.some((event) => event.event === "skipper-native-poll"),
@@ -886,6 +887,7 @@ test("the installed Skipper model rejects a changed native session and stops pol
     "SKIPPER_INCOMPLETE_skipper-test",
   );
   assert.equal(model.observations.length, beforeReplay + 1);
+  assert.equal(model.observations[beforeReplay].modelFixtureSelectedTerminalSuccess, undefined);
   assert.partialDeepStrictEqual(model.observations[beforeReplay], {
     event: "skipper-native-result",
     id: model.command.id,

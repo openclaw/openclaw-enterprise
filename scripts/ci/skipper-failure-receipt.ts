@@ -46,6 +46,7 @@ type Checkpoint =
   | ["skipper_gateway_transport_cause", string]
   | ["skipper_runtime_signal", string]
   | ["skipper_model_request_observation", string]
+  | ["skipper_model_fixture_selected_terminal_success", true]
   | ["skipper_stage", (typeof stages)[number] | `${typeof installerPrefix}${string}`]
   | ["skipper_installed_cleanup", (typeof cleanups)[number]];
 
@@ -136,6 +137,9 @@ export async function recordSkipperTestFailure(
   if (diagnostic?.operation === "gateway-chat") {
     const { gatewayChatPhase, httpStatus, gatewayCategory, runtimeSignal, gatewayTransportCause } =
       diagnostic;
+    if (diagnostic.modelFixtureSelectedTerminalSuccess) {
+      await recordSkipperCheckpoint("skipper_model_fixture_selected_terminal_success", true);
+    }
     if (gatewayChatPhase) {
       await recordSkipperCheckpoint("skipper_gateway_chat_phase", gatewayChatPhase);
     }
@@ -208,6 +212,8 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
             gatewayCategory: process.env.SKIPPER_GATEWAY_CATEGORY,
             gatewayTransportCause: process.env.SKIPPER_GATEWAY_TRANSPORT_CAUSE,
             runtimeSignal: process.env.SKIPPER_RUNTIME_SIGNAL,
+            modelFixtureSelectedTerminalSuccess:
+              process.env.SKIPPER_MODEL_FIXTURE_SELECTED_TERMINAL_SUCCESS === "true",
             modelRequestObservation: process.env.SKIPPER_MODEL_REQUEST_OBSERVATION,
           })
         : undefined;
@@ -260,6 +266,9 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
               ? { gatewayTransportCause: gatewayChat.gatewayTransportCause }
               : {}),
             ...(gatewayChat?.runtimeSignal ? { runtimeSignal: gatewayChat.runtimeSignal } : {}),
+            ...(gatewayChat?.modelFixtureSelectedTerminalSuccess
+              ? { modelFixtureSelectedTerminalSuccess: true }
+              : {}),
             ...(gatewayChat?.modelRequestObservation
               ? { modelRequestObservation: gatewayChat.modelRequestObservation }
               : {}),

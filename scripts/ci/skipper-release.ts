@@ -155,6 +155,14 @@ export function skipperOperationDiagnostic(value: unknown) {
   const attributed = operation === "gateway-chat" && gatewayChatPhase !== undefined;
   return {
     ...(attributed &&
+    gatewayChatPhase === "native-git" &&
+    httpStatus === 0 &&
+    gatewayCategory === "transport" &&
+    modelRequestObservation === "observed" &&
+    diagnostic.modelFixtureSelectedTerminalSuccess === true
+      ? { modelFixtureSelectedTerminalSuccess: true as const }
+      : {}),
+    ...(attributed &&
     typeof runtimeSignal === "string" &&
     [
       "thread-filesystem-sandbox-denied",
