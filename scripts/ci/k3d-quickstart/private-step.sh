@@ -31,7 +31,7 @@ else
   # Accept only known script names, numeric locations and fixed browser stage names.
   grep -Ex 'quickstart-location (setup|git|linear|browser-recall|git-cleanup|teardown|operator-session|setup-(before|after)-browser|git-guide-step|linear-(catalog|deploy|prompt|send|transcript))\.sh:[0-9]{1,5}' "$log" | tail -5 || true
   grep -Ex 'Control UI verification failed during (initialize|launch trusted Chromium|sign in to Console|resolve the running revision|complete onboarding|verify Workspace identity and preference|verify ready reply|reopen original conversation from chat history|search signed-in session history|open matching session history row|verify original session selected|recall saved preference)\.|OCE REST request failed with HTTP [1-5][0-9]{2}' "$log" | tail -3 || true
-  grep -Ex 'quickstart-location browser\.mjs:[0-9]{1,5}|Control UI navigation HTTP (0|[1-5][0-9]{2})' "$log" | tail -2 || true
+  grep -Ex 'quickstart-location browser\.ts:[0-9]{1,5}|Control UI navigation HTTP (0|[1-5][0-9]{2})' "$log" | tail -2 || true
   if [[ $phase == linear ]]; then
     if ! node scripts/ci/k3d-quickstart/linear-evidence.ts diagnose "$RUN_DIR" 2>>"$log"; then
       printf '%s\n' 'Linear diagnostics unavailable.'
