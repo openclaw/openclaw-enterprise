@@ -68,7 +68,7 @@
     "tests/conformance/console-namespace-name.test.ts": 100,
     "tests/conformance/contracts.test.mjs": 200,
     "tests/conformance/controller-stop-yields.test.ts": 200,
-    "tests/conformance/credential-source-occ.test.mjs": 600,
+    "tests/conformance/credential-source-occ.test.ts": 600,
     "tests/conformance/docker-compute.test.ts": 1800,
     "tests/conformance/grafana-overview-dashboard.test.ts": 100,
     "tests/conformance/hosted-plugin-discovery.test.ts": 300,

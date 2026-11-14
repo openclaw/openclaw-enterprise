@@ -86,7 +86,7 @@
     "tests/integration/controller-lifecycle.test.ts",
     "tests/conformance/configuration-occ.test.ts",
     "tests/conformance/configuration-model-policy.test.ts",
-    "tests/conformance/credential-source-occ.test.mjs",
+    "tests/conformance/credential-source-occ.test.ts",
     "tests/conformance/kubernetes-real-kubectl.test.ts",
     "tests/conformance/k3d-failure-diagnostics.test.ts",
     "tests/conformance/secret-occ.test.ts",
@@ -238,7 +238,7 @@
       ]
     },
     {
-      "path": "tests/conformance/credential-source-occ.test.mjs"
+      "path": "tests/conformance/credential-source-occ.test.ts"
     },
     {
       "path": "tests/conformance/docker-compute.test.ts"
