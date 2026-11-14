@@ -511,6 +511,7 @@ export function classify(mainTestAdvisory = false): Classification {
     const diff = git(
       "diff",
       "--raw",
+      "--no-abbrev",
       "-z",
       "--no-renames",
       "--no-ext-diff",
@@ -531,6 +532,7 @@ export function classify(mainTestAdvisory = false): Classification {
       throw new InspectionError("diff has an unexpected shape", "malformed_diff");
     }
     const tests = [];
+    const testBlobs = new Set<string>();
     const manifests = [];
     let documents = 0;
     for (let i = 0; i < fields.length; i += 2) {
@@ -539,7 +541,7 @@ export function classify(mainTestAdvisory = false): Classification {
       const header =
         rawHeader === undefined
           ? null
-          : /^:(\d{6}) (\d{6}) [0-9a-f]+ [0-9a-f]+ ([AMDT])$/.exec(rawHeader);
+          : /^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) ([AMDT])$/.exec(rawHeader);
       if (!header || rawPath === undefined) {
         throw new InspectionError("diff has an unexpected shape", "malformed_diff");
       }
@@ -549,7 +551,8 @@ export function classify(mainTestAdvisory = false): Classification {
       } catch {
         throw new InspectionError("filename is not UTF-8", "filename_not_utf8");
       }
-      if (header[3] === "T") {
+      const [, oldMode, newMode, oldId, newId, status] = header;
+      if (status === "T") {
         throw new InspectionError("diff contains a type change", "unsupported_change");
       }
       const kind = documentationPath(path)
@@ -566,14 +569,13 @@ export function classify(mainTestAdvisory = false): Classification {
         canonicalPush &&
         fields.length === 2 &&
         kind === "test" &&
-        header[3] === "M";
+        status === "M";
       if (!kind || (push && kind !== "docs" && !advisoryTest)) {
         throw new InspectionError(
           "diff contains a path or change outside the documentation allowlist",
           "ineligible_change",
         );
       }
-      const [, oldMode, newMode, status] = header;
       if (
         (status === "A" && (oldMode !== "000000" || newMode !== "100644")) ||
         (status === "D" && (oldMode !== "100644" || newMode !== "000000")) ||
@@ -587,6 +589,17 @@ export function classify(mainTestAdvisory = false): Classification {
       if (kind === "docs") {
         documents += 1;
       } else if (kind === "test") {
+        for (const [mode, id] of [
+          [oldMode, oldId],
+          [newMode, newId],
+        ]) {
+          if (!id || !oid.test(id) || (mode === "000000") !== /^0+$/.test(id)) {
+            throw new InspectionError("diff has an invalid test blob", "malformed_diff");
+          }
+          if (mode === "100644") {
+            testBlobs.add(id);
+          }
+        }
         tests.push(path);
       } else {
         if (status !== "M") {
@@ -604,6 +617,20 @@ export function classify(mainTestAdvisory = false): Classification {
         reason: `verified ${documents} documentation changes`,
         category: "docs_only",
       };
+    }
+    // A consumer may compute its import path. Check both versions, including removed exports.
+    const sources = batchContents([...testBlobs]);
+    for (const id of testBlobs) {
+      const source = sources.get(id);
+      if (!source || source.includes(0)) {
+        throw new InspectionError("changed test source is unavailable", "git_inspection_failed");
+      }
+      if (/\bexport\b/.test(decoder.decode(source))) {
+        throw new InspectionError(
+          "a changed test may expose exports to other lanes",
+          "referenced_test",
+        );
+      }
     }
     const lanes = selectTestLanes(mergeBase, tested, tests, manifests);
     return {

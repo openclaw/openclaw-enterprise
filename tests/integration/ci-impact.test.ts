@@ -3371,6 +3371,36 @@ test("manifest changes beyond the changed test files select full", async (t) => 
   );
 });
 
+test("a computed import of a changed test requires full pull request coverage", async (t) => {
+  const producer = "tests/integration/postgres-a.test.mjs";
+  const reader = "tests/browser/consumer.test.mjs";
+  // The browser test assembles the filename at runtime, so a literal reference search misses it.
+  const [f, shallow] = await suiteFixture(
+    t,
+    ({ put }) => put(producer, "export const value = 2;\n"),
+    {
+      [producer]: "export const value = 1;\n",
+      [reader]: `import assert from "node:assert/strict";
+const { value } = await import("../integration/" + ["postgres", "a.test.mjs"].join("-"));
+assert.equal(value, 1);
+`,
+      "scripts/ci/test-suites.json": present(
+        suiteFiles()["scripts/ci/test-suites.json"],
+      ).replaceAll("k3d-fixture-state", "checks-browser"),
+      "scripts/ci/test-suites/checks-browser.json": laneManifest([reader]),
+    },
+  );
+  await f.git("checkout", "-q", "--detach", f.base);
+  assert.equal((await run(process.execPath, [reader], { cwd: f.repo })).status, 0);
+  assert.equal((await run(process.execPath, [producer], { cwd: shallow.checkout })).status, 0);
+  const failure = await run(process.execPath, [reader], { cwd: shallow.checkout });
+  assert.equal(failure.status, 1);
+  assert.match(failure.stderr, /2 !== 1/);
+  await shallow.expectReason("referenced_test");
+  const narrow = await shallow.run("verify", "tests", { EXPECTED_LANES: '["postgres"]' });
+  assert.notEqual(narrow.status, 0);
+});
+
 test("unmapped, non-CI, referenced or irregular test files select full", async (t) => {
   const index = indexData(present(suiteFiles()["scripts/ci/test-suites.json"]));
   index.groups.ci = ["postgres"];
@@ -3388,6 +3418,19 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
     ],
     // Another file reads, copies or runs it; Markdown mentions do not count.
     referenced_test: [
+      // Removing the last export still affects consumers of the old interface.
+      [editA, { "tests/integration/postgres-a.test.mjs": "export const value = 1;\n" }],
+      [
+        ({ git }) => git("rm", "-q", "tests/integration/postgres-a.test.mjs"),
+        { "tests/integration/postgres-a.test.mjs": "export const value = 1;\n" },
+      ],
+      [
+        ({ put }) => {
+          const path = "tests/integration/postgres-c.test.ts";
+          put(path, "export type Case = string;\n");
+          put("scripts/ci/test-suites/postgres.json", laneManifest([...suiteLanes.postgres, path]));
+        },
+      ],
       [
         editTest("tests/integration/postgres-b.test.mjs"),
         { "scripts/ci/prepare.mjs": 'if (file.endsWith("postgres-b.test.mjs")) {}\n' },
