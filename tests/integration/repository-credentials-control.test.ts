@@ -1,4 +1,4 @@
-import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.mjs";
+import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.ts";
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { createServer as createNetServer, connect, Socket } from "node:net";

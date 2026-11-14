@@ -120,7 +120,7 @@
     "tests/conformance/runtime-probe-cpu-counter.test.ts",
     "tests/conformance/runtime-gateway-state-migration.test.mjs",
     "tests/conformance/node-test-summary.test.ts",
-    "tests/conformance/repository-material-store.test.mjs",
+    "tests/conformance/repository-material-store.test.ts",
     "tests/conformance/plugin-runtime-templates.test.ts",
     "tests/integration/ci-logging.test.ts",
     "tests/integration/ci-go-test.test.ts",
@@ -132,8 +132,7 @@
     "tests/integration/runtime-ai-package-relocation.test.ts",
     "tests/integration/runtime-node-build-jobs.test.ts",
     "tests/integration/openclaw-source.test.ts",
-    "tests/conformance/repository-client-environment.test.mjs",
-    "tests/conformance/repository-credentials-tool-evidence.test.mjs",
+    "tests/conformance/repository-credentials-tool-evidence.test.ts",
     "tests/integration/client-address.test.mjs",
     "tests/integration/full-integration-preflight.test.mjs",
     "tests/integration/container-promote.test.ts",
@@ -532,7 +531,7 @@
       "path": "tests/conformance/repository-credentials-ownership-boundaries.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-tool-evidence.test.mjs"
+      "path": "tests/conformance/repository-credentials-tool-evidence.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-fixture-ownership.test.ts",
@@ -602,10 +601,7 @@
       "path": "tests/conformance/repository-credentials-registry.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-client-environment.test.mjs"
-    },
-    {
-      "path": "tests/conformance/repository-material-store.test.mjs",
+      "path": "tests/conformance/repository-material-store.test.ts",
       "expectedTests": [
         "expiry during Secret read refuses to create material",
         "earliest expiry during first creation prevents the next creation and leaves cleanup possible",
