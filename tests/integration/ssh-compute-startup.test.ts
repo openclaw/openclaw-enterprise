@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { Pool } from "pg";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
-import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
+import {
+  SshComputeDriver,
+  type SshComputeDriverOptions,
+} from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
@@ -10,64 +14,88 @@ import { testPool } from "../helpers/postgres-database.mjs";
 
 function installation() {
   const value = createInstallationDriverConfiguration();
-  value.drivers.compute = {
-    id: "compute-ssh",
-    configuration: {
-      ssh: {
-        identityFile: "/etc/openclaw/ssh/id",
-        knownHostsFile: "/etc/openclaw/ssh/known_hosts",
-      },
-      hosts: { stable: { address: "192.0.2.1", user: "root" } },
-      runtime: {
-        nodePath: "/usr/bin/node",
-        openclawPath: "/opt/openclaw/current/dist/index.js",
-        user: "openclaw",
-        root: "/var/lib/openclaw-enterprise",
-      },
-      network: { gatewayPortRange: { start: 18800, end: 18899 } },
+  const configuration = {
+    ssh: {
+      identityFile: "/etc/openclaw/ssh/id",
+      knownHostsFile: "/etc/openclaw/ssh/known_hosts",
+    },
+    hosts: { stable: { address: "192.0.2.1", user: "root" } },
+    runtime: {
+      nodePath: "/usr/bin/node",
+      openclawPath: "/opt/openclaw/current/dist/index.js",
+      user: "openclaw",
+      root: "/var/lib/openclaw-enterprise",
+    },
+    network: { gatewayPortRange: { start: 18800, end: 18899 } },
+  } satisfies SshComputeDriverOptions;
+  return {
+    ...value,
+    drivers: {
+      ...value.drivers,
+      compute: { id: "compute-ssh", configuration },
     },
   };
-  return value;
 }
 
 test("SSH startup selects occ/ssh in production without Kubernetes Compute fields and constructs a worker", async (t) => {
   const drivers = await loadInstallationFile(t, installation());
+  assert.ok(drivers);
   assert.ok(drivers.computeDriver instanceof SshComputeDriver);
   assert.equal(drivers.computeDriver.id, "compute-ssh");
   assert.equal(drivers.computeDriver.implementation, "occ/ssh");
   assert.equal(drivers.installation.drivers.compute.implementation, "occ/ssh");
   assert.equal(drivers.installation.drivers.compute.configuration.images, undefined);
   // Construction proves production structural acceptance; it does not connect to PostgreSQL or SSH.
-  const pool = testPool(t, { connectionString: "postgresql://127.0.0.1:1/occ" });
+  const pool: Pool = testPool(t, { connectionString: "postgresql://127.0.0.1:1/occ" });
   assert.doesNotThrow(() =>
     createControllerWorker({ pool, mode: "production", drivers, emit: () => {} }),
   );
-  assert.ok(
-    (await loadInstallationFile(t, installation(), { mode: "development" }))
-      .computeDriver instanceof SshComputeDriver,
-  );
+  const development = await loadInstallationFile(t, installation(), { mode: "development" });
+  assert.ok(development?.computeDriver instanceof SshComputeDriver);
 });
 
 test("SSH startup rejects Sandbox composition, missing Secret selection and invalid SSH configuration", async (t) => {
-  const sandbox = installation();
-  sandbox.drivers.sandbox = { id: "sandbox-openshell", configuration: {} };
+  const baseline = installation();
   await assert.rejects(
-    loadInstallationFile(t, sandbox),
+    loadInstallationFile(t, {
+      ...baseline,
+      drivers: { ...baseline.drivers, sandbox: { id: "sandbox-openshell", configuration: {} } },
+    }),
     /drivers\.sandbox.*compute-ssh.*Kubernetes/,
   );
-  const missingSecret = installation();
-  delete missingSecret.drivers.secret;
-  await assert.rejects(loadInstallationFile(t, missingSecret), /drivers\.secret/);
-  for (const [mutate, path, code] of [
-    [(c) => (c.ssh.identityFile = "relative"), "/ssh/identityFile", "INVALID_FORMAT"],
-    [(c) => (c.hosts.stable.user = "deploy"), "/hosts", "INVALID_VALUE"],
-    [(c) => (c.hosts.stable.port = 65536), "/hosts", "INVALID_VALUE"],
-    [(c) => (c.executor = {}), "", "UNKNOWN_FIELD"],
-    [(c) => (c.runtime.extra = true), "/runtime", "UNKNOWN_FIELD"],
-  ]) {
-    const invalid = installation();
-    mutate(invalid.drivers.compute.configuration);
-    await assert.rejects(loadInstallationFile(t, invalid), (error) => {
+  const { secret, ...driversWithoutSecret } = baseline.drivers;
+  assert.ok(secret);
+  await assert.rejects(
+    loadInstallationFile(t, { ...baseline, drivers: driversWithoutSecret }),
+    /drivers\.secret/,
+  );
+  const configuration = baseline.drivers.compute.configuration;
+  const { ssh, hosts, runtime } = configuration;
+  // The Installation loader receives raw configuration, including fields the schema rejects.
+  for (const [input, path, code] of [
+    [
+      { ...configuration, ssh: { ...ssh, identityFile: "relative" } },
+      "/ssh/identityFile",
+      "INVALID_FORMAT",
+    ],
+    [
+      { ...configuration, hosts: { stable: { ...hosts.stable, user: "deploy" } } },
+      "/hosts",
+      "INVALID_VALUE",
+    ],
+    [
+      { ...configuration, hosts: { stable: { ...hosts.stable, port: 65536 } } },
+      "/hosts",
+      "INVALID_VALUE",
+    ],
+    [{ ...configuration, executor: {} }, "", "UNKNOWN_FIELD"],
+    [{ ...configuration, runtime: { ...runtime, extra: true } }, "/runtime", "UNKNOWN_FIELD"],
+  ] as const) {
+    const invalid = {
+      ...baseline,
+      drivers: { ...baseline.drivers, compute: { id: "compute-ssh", configuration: input } },
+    };
+    await assert.rejects(loadInstallationFile(t, invalid), (error: unknown) => {
       assert.ok(error instanceof ConfigurationValidationError);
       assert.ok(
         error.error.details.some(
@@ -80,7 +108,7 @@ test("SSH startup rejects Sandbox composition, missing Secret selection and inva
   }
   const range = installation();
   range.drivers.compute.configuration.network.gatewayPortRange = { start: 2000, end: 1999 };
-  await assert.rejects(loadInstallationFile(t, range), (error) => {
+  await assert.rejects(loadInstallationFile(t, range), (error: unknown) => {
     assert.ok(error instanceof ConfigurationValidationError);
     assert.deepEqual(error.error.details, [
       {
@@ -98,6 +126,7 @@ test("every other packageless Compute id retains Kubernetes selection and produc
     const value = createInstallationDriverConfiguration();
     value.drivers.compute.id = id;
     const drivers = await loadInstallationFile(t, value);
+    assert.ok(drivers);
     assert.ok(drivers.computeDriver instanceof KubernetesComputeDriver);
     assert.equal(drivers.computeDriver.id, id);
     assert.equal(drivers.computeDriver.implementation, "occ/kubernetes");

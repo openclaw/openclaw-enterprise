@@ -13,7 +13,7 @@
     "tests/conformance/startup-environment-boundary.test.ts",
     "tests/integration/repository-credentials-admission.test.mjs",
     "tests/integration/repository-native-cutover.test.ts",
-    "tests/conformance/ssh-compute.test.mjs",
+    "tests/conformance/ssh-compute.test.ts",
     "tests/conformance/module-boundaries.test.ts",
     "tests/integration/repository-credentials-router.test.ts",
     "tests/conformance/module-policy.test.mjs",
@@ -90,7 +90,7 @@
     "tests/integration/repository-credentials-config.test.ts",
     "tests/integration/kubernetes-peer-status.test.mjs",
     "tests/conformance/repository-credentials-lifecycle.test.ts",
-    "tests/integration/ssh-compute-startup.test.mjs",
+    "tests/integration/ssh-compute-startup.test.ts",
     "tests/integration/oidc-login-transport.test.ts",
     "tests/conformance/repository-credentials-ownership-boundaries.test.ts",
     "tests/integration/ci-cleanup.test.ts",
@@ -429,10 +429,10 @@
       "path": "tests/integration/container-promote.test.ts"
     },
     {
-      "path": "tests/conformance/ssh-compute.test.mjs"
+      "path": "tests/conformance/ssh-compute.test.ts"
     },
     {
-      "path": "tests/integration/ssh-compute-startup.test.mjs"
+      "path": "tests/integration/ssh-compute-startup.test.ts"
     },
     {
       "path": "tests/conformance/runtime-probe-cpu-counter.test.ts"
