@@ -286,10 +286,6 @@ export function registerAdmissionCases() {
       }
     },
   );
-
-  // The GitHub repository policy the provisioning tests compose: one repository, `project`,
-  // approved in `namespaceId` for `profiles`.
-  // `installationAccess` also offers the Namespace installation-wide access, as `installation`.
 }
 
 export function registerHandoffAdmissionCases() {
@@ -311,9 +307,10 @@ export function registerHandoffAdmissionCases() {
         const secretCreateCallCount = fixture.secretDriver.calls.filter(
           ({ operation }) => operation === "create",
         ).length;
-        const body = provisioningBody(namespace.id, secrets, {
+        const body = {
+          ...provisioningBody(namespace.id, secrets),
           harnessAuth: { method: authMethod, source: secretRef(namespace.id, secrets.modelKey.id) },
-        });
+        };
         // Model-only references must obey the same Namespace boundary as channel Secrets.
         const foreign = structuredClone(body);
         foreign.harnessAuth.source.namespaceId = `ns_${randomUUID()}`;

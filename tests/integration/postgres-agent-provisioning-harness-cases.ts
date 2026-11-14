@@ -206,8 +206,6 @@ export function registerHarnessRefusalCase() {
       assert.doesNotMatch(JSON.stringify(denied.body), /models\.providers/);
     },
   );
-
-  // Provision Agents through the worker and return their settled provisioning views.
 }
 
 export function registerNativeAdminCases() {
@@ -231,7 +229,7 @@ export function registerNativeAdminCases() {
         "POST",
         `/namespaces/${namespace.id}/agents/provision`,
         {
-          body: provisioningBody(namespace.id, secrets, { nativeAdmin: true }),
+          body: { ...provisioningBody(namespace.id, secrets), nativeAdmin: true },
         },
       );
       assert.equal(response.status, 400, JSON.stringify(response.body));
@@ -265,7 +263,7 @@ export function registerNativeAdminCases() {
       const namespace = await fixture.bootstrapNamespace();
       const secrets = await createProvisioningSecrets(fixture, namespace.id);
       const path = `/namespaces/${namespace.id}/agents/provision`;
-      const base = provisioningBody(namespace.id, secrets, { nativeAdmin: true });
+      const base = { ...provisioningBody(namespace.id, secrets), nativeAdmin: true };
       const existingOrigin = "http://localhost:18789";
       const gateway = {
         controlUi: { enabled: false, allowedOrigins: [existingOrigin] },

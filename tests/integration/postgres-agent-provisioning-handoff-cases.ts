@@ -134,6 +134,8 @@ async function assertCancellationAudit(
   ]);
 }
 
+// Admits provisioning and starts the worker, then waits until it is inside its first runtime
+// credential write, so a worker holds the job's claim with a pending transport effect.
 async function provisionUntilTransportWrite(fixture: Fixture, isWriting: () => boolean) {
   const namespace = await fixture.bootstrapNamespace();
   const secrets = await createProvisioningSecrets(fixture, namespace.id);
@@ -361,9 +363,6 @@ export function registerStopAndDeleteCases() {
       assert.equal(agents.rowCount, 0, "no Agent may keep the Namespace non-empty");
     },
   );
-
-  // Admits provisioning and starts the worker, then waits until it is inside its first runtime
-  // credential write, so a worker holds the job's claim with a pending transport effect.
 }
 
 export function registerTransportCases() {

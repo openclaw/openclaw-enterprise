@@ -41,6 +41,7 @@ import {
   signInToControllerApp,
 } from "./postgres-agent-provisioning-setup.ts";
 
+// Provision Agents through the worker and return their settled provisioning views.
 async function provisionAgents(fixture: Fixture, namespaceId: string, count = 1) {
   const secrets = await createProvisioningSecrets(fixture, namespaceId);
   const admitted: string[] = [];

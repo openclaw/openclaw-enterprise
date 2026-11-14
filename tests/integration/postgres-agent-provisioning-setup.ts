@@ -203,12 +203,14 @@ export async function createProvisioningSecrets(
   return { modelKey, slackBotToken, slackSigningSecret, externalServiceToken };
 }
 
-export function provisioningBody<
-  Overrides extends Partial<ProvisionAgentBody> = Record<never, never>,
->(namespaceId: string, secrets: ProvisioningSecrets, overrides?: Overrides) {
-  const body = {
-    requestId: overrides?.requestId ?? requestId(),
-    name: overrides?.name ?? `Provisioned ${randomUUID().slice(0, 8)}`,
+export function provisioningBody(
+  namespaceId: string,
+  secrets: ProvisioningSecrets,
+  { name, requestId: id }: Pick<Partial<ProvisionAgentBody>, "name" | "requestId"> = {},
+) {
+  return {
+    requestId: id ?? requestId(),
+    name: name ?? `Provisioned ${randomUUID().slice(0, 8)}`,
     executionMode: "dedicated",
     configuration: {
       kind: "agent",
@@ -245,7 +247,6 @@ export function provisioningBody<
     // is covered by the Kubernetes provisioning integration.
     initialWorkspaceFiles: {},
   } satisfies ProvisionAgentBody;
-  return Object.assign(body, overrides);
 }
 
 export async function requestAcceptedProvisioning(
@@ -254,7 +255,7 @@ export async function requestAcceptedProvisioning(
   secrets: ProvisioningSecrets,
   overrides: Partial<ProvisionAgentBody> = {},
 ) {
-  const body = provisioningBody(namespaceId, secrets, overrides);
+  const body = { ...provisioningBody(namespaceId, secrets, overrides), ...overrides };
   const admitted = await fixture.requestChecked(
     AgentProvisioningResponse,
     "POST",

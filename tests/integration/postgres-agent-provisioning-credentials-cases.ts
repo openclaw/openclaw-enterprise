@@ -148,7 +148,7 @@ export function registerCredentialCases() {
           };
         } else {
           const secrets = await createProvisioningSecrets(fixture, namespace.id);
-          body = provisioningBody(namespace.id, secrets, {});
+          body = provisioningBody(namespace.id, secrets);
         }
         const admitted = await fixture.requestChecked(
           AgentProvisioningResponse,

@@ -48,6 +48,9 @@ import {
   provisioningRow,
 } from "./postgres-agent-provisioning-setup.ts";
 
+// The GitHub repository policy the provisioning tests compose: one repository, `project`,
+// approved in `namespaceId` for `profiles`.
+// `installationAccess` also offers the Namespace installation-wide access, as `installation`.
 function provisioningRepositoryPolicy(
   namespaceId: string,
   profiles: readonly GitHubProfile[],
@@ -140,13 +143,12 @@ function repositoryProvisioningBody(
   overrides: Partial<ProvisionAgentBody> = {},
 ) {
   return {
-    ...provisioningBody(namespaceId, secrets, {
-      repositoryAccess: {
-        defaultProfile: "git-read",
-        repositories: [{ repositoryRef: "project" }],
-      },
-      ...overrides,
-    }),
+    ...provisioningBody(namespaceId, secrets, overrides),
+    repositoryAccess: {
+      defaultProfile: "git-read",
+      repositories: [{ repositoryRef: "project" }],
+    },
+    ...overrides,
     pluginApprovers: [],
   };
 }
