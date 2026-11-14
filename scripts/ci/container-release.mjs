@@ -23,7 +23,7 @@ export function isReleaseVersion(version) {
 }
 // CI runs the runtime startup tests in three lanes; the release smoke runs their
 // startup files one at a time, since some cases measure timing.
-// container-release.test.mjs pins this list to the lane manifests.
+// container-release.test.ts pins this list to the lane manifests.
 export const runtimeImageSmokeTests = Object.freeze([
   "tests/helpers/workspace-gateway-relay-container.test.ts",
   "tests/integration/codex-plugin-stdio-real.test.ts",
