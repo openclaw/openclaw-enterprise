@@ -17,11 +17,14 @@
     "tests/integration/postgres-backend-ownership.test.mjs",
     "tests/integration/postgres-restart-recovery.test.mjs",
     "tests/integration/postgres-agent-deletion-audit.test.ts",
+    "tests/integration/postgres-api-request-audit.test.ts",
+    "tests/integration/postgres-agent-audit-read.test.ts",
     "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
     "tests/integration/postgres-default-users.test.ts",
     "tests/integration/postgres-agent-runtime-logs.test.ts",
     "tests/integration/postgres-repository-broker-receipts.test.mjs",
     "tests/integration/postgres-worker-stale-claim.test.ts",
+    "tests/integration/postgres-worker-audit.test.ts",
     "tests/integration/postgres-namespace-iam-policy.test.mjs",
     "tests/integration/postgres-agent-update-authority.test.ts",
     "tests/integration/postgres-connection-templates.test.ts",
@@ -297,6 +300,18 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-api-request-audit.test.ts",
+      "expectedTests": [
+        "PostgreSQL records API admission and results and blocks work when admission cannot be saved"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-agent-audit-read.test.ts",
+      "expectedTests": [
+        "Agent audit pages require an exact current grant and a committed disclosure"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
       "expectedTests": [
         "an Installation admin controls Gateway managed mode and a deployer applies the saved setting"
@@ -326,6 +341,10 @@
         "a stale worker whose held renewal succeeds after a takeover starts no Compute effect",
         "a stale worker whose held interval renewal succeeds after a takeover stopped its effect first"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-worker-audit.test.ts",
+      "expectedTests": ["PostgreSQL commits a worker claim and its audit record before Compute"]
     },
     {
       "path": "tests/integration/compute-singleton-worker-postgres.test.ts",

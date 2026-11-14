@@ -21180,6 +21180,297 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/agents/{agentId}/audit-events": {
+      "get": {
+        "description": "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.",
+        "operationId": "listAgentAuditEvents",
+        "parameters": [
+          {
+            "description": "Number of records per page, from 1 to 100. The default is 50.",
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "20"
+              }
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": { "pattern": "^(?:[1-9][0-9]?|100)$", "type": "string" }
+          },
+          {
+            "description": "Continuation from the preceding page for the same Agent and session.",
+            "examples": {
+              "example": {
+                "summary": "Illustrative only: copy an actual cursor from the previous response.",
+                "value": "YXVkaXQtbmV4dC1wYWdl"
+              }
+            },
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "agt_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "events": [
+                          {
+                            "actorId": "prn_123e4567-e89b-42d3-a456-426614174000",
+                            "event": "api_request",
+                            "id": "aud_123e4567-e89b-42d3-a456-426614174000",
+                            "occurredAt": "2026-10-01T11:30:00.000000Z",
+                            "operationId": "getAgent",
+                            "outcome": "success",
+                            "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+                          }
+                        ],
+                        "nextCursor": null,
+                        "projectionVersion": 1,
+                        "window": {
+                          "end": "2026-10-01T12:00:00.000Z",
+                          "start": "2026-09-30T12:00:00.000Z"
+                        }
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "events": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "actorId": {
+                                "pattern": "^(prn|spn)_[a-f0-9-]{36}$",
+                                "type": "string"
+                              },
+                              "attemptId": {
+                                "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "event": {
+                                "anyOf": [
+                                  { "const": "api_request", "type": "string" },
+                                  { "const": "work_queued", "type": "string" },
+                                  { "const": "work_claimed", "type": "string" },
+                                  { "const": "work_deferred", "type": "string" },
+                                  { "const": "work_completed", "type": "string" },
+                                  { "const": "work_result", "type": "string" }
+                                ]
+                              },
+                              "id": {
+                                "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "occurredAt": {
+                                "format": "date-time",
+                                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+                                "type": "string"
+                              },
+                              "operationId": { "const": "getAgent", "type": "string" },
+                              "outcome": {
+                                "anyOf": [
+                                  { "const": "success", "type": "string" },
+                                  { "const": "denied", "type": "string" },
+                                  { "const": "failure", "type": "string" }
+                                ]
+                              },
+                              "requestId": {
+                                "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "workId": { "pattern": "^work_[0-9a-f]{64}$", "type": "string" },
+                              "workState": {
+                                "anyOf": [
+                                  { "const": "queued", "type": "string" },
+                                  { "const": "claimed", "type": "string" },
+                                  { "const": "succeeded", "type": "string" },
+                                  { "const": "failed_permanent", "type": "string" },
+                                  { "const": "superseded", "type": "string" }
+                                ]
+                              }
+                            },
+                            "required": ["id", "occurredAt", "event", "outcome"],
+                            "type": "object"
+                          },
+                          "maxItems": 100,
+                          "type": "array"
+                        },
+                        "nextCursor": {
+                          "anyOf": [
+                            {
+                              "description": "Continuation from the preceding page for the same Agent and session.",
+                              "maxLength": 1024,
+                              "minLength": 1,
+                              "pattern": "^[A-Za-z0-9_-]+$",
+                              "type": "string"
+                            },
+                            { "type": "null" }
+                          ]
+                        },
+                        "projectionVersion": { "const": 1, "type": "number" },
+                        "window": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "end": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                              "type": "string"
+                            },
+                            "start": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["start", "end"],
+                          "type": "object"
+                        }
+                      },
+                      "required": ["projectionVersion", "window", "events", "nextCursor"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "security": [{ "sessionCookie": [] }],
+        "summary": "List audit metadata for one Agent",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "read_audit", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdraw": {
       "post": {
         "description": "Requires operate permission on the requested Agent.",
@@ -37589,7 +37880,8 @@
                                     { "const": "operate", "type": "string" },
                                     { "const": "administer", "type": "string" },
                                     { "const": "read_logs", "type": "string" },
-                                    { "const": "manage_policy", "type": "string" }
+                                    { "const": "manage_policy", "type": "string" },
+                                    { "const": "read_audit", "type": "string" }
                                   ]
                                 },
                                 "resourceKind": {
@@ -37758,7 +38050,8 @@
                             { "const": "operate", "type": "string" },
                             { "const": "administer", "type": "string" },
                             { "const": "read_logs", "type": "string" },
-                            { "const": "manage_policy", "type": "string" }
+                            { "const": "manage_policy", "type": "string" },
+                            { "const": "read_audit", "type": "string" }
                           ]
                         },
                         "resourceKind": {
@@ -37839,7 +38132,8 @@
                                   { "const": "operate", "type": "string" },
                                   { "const": "administer", "type": "string" },
                                   { "const": "read_logs", "type": "string" },
-                                  { "const": "manage_policy", "type": "string" }
+                                  { "const": "manage_policy", "type": "string" },
+                                  { "const": "read_audit", "type": "string" }
                                 ]
                               },
                               "resourceKind": {
@@ -38170,7 +38464,8 @@
                                   { "const": "operate", "type": "string" },
                                   { "const": "administer", "type": "string" },
                                   { "const": "read_logs", "type": "string" },
-                                  { "const": "manage_policy", "type": "string" }
+                                  { "const": "manage_policy", "type": "string" },
+                                  { "const": "read_audit", "type": "string" }
                                 ]
                               },
                               "resourceKind": {

@@ -40,12 +40,25 @@ export const configurationHandlers = {
     });
     reply.status(201).send({ data: configuration, meta: { requestId: request.id } });
   },
-  async getConfiguration({ controller, context, request, reply, params, namespaceId }) {
+  async getConfiguration({
+    controller,
+    context,
+    request,
+    reply,
+    params,
+    namespaceId,
+    setAuditReadTarget,
+  }) {
     const configuration = await controller.getConfiguration(
       context.actorId,
       namespaceId,
       params.configurationId as string,
     );
+    setAuditReadTarget({
+      kind: "configuration",
+      id: configuration.id,
+      namespaceId: configuration.namespaceId,
+    });
     reply.send({ data: configuration, meta: { requestId: request.id } });
   },
   async updateConfiguration({

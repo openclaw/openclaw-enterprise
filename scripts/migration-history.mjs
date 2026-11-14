@@ -181,6 +181,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 75 && completedCount > 75) {
     return "preNativeBrowserAccess";
   }
+  if (count === 76 && completedCount > 76) {
+    return "preControlPlaneAudit";
+  }
   if (count === completedCount) {
     return "completed";
   }

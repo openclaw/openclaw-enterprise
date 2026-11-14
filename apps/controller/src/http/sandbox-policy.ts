@@ -64,13 +64,26 @@ export const sandboxPolicyHandlers = {
     );
     reply.send({ data: result, meta: { requestId: request.id } });
   },
-  async getAgentSandboxPolicy({ controller, context, namespaceId, params, reply, request }) {
+  async getAgentSandboxPolicy({
+    controller,
+    context,
+    namespaceId,
+    params,
+    reply,
+    request,
+    setAuditReadTarget,
+  }) {
     const view = await controller.getAgentSandboxPolicy(
       context.actorId,
       namespaceId,
       params.agentId!,
       params.facet as SandboxFacet,
     );
+    setAuditReadTarget({
+      kind: "sandbox_policy",
+      id: view.policy.id,
+      namespaceId: view.policy.namespaceId,
+    });
     reply.send({
       data: { ...view, policy: policyBody(view.policy) },
       meta: { requestId: request.id },

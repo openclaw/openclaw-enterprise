@@ -354,6 +354,8 @@ spec:
               value: {{ include "openclaw.installationSecretNamespace" $ | quote }}
             - name: NODE_ENV
               value: production
+            - name: OCC_CONTROL_PLANE_AUDIT_ENABLED
+              value: {{ ternary "true" "false" $.Values.controlPlaneAudit.enabled | quote }}
             {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
             - name: OCC_CONSOLE_THEME_DIR
               value: /etc/openclaw/console-theme

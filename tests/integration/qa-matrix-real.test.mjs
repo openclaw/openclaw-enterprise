@@ -4,9 +4,85 @@ import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { createConsoleFixtureTransport } from "../helpers/console-fixture-transport.ts";
 import { selectQaMatrix, validateQaInputs } from "../helpers/qa-selection.mjs";
 
 const selected = process.env.OCC_TEST_QA_MATRIX === "1";
+
+async function verifyAgentAudit(f, agent) {
+  const transport = createConsoleFixtureTransport(f.consoleUrl, f.apiUrl);
+  const signIn = (credentials) =>
+    signInWithEmailPassword({
+      ...credentials,
+      origin: f.consoleUrl,
+      fetch: transport.fetchThroughLoopback,
+      headers: { origin: f.consoleUrl },
+    });
+  const request = async (session, method, path, expectedStatus, body) => {
+    const result = await transport.rawRequest(method, path, {
+      headers: authenticatedHeaders(session),
+      body,
+      timeout: 30_000,
+    });
+    assert.equal(result.response.status, expectedStatus, `${method} ${path}`);
+    return JSON.parse(result.text);
+  };
+  const base = `/namespaces/${agent.namespaceId}`;
+  const agentPath = `${base}/agents/${agent.id}`;
+  const auditPath = `${agentPath}/audit-events?limit=100`;
+  const admin = await signIn(f.credentials);
+  const credentials = { email: `qa-audit-${randomUUID()}@example.test`, password: randomUUID() };
+  const { data: reader } = await request(admin, "POST", "/api/auth/accounts", 201, credentials);
+  const session = await signIn(credentials);
+  // This account must have a direct grant on this Agent to see its audit records.
+  await request(session, "GET", auditPath, 403);
+  const role = await f.api("POST", `${base}/iam/roles`, {
+    name: "qa-agent-audit",
+    permissions: [
+      { action: "read", resourceKind: "agent" },
+      { action: "read_audit", resourceKind: "agent" },
+    ],
+  });
+  await f.api("POST", `${base}/iam/access-bindings`, {
+    subjectKind: "identity",
+    subjectId: reader.principalId,
+    roleId: role.id,
+    resourceKind: "agent",
+    resourceId: agent.id,
+  });
+
+  const { meta } = await request(session, "GET", agentPath, 200);
+  const { data } = await request(session, "GET", auditPath, 200);
+  assert.ok(
+    data.events.some(
+      (entry) => entry.operationId === "getAgent" && entry.requestId === meta.requestId,
+    ),
+    "the successful Agent read must have an audit record",
+  );
+  // Use the request ID returned by the original deployment and match the successful attempt.
+  assert.ok(agent.deployRequestId, "the deployment must return its request ID");
+  const queued = data.events.find(
+    (entry) => entry.event === "work_queued" && entry.requestId === agent.deployRequestId,
+  );
+  assert.ok(queued?.workId, "the deployment must have a queue record");
+  const result = data.events.find(
+    (entry) =>
+      entry.event === "work_result" &&
+      entry.workId === queued.workId &&
+      entry.workState === "succeeded",
+  );
+  assert.ok(result?.attemptId, "the deployment must have a successful worker result");
+  assert.ok(
+    data.events.some(
+      (entry) =>
+        entry.event === "work_claimed" &&
+        entry.workId === queued.workId &&
+        entry.attemptId === result.attemptId,
+    ),
+    "the result must refer to the claim for this deployment",
+  );
+}
 
 test(
   "shipped installations: canonical QA matrix",
@@ -253,6 +329,14 @@ test(
                   });
                 }
                 const scenarios = [
+                  [
+                    "agent-audit",
+                    async (agent, step) => {
+                      await step("authorized Agent reads and linked deployment audit records", () =>
+                        verifyAgentAudit(f, agent),
+                      );
+                    },
+                  ],
                   [
                     "console-secrets",
                     async (agent, step) => {

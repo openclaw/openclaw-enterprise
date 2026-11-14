@@ -8,6 +8,7 @@ import { Check } from "typebox/value";
 
 import {
   ErrorResponse,
+  Meta,
   type AgentResponse,
   type ConfigurationResponse,
   type CreateAgentBody,
@@ -427,12 +428,18 @@ async function request<Data = unknown>(
     "expected a JSON response envelope",
   );
   const envelope = payload as Record<string, unknown>;
-  const { error } = envelope;
+  const { error, meta } = envelope;
   assert.ok(
     error === undefined || Check(ErrorResponse.properties.error, error),
     "invalid API error envelope",
   );
-  return { status: response.status, data: envelope.data as Data, error };
+  const requestId =
+    typeof meta === "object" && meta !== null && "requestId" in meta ? meta.requestId : undefined;
+  assert.ok(
+    requestId === undefined || Check(Meta.properties.requestId, requestId),
+    "invalid API request ID",
+  );
+  return { status: response.status, data: envelope.data as Data, error, requestId };
 }
 
 async function createDurableController(pool: Pool) {

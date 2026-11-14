@@ -196,7 +196,7 @@ function refusedOnceBy(b, response, reason, operation, upstreamConnect) {
   ]);
 }
 
-async function withdrawRepositoryBinding(t, { state, agent, revision }) {
+async function withdrawRepositoryBinding(t, { state, pool, agent, revision }) {
   const original = await state.read((unit) =>
     unit.operations.findWork(`agent_revision:${revision.id}:reconcile`),
   );
@@ -223,6 +223,7 @@ async function withdrawRepositoryBinding(t, { state, agent, revision }) {
     controller,
     iamDriver: iam,
     auditSink: new InMemoryAuditSink(),
+    durableRequestAuditSink: state.auditSink,
     auth: auth.auth,
     development: {
       enabled: true,
@@ -239,11 +240,33 @@ async function withdrawRepositoryBinding(t, { state, agent, revision }) {
   assert.equal(result.status, 200, JSON.stringify(result.error));
   assert.deepEqual(result.data.repositoryBindings ?? [], []);
   // Cleanup retains the original deployer, even when another principal removes Git.
-  const withdrawal = await state.read((unit) =>
-    unit.operations.findWork(repositoryRemovalWorkKey(revision.id)),
-  );
+  const workId = repositoryRemovalWorkKey(revision.id);
+  const withdrawal = await state.read((unit) => unit.operations.findWork(workId));
   assert.ok(withdrawal);
   assert.equal(withdrawal.actorId, original.actorId);
+  const replay = await api("PATCH", "/namespaces/" + agent.namespaceId + "/agents/" + agent.id, {
+    configurationId: agent.configurationId,
+    repositoryBindings: [],
+  });
+  assert.equal(replay.status, 200, JSON.stringify(replay.error));
+  // Only the request that queued withdrawal is linked to this job.
+  const events = await pool.query(
+    `SELECT details->'__occAuditMetadata'->>'requestId' AS request_id, actor_id,
+            resource_kind, resource_id, namespace_id, details->>'agentId' AS agent_id
+     FROM occ.audit_events WHERE action = 'openclaw.controller_work.queued'
+       AND details->>'workId' = $1`,
+    [workId],
+  );
+  assert.deepEqual(events.rows, [
+    {
+      request_id: result.meta.requestId,
+      actor_id: original.actorId,
+      resource_kind: "agent_revision",
+      resource_id: revision.id,
+      namespace_id: agent.namespaceId,
+      agent_id: agent.id,
+    },
+  ]);
 }
 
 test(
