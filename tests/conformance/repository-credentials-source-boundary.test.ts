@@ -3,9 +3,18 @@ import { cp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/pro
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import type { ParserOptions } from "prettier";
 import { parsers } from "prettier/plugins/typescript";
-import { verifyRepositoryCredentialBoundary as verify } from "../../scripts/verify-repository-credentials-boundary.mjs";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { verifyRepositoryCredentialBoundary as verify } from "../../scripts/verify-repository-credentials-boundary.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+
+type SourceParser = {
+  parse(text: string, options?: ParserOptions<unknown>): unknown;
+};
+
+type MutationSource = readonly [label: string, source: string];
+type AcceptedMutation = readonly [label: string, file: string, source: string];
+type RejectedMutation = readonly [label: string, source: string, expected: RegExp, file?: string];
 
 const sourceRoot = fileURLToPath(new URL("../../apps/controller/src/", import.meta.url));
 const sharedFields = "composition/installation-fields.ts";
@@ -23,10 +32,15 @@ const entrypoints = [
   openShellEvidence,
 ];
 
-async function appendSource(root, file, source, check) {
+async function appendSource(
+  root: string,
+  file: string,
+  source: string,
+  check: () => Promise<unknown>,
+): Promise<void> {
   const path = join(root, file);
-  const previous = await readFile(path, "utf8").catch((error) => {
-    if (error.code !== "ENOENT") {
+  const previous = await readFile(path, "utf8").catch((error: unknown) => {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") {
       throw error;
     }
   });
@@ -42,9 +56,10 @@ async function appendSource(root, file, source, check) {
 test("credential source boundary rejects new raw capabilities in the real source tree", async (t) => {
   // Each check re-parses every credential source, but a case changes one file. The verifier
   // never mutates the AST, so this test reuses the real parser's output by source text.
-  const parse = parsers.typescript.parse.bind(parsers.typescript);
-  const parsed = new Map();
-  t.mock.method(parsers.typescript, "parse", (text, ...options) => {
+  const parser: SourceParser = parsers.typescript;
+  const parse = parser.parse.bind(parser);
+  const parsed = new Map<string, unknown>();
+  t.mock.method(parser, "parse", (text: string, ...options: [ParserOptions<unknown>?]) => {
     if (options.length) {
       return parse(text, ...options);
     }
@@ -58,7 +73,7 @@ test("credential source boundary rejects new raw capabilities in the real source
   await cp(sourceRoot, root, { recursive: true });
   assert.ok((await verify(root)) > 0);
 
-  for (const [label, file, source] of [
+  const accepted: readonly AcceptedMutation[] = [
     [
       "OpenShell evidence admits its exact contract symbol",
       openShellEvidence,
@@ -122,7 +137,8 @@ test("credential source boundary rejects new raw capabilities in the real source
       "drivers/repo/github/driver.ts",
       'import { encodeRepositoryCredentialSessionFiles as encodeFiles } from "./access/client/config.js"; void encodeFiles;',
     ],
-  ]) {
+  ];
+  for (const [label, file, source] of accepted) {
     await t.test(label, () => appendSource(root, file, source, () => verify(root)));
   }
 
@@ -138,7 +154,8 @@ test("credential source boundary rejects new raw capabilities in the real source
       const saved = join(temporary, "missing-source");
       await rename(path, saved);
       try {
-        await assert.rejects(verify(root), (error) => {
+        await assert.rejects(verify(root), (error: unknown) => {
+          assert.ok(error instanceof Error);
           if (entrypoints.includes(file)) {
             assert.match(
               error.message,
@@ -207,7 +224,7 @@ test("credential source boundary rejects new raw capabilities in the real source
     });
   }
 
-  const cases = [
+  const cases: readonly RejectedMutation[] = [
     [
       "the shared JSON parser cannot read files",
       'import { readFile } from "node:fs/promises";',
@@ -216,33 +233,35 @@ test("credential source boundary rejects new raw capabilities in the real source
     ],
     // These mutations must be rejected at the evidence file itself: merely
     // exempting the selector's import or ignoring this file cannot pass.
-    ...[
-      ["file IO", 'import { readFile } from "node:fs/promises";'],
-      ["network IO", 'import { request } from "node:https";'],
-      ["ordinary builtin expansion", 'import { hostname } from "node:os";'],
+    ...(
       [
-        "adjacent contract symbol",
-        'import { requireConfiguration } from "@openclaw-enterprise/contracts";',
-      ],
-      ["credential material", 'import * as material from "../repo/github/access/material.ts";'],
-      [
-        "additional loader",
-        'import { loadPublicCa } from "../../composition/repository-credentials/public-ca.ts";',
-      ],
-      ["adapter source", 'import "./openshell.ts";'],
-      ["side-effect import", 'import "@openclaw-enterprise/contracts";'],
-      ["namespace import", 'import * as contracts from "@openclaw-enterprise/contracts";'],
-      ["inline type side effect", 'import { type Extra } from "@openclaw-enterprise/contracts";'],
-      ["dynamic import", 'void import("@openclaw-enterprise/contracts");'],
-      [
-        "dependency re-export",
-        'export { repositoryGitRecipientFields } from "@openclaw-enterprise/contracts";',
-      ],
-      [
-        "relative dependency expansion",
-        'import { extra } from "../repo/access/protected-repository-git-installation.ts";',
-      ],
-    ].map(([label, source]) => [
+        ["file IO", 'import { readFile } from "node:fs/promises";'],
+        ["network IO", 'import { request } from "node:https";'],
+        ["ordinary builtin expansion", 'import { hostname } from "node:os";'],
+        [
+          "adjacent contract symbol",
+          'import { requireConfiguration } from "@openclaw-enterprise/contracts";',
+        ],
+        ["credential material", 'import * as material from "../repo/github/access/material.ts";'],
+        [
+          "additional loader",
+          'import { loadPublicCa } from "../../composition/repository-credentials/public-ca.ts";',
+        ],
+        ["adapter source", 'import "./openshell.ts";'],
+        ["side-effect import", 'import "@openclaw-enterprise/contracts";'],
+        ["namespace import", 'import * as contracts from "@openclaw-enterprise/contracts";'],
+        ["inline type side effect", 'import { type Extra } from "@openclaw-enterprise/contracts";'],
+        ["dynamic import", 'void import("@openclaw-enterprise/contracts");'],
+        [
+          "dependency re-export",
+          'export { repositoryGitRecipientFields } from "@openclaw-enterprise/contracts";',
+        ],
+        [
+          "relative dependency expansion",
+          'import { extra } from "../repo/access/protected-repository-git-installation.ts";',
+        ],
+      ] satisfies readonly MutationSource[]
+    ).map(([label, source]): RejectedMutation => [
       `OpenShell evidence rejects ${label}`,
       source,
       /unreviewed OpenShell evidence/,
@@ -284,20 +303,22 @@ test("credential source boundary rejects new raw capabilities in the real source
       /openshell-repository-git-evidence.ts is not reviewed for/,
       "composition/repository-credentials/new-evidence-consumer.ts",
     ],
-    ...[
+    ...(
       [
-        "extra symbol",
-        `import { openShellGitRecipientEvidence as allowed, protectedRepositoryGitInstallationSql } from "${evidenceImport}";`,
-      ],
-      ["namespace import", `import * as evidence from "${evidenceImport}";`],
-      ["side-effect import", `import "${evidenceImport}";`],
-      ["dynamic import", `void import("${evidenceImport}");`],
-      ["direct re-export", `export { openShellGitRecipientEvidence } from "${evidenceImport}";`],
-      [
-        "emitted extra symbol",
-        `import { protectedRepositoryGitInstallationSql } from "${evidenceImport.replace(/\.ts$/, ".js")}";`,
-      ],
-    ].map(([label, source]) => [
+        [
+          "extra symbol",
+          `import { openShellGitRecipientEvidence as allowed, protectedRepositoryGitInstallationSql } from "${evidenceImport}";`,
+        ],
+        ["namespace import", `import * as evidence from "${evidenceImport}";`],
+        ["side-effect import", `import "${evidenceImport}";`],
+        ["dynamic import", `void import("${evidenceImport}");`],
+        ["direct re-export", `export { openShellGitRecipientEvidence } from "${evidenceImport}";`],
+        [
+          "emitted extra symbol",
+          `import { protectedRepositoryGitInstallationSql } from "${evidenceImport.replace(/\.ts$/, ".js")}";`,
+        ],
+      ] satisfies readonly MutationSource[]
+    ).map(([label, source]): RejectedMutation => [
       `custody selection rejects evidence ${label}`,
       source,
       /openshell-repository-git-evidence.ts is not reviewed for/,
@@ -974,7 +995,8 @@ test("credential source boundary rejects new raw capabilities in the real source
   ] of cases) {
     await t.test(label, () =>
       appendSource(root, file, source, () =>
-        assert.rejects(verify(root), (error) => {
+        assert.rejects(verify(root), (error: unknown) => {
+          assert.ok(error instanceof Error);
           assert.match(error.message, /Repository credential boundary requires security review/);
           assert.ok(error.message.includes(`${file}:`), error.message);
           assert.match(error.message, expected);

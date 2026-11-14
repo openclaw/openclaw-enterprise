@@ -1,8 +1,22 @@
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ParserOptions } from "prettier";
 import { parsers } from "prettier/plugins/typescript";
 
+// Prettier's TypeScript parser accepts an omitted options argument. Keep its
+// output opaque until the scanner reads the AST.
+type SourceParser = {
+  parse(text: string, options?: ParserOptions<unknown>): unknown;
+};
+
+type ReviewedMembers = Readonly<Partial<Record<string, readonly string[]>>>;
+type ReviewedModules = Readonly<Partial<Record<string, ReviewedMembers>>>;
+type AstRecord = Record<string, unknown>;
+type AstNode = AstRecord & { type: string };
+type EdgeKind = "import" | "export";
+
+const sourceParser: SourceParser = parsers.typescript;
 const sourceRoot = fileURLToPath(new URL("../apps/controller/src/", import.meta.url));
 const credentialDirectories = [
   "composition/repository-credentials",
@@ -37,7 +51,7 @@ const publicReadDirectory = "drivers/repo/github/public-read/";
 const sourceExtensions = new Set([".ts", ".mts", ".cts", ".js", ".mjs", ".cjs", ".tsx", ".jsx"]);
 
 // Adding an I/O owner or member requires security review; see the owning test guide.
-const reviewedImports = {
+const reviewedImports: ReviewedModules = {
   // Pure recipient SQL only: no adapter, loader, material or I/O authority.
   [openShellEvidence]: {
     "@openclaw-enterprise/contracts": ["repositoryGitRecipientFields"],
@@ -281,7 +295,7 @@ const ordinaryBuiltins = new Set([
 ]);
 // Restrict imports and re-exports inside scanned credential source. The worker
 // entrypoint is outside that source; packaging and runtime tests cover that boundary.
-const capabilityConsumers = {
+const capabilityConsumers: ReviewedModules = {
   [openShellEvidence]: {
     "composition/repository-credentials/custody-selection.ts": [
       "openShellGitRecipientEvidence",
@@ -343,7 +357,7 @@ const rawGlobals = new Set([
   "console",
   "module",
 ]);
-const reviewedProcessMembers = {
+const reviewedProcessMembers: ReviewedMembers = {
   "composition/repository-credentials/check-config.ts": ["argv", "exitCode", "stderr", "stdout"],
   "drivers/repo/github/access/client/environment.ts": ["env"],
   "drivers/repo/github/access/client/git-helper.ts": [
@@ -400,11 +414,26 @@ const runtimeTypeScript = new Set([
   "TSEnumMember",
 ]);
 
-function slash(path) {
+const emittedToSourceExtension: Readonly<Partial<Record<string, string>>> = {
+  ".js": ".ts",
+  ".mjs": ".mts",
+  ".cjs": ".cts",
+};
+
+function slash(path: string): string {
   return path.split(sep).join("/");
 }
 
-async function collectSourceFiles(root, files) {
+async function sourceStat(path: string) {
+  return lstat(path).catch((error: unknown) => {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") {
+      throw error;
+    }
+    return undefined;
+  });
+}
+
+async function collectSourceFiles(root: string, files: string[]): Promise<void> {
   if (!(await lstat(root)).isDirectory()) {
     throw new Error(`Credential source must be a directory: ${root}`);
   }
@@ -424,22 +453,49 @@ async function collectSourceFiles(root, files) {
   }
 }
 
-function name(node) {
-  return node?.type === "Identifier" ? node.name : node?.value;
+function isRecord(value: unknown): value is AstRecord {
+  return typeof value === "object" && value !== null;
 }
 
-function member(node) {
-  if (node?.type !== "MemberExpression") {
+function isNode(value: unknown): value is AstNode {
+  return isRecord(value) && typeof value.type === "string";
+}
+
+function requireRecord(value: unknown): AstRecord {
+  if (!isRecord(value)) {
+    throw new TypeError("Expected a TypeScript parser AST record");
+  }
+  return value;
+}
+
+function isList(value: unknown): value is readonly unknown[] {
+  return Array.isArray(value);
+}
+
+function requireList(value: unknown): readonly unknown[] {
+  if (!isList(value)) {
+    throw new TypeError("Expected a TypeScript parser AST list");
+  }
+  return value;
+}
+
+function name(value: unknown): unknown {
+  if (!isRecord(value)) {
     return undefined;
   }
-  return !node.computed || node.property.type === "Literal" ? name(node.property) : undefined;
+  return value.type === "Identifier" ? value.name : value.value;
 }
 
-function isReference(parent, key) {
+function member(node: AstNode): unknown {
+  const property = requireRecord(node.property);
+  return !node.computed || property.type === "Literal" ? name(property) : undefined;
+}
+
+function isReference(parent: AstNode | undefined, key: string | undefined): boolean {
   if (parent?.type === "MemberExpression" && key === "property" && !parent.computed) {
     return false;
   }
-  if (["Property", "MethodDefinition", "PropertyDefinition"].includes(parent?.type)) {
+  if (parent && ["Property", "MethodDefinition", "PropertyDefinition"].includes(parent.type)) {
     if (key === "key" && !parent.computed) {
       return false;
     }
@@ -450,33 +506,62 @@ function isReference(parent, key) {
   return true;
 }
 
-function unwrappedValue(node) {
-  while (runtimeTypeScript.has(node?.type) && node.expression) {
+function unwrappedValue(node: unknown): unknown {
+  while (isNode(node) && runtimeTypeScript.has(node.type) && node.expression) {
     node = node.expression;
   }
   return node;
 }
 
-function relativeSource(path, root, specifier, sources) {
+function relativeSource(
+  path: string,
+  root: string,
+  specifier: string,
+  sources: ReadonlySet<string>,
+): string {
   const target = slash(relative(root, resolve(dirname(path), specifier)));
   if (sources.has(target)) {
     return target;
   }
   const extension = extname(target);
-  const sourceExtension = { ".js": ".ts", ".mjs": ".mts", ".cjs": ".cts" }[extension];
+  const sourceExtension = emittedToSourceExtension[extension];
   const sourceTarget = sourceExtension && target.slice(0, -extension.length) + sourceExtension;
   return sourceTarget && sources.has(sourceTarget) ? sourceTarget : target;
 }
 
-function inspectSource(path, root, sources, ast) {
+function valueSpecifiers(value: unknown, kind: "importKind" | "exportKind"): AstRecord[] {
+  const specifiers: AstRecord[] = [];
+  for (const item of requireList(value)) {
+    const specifier = requireRecord(item);
+    if (specifier[kind] !== "type") {
+      specifiers.push(specifier);
+    }
+  }
+  return specifiers;
+}
+
+function allReviewed(names: readonly unknown[], members: readonly string[] | undefined): boolean {
+  return names.every((binding) => typeof binding === "string" && members?.includes(binding));
+}
+
+function inspectSource(
+  path: string,
+  root: string,
+  sources: ReadonlySet<string>,
+  ast: unknown,
+): string[] {
   const file = slash(relative(root, path));
-  const failures = [];
-  const rawBindings = new Set();
-  for (const node of ast.body) {
+  const failures: string[] = [];
+  const rawBindings = new Set<string>();
+  for (const value of requireList(requireRecord(ast).body)) {
+    const node = requireRecord(value);
     if (node.type !== "ImportDeclaration" || node.importKind === "type") {
       continue;
     }
-    const source = node.source.value;
+    const source = requireRecord(node.source).value;
+    if (typeof source !== "string") {
+      throw new TypeError("Expected a TypeScript import source string");
+    }
     if (
       ordinaryBuiltins.has(source) &&
       file !== sharedConfigurationFields &&
@@ -498,27 +583,40 @@ function inspectSource(path, root, sources, ast) {
         continue;
       }
     }
-    for (const specifier of node.specifiers) {
-      if (specifier.importKind !== "type") {
-        rawBindings.add(specifier.local.name);
+    for (const specifier of valueSpecifiers(node.specifiers, "importKind")) {
+      const localName = requireRecord(specifier.local).name;
+      if (typeof localName === "string") {
+        rawBindings.add(localName);
       }
     }
   }
-  function deny(node, reason) {
-    failures.push(`${file}:${node.loc?.start.line ?? 1}: ${reason}`);
+
+  function isRawBinding(binding: unknown): boolean {
+    return typeof binding === "string" && rawBindings.has(binding);
   }
-  function edge(node, specifier, names, kind) {
+
+  function deny(node: AstRecord, reason: string): void {
+    const loc = node.loc;
+    const start = isRecord(loc) ? loc.start : undefined;
+    const line = isRecord(start) ? start.line : undefined;
+    failures.push(`${file}:${line ?? 1}: ${reason}`);
+  }
+
+  function edge(
+    node: AstNode,
+    specifier: unknown,
+    names: readonly unknown[],
+    kind: EdgeKind,
+  ): void {
     if (typeof specifier !== "string") {
       deny(node, "nonliteral module loading requires security review");
       return;
     }
+    const reviewed = reviewedImports[file]?.[specifier];
     // Like the shared field owner, this pure module must not inherit general
     // relative-source or ordinary-builtin access (including credential material).
     if (file === openShellEvidence) {
-      if (
-        kind === "import" &&
-        names.every((binding) => reviewedImports[file]?.[specifier]?.includes(binding))
-      ) {
+      if (kind === "import" && allReviewed(names, reviewed)) {
         // Continue through the source and capability checks for relative imports.
         if (!specifier.startsWith(".")) {
           return;
@@ -535,10 +633,7 @@ function inspectSource(path, root, sources, ast) {
       (specifier.startsWith(".") &&
         relativeSource(path, root, specifier, sources) === sharedConfigurationFields)
     ) {
-      if (
-        kind === "import" &&
-        names.every((binding) => reviewedImports[file]?.[specifier]?.includes(binding))
-      ) {
+      if (kind === "import" && allReviewed(names, reviewed)) {
         return;
       }
       deny(node, `unreviewed shared field validation ${kind} from ${specifier}`);
@@ -575,10 +670,7 @@ function inspectSource(path, root, sources, ast) {
         deny(node, `client runtime cannot load service owner ${target}`);
       }
       const consumers = capabilityConsumers[target];
-      if (
-        consumers &&
-        (kind !== "import" || !names.every((binding) => consumers[file]?.includes(binding)))
-      ) {
+      if (consumers && (kind !== "import" || !allReviewed(names, consumers[file]))) {
         deny(node, `raw sender ${target} is not reviewed for ${file}`);
       }
       if (!file.startsWith(clientDirectory) && target.startsWith(clientDirectory)) {
@@ -597,52 +689,51 @@ function inspectSource(path, root, sources, ast) {
     if (ordinaryBuiltins.has(specifier)) {
       return;
     }
-    if (
-      kind === "import" &&
-      names.every((binding) => reviewedImports[file]?.[specifier]?.includes(binding))
-    ) {
+    if (kind === "import" && allReviewed(names, reviewed)) {
       return;
     }
     deny(node, `unreviewed runtime ${kind} from ${specifier} (${names.join(", ")})`);
   }
 
-  function visit(node, parent, key) {
-    if (!node || typeof node.type !== "string" || node.declare) {
+  function visit(node: unknown, parent?: AstNode, key?: string): void {
+    if (!isNode(node) || node.declare) {
       return;
     }
     if (node.type === "ImportDeclaration") {
       if (node.importKind === "type") {
         return;
       }
-      const values = node.specifiers.filter((specifier) => specifier.importKind !== "type");
+      const values = valueSpecifiers(node.specifiers, "importKind");
       // With verbatimModuleSyntax, inline type-only specifiers retain import {}.
       const names = values.length
         ? values.map((specifier) => name(specifier.imported) ?? "*")
         : ["<side-effect>"];
-      edge(node, node.source.value, names, "import");
+      edge(node, requireRecord(node.source).value, names, "import");
       return;
     }
     if (node.type === "ExportAllDeclaration" || node.type === "ExportNamedDeclaration") {
       if (node.exportKind === "type") {
         return;
       }
-      const values = node.specifiers?.filter((specifier) => specifier.exportKind !== "type") ?? [];
+      const values = valueSpecifiers(node.specifiers ?? [], "exportKind");
       if (node.source) {
         const names = values.map((specifier) => name(specifier.local));
         if (!names.length) {
           names.push(node.type === "ExportAllDeclaration" ? "*" : "<side-effect>");
         }
-        edge(node, node.source.value, names, "export");
+        edge(node, requireRecord(node.source).value, names, "export");
       } else {
         for (const specifier of values) {
-          if (rawBindings.has(name(specifier.local))) {
+          if (isRawBinding(name(specifier.local))) {
             deny(specifier, "raw I/O binding cannot be re-exported");
           }
         }
-        if (node.declaration?.type === "VariableDeclaration") {
-          for (const declaration of node.declaration.declarations) {
+        const exported = node.declaration;
+        if (isNode(exported) && exported.type === "VariableDeclaration") {
+          for (const item of requireList(exported.declarations)) {
+            const declaration = requireRecord(item);
             const value = unwrappedValue(declaration.init);
-            if (value?.type === "Identifier" && rawBindings.has(value.name)) {
+            if (isNode(value) && value.type === "Identifier" && isRawBinding(value.name)) {
               deny(declaration, "raw I/O binding cannot be re-exported");
             }
           }
@@ -653,31 +744,37 @@ function inspectSource(path, root, sources, ast) {
     }
     if (node.type === "ExportDefaultDeclaration") {
       const value = unwrappedValue(node.declaration);
-      if (value?.type === "Identifier" && rawBindings.has(value.name)) {
+      if (isNode(value) && value.type === "Identifier" && isRawBinding(value.name)) {
         deny(node, "raw I/O binding cannot be re-exported");
       }
     }
     if (node.type === "TSImportEqualsDeclaration") {
       if (node.importKind !== "type") {
-        edge(node, node.moduleReference.expression?.value, ["*"], "import");
+        const expression = requireRecord(node.moduleReference).expression;
+        edge(node, isRecord(expression) ? expression.value : undefined, ["*"], "import");
       }
       return;
     }
     if (node.type === "ImportExpression") {
-      edge(node, node.source.type === "Literal" ? node.source.value : undefined, ["*"], "import");
+      const source = requireRecord(node.source);
+      edge(node, source.type === "Literal" ? source.value : undefined, ["*"], "import");
       return;
     }
     if (node.type.startsWith("TS") && !runtimeTypeScript.has(node.type)) {
       return;
     }
     if (node.type === "Identifier" && isReference(parent, key)) {
-      if (rawGlobals.has(node.name)) {
+      if (typeof node.name === "string" && rawGlobals.has(node.name)) {
         deny(node, `raw global ${node.name} requires security review`);
       }
       if (node.name === "process") {
         const property =
           parent?.type === "MemberExpression" && key === "object" ? member(parent) : undefined;
-        if (!property || !reviewedProcessMembers[file]?.includes(property)) {
+        if (
+          typeof property !== "string" ||
+          !property ||
+          !reviewedProcessMembers[file]?.includes(property)
+        ) {
           deny(node, `raw process capability ${property ?? "<value>"} requires security review`);
         }
       }
@@ -687,7 +784,7 @@ function inspectSource(path, root, sources, ast) {
         continue;
       }
       const child = node[childKey];
-      if (Array.isArray(child)) {
+      if (isList(child)) {
         for (const item of child) {
           visit(item, node, childKey);
         }
@@ -700,20 +797,17 @@ function inspectSource(path, root, sources, ast) {
   return failures;
 }
 
-export async function verifyRepositoryCredentialBoundary(root = sourceRoot) {
-  const files = [];
+export async function verifyRepositoryCredentialBoundary(
+  root: string = sourceRoot,
+): Promise<number> {
+  const files: string[] = [];
   for (const directory of credentialDirectories) {
     const path = join(root, directory);
-    const stat = await lstat(path).catch((error) => {
-      if (error.code !== "ENOENT") {
-        throw error;
-      }
-      return undefined;
-    });
+    const stat = await sourceStat(path);
     if (!stat?.isDirectory() || stat.isSymbolicLink()) {
       throw new Error(`Missing or invalid credential source root: ${directory}`);
     }
-    const owned = [];
+    const owned: string[] = [];
     await collectSourceFiles(path, owned);
     if (!owned.length) {
       throw new Error(`Empty credential source root: ${directory}`);
@@ -727,12 +821,7 @@ export async function verifyRepositoryCredentialBoundary(root = sourceRoot) {
     openShellEvidence,
   ]) {
     const path = join(root, entrypoint);
-    const stat = await lstat(path).catch((error) => {
-      if (error.code !== "ENOENT") {
-        throw error;
-      }
-      return undefined;
-    });
+    const stat = await sourceStat(path);
     if (stat && (!stat.isFile() || stat.isSymbolicLink())) {
       throw new Error(`Invalid credential entrypoint: ${entrypoint}`);
     }
@@ -741,14 +830,14 @@ export async function verifyRepositoryCredentialBoundary(root = sourceRoot) {
     }
   }
   const sources = new Set(files.map((path) => slash(relative(root, path))));
-  const failures = [];
+  const failures: string[] = [];
   for (const entrypoint of requiredEntrypoints) {
     if (!sources.has(entrypoint)) {
       failures.push(`Missing credential entrypoint: ${entrypoint}`);
     }
   }
   for (const path of files) {
-    const ast = await parsers.typescript.parse(await readFile(path, "utf8"));
+    const ast = await sourceParser.parse(await readFile(path, "utf8"));
     failures.push(...inspectSource(path, root, sources, ast));
   }
   if (failures.length) {

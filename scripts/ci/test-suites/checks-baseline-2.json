@@ -9,7 +9,7 @@
     "tests/integration/controlled-tls-origin.test.ts",
     "tests/integration/ci-prepare-k3d.test.ts",
     "tests/integration/ci-prepare.test.mjs",
-    "tests/conformance/repository-credentials-source-boundary.test.mjs",
+    "tests/conformance/repository-credentials-source-boundary.test.ts",
     "tests/conformance/startup-environment-boundary.test.ts",
     "tests/integration/repository-credentials-admission.test.mjs",
     "tests/integration/repository-native-cutover.test.ts",
@@ -530,7 +530,7 @@
       "path": "tests/integration/model-provider.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-source-boundary.test.mjs"
+      "path": "tests/conformance/repository-credentials-source-boundary.test.ts"
     },
     {
       "path": "tests/conformance/startup-environment-boundary.test.ts"
