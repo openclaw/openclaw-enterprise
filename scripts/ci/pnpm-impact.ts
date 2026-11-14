@@ -77,7 +77,7 @@ function changedPaths(base: string, tested: string) {
   if (fields.length % 2 || fields.length > 512) {
     throw new Error("unsupported diff");
   }
-  const paths = [];
+  const paths: string[] = [];
   for (let i = 0; i < fields.length; i += 2) {
     const match = /^:(\d{6}) (\d{6}) [0-9a-f]+ [0-9a-f]+ ([AMD])$/.exec(fields[i] ?? "");
     if (!match) {
@@ -119,6 +119,10 @@ function projects(args: string[]): unknown[] {
     throw new Error("invalid workspace");
   }
   return result;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function property(value: unknown, key: string): unknown {
@@ -200,18 +204,18 @@ function assetPrediction({ base, tested }: Identity): Prediction {
       property(manifest, "version") !== 1 ||
       !Array.isArray(ci) ||
       !ci.length ||
-      typeof definitions !== "object" ||
-      definitions === null
+      !isObject(definitions)
     ) {
       return broad("incomplete_manifest");
     }
     const found = new Set<string>();
     const lanes: string[] = [];
     for (const [name, lane] of Object.entries(definitions)) {
-      const files: unknown = property(lane, "files");
-      if (!Array.isArray(files)) {
+      const entries = property(lane, "files");
+      if (!Array.isArray(entries)) {
         return broad("incomplete_manifest");
       }
+      const files: readonly unknown[] = entries;
       for (const file of files) {
         const path = property(file, "path");
         if (typeof path !== "string") {
@@ -363,7 +367,7 @@ function inspect() {
     if (!cleanCheckout()) {
       return { identity, result: unavailable("dirty_checkout") };
     }
-    let result;
+    let result: ReturnType<typeof inspectGraph>;
     try {
       result = inspectGraph(checked.base, paths);
     } catch {

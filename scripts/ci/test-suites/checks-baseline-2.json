@@ -381,7 +381,7 @@
       "path": "tests/integration/ci-image-pull.test.ts"
     },
     {
-      "path": "tests/integration/ci-image-config-digest.test.mjs"
+      "path": "tests/integration/ci-image-config-digest.test.ts"
     },
     {
       "path": "tests/integration/skipper-release.test.ts"
