@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-14"
-last_updated_session: "authoring-run/dfd9adb7-a9e9-438a-ae1a-ab73c7fe7079"
+last_updated_session: "authoring-run/2d33bc98-b254-4e9a-9e69-8d859a58b543"
 ---
 
 # Production Startup Flow
@@ -308,8 +308,9 @@ after successful cleanup.
 
 `apps/controller/src/composition/repository-credentials/issuer.ts:startPreparedGitIssuer`
 
-The issuer checks enrollment, database Installation and custody schema. The
-Worker requires the issuer probe over mutual TLS before binding its sender.
+Before listening, the issuer checks enrollment, the database Installation,
+the custody schema and effective application grants. Over mutual TLS, the Worker requires
+the versioned issuer probe response before binding its sender.
 Custody checks the enrolled witness before preparation and dispatch. It checks
 the release, recipient, fence and material before use.
 
@@ -347,15 +348,13 @@ until tenant deployment/TUI procedures run.
 
 ## Debugging and Verification
 
-- `scripts/prepare-bootstrap-volume` should exit `0` only for a fresh claim with
-  no bootstrap output files and UID/GID `1000`, mode `0700` root state.
-- `kubectl -n openclaw-system wait --for=condition=complete job/oce-initialization`
-  should succeed before API and worker rollout checks.
-- `pnpm db:migrate:production --check` reports the accepted database history
-  without applying SQL. `MIGRATION_HISTORY_UNSUPPORTED` needs the database
-  inspected; initialization never repairs its ledger.
-- The API emits `listening`; the worker emits `worker.started`, then `worker.health`.
-  `listening` reports `startupMs` (since process start) and per-phase `phasesMs`.
+- `scripts/prepare-bootstrap-volume` exits `0` for a fresh claim with no outputs,
+  UID/GID `1000` and root state mode `0700`.
+- Before rollout checks, wait for `job/oce-initialization` to complete in `openclaw-system`.
+- `pnpm db:migrate:production --check` reads database history without applying SQL.
+  If it reports `MIGRATION_HISTORY_UNSUPPORTED`, inspect the ledger.
+- API `listening` reports elapsed `startupMs` and `phasesMs`. The worker emits
+  `worker.started`, then `worker.health`.
 - `compute.preflight-warning` code `KUBERNETES_VERSION_BELOW_MINIMUM`: upgrade
   Kubernetes to 1.35 or later for support.
 - `startup-error` or `worker.startup-error` with code
@@ -396,6 +395,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 02:27: Trace effective database grants and the versioned issuer probe. (authoring-run/2d33bc98-b254-4e9a-9e69-8d859a58b543 - b7964df8777077ca4197038f9217ab3785ca4dba)
 
 - 2026-11-14 02:01: Trace issuer enrollment and readiness. (authoring-run/dfd9adb7-a9e9-438a-ae1a-ab73c7fe7079 - d0a92127b46be95d855f47b9559cf4e51e24c3ca)
 

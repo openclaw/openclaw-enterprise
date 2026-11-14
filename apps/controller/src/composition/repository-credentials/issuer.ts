@@ -145,26 +145,53 @@ export async function startPreparedGitIssuer(
       query_timeout: 5000,
     });
     pool = database;
-    // Resolve the custody tables and required privileges on this connection without
-    // writing or requiring a live revision, release, witness or prepared token.
+    // Check effective grants for issuance, retirement and recipient custody on the actual
+    // application connection. Table grants and column grants both satisfy a column check.
     const ready = await database.query(
       `SELECT FROM occ.installation i
        JOIN occ.agents a ON (a.namespace_id,a.id,a.service_principal_id)=($2,$3,$4)
        WHERE i.id=$1
          AND current_setting('transaction_read_only') = 'off'
-         AND has_table_privilege('occ.credential_deliveries', 'INSERT')
-         AND has_column_privilege('occ.credential_deliveries', 'fence', 'UPDATE')
-         AND has_table_privilege('occ.prepared_github_families', 'INSERT')
-         AND has_column_privilege('occ.prepared_github_families', 'enabled', 'UPDATE')
-         AND has_table_privilege('occ.prepared_github_attempts', 'INSERT')
-         AND has_column_privilege('occ.prepared_github_attempts', 'custody', 'UPDATE')
-         AND has_table_privilege('occ.prepared_repository_git_uses', 'INSERT')
-         AND NOT EXISTS (SELECT live_revision_id, worker_instance, target FROM occ.credential_deliveries LIMIT 0)
-         AND NOT EXISTS (SELECT installation FROM occ.egress_installations LIMIT 0)
-         AND NOT EXISTS (SELECT cleanup_context, phase FROM occ.repository_session_attempts LIMIT 0)
-         AND NOT EXISTS (SELECT admission, enabled, next_check_at FROM occ.prepared_github_families LIMIT 0)
-         AND NOT EXISTS (SELECT state, custody, sealed, material_version FROM occ.prepared_github_attempts LIMIT 0)
-         AND NOT EXISTS (SELECT recipient_fence FROM occ.prepared_repository_git_uses LIMIT 0)`,
+         AND NOT EXISTS (
+           SELECT FROM (VALUES
+             ('installation', 'SELECT', 'id'),
+             ('agents', 'SELECT', 'namespace_id,id,service_principal_id,active_revision_id,status,desired_runtime_state,execution_mode,repository_bindings'),
+             ('namespaces', 'SELECT', 'id,status,deleted_at'),
+             ('agent_revisions', 'SELECT', 'namespace_id,agent_id,id,admitted_spec'),
+             ('repository_session_attempts', 'SELECT', 'namespace_id,agent_id,revision_id,live_revision_id,admission_id,session_id,repository_ref,cleanup_context,deadline_wall_ms,broker_protocol,phase,predecessor_admission_id'),
+             ('egress_installations', 'SELECT', 'namespace_id,agent_id,revision_id,installation,sandbox_id'),
+             ('repository_standing_approvals', 'SELECT', 'id,namespace_id,agent_id,revoked_at,generation,scope_fingerprint,binding'),
+             ('repository_standing_executions', 'SELECT', 'namespace_id,agent_id,revision_id,closed,approval_id,approval_generation'),
+             ('egress_rejected_material', 'SELECT', 'namespace_id,secret_driver_id,material_id,material_version'),
+             ('credential_deliveries', 'SELECT', 'revision_id,live_revision_id,binding_id,namespace_id,agent_id,target,fence,worker_instance,settlement,write_pending,blocked,operation_fence,target_preparation_attempt_id,target_material_version,preparation_attempt_id,material_version'),
+             ('credential_deliveries', 'INSERT', 'revision_id,live_revision_id,binding_id,namespace_id,agent_id,target,worker_instance,settlement'),
+             ('credential_deliveries', 'UPDATE', 'write_pending,fence,operation_fence,target_preparation_attempt_id,target_material_version,updated_at,preparation_attempt_id,material_version'),
+             ('prepared_github_families', 'SELECT', 'source_id,source,admission,enabled,next_check_at'),
+             ('prepared_github_families', 'INSERT', 'source_id,source,issuer,admission'),
+             ('prepared_github_families', 'UPDATE', 'enabled,admission,next_check_at'),
+             ('prepared_github_attempts', 'SELECT', 'source_id,id,admission,state,custody,material_version,provider_expires_at,usable_until,started_at,sealed'),
+             ('prepared_github_attempts', 'INSERT', 'id,source_id,admission,state'),
+             ('prepared_github_attempts', 'UPDATE', 'state,custody,sealed,material_version,provider_expires_at,usable_until'),
+             ('prepared_repository_git_uses', 'INSERT', 'exchange_id,admission_id,attempt_id,material_version,operation,request_digest_sha256,authorization_reply_by,recipient_fence')
+           ) AS required(relation, privilege, columns)
+           CROSS JOIN LATERAL unnest(string_to_array(required.columns, ',')) AS col(name)
+           WHERE has_column_privilege('occ.' || required.relation, col.name, required.privilege) IS NOT TRUE
+         )
+         -- PostgreSQL also requires UPDATE on at least one column for a row lock.
+         AND NOT EXISTS (
+           SELECT FROM unnest(ARRAY['agents', 'namespaces', 'repository_session_attempts',
+                                    'egress_installations', 'repository_standing_approvals']) AS locked(relation)
+           WHERE has_any_column_privilege('occ.' || locked.relation, 'UPDATE') IS NOT TRUE
+         )
+         AND has_function_privilege('occ.repository_standing_approval_is_current(jsonb,text,text)', 'EXECUTE')
+         AND has_function_privilege('occ.repository_standing_execution_is_current(jsonb,text,text,text)', 'EXECUTE')
+         -- Earlier versions of the same family table cannot store selected repository material.
+         AND EXISTS (
+           SELECT FROM pg_catalog.pg_constraint
+           WHERE conrelid = 'occ.prepared_github_families'::regclass
+             AND conname = 'prepared_github_families_check' AND contype = 'c' AND convalidated
+             AND strpos(pg_get_constraintdef(oid), 'credential_proxy_github_repository') > 0
+         )`,
       [
         settings.enrolledWorker.installationId,
         enrollment.namespaceId,

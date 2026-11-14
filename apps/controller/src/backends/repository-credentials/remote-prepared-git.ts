@@ -9,6 +9,8 @@ import type { RemotePreparedGitConfiguration } from "./remote-prepared-git-confi
 import { inspectRequestHead } from "../../drivers/repo/access/transport/request.ts";
 
 const path = "/v1/prepared-git/authority";
+const probeHeader = "openclaw-prepared-git-authority";
+const probeVersion = "v1";
 const maxBytes = 128 * 1024;
 const unavailable = () => new Error("PREPARED_REPOSITORY_GIT_UNAVAILABLE");
 const denied = { kind: "denied", reason: "unavailable" } as const;
@@ -208,7 +210,7 @@ export async function serveRemotePreparedGit(
         const headers = { "cache-control": "no-store", connection: "close" };
         if (input.operation === "probe") {
           fields(input, "operation");
-          res.writeHead(204, headers).end();
+          res.writeHead(204, { ...headers, [probeHeader]: probeVersion }).end();
           return;
         }
         const result = await dispatch(authority, input, signal);
@@ -309,7 +311,11 @@ export async function connectRemotePreparedGit(
   );
   const origin = new URL(path, config.issuerEndpoint);
   const stop = new AbortController();
-  const call = <T>(input: object, signal = stop.signal): Promise<T | undefined> => {
+  const call = <T>(
+    input: { operation: string } & Record<string, unknown>,
+    signal = stop.signal,
+  ): Promise<T | undefined> => {
+    const probe = input.operation === "probe";
     const lifetime = AbortSignal.any([signal, stop.signal, AbortSignal.timeout(10_000)]);
     const body = Buffer.from(JSON.stringify(input));
     return new Promise((resolve, reject) => {
@@ -329,11 +335,11 @@ export async function connectRemotePreparedGit(
           },
         },
         (res) => {
-          if (res.statusCode === 204) {
+          if (res.statusCode === 204 && (!probe || res.headers[probeHeader] === probeVersion)) {
             res.resume();
             resolve(undefined);
           } else if (
-            !("operation" in input && input.operation === "probe") &&
+            !probe &&
             res.statusCode === 200 &&
             res.headers["content-type"] === "application/json"
           ) {

@@ -24,8 +24,13 @@ delivery matches the enrolled Namespace, Agent and ServicePrincipal.
 Create or select a dedicated Agent in the Installation before you configure
 its enrollment. Use the Agent's current ServicePrincipal ID. Start the
 issuer and Worker with the matching enrollment before deploying the Agent
-with repository bindings. Issuer startup requires the Agent record and
-does not require an active revision, recipient witness, or token.
+with repository bindings. Issuer startup requires the Agent record. You can
+start it before any revision, recipient witness, or token exists.
+
+To deploy with repository selections, save them on the enrolled Agent and
+deploy it. A guided provisioning request with repository selections returns
+`409 RESOURCE_CONFLICT` because it creates a new Agent and ServicePrincipal.
+Guided provisioning accepts requests without repository selections.
 
 ## Configure and start the issuer
 
@@ -62,6 +67,7 @@ egress for the co-located Worker. Supply the remote issuer runtime, mounts and
 network rules in your deployment.
 
 The issuer checks that its enrollment matches the Installation configuration
-and verifies the database Installation and custody schema before accepting
-probes. The Worker requires the authenticated issuer probe before binding its
-sender. See the [production startup flow](../../flows/production-startup.md).
+and verifies the database Installation, custody schema, and application role
+grants for claim, issuance, retirement, and recipient custody before accepting
+probes. The Worker requires the issuer’s versioned response over mutual TLS
+before binding its sender. See the [production startup flow](../../flows/production-startup.md).

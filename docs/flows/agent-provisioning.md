@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-11-13
-last_updated_session: authoring-run/6f9b8960-1432-46e9-97af-330142c01422
+updated: "2026-11-14"
+last_updated_session: "authoring-run/2d33bc98-b254-4e9a-9e69-8d859a58b543"
 ---
 
 # Agent provisioning flow
@@ -26,9 +26,11 @@ See [worker reconciliation](controller-worker.md) and [Harness topology](harness
 graph TD
   Console["<b>Console</b><br/>Save entered Secrets"] --> Secrets["<b>Existing Secrets API</b><br/>Return ordinary references"]
   Secrets --> API["<b>Provision API</b><br/>Inline config and references"]
-  API --> Queue["<b>Existing work queue</b><br/>Return job handle"]
+  API -->|New request is eligible| Queue["<b>Existing work queue</b><br/>Return job handle"]
+  API -->|New Agent cannot use enrolled repository recipient| NoRecipient["<b>409 conflict</b><br/>No job queued"]
   Queue --> Claim["<b>Worker</b><br/>Claim and authorize"]
-  Claim --> Config["<b>Configuration Driver</b><br/>Write or recover Configuration"]
+  Claim -->|Eligible for new writes| Config["<b>Configuration Driver</b><br/>Write or recover Configuration"]
+  Claim -->|Saved work lost recipient eligibility| Failed
   Config -->|Repository selections still valid| Agent["<b>Create Agent</b><br/>Grant exact credential access"]
   Config -->|Repository selections refused| RepoRefused["<b>Refuse provisioning</b><br/>No new Agent or revision"]
   Agent --> Transport["<b>Compute Driver</b><br/>Trusted-proxy credentials"]
@@ -48,7 +50,7 @@ graph TD
   classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class Console,Secrets,API,Queue state
   class Claim,Config,Agent,Transport,Deploy,Observe,UI,Settings operation
-  class Failed,Recovery,Terminal,Superseded,RepoRefused,Unknown condition
+  class Failed,Recovery,Terminal,Superseded,RepoRefused,Unknown,NoRecipient condition
 ```
 
 ## Execution Trace
@@ -91,6 +93,8 @@ After an Installation selects another Secret Driver, request, status and retry a
 
 OCC applies Configuration rules before Channel credential validation. Its Secret callbacks recheck provisioning grants before storage and after I/O, then confirm current same-Namespace backend and selected-Driver ownership before provider use. Slack accepts whole `${NAME}` environment references and checks token roles and bot authentication. This does not pin Secret versions or revalidate queued work. OCC validates Namespace repository selections before queueing. Undeliverable bindings, including Sandbox repositories, retain Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup`; Compute delegates validation or refuses unsupported placement before staging. Deployment checks the Harness topology.
 
+When the Installation uses a [remote prepared Git issuer](../reference/repository-credentials/remote-prepared-git-issuer.md), the repository recipient must already exist. OCC returns `409 RESOURCE_CONFLICT` before queueing a new Agent with nonempty repository selections. Provisioning without repository selections remains available.
+
 OCC stores the accepted request and deduplication fingerprint in `agent_provisioning_work`, then queues `controller_work` with `work_kind = 'provisioning'`. Configuration and Agent creation happen later. The same actor, Namespace and request ID return the existing work; changed input conflicts.
 
 The `202` response contains `data.provisioning`, with the work ID and status URL. Public progress exposes result IDs and safe errors without input values or backend credentials.
@@ -104,16 +108,16 @@ effects and result commits. Retries reuse completed outputs. It creates the Conf
 values and bindings, then creates a stopped Agent, records the auth, provider, plugin, repository and
 workspace selections, and grants its service principal the exact Secret permissions.
 
+The worker checks recipient eligibility before new writes. It can inspect or clean up effects from an earlier claim. Status and exact replay still report saved work.
+
 The bundled worker uses the Installation's selected repository policy for saved selections and first revision admission. A programmatic controller without this binding uses its registered repository Driver. After fencing the claim and checking that the Namespace is ready, the worker checks the saved selections before creating the Agent. The Configuration Driver may already have written the Configuration. If the check refuses, the worker creates no new Agent or revision and follows the existing Configuration recovery rules.
 
 Source-backed provisioning records the canonical model source and grants only source `operate`.
 Admission, replay, retry and execution recheck caller authority, source readiness and Gateway
 ownership. Queued or running work prevents source deletion.
 
-Compute prepares runtime credentials without loopback HTTP. Kubernetes
-`apps/controller/src/drivers/compute/kubernetes/index.ts:provisionAgentRuntimeCredentials` confirms complete owned Secrets after
-create-only provisioning. Failure retains them and blocks configured success or
-first revision admission.
+Compute prepares runtime credentials directly. Kubernetes
+`apps/controller/src/drivers/compute/kubernetes/index.ts:provisionAgentRuntimeCredentials` confirms owned Secrets after create-only provisioning. Failure retains the Secrets and blocks the first revision.
 `kubernetesGatewayConfigurationDocument` defaults to machine-only trusted-proxy
 administration and preserves human identities/scopes. Provisioning and
 deploy admission reject an invalid `allowUsers` or malformed `deviceAutoApprove` (Configuration
@@ -217,8 +221,9 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 ## Debugging and Verification
 
-- Poll `data.provisioning.url` or `GET /namespaces/:namespaceId/agents/provision/:workId`; failed work reports a safe error. Status checks stored ownership and provisioning grants, while retry also revalidates the accepted plan. See [admission](#2-occ-admits-one-job) for refusal rules. Explicit pre-handoff retry uses the same URL plus `/retry` and an empty body; only the initiating actor can read or retry work. Match request IDs in `agent_provisioning.compute_refused` and `worker.completed`.
-- Status does not repeat repository admission, plugin policy, runtime-image support, Compute plan validation or Harness authentication checks. For source-backed Harness authentication, it omits the Gateway catalog lookup but still requires a ready source, its original Gateway owner, a Sandbox, current operator grants and the Agent grant when the Agent exists. If the Agent already exists, retry rechecks its repository selections before the lifecycle checks and can refuse a readable record. Missing accepted Secrets, Credential Sources or ServiceAccounts give `409`; changed selected Driver IDs or Sandbox containment can give `503`. Caller-owned Configuration refusals name the setting without its value; other Compute refusals use fixed public text. A worker refusal fails that attempt with `PROVISIONING_REJECTED` after inspecting earlier unsettled writes; an unobservable write still retries. Kubernetes provisioning requires explicit `dedicated`, because omission defaults to `embedded`. An accepted account without an access token requires the ChatGPT Backend.
+- Poll `data.provisioning.url` for saved work and safe errors. The initiating actor can send an empty POST to the URL plus `/retry` before handoff. Correlate `agent_provisioning.compute_refused` and `worker.completed` by request ID.
+- Status checks caller authority, saved resources and Driver ownership. It skips admission checks for repository selections, plugin policy, image support, the Compute plan and Harness authentication. For source-backed authentication, it checks the ready source, original Gateway, Sandbox and current grants without a Gateway catalog lookup.
+- Retry revalidates admission. Missing accepted sources give `409`. A changed Driver or Sandbox requirement can give `503`. The worker records `PROVISIONING_REJECTED` after inspecting earlier writes. An unobserved write keeps its pending record.
 - Inspect `worker.completed`, `worker.error` and the `agent_provisioning` work metric. PostgreSQL job state lives in `occ.controller_work` and `occ.agent_provisioning_work`.
 - Use `tests/integration/postgres-agent-provisioning.test.mjs` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
 - Use Console browser coverage for channel Secret creation before provisioning, reference reuse after failure and job-to-deployment navigation. The disposable Kubernetes fixture proves actual Driver handoff, not native enrollment, model execution or Slack replies.
@@ -237,6 +242,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 02:27: Trace recipient enrollment checks before new provisioning writes. (authoring-run/2d33bc98-b254-4e9a-9e69-8d859a58b543 - b7964df8777077ca4197038f9217ab3785ca4dba)
 
 - 2026-11-13 16:01: Clarify provisioning audit. (authoring-run/6f9b8960-1432-46e9-97af-330142c01422 - e3e113d4111af1e467f10db2c6eef8e8d10a5b48)
 

@@ -30,6 +30,7 @@ import type {
 import { selectGitHubRequest } from "../../apps/controller/src/drivers/repo/github/access/routes/request-selection.ts";
 import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts";
 import test, { type TestContext } from "node:test";
+import type { Pool } from "pg";
 import {
   selectBundledRepositoryGitCustody,
   selectRegisteredRepositoryGitCustody,
@@ -63,7 +64,13 @@ import {
 import { fixture } from "../fixtures/prepared-repository-git.mjs";
 import { standingGitOrigin } from "../helpers/prepared-standing-git-peer.ts";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, withPool } from "../helpers/postgres-database.mjs";
+import { createFastifyApp } from "../../apps/controller/src/index.ts";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
+import { injectJson } from "../helpers/inject-json.mjs";
+import { signInToControllerApp } from "../helpers/auth-session.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
+import { createRuntimeComputeDriver } from "./postgres-agent-provisioning-transport-fixture.ts";
 
 test(
   "only the installed Git recipient owner may use its material or retire its ended admission",
@@ -1753,6 +1760,7 @@ test(
     };
     // A hostname-valid mTLS endpoint can still speak a different protocol.
     let unrelatedProbes = 0;
+    let unrelatedStatus = 200;
     const unrelated = await listen(
       t,
       createServer(
@@ -1770,14 +1778,22 @@ test(
             // Drain the request before returning a successful response for a different protocol.
           }
           unrelatedProbes++;
-          res.writeHead(200, { "content-type": "application/json" }).end('{"unrelated":true}');
+          if (unrelatedStatus === 204) {
+            res.writeHead(204).end();
+          } else {
+            res.writeHead(200, { "content-type": "application/json" }).end('{"unrelated":true}');
+          }
         },
       ),
     );
     await assert.rejects(connectRemotePreparedGit({ ...client, issuerEndpoint: unrelated }), {
       message: "PREPARED_REPOSITORY_GIT_UNAVAILABLE",
     });
-    assert.equal(unrelatedProbes, 1);
+    unrelatedStatus = 204;
+    await assert.rejects(connectRemotePreparedGit({ ...client, issuerEndpoint: unrelated }), {
+      message: "PREPARED_REPOSITORY_GIT_UNAVAILABLE",
+    });
+    assert.equal(unrelatedProbes, 2);
     const platform = await f.state.loadInstallation();
     assert.ok(platform);
     const enrollment = {
@@ -2117,6 +2133,277 @@ test(
         ),
         [],
       );
+      const configurationEffects = createTestConfigurationDriver({
+        id: "remote-provisioning-configuration",
+        exact: true,
+      });
+      const writes: { namespaceId: string; id: string }[] = [];
+      const createExact = configurationEffects.createExact!;
+      let loseConfigurationReply = false;
+      configurationEffects.createExact = async (configuration) => {
+        const created = await createExact(configuration);
+        writes.push({ namespaceId: created.namespaceId, id: created.id });
+        if (loseConfigurationReply) {
+          throw new Error("Fixture lost the Configuration write response.");
+        }
+        return created;
+      };
+      const runtimeEffects = createRuntimeComputeDriver();
+      const runtimeAdmission = drivers.computeDriver;
+      const compute = {
+        ...runtimeEffects,
+        id: "remote-provisioning-compute",
+        validateAgentProvisioning:
+          runtimeAdmission.validateAgentProvisioning!.bind(runtimeAdmission),
+        validateRepositoryCredentials:
+          runtimeAdmission.validateRepositoryCredentials!.bind(runtimeAdmission),
+        validateHarnessAuth: runtimeAdmission.validateHarnessAuth!.bind(runtimeAdmission),
+      };
+      // A real plan admitted before recipient enrollment remains readable and recoverable.
+      const { recipient: _recipient, ...priorAdmission } = drivers.repositoryAdmission!;
+      const prior = OpenClawController.forInstallation(
+        platform,
+        { state: f.state, backends: drivers.installation.backend },
+        priorAdmission,
+      );
+      registerCoreDrivers(prior, f.state);
+      prior.registerDriver(secretDriver);
+      prior.selectDriver("secret", secretDriver.id);
+      prior.installDriver(owner, ["sandbox", "credential_proxy"]);
+      for (const controller of [deployment, prior]) {
+        controller.registerDriver(configurationEffects);
+        controller.selectDriver("configuration", configurationEffects.id);
+        controller.registerDriver(compute);
+        controller.selectDriver("compute", compute.id);
+      }
+      const auth = await createPostgresControllerAuth({
+        pool: f.pool,
+        installationId: platform.id,
+        mode: "development",
+        baseURL: "https://console.oce.localhost",
+        agentDomain: "agents.oce.localhost",
+        secret: "fixture-provisioning-session-" + randomUUID(),
+      });
+      const credentials = { email: `fixture-${randomUUID()}@example.test`, password: randomUUID() };
+      const account = await auth.createAccount(credentials);
+      const seed = auth.principalSeed(account, { grant: "none" });
+      await f.state.appendNativeIAMPrincipal(seed);
+      await f.pool.query(
+        `INSERT INTO occ.iam_access_bindings
+           (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
+         SELECT 'binding-' || gen_random_uuid(), namespace_id, $1, role_id, resource_kind, resource_id
+         FROM occ.iam_access_bindings WHERE identity_subject_id = $2`,
+        [seed.principal.id, actor.id],
+      );
+      const appFor = (controller: OpenClawController) =>
+        createFastifyApp({
+          controller,
+          iamDriver: controller.selectedDriver("iam"),
+          computeDriver: compute,
+          configurationDriver: configurationEffects,
+          secretDriver,
+          resolveHarness: resolveApprovedHarness,
+          auditSink: f.state.auditSink,
+          auth,
+          development: { enabled: false },
+        });
+      const app = appFor(deployment);
+      const priorApp = appFor(prior);
+      try {
+        const session = await signInToControllerApp(app, credentials);
+        const namespaceId = enrollment.namespaceId;
+        const path = `/namespaces/${namespaceId}/agents/provision`;
+        const bindings = [{ repositoryRef: "selected", profile: "github-repository" }];
+        const request = () => ({
+          requestId: `req_${randomUUID()}`,
+          name: `Provisioning fixture ${randomUUID()}`,
+          executionMode: "dedicated",
+          configuration: { kind: "agent", values: createHarnessConfiguration("codex", "fixture") },
+          harnessAuth: {
+            method: "api_key",
+            source: { kind: "secret", namespaceId, id: secret.id },
+          },
+        });
+        const counts = async () =>
+          (
+            await f.pool.query(
+              `SELECT
+              (SELECT count(*) FROM occ.agent_provisioning_work WHERE namespace_id=$1) AS jobs,
+              (SELECT count(*) FROM occ.controller_work WHERE namespace_id=$1) AS work,
+              (SELECT count(*) FROM occ.configurations WHERE namespace_id=$1) AS configurations,
+              (SELECT count(*) FROM occ.agents WHERE namespace_id=$1) AS agents,
+              (SELECT count(*) FROM occ.agent_revisions WHERE namespace_id=$1) AS revisions,
+              (SELECT count(*) FROM occ.audit_events WHERE namespace_id=$1
+                 AND action='openclaw.agents.provision' AND outcome='success') AS accepted`,
+              [namespaceId],
+            )
+          ).rows[0];
+        const before = await counts();
+        for (const repository of [
+          { repositoryBindings: bindings },
+          {
+            repositoryAccess: {
+              defaultProfile: "github-repository",
+              repositories: [{ repositoryRef: "selected" }],
+            },
+          },
+        ]) {
+          const refused = await injectJson(app, "POST", path, {
+            session,
+            body: { ...request(), ...repository },
+          });
+          assert.equal(refused.statusCode, 409, refused.body);
+          assert.equal(refused.json().error.code, "RESOURCE_CONFLICT");
+          assert.match(
+            refused.json().error.message,
+            /no prepared repository credential enrollment/,
+          );
+          assert.deepEqual(await counts(), before);
+        }
+        assert.deepEqual(writes, []);
+        assert.deepEqual(runtimeEffects.calls, []);
+        assert.equal(peer.gh.issuesOfTokens.length, 0);
+        t.diagnostic("Both repository request forms returned 409 with zero new jobs or effects.");
+
+        const admit = async (target: typeof app, body: object) => {
+          const response = await injectJson(target, "POST", path, { session, body });
+          assert.equal(response.statusCode, 202, response.body);
+          const { workId, url } = response.json().data.provisioning;
+          assert.equal(typeof workId, "string");
+          assert.equal(typeof url, "string");
+          return { workId: workId as string, url: url as string };
+        };
+        const status = async (url: string) => {
+          const response = await injectJson(app, "GET", url, { session });
+          assert.equal(response.statusCode, 200, response.body);
+          return response.json().data;
+        };
+        const claim = async (workId: string) => {
+          const claimToken = randomUUID();
+          const claimed = await f.pool.query(
+            `UPDATE occ.controller_work SET state='claimed', attempt_count=attempt_count+1,
+               claim_token=$2::uuid, lease_expires_at=clock_timestamp()+interval '10 minutes',
+               updated_at=clock_timestamp()
+             WHERE idempotency_key=$1 AND work_kind='provisioning' AND state='queued'`,
+            [workId, claimToken],
+          );
+          assert.equal(claimed.rowCount, 1, "claim only the named provisioning work");
+          const work = await f.state.read((view) => view.operations.findWork(workId));
+          assert.ok(work?.leaseExpiresAt);
+          assert.equal(work.kind, "provisioning");
+          return {
+            ...work,
+            state: "claimed" as const,
+            claimToken,
+            leaseExpiresAt: work.leaseExpiresAt,
+            ageMs: work.updatedAt.getTime() - work.createdAt.getTime(),
+          };
+        };
+        const process = async (target: OpenClawController, workId: string) =>
+          target.processAgentProvisioning(await claim(workId), resolveApprovedHarness);
+        const legacy = { ...request(), repositoryBindings: bindings };
+        const queued = await admit(priorApp, legacy);
+        assert.deepEqual(await admit(app, legacy), queued);
+        const changed = await injectJson(app, "POST", path, {
+          session,
+          body: { ...legacy, name: request().name },
+        });
+        assert.equal(changed.statusCode, 409, changed.body);
+        assert.equal((await status(queued.url)).status, "queued");
+        assert.deepEqual(await process(deployment, queued.workId), {
+          outcome: "permanent",
+          code: "PROVISIONING_REJECTED",
+        });
+        const failed = await status(queued.url);
+        assert.equal(failed.status, "failed");
+        assert.equal(failed.agentId, undefined);
+        assert.equal(failed.configurationId, undefined);
+        assert.equal(failed.revisionId, undefined);
+        assert.deepEqual(await admit(app, legacy), queued);
+        assert.deepEqual(writes, []);
+        assert.deepEqual(runtimeEffects.calls, []);
+        const refusedRetry = await injectJson(app, "POST", queued.url + "/retry", { session });
+        assert.equal(refusedRetry.statusCode, 409, refusedRetry.body);
+
+        // Earlier Configuration writes are inspected and cleaned up even when new work is refused.
+        const interrupted = await admit(priorApp, { ...request(), repositoryBindings: bindings });
+        loseConfigurationReply = true;
+        const lost = await process(prior, interrupted.workId);
+        loseConfigurationReply = false;
+        assert.equal(lost.outcome, "retry");
+        assert.equal(lost.code, "PROVISIONING_OUTCOME_UNKNOWN");
+        assert.equal(writes.length, 1);
+        const written = writes[0]!;
+        assert.ok(configurationEffects.stored(written));
+        assert.deepEqual(await process(deployment, interrupted.workId), {
+          outcome: "permanent",
+          code: "PROVISIONING_REJECTED",
+        });
+        assert.equal(writes.length, 1, "the Configuration was never sent again");
+        assert.equal(configurationEffects.stored(written), undefined);
+        assert.deepEqual(runtimeEffects.calls, []);
+
+        for (const repository of [
+          {},
+          { repositoryBindings: [] },
+          { repositoryAccess: { defaultProfile: "github-repository", repositories: [] } },
+        ]) {
+          const body = { ...request(), ...repository };
+          const accepted = await admit(app, body);
+          assert.deepEqual(await admit(app, body), accepted);
+          const claimed = await claim(accepted.workId);
+          const cancelled = await f.state.transact((unit) =>
+            unit.provisioning.cancel(claimed, {
+              code: "PROVISIONING_CANCELLED",
+              message: "Fixture finished before worker dispatch.",
+            }),
+          );
+          assert.equal(cancelled.status, "cancelled");
+          const cancelledStatus = await status(accepted.url);
+          assert.equal(cancelledStatus.status, "failed");
+          assert.equal(cancelledStatus.error.code, "PROVISIONING_CANCELLED");
+          assert.deepEqual(await admit(app, body), accepted);
+        }
+        // A claim accepted before enrollment can have a saved Agent when Stop cancels it.
+        // Hold its transport write before dispatch, then exercise the public Stop route.
+        const partialBody = { ...request(), repositoryBindings: bindings };
+        const partial = await admit(priorApp, partialBody);
+        let effects = 0;
+        const cancelled = await prior.processAgentProvisioning(
+          await claim(partial.workId),
+          resolveApprovedHarness,
+          {
+            async runEffect(operation) {
+              effects++;
+              if (effects === 1) {
+                return operation(t.signal);
+              }
+              const current = await status(partial.url);
+              assert.equal(typeof current.agentId, "string");
+              assert.equal(typeof current.configurationId, "string");
+              assert.equal(current.revisionId, undefined);
+              assert.deepEqual(await admit(app, partialBody), partial);
+              const stopped = await injectJson(
+                app,
+                "POST",
+                `/namespaces/${namespaceId}/agents/${current.agentId}/stop`,
+                { session },
+              );
+              assert.equal(stopped.statusCode, 200, stopped.body);
+              throw new Error("Fixture stopped before the transport write.");
+            },
+          },
+        );
+        assert.equal(effects, 2);
+        assert.deepEqual(cancelled, { outcome: "permanent", code: "PROVISIONING_CANCELLED" });
+        assert.equal((await status(partial.url)).error.code, "PROVISIONING_CANCELLED");
+        assert.deepEqual(runtimeEffects.calls, []);
+        t.diagnostic(
+          "Saved work retained replay and status, fenced new writes, and cleaned up an earlier landed Configuration.",
+        );
+      } finally {
+        await Promise.all([app.close(), priorApp.close()]);
+      }
     } finally {
       await owner.close();
     }
@@ -2198,6 +2485,62 @@ test(
       assert.doesNotMatch(refused.stdout, /prepared-git-issuer.ready/);
     }
     await writeFile(issuerPath, JSON.stringify(issuerConfiguration), { mode: 0o600 });
+    const migrationUrl = process.env.OCC_TEST_PREPARED_GIT_MIGRATION_DATABASE_URL;
+    if (migrationUrl !== undefined) {
+      const appTarget = new URL(databaseUrl);
+      const migratorTarget = new URL(migrationUrl);
+      assert.ok(
+        [appTarget, migratorTarget].every(
+          (url) =>
+            url.protocol === "postgresql:" &&
+            url.hostname === "127.0.0.1" &&
+            /^\/openclaw_ci_postgres_protected_git_recipient_custo_[a-f0-9]{12}$/.test(
+              url.pathname,
+            ) &&
+            url.search === "" &&
+            url.hash === "",
+        ) &&
+          appTarget.port === migratorTarget.port &&
+          appTarget.pathname === migratorTarget.pathname &&
+          appTarget.username === "occ_app" &&
+          migratorTarget.username === "occ_migrator",
+        "Both roles must use the same disposable recipient custody database.",
+      );
+      await withPool(migrationUrl, async (migrator: Pool) => {
+        await migrator.query(
+          "REVOKE UPDATE (next_check_at) ON occ.prepared_github_families FROM occ_app",
+        );
+        try {
+          // The actual application role cannot execute the family claim's write, even with no rows.
+          await assert.rejects(
+            f.pool.query(
+              "UPDATE occ.prepared_github_families SET next_check_at = clock_timestamp() WHERE false",
+            ),
+            { code: "42501" },
+          );
+          const refused = await run(process.execPath, [issuerEntry, issuerPath], {
+            allowFailure: true,
+            signal: AbortSignal.any([t.signal, AbortSignal.timeout(12_000)]),
+            env,
+          });
+          assert.equal(refused.code, 1);
+          assert.match(refused.stderr, /PREPARED_GIT_ISSUER_STARTUP_FAILED/);
+          assert.doesNotMatch(refused.stdout, /prepared-git-issuer.ready/);
+          await assert.rejects(connectRemotePreparedGit(client), {
+            message: "PREPARED_REPOSITORY_GIT_UNAVAILABLE",
+          });
+        } finally {
+          await migrator.query(
+            "GRANT UPDATE (next_check_at) ON occ.prepared_github_families TO occ_app",
+          );
+        }
+        t.diagnostic(
+          "The issuer refused the missing family claim grant; the migrator restored it.",
+        );
+      });
+    } else {
+      t.diagnostic("The missing-grant control requires the managed PostgreSQL file fixture.");
+    }
     const evaluationMarker = join(directory, "issuer-driver-evaluation");
     const issuer = spawn(process.execPath, [issuerEntry, issuerPath], {
       env: { ...env, OCC_TEST_REPOSITORY_DRIVER_EVALUATION_MARKER: evaluationMarker },
