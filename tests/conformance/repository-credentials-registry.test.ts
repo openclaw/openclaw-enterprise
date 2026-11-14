@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import type { AgentRevision } from "@openclaw-enterprise/contracts";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { chmod, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { AgentRevision, RepositoryRevisionState } from "@openclaw-enterprise/contracts";
+import { controlledProtectedDriver } from "../fixtures/prepared-repository-git.mjs";
 import {
   resolveGitHubRepositoryBinding,
   resolveGitHubStandingApprovalScope,
@@ -12,6 +14,8 @@ import {
 import { loadGitHubRepositoryRegistry } from "../../apps/controller/src/composition/repository-credentials/registry.ts";
 import { repositoryApprovalFingerprint } from "../../packages/occ/src/repository-approval.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { completeSandboxRevision } from "../integration/sandbox-driver-revision-fixture.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 interface NamespaceInput {
   namespaceId: string;
@@ -442,41 +446,58 @@ test("selected repository standing approval binds permissions and rechecks deliv
     metadata: "read",
     pull_requests: "write",
   });
-  const agentId = "agent";
-  const finiteState: NonNullable<AgentRevision["repositoryCredentials"]> = {
-    driver: { id: "repository-credentials", implementation: "repository-credentials" },
-    deadlineWallMs: 1700003600000,
+  const sandboxDriverId = controlledProtectedDriver.id;
+  const base = completeSandboxRevision({
+    id: `rev_${randomUUID()}`,
+    namespaceId: request.namespaceId,
+    agentId: `agt_${randomUUID()}`,
+    sandboxDriverId,
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+  });
+  const finiteState: RepositoryRevisionState = {
+    driver: { id: "repository-credentials", implementation: "github" },
+    deadlineWallMs: Date.parse(base.createdAt) + 3_600_000,
     bindings: [binding],
   };
-  const revision = {
-    id: "revision",
-    namespaceId: request.namespaceId,
-    repositoryCredentials: {
-      ...finiteState,
-      standingApprovalId: "approval",
-      standingApprovalGeneration: 1,
-      standingApprovalScopeFingerprint: repositoryApprovalFingerprint({
-        namespaceId: request.namespaceId,
-        agentId,
-        binding,
-        scope,
-      }),
+  const nativeConfiguration: (harness: "codex", model: string) => AgentRevision["configuration"] =
+    createHarnessConfiguration;
+  // The persisted revision and its protected Git plan carry the same admitted grant.
+  const deliveryRevision = (repositoryCredentials: RepositoryRevisionState): AgentRevision => ({
+    ...base,
+    configuration: nativeConfiguration("codex", "gpt-5.1"),
+    repositoryCredentials,
+    executionAdmission: { version: 5, mode: "protected" },
+    egressPlan: {
+      id: randomUUID(),
+      generation: 1,
+      driver: controlledProtectedDriver,
+      sandboxDriverId,
+      egressDriverId: sandboxDriverId,
+      execution: {
+        installationId: "installation",
+        namespaceId: base.namespaceId,
+        agentId: base.agentId,
+        servicePrincipalId: base.servicePrincipalId,
+        revisionId: base.id,
+        executionId: randomUUID().replaceAll("-", ""),
+      },
+      repositoryGit: repositoryCredentials,
+      repositoryGitAuthorization: "online-request",
+      routes: [],
     },
-    agentId,
-    revision: 1,
-    backendId: null,
-    configurationId: "configuration",
-    configurationKind: "agent",
-    configurationGeneration: 1,
-    configuration: {},
-    gatewayManagedMode: false,
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
-    compute: { id: "kubernetes", implementation: "kubernetes" },
-    harnessAuth: { method: "runtime" },
-    servicePrincipalId: "service-principal",
-    createdAt: "2023-11-14T22:13:20.000Z",
-    executionAdmission: { version: 2, mode: "unprotected" },
-  } satisfies AgentRevision;
+  });
+  const standingState = {
+    ...finiteState,
+    standingApprovalId: "approval",
+    standingApprovalGeneration: 1,
+    standingApprovalScopeFingerprint: repositoryApprovalFingerprint({
+      namespaceId: base.namespaceId,
+      agentId: base.agentId,
+      binding,
+      scope,
+    }),
+  };
+  const revision = deliveryRevision(standingState);
   assert.deepEqual(createGitHubRepositoryDeliveryResolver(registry)(revision).delivery, {
     scope: "github-repository",
     installationId: "67890",
@@ -512,11 +533,7 @@ test("selected repository standing approval binds permissions and rechecks deliv
       /Standing repository policy/,
     );
     assert.doesNotThrow(
-      () =>
-        createGitHubRepositoryDeliveryResolver(current)({
-          ...revision,
-          repositoryCredentials: finiteState,
-        }),
+      () => createGitHubRepositoryDeliveryResolver(current)(deliveryRevision(finiteState)),
       "withdrawing standing permission does not reject an independent finite grant",
     );
   }
@@ -544,10 +561,9 @@ test("selected repository standing approval binds permissions and rechecks deliv
   }
   assert.throws(
     () =>
-      createGitHubRepositoryDeliveryResolver(registry)({
-        ...revision,
-        repositoryCredentials: { ...revision.repositoryCredentials, bindings: [binding, binding] },
-      }),
+      createGitHubRepositoryDeliveryResolver(registry)(
+        deliveryRevision({ ...standingState, bindings: [binding, binding] }),
+      ),
     /Standing repository policy/,
     "standing approval never authorizes multiple bindings",
   );
