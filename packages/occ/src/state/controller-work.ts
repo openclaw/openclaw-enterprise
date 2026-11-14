@@ -159,6 +159,7 @@ export function deploymentProgressForWork(
       message =
         "Waiting for the previous version to finish its active work and deliver its results before this version starts.";
       break;
+    case "PLANNED_PREDECESSOR_STOP_YIELDED":
     case "PLANNED_PREDECESSOR_STOP_PENDING":
       code = attempt.code;
       message =

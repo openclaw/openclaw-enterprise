@@ -6856,19 +6856,27 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
-      const code = "PLANNED_PREDECESSOR_STOP_PENDING";
+      const code =
+        error instanceof ComputeStopYieldedError
+          ? "PLANNED_PREDECESSOR_STOP_YIELDED"
+          : "PLANNED_PREDECESSOR_STOP_PENDING";
       await this.queue.defer(claim, { code }, { delayMs: this.stopYieldRecheckMs(claim) });
       this.passOutcome = "pending";
-      this.emit({
-        event: "worker.completed",
-        ...workLogFields(claim),
-        namespaceId: claim.namespaceId,
-        agentId: claim.agentId,
-        revisionId: claim.revisionId,
-        outcome: "pending",
-        code,
-        ...revisionFailureLogFields(error),
-      });
+      const yields =
+        code === "PLANNED_PREDECESSOR_STOP_YIELDED" ? this.recordStopYield(claim, code) : undefined;
+      if (code === "PLANNED_PREDECESSOR_STOP_PENDING" || yields !== undefined) {
+        this.emit({
+          event: "worker.completed",
+          ...workLogFields(claim),
+          namespaceId: claim.namespaceId,
+          agentId: claim.agentId,
+          revisionId: claim.revisionId,
+          outcome: "pending",
+          code,
+          ...revisionFailureLogFields(error),
+          ...stopYieldsField(yields),
+        });
+      }
       return true;
     }
     await this.state.transactWithQueue(async (unit, queue) => {
@@ -6883,8 +6891,16 @@ export class ControllerWorker {
         predecessor.id,
         stoppingAt,
       );
+      // Stop or a newer admission can commit during the Driver call. Resume with
+      // fresh lifecycle and authorization reads instead of using the old snapshot.
+      await queue.defer(
+        claim,
+        { code: "PLANNED_PREDECESSOR_STOP_COMPLETED" },
+        { delayMs: 1, recordEvidence: false },
+      );
     }, this.queueOptions);
-    return false;
+    this.passOutcome = "pending";
+    return true;
   }
 
   /**

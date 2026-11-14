@@ -1665,7 +1665,7 @@ revisionTest(
   },
 );
 
-for (const recovery of ["retry", "reassigned"]) {
+for (const recovery of ["retry", "reassigned", "explicit Stop", "legacy sweep"]) {
   test(
     `planned replacement recovers a committed predecessor stop after its only claim expires (${recovery})`,
     { ...requiresPostgres, timeout: 60_000 },
@@ -1721,20 +1721,36 @@ for (const recovery of ["retry", "reassigned"]) {
       }
       assert.ok(events.some((event) => event.event === "worker.pass-interrupted"));
       assert.equal((await fixture.expireClaim(candidate, claim.claim_token)).rowCount, 1);
-      await denyDeploy(fixture, owner);
+      if (recovery === "retry" || recovery === "reassigned") {
+        await denyDeploy(fixture, owner);
+      }
       const stop = driver.compute.stopRevision.bind(driver.compute);
       let stopAttempts = 0;
+      let sweepAttempts = 0;
       let newer;
+      let stopWork;
       let releaseRetry;
       const retryInFlight = new Promise((resolve) => {
         releaseRetry = resolve;
       });
       driver.compute.stopRevision = async (revision) => {
-        if (revision.id === first.id) {
+        if (revision.id === earlier.id && recovery === "legacy sweep") {
+          sweepAttempts += 1;
+          if (sweepAttempts === 1) {
+            throw new ComputeStopYieldedError("older predecessor drain yielded");
+          }
+          if (sweepAttempts === 2) {
+            await retryInFlight;
+            return;
+          }
+        }
+        if (revision.id === first.id && recovery !== "legacy sweep") {
           stopAttempts += 1;
           if (stopAttempts === 1 && recovery === "reassigned") {
             newer = await fixture.revision(owner, 4);
             await recordPlannedReplacement(fixture, owner, first, newer);
+          } else if (stopAttempts === 1 && recovery === "explicit Stop") {
+            stopWork = await fixture.requestStop(owner);
           } else if (stopAttempts === 1) {
             throw new Error("temporary predecessor stop outage");
           } else if (stopAttempts === 2 && recovery === "retry") {
@@ -1764,6 +1780,46 @@ for (const recovery of ["retry", "reassigned"]) {
         assert.equal((await fixture.expireClaim(candidate, retryClaim.claim_token)).rowCount, 1);
         await fixture.start(driver.compute, { emit: (event) => events.push(event) });
       }
+      if (recovery === "legacy sweep") {
+        let sweepClaim;
+        try {
+          await waitFor("legacy sweep reclaimed after yield", () =>
+            sweepAttempts === 2 ? true : undefined,
+          );
+          sweepClaim = await fixture.work(candidate, "claimed");
+          assert.equal(sweepClaim.attempt_count, 1);
+          assert.equal(driver.preparations(candidate), 0);
+          assert.ok(events.some((event) => event.code === "PREDECESSOR_STOP_YIELDED"));
+        } finally {
+          const stopping = fixture.stop();
+          releaseRetry();
+          await stopping;
+        }
+        assert.equal((await fixture.expireClaim(candidate, sweepClaim.claim_token)).rowCount, 1);
+        await fixture.start(driver.compute, { emit: (event) => events.push(event) });
+        const terminal = await waitFor("legacy sweep deployment terminal state", async () => {
+          const { rows } = await fixture.workResult(candidate);
+          return rows[0].reason_code || undefined;
+        });
+        assert.equal(
+          terminal,
+          "REVISION_ACTIVATED",
+          "exact recovery must preserve the legacy grant",
+        );
+        assert.equal(sweepAttempts, 3);
+        assert.ok(driver.preparations(candidate) > 0);
+        return;
+      }
+      if (recovery === "explicit Stop") {
+        await fixture.work(candidate, "succeeded");
+        assert.ok(stopWork);
+        await fixture.work(stopWork, "succeeded");
+        assert.equal(driver.preparations(candidate), 0, "Stop must prevent candidate preparation");
+        assert.equal((await fixture.currentAgent(owner)).desiredRuntimeState, "stopped");
+        assert.equal(driver.running.has(first.id), false);
+        assert.equal(driver.running.has(candidate.id), false);
+        return;
+      }
       await fixture.work(candidate, "failed_permanent");
       if (newer !== undefined) {
         await fixture.work(newer, "failed_permanent");
@@ -1777,7 +1833,12 @@ for (const recovery of ["retry", "reassigned"]) {
       assert.equal(completedBoundary.stopCompleted, true);
       assert.equal(stopAttempts, recovery === "retry" ? 4 : 1);
       const pending = events.filter((event) => event.code === "PLANNED_PREDECESSOR_STOP_PENDING");
-      assert.equal(pending.length, recovery === "retry" ? 2 : 0);
+      assert.equal(pending.length, recovery === "retry" ? 1 : 0);
+      const yields = events.filter((event) => event.code === "PLANNED_PREDECESSOR_STOP_YIELDED");
+      assert.equal(yields.length, recovery === "retry" ? 1 : 0);
+      if (recovery === "retry") {
+        assert.equal(yields[0].stopYields, 1);
+      }
       assert.equal(driver.preparations(candidate), 0);
       assert.equal(driver.count(first), 1, "recovery must stop the exact committed predecessor");
       assert.equal(driver.running.has(first.id), false);

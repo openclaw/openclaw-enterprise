@@ -32,6 +32,7 @@ export function stopYieldRecheckMs(ageMs: number): number {
 export type StopYieldedCode =
   | "AGENT_STOP_YIELDED"
   | "PREDECESSOR_STOP_YIELDED"
+  | "PLANNED_PREDECESSOR_STOP_YIELDED"
   | "SUPERSEDED_STOP_YIELDED"
   | "PREDECESSOR_COMPLETION_WAITING";
 
@@ -105,7 +106,9 @@ export class StopYields {
       .filter(
         ([, stop]) =>
           stop.code !== "PREDECESSOR_COMPLETION_WAITING" &&
-          (wait === "gateway-drain" || stop.code !== "PREDECESSOR_STOP_YIELDED"),
+          (wait === "gateway-drain" ||
+            (stop.code !== "PREDECESSOR_STOP_YIELDED" &&
+              stop.code !== "PLANNED_PREDECESSOR_STOP_YIELDED")),
       )
       .map(([key]) => key);
   }
@@ -159,6 +162,7 @@ export function isStopYieldedCode(code: string): code is StopYieldedCode {
     code === "PREDECESSOR_COMPLETION_WAITING" ||
     code === "AGENT_STOP_YIELDED" ||
     code === "PREDECESSOR_STOP_YIELDED" ||
+    code === "PLANNED_PREDECESSOR_STOP_YIELDED" ||
     code === "SUPERSEDED_STOP_YIELDED"
   );
 }
