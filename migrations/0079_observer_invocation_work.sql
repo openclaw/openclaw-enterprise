@@ -12,7 +12,7 @@ ALTER TABLE occ.controller_work
       AND namespace_target IN ('ready', 'deleted') AND agent_target IS NULL)
     OR (work_kind = 'lifecycle' AND agent_id IS NOT NULL AND revision_id IS NULL
       AND namespace_target IS NULL AND agent_target IS NOT NULL
-      AND agent_target IN ('stopped', 'deleted'))
+      AND agent_target IN ('stopped', 'deleted', 'sandbox_policy'))
     OR (work_kind = 'lifecycle' AND agent_id IS NOT NULL AND revision_id IS NOT NULL
       AND namespace_target IS NULL
       AND (agent_target IS NULL OR agent_target = 'credentials_withdrawn'))

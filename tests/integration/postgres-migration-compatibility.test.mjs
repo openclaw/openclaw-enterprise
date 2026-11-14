@@ -2437,6 +2437,7 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
+      [78, "preObserverInvocationWork"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2932,6 +2933,7 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
+      [78, "preObserverInvocationWork"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3129,6 +3131,7 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
+      [78, "preObserverInvocationWork"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -3220,6 +3223,7 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
+      [78, "preObserverInvocationWork"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
