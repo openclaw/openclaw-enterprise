@@ -175,14 +175,24 @@ either in one PR or as linked PRs merged in dependency order. Core team members
 do not wait for an RFC response unless a specific decision or hold requires it.
 
 Use `node scripts/pr-status.ts PR_NUMBER` to inspect a PR before the final
-checks. The command is read-only; it does not establish merge readiness. If the
-authenticated-user lookup is unavailable, it still reports the PR and checks,
-but marks the actor and account match unknown. Verify publishing authority
-separately. After the applicable checks and review, set `PR_NUMBER` and `HEAD_SHA` to the observed
-PR number and final head, then merge from this checkout:
+checks. If repository inference fails, such as with a local-clone Git remote,
+set `BASE_REPOSITORY` to the owner and repository from the intended PR URL
+and pass it as the second argument. For an upstream PR:
 
 ```sh
-gh pr merge "$PR_NUMBER" --squash --match-head-commit "$HEAD_SHA"
+BASE_REPOSITORY=openclaw/openclaw-enterprise
+node scripts/pr-status.ts PR_NUMBER "$BASE_REPOSITORY"
+```
+
+The command is read-only; it does not establish merge readiness. If the
+authenticated-user lookup is unavailable, it still reports the PR and checks,
+but marks the actor and account match unknown. Verify publishing authority
+separately. Confirm that the reported `Repository` and `URL` match the intended
+PR. After the applicable checks and review, set `BASE_REPOSITORY`, `PR_NUMBER`,
+and `HEAD_SHA` to that base repository, PR number, and final head commit. Then merge:
+
+```sh
+gh pr merge "$PR_NUMBER" --repo "$BASE_REPOSITORY" --squash --match-head-commit "$HEAD_SHA"
 ```
 
 If the review rule prevents an authorized core team author from merging their
