@@ -146,7 +146,7 @@
     "tests/conformance/ssh-compute.test.mjs": 17500,
     "tests/conformance/startup-environment-boundary.test.ts": 500,
     "tests/conformance/temporary-directory.test.mjs": 100,
-    "tests/conformance/test-files.test.mjs": 1300,
+    "tests/conformance/test-files.test.ts": 1300,
     "tests/conformance/url-authority.test.ts": 200,
     "tests/conformance/utils.test.ts": 100,
     "tests/conformance/workspace-files-configuration.test.mjs": 1600,
