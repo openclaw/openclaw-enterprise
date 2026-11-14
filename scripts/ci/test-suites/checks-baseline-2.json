@@ -55,7 +55,7 @@
     "tests/integration/k3d-launcher.test.mjs",
     "tests/integration/password-sign-in-admission.test.ts",
     "tests/integration/google-login-transport.test.ts",
-    "tests/conformance/slack-channel-directory.test.mjs",
+    "tests/conformance/slack-channel-directory.test.ts",
     "tests/conformance/bounded-response-reads.test.ts",
     "tests/conformance/repository-credentials-github.test.mjs",
     "tests/integration/repository-credentials-driver.test.mjs",
@@ -433,7 +433,7 @@
       "path": "tests/conformance/plugin-driver.test.mjs"
     },
     {
-      "path": "tests/conformance/slack-channel-directory.test.mjs"
+      "path": "tests/conformance/slack-channel-directory.test.ts"
     },
     {
       "path": "tests/conformance/bounded-response-reads.test.ts"
