@@ -16,7 +16,7 @@
     "tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs",
     "tests/integration/postgres-worker-agent-revision-health.test.mjs",
     "tests/integration/postgres-native-iam-policy-barrier.test.ts",
-    "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-teardown.test.ts",
     "tests/integration/postgres-worker-harness-exposure.test.ts",
     "tests/integration/auth-maintain.test.ts",
     "tests/integration/occ-metrics.test.mjs"
@@ -163,7 +163,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
+      "path": "tests/integration/postgres-worker-agent-revision-teardown.test.ts",
       "expectedTests": [
         "repository service outage during Agent stop still stops Compute and retains durable closing work",
         "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once"
