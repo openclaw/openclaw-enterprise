@@ -841,6 +841,17 @@ export function renderAgentSandboxPolicy(
         (d) => [format(d), d],
       ),
     );
+    if (
+      (status?.state === "unavailable" && status.reason === "installation-unconfirmed") ||
+      (op && op.revisionId === revisionId && (op.state === "pending" || op.state === "failed"))
+    ) {
+      section.append(
+        button("Refresh download status", () => void loadPolicy(true), {
+          size: "sm",
+          disabled: mutation,
+        }),
+      );
+    }
     if (op && op.revisionId === revisionId) {
       const state =
         op.state === "failed"
@@ -850,14 +861,6 @@ export function renderAgentSandboxPolicy(
             : op.state === "pending"
               ? "Pending"
               : "Unconfirmed";
-      if (op.state === "pending" || op.state === "failed") {
-        section.append(
-          button("Refresh download status", () => void loadPolicy(true), {
-            size: "sm",
-            disabled: mutation,
-          }),
-        );
-      }
       section.append(
         element(
           "p",

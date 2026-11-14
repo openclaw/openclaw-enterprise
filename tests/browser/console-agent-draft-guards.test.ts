@@ -1060,6 +1060,17 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   view.protectedDownloads = { state: "verified", revisionId, canApprove: false };
   await panel.getByRole("button", { name: "Refresh download status", exact: true }).click();
   await panel.getByText(/Applied · Policy v2/).waitFor();
+  // A transient verification failure can outlast the operation that already settled.
+  view.protectedDownloads = { state: "unavailable", reason: "installation-unconfirmed" };
+  await page.reload();
+  await panel.getByText(/Unconfirmed · Policy v2/).waitFor();
+  const refresh = panel.getByRole("button", { name: "Refresh download status", exact: true });
+  assert.equal(await refresh.count(), 1);
+  assert.equal(await panel.getByRole("button", { name: "Allow download" }).count(), 0);
+  view.protectedDownloads = { state: "verified", revisionId, canApprove: false };
+  await refresh.click();
+  await panel.getByText(/Applied · Policy v2/).waitFor();
+  assert.equal(pathRequests(requests, "POST", base + "/apply").length, 1);
   assert.equal(await panel.getByRole("button", { name: "Withdraw approval" }).count(), 0);
   await page.unroute(fixture.origin + base + "/apply");
   await panel.getByRole("button", { name: "Disable", exact: true }).first().click();

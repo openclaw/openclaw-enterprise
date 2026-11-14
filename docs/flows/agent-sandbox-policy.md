@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-14"
-last_updated_session: "codex/01a1d8ae-1c75-7651-81c5-409d7a39f0fc"
+last_updated_session: "authoring-run/50d40cbd-2394-47b4-b71d-dd2d713fca52"
 ---
 
 # Agent sandbox policy flow
@@ -102,6 +102,8 @@ lacks this capability.
 3. Wait for confirmation. OCC saves the desired change and queues one operation on the
    active revision. The Console shows the previous confirmed destinations until both
    Drivers confirm the new policy on the same Sandbox and supervisor instance.
+   If the Console later shows **Unconfirmed**, choose **Refresh download status**
+   to check the running policy again without submitting another change.
 
 The worker records intent before writing. A pre-write refusal restores the prior
 approval and desired lists. After an uncertain write, the worker retains and looks up
@@ -277,6 +279,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-14 13:59: Explain how to refresh an unconfirmed download status. (authoring-run/50d40cbd-2394-47b4-b71d-dd2d713fca52 - b5914ade8c5721f98b33b6a29c1f4cbe2a9dc465)
 
 - 2026-11-14 06:12: Clarify protected download approval, confirmation and policy review. (codex/01a1d8ae-1c75-7651-81c5-409d7a39f0fc - d68863e5de057c7513eb581389561173031aa48d)
 
