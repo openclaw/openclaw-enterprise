@@ -2,10 +2,9 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { writeSync } from "node:fs";
-import { lstat, mkdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import vm from "node:vm";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
@@ -19,13 +18,20 @@ import {
   OPENCLAW_STATE_DATABASE_SCHEMA_VERSION,
   openClawStateMigrationHelper,
 } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import {
+  databasePath,
+  finishDoctor,
+  readVersion,
+  setVersion,
+  sharedPath,
+  stateDirectory,
+} from "./runtime-gateway-state-migration-fixture.ts";
 
 // Exercise the state migration step the Kubernetes and Docker Gateway programs,
 // the Harness's workspace node and the dedicated OpenClaw worker share, against real SQLite files. Only Doctor
 // is replaced: the runtime image tests prove the real Doctor migrates a released
 // Gateway's and a released workspace node's state.
-const helper = openClawStateMigrationHelper("Gateway", "restart the Pod");
 const nodeRequire = createRequire(import.meta.url);
 const CURRENT = OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION;
 const STATE_CURRENT = OPENCLAW_STATE_DATABASE_SCHEMA_VERSION;
@@ -97,357 +103,10 @@ async function assertHeldFailureServed(servers, env, check) {
   }
 }
 
-// Agent databases by agent id at their schema versions, and optionally the
-// shared state database (`shared`) with its content marker (`marker`).
-async function stateDirectory(t, databases = {}, { shared, marker } = {}) {
-  const directory = await temporaryDirectory(t, "oce-gateway-state-migration-");
-  for (const [agentId, version] of Object.entries(databases)) {
-    const agentDirectory = join(directory, "agents", agentId, "agent");
-    await mkdir(agentDirectory, { recursive: true });
-    setVersion(join(agentDirectory, "openclaw-agent.sqlite"), version);
-  }
-  if (shared !== undefined) {
-    await mkdir(join(directory, "state"), { recursive: true });
-    setVersion(sharedPath(directory), shared, marker);
-  }
-  return directory;
-}
-
-function databasePath(directory, agentId) {
-  return join(directory, "agents", agentId, "agent", "openclaw-agent.sqlite");
-}
-
-function sharedPath(directory) {
-  return join(directory, "state", "openclaw.sqlite");
-}
-
-// OpenClaw keeps the shared state content marker in config_machine_state.
-function setVersion(path, version, marker) {
-  const database = new DatabaseSync(path);
-  database.exec(
-    `CREATE TABLE IF NOT EXISTS fixture (id INTEGER); PRAGMA user_version = ${version}`,
-  );
-  if (marker !== undefined) {
-    database.exec(
-      "CREATE TABLE IF NOT EXISTS config_machine_state (state_key TEXT PRIMARY KEY, value_json TEXT)",
-    );
-    database
-      .prepare(
-        "INSERT OR REPLACE INTO config_machine_state VALUES ('state.schema.contentVersion', ?)",
-      )
-      .run(String(marker));
-  }
-  database.close();
-}
-
-function readVersion(path) {
-  const database = new DatabaseSync(path, { readOnly: true });
-  try {
-    return database.prepare("PRAGMA user_version").get().user_version;
-  } finally {
-    database.close();
-  }
-}
-
-// The packaged integration tests exercise the actual producer. This fixture
-// controls only the external result/stream boundary consumed by the OCE wrapper.
-function finishDoctor(child, result = { status: "ok" }) {
-  child.stdout.emit(
-    "data",
-    Buffer.from("OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH=" + JSON.stringify(result) + "\n"),
-  );
-  child.emit("exit", result.status === "advisory" ? 86 : 0, null);
-  child.emit("close", result.status === "advisory" ? 86 : 0, null);
-}
-
-// Runs migrateGatewayState() with a stand-in Doctor: doctor(child) decides what
-// it does to the databases and how it exits.
-function migrate(directory, doctor = () => assert.fail("Doctor must not run")) {
-  const spawned = [];
-  const phases = [];
-  const failures = [];
-  const errors = [];
-  const listeners = { SIGTERM: [], SIGINT: [] };
-  const exits = [];
-  let holds = 0;
-  const exited = new Error("process exited");
-  const context = {
-    console: { error: (line) => errors.push(line) },
-    Date,
-    JSON,
-    Promise,
-    process: {
-      env: { OPENCLAW_CONFIG_PATH: "/etc/openclaw/openclaw.json", OPENCLAW_STATE_DIR: directory },
-      stdout: { write() {} },
-      execPath: "/usr/local/bin/node",
-      on: (signal, listener) => listeners[signal].push(listener),
-      off: (signal, listener) => {
-        listeners[signal] = listeners[signal].filter((entry) => entry !== listener);
-      },
-      // process.exit does not return: end the step where the real process would.
-      exit: (code) => {
-        exits.push(code);
-        throw exited;
-      },
-    },
-    require: (specifier) => nodeRequire(specifier),
-    spawn(command, args, options) {
-      const child = new EventEmitter();
-      child.stdout = new EventEmitter();
-      child.kill = (signal) => child.emit("killed", signal);
-      spawned.push({ command, args, env: options.env, stdio: options.stdio });
-      setImmediate(() => doctor(child, { listeners }));
-      return child;
-    },
-    logStartupPhase: (phase, startedAt, outcome = "ok") => phases.push({ phase, outcome }),
-    publishRuntimeFailure: (check, code) => failures.push({ check, code }),
-    setInterval: () => {
-      holds += 1;
-    },
-  };
-  // The same guard the Gateway program applies before its spawn.
-  const result = vm.runInNewContext(
-    `${helper}\nconst outdated = outdatedOpenClawDatabases(process.env.OPENCLAW_STATE_DIR);\n` +
-      "outdated.length === 0 && !openClawMaintenancePending(process.env.OPENCLAW_STATE_DIR) ? Promise.resolve(true)\n" +
-      "  : migrateOpenClawState(process.env.OPENCLAW_STATE_DIR, outdated, process.env);",
-    context,
-  );
-  return result.then(
-    (started) => ({
-      started,
-      spawned,
-      phases,
-      failures,
-      errors,
-      exits,
-      holds,
-      listeners,
-    }),
-    (error) => {
-      if (error !== exited) {
-        throw error;
-      }
-      return { started: undefined, spawned, phases, failures, errors, exits, holds, listeners };
-    },
-  );
-}
-
-test("Gateway state migration skips fresh, current, uninitialized and newer databases", async (t) => {
-  for (const [databases, shared] of [
-    [{}],
-    [{ main: CURRENT }],
-    [{ main: 0 }],
-    [{ main: CURRENT + 1 }],
-    [{ main: CURRENT, helper: 0 }],
-    [{}, { shared: STATE_CURRENT }],
-    [{ main: CURRENT }, { shared: 0 }],
-    [{}, { shared: STATE_CURRENT + 1 }],
-    // Current content published under an older header while an older updater runs.
-    [{ main: CURRENT }, { shared: STATE_CURRENT - 2, marker: STATE_CURRENT }],
-    // A current header over an older marker: OpenClaw publishes the header later
-    // without rewriting the marker row, so the newer of the two names the schema.
-    [{ main: CURRENT }, { shared: STATE_CURRENT, marker: STATE_CURRENT - 3 }],
-  ]) {
-    const directory = await stateDirectory(t, databases, shared);
-    const outcome = await migrate(directory);
-    assert.equal(outcome.started, true);
-    assert.deepEqual(outcome.spawned, []);
-    assert.deepEqual(outcome.phases, []);
-    for (const [agentId, version] of Object.entries(databases)) {
-      assert.equal(readVersion(databasePath(directory, agentId)), version);
-    }
-  }
-});
-
-test("Gateway state migration runs Doctor for an older shared state database beside current agent databases", async (t) => {
-  // The shared database holds client credentials, which OpenClaw moves only under
-  // Doctor's backed-up migration custody; an older content marker does not hide it.
-  const directory = await stateDirectory(
-    t,
-    { main: CURRENT },
-    { shared: STATE_CURRENT - 2, marker: STATE_CURRENT - 1 },
-  );
-  const outcome = await migrate(directory, (child) => finishDoctor(child, { status: "ok" }));
-  assert.equal(outcome.started, false);
-  assert.equal(outcome.spawned.length, 1);
-  assert.match(
-    outcome.errors[0],
-    new RegExp(
-      `^Migrating 1 OpenClaw database\\(s\\) from schema ${STATE_CURRENT - 1} to ${STATE_CURRENT} `,
-    ),
-  );
-  assert.ok(
-    outcome.errors.at(-1).includes(`${sharedPath(directory)} at schema ${STATE_CURRENT - 1}`),
-  );
-  assert.deepEqual(outcome.failures, [{ check: "state-migration", code: "UNAVAILABLE" }]);
-});
-
-test("Gateway state migration waits for the settled Doctor result and preserves warnings", async (t) => {
-  const directory = await stateDirectory(t, { main: CURRENT - 1, current: CURRENT });
-  const outcome = await migrate(directory, (child) => {
-    setVersion(databasePath(directory, "main"), CURRENT);
-    // The final record can arrive after exit but before the output stream closes.
-    child.emit("exit", 0, null);
-    child.stdout.emit("data", Buffer.from("OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_"));
-    child.stdout.emit(
-      "data",
-      Buffer.from('RESULT_PATH={"status":"ok","warnings":["Gateway is not configured"]}\n'),
-    );
-    child.emit("close", 0, null);
-  });
-  assert.equal(outcome.started, true);
-  assert.equal(outcome.spawned.length, 1);
-  assert.equal(outcome.spawned[0].command, "/usr/local/bin/node");
-  assert.deepEqual(
-    [...outcome.spawned[0].args],
-    ["/app/openclaw.mjs", "doctor", "--fix", "--non-interactive"],
-  );
-  assert.deepEqual([...outcome.spawned[0].stdio], ["inherit", "pipe", "inherit"]);
-  assert.deepEqual(
-    { ...outcome.spawned[0].env },
-    {
-      OPENCLAW_CONFIG_PATH: "/etc/openclaw/openclaw.json",
-      OPENCLAW_CONFIG_READONLY: "1",
-      OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH: "-",
-      OPENCLAW_STATE_DIR: directory,
-    },
-  );
-  assert.deepEqual(outcome.phases, [{ phase: "state-migration", outcome: "ok" }]);
-  assert.deepEqual(outcome.failures, []);
-  assert.equal(outcome.holds, 0);
-  assert.deepEqual(outcome.listeners, { SIGTERM: [], SIGINT: [] });
-  assert.match(outcome.errors.join("\n"), new RegExp(`from schema ${CURRENT - 1} to ${CURRENT}`));
-});
-
-test("Gateway state migration refuses incomplete maintenance even after schemas advance", async (t) => {
-  const records = [
-    ["missing result", undefined],
-    [
-      "malformed advisory",
-      {
-        status: "advisory",
-        advisory: {
-          kind: "package-post-install-doctor",
-          reason: "deferred-configured-plugin-repair",
-        },
-      },
-    ],
-    [
-      "maintenance refusal",
-      { status: "ok", maintenanceRefusal: { kind: "deferred", reason: "coordinator-contention" } },
-    ],
-    [
-      "cleanup refusal",
-      { status: "error", maintenanceRefusal: { kind: "data-at-risk", reason: "active-mutation" } },
-    ],
-    [
-      "unsettled processes",
-      { status: "ok", failureFacts: [{ code: "doctor-processes-unsettled" }] },
-    ],
-    ["config refusal", { status: "ok", configWriteRefusal: {} }],
-    ["malformed facts", { status: "ok", failureFacts: false }],
-    ["unknown outcome", { status: "future" }],
-  ];
-  for (const [name, result] of records) {
-    await t.test(name, async (t) => {
-      const directory = await stateDirectory(t, { main: CURRENT - 1 });
-      const outcome = await migrate(directory, (child) => {
-        setVersion(databasePath(directory, "main"), CURRENT);
-        if (result) {
-          finishDoctor(child, result);
-        } else {
-          child.emit("exit", 0, null);
-          child.emit("close", 0, null);
-        }
-      });
-      assert.equal(outcome.started, false);
-      assert.deepEqual(outcome.failures, [{ check: "state-migration", code: "UNAVAILABLE" }]);
-      assert.match(outcome.errors.at(-1), /did not confirm completed maintenance/);
-    });
-  }
-});
-
-test("Gateway state migration names the failure when Doctor leaves an older agent database", async (t) => {
-  const directory = await stateDirectory(t, { main: CURRENT - 1 });
-  // Doctor can hold back a store it cannot verify and still exit 0.
-  const outcome = await migrate(directory, (child) => finishDoctor(child, { status: "ok" }));
-  assert.equal(outcome.started, false);
-  assert.equal(outcome.spawned.length, 1);
-  assert.deepEqual(outcome.phases, [{ phase: "state-migration", outcome: "failed" }]);
-  assert.deepEqual(outcome.failures, [{ check: "state-migration", code: "UNAVAILABLE" }]);
-  // Each wrapper decides how to stay down: Kubernetes holds, Docker exits.
-  assert.equal(outcome.holds, 0);
-  assert.deepEqual(outcome.exits, []);
-  const message = outcome.errors.at(-1);
-  assert.match(message, /^Gateway state migration failed: openclaw doctor --fix \(exit-0\) left /);
-  assert.ok(message.includes(`${databasePath(directory, "main")} at schema ${CURRENT - 1}`));
-  assert.match(message, /OpenClaw was not started\. .* then restart the Pod\.$/);
-  assert.equal(readVersion(databasePath(directory, "main")), CURRENT - 1);
-});
-
-test("Gateway state migration leaves an agent database it cannot read to OpenClaw's own check", async (t) => {
-  const directory = await stateDirectory(t, { main: CURRENT });
-  await mkdir(join(directory, "agents", "broken", "agent"), { recursive: true });
-  await writeFile(databasePath(directory, "broken"), "not a SQLite database");
-  // An agent directory without a database is skipped too.
-  await mkdir(join(directory, "agents", "empty", "agent"), { recursive: true });
-  const outcome = await migrate(directory);
-  assert.equal(outcome.started, true);
-  assert.deepEqual(outcome.spawned, []);
-});
-
-test("Gateway state migration names a Doctor that could not start or was killed", async (t) => {
-  for (const [end, named] of [
-    [
-      (child) => {
-        child.emit("error", Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }));
-        child.emit("close", -2, null);
-      },
-      "error-ENOENT",
-    ],
-    [(child) => child.emit("close", null, "SIGKILL"), "SIGKILL"],
-  ]) {
-    const directory = await stateDirectory(t, { main: CURRENT - 1 });
-    const outcome = await migrate(directory, end);
-    assert.equal(outcome.started, false);
-    assert.deepEqual(outcome.failures, [{ check: "state-migration", code: "UNAVAILABLE" }]);
-    assert.deepEqual(outcome.exits, []);
-    assert.deepEqual(outcome.listeners, { SIGTERM: [], SIGINT: [] });
-    assert.ok(
-      outcome.errors
-        .at(-1)
-        .startsWith(`Gateway state migration failed: openclaw doctor --fix (${named}) left `),
-    );
-  }
-});
-
-test("Gateway state migration stops Doctor with the signal it got and exits", async (t) => {
-  for (const signal of ["SIGTERM", "SIGINT"]) {
-    const directory = await stateDirectory(t, { main: CURRENT - 1 });
-    const killed = [];
-    const outcome = await migrate(directory, (child, { listeners }) => {
-      setVersion(databasePath(directory, "main"), CURRENT);
-      child.on("killed", (received) => {
-        killed.push(received);
-        child.emit("close", null, received);
-      });
-      for (const listener of listeners[signal]) {
-        listener();
-      }
-    });
-    assert.deepEqual(killed, [signal]);
-    assert.deepEqual(outcome.exits, [0]);
-    assert.deepEqual(outcome.failures, []);
-    assert.deepEqual(outcome.listeners, { SIGTERM: [], SIGINT: [] });
-    // Stop after schema publication still requires a completed repair on restart.
-    const restarted = await migrate(directory, (child) => finishDoctor(child));
-    assert.equal(restarted.spawned.length, 1);
-    assert.equal(restarted.started, true);
-  }
-});
-
 test("Kubernetes and Docker Gateway programs share the migration step and stay down after a failure", () => {
-  assert.ok(GATEWAY_RUNTIME_ENTRYPOINT.includes(helper));
+  assert.ok(
+    GATEWAY_RUNTIME_ENTRYPOINT.includes(openClawStateMigrationHelper("Gateway", "restart the Pod")),
+  );
   assert.ok(
     DOCKER_GATEWAY_RUNTIME_ENTRYPOINT.includes(
       openClawStateMigrationHelper("Gateway", "deploy the Agent again"),
