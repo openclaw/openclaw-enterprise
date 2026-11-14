@@ -244,10 +244,10 @@ export async function startHttpsIngress({
   return {
     cert,
     async close() {
-      ingress.closeAllConnections();
-      await new Promise((resolve, reject) =>
-        ingress.close((error) => (error ? reject(error) : resolve())),
-      );
+      await new Promise((resolve, reject) => {
+        ingress.close((error) => (error ? reject(error) : resolve()));
+        ingress.closeAllConnections();
+      });
     },
   };
 }
