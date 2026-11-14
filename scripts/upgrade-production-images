@@ -1396,6 +1396,20 @@ normalize_restart_inventory() {
       | sort_by(.id))}] | sort_by(.id)}' "$1"
 }
 
+record_deployed_helm_status() {
+  local snapshot="$1-helm-status" refusal="$2"
+  # A failed read on resume must not leave the previous attempt's summary.
+  : >"$evidence_dir/$snapshot.txt"
+  helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/$snapshot.json"
+  jq -ers --arg snapshot "$snapshot" --arg release "$release" --arg namespace "$namespace" '
+    select(length == 1) | .[0] |
+    select(.name == $release and .namespace == $namespace and .info.status == "deployed" and
+      (.version | type == "number" and isfinite and . >= 1 and . == floor)) |
+    "Summary from \($snapshot).json\nNAME: \(.name)\nNAMESPACE: \(.namespace)\nSTATUS: \(.info.status)\nREVISION: \(.version)"
+  ' "$evidence_dir/$snapshot.json" >"$evidence_dir/$snapshot.txt" ||
+    die "$refusal"
+}
+
 prepare_upgrade() {
 mkdir -m 700 "$evidence_dir/inventory"
 if [[ -n "$runtime_image" ]]; then
@@ -1420,14 +1434,8 @@ if [[ "$preprovisioned_namespace" == true ]]; then
 fi
 
 "${kube[@]}" --request-timeout=15s get --raw=/readyz >"$evidence_dir/kubernetes-readyz"
-helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/before-helm-status.json"
-jq -ers --arg release "$release" --arg namespace "$namespace" '
-  select(length == 1) | .[0] |
-  select(.name == $release and .namespace == $namespace and .info.status == "deployed" and
-    (.version | type == "number" and isfinite and . >= 1 and . == floor)) |
-  "Summary from before-helm-status.json\nNAME: \(.name)\nNAMESPACE: \(.namespace)\nSTATUS: \(.info.status)\nREVISION: \(.version)"
-' "$evidence_dir/before-helm-status.json" >"$evidence_dir/before-helm-status.txt" ||
-  die "the Helm release must be deployed with matching identity and a valid revision before starting an upgrade."
+record_deployed_helm_status before \
+  "the Helm release must be deployed with matching identity and a valid revision before starting an upgrade."
 helm get values "$release" "${helm_args[@]}" --output yaml >"$evidence_dir/before-live-values.yaml"
 installation_secret=$(
   yq -er '.installation.secretName // "occ-installation-startup"' \
@@ -2440,6 +2448,22 @@ else
   : >"$deployments"
 fi
 
+# A failing CLI can still print a complete status. Publish the snapshot only
+# after the command succeeds and its output contains one known deployment state.
+poll_deployment_status() (
+  local namespace_id=$1 agent_id=$2 deployment_id=$3 destination=$4
+  local snapshot status
+  snapshot=$(mktemp "${destination}.XXXXXXXX") || return
+  trap 'rm -f "$snapshot"' EXIT
+  "${occ_json[@]}" --namespace "$namespace_id" agent deployment-status "$agent_id" "$deployment_id" \
+    >"$snapshot" || return
+  status=$(jq -ser 'select(length == 1) | .[0].status | select(IN("queued","running","succeeded","failed"))' "$snapshot") ||
+    die "OCC returned an invalid deployment status for $deployment_id."
+  [[ ! -d "$destination" ]] || die "deployment status destination is a directory: $destination"
+  mv -f "$snapshot" "$destination" || return
+  printf '%s\n' "$status"
+)
+
 pending=$target_count
 while ((pending > 0)); do
   ((SECONDS < deadline)) || die "$pending Agent deployments remained incomplete at the upgrade timeout."
@@ -2448,14 +2472,11 @@ while ((pending > 0)); do
   while IFS= read -r deployment; do
     json_fields "$deployment" namespace_id=namespaceId agent_id=agentId deployment_id=deploymentId
     status_file="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").json"
-    "${occ_json[@]}" --namespace "$namespace_id" agent deployment-status "$agent_id" "$deployment_id" \
-      >"$status_file"
-    status=$(jq -er '.status' "$status_file")
+    status=$(poll_deployment_status "$namespace_id" "$agent_id" "$deployment_id" "$status_file")
     case "$status" in
       queued | running) ((pending += 1)) ;;
       succeeded) ;;
       failed) failed=1 ;;
-      *) die "deployment $deployment_id returned unknown status $status." ;;
     esac
   done <"$deployments"
   ((failed == 0)) || die "at least one Agent deployment failed; inspect $evidence_dir/status."
@@ -2484,10 +2505,9 @@ while IFS= read -r deployment; do
     "${kube[@]}" --request-timeout="${remaining_seconds}s" get pods --all-namespaces \
       --selector "openclaw.dev/revision=$deployment_id" \
       --output json >"$pods"
-    # A Pod that ended (phase Succeeded or Failed, such as an evicted gateway) no
-    # longer serves, and its controller starts a replacement. Kubernetes keeps ended
-    # Pods until garbage collection, so this wait, also on --resume, ignores them.
-    jq '.items |= map(select(.status.phase != "Succeeded" and .status.phase != "Failed"))' \
+    # During replacement, a deleting Pod can still report Running and Ready.
+    # Select Doctor targets from current Pods and keep the full list in the evidence.
+    jq '.items |= map(select(.metadata.deletionTimestamp == null and .status.phase != "Succeeded" and .status.phase != "Failed"))' \
       "$pods" >"$live_pods"
     runtime_count=$(jq '[.items[].spec.containers[] | select(.name == "gateway" or .name == "agent")] | length' "$live_pods")
     if ((runtime_count == expected_runtime_count)); then
@@ -2840,12 +2860,12 @@ if [[ "$repository_enabled" == true ]]; then
   done
 fi
 
-helm status "$release" "${helm_args[@]}" >"$evidence_dir/after-helm-status.txt"
-helm status "$release" "${helm_args[@]}" --output json >"$evidence_dir/after-helm-status.json"
+final_helm_refusal="the final Helm release is not this submission's deployed revision; completion was not recorded."
+record_deployed_helm_status after "$final_helm_refusal"
 jq -e --arg recovered "$recovered_revision" --slurpfile submission "$evidence_dir/helm-started" '
-  .info.status == "deployed" and .version == (if $recovered == "" then $submission[0].expectedRevision else ($recovered | tonumber) end)
+  .version == (if $recovered == "" then $submission[0].expectedRevision else ($recovered | tonumber) end)
 ' "$evidence_dir/after-helm-status.json" >/dev/null ||
-  die "the final Helm release is not this submission's deployed revision; completion was not recorded."
+  die "$final_helm_refusal"
 "${kube[@]}" get deployments,statefulsets,pods,persistentvolumeclaims --all-namespaces \
   --output json >"$evidence_dir/after-workloads.json"
 # Record the terminal state only after every required check and evidence read.

@@ -12,11 +12,7 @@ import {
   type KubernetesComputeDriverOptions,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import {
-  OpenShellSandboxDriver,
-  type OpenShellSandboxDriverOptions,
-  type OpenShellSandboxDriverSelection,
-} from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import type {
   OpenShellGatewayClient,
   OpenShellSandboxResponse,
@@ -29,6 +25,8 @@ import type {
 import { SandboxRevisionUnsupportedError } from "../../packages/occ/src/index.ts";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { openShellWorkspaceHarnessConfiguration } from "./sandbox-driver-installation-fixture.ts";
+import { backendFor, openShellDriver } from "./sandbox-driver-openshell-fixture.ts";
 import {
   completeSandboxRevision,
   completeWorkspaceRevision,
@@ -48,7 +46,6 @@ type GatewayFixture = OpenShellGatewayClient &
   Pick<ReturnType<typeof createWorkspaceGatewayClient>, "calls">;
 type FixtureDependencies = {
   agentRuntimeEntrypoint: string;
-  backendFor: (client: GatewayFixture) => Mutable<OpenShellSandboxDriverSelection["backend"]>;
   codexRequirements: (
     revision: Pick<AgentRevision, "id">,
     environment: Requirements["environment"],
@@ -63,14 +60,10 @@ type FixtureDependencies = {
   ) => SandboxFixtureRevision;
   harnessRuntimeCommand: (program: string) => string[];
   namespaceContext: () => SandboxNamespaceContext;
-  openShellDriver: (client: GatewayFixture) => OpenShellSandboxDriver;
   runtimeSandboxFixture: (driver: OpenShellSandboxDriver) => {
     context: SandboxNamespaceContext;
     revision: SandboxFixtureRevision;
     requirements: Requirements;
-  };
-  sandboxInstallation: () => {
-    drivers: { sandbox: { configuration: OpenShellSandboxDriverOptions } };
   };
   workspaceGatewayClient: () => GatewayFixture;
 };
@@ -93,15 +86,12 @@ function stringArray(value: unknown): string[] {
 
 export function createSandboxCodexHarnessChecks({
   agentRuntimeEntrypoint,
-  backendFor,
   codexRequirements,
   conformanceKubernetesOptions,
   dedicatedRevision,
   harnessRuntimeCommand,
   namespaceContext,
-  openShellDriver,
   runtimeSandboxFixture,
-  sandboxInstallation,
   workspaceGatewayClient,
 }: FixtureDependencies) {
   return {
@@ -179,8 +169,7 @@ export function createSandboxCodexHarnessChecks({
         url: "https://harness.example.test:8080/",
       });
       const endpoint = async (rootCertificatePath?: string) => {
-        const backend = backendFor(gatewayClient);
-        backend.client = new OpenShellGateway(
+        const client = new OpenShellGateway(
           {
             endpoint: "https://gateway.example.test:8080/",
             // Endpoint trust never reads or exports administrator authentication.
@@ -192,14 +181,11 @@ export function createSandboxCodexHarnessChecks({
           },
           { gatewayClient },
         );
-        const driver = new OpenShellSandboxDriver(
-          sandboxInstallation().drivers.sandbox.configuration,
-          {
-            id: "openshell-sandbox",
-            implementation: "openshell",
-            backend,
-          },
-        );
+        const driver = new OpenShellSandboxDriver(openShellWorkspaceHarnessConfiguration(), {
+          id: "openshell-sandbox",
+          implementation: "openshell",
+          backend: { ...backendFor(gatewayClient), client },
+        });
         const { context, revision, requirements } = runtimeSandboxFixture(driver);
         return driver.harnessEndpoint({
           ...context,

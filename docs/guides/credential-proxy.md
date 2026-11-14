@@ -184,20 +184,8 @@ return here. Do not use that page's `codex-pat` variant for this profile, or fol
 its copied-key rotation and Agent-deleting cleanup as a live-adoption procedure.
 Retain `SOURCE_ID` and the Secret reference.
 
-With Credential Proxy selected, fresh `openai` registration is already live:
-
-```bash
-./bin/occ credential-source get "$SOURCE_ID" -o json
-```
-
-Require `ownerCapability: credential_gateway`, `egress.adoption: live` and
-`egress.retention: none`. Creation reads the versioned Secret without depositing
-a Gateway copy. The CLI's `GATEWAY STATUS ready` label does not prove such a copy
-exists. Keep the Gateway selected: live reads do not transfer ownership. A ready
-source alone does not prove installed enforcement.
-
-For an **existing unreferenced legacy or narrower source**, obtain the same
-consent, then explicitly adopt live reads instead:
+Registration creates a Gateway copy. Before binding the source to an Agent,
+explicitly adopt protected live reads with whole-execution consent:
 
 ```bash
 cat > source-adoption.json <<'JSON'
@@ -206,6 +194,10 @@ JSON
 ./bin/occ credential-source update "$SOURCE_ID" --file source-adoption.json
 ./bin/occ credential-source get "$SOURCE_ID" -o json
 ```
+
+Require `ownerCapability: credential_gateway`, `egress.adoption: live` and
+`egress.retention: none`. Keep the Gateway selected: adoption does not transfer
+ownership. A ready source alone does not prove installed enforcement.
 
 This update requires exact source `update` and `operate` on every referenced
 Secret, advances the source generation, and retains its Gateway owner. It does

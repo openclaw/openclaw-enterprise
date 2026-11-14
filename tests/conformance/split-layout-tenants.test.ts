@@ -16,7 +16,7 @@ import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 import {
   createTenantReaderFixture,
   tenantRequest as request,
-} from "../helpers/tenant-reader-app.mjs";
+} from "../helpers/tenant-reader-app.ts";
 import {
   BUNDLE_FORMAT,
   checkImport,
@@ -90,7 +90,7 @@ async function createFixture() {
     baseUrl: "https://console.oce.localhost",
     fetchImpl: asAdministrator(fixture),
   });
-  const controller: unknown = fixture.controller;
+  const controller = fixture.controller;
   assert.ok(controller instanceof OpenClawController);
   return { ...fixture, api, controller };
 }
@@ -101,7 +101,7 @@ function asAdministrator(fixture: BaseFixture) {
     fixture.app.fetch(
       new Request(url, {
         ...init,
-        headers: authenticatedHeaders(fixture.session(fixture.administrator), init.headers),
+        headers: authenticatedHeaders(fixture.app.defaultSession, init.headers),
       }),
     );
 }
@@ -594,9 +594,11 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
   const third = await importTenants(fixture.api, bundle, values, { ...options, state: saved });
   assert.equal(third.complete, true);
   assert.equal(JSON.stringify(saved.ids), before);
-  assert.equal((await request(fixture.app, `${base}/agents`)).payload.data.length, 1);
-
-  assert.equal((await request(fixture.app, `${base}/service-accounts`)).payload.data.length, 1);
+  assert.equal(resources((await request(fixture.app, `${base}/agents`)).payload.data).length, 1);
+  assert.equal(
+    resources((await request(fixture.app, `${base}/service-accounts`)).payload.data).length,
+    1,
+  );
   for (const original of [preset, legacyPreset]) {
     const restored = createdResource(
       (await request(fixture.app, `${base}/presets/${saved.ids[original.id]}`)).payload.data,
@@ -617,7 +619,7 @@ test("import re-creates tenants under new IDs, waits for readiness, and resumes"
   assert.equal(resumed.ids[seeded.agent.servicePrincipalId], agent.servicePrincipalId);
   assert.ok(bindings.some(({ id }) => id === resumed.ids[seeded.binding.id]));
   assert.equal(
-    (await request(fixture.app, `${base}/iam/access-bindings`)).payload.data.length,
+    resources((await request(fixture.app, `${base}/iam/access-bindings`)).payload.data).length,
     bindingCount,
   );
 

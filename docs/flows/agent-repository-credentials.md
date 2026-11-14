@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-12"
-last_updated_session: "authoring-run/8318a8cc-bd10-4d1f-8290-56ee2f90a929"
+last_updated_session: "authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb"
 ---
 
 # Agent repository credential flow
@@ -258,25 +258,28 @@ bearer, the helper checks host, path, generation and deadline.
 `OCE_REPOSITORY_REF` selects bindings.
 [Routing limits](../reference/repository-credentials.md#client-routing-and-limits) describe command preflight and egress.
 `pushRefAllowlist` selects image-owned hooks. `scripts/build-repository-credentials.ts:stage`
-builds launchers that resolve the dispatcher by module URL through symlinks and relocations.
+builds launchers that resolve dispatcher URLs through symlinks and relocations.
 `apps/controller/src/drivers/repo/github/access/client/hook-dispatch.ts:checkPush`
-rejects disallowed refs before updates and passes arguments and input to
-common-directory hooks. See [discovery and hook limits](../reference/repository-credentials/push-ref-guardrail.md).
+rejects disallowed refs before updates and forwards arguments and input to
+common-directory hooks. See [hook limits](../reference/repository-credentials/push-ref-guardrail.md).
 
 `apps/controller/src/drivers/repo/github/access/client/router.ts:routeRepositoryClient`
-routes `gh` by explicit target or effective remote. It pins generation, ref and
-session, selects private configuration and preserves HOME and shared selection.
+routes `gh` by target or effective remote, pins generation, ref and session,
+selects private configuration and preserves HOME and shared selection.
 
 OpenShell's
 `apps/controller/src/drivers/repo/github/access/routes/request-selection.ts:requestHead`
 accepts [CLI metadata](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
-`git-write` `draftScope` excludes the timezone header from planning. The current grant owner authorizes signed requests.
+`git-write` `draftScope` excludes the timezone header.
+`installationApiOperation` admits `gh auth status` API-root reads under current
+GitHub API grants. The grant owner authorizes signed requests.
 `apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:validBinding`
 uses `normalizePushRefAllowlist` for Git-only policies, including terminal `/*`.
-Draft heads require concrete refs. Receive-pack rejects disallowed refs before durable approval. See [access levels](../reference/repository-credentials/access-levels.md).
+Draft heads require concrete refs. Receive-pack rejects disallowed refs before approval.
+[Access levels](../reference/repository-credentials/access-levels.md) define the grants.
 
 [Service exchange](repository-credentials.md#4-reserve-acquire-and-dispatch)
-checks bearer, fixed repository/profile, capacity and deadlines. Installation token refresh uses that grant until version expiry.
+checks bearer, fixed repository/profile, capacity and deadlines; token refresh uses that grant until expiry.
 
 ### 6. Maintain, recover and retire ownership
 
@@ -373,6 +376,8 @@ Verify live PR updates, denial before provider contact and continued chat separa
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 12:38: Admit GitHub CLI authentication discovery under current API grants. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb5113e006f7aeee9d5e2a04b504232bbead)
 
 - 2026-11-12 11:35: Keep the separately registered Installation option in a maximum-size catalog. (authoring-run/8318a8cc-bd10-4d1f-8290-56ee2f90a929 - bd0b21f805f8f2e76654c933a15bc31e0d4d44e1)
 

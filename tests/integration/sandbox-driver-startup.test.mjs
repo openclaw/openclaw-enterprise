@@ -7,7 +7,7 @@ import { verifyProtectedGitNetworkAdmission } from "./sandbox-driver-protected-g
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
-import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspace-chart.mjs";
+import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspace-chart.ts";
 import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -26,10 +26,7 @@ import {
   openShellWorkspaceName,
 } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import {
-  createKubernetesComputeDriver,
-  KubernetesComputeDriver,
-} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
@@ -43,11 +40,9 @@ import { formatStartupConfigurationFailure } from "../../apps/controller/src/sta
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import {
   GrpcOpenShellGatewayClient,
-  normalizeServiceUrl,
   OpenShellProviderAlreadyExistsError,
   OpenShellSandboxAlreadyExistsError,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { serviceTarget } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
   ConfigurationHarnessError,
@@ -74,7 +69,7 @@ import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { createSandboxProviderProfileChecks } from "./sandbox-driver-provider-profiles-cases.ts";
-import { createSandboxCredentialContractChecks } from "./sandbox-driver-credential-contract-cases.ts";
+import { registerSandboxCredentialContractCases } from "./sandbox-driver-credential-contract-cases.ts";
 import { createCredentialGatewayContexts } from "./sandbox-driver-credential-fixture.ts";
 import { createSandboxHarnessLifecycleChecks } from "./sandbox-driver-harness-lifecycle-cases.ts";
 import { createSandboxCodexHarnessChecks } from "./sandbox-driver-codex-harness-cases.ts";
@@ -113,11 +108,8 @@ import {
 import {
   verifyRevisionProviderRetention,
   verifyForeignSandboxAnnotations,
+  verifyPreparedGitCleanupRefusals,
 } from "./sandbox-driver-revision-observation-cases.ts";
-import {
-  verifyInitialWorkspaceAdmission,
-  verifyMainWorkspaceMount,
-} from "./sandbox-driver-workspace-admission-cases.ts";
 import {
   buildOperatorIngressManifests,
   verifyOperatorWorkspaceChart,
@@ -128,24 +120,19 @@ import {
 } from "./sandbox-driver-protected-startup-guard-cases.ts";
 import { callCount, storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
-import {
-  buildEndpointInstallation,
-  makeStructuralRefusal,
-} from "./sandbox-driver-installation-fixture.ts";
+import { makeStructuralRefusal } from "./sandbox-driver-installation-fixture.ts";
 import {
   buildSandboxInstallation as sandboxInstallation,
   rejectsAtStartup,
 } from "./sandbox-driver-startup-installation-fixture.ts";
-import { verifyEndpointAdmission } from "./sandbox-driver-endpoint-admission-case.ts";
 import { verifySandboxDriverHarnessObservation } from "./sandbox-driver-harness-observation-cases.ts";
 import { registerSandboxDriverNamespaceGatewayCleanupCases } from "./sandbox-driver-namespace-gateway-cleanup-cases.ts";
-import { completeWorkspaceRevision } from "./sandbox-driver-revision-fixture.ts";
 import { registerSandboxDriverWorkspaceRenewalCases } from "./sandbox-driver-workspace-renewal-cases.ts";
 import { registerSandboxDriverWorkspaceExpiryCases } from "./sandbox-driver-workspace-expiry-cases.ts";
 import { registerSandboxDriverPreparerCleanupCases } from "./sandbox-driver-preparer-cleanup-cases.ts";
 import { registerSandboxDriverNativePreparationCases } from "./sandbox-driver-native-preparation-cases.ts";
-import { verifySandboxScratchStorage } from "./sandbox-driver-scratch-storage-case.ts";
-import { verifyAdmittedComputeCommands } from "./sandbox-driver-admitted-command-case.ts";
+import { createOrphanedNativePreparation } from "./sandbox-driver-preparation-cases.ts";
+import { registerSandboxDriverScratchStorageCase } from "./sandbox-driver-scratch-storage-case.ts";
 import { verifyStockExtensionRoundTrips } from "./sandbox-driver-stock-readiness-cases.ts";
 
 const harnessLifecycleChecks = createSandboxHarnessLifecycleChecks({
@@ -167,15 +154,12 @@ const harnessLifecycleChecks = createSandboxHarnessLifecycleChecks({
 });
 const codexHarnessChecks = createSandboxCodexHarnessChecks({
   agentRuntimeEntrypoint: AGENT_RUNTIME_ENTRYPOINT,
-  backendFor,
   codexRequirements,
   conformanceKubernetesOptions,
   dedicatedRevision,
   harnessRuntimeCommand,
   namespaceContext,
-  openShellDriver,
   runtimeSandboxFixture,
-  sandboxInstallation,
   workspaceGatewayClient,
 });
 
@@ -211,7 +195,7 @@ function sandboxStartupGuardChecks() {
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
 );
-const { KubernetesObjectApi } = controllerRequire("@kubernetes/client-node");
+const { KubernetesObjectApi, V1Deployment } = controllerRequire("@kubernetes/client-node");
 const { ObjectSerializer } = controllerRequire("@kubernetes/client-node/dist/serializer.js");
 
 function harnessRuntimeCommand(program) {
@@ -694,38 +678,6 @@ test("OpenShell refuses dedicated OpenClaw on settings its workspace preparation
     // Codex never runs the preparation, so it is still admitted.
     assert.ok(driver.configureAgent(configuration, harness("codex")).plugins.entries.codex);
   }
-});
-
-test("OpenShell pins an explicit main Agent workspace to the Sandbox data mount", () => {
-  verifyMainWorkspaceMount({
-    driver: openShellDriver(workspaceGatewayClient()),
-    readGatewayWorkspace: (configured, harness) => {
-      const compute = createKubernetesComputeDriver(
-        conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["127.0.0.1/32"] }),
-      );
-      return compute.gatewayConfiguration({
-        id: "rev_00000000-0000-4000-8000-000000000001",
-        namespaceId: "ns_00000000-0000-4000-8000-000000000001",
-        agentId: "agt_00000000-0000-4000-8000-000000000001",
-        revision: 1,
-        configurationId: "cfg_main_workspace",
-        configurationKind: "agent",
-        configurationGeneration: 1,
-        configuration: {
-          ...configured,
-          logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },
-          diagnostics: { otel: { logs: false } },
-        },
-        harness,
-      }).workspace;
-    },
-  });
-});
-
-test("OpenShell admits initial files only for its projected main workspace", () => {
-  const options = sandboxInstallation().drivers.sandbox.configuration;
-  options.kubernetes.sandboxDataMount.mountPath = "/sandbox/custom-workspace";
-  verifyInitialWorkspaceAdmission(openShellDriver(workspaceGatewayClient(), options));
 });
 
 const negotiatedGoogleGuard = () => ({
@@ -1771,16 +1723,10 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   assert.equal(gatewayClient.profiles.has("oce-codex-runtime"), false);
 });
 
-test("OpenShell keeps scratch separate from its durable data mount", async () => {
-  await verifySandboxScratchStorage({ openShellDriver, runtimeSandboxFixture });
-});
+registerSandboxDriverScratchStorageCase({ openShellDriver, runtimeSandboxFixture });
 
 test("OpenShell holds withdrawn Codex authentication after a Harness restart", async (t) => {
   await codexHarnessChecks.holdWithdrawnCodexAuthentication(t);
-});
-
-test("OpenShell composes immutable commands from admitted Compute revisions", async (t) => {
-  await verifyAdmittedComputeCommands(t);
 });
 
 for (const harnessId of ["codex", "openclaw"]) {
@@ -2236,68 +2182,7 @@ function credentialGatewayOverProviders({
   };
 }
 
-const providerProfileChecks = createSandboxProviderProfileChecks({
-  credentialGatewayOverProviders,
-  ready,
-  ScopeViolationError,
-});
-const credentialContractChecks = createSandboxCredentialContractChecks({
-  credentialGatewayOverProviders,
-  ready,
-  structuralRefusal,
-});
-
-async function ready(operation) {
-  assert.deepEqual(await operation, { state: "ready" });
-}
-
-test("Codex PAT profiles restrict native startup and plugin routes", async () => {
-  await providerProfileChecks.restrictCodexPatNativeStartupAndPluginRoutes();
-});
-
-test("each Codex PAT source gets its own provider profile, stable across replays", async () => {
-  await providerProfileChecks.keepCodexPatProviderProfilesDistinctAcrossReplays();
-});
-
-test("the OpenShell Credential Gateway acts only on its own source's provider", async () => {
-  await providerProfileChecks.restrictGatewayToItsOwnedProvider();
-});
-
-test("OpenShell preserves the main-era owned profile lifecycle without a migration", async () => {
-  await providerProfileChecks.preserveOwnedProfileLifecycle();
-});
-
-test("OpenShell main-era interrupted registration survives restart without replaying credentials", async () => {
-  await providerProfileChecks.resumeInterruptedRegistrationWithoutCredentialReplay();
-});
-
-test("OpenShell main-era cleanup resumes after provider deletion without losing another source", async () => {
-  await providerProfileChecks.resumeCleanupWithoutLosingAnotherSource();
-});
-
-test("OpenShell concurrent registrations preserve the first provider's credentials", async () => {
-  await providerProfileChecks.preserveFirstProviderCredentialsDuringConcurrentRegistration();
-});
-
-test("OpenShell rejects a foreign provider appearing after preflight without erasing the profile", async () => {
-  await providerProfileChecks.rejectForeignProviderAfterPreflight();
-});
-
-test("OpenShell registration does not adopt an unknown provider create outcome", async () => {
-  await providerProfileChecks.rejectUnknownProviderCreateOutcome();
-});
-
-test("the OpenShell Credential Gateway never attaches a source of another Namespace", async () => {
-  await providerProfileChecks.rejectCrossNamespaceAttachment();
-});
-
-test("the OpenShell Credential Gateway refuses an empty secret before creating a provider", async () => {
-  await providerProfileChecks.rejectEmptySecretBeforeProviderCreation();
-});
-
-test("OpenShell credential source removal fails while the provider survives deletion", async () => {
-  await providerProfileChecks.failRemovalWhenProviderSurvivesDeletion();
-});
+createSandboxProviderProfileChecks({ credentialGatewayOverProviders, ScopeViolationError });
 
 test("Google requires an OAuth source whose effective binary list is exactly the pinned executable", async () => {
   const pinned = managedGoogleInstall.binaryPath;
@@ -2440,20 +2325,9 @@ test("a Slack MCP source stays independent and cannot acquire a broad REST crede
   );
 });
 
-test("the OpenShell bearer-token type exists only with toolBinaries and validates its endpoint", async () => {
-  await credentialContractChecks.validatesBearerTokenTypeAndEndpoint();
-});
-
-test("narrowing OpenShell toolBinaries narrows existing bearer-token sources on update and deployment", async () => {
-  await credentialContractChecks.narrowsExistingBearerTokenSources();
-});
-
-test("an OpenShell profile write that lost a race to the same profile still attaches", async () => {
-  await credentialContractChecks.attachesAfterMatchingProfileRace();
-});
-
-test("an OpenShell bearer-token source stays deletable after toolBinaries is removed", async () => {
-  await credentialContractChecks.removesBearerTokenSourceWithoutToolBinaries();
+registerSandboxCredentialContractCases({
+  credentialGatewayOverProviders,
+  structuralRefusal,
 });
 
 test("OpenShell observes the Codex Harness through its exact bearer-passthrough service", async () => {
@@ -2463,17 +2337,6 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
     sandboxInstallation,
     TransientDependencyError,
   });
-});
-
-test("OpenShell startup admits exactly the endpoints both consumers can parse and dial", async (t) => {
-  // Each consumer parses the endpoint once per gateway call: the gRPC path through its
-  // service URL normalization, the service transport through its connect target.
-  const consumers = {
-    grpc: (endpoint) => normalizeServiceUrl("http://service.example.test/", endpoint),
-    service: (endpoint) =>
-      serviceTarget({ endpoint, requestTimeoutMs: 1000 }, "http://service.example.test/"),
-  };
-  await verifyEndpointAdmission(t, buildEndpointInstallation, consumers);
 });
 
 // These codecs test the stock/product boundary, not installed supervisor capabilities.
@@ -2667,54 +2530,12 @@ test("OpenShell refuses repository provision and enrollment before any gateway o
   }
 });
 
-// These cases invoke the production Driver over controlled Kubernetes/Gateway
-// transports. They prove cleanup selection, fencing and completion ordering, not
-// Kubernetes garbage collection, filesystem isolation, or live Pod termination.
-async function orphanedNativePreparation({
-  scratch = false,
-  dataMountPath = "/sandbox/enterprise",
-} = {}) {
-  const gateway = workspaceGatewayClient();
-  gateway.deleteSandbox = async () => gateway.calls.push(["deleteSandbox"]);
-  const configuration = sandboxInstallation().drivers.sandbox.configuration;
-  configuration.kubernetes.userNamespaces = false;
-  configuration.kubernetes.sandboxDataMount.mountPath = dataMountPath;
-  const driver = openShellDriver(gateway, configuration);
-  const fixture = runtimeSandboxFixture(driver, { harnessId: "openclaw" });
-  fixture.revision = completeWorkspaceRevision(fixture.revision, fixture.requirements);
-  // Revision cleanup confirms an absent Sandbox through the Workspace ensureNamespace created.
-  const { name, id } = fixture.context.namespace;
-  gateway.workspaces.set(name, ownedWorkspace(name, id));
-  const { revision, requirements, prepared } = fixture;
-  if (scratch) {
-    requirements.workspaceMounts.push({
-      claimName: "operator-scratch",
-      subPath: "scratch",
-      mountPath: "/sandbox/scratch",
-      readOnly: false,
-    });
-  }
-  const api = fixture.context.kubernetes;
-  const create = api.create;
-  // The API stored the real manifest, but the response never reached the Driver.
-  api.create = async (resource) => {
-    await create(resource);
-    throw new Error("preparation create response lost");
-  };
-  await assert.rejects(
-    driver.provisionHarness({ ...fixture.context, revision, requirements }),
-    /preparation create response lost/,
-  );
-  assert.equal(gateway.providers.size, 1);
-  assert.equal(
-    gateway.calls.some(([method]) => method === "deleteSandbox"),
-    false,
-  );
-  const resource = prepared[0];
-  const deployment = await api.read(resource);
-  const context = { ...fixture.context, revision };
-  return { driver, gateway, api, resource, deployment, context, requirements };
-}
+const orphanedNativePreparation = createOrphanedNativePreparation({
+  V1Deployment,
+  openShellDriver,
+  runtimeSandboxFixture,
+  ownedWorkspace,
+});
 
 registerSandboxDriverNativePreparationCases(orphanedNativePreparation);
 
@@ -3708,30 +3529,11 @@ test(
           // Finding 2206: the revision's Git provider and its profile go with its Sandbox. Left
           // behind, they kept the Namespace's Workspace forever: OpenShell refuses DeleteWorkspace
           // while a Sandbox, provider or provider profile remains (the fake gateway does too).
-          const gitProvider = spec.providers.find((p) => p.startsWith("oce-git-"));
-          const leftBehind = {
-            provider: structuredClone(gateway.providers.get(gitProvider)),
-            profile: structuredClone(gateway.profiles.get(gitProvider)),
-          };
-          assert.ok(leftBehind.provider && leftBehind.profile);
-          // A same-name provider without the revision's owner fingerprint is refused, not deleted.
-          gateway.providers.get(gitProvider).labels = {
-            "openclaw.dev/prepared-git-binding": "0".repeat(48),
-          };
-          await assert.rejects(sandbox.cleanup({ ...ctx, revision: rev }), {
-            name: "OpenShellPreparedGitProviderError",
+          const { gitProvider, leftBehind } = await verifyPreparedGitCleanupRefusals({
+            providerNames: spec.providers,
+            gateway,
+            cleanupRevision: () => sandbox.cleanup({ ...ctx, revision: rev }),
           });
-          assert.ok(gateway.providers.has(gitProvider) && gateway.profiles.has(gitProvider));
-          gateway.providers.set(gitProvider, structuredClone(leftBehind.provider));
-          // The same for its profile: the provider goes, the profile stays.
-          gateway.profiles.get(gitProvider).annotations = {
-            "openclaw.dev/prepared-git-binding": "0".repeat(48),
-          };
-          await assert.rejects(sandbox.cleanup({ ...ctx, revision: rev }), {
-            name: "OpenShellPreparedGitProviderError",
-          });
-          assert.ok(!gateway.providers.has(gitProvider) && gateway.profiles.has(gitProvider));
-          gateway.profiles.set(gitProvider, structuredClone(leftBehind.profile));
           await sandbox.cleanup({ ...ctx, revision: rev });
           assert.equal(gateway.sandboxes.has(created.name), false);
           assert.equal(gateway.providers.has(gitProvider), false, "Git provider deleted");

@@ -3,6 +3,9 @@ import { dirname, join, resolve } from "node:path";
 import type { RepositoryCredentialSessionFiles } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../../access/client-contracts.ts";
 import {
+  clientGitconfig,
+  clientGhConfiguration,
+  renderClientGhHosts,
   isValidGitClientConnection,
   isValidGitClientUsernameAndHosts,
   normalizePushRefAllowlist,
@@ -25,8 +28,8 @@ export function isClientBearer(bearer: string): boolean {
   return /^[A-Za-z0-9_-]{32,256}$/.test(bearer);
 }
 
-function ghHosts(client: RepositoryCredentialClientConfiguration, bearer: string): string {
-  return `${JSON.stringify(client.canonicalApiHost)}:\n  api_host: ${JSON.stringify(client.apiHost)}\n  git_protocol: https\n  oauth_token: ${JSON.stringify(bearer)}\n`;
+function isClientSessionId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 }
 
 /** Refuse a direct gh session whose private files disagree. */
@@ -49,7 +52,7 @@ export async function requireGhMaterial(
       join(directory, "gh", "hosts.yml"),
       clientSessionFileMaxBytes["gh/hosts.yml"],
     );
-    expected = Buffer.from(ghHosts(configuration.client, bearer));
+    expected = Buffer.from(renderClientGhHosts(configuration.client, bearer));
     if (!hosts.equals(expected)) {
       throw new Error("invalid-client-gh-material");
     }
@@ -86,16 +89,19 @@ export function encodeRepositoryCredentialSessionFiles(
   publicCa?: Uint8Array,
 ): RepositoryCredentialSessionFiles {
   validateClient(opened.client);
+  if (!isClientBearer(opened.bearer)) {
+    throw new Error("invalid-client-configuration");
+  }
+  const sessionId = opened.session.sessionId;
   if (
-    !isClientBearer(opened.bearer) ||
-    !/^[A-Za-z0-9_-]{1,128}$/.test(opened.session.sessionId) ||
+    !isClientSessionId(sessionId) ||
     !Number.isFinite(opened.session.deadlineWallMs) ||
     (publicCa && publicCa.byteLength > clientSessionFileMaxBytes["ca.pem"])
   ) {
     throw new Error("invalid-client-configuration");
   }
   const files: ClientFiles = {
-    sessionId: opened.session.sessionId,
+    sessionId,
     deadlineWallMs: opened.session.deadlineWallMs,
     client: opened.client,
     hasPublicCa: publicCa !== undefined,
@@ -108,10 +114,9 @@ export function encodeRepositoryCredentialSessionFiles(
   return {
     bearer: opened.bearer,
     "client.json": clientJson,
-    gitconfig:
-      "[credential]\n\thelper =\n\tuseHttpPath = true\n[http]\n\tfollowRedirects = false\n\tsslVerify = true\n",
-    "gh/hosts.yml": ghHosts(opened.client, opened.bearer),
-    "gh/config.yml": "version: 1\nprompt: disabled\ngit_protocol: https\n",
+    gitconfig: clientGitconfig,
+    "gh/hosts.yml": renderClientGhHosts(opened.client, opened.bearer),
+    "gh/config.yml": clientGhConfiguration,
     // Git loads this file as sslCAInfo. A leading UTF-8 BOM is not part of the
     // certificate; keeping it makes Git reject the file before the handshake.
     ...(publicCa === undefined
@@ -191,7 +196,7 @@ export async function readClientConfiguration(directory: string): Promise<Client
   ) as ClientFiles;
   validateClient(value.client);
   if (
-    !/^[A-Za-z0-9_-]{1,128}$/.test(value.sessionId) ||
+    !isClientSessionId(value.sessionId) ||
     !Number.isFinite(value.deadlineWallMs) ||
     typeof value.hasPublicCa !== "boolean"
   ) {

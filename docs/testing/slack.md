@@ -40,7 +40,7 @@ The test posts a real message and leaves it in the channel. It checks the reply 
 
 `tests/conformance/service-account-driver.test.ts` and `tests/integration/occ-api.test.mjs` cover lifecycle and API behavior with synthetic providers. The loopback HTTPS Backend regression requires `openssl`. [PostgreSQL tests](postgresql.md) cover persistence and deletion constraints. These do not prove live provider credential revocation or a model turn.
 
-[`postgres-service-account-issuance-recovery.test.mjs`](../../tests/integration/postgres-service-account-issuance-recovery.test.mjs)
+[`postgres-service-account-issuance-recovery.test.ts`](../../tests/integration/postgres-service-account-issuance-recovery.test.ts)
 runs the ChatGPT ServiceAccount Driver through OCC over PostgreSQL after an
 issuance that never committed. The next issuance and account deletion reclaim
 the leftover Secret and credential. Ending a session during reclamation must

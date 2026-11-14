@@ -24,7 +24,7 @@ import {
   recordWorkspaceNodeObservation,
 } from "../../apps/controller/src/gateway/workspace-node-observation.ts";
 import { ActivationPendingError } from "../../packages/occ/src/errors.ts";
-import { createReplacementNodeObservation } from "../helpers/openshell-workspace-node-observation.mjs";
+import { createReplacementNodeObservation } from "../helpers/openshell-workspace-node-observation.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -563,7 +563,7 @@ import { setImmediate as turn } from "node:timers/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { createKubernetesClient } from ${moduleUrl("../helpers/kubernetes-real.mjs")};
 import { waitForReplacementActivation } from ${moduleUrl("../helpers/openshell-sandbox-workflows.mjs")};
-import { createReplacementNodeObservation } from ${moduleUrl("../helpers/openshell-workspace-node-observation.mjs")};
+import { createReplacementNodeObservation } from ${moduleUrl("../helpers/openshell-workspace-node-observation.ts")};
 import { observeWorkspaceNodeRead, recordWorkspaceNodeObservation } from ${moduleUrl("../../apps/controller/src/gateway/workspace-node-observation.ts")};
 
 test("long failure", async (t) => {
@@ -659,7 +659,11 @@ test("replacement observation accepts only a single bound read and the real pend
   const receipt = createReplacementNodeObservation();
   let reads = 0;
   const driver = receipt.wrap({
-    async activateRevision(target: typeof revision, observations: string[], reason: Error) {
+    async activateRevision(
+      target: typeof revision,
+      observations: readonly string[],
+      reason: Error,
+    ) {
       for (const observation of observations) {
         await observeWorkspaceNodeRead(target.id, async () => {
           reads++;

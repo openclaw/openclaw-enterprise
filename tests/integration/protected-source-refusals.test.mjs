@@ -90,6 +90,42 @@ test("protected credential source create names the type, the foreign Secret or t
   );
 });
 
+test("explicit live adoption refuses an unsupported Gateway source after full Proxy cutover", async (t) => {
+  const f = await protectedSourceFixture(t, { githubMetadata: true });
+  // Register through the real Gateway-only controller before asking the full Proxy API
+  // to adopt it. The full profile cannot create an ordinary PAT source itself.
+  const pat = await f
+    .restart(["sandbox", "credential_gateway"])
+    .createCredentialSource(f.administratorId, {
+      namespaceId: f.namespace.id,
+      name: "unprotected-pat",
+      type: "codex-pat",
+      secrets: { access_token: f.source.secrets.api_key },
+    });
+  assert.equal(pat.egress, undefined);
+  const adoption = await f.request("PATCH", `${f.path}/${pat.id}`, {
+    body: { adoption: "live", authorityScope: "execution" },
+  });
+  assert.equal(adoption.status, 409, JSON.stringify(adoption.body));
+  assert.equal(adoption.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal(
+    adoption.body.error.message,
+    protectedSourceTypeRefused(
+      "codex-pat",
+      "openai, credential-free-repository-metadata, github-app-metadata",
+    ),
+  );
+  const retained = await f.request("GET", `${f.path}/${pat.id}`);
+  assert.equal(retained.status, 200, JSON.stringify(retained.body));
+  assert.equal(retained.data.egress, undefined);
+  assert.deepEqual(retained.data.secrets, pat.secrets);
+  assert.deepEqual(
+    (await f.request("GET", f.path)).data.map(({ id }) => id),
+    [f.source.id, pat.id],
+    "refused adoption preserves the existing sources without creating another row",
+  );
+});
+
 test("deploy names a live-adopted source without a provider/model and Proxy sources without a Proxy", async (t) => {
   const f = await protectedSourceFixture(t);
   const agentPath = `/namespaces/${f.namespace.id}/agents/${f.agent.id}`;

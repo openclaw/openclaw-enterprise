@@ -13,7 +13,9 @@ import {
   PostgresMetricsSnapshot,
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl } from "../helpers/postgres-database.mjs";
+
+const migrationUrl = process.env.OCC_METRICS_TEST_MIGRATION_DATABASE_URL;
 
 let requestsSent = 0;
 function recordRequests(count: number): void {
@@ -194,12 +196,14 @@ function scrape(url: string): Promise<number> {
 test(
   "metrics listener bounds PostgreSQL scrape waiters and pipelined responses",
   {
-    ...requiresPostgres,
+    skip:
+      databaseUrl && migrationUrl
+        ? false
+        : "Set OCC_TEST_DATABASE_URL and OCC_METRICS_TEST_MIGRATION_DATABASE_URL to the same migrated disposable PostgreSQL database (docs/testing/postgresql.md).",
     timeout: 30_000,
   },
   async (context) => {
     assert.ok(databaseUrl);
-    const migrationUrl = process.env.OCC_METRICS_TEST_MIGRATION_DATABASE_URL;
     assert.ok(migrationUrl, "the prepared CI fixture supplies its migrator URL");
     const appUrl = new URL(databaseUrl);
     const migrator = new URL(migrationUrl);

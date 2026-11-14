@@ -1,5 +1,25 @@
 import { isAbsolute, resolve } from "node:path";
 
+export const clientSessionFileMaxBytes = Object.freeze({
+  bearer: 256,
+  "client.json": 16 * 1024,
+  gitconfig: 16 * 1024,
+  "gh/hosts.yml": 16 * 1024,
+  "gh/config.yml": 16 * 1024,
+  "ca.pem": 64 * 1024,
+});
+
+export const clientGitconfig =
+  "[credential]\n\thelper =\n\tuseHttpPath = true\n[http]\n\tfollowRedirects = false\n\tsslVerify = true\n";
+export const clientGhConfiguration = "version: 1\nprompt: disabled\ngit_protocol: https\n";
+
+export function renderClientGhHosts(
+  client: RepositoryCredentialClientConfiguration,
+  bearer: string,
+): string {
+  return `${JSON.stringify(client.canonicalApiHost)}:\n  api_host: ${JSON.stringify(client.apiHost)}\n  git_protocol: https\n  oauth_token: ${JSON.stringify(bearer)}\n`;
+}
+
 export const repositorySessionBearerSource = "[A-Za-z0-9_-]{43,256}";
 
 /** Check a Unix socket path's lexical form and UTF-8 byte limit. */

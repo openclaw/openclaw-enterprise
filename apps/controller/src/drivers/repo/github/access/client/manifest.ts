@@ -271,7 +271,9 @@ export async function readManifestOrigins(
   return origins;
 }
 
-export function requireCurrentBinding(binding: RuntimeRepositoryBinding): void {
+export function requireCurrentBinding(
+  binding: Pick<RuntimeRepositoryBinding, "deadlineWallMs">,
+): void {
   if (binding.deadlineWallMs <= Date.now()) {
     throw new Error("repository-session-expired");
   }

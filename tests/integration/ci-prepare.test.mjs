@@ -21,7 +21,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { describe, test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
-import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
+import { prepareCodexSeccompProfile } from "../../scripts/lib/codex-seccomp-k3d.ts";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
 import { defaultK3sImage, prepareLane, prepareFile } from "../../scripts/ci/prepare.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
@@ -242,6 +242,170 @@ function runPrepare(args, env = {}) {
     env: { ...process.env, GITHUB_ENV: "", GITHUB_OUTPUT: "", ...env },
   });
 }
+
+function modelPreparationNotices(stderr) {
+  return stderr
+    .split("\n")
+    .filter((line) => line.startsWith("::notice title=k3d Model Runtime preparation::"))
+    .map((line) => {
+      const match =
+        /^::notice title=k3d Model Runtime preparation::stage=([a-z0-9-]+) elapsed_ms=\d+ outcome=(success|failure)$/.exec(
+          line,
+        );
+      assert.ok(match, line);
+      return [match[1], match[2]];
+    });
+}
+
+function modelImageRoleNotices(stderr) {
+  return stderr
+    .split("\n")
+    .filter((line) => line.startsWith("::notice title=k3d Model Runtime image::"))
+    .map((line) => {
+      const match =
+        /^::notice title=k3d Model Runtime image::role=(controller|runtime) elapsed_ms=\d+ outcome=(success|failure)$/.exec(
+          line,
+        );
+      assert.ok(match, line);
+      return [match[1], match[2]];
+    })
+    .sort(([left], [right]) => left.localeCompare(right));
+}
+
+test("model preparation notices follow completed CLI phases", async (t) => {
+  const root = await fixture(t);
+  const fetchStub = join(root, "offline.cjs");
+  await writeFile(fetchStub, "globalThis.fetch = async () => new Response(null, { status: 404 });");
+  for (const suppliedImages of [false, true]) {
+    const commands = await fixtureImageCommands(t, "local-digest", "k3d-model", {
+      GITHUB_ACTIONS: "true",
+      OPENAI_API_KEY: "synthetic-model-key",
+      OCC_TEST_OPENAI_MODEL: "synthetic-model",
+      NODE_BASE_IMAGE: nodeBaseImage,
+      NODE_OPTIONS: `--require="${fetchStub}"`,
+      // The empty source directory fails validation only when an image build is requested.
+      OCC_K3D_OPENCLAW_SOURCE: root,
+      ...(suppliedImages
+        ? {
+            OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
+            OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
+            OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
+          }
+        : {}),
+    });
+    const prepared = await commands.prepare();
+    assert.equal(prepared.status, 1, prepared.stderr);
+    assertStderrMatch(prepared.stderr, suppliedImages ? /download failed: HTTP 404/ : /Dockerfile/);
+    assert.deepEqual(modelPreparationNotices(prepared.stderr), [
+      ["k3d-cluster-preparation", "success"],
+      ["postgres-start", "success"],
+      ...(suppliedImages
+        ? [
+            ["runtime-image-preparation", "success"],
+            ["gateway-routing", "failure"],
+          ]
+        : [
+            ["image-build-or-reuse", "failure"],
+            ["runtime-image-preparation", "failure"],
+          ]),
+    ]);
+    assert.deepEqual(modelImageRoleNotices(prepared.stderr), []);
+    await commands.cleanupSuccessfully();
+  }
+});
+
+test("model image notices time only requested builds and preserve each outcome", async (t) => {
+  for (const [scenario, suppliedPair] of [
+    ["save-failed", false],
+    ["controller-build-failed", false],
+    ["save-failed", true],
+  ]) {
+    const commands = await fixtureImageCommands(t, scenario, "k3d-model", {
+      GITHUB_ACTIONS: "true",
+      OPENAI_API_KEY: "synthetic-model-key",
+      OCC_TEST_OPENAI_MODEL: "synthetic-model",
+      NODE_BASE_IMAGE: nodeBaseImage,
+      ...(suppliedPair
+        ? {
+            OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
+            OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
+          }
+        : {}),
+    });
+    // The shared fake recognizes controller builds under its buildx spelling.
+    // Adapt only the plain controller command issued by this lane at the fake boundary.
+    const bin = join(dirname(commands.statePath), "bin");
+    const adapter = join(bin, "model-docker");
+    await writeFile(
+      adapter,
+      `#!/bin/sh
+if [ "$1" = build ]; then
+  if [ "$3" = --target ]; then
+    role=controller
+    peer=runtime
+    set -- buildx "$@"
+  else
+    role=runtime
+    peer=controller
+  fi
+  if [ "$WAIT_FOR_PEER" = 1 ]; then
+    : > "$TMPDIR/$role.started"
+    tries=0
+    while [ ! -f "$TMPDIR/$peer.started" ]; do
+      [ "$tries" -lt 100 ] || { echo "peer build never started" >&2; exit 1; }
+      /bin/sleep 0.05
+      tries=$((tries + 1))
+    done
+  fi
+fi
+exec docker.mjs "$@"
+`,
+      { mode: 0o700 },
+    );
+    // Both requested builds must start before either command can finish.
+    const result = await commands.prepare([], {
+      env: { OCC_DOCKER_BIN: adapter, WAIT_FOR_PEER: suppliedPair ? "0" : "1" },
+    });
+    assert.equal(result.status, 1, result.stderr);
+    const failed = scenario === "controller-build-failed";
+    assertStderrMatch(
+      result.stderr,
+      failed ? /synthetic build failure/ : /synthetic export failure/,
+    );
+    assert.deepEqual(modelImageRoleNotices(result.stderr), [
+      ["controller", failed ? "failure" : "success"],
+      ...(suppliedPair ? [] : [["runtime", "success"]]),
+    ]);
+    await commands.cleanupSuccessfully();
+  }
+});
+
+test("model preparation notices preserve outcomes and require Actions and a known stage", async (t) => {
+  const root = await fixture(t);
+  const result = await runProgram(
+    `import assert from "node:assert/strict";
+     const { timedK3dModelPreparation: time } = await import(process.argv[1]);
+     const value = {};
+     const failure = new Error("synthetic-private-detail");
+     assert.equal(await time("k3d-model", "postgres-start", () => value), value);
+     await assert.rejects(time("k3d-model", "gateway-routing", async () => { throw failure; }), error => error === failure);
+     await time("k3d-model", "unknown-stage", () => value);
+     await time("k3d-otel", "gateway-routing", () => value);
+     delete process.env.GITHUB_ACTIONS;
+     await time("k3d-model", "controller", () => value);
+     await time("k3d-model", "postgres-start", () => value);`,
+    join(root, "state.json"),
+    { GITHUB_ACTIONS: "true" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.doesNotMatch(result.stderr, /synthetic-private-detail|lane=k3d-otel/);
+  assert.deepEqual(modelImageRoleNotices(result.stderr), []);
+  assert.deepEqual(modelPreparationNotices(result.stderr), [
+    ["postgres-start", "success"],
+    ["gateway-routing", "failure"],
+  ]);
+});
 
 test(
   "PostgreSQL preparation records staging before creating its directory",
@@ -880,6 +1044,7 @@ describe("CI preparation", { concurrency }, () => {
       } else {
         assert.equal(prepared.status, 0, `${event}: ${prepared.stderr}`);
       }
+      assert.deepEqual(modelImageRoleNotices(prepared.stderr), []);
       const calls = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
       const builds = calls.filter(({ args }) => args.includes("--load"));
       if (lane === "k3d-otel") {
@@ -2562,7 +2727,10 @@ assert.equal(commands, 0);
                 ? ["compose", "kubernetes"].map((installation) => ({
                     installation,
                     preset: "Codex",
-                    scenarios: "console-secrets",
+                    scenarios:
+                      installation === "compose"
+                        ? "console-secrets,agent-audit"
+                        : "console-secrets",
                     focused: false,
                   }))
                 : [
@@ -4125,6 +4293,7 @@ if (args[0] === "pull") {
   test("Kubernetes runtime consumers reject a foreign artifact without a source-build fallback", async (t) => {
     for (const lane of ["gateway-routing", "production-tui"]) {
       const commands = await fixtureImageCommands(t, "artifact-import", lane, {
+        GITHUB_ACTIONS: "true",
         NODE_BASE_IMAGE: packagingNodeBaseImage,
         OPENAI_API_KEY: "synthetic-model-key",
         OCC_TEST_OPENAI_MODEL: "synthetic-model",
@@ -4142,6 +4311,7 @@ if (args[0] === "pull") {
       const prepared = await commands.prepare();
       assert.equal(prepared.status, 1, lane);
       assertStderrMatch(prepared.stderr, /Runtime artifact source differs from checkout/, lane);
+      assert.deepEqual(modelPreparationNotices(prepared.stderr), []);
       const calls = await commands.commands();
       assert.equal(
         calls.some(

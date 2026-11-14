@@ -21,7 +21,7 @@ import type {
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import type { openShellWorkspaceChartResources as chartResources } from "../fixtures/openshell-workspace-chart.mjs";
+import type { openShellWorkspaceChartResources as chartResources } from "../fixtures/openshell-workspace-chart.ts";
 import { makeStructuralRefusal } from "./sandbox-driver-installation-fixture.ts";
 import {
   buildSandboxInstallation,
@@ -197,43 +197,6 @@ export async function verifyManagedNamespaceRejectsMutation({
   );
   assert.deepEqual(events, []);
   assert.deepEqual(gatewayClient.calls, []);
-}
-
-export async function verifySandboxFactoryValidation({
-  t,
-  sandboxInstallation,
-  structuralRefusal,
-  SharedConfigurationValidationError,
-}: {
-  t: TestContext;
-  sandboxInstallation: () => Installation;
-  structuralRefusal: typeof makeStructuralRefusal;
-  SharedConfigurationValidationError: typeof ConfigurationValidationError;
-}) {
-  const configuration = sandboxInstallation();
-  Reflect.set(configuration.drivers.sandbox.configuration, "unsupported", true);
-  let invokedFactory = false;
-  const options: NonNullable<Parameters<typeof loadInstallationFile>[2]> & {
-    createSandboxDriver(): never;
-  } = {
-    createSandboxDriver() {
-      invokedFactory = true;
-      throw new Error("An injected factory must not bypass provider configuration validation.");
-    },
-  };
-
-  await assert.rejects(loadInstallationFile(t, configuration, options), (error: unknown) => {
-    assert.ok(error instanceof SharedConfigurationValidationError);
-    assert.deepEqual(
-      error.error.details,
-      structuralRefusal("", "additionalProperties", "UNKNOWN_FIELD"),
-    );
-    return true;
-  });
-  assert.equal(invokedFactory, false);
-  // Control: the same factory is reached once the configuration is valid.
-  await assert.rejects(loadInstallationFile(t, sandboxInstallation(), options), /injected factory/);
-  assert.equal(invokedFactory, true);
 }
 
 export async function verifyOperatorPolicyDrift({

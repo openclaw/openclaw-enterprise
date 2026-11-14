@@ -114,11 +114,12 @@ test(
             });
           },
         };
-        // This test-owned catalogue adapter delegates validation and routing to the real provider.
-        // Registration remains live through the Proxy; no Gateway copy is invented for this type.
+        // The auxiliary type separates the two routes in this protocol fixture. Delegate its
+        // registration to the real OpenAI Gateway path before explicit Proxy adoption.
         const gateway = app.controller.selectedDriver("credential_gateway");
         const listTypes = gateway.listSourceTypes.bind(gateway);
         const validate = gateway.validateSourceConfig.bind(gateway);
+        const register = gateway.registerSource.bind(gateway);
         t.mock.method(gateway, "listSourceTypes", async (...args: Parameters<typeof listTypes>) => [
           ...(await listTypes(...args)),
           auxiliaryType,
@@ -127,6 +128,15 @@ test(
           input.type === auxiliaryType.type
             ? auxiliary.normalizeConfig(input.config)
             : validate(input),
+        );
+        t.mock.method(
+          gateway,
+          "registerSource",
+          (context: Parameters<typeof register>[0], input: Parameters<typeof register>[1]) =>
+            register(
+              context,
+              input.type === auxiliaryType.type ? { ...input, type: "openai" } : input,
+            ),
         );
         const sandbox = new Proxy(app.controller.selectedDriver("sandbox"), {
           get(target, key) {
@@ -198,7 +208,13 @@ test(
             },
           });
           assert.equal(result.status, 201, JSON.stringify(result.body));
-          return result.data;
+          // Both sources must be protected before binding; selecting a Proxy alone
+          // no longer enrolls a newly registered Gateway source.
+          const adopted = await app.request("PATCH", `${path}/${result.data.id}`, {
+            body: { adoption: "live", authorityScope: "execution" },
+          });
+          assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
+          return adopted.data;
         };
         const source = await createSource(
           "first-reduced-source",

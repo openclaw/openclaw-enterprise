@@ -65,7 +65,7 @@ graph TD
 
 `run-tests.mjs:main` rejects noncanonical manifests before [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt).
 
-`run-tests.mjs:parseArgs` accepts `--test-name=<literal>` with leading dashes;
+`runner-inputs.ts:parseArgs` accepts `--test-name=<literal>` with leading dashes;
 duplicates, including empty values, fail before effects. `selectLane` validates paths/names.
 `runFile` requires one passing standalone case through an escaped, anchored Node-child pattern.
 Results retain environment, cleanup and focus/name on preparation failure.
@@ -111,7 +111,7 @@ Slack serializes channel/app access; installation and Skipper Git serialize per 
 Retries require [approved dispatch](../testing/ci/configuration.md#environments).
 
 First-attempt `all` reuse requires completed execution
-(`scripts/ci/full-integration-reuse.mjs:validateResults`). Success selects artifacts,
+(`scripts/ci/full-integration-reuse.ts:validateResults`). Success selects artifacts,
 skipping lanes. Failure uses preflight’s fresh fallback.
 QA awaits Slack despite failure, stops on cancellation, and requires selected results.
 
@@ -167,7 +167,7 @@ Without runner capture, it emits a projected diagnostic. `unavailable` means a
 failed observation; missing records do not prove healthy startup.
 
 Dedicated Codex preparation and the operator's offline profile generator share
-`scripts/lib/codex-seccomp-profile.mjs:deriveCodexBwrapProfile`. Preparation
+`scripts/lib/codex-seccomp-profile.ts:deriveCodexBwrapProfile`. Preparation
 requires an actual workspace write and denied write to a container-writable
 outside path before publishing the selected Localhost profile to the live suite.
 Native runtime-image tests trust a dynamic Codex Docker seccomp profile only when
@@ -185,7 +185,7 @@ owns credential isolation and historical-pair limits.
 
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
-`scripts/ci/run-tests.mjs:normalizeFile` validates `file.env`.
+`scripts/ci/runner-inputs.ts:normalizeFile` validates `file.env`.
 `runFile` merges filtered inherited values, restored declared inputs, `lane.env`,
 preparation defaults, `file.env`, then generated values; later values win.
 `scripts/ci/prepare.mjs:prepareFile` separates defaults and outputs.

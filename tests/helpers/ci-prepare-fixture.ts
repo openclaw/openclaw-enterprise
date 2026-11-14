@@ -6,12 +6,12 @@ import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import type { CleanupRegistrar } from "./console-file-app.ts";
-import { commandShim, startFixtureCommandServer } from "./ci-prepare-fixture-command.mjs";
+import { commandShim, startFixtureCommandServer } from "./ci-prepare-fixture-command.ts";
 import { readJsonLines } from "./json-lines.mjs";
 import { socketDirectory } from "./socket-directory.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
-export { forwardedEnv } from "./ci-prepare-fixture-command.mjs";
+export { forwardedEnv } from "./ci-prepare-fixture-command.ts";
 
 // Shared by ci-prepare.test.mjs and ci-prepare-k3d.test.mjs, which split the
 // preparation cases so Checks and Conformance 2 can run them at the same time.
@@ -251,7 +251,7 @@ export async function fixtureImageCommands(
   await mkdir(bin);
   await mkdir(home);
   // Each fake is a bash script answered by this test's command server
-  // (ci-prepare-fixture-command.mjs), which runs the scenario's logic in this process.
+  // (ci-prepare-fixture-command.ts), which runs the scenario's logic in this process.
   const server = await fixtureCommandServer(t, root);
   for (const file of ["docker.mjs", "k3d.mjs", "kubectl.mjs", "podman", "corepack", "helm", "yq"]) {
     await writeFixtureCommand(join(bin, file), file.replace(/\.mjs$/, ""), server);
@@ -259,7 +259,7 @@ export async function fixtureImageCommands(
   await symlink(process.execPath, join(bin, "node"));
   const statePath = join(root, "state.json");
   const githubEnv = join(root, "github.env");
-  // The fake PostgreSQL server's Unix socket (ci-prepare-fixture-command.mjs).
+  // The fake PostgreSQL server's Unix socket (ci-prepare-fixture-command.ts).
   const postgresSockets = await socketDirectory(t, "ci-prepare-pg-", {
     longest: ".s.PGSQL.65535",
   });
