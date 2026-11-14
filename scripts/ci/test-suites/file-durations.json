@@ -152,7 +152,7 @@
     "tests/conformance/utils.test.ts": 100,
     "tests/conformance/workspace-files-configuration.test.mjs": 1600,
     "tests/conformance/workspace-files.test.ts": 1200,
-    "tests/conformance/workspace-node-supervisor.test.mjs": 13100,
+    "tests/conformance/workspace-node-supervisor.test.ts": 13100,
     "tests/docs/docs-length.test.mjs": 1600,
     "tests/docs/docs-server.test.mjs": 200,
     "tests/docs/docs-site.test.mjs": 6600,

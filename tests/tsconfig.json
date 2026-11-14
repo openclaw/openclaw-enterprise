@@ -182,7 +182,6 @@
     "helpers/native-admin-postgres.ts",
     "helpers/postgres-worker-revision-queue.ts",
     "conformance/topology-launch-cases.ts",
-    "conformance/workspace-node-supervisor-cases.ts",
     "integration/configuration-credential-save-cases.ts"
   ],
   "references": [

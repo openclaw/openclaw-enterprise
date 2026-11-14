@@ -29,7 +29,7 @@
     "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
-    "tests/conformance/workspace-node-supervisor.test.mjs",
+    "tests/conformance/workspace-node-supervisor.test.ts",
     "tests/integration/presets-controller.test.ts",
     "tests/integration/plugin-discovery-api.test.ts",
     "tests/integration/openshell-plugin-source-reader.test.ts",
@@ -413,7 +413,7 @@
       "path": "tests/conformance/workspace-files.test.ts"
     },
     {
-      "path": "tests/conformance/workspace-node-supervisor.test.mjs"
+      "path": "tests/conformance/workspace-node-supervisor.test.ts"
     },
     {
       "path": "tests/integration/presets-controller.test.ts"
