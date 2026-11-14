@@ -23,7 +23,6 @@ on:
       - "deploy/examples/console-theme/**"
       - "deploy/presets/*.json"
       - "packages/contracts/src/preset-variables.mts"
-      - "packages/contracts/src/workspace-defaults.mjs"
       - "packages/contracts/src/workspace-defaults.ts"
       - "packages/occ/src/environment-references.ts"
       - "packages/occ/src/gateway-security-defaults.ts"
