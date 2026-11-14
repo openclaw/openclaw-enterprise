@@ -25,7 +25,7 @@ import {
   bootstrapFailureCode,
   optional,
   required,
-} from "./lib/bootstrap-configuration.mjs";
+} from "./lib/bootstrap-configuration.ts";
 
 const DEFAULT_DEV_ADMIN_PASSWORD = "openclaw-development-password";
 const DEFAULT_DEV_INSTALLATION_NAME = "OpenClaw Local Development";

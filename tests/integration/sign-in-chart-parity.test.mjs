@@ -19,7 +19,7 @@ import {
 import {
   bootstrapConfiguration,
   bootstrapFailureCode,
-} from "../../scripts/lib/bootstrap-configuration.mjs";
+} from "../../scripts/lib/bootstrap-configuration.ts";
 import { settled as settle } from "../helpers/child-processes.mjs";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
