@@ -280,7 +280,7 @@ activation, and repository registry creation need separate evidence.
 
 ## Debugging and Verification
 
-- Run `node --test tests/integration/profile-renderer.test.mjs` to exercise the
+- Run `node --test tests/integration/profile-renderer.test.ts` to exercise the
   CLI and inspect generated profile output.
 - `tests/integration/profile-preflight-chart-parity.test.ts` runs trusted proxy
   CIDRs and client address headers, namespaces, node selectors, sign-in Secret

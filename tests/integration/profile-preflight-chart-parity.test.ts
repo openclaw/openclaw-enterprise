@@ -179,7 +179,7 @@ function run(command: string, args: readonly string[]) {
 
 // Renders in-process through the function the CLI calls. `renderer.output` is what the CLI
 // prints: the preflight summary on stdout, or its stderr line for a refusal without one.
-// profile-renderer.test.mjs covers the CLI process itself (argv, exit status, stdout).
+// profile-renderer.test.ts covers the CLI process itself (argv, exit status, stdout).
 async function renderProfile(
   profileInput: TestInput,
   profile = "openclaw",

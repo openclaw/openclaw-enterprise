@@ -52,7 +52,7 @@
     "tests/integration/openshell-device-authorization-api.test.mjs",
     "tests/integration/dependency-unavailable-log.test.mjs",
     "tests/integration/git-hooks.test.mjs",
-    "tests/integration/profile-renderer.test.mjs",
+    "tests/integration/profile-renderer.test.ts",
     "tests/integration/profile-public-github-read.test.mjs",
     "tests/integration/profile-preflight-chart-parity.test.ts",
     "tests/conformance/runtime-logs-content.test.ts",
@@ -419,7 +419,7 @@
       "path": "tests/integration/presets-controller.test.ts"
     },
     {
-      "path": "tests/integration/profile-renderer.test.mjs",
+      "path": "tests/integration/profile-renderer.test.ts",
       "expectedTests": ["preflight rejects noncanonical SHA-256 image digests"]
     },
     {
