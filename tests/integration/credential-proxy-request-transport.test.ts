@@ -471,210 +471,246 @@ test(
   },
 );
 
-test(
-  "model request installation survives a material epoch change but fences policy and recipient drift",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (t) => {
-    const f = await staticEgressFixture(t, {
-      admitRevision: false,
-      requestCredentials: true,
-      appFactory: postgresApp,
-    });
-    assert.ok("credentialProxy" in f);
-    const controller: OpenClawController = f.controller;
-    const metadata = await f.deployAgent(f.namespace.id, f.agent.id);
-    const revision = await controller.transact((unit) =>
-      unit.revisions.findRevision(f.namespace.id, f.agent.id, metadata.id),
-    );
-    assert.ok(revision?.egressPlan);
-    const context = {
-      namespace: f.runtimeNamespace,
-      revision,
-      plan: revision.egressPlan,
-      signal: t.signal,
-    };
-    const prepared = await f.credentialProxy.configureRevision(context);
-    assert.equal(f.egressOptions.authorityScope, "execution");
-    const egressOptions = { ...f.egressOptions, authorityScope: "execution" as const };
-    const expected = openShellModelRequestPolicy(context.plan, egressOptions, revision);
-    assert.ok(expected);
-    const numericOrigin = {
-      ...context.plan,
-      routes: context.plan.routes.map((route, index) =>
-        index === 0 ? { ...route, origin: "https://192.0.2.1" } : route,
-      ),
-    };
-    assert.throws(
-      () => openShellModelRequestPolicy(numericOrigin, egressOptions, revision),
-      /HTTPS DNS origin/,
-      "numeric destinations fail during policy selection instead of producing an unusable route",
-    );
-    const ref = f.sandboxDriver.harnessResource(context);
-    const workspace = f.runtimeNamespace.name;
-    await f.gatewayClient.importProviderProfile(
-      workspace,
-      { ...expected.provider.profile, annotations: {} },
-      t.signal,
-    );
-    await f.gatewayClient.createProvider(
-      {
+for (const harnessId of ["codex", "openclaw"] as const) {
+  test(
+    `${harnessId} model request installation survives a material epoch change but fences policy and recipient drift`,
+    { ...requiresPostgres, timeout: 60_000 },
+    async (t) => {
+      const f = await staticEgressFixture(t, {
+        admitRevision: false,
+        requestCredentials: true,
+        harnessId,
+        appFactory: postgresApp,
+      });
+      assert.ok("credentialProxy" in f);
+      const controller: OpenClawController = f.controller;
+      const metadata = await f.deployAgent(f.namespace.id, f.agent.id);
+      const revision = await controller.transact((unit) =>
+        unit.revisions.findRevision(f.namespace.id, f.agent.id, metadata.id),
+      );
+      assert.ok(revision?.egressPlan);
+      assert.equal(revision.harness.id, harnessId);
+      assert.deepEqual(revision.executionAdmission, { mode: "protected", version: 8 });
+      const context = {
+        namespace: f.runtimeNamespace,
+        revision,
+        plan: revision.egressPlan,
+        signal: t.signal,
+      };
+      const prepared = await f.credentialProxy.configureRevision(context);
+      assert.equal(f.egressOptions.authorityScope, "execution");
+      const egressOptions = { ...f.egressOptions, authorityScope: "execution" as const };
+      const expected = openShellModelRequestPolicy(context.plan, egressOptions, revision);
+      assert.ok(expected);
+      if (harnessId === "openclaw") {
+        assert.deepEqual(expected.provider.profile.binaries, [
+          "/opt/oce/bin/openclaw-model-sender",
+        ]);
+        assert.deepEqual(expected.environment, { OPENAI_API_KEY: "oce:request-authorized:model" });
+      }
+      const explicitOrigin = "https://models.example.test:8443";
+      const withPort = openShellModelRequestPolicy(
+        {
+          ...context.plan,
+          routes: context.plan.routes.map((route) => ({ ...route, origin: explicitOrigin })),
+        },
+        egressOptions,
+        revision,
+      );
+      assert.equal(withPort?.origin, explicitOrigin);
+      assert.equal(withPort.provider.profile.endpoints[0]?.port, 8443);
+      const numericOrigin = {
+        ...context.plan,
+        routes: context.plan.routes.map((route, index) =>
+          index === 0 ? { ...route, origin: "https://192.0.2.1" } : route,
+        ),
+      };
+      assert.throws(
+        () => openShellModelRequestPolicy(numericOrigin, egressOptions, revision),
+        /HTTPS DNS origin/,
+        "numeric destinations fail during policy selection instead of producing an unusable route",
+      );
+      const ref = f.sandboxDriver.harnessResource(context);
+      const workspace = f.runtimeNamespace.name;
+      await f.gatewayClient.importProviderProfile(
         workspace,
-        name: expected.provider.name,
-        type: expected.provider.profile.id,
-        credentials: {},
-        config: {},
-        labels: {
-          "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        { ...expected.provider.profile, annotations: {} },
+        t.signal,
+      );
+      await f.gatewayClient.createProvider(
+        {
+          workspace,
+          name: expected.provider.name,
+          type: expected.provider.profile.id,
+          credentials: {},
+          config: {},
+          labels: {
+            "app.kubernetes.io/managed-by": "openclaw-enterprise",
+            "openclaw.dev/namespace-id": revision.namespaceId,
+            "openclaw.dev/agent-id": revision.agentId,
+            "openclaw.dev/revision-id": revision.id,
+          },
+        },
+        t.signal,
+      );
+      // These are controlled Gateway protocol observations. The real Driver qualifies
+      // them; this case does not claim installed supervisor or Git renewal execution.
+      const sandboxObservation = {
+        id: "model-sandbox",
+        name: ref.resourceName,
+        workspace,
+        annotations: {
           "openclaw.dev/namespace-id": revision.namespaceId,
           "openclaw.dev/agent-id": revision.agentId,
           "openclaw.dev/revision-id": revision.id,
         },
-      },
-      t.signal,
-    );
-    // These are controlled Gateway protocol observations. The real Driver qualifies
-    // them; this case does not claim installed supervisor or Git renewal execution.
-    const sandboxObservation = {
-      id: "model-sandbox",
-      name: ref.resourceName,
-      workspace,
-      annotations: {
-        "openclaw.dev/namespace-id": revision.namespaceId,
-        "openclaw.dev/agent-id": revision.agentId,
-        "openclaw.dev/revision-id": revision.id,
-      },
-    };
-    const sandboxSpec = {
-      providers: [
-        expected.provider.name,
-        "oce-runtime-" + createHash("sha256").update(revision.id).digest("hex").slice(0, 16),
-      ],
-    };
-    const materialEpoch: { provider_env_revision?: string } = { provider_env_revision: "10" };
-    const admission = {
-      ...materialEpoch,
-      instance_id: "configuration-instance",
-      state: 2,
-      policy_version: 1,
-      policy_hash: "a".repeat(64),
-      config_revision: "7",
-    };
-    const sandboxStatus = {
-      configuration_activated: true,
-      configuration_admission: admission,
-      main_process_instance_id: "process-instance",
-    };
-    const rule = "_provider_" + expected.provider.name.replaceAll("-", "_");
-    const networkPolicies = prepared.configuration.network_policies;
-    assert.ok(networkPolicies && typeof networkPolicies === "object");
-    const policy: Record<string, unknown> = {
-      ...structuredClone(prepared.configuration),
-      network_policies: {
-        ...networkPolicies,
-        [rule]: {
-          name: rule,
-          binaries: expected.provider.profile.binaries.map((path) => ({ path })),
-          endpoints: expected.provider.profile.endpoints.map((endpoint) => ({
-            ...openShellProfileEndpoint(endpoint),
-            provider_credentialed: true,
-            token_grant_owner: "grant-owner:v1:" + "1".repeat(64),
-          })),
+      };
+      const sandboxSpec: { restart_policy?: string | number; providers: string[] } = {
+        ...(harnessId === "openclaw" && { restart_policy: "SANDBOX_RESTART_POLICY_NEVER" }),
+        providers: [
+          expected.provider.name,
+          "oce-runtime-" + createHash("sha256").update(revision.id).digest("hex").slice(0, 16),
+        ],
+      };
+      const materialEpoch: { provider_env_revision?: string } = { provider_env_revision: "10" };
+      const admission = {
+        ...materialEpoch,
+        instance_id: "configuration-instance",
+        state: 2,
+        policy_version: 1,
+        policy_hash: "a".repeat(64),
+        config_revision: "7",
+      };
+      const sandboxStatus = {
+        configuration_activated: true,
+        configuration_admission: admission,
+        main_process_instance_id: "process-instance",
+      };
+      const rule = "_provider_" + expected.provider.name.replaceAll("-", "_");
+      const networkPolicies = prepared.configuration.network_policies;
+      assert.ok(networkPolicies && typeof networkPolicies === "object");
+      const policy: Record<string, unknown> = {
+        ...structuredClone(prepared.configuration),
+        network_policies: {
+          ...networkPolicies,
+          [rule]: {
+            name: rule,
+            binaries: expected.provider.profile.binaries.map((path) => ({ path })),
+            endpoints: expected.provider.profile.endpoints.map((endpoint) => ({
+              ...openShellProfileEndpoint(endpoint),
+              provider_credentialed: true,
+              token_grant_owner: "grant-owner:v1:" + "1".repeat(64),
+            })),
+          },
         },
-      },
-    };
-    const config = {
-      ...materialEpoch,
-      workspace,
-      version: 1,
-      policy_hash: admission.policy_hash,
-      config_revision: "7",
-      configuration_instance_id: admission.instance_id,
-      configuration_admitted: true,
-      provider_attachment_epoch: "original-attachment",
-      policy_source: 1,
-      policy_validation_failure_mode: "fail_closed",
-      extension_authentication_enabled: true,
-      supervisor_middleware_services: [
-        {
-          name: "oce-authority",
-          audience: "oce-authority",
-          grpc_endpoint: "https://authority.example.test:9444",
-          binding_policy: 2,
-          bindings: [1],
-        },
-      ],
-      policy,
-    };
-    Object.assign(f.observed, {
-      sandbox: sandboxObservation,
-      sandboxSpec,
-      sandboxStatus,
-      policy: prepared.configuration,
-      policyHash: admission.policy_hash,
-      config,
-    });
-    // Contradictory or absent initial versions must never become the saved witness.
-    admission.policy_version = 2;
-    assert.equal(await f.credentialProxy.wiringStatus(context, prepared), undefined);
-    Reflect.deleteProperty(admission, "policy_version");
-    assert.equal(await f.credentialProxy.wiringStatus(context, prepared), undefined);
-    admission.policy_version = 1;
-    const installation = await f.credentialProxy.wiringStatus(context, prepared);
-    assert.ok(installation, "the Driver must first qualify the observed installation");
-    const requestCredentials = f.credentialProxy.requestTimeCredentials;
-    assert.ok(requestCredentials);
-    const verify = () =>
-      requestCredentials.verifyRequestInstallation(context, installation, {
-        id: installation.sandboxId,
-        context: workspace,
+      };
+      const config = {
+        ...materialEpoch,
+        workspace,
+        version: 1,
+        policy_hash: admission.policy_hash,
+        config_revision: "7",
+        configuration_instance_id: admission.instance_id,
+        configuration_admitted: true,
+        provider_attachment_epoch: "original-attachment",
+        policy_source: 1,
+        policy_validation_failure_mode: "fail_closed",
+        extension_authentication_enabled: true,
+        supervisor_middleware_services: [
+          {
+            name: "oce-authority",
+            audience: "oce-authority",
+            grpc_endpoint: "https://authority.example.test:9444",
+            binding_policy: 2,
+            bindings: [1],
+          },
+        ],
+        policy,
+      };
+      Object.assign(f.observed, {
+        sandbox: sandboxObservation,
+        sandboxSpec,
+        sandboxStatus,
+        policy: prepared.configuration,
+        policyHash: admission.policy_hash,
+        config,
       });
-    assert.equal(await verify(), true);
-    // Protobuf maps have no stable wire order. Repeated real-client decodes must
-    // preserve the installation when only the order of the provider labels changes.
-    const provider = f.providers.get(expected.provider.name);
-    provider.metadata.labels = Object.fromEntries(
-      Object.entries(provider.metadata.labels).reverse(),
-    );
-    assert.equal(await verify(), true, "label order does not change the model recipient");
-    provider.metadata.labels["openclaw.dev/agent-id"] = "another-agent";
-    assert.equal(await verify(), false, "a different label value still invalidates ownership");
-    provider.metadata.labels["openclaw.dev/agent-id"] = revision.agentId;
-    // A provider material refresh advances both observations without replacing the
-    // process, admitted policy or model profile. Its old epoch is not a policy fence.
-    admission.provider_env_revision = "11";
-    config.provider_env_revision = "11";
-    assert.equal(
-      await verify(),
-      true,
-      "a completed material refresh preserves model authorization",
-    );
+      // Contradictory or absent initial versions must never become the saved witness.
+      admission.policy_version = 2;
+      assert.equal(await f.credentialProxy.wiringStatus(context, prepared), undefined);
+      Reflect.deleteProperty(admission, "policy_version");
+      assert.equal(await f.credentialProxy.wiringStatus(context, prepared), undefined);
+      admission.policy_version = 1;
+      const installation = await f.credentialProxy.wiringStatus(context, prepared);
+      assert.ok(installation, "the Driver must first qualify the observed installation");
+      const requestCredentials = f.credentialProxy.requestTimeCredentials;
+      assert.ok(requestCredentials);
+      const verify = () =>
+        requestCredentials.verifyRequestInstallation(context, installation, {
+          id: installation.sandboxId,
+          context: workspace,
+        });
+      assert.equal(await verify(), true);
+      if (harnessId === "openclaw") {
+        sandboxSpec.restart_policy = 1;
+        assert.equal(await verify(), true);
+        delete sandboxSpec.restart_policy;
+        assert.equal(
+          await verify(),
+          false,
+          "native enrollment requires an explicit restart policy",
+        );
+        sandboxSpec.restart_policy = "SANDBOX_RESTART_POLICY_ALWAYS";
+        assert.equal(await verify(), false, "native process replacement requires fresh enrollment");
+        sandboxSpec.restart_policy = "SANDBOX_RESTART_POLICY_NEVER";
+      }
+      // Protobuf maps have no stable wire order. Repeated real-client decodes must
+      // preserve the installation when only the order of the provider labels changes.
+      const provider = f.providers.get(expected.provider.name);
+      provider.metadata.labels = Object.fromEntries(
+        Object.entries(provider.metadata.labels).reverse(),
+      );
+      assert.equal(await verify(), true, "label order does not change the model recipient");
+      provider.metadata.labels["openclaw.dev/agent-id"] = "another-agent";
+      assert.equal(await verify(), false, "a different label value still invalidates ownership");
+      provider.metadata.labels["openclaw.dev/agent-id"] = revision.agentId;
+      // A provider material refresh advances both observations without replacing the
+      // process, admitted policy or model profile. Its old epoch is not a policy fence.
+      admission.provider_env_revision = "11";
+      config.provider_env_revision = "11";
+      assert.equal(
+        await verify(),
+        true,
+        "a completed material refresh preserves model authorization",
+      );
 
-    // The stock uint64 fingerprint has no reserved zero. Proto3 omits that scalar,
-    // so two canonical zero observations remain a valid acknowledged epoch.
-    delete admission.provider_env_revision;
-    delete config.provider_env_revision;
-    assert.equal(await verify(), true, "canonical proto3 zero remains a valid material epoch");
-    admission.provider_env_revision = "11";
-    config.provider_env_revision = "12";
-    assert.equal(await verify(), false, "an unacknowledged material epoch still fails closed");
-    config.provider_env_revision = "11";
-    config.provider_attachment_epoch = "replacement-attachment";
-    assert.equal(await verify(), false);
-    config.provider_attachment_epoch = "original-attachment";
-    sandboxStatus.main_process_instance_id = "replacement-process";
-    assert.equal(await verify(), false);
-    sandboxStatus.main_process_instance_id = "process-instance";
-    admission.instance_id = config.configuration_instance_id = "replacement-configuration";
-    assert.equal(await verify(), false);
-    admission.instance_id = config.configuration_instance_id = "configuration-instance";
-    admission.policy_hash = config.policy_hash = "b".repeat(64);
-    assert.equal(await verify(), false);
-    admission.policy_hash = config.policy_hash = "a".repeat(64);
-    config.policy.filesystem = { read_write: ["/"] };
-    assert.equal(await verify(), false, "effective policy content remains fenced");
-    delete config.policy.filesystem;
-    const profile = f.profiles.get(expected.provider.profile.id);
-    profile.credentials[0].token_grant.audience = "different-binding";
-    await assert.rejects(verify, /zero-cache model token grant/);
-  },
-);
+      // The stock uint64 fingerprint has no reserved zero. Proto3 omits that scalar,
+      // so two canonical zero observations remain a valid acknowledged epoch.
+      delete admission.provider_env_revision;
+      delete config.provider_env_revision;
+      assert.equal(await verify(), true, "canonical proto3 zero remains a valid material epoch");
+      admission.provider_env_revision = "11";
+      config.provider_env_revision = "12";
+      assert.equal(await verify(), false, "an unacknowledged material epoch still fails closed");
+      config.provider_env_revision = "11";
+      config.provider_attachment_epoch = "replacement-attachment";
+      assert.equal(await verify(), false);
+      config.provider_attachment_epoch = "original-attachment";
+      sandboxStatus.main_process_instance_id = "replacement-process";
+      assert.equal(await verify(), false);
+      sandboxStatus.main_process_instance_id = "process-instance";
+      admission.instance_id = config.configuration_instance_id = "replacement-configuration";
+      assert.equal(await verify(), false);
+      admission.instance_id = config.configuration_instance_id = "configuration-instance";
+      admission.policy_hash = config.policy_hash = "b".repeat(64);
+      assert.equal(await verify(), false);
+      admission.policy_hash = config.policy_hash = "a".repeat(64);
+      config.policy.filesystem = { read_write: ["/"] };
+      assert.equal(await verify(), false, "effective policy content remains fenced");
+      delete config.policy.filesystem;
+      const profile = f.profiles.get(expected.provider.profile.id);
+      profile.credentials[0].token_grant.audience = "different-binding";
+      await assert.rejects(verify, /zero-cache model token grant/);
+    },
+  );
+}

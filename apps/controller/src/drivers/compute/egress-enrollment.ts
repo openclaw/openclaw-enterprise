@@ -1,4 +1,5 @@
-import { createPublicKey, sign, type KeyObject } from "node:crypto";
+import { createPublicKey, sign, verify, type KeyObject } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   repositoryGitDeliveryProfile,
   validRepositoryGitRecipient,
@@ -10,7 +11,21 @@ import type {
   EgressRef,
 } from "@openclaw-enterprise/contracts";
 
-export { HARNESS_EGRESS_ENROLLMENT_PATH } from "./harness-egress-enrollment.ts";
+export {
+  HARNESS_EGRESS_ENROLLMENT_PATH,
+  NATIVE_MODEL_ENROLLMENT_ENV,
+  NATIVE_MODEL_ORIGIN_ENV,
+} from "./harness-egress-enrollment.ts";
+
+/** Enrollment must stop before Compute observes or accepts a workspace node. */
+export class NativeEnrollmentPending extends Error {
+  readonly runtimeFailure: unknown;
+
+  constructor(runtimeFailure?: unknown) {
+    super("The native worker has not presented its signed startup receipt.");
+    this.runtimeFailure = runtimeFailure;
+  }
+}
 
 export interface HarnessEgressEnrollment {
   readonly authorization?: ProxyPlan["authorization"];
@@ -105,4 +120,47 @@ export function signComputeExecutionRelease(
     expiresAt,
     signature: sign(null, Buffer.from(transcript), privateKey).toString("base64url"),
   };
+}
+
+/** A native launcher retains the exact signed POST it accepted for this process during startup. */
+export function verifyNativeReleaseReceipt(
+  value: Readonly<Record<string, unknown>>,
+  installed: EgressInstallation,
+  publicKey: string,
+): boolean {
+  const { challenge, installation, expiresAt, signature } = value;
+  if (
+    typeof challenge !== "object" ||
+    !challenge ||
+    !("startupId" in challenge) ||
+    typeof challenge.startupId !== "string" ||
+    !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+      challenge.startupId,
+    ) ||
+    !Number.isSafeInteger(expiresAt) ||
+    typeof signature !== "string" ||
+    !/^[A-Za-z0-9_-]{86}$/.test(signature)
+  ) {
+    return false;
+  }
+  const expectedChallenge = {
+    profile: COMPUTE_RELEASE_PROFILE,
+    ...harnessEgressEnrollment(installed.plan),
+    startupId: challenge.startupId,
+  };
+  const expectedInstallation = {
+    sandboxId: installed.sandboxId,
+    instanceId: installed.enforcement.instanceId,
+    configurationId: installed.enforcement.configurationId,
+  };
+  return (
+    isDeepStrictEqual(challenge, expectedChallenge) &&
+    isDeepStrictEqual(installation, expectedInstallation) &&
+    verify(
+      null,
+      Buffer.from(JSON.stringify([expectedChallenge, expectedInstallation, expiresAt])),
+      createPublicKey({ key: Buffer.from(publicKey, "base64url"), format: "der", type: "spki" }),
+      Buffer.from(signature, "base64url"),
+    )
+  );
 }

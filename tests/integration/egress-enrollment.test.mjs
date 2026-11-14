@@ -338,7 +338,7 @@ test(
       }),
       {
         code: "SANDBOX_HARNESS_UNSUPPORTED",
-        message: "Protected inference startup enrollment requires the dedicated Codex Harness.",
+        message: "The selected Harness does not support this protected inference plan.",
       },
     );
     // Consume the same independently verified adapter observation that Compute

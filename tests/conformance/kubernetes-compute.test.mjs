@@ -1,3 +1,4 @@
+import { exerciseProtectedNativeWorkerStartup } from "../fixtures/native-protected-worker-startup.mjs";
 import { workspaceSetupFixture } from "../helpers/kubernetes-workspace-setup.ts";
 import {
   openShellPolicyOptions,
@@ -1086,6 +1087,7 @@ function dedicatedFirstDeployFixture({
   modelProtocol = "openai-responses",
   standaloneWebSearch,
   sandboxDriver,
+  protectedDriver,
   openShellGit,
   credentialGatewayDriver,
   context,
@@ -1140,6 +1142,7 @@ function dedicatedFirstDeployFixture({
     }),
     {
       sandboxDriver,
+      protectedDriver,
       ...(openShellGit === undefined ? {} : { openShellGit }),
       credentialGatewayDriver,
       nodeEnrollment: {
@@ -1901,6 +1904,444 @@ test("provider-owned Harness preparation waits to renew expired setup until its 
     });
   }
 });
+
+test(
+  "the native worker probes and connects only after its exact signed release",
+  { timeout: 15_000 },
+  exerciseProtectedNativeWorkerStartup,
+);
+
+test("native Compute resumes signed startup across preparation passes", (t) =>
+  exerciseNativeComputeEnrollment(t, "acknowledged"));
+
+test("native Compute observes the accepted release after bootstrap connections drop", (t) =>
+  exerciseNativeComputeEnrollment(t, "disconnected"));
+
+test("native Compute observes the accepted release after an incomplete HTTP reply", (t) =>
+  exerciseNativeComputeEnrollment(t, "incomplete"));
+
+async function exerciseNativeComputeEnrollment(t, releaseResponse) {
+  const dropConnections = releaseResponse === "disconnected";
+  const { InstalledDriver } = await import("../../packages/occ/src/index.ts");
+  const { createOpenAiRequestProvider } =
+    await import("../../apps/controller/src/drivers/egress-proxy/openai-provider.ts");
+  const { OpenShellSandboxDriver } =
+    await import("../../apps/controller/src/drivers/sandbox/openshell.ts");
+  const model = createOpenAiRequestProvider();
+  const revision = {
+    id: "ar_00000000-0000-4000-8000-000000000547",
+    namespaceId: tenant.id,
+    agentId: "agent-routed",
+    servicePrincipalId: "service-principal-routed",
+    createdAt: tenant.createdAt,
+    harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+    configuration: createHarnessConfiguration("openclaw", "gpt-5"),
+    executionAdmission: { version: 8, mode: "protected" },
+    plugins: undefined,
+  };
+  const execution = {
+    installationId: "ins_00000000-0000-4000-8000-000000000001",
+    namespaceId: tenant.id,
+    agentId: revision.agentId,
+    servicePrincipalId: revision.servicePrincipalId,
+    revisionId: revision.id,
+    executionId: "00000000-0000-4000-8000-000000000547",
+  };
+  const key = {
+    installationId: execution.installationId,
+    namespaceId: tenant.id,
+    source: { id: "cs_00000000-0000-4000-8000-000000000547", generation: 1 },
+    backend: { id: "static-input", generation: 1 },
+    provider: model.ref,
+  };
+  const source = {
+    id: key.source.id,
+    namespaceId: tenant.id,
+    ownerCapability: "credential_gateway",
+    driverId: "credential-gateway",
+    type: "openai",
+    config: model.normalizeConfig({}),
+    name: "model",
+    state: "ready",
+    secrets: {},
+    createdAt: tenant.createdAt,
+    egress: {
+      key,
+      schemaVersion: 1,
+      adoption: "live",
+      retention: "none",
+      materialRefId: "material-model",
+      secret: {
+        kind: "secret",
+        id: "sec_00000000-0000-4000-8000-000000000550",
+        namespaceId: tenant.id,
+      },
+      secretDriver: { id: "secrets", generation: 1 },
+      sender: { id: "supervisor", generation: 1 },
+      resolver: { id: "resolver", generation: 1 },
+    },
+  };
+  revision.harnessAuth = {
+    method: "credential_source",
+    sourceId: source.id,
+    sourceType: source.type,
+    credentialGatewayId: source.driverId,
+    loginMode: "api_key",
+  };
+  revision.credentialSources = [
+    { sourceId: source.id, sourceType: source.type, credentialGatewayId: source.driverId },
+  ];
+  const grant = model.normalizeGrant(["gpt-5"]);
+  const plan = {
+    authorization: "online-request",
+    id: "00000000-0000-4000-8000-000000000548",
+    generation: 1,
+    execution,
+    sandboxDriverId: "native-sandbox",
+    egressDriverId: "native-sandbox",
+    routes: model.routes(
+      source,
+      {
+        binding: { id: "00000000-0000-4000-8000-000000000549", generation: 1 },
+        execution,
+        source: key,
+        grant,
+        grantHash: digest(JSON.stringify(grant)),
+        isolationId: revision.agentId,
+      },
+      {
+        modelProvider: {
+          protocol: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+          supportsStandaloneWebSearch: false,
+        },
+      },
+    ),
+  };
+  revision.egressPlan = plan;
+  revision.sandboxDriverId = plan.sandboxDriverId;
+  const { harnessEgressEnrollment, COMPUTE_RELEASE_PROFILE } =
+    await import("../../apps/controller/src/drivers/compute/egress-enrollment.ts");
+  const startupId = "00000000-0000-4000-8000-000000000001";
+  const challenge = {
+    profile: COMPUTE_RELEASE_PROFILE,
+    ...harnessEgressEnrollment(plan),
+    startupId,
+  };
+  const installed = {
+    plan,
+    sandboxId: "original",
+    sender: source.egress.sender,
+    installedAt: revision.createdAt,
+    enforcement: {
+      authorityScope: "execution",
+      instanceId: "process",
+      configurationId: "configuration",
+      policyHash: "a".repeat(64),
+    },
+  };
+  const withdrawals = [];
+  let replaceDuringStatus = false;
+  let liveConfiguration = installed.enforcement.configurationId;
+  let recorded;
+  let receipt;
+  let liveProcess = installed.enforcement.instanceId;
+  let status = 502;
+  let statusReads = 0;
+  let held;
+  let provisions;
+  let posts = 0;
+  const { createServer } = await import("node:http");
+  const { getServiceDocument, postServiceDocument } =
+    await import("../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts");
+  const { HARNESS_EGRESS_ENROLLMENT_PATH } =
+    await import("../../apps/controller/src/drivers/compute/egress-enrollment.ts");
+  let refuseRelease;
+  let dropPath;
+  const exchanges = [];
+  const server = createServer(async (request, response) => {
+    assert.equal(request.headers.authorization, "Bearer test-transport");
+    const answer = (code, json) => {
+      response.writeHead(code, { "content-type": "application/json" });
+      response.end(JSON.stringify(json));
+    };
+    if (request.url === "/openclaw/runtime/status") {
+      statusReads++;
+    } else {
+      assert.equal(request.url, HARNESS_EGRESS_ENROLLMENT_PATH);
+    }
+    if (request.method === "POST" && refuseRelease) {
+      request.resume();
+      refuseRelease(response);
+      return;
+    }
+    if (request.method === "POST") {
+      posts++;
+      const chunks = [];
+      for await (const chunk of request) {
+        chunks.push(chunk);
+      }
+      receipt = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      exchanges.push("applied release");
+      if (releaseResponse === "incomplete") {
+        response.writeHead(200, { "content-type": "application/json", "content-length": 120 });
+        response.end('{"enrolled":');
+        return;
+      }
+      if (dropConnections) {
+        request.socket.destroy();
+        return;
+      }
+      answer(200, { enrolled: true, startupId });
+    } else if (dropPath === request.url) {
+      request.socket.destroy();
+    } else if (request.url === "/openclaw/runtime/status") {
+      answer(200, { runtimeFailure: held });
+    } else {
+      exchanges.push(receipt ? "read receipt" : "read challenge");
+      answer(status, receipt ? { acceptedRelease: receipt } : challenge);
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const transport = {
+    endpoint: `http://127.0.0.1:${server.address().port}`,
+    requestTimeoutMs: 2000,
+  };
+  const client = {
+    getSandbox: async () => ({
+      id: installed.sandboxId,
+      mainProcessInstanceId: liveProcess,
+    }),
+    getServiceDocument: (...args) => getServiceDocument(transport, ...args),
+    postServiceDocument: (...args) => postServiceDocument(transport, ...args),
+  };
+  const sandboxDriver = {
+    ...nativeSandboxIdentity(),
+    id: plan.sandboxDriverId,
+    async workspaceNodePeerLabels() {
+      return provisions && supervisorPeerLabels(revision.id);
+    },
+    async provisionHarness(ctx) {
+      provisions = ctx;
+      return { ...nativeHarnessResource(ctx), proxyWiring: ctx.requirements.proxyWiring };
+    },
+    async harnessEndpoint() {
+      assert.fail();
+    },
+    async withdrawHarnessExposure(context) {
+      withdrawals.push(context);
+    },
+    async harnessStatus() {
+      if (replaceDuringStatus) {
+        liveConfiguration = "replacement";
+      }
+      return held ? { state: "failed", runtimeFailure: held } : { state: "starting" };
+    },
+    cleanup: assert.fail,
+    enrollHarness: OpenShellSandboxDriver.prototype.enrollHarness,
+    sandboxRef: () => ({ resourceName: "original" }),
+    exactHarnessService: async () => ({ client, service: { url: "http://synthetic.invalid" } }),
+  };
+  const proxy = {
+    id: plan.egressDriverId,
+    implementation: "openshell",
+    capability: "credential_proxy",
+    sourceControl: {
+      sender: source.egress.sender,
+      resolver: source.egress.resolver,
+      providers: [model],
+      assertAvailable: assert.fail,
+    },
+    withdrawBinding: assert.fail,
+    removeRevision: assert.fail,
+    configureRevision: async () => ({ plan, configuration: {} }),
+    wiringStatus: async () => installed,
+    verifyInstallation: async (_context, observed) =>
+      observed.enforcement.configurationId === liveConfiguration,
+  };
+  const owner = new InstalledDriver(
+    { id: sandboxDriver.id, implementation: sandboxDriver.implementation, configuration: {} },
+    { capabilities: { sandbox: sandboxDriver, credential_proxy: proxy } },
+    { sandbox: sandboxDriver.id, credential_proxy: proxy.id },
+  );
+  plan.driver = owner.ref;
+  const scenario = dedicatedFirstDeployFixture({
+    namespace: kubernetesNamespaceName(revision.namespaceId),
+    modelEndpoint: plan.routes[0].origin + "/v1",
+    sandboxDriver,
+    protectedDriver: owner,
+    credentialGatewayDriver: {
+      id: source.driverId,
+      capability: "credential_gateway",
+      listSourceTypes: async () => [model.sourceType],
+    },
+    context: {
+      harnessAuth: { ...revision.harnessAuth, source },
+      credentialSources: [source],
+      currentEgressInstallation: async () => recorded,
+      recordEgressInstallation: async (value) => {
+        if (recorded) {
+          assert.deepEqual(recorded, value);
+        }
+        recorded = value;
+      },
+    },
+    revision: {
+      ...revision,
+      compute: { id: "compute-kubernetes-local", implementation: "kubernetes-local" },
+    },
+  });
+  const { prepare, markReady, gatewayName, state, namespace } = scenario;
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+  await t.test("a starting listener waits without spending a worker attempt", async () => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const waiting = await prepare();
+      assert.equal(waiting.ready, false);
+      assert.equal(waiting.runtimeFailure, undefined);
+    }
+  });
+  assert.ok(recorded);
+  state.providerPod = readyNativeHarnessPod(namespace, provisions.requirements.labels);
+  state.connected = true;
+  const nodeName = scenario.driver.workspaceNodeName(revision);
+  const assertNoNodeAccepted = () => {
+    assert.equal(scenario.read("Secret", nodeName).data.deviceId, undefined);
+    assert.equal(posts, 0);
+  };
+  if (dropConnections) {
+    for (const [code, path] of [
+      [200, HARNESS_EGRESS_ENROLLMENT_PATH],
+      [503, "/openclaw/runtime/status"],
+    ]) {
+      await t.test(`a dropped GET on ${path} leaves enrollment pending`, async () => {
+        status = code;
+        dropPath = path;
+        const waiting = await prepare();
+        assert.equal(waiting.ready, false);
+        assert.equal(waiting.runtimeFailure, undefined);
+        assertNoNodeAccepted();
+        assert.deepEqual(withdrawals, []);
+      });
+    }
+    dropPath = undefined;
+  }
+  await t.test("a pre-release hold returns only authenticated runtime evidence", async () => {
+    status = 503;
+    const failure = {
+      component: "agent",
+      check: "egress-enrollment",
+      code: "UNAVAILABLE",
+      checkedAt: revision.createdAt,
+    };
+    held = { ...failure, detail: "private diagnostic fixture" };
+    const waiting = await prepare();
+    assert.equal(waiting.ready, false);
+    assert.deepEqual(waiting.runtimeFailure, failure);
+    assert.equal(statusReads, dropConnections ? 2 : 1);
+    assertNoNodeAccepted();
+    held = undefined;
+    assert.equal((await prepare()).ready, false);
+    assertNoNodeAccepted();
+  });
+  held = undefined;
+  status = 404;
+  await assert.rejects(prepare(), /native model startup challenge is unavailable/);
+  assertNoNodeAccepted();
+  status = 200;
+  liveProcess = "replacement";
+  await assert.rejects(prepare(), /does not match this execution/);
+  assertNoNodeAccepted();
+  liveProcess = installed.enforcement.instanceId;
+  if (releaseResponse === "incomplete") {
+    const acknowledgment = JSON.stringify({ enrolled: true, startupId });
+    for (const [name, code, type, body, length = body.length] of [
+      ["stalled 401", 401, "application/json", "{", 120],
+      ["incomplete 403", 403, "application/json", "{", 120],
+      ["stale challenge", 409, "application/json", "{}"],
+      ["complete malformed JSON", 200, "application/json", "{"],
+      ["wrong content type", 200, "text/plain", acknowledgment],
+      ["oversized acknowledgment", 200, "application/json", acknowledgment.padEnd(20_000)],
+    ]) {
+      await t.test(`a release with ${name} fails enrollment`, async () => {
+        refuseRelease = (response) => {
+          response.writeHead(code, { "content-type": type, "content-length": length });
+          if (name === "stalled 401") {
+            response.write(body);
+          } else {
+            response.end(body);
+          }
+        };
+        const expected = code === 409 ? /requires a fresh challenge/ : /was not acknowledged/;
+        await assert.rejects(prepare(), expected);
+        assertNoNodeAccepted();
+        assert.deepEqual(withdrawals, []);
+      });
+    }
+    refuseRelease = undefined;
+  }
+  const originalStartupId = challenge.startupId;
+  challenge.startupId = "malformed";
+  await assert.rejects(prepare(), /challenge does not match the admitted execution/);
+  assertNoNodeAccepted();
+  challenge.startupId = originalStartupId;
+  exchanges.length = 0;
+  assert.equal((await prepare()).ready, false);
+  assert.equal(scenario.read("Secret", nodeName).data.deviceId, undefined);
+  assert.equal(posts, 1);
+  assert.deepEqual(exchanges, ["read challenge", "applied release"]);
+  assert.deepEqual(withdrawals, []);
+  state.connected = false;
+  assert.equal((await prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
+  assert.deepEqual(exchanges, ["read challenge", "applied release", "read receipt"]);
+  assert.deepEqual(withdrawals, []);
+
+  liveProcess = "replacement";
+  await assert.rejects(prepare(), /startup process does not match this execution/);
+  liveProcess = installed.enforcement.instanceId;
+  state.connected = true;
+  status = 404;
+  await assert.rejects(prepare(), /native model startup challenge is unavailable/);
+  assert.equal(scenario.read("Secret", nodeName).data.deviceId, undefined);
+  state.connected = false;
+  status = 200;
+  const acceptedReceipt = receipt;
+  for (const override of [
+    { installation: { ...receipt.installation, configurationId: "replaced" } },
+    { installation: { ...receipt.installation, sandboxId: "replaced" } },
+    { signature: "A".repeat(86) },
+  ]) {
+    receipt = { ...acceptedReceipt, ...override };
+    await assert.rejects(prepare(), /release receipt does not match this execution/);
+  }
+  receipt = acceptedReceipt;
+  state.providerPod = readyNativeHarnessPod(namespace, provisions.requirements.labels);
+  assert.equal((await prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
+  held = {
+    component: "agent",
+    check: "model-probe",
+    code: "AUTHENTICATION_FAILED",
+    checkedAt: revision.createdAt,
+  };
+  assert.deepEqual((await prepare()).runtimeFailure, held);
+  assert.deepEqual(withdrawals, []);
+  replaceDuringStatus = true;
+  await assert.rejects(prepare(), /requires the exact current committed installation/);
+  assert.deepEqual(withdrawals, []);
+  replaceDuringStatus = false;
+  liveConfiguration = installed.enforcement.configurationId;
+  held = undefined;
+  state.connected = true;
+  assert.equal((await prepare()).ready, false);
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+  assert.equal(withdrawals.length, 1);
+  assert.equal(withdrawals[0].revision.id, revision.id);
+  assert.equal(withdrawals[0].workspaceNodeEnrolled, true);
+  assert.equal((await prepare()).ready, true);
+  assert.equal(posts, 1);
+}
 
 test("native OpenClaw preparation and activation use only outbound Sandbox enrollment", async () => {
   const provisions = [];
@@ -11819,6 +12260,10 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     },
     secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } },
   };
+  const nativeRuntime = {
+    configuration: JSON.stringify(nativeInference),
+    entrypoint: NATIVE_WORKER_ENTRYPOINT,
+  };
   const deviceId = "a".repeat(64);
   const gatewayDeployment = driver.deployment(
     "gateway-native-worker",
@@ -11857,9 +12302,15 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     [],
     undefined,
     undefined,
-    { configuration: JSON.stringify(nativeInference) },
+    nativeRuntime,
   );
-  driver.addNativeWorker(workerDeployment, "workspace-node-native-worker", undefined, undefined);
+  driver.addNativeWorker(
+    workerDeployment,
+    "workspace-node-native-worker",
+    undefined,
+    undefined,
+    nativeRuntime.entrypoint,
+  );
   assertExecStringsWithinBudget([gatewayDeployment, workerDeployment]);
   const gateway = gatewayDeployment.spec.template.spec.containers[0];
   const worker = workerDeployment.spec.template.spec.containers[0];

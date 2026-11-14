@@ -744,7 +744,8 @@
       "expectedTests": [
         "signed model request middleware redeems once through TLS after startup release (PostgreSQL)",
         "model-only request admission uses the registered request profile without strict capabilities",
-        "model request installation survives a material epoch change but fences policy and recipient drift"
+        "codex model request installation survives a material epoch change but fences policy and recipient drift",
+        "openclaw model request installation survives a material epoch change but fences policy and recipient drift"
       ]
     },
     {

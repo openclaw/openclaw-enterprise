@@ -83,15 +83,17 @@ this support; they do not qualify stock OpenShell or any installed deployment.
 
 ### Online model requests
 
-Eligible static sources default to strict admission. Explicit `authorization: "online-request"`
-selects an offered provider; updates retain its ID and generation. Bundled
-`openai-online-request` generation 1 requires same-state native IAM and one dedicated
-Codex HTTPS Responses route, an explicit model and no provider-hosted tools.
+Static sources default to strict admission. With `authorization: "online-request"`,
+provider ID and generation persist across updates. `openai-online-request`
+generation 1 requires same-state native IAM, one dedicated HTTPS Responses
+route, one model and no provider-hosted tools.
 
-`ProxyPlan.authorization` records the profile. Version 8 admits the model route;
-version 9 adds independently authorized mandatory Git delivery. Strict admissions
-retain their guarantees. The optional `requestTimeCredentials` capability provides
-`assertAvailable` and `verifyRequestInstallation(context, installation, recipient)`.
+`ProxyPlan.authorization` records the profile. Version 8 admits the model route.
+Native OpenClaw requires signed enrollment and a current installation to report
+a held startup failure. Installed qualification is pending. Version 9 adds
+independently authorized mandatory Git delivery. Strict admission retains its
+guarantees. Optional `requestTimeCredentials` provides `assertAvailable` and
+`verifyRequestInstallation(context, installation, recipient)`.
 The API checks the recipient against the persisted opaque `requestConfigurationId`.
 OpenShell binds the full policy, model provider/profile and Sandbox/process identities.
 Only `provider_env_revision` is excluded from stored admission/configuration hashes;

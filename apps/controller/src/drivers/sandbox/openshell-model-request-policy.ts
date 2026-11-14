@@ -17,6 +17,30 @@ function unsupported(message: string): never {
   throw new SandboxRevisionUnsupportedError("SANDBOX_HARNESS_UNSUPPORTED", message);
 }
 
+export function isOpenShellRestartNever(policy: unknown): boolean {
+  return policy === 1 || policy === "SANDBOX_RESTART_POLICY_NEVER";
+}
+
+function nativeOpenShellModelRequest(revision: Readonly<AgentRevision>, plan: ProxyPlan): boolean {
+  const binding = plan.routes[0]?.binding;
+  return (
+    revision.harness.id === "openclaw" &&
+    revision.harness.mode === "dedicated" &&
+    revision.executionAdmission.version === 8 &&
+    revision.harnessAuth.method === "credential_source" &&
+    revision.harnessAuth.sourceType === "openai" &&
+    revision.harnessAuth.loginMode === "api_key" &&
+    binding?.source.source.id === revision.harnessAuth.sourceId &&
+    plan.authorization === "online-request" &&
+    plan.routes.length === 1 &&
+    binding?.grant.kind === "inference" &&
+    binding.grant.providerTools === "none" &&
+    binding.grant.models.length === 1 &&
+    plan.repositoryGit === undefined &&
+    plan.harnessCredentialSource === undefined
+  );
+}
+
 export function modelRequestProviderName(revisionId: string): string {
   return "oce-model-" + sha256Hex(revisionId, 32);
 }
@@ -34,7 +58,8 @@ export function openShellModelRequestPolicy(
   const route = plan.routes[0];
   if (
     !registration ||
-    revision?.harness.id !== "codex" ||
+    !revision ||
+    (revision.harness.id !== "codex" && !nativeOpenShellModelRequest(revision, plan)) ||
     revision.harness.mode !== "dedicated" ||
     revision.id !== plan.execution.revisionId ||
     revision.namespaceId !== plan.execution.namespaceId ||
@@ -42,9 +67,12 @@ export function openShellModelRequestPolicy(
     plan.routes.length !== 1 ||
     !route ||
     route.binding.grant.kind !== "inference" ||
+    route.method !== "POST" ||
     route.path !== "/v1/responses"
   ) {
-    unsupported("Online model authorization requires one dedicated Codex Responses binding.");
+    unsupported(
+      "Online model authorization requires one supported dedicated Harness Responses binding.",
+    );
   }
   const origin = new URL(route.origin);
   const host = origin.hostname;
@@ -112,7 +140,10 @@ export function openShellModelRequestPolicy(
         rules: [{ allow: { method: "POST", path: route.path } }],
       },
     ],
-    binaries: OPEN_SHELL_CODEX_BINARIES,
+    binaries:
+      revision.harness.id === "openclaw"
+        ? ["/opt/oce/bin/openclaw-model-sender"]
+        : OPEN_SHELL_CODEX_BINARIES,
     inferenceCapable: false,
   } satisfies Omit<OpenShellProviderProfile, "annotations">;
   return {
@@ -120,6 +151,7 @@ export function openShellModelRequestPolicy(
     provider: { name, profile },
     environment: { OPENAI_API_KEY: "oce:request-authorized:model" },
     host,
+    origin: route.origin,
     registration: { name: options.middlewareName, ...registration },
   };
 }
@@ -181,7 +213,7 @@ export function verifyModelRequestProfile(
 /** Inspect actual admission and provider-derived routes, not merely the desired profile. */
 export function verifyModelRequestPolicy(
   config: Readonly<Record<string, unknown>> | undefined,
-  expected: ModelRequestPolicy,
+  expected: Pick<ModelRequestPolicy, "host" | "middlewares" | "provider" | "registration">,
   workspace: string,
 ): void {
   const registrations = Array.isArray(config?.supervisor_middleware_services)
