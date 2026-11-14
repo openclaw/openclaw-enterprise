@@ -150,7 +150,37 @@ export function skipperOperationDiagnostic(value: unknown) {
   const gatewayChatPhase = skipperGatewayChatPhases.find(
     (phase) => phase === diagnostic.gatewayChatPhase,
   );
+  const { runtimeSignal, modelRequestObservation, gatewayTransportCause } = diagnostic;
+  const attributed = operation === "gateway-chat" && gatewayChatPhase !== undefined;
   return {
+    ...(attributed &&
+    typeof runtimeSignal === "string" &&
+    [
+      "thread-filesystem-sandbox-denied",
+      "thread-start",
+      "model-transport",
+      "no-known-signal",
+      "logs-unavailable",
+    ].includes(runtimeSignal)
+      ? { runtimeSignal }
+      : {}),
+    ...(operation === "gateway-exec" && modelRequestObservation === "observed"
+      ? { modelRequestObservation }
+      : {}),
+    ...(attributed &&
+    httpStatus === 0 &&
+    gatewayCategory === "transport" &&
+    typeof gatewayTransportCause === "string" &&
+    ["socket-closed", "connection-reset", "headers-timeout", "other"].includes(
+      gatewayTransportCause,
+    )
+      ? { gatewayTransportCause }
+      : {}),
+    ...(attributed &&
+    typeof modelRequestObservation === "string" &&
+    ["observed", "none-in-window", "unavailable"].includes(modelRequestObservation)
+      ? { modelRequestObservation }
+      : {}),
     kind: "skipper-operation",
     operation: operation as SkipperOperation,
     ...(operation === "gateway-chat" && gatewayChatPhase ? { gatewayChatPhase } : {}),
@@ -165,6 +195,7 @@ export function skipperOperationDiagnostic(value: unknown) {
       "unavailable",
       "unclassified",
       "transport",
+      "client-deadline",
       "response-body",
       "response-json",
     ].includes(gatewayCategory)

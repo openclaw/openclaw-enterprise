@@ -224,6 +224,7 @@ function installationApiOperation(
   const graph = path === "/graphql";
   const maximumBody = scope === "github-repository" && !graph ? 1024 * 1024 : 64 * 1024;
   const read = method === "GET" || method === "HEAD";
+  const apiRoot = path === "/" && read && query === "";
   if (
     head.contentEncoding !== "identity" ||
     // Dedicated credential issuance is not ordinary repository collaboration.
@@ -235,7 +236,8 @@ function installationApiOperation(
     headers["git-protocol"] !== undefined ||
     (graph
       ? method !== "POST" || query !== ""
-      : !/^\/(?:repos\/[\w-]+\/[\w.-]+(?:\/[\w.-]+)*|orgs\/[\w-]+(?:\/[\w.-]+)*|users\/[\w-]+(?:\/[\w.-]+)*|user(?:\/repos)?|installation\/repositories|search\/[\w-]+|rate_limit)$/.test(
+      : !apiRoot &&
+        !/^\/(?:repos\/[\w-]+\/[\w.-]+(?:\/[\w.-]+)*|orgs\/[\w-]+(?:\/[\w.-]+)*|users\/[\w-]+(?:\/[\w.-]+)*|user(?:\/repos)?|installation\/repositories|search\/[\w-]+|rate_limit)$/.test(
           path,
         )) ||
     path.split("/").some((s) => s === "." || s === "..") ||

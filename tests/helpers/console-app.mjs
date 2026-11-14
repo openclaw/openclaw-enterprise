@@ -34,7 +34,7 @@ import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mj
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
-import { reservePort } from "./available-port.mjs";
+import { reservePort } from "./available-port.ts";
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
 import { createConsoleFixtureTransport } from "./console-fixture-transport.ts";
 import { createFixtureResponse } from "./console-fixture-response.ts";
@@ -244,10 +244,10 @@ export async function startHttpsIngress({
   return {
     cert,
     async close() {
-      ingress.closeAllConnections();
-      await new Promise((resolve, reject) =>
-        ingress.close((error) => (error ? reject(error) : resolve())),
-      );
+      await new Promise((resolve, reject) => {
+        ingress.close((error) => (error ? reject(error) : resolve()));
+        ingress.closeAllConnections();
+      });
     },
   };
 }
@@ -276,7 +276,7 @@ export function fileConsoleApp(options = {}) {
  * Keep object-typed wrappers and keyed options extracted with Parameters compatible.
  * @param {import("./console-file-app.ts").CleanupRegistrar} t
  * @template {object | Record<string, unknown>} [Options=object]
- * @param {Options & {auditSink?: InMemoryAuditSink, https?: boolean, ingressTLS?: {key: Buffer, cert: Buffer}}} [options]
+ * @param {Options & {auditSink?: InMemoryAuditSink, durableRequestAuditSink?: InMemoryAuditSink, https?: boolean, ingressTLS?: {key: Buffer, cert: Buffer}}} [options]
  */
 export async function createConsoleAppFixture(t, options = {}) {
   const auditSink = options.auditSink ?? new InMemoryAuditSink();
@@ -447,6 +447,9 @@ export async function createConsoleAppFixture(t, options = {}) {
     auth,
     iamDriver,
     auditSink,
+    ...(options.durableRequestAuditSink === undefined
+      ? {}
+      : { durableRequestAuditSink: options.durableRequestAuditSink }),
     development: {
       enabled: true,
       installationId,

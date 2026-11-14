@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-11-11
-last_updated_session: authoring-run/6c64aee6-cdeb-442f-b8bf-936f62eb5bc5
+updated: 2026-11-12
+last_updated_session: authoring-run/5c61b5ae-c933-43cd-8aef-ad925fada92c
 ---
 
 # Agent Native Admin UI Flow
@@ -12,7 +12,7 @@ OCC authorizes exact-Agent browser access through the OCE session or a host-only
 
 ## Entry Points
 
-- Trigger: Console opts into native admin during Agent creation, opens an Agent native admin URL, or `scripts/first-agent.mjs --control-ui` creates a compatible local Compose/OpenShell Agent.
+- Trigger: Console opts into native admin during Agent creation, opens an Agent native admin URL, or `scripts/first-agent.mjs --control-ui` creates a compatible Agent in Local Setup with OpenShell.
 - Source: `scripts/first-agent.ts:nativeConfiguration`
 - Source: `apps/controller/src/console/agents/native-admin.mts:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
@@ -101,12 +101,11 @@ reuse its fingerprinted plan and identity. The worker creates and deploys.
 `scripts/first-agent.ts:nativeConfiguration`
 `scripts/first-agent.ts:ensureManagedConfiguration`
 
-With launcher-owned Compose/OpenShell browser state, the helper saves disabled
-Configuration generation 1, creates the Agent, then derives its origin. Before
-deployment, generation 2 enables `controlUi`, pins origins, and grants
-`occ-workspace-files` trusted-proxy `operator.admin` with device auto-approval.
-Identity grants supply admin independently of device scopes.
-An existing helper-owned name cannot change this selection.
+Using Local Setup browser state, the helper saves disabled Configuration generation 1,
+creates the Agent, and derives its origin. Generation 2 enables `controlUi`, pins
+origins, requires `x-openclaw-scopes`, and grants `occ-workspace-files` trusted-proxy
+`operator.admin` with device auto-approval before deployment. Identity grants supply
+admin independently of device scopes. Existing helper-owned names keep this selection.
 
 ### 1. Console renders native admin availability
 
@@ -161,7 +160,7 @@ Compute `id` and `implementation` must match `revision.compute`; changing select
 
 Overlong suffixes refuse native targets after authorization; opt-in fails before persistence.
 
-`deriveNativeAdminHost` hashes scoped Agent identity under the configured domain. `nativeAdminTarget` returns `/`. Unknown, deleted or ambiguous hosts fail closed.
+`deriveNativeAdminHost` hashes scoped Agent identity under the configured domain. `nativeAdminTarget` returns `/`.
 
 `nativeAdminGatewayHttpBase` converts `wss:` to `https:`, preserving authority and Agent path, rejecting userinfo, query or hash. Workspace-file WSS is unchanged.
 
@@ -201,10 +200,20 @@ account or grant. See [session limits](../reference/agent-native-admin.md#host-o
 ### 6. OCC intercepts native-host HTTP requests
 
 `apps/controller/src/http/native-admin.ts:interceptNativeAdminHttp`
+`apps/controller/src/http/native-admin.ts:resolveNativeAdminAgentHost`
 
-The `onRequest` hook prevents Agent origins from exposing controller routes.
-It authenticates the session or handle, resolves the Agent and IAM identity,
-selects `admin` or `chat`, and checks version and configuration.
+The `onRequest` hook keeps ordinary controller routes off subdomains of the
+configured Agent domain, except the Console host. This also applies when native
+access is disabled and the domain is retained.
+
+For proxy admission, OCC authenticates the session or handle and resolves the IAM
+identity. Before Agent-reference lookup, OCC requires a normalized hostname of
+`agent-` followed by exactly 32 lowercase hexadecimal characters, a dot, and the
+exact configured domain. Malformed hostnames fail before lookup or proxying.
+For well-formed keys, the same resolver scans Installation Agent references and
+refuses unknown, deleted or ambiguous hosts. OCC selects `admin` or `chat` and
+checks version and configuration.
+
 Attributable IAM denials get one audit attempt, even after the five-second
 admission wait, disconnect or shutdown. Timely denials await that append before
 returning `403`. Classified dependency failures, append failures and admission
@@ -236,22 +245,44 @@ both sockets.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 
-The HTTP proxy normalizes URLs (maximum 4,096 characters), requires exact `Origin` except for GET/HEAD, and strips cookies, service keys, forwarding/identity/scope headers and upstream `Set-Cookie`. It blocks service-worker scripts, rewrites same-upstream redirects to the Agent origin, adds CSP `worker-src 'none'`, and forwards to private HTTPS. Avatar `502`s become empty `404`s, preserving the initials fallback. Both modes use `occ-workspace-files`; chat overwrites `x-openclaw-scopes` with `operator.sessions.write`. Runtime authority intersects that ceiling with identity/device grants; client headers cannot widen it.
+The HTTP proxy normalizes URLs up to 4,096 characters, checks exact Agent
+`Origin` (optional for GET/HEAD), and strips cookies, service keys and forwarding,
+identity, and scope headers. Over private HTTPS it preserves surviving
+`Content-Length`; otherwise, it uses chunked framing only when inbound headers
+specify framing.
+
+Both modes use `occ-workspace-files`. Chat sets
+`x-openclaw-scopes: operator.sessions.write`, capping runtime authority alongside
+identity and device grants.
+
+The proxy blocks service-worker scripts, adds CSP `worker-src 'none'`, rewrites
+same-upstream redirects to the Agent origin, and strips upstream `Set-Cookie`
+and `Clear-Site-Data`.
+
+An upstream transfer failure stops the request. Before sending response headers,
+the proxy returns `503`; afterwards it aborts the response. An avatar `502`
+becomes an empty `404` for the initials fallback, and the proxy cancels its
+upstream body.
 
 ### 7. OCC proxies native WebSocket upgrades
 
 `apps/controller/src/http/native-admin.ts:handleNativeAdminUpgrade`
 
-Before Fastify routing, the API intercepts derived-host upgrades and tracks sockets for `preClose`. It handles socket errors before awaiting admission, preventing uncaught errors on TCP reset. Refused sockets close without waiting for denial audits, which still run after reset. Admission checks client destruction and shutdown before and after transport resolution; late success cannot connect. Accepted clients use the selected version.
+Before Fastify routing, the API intercepts derived-host upgrades and tracks sockets for `preClose`. Socket error handling covers admission-time resets. Refusals close before denial audits settle; those audits survive resets. Admission checks destruction and shutdown before and after transport resolution; late success cannot connect.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminWebSocket`
 
-The WebSocket proxy requires non-null exact Agent `Origin`, sanitizes the private HTTPS upgrade, and connects only after upstream `101`. `onConnect` and `onClose` append `openclaw.agents.native_admin.websocket.connect` and `.close` with the same `connectionId`. Close records include `closeReason` for lifecycle, revocation, dependency, client, upstream or shutdown. A timer rechecks admission every 25 seconds with a five-second timeout. Failed, denied, timed-out, session-changed, mode-changed, or version-changed lease checks close both sockets. Denial closure does not wait for the append; a late attributable lease denial still gets its single audit attempt. An authorized reconnect uses the selected version. Native chat does not renew the OCE session. Cookie replacement cannot transfer an existing socket to another session; reconnect authenticates the current cookie.
+The proxy requires non-null exact Agent `Origin`, sanitizes the private HTTPS upgrade, and connects after upstream `101`. `onConnect` and `onClose` append `openclaw.agents.native_admin.websocket.connect` and `.close` with the same `connectionId`. `closeReason` records lifecycle, revocation, dependency, client, upstream or shutdown. Admission renews every 25 seconds with a five-second timeout. Failed, denied, timed-out, session-changed, mode-changed, or version-changed lease checks close both sockets. Denial closure does not wait for the append; a late attributable lease denial still gets its single audit attempt. Reconnects authenticate the current cookie and use the selected version. Cookie replacement cannot transfer a socket to another session. Native chat does not renew the OCE session.
 
-Bridge requests, admission and close audits share one five-second shutdown drain. Bridge handlers stop before subsequent phases or secret delivery after shutdown or client disconnect. Work still pending
-afterwards logs `native_admin.pending_work_unresolved` with its count and keeps its
-audit attempt while the process lives. The drain neither cancels producers nor
-guarantees durable delivery; process exit can prevent or interrupt an audit attempt.
+`apps/controller/src/http/native-admin.ts:drainNativeAdminWork`
+
+Bridge requests, admission, connect and close audits share one five-second shutdown
+drain. `preClose` destroys sockets and drains batches, including follow-on close
+audits, under one deadline. Composition then closes storage in `onClose`. Bridge handlers stop before
+subsequent phases or secret delivery after shutdown or disconnect. Unsettled work
+logs `native_admin.pending_work_unresolved` with its count and retains its audit
+attempt while the process lives. The drain neither cancels producers nor guarantees
+durable delivery; process exit can interrupt attempts.
 
 ### 8. Runtime renders HTML on a separate origin
 
@@ -307,6 +338,18 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 11:33: Document connect and follow-on close audit draining in the accompanying fix. (authoring-run/5c61b5ae-c933-43cd-8aef-ad925fada92c - 2e2f7efbb0c1d430bc30a0185fc21ae1ffbdf581)
+
+- 2026-11-12 00:02: Shorten relay trace. (authoring-run/bae4d18e-05ed-457e-9c6a-96ef2b959619 - cbca5166c168531ada145c95da19ef04c7a34488)
+
+- 2026-11-11 23:34: Clarify request framing. (authoring-run/2dccf6f5-0340-47b6-88a4-eb047f929fff - a8ccd21095bf8f651c8dbc270e069808251fd0db)
+
+- 2026-11-11 23:20: Document native admin HTTP relay handling. (authoring-run/30741f75-946a-4c47-952b-1afd8ff10888 - a8ccd21095bf8f651c8dbc270e069808251fd0db)
+
+- 2026-11-11 21:13: Describe hostname validation before Agent-reference lookup. (authoring-run/c70a6869-705d-495a-85dd-f0c603db8196 - dfbdd7bfa6ccfba7d3d2e6b28f2770988c0cfc0d)
+
+- 2026-11-11 20:31: Persist the first-Agent native UI scope-header requirement. (authoring-run/4eb36434-af9e-40b8-8958-e8a2f9f2b662 - be754f513bcfdee8c898c33df1fe37bff4581261)
 
 - 2026-11-11 18:51: Integrate admission classification; retain canonical domain refusal. (authoring-run/6c64aee6-cdeb-442f-b8bf-936f62eb5bc5 - d7f1a5a6196545a406f46a616278c123ab970095)
 

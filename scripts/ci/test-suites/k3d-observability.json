@@ -23,13 +23,13 @@
   },
   "files": [
     {
-      "path": "tests/integration/production-separate-migration-k3d.test.mjs",
+      "path": "tests/integration/production-separate-migration-k3d.test.ts",
       "expectedTests": [
         "separate migration Helm upgrades keep writers stopped until the database passes verification"
       ]
     },
     {
-      "path": "tests/integration/production-observability-k3d.test.mjs",
+      "path": "tests/integration/production-observability-k3d.test.ts",
       "expectedTests": [
         "Helm defaults expose private OCC metrics and operational logs through real collection",
         "worker observer retains two real restartable-init worker exits"
@@ -48,7 +48,7 @@
       ]
     },
     {
-      "path": "tests/integration/production-preflight-cleanup-k3d.test.mjs",
+      "path": "tests/integration/production-preflight-cleanup-k3d.test.ts",
       "expectedTests": [
         "interrupted preflight recovery respects real Kubernetes identity and consumer lifetime"
       ]

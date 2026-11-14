@@ -43,7 +43,7 @@ import {
   createModelProviderFiles,
   writeModelProviderTrust,
 } from "../../tests/helpers/runtime-model-provider.mjs";
-import { postgresImage, runtimeNodeBaseImage } from "./fixture-support-images.mjs";
+import { postgresImage, registryImage, runtimeNodeBaseImage } from "./fixture-support-images.mjs";
 import { ensureImage } from "./image-pull.ts";
 import {
   openclawBuildArguments,
@@ -94,9 +94,6 @@ export function smokeSlotNames(value) {
 }
 const slotNames = smokeSlotNames(process.env.OCC_FIRST_AGENT_SMOKE_SLOT);
 const registry = slotNames.registry;
-// Pinned like tests/integration/container-registry-real.test.mjs.
-const registryImage =
-  "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373";
 const nodeBaseImage =
   "docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a";
 // Agent NetworkPolicies allow model egress only to public addresses on TCP/443,

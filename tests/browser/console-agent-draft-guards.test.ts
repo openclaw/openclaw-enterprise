@@ -707,7 +707,7 @@ const delegatedPolicyGrant = {
   ports: [{ from: 443, to: 443 }],
 };
 
-test("Agent policy proposals save separately or save then apply the newly saved version", async (t) => {
+test("Agent policy proposals save separately or atomically request application to the current revision", async (t) => {
   const {
     fixture,
     namespace: rawNamespace,
@@ -786,8 +786,7 @@ test("Agent policy proposals save separately or save then apply the newly saved 
     "Save must not enqueue live application",
   );
 
-  // The combined action must submit the accepted version, rather than applying the
-  // old saved version while silently leaving a local proposal behind.
+  // Only Save for later should send a PUT. The combined action carries the edited rule.
   await page.getByRole("button", { name: "Manage rules", exact: true }).click();
   await page.getByLabel("Actions for network rule 1", { exact: true }).click();
   await page.getByRole("button", { name: "Edit rule", exact: true }).click();
@@ -797,7 +796,8 @@ test("Agent policy proposals save separately or save then apply the newly saved 
     .getByRole("button", { name: "Save and apply to current revision", exact: true })
     .click();
   await page
-    .getByText(/Policy v3 saved\. Application to the current revision is pending\./)
+    .locator(".sandbox-application-feedback")
+    .getByText("Applying…", { exact: true })
     .waitFor();
   const applied = policyFields(record((await fixture.request("GET", base)).data).policy);
   assert.equal(applied.version, 3);
@@ -808,7 +808,36 @@ test("Agent policy proposals save separately or save then apply the newly saved 
   assert.equal(application.revisionId, revision.id);
   assert.deepEqual(
     pathRequests(requests, "POST", `${base}/apply`).map(({ body }) => body),
-    [{ expectedVersion: 3, revisionId: revision.id }],
+    [
+      {
+        expectedVersion: 2,
+        revisionId: revision.id,
+        additions: [{ ...delegatedPolicyGrant, id: "python-reviewed" }],
+      },
+    ],
+  );
+  assert.equal(pathRequests(requests, "PUT", base).length, 1);
+  // This fixture has no policy worker. Deliver its terminal observation through the pending poll.
+  await page.route(fixture.origin + base, async (route) => {
+    const response = await route.fetch();
+    const body = record(await response.json());
+    const policy = record(record(body.data).policy);
+    const pending = record(policy.application);
+    assert.equal(pending.id, application.id);
+    policy.application = { ...pending, state: "applied", providerVersion: "browser-v3" };
+    policy.applied = {
+      revisionId: revision.id,
+      policyVersion: 3,
+      providerVersion: "browser-v3",
+      appliedAt: new Date().toISOString(),
+    };
+    await route.fulfill({ response, json: body });
+  });
+  await page.getByText("Applied to the running Agent", { exact: true }).waitFor();
+  assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 1);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`).length,
+    0,
   );
 });
 
@@ -1036,7 +1065,7 @@ test("Agent policy under protected execution offers only removal of saved networ
   );
 });
 
-test("Agent policy combined save distinguishes ceiling rejection from a saved policy whose application is rejected", async (t) => {
+test("Agent policy combined save preserves the original policy when the revision stops after review", async (t) => {
   const {
     fixture,
     namespace: rawNamespace,
@@ -1078,25 +1107,26 @@ test("Agent policy combined save distinguishes ceiling rejection from a saved po
     .getByRole("textbox", { name: "Destination hostname", exact: true })
     .fill(delegatedPolicyGrant.host);
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
-  // Another operator stops the Agent after review. Saving remains valid, while the
-  // exact running-revision check must reject application without concealing the saved change.
+  // Another operator stops the Agent after review, so neither the change nor its application is admitted.
   const stopped = await fixture.request(
     "POST",
     `/namespaces/${namespace.id}/agents/${agent.id}/stop`,
   );
   assert.equal(stopped.status, 202);
+  const refused = page.waitForResponse(
+    (response) => response.url() === fixture.origin + base + "/apply",
+  );
   await page
     .getByRole("button", { name: "Save and apply to current revision", exact: true })
     .click();
-  await page
-    .getByRole("alert")
-    .filter({
-      hasText: "Policy v2 was saved, but application to the current revision was not confirmed.",
-    })
-    .waitFor();
+  const response = await refused;
+  assert.equal(response.status(), 409);
+  const message = text(record(record(await response.json()).error).message);
+  await page.getByRole("alert").filter({ hasText: message }).waitFor();
   const persisted = policyFields(record((await fixture.request("GET", base)).data).policy);
-  assert.equal(persisted.version, 2);
-  assert.equal(record(persisted.additions[0]).host, delegatedPolicyGrant.host);
+  assert.equal(persisted.version, 1);
+  assert.deepEqual(persisted.additions, []);
+  assert.equal(pathRequests(requests, "PUT", base).length, 0);
   assert.equal(persisted.application, undefined);
   assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 1);
 });
@@ -1204,6 +1234,10 @@ test("overlapping policy refreshes retain the newest read and continue pending p
     .getByRole("button", { name: "Apply saved rules", exact: true })
     .click();
   await page.getByText(/Application to the current revision is pending/).waitFor();
+  assert.deepEqual(
+    pathRequests(requests, "POST", `${base}/apply`).map(({ body }) => body),
+    [{ expectedVersion: 2, revisionId: revision.id }],
+  );
   const reads = pathRequests(requests, "GET", base).length;
   // This fixture has no worker: real admission stays pending, so observing multiple polls
   // proves refresh continues rather than claiming provider enforcement or confirmation.

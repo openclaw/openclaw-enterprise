@@ -10,8 +10,8 @@ import {
   credentialCompositionModule,
 } from "./runtime.mjs";
 import { writeSessionClientConfiguration } from "./service-resources.mjs";
-import { createRegistryMaterial } from "./registry/material.mjs";
-import { startRegistryProviderFixtures } from "./registry/provider.mjs";
+import { createRegistryMaterial } from "./registry/material.ts";
+import { startRegistryProviderFixtures } from "./registry/provider.ts";
 import { createRegistryServiceOwner } from "./registry/service.mjs";
 
 export const defaultRegistryRepositories = Object.freeze([

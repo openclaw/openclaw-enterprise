@@ -283,24 +283,15 @@ export function createAgentHandler(
             answer(400, "unsupported-request");
             return;
           }
-          upstreamHead = {
-            ...parsed.head,
-            contentEncoding: "identity",
-            framing: { kind: "length", bytes: body.length },
-          };
         }
         const verdict = plan.inputPolicy(body);
-        if (typeof verdict === "object" && "body" in verdict) {
+        const replaced = typeof verdict === "object" && "body" in verdict;
+        if (replaced) {
           body = Buffer.from(verdict.body);
           if (body.length > plan.limits.inputDecodedBytes) {
             answer(413, "limit-exceeded");
             return;
           }
-          upstreamHead = {
-            ...parsed.head,
-            contentEncoding: "identity",
-            framing: { kind: "length", bytes: body.length },
-          };
         } else if (verdict !== true) {
           if (verdict === false) {
             answer(400, "unsupported-request");
@@ -308,6 +299,13 @@ export function createAgentHandler(
             answer(verdict.status, verdict.code, verdict.message);
           }
           return;
+        }
+        if (compressed || replaced) {
+          upstreamHead = {
+            ...parsed.head,
+            contentEncoding: "identity",
+            framing: { kind: "length", bytes: body.length },
+          };
         }
         // One retained copy, written in slices so the TLS sender never queues a
         // second, encrypted copy of a large body at once.

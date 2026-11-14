@@ -36,7 +36,7 @@ test("production upgrades check the stock chart before recording evidence or con
   // are read by the command before the first cluster call.
   for (const path of [
     upgradeScript,
-    "scripts/lib/image-reference-problem.mjs",
+    "scripts/lib/image-reference-problem.ts",
     "packages/occ/src/image-reference.ts",
     "scripts/upgrade-repository-image-probe.mjs",
     "scripts/upgrade-image-identity.py",

@@ -106,7 +106,7 @@ jobs:
         id: producer
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/ci/full-integration-reuse.mjs discover
+        run: node scripts/ci/full-integration-reuse.ts discover
       - name: Download immutable CI results
         id: download
         if: steps.producer.outputs.artifact_ids != ''
@@ -123,7 +123,7 @@ jobs:
         if: steps.download.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/ci/full-integration-reuse.mjs validate
+        run: node scripts/ci/full-integration-reuse.ts validate
       - name: Retain validated results for full aggregation
         id: upload
         if: steps.validate.outputs.lanes != '[]' && steps.validate.outcome == 'success'
@@ -140,7 +140,7 @@ jobs:
         env:
           REUSED_LANES: ${{ steps.validate.outputs.lanes }}
           REUSE_UPLOADED: ${{ steps.upload.outcome }}
-        run: node scripts/ci/full-integration-reuse.mjs plan
+        run: node scripts/ci/full-integration-reuse.ts plan
 
   pr-safe-same-sha:
     name: Same-SHA ${{ matrix.title }}
@@ -716,7 +716,15 @@ jobs:
           SKIPPER_PROOF_OUTCOME: ${{ steps.installed-skipper-proof.outcome }}
           SKIPPER_STAGE: ${{ steps.installed-skipper-proof.outputs.skipper_stage }}
           SKIPPER_TEST_OPERATION: ${{ steps.installed-skipper-proof.outputs.skipper_test_operation }}
+          SKIPPER_GATEWAY_EXEC_EXIT_CODE: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_exec_exit_code }}
+          SKIPPER_GATEWAY_EXEC_SIGNAL: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_exec_signal }}
+          SKIPPER_GATEWAY_EXEC_CODE: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_exec_code }}
           SKIPPER_GATEWAY_CHAT_PHASE: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_chat_phase }}
+          SKIPPER_HTTP_STATUS: ${{ steps.installed-skipper-proof.outputs.skipper_http_status }}
+          SKIPPER_GATEWAY_CATEGORY: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_category }}
+          SKIPPER_GATEWAY_TRANSPORT_CAUSE: ${{ steps.installed-skipper-proof.outputs.skipper_gateway_transport_cause }}
+          SKIPPER_RUNTIME_SIGNAL: ${{ steps.installed-skipper-proof.outputs.skipper_runtime_signal }}
+          SKIPPER_MODEL_REQUEST_OBSERVATION: ${{ steps.installed-skipper-proof.outputs.skipper_model_request_observation }}
           SKIPPER_LAST_TEST_CHECKPOINT: ${{ steps.installed-skipper-proof.outputs.skipper_last_test_checkpoint }}
           SKIPPER_INSTALLED_CLEANUP: ${{ steps.installed-skipper-proof.outputs.skipper_installed_cleanup }}
         run: node scripts/ci/skipper-failure-receipt.ts "$RUNNER_TEMP/skipper-installed-failure.json"

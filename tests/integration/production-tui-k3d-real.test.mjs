@@ -38,6 +38,7 @@ import {
   assertInstallationSecretRetained,
   assertInstallationVolume,
   assertLocalRehearsalSelection,
+  measureUpgradeAvailability,
   readImmutableInstallationSecret,
   rehearsePopulatedReturn,
   selectRehearsalControllers,
@@ -866,7 +867,14 @@ test(
         const result = await request(method, path, body, expected);
         return result.data;
       };
-      return { api, baseURL, externalRequest, occEnv, runGuideOcc };
+      return {
+        api,
+        baseURL,
+        externalRequest,
+        installationId: installation.data.id,
+        occEnv,
+        runGuideOcc,
+      };
     }
 
     async function provisionNamespace({ api, externalRequest, runGuideOcc }) {
@@ -1564,41 +1572,44 @@ test(
         }
       };
       const controllerEvidence = join(directory, "controller-upgrade");
-      const controllerOutput = await run(
-        "scripts/upgrade-production-images",
-        [
-          "--kubeconfig",
-          selection.kubeconfigPath,
-          "--context",
-          selection.kubernetesContext,
-          "--namespace",
-          system,
-          "--release",
-          release,
-          "--values",
-          valuesPath,
-          "--installation",
-          installationPath,
-          "--controller-image",
-          upgradeImages.controller,
-          "--source-revision",
-          sourceRevision,
-          "--evidence-dir",
-          controllerEvidence,
-          "--occ",
-          occCli,
-          "--timeout-seconds",
-          "600",
-        ],
-        {
-          timeout: 900_000,
-          env: {
-            OCC_URL: baseURL,
-            OCC_SERVICE_KEY_FILE: localServiceKeyFile,
-            OCC_CA_BUNDLE: join(directory, "tls.crt"),
-            OPENAI_API_KEY: undefined,
-          },
-        },
+      context.diagnostic(
+        `Controller upgrade observations: ${join(directory, "forward-api-availability.json")}`,
+      );
+      const controllerOutput = await measureUpgradeAvailability(
+        externalRequest,
+        installationId,
+        directory,
+        () =>
+          run(
+            "scripts/upgrade-production-images",
+            [
+              "--kubeconfig",
+              selection.kubeconfigPath,
+              "--context",
+              selection.kubernetesContext,
+              "--namespace",
+              system,
+              "--release",
+              release,
+              "--values",
+              valuesPath,
+              "--installation",
+              installationPath,
+              "--controller-image",
+              upgradeImages.controller,
+              "--source-revision",
+              sourceRevision,
+              "--evidence-dir",
+              controllerEvidence,
+              "--occ",
+              occCli,
+              "--timeout-seconds",
+              "600",
+            ],
+            { timeout: 900_000, env: occEnv },
+          ),
+        (details) =>
+          record("Independent controller upgrade API availability observations", details),
       );
       assert.match(controllerOutput, /no Agent deployments were requested/u);
       for (const component of ["api", "worker"]) {
@@ -1759,36 +1770,46 @@ test(
         `#!/bin/sh\nif [ "$1" = status ] && [ -f ${shellQuote(join(upgradeEvidence, "quiescence-worker-deployment.json"))} ]; then exit 75; fi\nexec ${shellQuote(realHelm)} "$@"\n`,
         { mode: 0o700 },
       );
-      await assert.rejects(
-        run("scripts/upgrade-production-images", runtimeArguments, {
-          timeout: 900_000,
-          env: {
-            ...upgradeEnvironment,
-            PATH: `${wrapperDirectory}:${process.env.PATH}`,
-          },
-        }),
-        /failed \(75\)/u,
+      const runtimeReceipt = "runtime-api-availability.json";
+      context.diagnostic(
+        `Runtime interruption and resume observations: ${join(directory, runtimeReceipt)}`,
       );
-      await retainInstallationSecrets();
-      assert.ok(
-        Buffer.from(successor.data["installation.yaml"], "base64").toString() ===
-          (await readFile(join(upgradeEvidence, "candidate-installation.yaml"), "utf8")),
-        "prepared Installation bytes differ from the staged immutable Secret",
-      );
-      await assert.rejects(readFile(join(upgradeEvidence, "helm-started")), { code: "ENOENT" });
-      for (const component of ["api", "worker"]) {
-        assert.equal(
-          (await get("deployment", `openclaw-enterprise-${component}`)).spec.replicas,
-          0,
-        );
-      }
-      const output = await run(
-        "scripts/upgrade-production-images",
-        [...runtimeArguments, "--resume"],
-        {
-          timeout: 900_000,
-          env: upgradeEnvironment,
+      const output = await measureUpgradeAvailability(
+        externalRequest,
+        installationId,
+        directory,
+        async () => {
+          await assert.rejects(
+            run("scripts/upgrade-production-images", runtimeArguments, {
+              timeout: 900_000,
+              env: {
+                ...upgradeEnvironment,
+                PATH: `${wrapperDirectory}:${process.env.PATH}`,
+              },
+            }),
+            /failed \(75\)/u,
+          );
+          await retainInstallationSecrets();
+          assert.ok(
+            Buffer.from(successor.data["installation.yaml"], "base64").toString() ===
+              (await readFile(join(upgradeEvidence, "candidate-installation.yaml"), "utf8")),
+            "prepared Installation bytes differ from the staged immutable Secret",
+          );
+          await assert.rejects(readFile(join(upgradeEvidence, "helm-started")), { code: "ENOENT" });
+          for (const component of ["api", "worker"]) {
+            assert.equal(
+              (await get("deployment", `openclaw-enterprise-${component}`)).spec.replicas,
+              0,
+            );
+          }
+          return run("scripts/upgrade-production-images", [...runtimeArguments, "--resume"], {
+            timeout: 900_000,
+            env: upgradeEnvironment,
+          });
         },
+        (details) =>
+          record("Runtime interruption and resume API availability observations", details),
+        runtimeReceipt,
       );
       assert.match(
         output,
@@ -2029,7 +2050,7 @@ test(
       });
     }
 
-    const { api, baseURL, externalRequest, occEnv, runGuideOcc } =
+    const { api, baseURL, externalRequest, installationId, occEnv, runGuideOcc } =
       await installProductionControlPlane();
     if (rehearsal) {
       await custody.assertPostgres();

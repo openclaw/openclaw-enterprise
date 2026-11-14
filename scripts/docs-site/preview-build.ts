@@ -114,7 +114,7 @@ export async function createPreviewBuild(onState: (state: PreviewState) => void)
     const directory = join(workspace, String(version));
     console.log("Docs preview: rebuilding…");
     try {
-      await run(process.execPath, ["scripts/docs-site/build.mjs", "--output", directory]);
+      await run(process.execPath, ["scripts/docs-site/build.ts", "--output", directory]);
       if (stopped) {
         return;
       }

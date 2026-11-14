@@ -10,7 +10,7 @@ import type {
   OpenShellServiceResponse,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { reservePort } from "../helpers/available-port.mjs";
+import { reservePort } from "../helpers/available-port.ts";
 import {
   completeSandboxRevision,
   completeWorkspaceRevision,
@@ -32,7 +32,7 @@ type Fixtures = {
   chmod: typeof import("node:fs/promises").chmod;
   mkdtemp: typeof import("node:fs/promises").mkdtemp;
   nativeWorkerEntrypoint: string;
-  reservedPortArgs: typeof import("../helpers/available-port.mjs").reservedPortArgs;
+  reservedPortArgs: typeof import("../helpers/available-port.ts").reservedPortArgs;
   rm: typeof import("node:fs/promises").rm;
   stat: typeof import("node:fs/promises").stat;
   tmpdir: typeof import("node:os").tmpdir;

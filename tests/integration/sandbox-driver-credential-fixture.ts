@@ -1,7 +1,9 @@
+import assert from "node:assert/strict";
 import type {
   CredentialRevisionContext,
   CredentialSource,
   CredentialSourceContext,
+  CredentialSourceStatus,
   Namespace,
 } from "../../packages/contracts/src/index.ts";
 import { completeSandboxRevision } from "./sandbox-driver-revision-fixture.ts";
@@ -52,4 +54,10 @@ export function createCredentialGatewayContexts(driverId: string) {
     signal,
   });
   return { source, context, revisionContext };
+}
+
+export async function assertCredentialSourceReady(
+  operation: Promise<CredentialSourceStatus>,
+): Promise<void> {
+  assert.deepEqual(await operation, { state: "ready" });
 }

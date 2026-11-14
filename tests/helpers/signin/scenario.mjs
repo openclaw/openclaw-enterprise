@@ -7,7 +7,7 @@ import { signinAdmission } from "./admission.mjs";
 import { fixtureClock } from "./clock.mjs";
 import { controllerCut } from "./controller-cut.mjs";
 import { fixtureFetch, retainedCatalog } from "./custody-probes.mjs";
-import { tcpControlCommand, tcpProbeCommand } from "./network-probe.mjs";
+import { tcpControlCommand, tcpProbeCommand } from "./network-probe.ts";
 import { runtimeProof } from "./runtime.mjs";
 import { trafficGate } from "./traffic-gate.mjs";
 import { runTransition } from "./transition.mjs";

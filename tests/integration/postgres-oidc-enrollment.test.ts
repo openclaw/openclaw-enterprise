@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import pg from "pg";
+import { startupFailureFields } from "../../apps/controller/src/api-startup.mjs";
+import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import {
   accountPrincipalId,
   assertConsoleSignIn,
@@ -531,10 +533,50 @@ test(
       }
     });
     await t.test("activation rejects missing Role, Namespace and Group references", async () => {
+      const namespaceRole = await app.inject({
+        method: "POST",
+        url: `/namespaces/${namespaceId}/iam/roles`,
+        headers: await signedInHeaders(app, origin, admin, address()),
+        payload: {
+          name: "Enrollment diagnostic Namespace Role",
+          permissions: [{ action: "read", resourceKind: "agent" }],
+        },
+      });
+      assert.equal(namespaceRole.statusCode, 201, namespaceRole.body);
+      assert.equal(namespaceRole.json().data.namespaceId, namespaceId);
       await app.close();
+
+      for (const id of ["missing-role", namespaceRole.json().data.id]) {
+        const invalid = { ...policy, createAccount: { enabled: true, role: { id, scope: "all" } } };
+        await assert.rejects(
+          composeApp({ ...settings, OCC_AUTH_OIDC_ENROLLMENT: JSON.stringify(invalid) }),
+          (error: unknown) => {
+            let output = "";
+            const logger = createOccLogger({
+              component: "occ-api",
+              destination: {
+                write(line: string) {
+                  output += line;
+                },
+              },
+            });
+            // Project and sanitize the error from real PostgreSQL-backed API composition.
+            emitOccLogEvent(logger, { event: "startup-error", ...startupFailureFields(error) });
+            const event = JSON.parse(output);
+            assert.equal(event.event, "startup-error");
+            assert.equal(event.code, "OIDC_ENROLLMENT_ROLE_INVALID");
+            assert.equal(
+              event.reason,
+              "Set auth.oidc.enrollment.createAccount.role.id to an Installation-scoped Role from the Installation iam configuration.",
+            );
+            assert.ok(!output.includes(id));
+            return true;
+          },
+        );
+      }
+
       for (const invalid of [
         { ...policy, groupIds: ["missing-group"] },
-        { ...policy, createAccount: { enabled: true, role: { id: "missing-role", scope: "all" } } },
         {
           ...policy,
           createAccount: {

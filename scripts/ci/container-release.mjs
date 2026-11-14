@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadTestSuites } from "./test-suites.mjs";
-import { prepareRuntimeImageSmoke } from "./prepare.mjs";
 
 export const repository = "openclaw/openclaw-enterprise";
 export const publishWorkflow = ".github/workflows/container-publish.yml";
@@ -16,11 +15,17 @@ const platforms = ["linux/amd64", "linux/arm64"];
 const shaPattern = /^[a-f0-9]{40}$/;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const integerPattern = /^[1-9][0-9]*$/;
+const releaseVersionPattern = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
+
+/** @param {string} version */
+export function isReleaseVersion(version) {
+  return releaseVersionPattern.test(version);
+}
 // CI runs the runtime startup tests in three lanes; the release smoke runs their
 // startup files one at a time, since some cases measure timing.
 // container-release.test.mjs pins this list to the lane manifests.
 export const runtimeImageSmokeTests = Object.freeze([
-  "tests/helpers/workspace-gateway-relay-container.test.mjs",
+  "tests/helpers/workspace-gateway-relay-container.test.ts",
   "tests/integration/codex-plugin-stdio-real.test.ts",
   "tests/integration/runtime-image-startup.test.mjs",
   "tests/integration/runtime-image-gateway-workspace.test.ts",
@@ -31,15 +36,17 @@ export const runtimeImageSmokeTests = Object.freeze([
   "tests/integration/runtime-image-startup-probe.test.mjs",
   "tests/integration/runtime-image-codex-readiness.test.ts",
   "tests/integration/runtime-image-startup-termination.test.ts",
-  "tests/integration/runtime-image-gateway-unclean-restart.test.mjs",
-  "tests/integration/runtime-image-gateway-retained-state.test.mjs",
+  "tests/integration/runtime-image-gateway-unclean-restart.test.ts",
+  "tests/integration/runtime-image-gateway-retained-state.test.ts",
   "tests/integration/runtime-image-workspace-setup-lock.test.ts",
-  "tests/integration/runtime-image-gateway-peer.test.mjs",
+  "tests/integration/runtime-image-gateway-peer.test.ts",
   "tests/integration/runtime-image-native-worker.test.mjs",
   "tests/integration/runtime-image-node-state-permissions.test.ts",
   "tests/integration/runtime-image-node-state-lock.test.ts",
   "tests/integration/runtime-image-codex-local-plugins.test.ts",
   "tests/integration/sandbox-driver-startup.test.mjs",
+  "tests/integration/sandbox-driver-workspace-admission.test.ts",
+  "tests/integration/sandbox-driver-startup-validation.test.ts",
   "tests/integration/sandbox-driver-installation-configuration.test.ts",
   "tests/integration/sandbox-driver-ipv6-endpoints.test.ts",
   "tests/integration/sandbox-driver-codex-app-server.test.ts",
@@ -238,6 +245,7 @@ function publicationAlias(value) {
   const tag = value || "latest";
   assert.match(tag, /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/, "Invalid image tag.");
   assert.ok(!/^(?:sha|bootstrap)-/i.test(tag), "Source and bootstrap tags are reserved.");
+  assert.ok(!isReleaseVersion(tag), "Release version tags are reserved.");
   return tag;
 }
 
@@ -589,6 +597,8 @@ async function smoke(directory, env) {
   const arch = process.arch === "x64" ? "amd64" : process.arch;
   assert.ok(["amd64", "arm64"].includes(arch));
   assert.equal(env.PLATFORM, `linux/${arch}`, "Smoke requires the target's native runner.");
+  // Resolve native runtime tooling before loading an image that would need cleanup.
+  const runtimePreparation = env.IMAGE === "runtime" ? await import("./prepare.mjs") : undefined;
   assert.equal(inspectDigest(`oci:${directory}`), env.IMAGE_DIGEST);
   const root = JSON.parse(await readFile(join(directory, "index.json"), "utf8"));
   assert.equal(root.manifests.length, 1);
@@ -634,8 +644,8 @@ async function smoke(directory, env) {
     }
     assert.equal(loaded.Os, "linux");
     assert.equal(loaded.Architecture, arch);
-    if (env.IMAGE === "runtime") {
-      prepared = await prepareRuntimeImageSmoke({
+    if (runtimePreparation) {
+      prepared = await runtimePreparation.prepareRuntimeImageSmoke({
         image: loaded.Id,
         statePath: join(env.RUNNER_TEMP ?? tmpdir(), `runtime-smoke-${arch}.json`),
       });
@@ -710,7 +720,8 @@ export async function verifyGhcr(image, digest, tag) {
   return existing.length > 0;
 }
 
-export async function publishPrepared(directory, env, producer, verify, aliasTag) {
+export async function publishPrepared(directory, env, producer, verify, requestedAlias) {
+  const aliasTag = requestedAlias === undefined ? undefined : publicationAlias(requestedAlias);
   await verify();
   const tag = `sha-${env.SOURCE_SHA}`;
   const prepared = [];

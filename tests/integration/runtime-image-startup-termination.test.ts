@@ -2,7 +2,7 @@
 // runtime-image-startup-probe.test.mjs so CI runs it beside the startup model
 // probes. Both files start the wrapper through the same scenario helper. The
 // Gateway restart after an unclean stop is in
-// runtime-image-gateway-unclean-restart.test.mjs.
+// runtime-image-gateway-unclean-restart.test.ts.
 import assert from "node:assert/strict";
 import { describe, test, type TestContext } from "node:test";
 import type { ProbeSnapshot } from "../helpers/runtime-image-model-probe.ts";
@@ -27,10 +27,9 @@ import {
 // Gateway's 330 seconds: a wrapper that ignores SIGTERM never meets it.
 const promptTerminationMs = 15_000;
 
-type TerminationSnapshot = Pick<
-  ProbeSnapshot,
-  "events" | "phases" | "output" | "running" | "exitCode"
->;
+type TerminationSnapshot = Pick<ProbeSnapshot, "events" | "output" | "running" | "exitCode"> & {
+  phases: readonly Record<string, unknown>[];
+};
 type TerminationScenario = {
   containerName: string;
   collect: () => Promise<TerminationSnapshot>;

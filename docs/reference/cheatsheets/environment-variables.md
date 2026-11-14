@@ -46,6 +46,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AUTH_CLIENT_IP_HEADER` — Lowercase header carrying the client address, such as `x-real-ip`; required by `generic` only.
 - `OCC_AGENT_NATIVE_ADMIN_ENABLED` — Enables the Agent native admin pilot; default: `false`.
 - `OCC_AGENT_RUNTIME_LOGS_ENABLED` — `false` makes the Agent runtime status and log routes answer `501`; default: `true`. Set by the chart's `agentRuntimeLogs.enabled`.
+- `OCC_CONTROL_PLANE_AUDIT_ENABLED` — Enables durable Control Plane request and worker audit and authorized Agent audit reads. Defaults to `true` in development and `false` in production. Set both processes together with `controlPlaneAudit.enabled` in Helm. See the [audit guide](../../guides/topics/audit-log.md).
 - `OCC_AGENT_NATIVE_ADMIN_SESSION_MODE` — `shared-cookie` (default) or guarded OIDC `host-only-exchange`; see [native access](../agent-native-admin.md#host-only-session-exchange).
 - `OCC_AGENT_NATIVE_ADMIN_DOMAIN` — Agent hostname suffix; required for shared browser sessions even when native access is disabled.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
@@ -137,7 +138,7 @@ for supported engines, images, and security restrictions.
 - `OCC_DEVELOPMENT_KUBERNETES_NAMESPACE` — Kubernetes namespace that runs the control plane in the Kubernetes-only profile; default: `oce-system`.
 - `OCC_DEVELOPMENT_KUBERNETES_CLUSTER` — Disposable k3d cluster; default: a generated name beginning with `occ-dev-`.
 - `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` — Kubernetes profile cluster and service readiness timeout; default: `600` seconds per wait in Kubernetes-only mode, `300` in Compose mode.
-- `OCC_DEVELOPMENT_KEEP_ON_FAILURE` — Unset by default; any nonempty value keeps a failed `occ dev up` stack, state directory, and copied service key for inspection; see [development settings](../settings/development.md).
+- `OCC_DEVELOPMENT_KEEP_ON_FAILURE` — Unset by default; any nonempty value keeps a failed `occ dev up` stack, state directory, and copied service key for inspection. Compose preparation failures before resource startup remove incomplete state; see [development settings](../settings/development.md).
 - `OCC_DEVELOPMENT_KUBERNETES_API_PORT` — Local Kubernetes API port; default: `6443`.
 - `OCC_DEVELOPMENT_K3D_DNS_RESOLVER` — Optional IPv4 resolver for either local k3d profile, or `k3d` for k3d's default; Linux Docker defaults to the host's upstream resolver.
 - `OCC_DEVELOPMENT_K3S_IMAGE` — K3s node image or channel for Compose control plane without OpenShell; default: `+v1.35`. Kubernetes-only and OpenShell profiles use their pinned image.

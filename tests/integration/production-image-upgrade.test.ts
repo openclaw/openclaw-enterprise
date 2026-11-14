@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
+import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { withoutShellStartup } from "../helpers/environment.ts";
@@ -329,7 +329,7 @@ test("production image upgrades preserve controller/runtime ownership and wait f
   const bin = join(directory, "bin");
   await mkdir(bin);
   // Use real JSON operations for the run's dispatch journal and receipts.
-  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "$*" == *'repositoryWorkerRestart'* || "$*" == *'def identifier:'* || "$*" == '-e .spec.replicas == 1 '* || "$*" == '-e .spec.replicas == 0 '* || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$*" == *'.metadata.ownerReferences'* || "\${!#}" == */preflight-cleanup-dependency.json || "$1" == '-cs' || "$1" == '-ser' || "$1" == '-cser' || "$1" == '-Rse' ]]; then
+  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "\${!#}" == */after-helm-status.json || "$*" == *'repositoryWorkerRestart'* || "$*" == *'def identifier:'* || "$*" == '-e .spec.replicas == 1 '* || "$*" == '-e .spec.replicas == 0 '* || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$*" == *'.metadata.ownerReferences'* || "$*" == *'.status.initContainerStatuses'* || "\${!#}" == */preflight-cleanup-dependency.json || "$1" == '-cs' || "$1" == '-ser' || "$1" == '-cser' || "$1" == '-Rse' ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 `;
@@ -646,8 +646,8 @@ fi
   const readinessCounter = join(directory, "readiness-counter");
   const runtimeCountCounter = join(directory, "runtime-count-counter");
   const commandLog = join(directory, "commands.log");
-  // Preflight reads controller images, Installation mounts and the initializer's
-  // migration identity from the chart. Render those inputs for this protocol fixture.
+  // Render the chart inputs preflight uses: controller entrypoints and images,
+  // Installation mounts, and the initializer's migration identity.
   // Accepted upgrades retain their submitted values and advance the revision;
   // server dry-runs must leave both unchanged.
   await writeCommand(
@@ -672,7 +672,7 @@ elif [[ "$1" == upgrade && "$*" != *--dry-run=* ]]; then
   done
   printf '%s\\n' "$((revision + 1))" >"$revision_file"
 elif [[ "$1" == template ]]; then
-  printf -- '---\\n%s\\n' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-api"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"api","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-worker"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"worker","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}'
+  printf -- '---\\n%s\\n' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-api"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"api","args":["apps/controller/src/server.mjs"],"image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-worker"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"worker","args":["apps/controller/src/worker.mjs"],"image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}'
   printf -- '---\\n%s\\n' '{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"oce-initialization","labels":{"app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"initialization"}},"spec":{"template":{"metadata":{"labels":{"app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"initialization"}},"spec":{"serviceAccountName":"openclaw-enterprise-initialization","initContainers":[{"name":"migration","image":"'"$OBSERVED_CONTROLLER_IMAGE"'"}]}}}}'
 fi
 `,
@@ -681,7 +681,10 @@ fi
   await writeCommand(
     bin,
     "jq",
-    `${dispatchJson}if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
+    `${dispatchJson}if [[ "$*" == *'resourceAttributes'* ]]; then
+  PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
+fi
+if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
   cat
   exit 0
 fi
@@ -807,6 +810,11 @@ case "$*" in
     fi
     printf '%s\\n' '{"status":"ok"}'
     ;;
+  *' create --raw /apis/authorization.k8s.io/v1/selfsubjectaccessreviews --filename -')
+    PATH="$ORIGINAL_TOOL_PATH" exec jq '.status = {allowed: (.spec.resourceAttributes == {
+      namespace: "openclaw-system", verb: "patch", group: "apps", version: "v1",
+      resource: "deployments", name: "openclaw-enterprise-worker"
+    })}' ;;
   *' create --filename'*|*' get job.batch/'*|*'batch.kubernetes.io/controller-uid='*|*' get pods -o json'*|*' get secret/oce-upgrade-preflight-'*|*' get networkpolicy.networking.k8s.io/oce-upgrade-preflight-'*|*' get pod/oce-upgrade-preflight-'*|*' logs pod/oce-upgrade-preflight-'*|*'delete --raw='*)
     exec "$(dirname "$0")/preflight-kubectl" "$@" ;;
 
@@ -831,7 +839,7 @@ esac
 case "$*" in
   *'deployment-inventory'*) printf '%s\\n' '{"installationId":"ins_upgrade_test","namespaces":[{"id":"ns_test","status":"ready","agents":[{"id":"agt_test","status":"active","desiredRuntimeState":"running","executionMode":"dedicated","activeRevisionId":"rev_test","deploymentInProgress":false,"repositoryWorkerRestart":"reverification-supported"}]}]}' ;;
   *'agent revision '*) printf '%s\\n' '{"id":"rev_test","namespaceId":"ns_test","agentId":"agt_test","harness":{"overrides":{},"configuration":{}}}' ;;
-  *'agent deploy'*) printf '%s\\n' "$AGENT_DEPLOY_RESPONSE" ;;
+  *'agent deploy '*) printf '%s\\n' "$AGENT_DEPLOY_RESPONSE" ;;
   *'deployment-status'*) printf '%s\\n' '{"status":"succeeded"}' ;;
   *'agent get'*) printf '%s\\n' '{"activeRevisionId":"rev_candidate","configurationId":"cfg_test"}' ;;
   *'configuration get'*) printf '%s\\n' '{"id":"cfg_test","values":{}}' ;;
@@ -905,6 +913,20 @@ esac
   assert.match(controllerOnly.stdout, /no Agent deployments were requested/u);
   const controllerCommands = await readFile(commandLog, "utf8");
   assert.doesNotMatch(controllerCommands, /agent deploy|apply --filename/u);
+  const commands = controllerCommands.trimEnd().split("\n");
+  const submission = commands.findIndex(
+    (line) => line.startsWith("helm upgrade ") && !line.includes("--dry-run"),
+  );
+  assert.ok(submission >= 0);
+  const finalStatusReads = commands
+    .slice(submission + 1)
+    .filter((line) => line.startsWith("helm status "));
+  assert.equal(finalStatusReads.length, 1);
+  assert.match(finalStatusReads[0] ?? "", / --output json$/u);
+  assert.equal(
+    await readFile(join(controllerEvidence, "after-helm-status.txt"), "utf8"),
+    "Summary from after-helm-status.json\nNAME: oce\nNAMESPACE: openclaw-system\nSTATUS: deployed\nREVISION: 2\n",
+  );
   assert.equal(await readFile(protectedFiles.installation, "utf8"), installationDocument);
   await assertCompletedRunCannotResume(controllerEvidence, ["controller"], controllerOptions);
   await rm(commandLog);

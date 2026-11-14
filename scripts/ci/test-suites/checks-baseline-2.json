@@ -38,11 +38,23 @@
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner-openshell-progress.test.ts",
+    "tests/integration/ci-runner-case-enforcement.test.ts",
+    "tests/integration/ci-runner-file-outcomes.test.ts",
+    "tests/integration/ci-runner-deadline.test.ts",
+    "tests/integration/ci-runner-cleanup-allowance.test.ts",
+    "tests/integration/ci-runner-preparation.test.ts",
+    "tests/integration/ci-runner-failure-output.test.ts",
+    "tests/integration/ci-runner-aggregate.test.ts",
+    "tests/integration/ci-runner-scheduling.test.ts",
+    "tests/integration/ci-runner-redaction.test.ts",
+    "tests/integration/openshell-plugin-install-reporter.test.ts",
+    "tests/integration/ci-runner-first-agent-startup.test.ts",
     "tests/integration/k3d-quickstart-diagnostics.test.ts",
     "tests/integration/local-first-agent-session-identity.test.ts",
     "tests/integration/k3d-launcher.test.mjs",
     "tests/integration/password-sign-in-admission.test.ts",
-    "tests/integration/google-login-transport.test.mjs",
+    "tests/integration/google-login-transport.test.ts",
     "tests/conformance/slack-channel-directory.test.mjs",
     "tests/conformance/bounded-response-reads.test.ts",
     "tests/conformance/repository-credentials-github.test.mjs",
@@ -61,30 +73,32 @@
     "tests/integration/repository-credentials-http.test.ts",
     "tests/integration/repository-original-lease.test.ts",
     "tests/integration/public-github-read-http.test.mjs",
-    "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
+    "tests/conformance/repository-credentials-fixture-ownership.test.ts",
     "tests/integration/repository-credentials-projected-inputs.test.mjs",
     "tests/integration/ci-image-pull.test.ts",
     "tests/integration/ci-download-pinned.test.ts",
     "tests/integration/ci-registry-transport.test.ts",
     "tests/conformance/slack-proxy-tunnel.test.mjs",
+    "tests/conformance/slack-proxy-backpressure.test.ts",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
     "tests/integration/qa-fixture-inputs.test.mjs",
+    "tests/integration/compose-network.test.ts",
     "tests/integration/qa-repository-installation.test.ts",
-    "tests/integration/repository-runtime-materialization.test.mjs",
+    "tests/integration/repository-runtime-materialization.test.ts",
     "tests/conformance/repository-credentials-contracts.test.ts",
     "tests/integration/plugin-driver-startup.test.ts",
     "tests/integration/repository-credentials-config.test.mjs",
     "tests/integration/kubernetes-peer-status.test.mjs",
     "tests/conformance/repository-credentials-lifecycle.test.ts",
     "tests/integration/ssh-compute-startup.test.mjs",
-    "tests/integration/oidc-login-transport.test.mjs",
+    "tests/integration/oidc-login-transport.test.ts",
     "tests/conformance/repository-credentials-ownership-boundaries.test.ts",
     "tests/integration/ci-cleanup.test.mjs",
     "tests/integration/ci-prepare-postgres.test.ts",
-    "tests/integration/runtime-image-failure-output.test.mjs",
+    "tests/integration/runtime-image-failure-output.test.ts",
     "tests/conformance/runtime-model-probe-settlement.test.mjs",
-    "tests/conformance/hosted-plugin-discovery.test.mjs",
-    "tests/integration/plugin-driver-real-preflight.test.mjs",
+    "tests/conformance/hosted-plugin-discovery.test.ts",
+    "tests/integration/plugin-driver-real-preflight.test.ts",
     "tests/conformance/postgres-transaction-commit.test.mjs",
     "tests/conformance/plugin-runtime-policy.test.mjs",
     "tests/integration/password-sign-in-policy.test.ts",
@@ -96,8 +110,8 @@
     "tests/conformance/repository-transactions.test.mjs",
     "tests/integration/google-id-token.test.mjs",
     "tests/integration/first-agent-startup.test.mjs",
-    "tests/conformance/repository-sessions-memory.test.mjs",
-    "tests/conformance/repository-credentials-github-token.test.mjs",
+    "tests/conformance/repository-sessions-memory.test.ts",
+    "tests/conformance/repository-credentials-github-token.test.ts",
     "tests/conformance/repository-credentials-registry.test.mjs",
     "tests/integration/ci-openshell.test.mjs",
     "tests/conformance/repository-credentials-sessions.test.ts",
@@ -126,18 +140,20 @@
     "tests/conformance/controller-stop-yields.test.ts",
     "tests/integration/dev-up-model-provider.test.mjs",
     "tests/integration/egress-connected-preflight.test.mjs",
+    "tests/integration/egress-connected-lifecycle-preflight.test.ts",
     "tests/integration/credential-proxy-configuration.test.ts",
     "tests/helpers/socket-relay.test.mjs",
-    "tests/integration/gateway-workspace-readiness.test.mjs",
+    "tests/integration/gateway-workspace-readiness.test.ts",
     "tests/integration/oidc-provider.test.ts",
     "tests/integration/signin-network-probe.test.ts",
     "tests/integration/port-forward-cleanup.test.ts",
     "tests/integration/staged-signin-proof.test.ts",
-    "tests/integration/shared-session-cookie.test.ts"
+    "tests/integration/shared-session-cookie.test.ts",
+    "tests/integration/workspace-gateway-host-route.test.ts"
   ],
   "serialFiles": {
-    "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
-    "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
+    "tests/conformance/postgres-auth-binding.test.ts": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
+    "tests/conformance/schema-auth-boundary-v1.test.ts": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
     {
@@ -179,10 +195,13 @@
       "path": "tests/integration/qa-fixture-inputs.test.mjs"
     },
     {
+      "path": "tests/integration/compose-network.test.ts"
+    },
+    {
       "path": "tests/integration/qa-repository-installation.test.ts"
     },
     {
-      "path": "tests/integration/github-app-observer.test.mjs"
+      "path": "tests/integration/github-app-observer.test.ts"
     },
     {
       "path": "tests/integration/dev-codex-seccomp-failure.test.mjs"
@@ -199,7 +218,7 @@
       ]
     },
     {
-      "path": "tests/integration/first-agent-smoke.test.mjs",
+      "path": "tests/integration/first-agent-smoke.test.ts",
       "expectedTests": [
         "chat proof accepts the deterministic assistant answer",
         "chat proof rejects a prompt echo, missing role, and other non-assistant replies",
@@ -235,7 +254,6 @@
     {
       "path": "tests/integration/ci-runner.test.mjs",
       "expectedTests": [
-        "focused runs retain case enforcement and cleanup but cannot complete a full lane",
         "complete lifecycle preserves phase failures and performs owned cleanup",
         "complete lifecycle drains interrupted preparation before cleanup and never starts tests",
         "complete lifecycle retains owned state when preparation exceeds its deadline",
@@ -244,6 +262,59 @@
         "complete lifecycle losing an attempt claim cannot run phases or clean its winner",
         "complete lifecycle owns detached test groups after deadline or coordinator loss"
       ]
+    },
+    {
+      "path": "tests/integration/ci-runner-openshell-progress.test.ts",
+      "expectedTests": [
+        "CI streams safe OpenShell failures before cleanup and retains the original error",
+        "run reports bounded OpenShell progress before the test file finishes",
+        "CI retains the unfinished upstream stage without changing the failed case"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-runner-case-enforcement.test.ts",
+      "expectedTests": [
+        "focused runs retain case enforcement and cleanup but cannot complete a full lane",
+        "run fails missing expected tests, skipped expected tests, skips, todos, and missing required env"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-runner-file-outcomes.test.ts",
+      "expectedTests": [
+        "run preserves nonzero child Node exits and rejects zero-case files",
+        "run annotates the first failed file before the lane finishes",
+        "run finishes file accounting and cleanup after a reporter pipe read error",
+        "run records a sanitized file failure after all reported cases pass",
+        "run records failed, skipped, todo, and passed dispositions separately",
+        "run keeps the enrollment operation pending when the parent is interrupted"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-runner-deadline.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-runner-cleanup-allowance.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-runner-preparation.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-runner-failure-output.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-runner-aggregate.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-runner-scheduling.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-runner-redaction.test.ts"
+    },
+    {
+      "path": "tests/integration/openshell-plugin-install-reporter.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-runner-first-agent-startup.test.ts"
     },
     {
       "path": "tests/integration/k3d-quickstart-diagnostics.test.ts"
@@ -274,7 +345,7 @@
       "path": "tests/integration/ci-prepare-postgres.test.ts"
     },
     {
-      "path": "tests/integration/runtime-image-failure-output.test.mjs"
+      "path": "tests/integration/runtime-image-failure-output.test.ts"
     },
     {
       "path": "tests/integration/ci-image-reconciliation.test.ts"
@@ -373,10 +444,13 @@
       "path": "tests/conformance/slack-proxy-tunnel.test.mjs"
     },
     {
+      "path": "tests/conformance/slack-proxy-backpressure.test.ts"
+    },
+    {
       "path": "tests/conformance/native-admin-websocket-relay.test.mjs"
     },
     {
-      "path": "tests/conformance/hosted-plugin-discovery.test.mjs"
+      "path": "tests/conformance/hosted-plugin-discovery.test.ts"
     },
     {
       "path": "tests/conformance/plugin-runtime-templates.test.ts"
@@ -385,7 +459,7 @@
       "path": "tests/integration/plugin-driver-startup.test.ts"
     },
     {
-      "path": "tests/integration/plugin-driver-real-preflight.test.mjs"
+      "path": "tests/integration/plugin-driver-real-preflight.test.ts"
     },
     {
       "path": "tests/conformance/repository-transactions.test.mjs"
@@ -437,7 +511,7 @@
       "path": "tests/conformance/repository-credentials-github.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-credentials-github-token.test.mjs"
+      "path": "tests/conformance/repository-credentials-github-token.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-receive-pack.test.mjs"
@@ -461,7 +535,7 @@
       "path": "tests/conformance/repository-credentials-tool-evidence.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
+      "path": "tests/conformance/repository-credentials-fixture-ownership.test.ts",
       "expectedTests": [
         "runner timeout cancels and joins commands before teardown admits cleanup",
         "accepted network creation with a lost response stays owned until verified absent",
@@ -544,7 +618,7 @@
       "path": "tests/conformance/repository-runtime-material.test.mjs"
     },
     {
-      "path": "tests/conformance/repository-sessions-memory.test.mjs"
+      "path": "tests/conformance/repository-sessions-memory.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-admission.test.mjs"
@@ -568,7 +642,7 @@
       "path": "tests/integration/repository-credentials-restart.test.ts"
     },
     {
-      "path": "tests/integration/repository-runtime-materialization.test.mjs"
+      "path": "tests/integration/repository-runtime-materialization.test.ts"
     },
     {
       "path": "tests/integration/codex-plugin-startup-reads.test.mjs"
@@ -619,13 +693,13 @@
       "path": "tests/integration/google-id-token.test.mjs"
     },
     {
-      "path": "tests/integration/google-login-transport.test.mjs"
+      "path": "tests/integration/google-login-transport.test.ts"
     },
     {
       "path": "tests/integration/oidc-id-token.test.mjs"
     },
     {
-      "path": "tests/integration/oidc-login-transport.test.mjs"
+      "path": "tests/integration/oidc-login-transport.test.ts"
     },
     {
       "path": "tests/integration/password-sign-in-policy.test.ts"
@@ -643,13 +717,13 @@
       "path": "tests/integration/known-device-cookie.test.ts"
     },
     {
-      "path": "tests/conformance/postgres-auth-binding.test.mjs"
+      "path": "tests/conformance/postgres-auth-binding.test.ts"
     },
     {
       "path": "tests/conformance/postgres-controller-auth-binding.test.mjs"
     },
     {
-      "path": "tests/conformance/schema-auth-boundary-v1.test.mjs"
+      "path": "tests/conformance/schema-auth-boundary-v1.test.ts"
     },
     {
       "path": "tests/conformance/controller-stop-yields.test.ts"
@@ -660,15 +734,27 @@
     {
       "path": "tests/integration/egress-connected-preflight.test.mjs",
       "expectedTests": [
+        "installed checkout evidence requires clean related product and harness commits in every mode",
         "connected response evidence survives cleanup without retaining untrusted fields",
         "connected response evidence preserves uncertainty after decoding and transport failures",
         "connected response headers cannot retain known credentials as request IDs",
         "connected database selection rejects missing, remote and redirected observers before effects",
         "connected receipt observation preserves proto3 zero and uint64 precision",
         "connected failed-turn observation rejects partial text without a completed message",
+        "synthetic provider separates TLS handshakes from partial HTTP bytes",
         "connected adversarial wire carries split and nested-JSON material without raw reflection",
         "connected request bytes pass the real Fastify parser and preserve missing-capability refusals",
         "failed custody deployment preserves worker event order across a reused attempt budget"
+      ]
+    },
+    {
+      "path": "tests/integration/egress-connected-lifecycle-preflight.test.ts",
+      "expectedTests": [
+        "reconnect observer counts accepted sessions once and preserves uint64 epochs",
+        "reconnect checkpoints keep correlation in the private ledger on success and failure",
+        "unexpected retirement creates require new, read-back run ownership before cleanup",
+        "upgrade and retirement quiet windows reject TCP arrivals without HTTP",
+        "controller upgrade checkpoints keep process identity in the private ledger"
       ]
     },
     {
@@ -687,7 +773,7 @@
       "path": "tests/integration/staging-qualification.test.ts"
     },
     {
-      "path": "tests/integration/gateway-workspace-readiness.test.mjs"
+      "path": "tests/integration/gateway-workspace-readiness.test.ts"
     },
     {
       "path": "tests/integration/openshell-full-integration.test.ts"
@@ -722,6 +808,13 @@
     },
     {
       "path": "tests/integration/shared-session-cookie.test.ts"
+    },
+    {
+      "path": "tests/integration/workspace-gateway-host-route.test.ts",
+      "expectedTests": [
+        "Linux Gateway routes reuse distinct bound ports and preserve the HTTPS Service target",
+        "Gateway Service mapping failure retains forwarder cleanup and reports shutdown failure"
+      ]
     }
   ]
 }

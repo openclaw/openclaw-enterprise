@@ -155,6 +155,7 @@ function publicHttpsUrl(value: unknown): string | undefined {
 function catalogEntry(value: unknown): PluginCatalogEntry {
   const plugin = record(value);
   const release = record(plugin.release);
+  const { requires_local_executor: requiresLocalExecutor = false } = release;
   const slug = text(plugin.name, 200);
   if (plugin.scope !== "GLOBAL" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(slug)) {
     invalid();
@@ -190,7 +191,7 @@ function catalogEntry(value: unknown): PluginCatalogEntry {
         unavailableReason =
           "Unavailable for this account. Ask a ChatGPT workspace administrator to review plugin access; the service did not provide a recognized reason.";
     }
-  } else if (release.requires_local_executor !== false && skills.length === 0) {
+  } else if (requiresLocalExecutor !== false && skills.length === 0) {
     // Skills use the native runtime; details must still check other local components.
     unavailableReason =
       "This plugin requires local components that OCE hosted discovery does not support. Changing ChatGPT access will not enable it here.";
@@ -278,12 +279,12 @@ export async function getHostedPlugin(
             ([name, app]) => [name, text(record(app).id, 256)] as const,
           );
     // Native Codex retains the first declaration per app before matching app/MCP alternatives.
-    const seenApps = new Set<string>();
+    const appIds = new Set<string>();
     const declarations = rawDeclarations.filter(([, id]) => {
-      if (seenApps.has(id)) {
+      if (appIds.has(id)) {
         return false;
       }
-      seenApps.add(id);
+      appIds.add(id);
       return true;
     });
     if (
@@ -301,11 +302,10 @@ export async function getHostedPlugin(
         unavailableHelp: PLUGIN_SETUP,
       };
     }
-    const appIds = declarations.map(([, id]) => id);
-    if (appIds.length > 100) {
+    if (appIds.size > 100) {
       invalid();
     }
-    if (appIds.length === 0) {
+    if (appIds.size === 0) {
       if (entry.available !== false && array(release.skills, 1000).length > 0) {
         return { ...entry, tools: [] };
       }
@@ -318,17 +318,17 @@ export async function getHostedPlugin(
             unavailableHelp: PLUGIN_SETUP,
           };
     }
-    const responseApps = await request("apps/batch", { app_ids: appIds, include_tools: true });
+    const responseApps = await request("apps/batch", { app_ids: [...appIds], include_tools: true });
     const apps = new Map<string, Record<string, unknown>>();
     for (const raw of array(responseApps.apps, 100)) {
       const app = record(raw);
       const id = text(app.id, 256);
-      if (!appIds.includes(id) || apps.has(id)) {
+      if (!appIds.has(id) || apps.has(id)) {
         invalid();
       }
       apps.set(id, app);
     }
-    if (apps.size !== new Set(appIds).size || [...apps.values()].some((app) => app.tools == null)) {
+    if (apps.size !== appIds.size || [...apps.values()].some((app) => app.tools == null)) {
       return entry;
     }
     const tools = new Map<string, PluginToolCatalogEntry>();

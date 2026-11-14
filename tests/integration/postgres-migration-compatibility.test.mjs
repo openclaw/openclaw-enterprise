@@ -14,7 +14,7 @@ import {
   assertInjectedMigrationRollback,
   retainGatewaySourcesAcrossProxyAdmission,
 } from "../helpers/credential-source-owner-upgrade.ts";
-import { request, startController } from "../helpers/postgres-platform-state.mjs";
+import { request, startController } from "../helpers/postgres-platform-state.ts";
 import { assertPopulatedUpgradeReturn } from "../helpers/populated-upgrade-return.ts";
 import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.mjs";
 import {
@@ -1406,6 +1406,7 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
       ["occ.hold_account_administration_policy(text)", true],
+      ["occ.hold_agent_audit_policy(text)", true],
       ["occ.record_repository_standing_execution(text,text,text,text,text)", true],
       ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
@@ -1966,7 +1967,7 @@ async function canonicalData(db) {
       "gateway_managed_mode",
     ],
     agent_revisions: ["gateway_managed_mode"],
-    controller_work: ["work_kind"],
+    controller_work: ["work_kind", "audit_attempt_id"],
   };
   const hasPresets =
     (await db.app.query("SELECT to_regclass('occ.presets') AS relation")).rows[0].relation !== null;
@@ -2077,6 +2078,91 @@ test(
     assert.deepEqual(await historySnapshot(db), current);
     await db.migrator.query("REVOKE SELECT ON occ.iam_identities FROM occ_app");
     assert.deepEqual(await verify(), { ok: false, code: "MIGRATION_HISTORY_UNSUPPORTED" });
+  },
+);
+
+test(
+  "Completed migration avoids DDL while preserving read-only refusal and lock release",
+  requiresHistoryPostgres,
+  async (context) => {
+    const db = await historyDatabase(context, await migrationHistoryFixture(), "completed", {
+      prefix: 73,
+    });
+    // Observe attempted DDL, including CREATE IF NOT EXISTS on existing objects.
+    // These database-local objects are outside the canonical application catalogs.
+    await historyAdmin(
+      db,
+      db.name,
+      `CREATE SEQUENCE public.migration_ddl_attempts;
+       GRANT USAGE, SELECT ON public.migration_ddl_attempts TO occ_migrator;
+       CREATE FUNCTION public.observe_migration_ddl() RETURNS event_trigger
+       LANGUAGE plpgsql AS $$ BEGIN
+         PERFORM nextval('public.migration_ddl_attempts');
+       END $$;
+       CREATE EVENT TRIGGER observe_migration_ddl ON ddl_command_start
+       WHEN TAG IN ('CREATE SCHEMA', 'CREATE TABLE')
+       EXECUTE FUNCTION public.observe_migration_ddl();`,
+    );
+    const attempts = async () =>
+      (await db.migrator.query("SELECT last_value FROM public.migration_ddl_attempts")).rows[0]
+        .last_value;
+    assert.deepEqual(await runHistoryCommand(db, "production"), {
+      ok: true,
+      history: "preFiniteRepositorySessionWithdrawal",
+    });
+    const before = await attempts();
+    assert.ok(Number(before) >= 2, "The observer must see the pending migrator's DDL.");
+    const snapshot = await historySnapshot(db);
+    for (const mode of ["development", "production"]) {
+      assert.deepEqual(await runHistoryCommand(db, mode), { ok: true, history: "completed" });
+      assert.equal(await attempts(), before, "A completed migration must not attempt DDL.");
+    }
+
+    const readonly = new URL(db.migrationUrl);
+    readonly.searchParams.set("options", "-c default_transaction_read_only=on");
+    const readonlyDb = { ...db, migrationUrl: readonly.toString() };
+    assert.deepEqual(await runHistoryCommand(readonlyDb, "production"), {
+      ok: false,
+      code: "MIGRATION_FAILED",
+    });
+    for (const flag of ["--check", "--require-current"]) {
+      assert.deepEqual(await runHistoryCommand(readonlyDb, "production", flag), {
+        ok: true,
+        history: "completed",
+      });
+    }
+    assert.deepEqual(await runHistoryCommand(readonlyDb, "production", "--expect-empty"), {
+      ok: false,
+      code: "MIGRATION_HISTORY_NOT_EMPTY",
+    });
+
+    // Keep the backend alive: closing the pool would hide a missing explicit unlock.
+    for (const readOnly of [false, true]) {
+      const pool = await createPostgresPool(db.migrationUrl, {
+        max: 1,
+        options: `-c default_transaction_read_only=${readOnly ? "on" : "off"}`,
+      });
+      try {
+        if (readOnly) {
+          await assert.rejects(migrateWithHistory(pool), (error) => error.cause?.code === "25006");
+        } else {
+          assert.equal(await migrateWithHistory(pool), "completed");
+        }
+        assert.equal(
+          (await pool.query("SHOW transaction_read_only")).rows[0].transaction_read_only,
+          readOnly ? "on" : "off",
+        );
+        assert.equal(
+          (await db.migrator.query("SELECT pg_try_advisory_lock(1868785005, 1835624306) AS held"))
+            .rows[0].held,
+          true,
+        );
+        await db.migrator.query("SELECT pg_advisory_unlock(1868785005, 1835624306)");
+      } finally {
+        await pool.end();
+      }
+    }
+    assert.deepEqual(await historySnapshot(db), snapshot);
   },
 );
 
@@ -2192,6 +2278,7 @@ test(
       [73, "preFiniteRepositorySessionWithdrawal"],
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preControlPlaneAudit"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2685,6 +2772,7 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
+      [76, "preControlPlaneAudit"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2880,6 +2968,7 @@ test(
     for (const [prefix, history] of [
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preControlPlaneAudit"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2969,6 +3058,7 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
+      [76, "preControlPlaneAudit"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2992,6 +3082,7 @@ test(
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         const rollbackTag = [
+          [76, "CREATE INDEX"],
           [75, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],
@@ -3248,6 +3339,17 @@ test(
         "GRANT DELETE ON occ.prepared_repository_draft_pulls TO occ_app",
       ],
       ["ledger-grant", 25, "GRANT SELECT ON drizzle.__drizzle_migrations TO occ_app"],
+      ["completed-catalog", manifest.entries.length, "CREATE TABLE occ.unexplained(id integer)"],
+      [
+        "completed-grant",
+        manifest.entries.length,
+        "REVOKE SELECT ON occ.iam_identities FROM occ_app",
+      ],
+      [
+        "completed-receipt",
+        manifest.entries.length,
+        "UPDATE drizzle.__drizzle_migrations SET hash=repeat('0',64) WHERE id=(SELECT min(id) FROM drizzle.__drizzle_migrations)",
+      ],
     ];
     for (const [label, prefix, sql] of cases) {
       void context.test(label, async (child) => {
