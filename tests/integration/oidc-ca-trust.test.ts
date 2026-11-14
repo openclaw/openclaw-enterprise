@@ -66,8 +66,11 @@ test(
     }
     // Render with the private CA settings enabled so comparison includes both embedded programs.
     const values = { ...oidcValues, ...caValues, ...gatewayValues };
-    const source = await renderProductionChart(values);
-    const packaged = await renderProductionChart(values, { chartDirectory: archive });
+    const source: unknown = await renderProductionChart(values);
+    const packaged: unknown = await renderProductionChart(values, { chartDirectory: archive });
+    const renderResult = Type.Object({ stdout: Type.String({ minLength: 1 }) });
+    assert.ok(Check(renderResult, source), "Expected Helm to render the source chart");
+    assert.ok(Check(renderResult, packaged), "Expected Helm to render the packaged chart");
     assert.equal(packaged.stdout, source.stdout);
   },
 );
