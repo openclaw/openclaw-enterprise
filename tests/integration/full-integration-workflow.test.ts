@@ -107,7 +107,7 @@ test("full integration workflow carries QA and installation outcomes into select
         PATH: `${dirname(process.execPath)}:${process.env.PATH}`,
         RUNNER_TEMP: directory,
         ...Object.fromEntries(
-          Object.entries(present(aggregate).env ?? {}).map(([name, expression]) => [
+          Object.entries(record(present(aggregate).env ?? {})).map(([name, expression]) => [
             name,
             text(workflowCondition(expression, context)),
           ]),
