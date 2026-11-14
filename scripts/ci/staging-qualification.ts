@@ -13,12 +13,11 @@ import {
   repository,
   validateCi,
   validateContext,
-} from "./container-release.mjs";
-import { loadTestSuites } from "./test-suites.mjs";
+} from "./container-release.ts";
+import { field as jsonField, match } from "./container-release/metadata.ts";
+import { loadTestSuites } from "./test-suites.ts";
 
 const env = process.env;
-// Staging communicates through receipt files, never Actions command files.
-delete env.GITHUB_OUTPUT;
 const workflow = ".github/workflows/staging-qualification.yml";
 const maxReceiptBytes = 64 * 1024;
 const startupFiles = [
@@ -158,7 +157,11 @@ async function releaseProfile(root: string, sourceSha = env.SOURCE_SHA) {
     );
   }
   const suites = loadTestSuites(join(root, "scripts/ci/test-suites.json"));
-  assert.equal(nodeBaseImage, suites.lanes["images-packaging"].prepare.defaultEnv.NODE_BASE_IMAGE);
+  const packaging = jsonField(jsonField(suites, "lanes"), "images-packaging");
+  assert.equal(
+    nodeBaseImage,
+    jsonField(jsonField(jsonField(packaging, "prepare"), "defaultEnv"), "NODE_BASE_IMAGE"),
+  );
   return { nodeBaseImage, codexVersion };
 }
 
@@ -184,12 +187,13 @@ async function producer(
     workflow,
   );
   const main = await github(`repos/${repository}/branches/main`);
-  assert.equal(main.name, "main");
-  assert.equal(main.protected, true, "Main must be protected.");
-  assert.match(main.commit?.sha ?? "", /^[a-f0-9]{40}$/);
-  assert.equal(main.commit.sha.length, 40);
-  requireMainCommit(root, main.commit.sha);
-  git(root, ["merge-base", "--is-ancestor", env.GITHUB_WORKFLOW_SHA!, main.commit.sha]);
+  assert.equal(jsonField(main, "name"), "main");
+  assert.equal(jsonField(main, "protected"), true, "Main must be protected.");
+  const mainSha = jsonField(jsonField(main, "commit"), "sha") ?? "";
+  match(mainSha, /^[a-f0-9]{40}$/);
+  assert.equal(mainSha.length, 40);
+  requireMainCommit(root, mainSha);
+  git(root, ["merge-base", "--is-ancestor", env.GITHUB_WORKFLOW_SHA!, mainSha]);
   const profile = await releaseProfile(root, selection.SOURCE_SHA);
   const run = await github(`repos/${repository}/actions/runs/${selection.PUBLICATION_RUN_ID}`);
   const definition = await github(`repos/${repository}/actions/workflows/container-publish.yml`);
@@ -199,39 +203,50 @@ async function producer(
     "jobs",
   );
   const publish = jobs.filter(
-    (job: { name: string }) => job.name === "Publish exact OCI digests to public GHCR",
+    (job) => jsonField(job, "name") === "Publish exact OCI digests to public GHCR",
   );
   assert.equal(publish.length, 1, "Require the exact image publication job.");
-  assert.equal(publish[0].head_sha, selection.SOURCE_SHA);
-  assert.equal(publish[0].status, "completed");
-  assert.equal(publish[0].conclusion, "success", "The image publication job must succeed.");
+  assert.equal(jsonField(publish[0], "head_sha"), selection.SOURCE_SHA);
+  assert.equal(jsonField(publish[0], "status"), "completed");
+  assert.equal(
+    jsonField(publish[0], "conclusion"),
+    "success",
+    "The image publication job must succeed.",
+  );
   const artifacts = await githubPages(
     `repos/${repository}/actions/runs/${selection.PUBLICATION_RUN_ID}/artifacts`,
     "artifacts",
   );
   const matches = artifacts.filter(
-    (artifact: { name: string }) =>
-      artifact.name ===
+    (artifact) =>
+      jsonField(artifact, "name") ===
       `container-publication-${selection.PUBLICATION_RUN_ID}-${selection.PUBLICATION_ATTEMPT}`,
   );
   assert.equal(matches.length, 1, "Require the exact publication artifact.");
   const artifact = matches[0];
-  assert.equal(artifact.expired, false);
-  assert.equal(String(artifact.workflow_run?.id), selection.PUBLICATION_RUN_ID);
-  assert.equal(artifact.workflow_run?.head_sha, selection.SOURCE_SHA);
-  assert.ok(Number.isSafeInteger(artifact.id) && artifact.id > 0, "Require a numeric artifact ID.");
-  const artifactId = Number(artifact.id).toString(10);
-  assert.match(artifact.digest ?? "", /^sha256:[a-f0-9]{64}$/);
+  assert.equal(jsonField(artifact, "expired"), false);
+  assert.equal(
+    String(jsonField(jsonField(artifact, "workflow_run"), "id")),
+    selection.PUBLICATION_RUN_ID,
+  );
+  assert.equal(jsonField(jsonField(artifact, "workflow_run"), "head_sha"), selection.SOURCE_SHA);
+  const id = jsonField(artifact, "id");
   assert.ok(
-    Number.isSafeInteger(artifact.size_in_bytes) &&
-      artifact.size_in_bytes > 0 &&
-      artifact.size_in_bytes <= 1024 * 1024,
+    typeof id === "number" && Number.isSafeInteger(id) && id > 0,
+    "Require a numeric artifact ID.",
+  );
+  const artifactId = id.toString(10);
+  const digest = jsonField(artifact, "digest") ?? "";
+  match(digest, /^sha256:[a-f0-9]{64}$/);
+  const size = jsonField(artifact, "size_in_bytes");
+  assert.ok(
+    typeof size === "number" && Number.isSafeInteger(size) && size > 0 && size <= 1024 * 1024,
     "Publication archive exceeds 1 MiB.",
   );
   return {
     root,
     selection,
-    artifact: { digest: artifact.digest, size_in_bytes: artifact.size_in_bytes },
+    artifact: { digest, size_in_bytes: size },
     artifactId,
     profile,
   };
@@ -363,23 +378,24 @@ async function receiptCi(
     "workflow_runs",
   );
   const matches = runs.filter(
-    (run: { id: number; run_attempt: number }) =>
-      String(run.id) === ciRunId && String(run.run_attempt) === ciAttempt,
+    (run) =>
+      String(jsonField(run, "id")) === ciRunId &&
+      String(jsonField(run, "run_attempt")) === ciAttempt,
   );
   assert.equal(matches.length, 1, "Receipt CI identity is not bound to a service run.");
   const candidate = matches[0];
-  const id = decimal(String(candidate.id));
-  const attempt = decimal(String(candidate.run_attempt));
+  const id = decimal(String(jsonField(candidate, "id")));
+  const attempt = decimal(String(jsonField(candidate, "run_attempt")));
   const definition = await github(`repos/${repository}/actions/workflows/ci.yml`);
-  assert.equal(candidate.repository?.full_name, repository);
-  assert.equal(candidate.head_repository?.full_name, repository);
-  assert.equal(candidate.head_branch, "main");
-  assert.equal(candidate.head_sha, sourceSha);
-  assert.equal(candidate.event, "push");
-  assert.equal(candidate.status, "completed");
-  assert.equal(candidate.conclusion, "success");
-  assert.equal(candidate.workflow_id, definition.id);
-  assert.equal(candidate.path, ".github/workflows/ci.yml");
+  assert.equal(jsonField(jsonField(candidate, "repository"), "full_name"), repository);
+  assert.equal(jsonField(jsonField(candidate, "head_repository"), "full_name"), repository);
+  assert.equal(jsonField(candidate, "head_branch"), "main");
+  assert.equal(jsonField(candidate, "head_sha"), sourceSha);
+  assert.equal(jsonField(candidate, "event"), "push");
+  assert.equal(jsonField(candidate, "status"), "completed");
+  assert.equal(jsonField(candidate, "conclusion"), "success");
+  assert.equal(jsonField(candidate, "workflow_id"), jsonField(definition, "id"));
+  assert.equal(jsonField(candidate, "path"), ".github/workflows/ci.yml");
   const run = await github(`repos/${repository}/actions/runs/${id}`);
   const jobs = await githubPages(
     `repos/${repository}/actions/runs/${id}/attempts/${attempt}/jobs`,
@@ -887,7 +903,9 @@ async function smoke(directory: string) {
   );
 }
 
-try {
+async function main() {
+  // Staging communicates through receipt files, never Actions command files.
+  delete env.GITHUB_OUTPUT;
   const [command, path, candidatePath, ...extra] = process.argv.slice(2);
   if (command === "validate-pair") {
     await validatePair();
@@ -925,7 +943,11 @@ try {
       await smoke(env.RUNNER_TEMP);
     }
   }
-} catch (error) {
-  console.error(error instanceof Error ? error.message : "Staging qualification failed.");
-  process.exitCode = 1;
+}
+
+if (import.meta.main) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : "Staging qualification failed.");
+    process.exitCode = 1;
+  });
 }

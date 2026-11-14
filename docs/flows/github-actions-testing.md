@@ -59,7 +59,7 @@ graph TD
 `.github/workflows/ci.yml:jobs`, `.github/workflows/full-integration.yml:jobs`,
 `.github/workflows/full-integration-execution.yml:jobs`,
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
-`scripts/ci/test-suites.mjs:loadTestSuites`
+`scripts/ci/test-suites.ts:loadTestSuites`
 
 `loadTestSuites` reads ordered `scripts/ci/test-suites.json` lanes: tests, inputs, preparation.
 

@@ -12,7 +12,7 @@ import {
   verifyCi,
   verifyEnvironment,
   verifyMainSource,
-} from "./container-release.mjs";
+} from "./container-release.ts";
 
 function property<K extends PropertyKey>(value: unknown, key: K): unknown {
   return (value as Record<K, unknown>)[key];

@@ -5,7 +5,7 @@ import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { isAbsolute, relative, sep } from "node:path";
 import { TextDecoder } from "node:util";
 
-import { loadTestSuites } from "./test-suites.mjs";
+import { loadTestSuites } from "./test-suites.ts";
 
 const oid = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const packageName = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
@@ -194,13 +194,20 @@ function assetPrediction({ base, tested }: Identity): Prediction {
   }
   try {
     const manifest = loadTestSuites("scripts/ci/test-suites.json");
-    const ci: unknown = manifest.groups.ci;
-    if (manifest.version !== 1 || !Array.isArray(ci) || !ci.length) {
+    const ci = property(property(manifest, "groups"), "ci");
+    const definitions = property(manifest, "lanes");
+    if (
+      property(manifest, "version") !== 1 ||
+      !Array.isArray(ci) ||
+      !ci.length ||
+      typeof definitions !== "object" ||
+      definitions === null
+    ) {
       return broad("incomplete_manifest");
     }
     const found = new Set<string>();
     const lanes: string[] = [];
-    for (const [name, lane] of Object.entries(manifest.lanes)) {
+    for (const [name, lane] of Object.entries(definitions)) {
       const files: unknown = property(lane, "files");
       if (!Array.isArray(files)) {
         return broad("incomplete_manifest");
@@ -224,7 +231,7 @@ function assetPrediction({ base, tested }: Identity): Prediction {
     if (
       found.size !== assetTests.length ||
       lanes.length > 32 ||
-      !ci.every((name) => Object.hasOwn(manifest.lanes, name))
+      !ci.every((name: unknown) => typeof name === "string" && Object.hasOwn(definitions, name))
     ) {
       return broad("incomplete_manifest");
     }

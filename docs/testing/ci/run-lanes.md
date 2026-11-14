@@ -32,7 +32,7 @@ To find the owning lane for a file name or path fragment, run from the repositor
 
 ```sh
 node --input-type=module - local-first-agent <<'JS'
-import { loadTestSuites } from './scripts/ci/test-suites.mjs';
+import { loadTestSuites } from './scripts/ci/test-suites.ts';
 
 const { lanes } = loadTestSuites('scripts/ci/test-suites.json');
 
