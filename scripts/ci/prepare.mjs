@@ -61,7 +61,7 @@ import { metricsMonitoringImages } from "./metrics-monitoring-images.ts";
 import {
   prepareRepositoryCredentials,
   prepareRepositoryCredentialsFile,
-} from "./repository-credentials.mjs";
+} from "./repository-credentials.ts";
 import { prepareCodexSeccompProfile } from "../lib/codex-seccomp-k3d.ts";
 import {
   prepareOpenShell,
@@ -460,6 +460,25 @@ async function markResourceReady(statePath, state, resource) {
   resource.status = "ready";
   resource.readyAt = new Date().toISOString();
   await writeState(statePath, state);
+}
+
+/**
+ * @param {string} statePath
+ * @param {ReturnType<typeof baseState>} state
+ * @returns {import("./repository-credentials.ts").RepositoryCredentialsImageJournal}
+ */
+function repositoryCredentialsImageJournal(statePath, state) {
+  return {
+    imagePrefix: `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}`,
+    registerImage: async (tag) => {
+      const resource = addResource(state, "image-tag", { name: tag });
+      await writeState(statePath, state);
+      return async (imageId) => {
+        resource.imageId = imageId;
+        await markResourceReady(statePath, state, resource);
+      };
+    },
+  };
 }
 
 // A timed-out command gets SIGTERM, SIGKILL after this grace, and after the same
@@ -3303,18 +3322,9 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
         env,
         await prepareRepositoryCredentials({
           repositoryRoot,
-          imagePrefix: `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}`,
+          ...repositoryCredentialsImageJournal(resolvedStatePath, state),
           receiptPath: join(dirname(resolvedStatePath), "repository-credentials-images.json"),
           execFile,
-          registerImage: async (tag) => {
-            const resource = addResource(state, "image-tag", { name: tag });
-            await writeState(resolvedStatePath, state);
-            return resource;
-          },
-          markImageReady: async (resource, imageId) => {
-            resource.imageId = imageId;
-            await markResourceReady(resolvedStatePath, state, resource);
-          },
         }),
       );
       break;
@@ -3424,18 +3434,9 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
             () =>
               prepareRepositoryCredentials({
                 repositoryRoot,
-                imagePrefix: `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}`,
+                ...repositoryCredentialsImageJournal(resolvedStatePath, state),
                 execFile,
                 serviceOnly: true,
-                registerImage: async (tag) => {
-                  const resource = addResource(state, "image-tag", { name: tag });
-                  await writeState(resolvedStatePath, state);
-                  return resource;
-                },
-                markImageReady: async (resource, imageId) => {
-                  resource.imageId = imageId;
-                  await markResourceReady(resolvedStatePath, state, resource);
-                },
               }),
           ]),
       );
