@@ -214,7 +214,7 @@ Agent, revision, Sandbox, Pod and supervisor identities throughout.
    deletion removes its row, and status, logs and audit omit the private payload.
    Measure update latency separately from setup and deployment.
 
-The [CI pin](../../../scripts/ci/openshell.mjs) selects OpenShell 0.1.8.
+CI uses [OpenShell 0.1.8](../../../docs/testing/openshell-oauth.md#prepare-images-and-trust).
 Its [policy matcher](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/crates/openshell-supervisor-network/data/sandbox-policy.rego)
 checks request methods and canonical paths. Its [policy status protocol](https://github.com/NVIDIA/OpenShell/blob/f3d976590d3eb1379690a2abaf0f0e26c21d487d/proto/openshell.proto)
 distinguishes a queried policy revision from the active loaded version.
