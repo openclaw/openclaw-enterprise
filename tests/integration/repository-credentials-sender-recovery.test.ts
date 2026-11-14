@@ -13,7 +13,7 @@ import { socketDirectory } from "../helpers/socket-directory.mjs";
 // Node's test runner gives this file a fresh process, before any broker imports.
 test("selected native sender recovers only the original grant without loading broker sessions", async (t) => {
   const forbidden = await realpath(
-    new URL("../../apps/controller/src/drivers/repo/credentials/sessions.ts", import.meta.url),
+    new URL("../../apps/controller/src/drivers/repo/access/sessions.ts", import.meta.url),
   );
   const attempts: string[] = [];
   const hook = registerHooks({

@@ -16,6 +16,8 @@ import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { CONSOLE_NAMESPACE_NOT_READY, NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
+import { settledFetches, trackSettledFetches } from "./console-fetch-accounting.ts";
 import {
   AGENT_READ,
   expireSessions,
@@ -461,7 +463,7 @@ test("the Agents list sees its Namespace become ready without a Refresh", async 
 
 // The Agents list waiting on a provisioning Namespace, with the page clock held: `poll()` runs one
 // check and waits for its read to arrive, so its answer, not the absence of one, is what shows.
-async function waitingList(t: TestContext) {
+async function waitingList(t: TestContext, { trackNamespaceReads = false } = {}) {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "team");
   const { page } = await newPage(t, fixture, { browser });
   await page.clock.install({ time: new Date("2026-10-20T12:00:00Z") });
@@ -469,6 +471,9 @@ async function waitingList(t: TestContext) {
   await reportNamespaces(page, patches);
   await routeInstallationProvisioning(page, fixture);
   const view = page.locator(settledView);
+  if (trackNamespaceReads) {
+    await trackSettledFetches(page);
+  }
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
   await view.getByText(DRAFT_INVITATION).waitFor();
@@ -485,12 +490,20 @@ async function waitingList(t: TestContext) {
       requested += 1;
     }
   });
-  const poll = async () => {
-    const read = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/namespaces",
-    );
-    await page.clock.runFor(10_000);
-    await read;
+  const poll = async (leg?: string) => {
+    const before = requested;
+    try {
+      await Promise.all([
+        page.waitForResponse((response) => new URL(response.url()).pathname === "/namespaces"),
+        page.clock.runFor(10_000),
+      ]);
+    } catch (cause) {
+      if (leg === undefined) {
+        throw cause;
+      }
+      const request = requested === before ? "no request was sent" : "request sent";
+      throw new Error(`Namespace poll for ${leg}: ${request}`, { cause });
+    }
   };
   // No check comes over three more cadences.
   const assertStopped = async () => {
@@ -549,24 +562,36 @@ test("the Agents list names a Namespace that left the list while it waited", asy
 // An unchanged or failed read changes nothing on screen, and the next check still comes
 // (finding 2082).
 test("the Agents list keeps checking its Namespace after a failed read", async (t) => {
-  const { page, view, reads, poll, create, set } = await waitingList(t);
+  const { page, view, reads, poll, create, set } = await waitingList(t, {
+    trackNamespaceReads: true,
+  });
+  const before = await settledFetches(page, "/namespaces");
+  // Let the page handle each body and schedule its next check before advancing the clock.
+  const waitForRead = (count: number) =>
+    waitUntil(
+      `Namespace read ${count} to settle`,
+      async () => (await settledFetches(page, "/namespaces")) >= before + count,
+      { timeoutMs: 10_000, intervalMs: 50 },
+    );
   // An unchanged answer leaves the note as it is: the same node, not announced again.
   const note = view.getByRole("status").filter({ hasText: NOT_READY });
   await note.evaluate((node: HTMLElement) => {
     node.dataset.kept = "";
   });
-  await poll();
+  await poll("unchanged 200 read");
+  await waitForRead(1);
   assert.equal(await view.locator("#namespace-not-ready[data-kept]").count(), 1);
   await page.route(
     (url) => url.pathname === "/namespaces",
     (route) => route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
     { times: 1 },
   );
-  await poll();
+  await poll("injected 503 read");
   assert.deepEqual(reads, [200, 503]);
+  await waitForRead(2);
   await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
   set({ status: "ready" });
-  await poll();
+  await poll("ready recovery after the 503");
   await view
     .getByRole("status")
     .filter({ hasText: "Namespace status: Ready. Agents created here can be deployed now." })

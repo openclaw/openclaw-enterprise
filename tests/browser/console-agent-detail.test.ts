@@ -3490,6 +3490,8 @@ test("a superseded draft Secret metadata read cannot replace the current Configu
   });
   assert.equal(changed.status, 200, JSON.stringify(changed.body));
   await page.getByRole("button", { name: "Reload authentication source", exact: true }).click();
+  // Let the reload replace its view before changing tabs; the old metadata stays held.
+  await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(replacement));
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   const reason =
     "Saving this Configuration needs Secret operate on Current bot token, which your access does not include. Ask an Installation administrator to grant it.";

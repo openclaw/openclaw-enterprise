@@ -1,8 +1,8 @@
 import type {
   Clock,
   RepositoryServiceFactory,
-} from "../../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
-import type { ServiceConfig } from "../../../apps/controller/src/drivers/repo/credentials/service-contracts.ts";
+} from "../../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import type { ServiceConfig } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { appModule } from "./runtime.mjs";
 
 const [
@@ -10,9 +10,9 @@ const [
   { preparedSessionConstructor },
   { developmentSessionConstructor },
 ] = await Promise.all([
-  appModule("drivers/repo/credentials/service"),
-  appModule("drivers/repo/credentials/session-construction"),
-  appModule("drivers/repo/credentials/development-session"),
+  appModule("drivers/repo/access/service"),
+  appModule("drivers/repo/access/session-construction"),
+  appModule("drivers/repo/access/development-session"),
 ]);
 
 /** Synchronous service fixture with the same construction choice as process composition. */
@@ -22,7 +22,7 @@ export function createCredentialService(
     factory: RepositoryServiceFactory;
     clock: Clock;
   }>,
-): import("../../../apps/controller/src/drivers/repo/credentials/internal-contracts.ts").CredentialServiceOwner {
+): import("../../../apps/controller/src/drivers/repo/access/internal-contracts.ts").CredentialServiceOwner {
   const construct =
     "createPrepared" in options.factory
       ? preparedSessionConstructor(options.factory)

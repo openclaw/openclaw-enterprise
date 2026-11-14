@@ -2,6 +2,19 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DEPLOYMENT_FAILURE_STEPS } from "../../packages/occ/src/deployment-failure-steps.ts";
+import {
+  entries,
+  hasPodIdentity,
+  hasResourceId,
+  hasStringField,
+  isArray,
+  isRecord,
+  readString,
+  record,
+} from "./egress-observation-values.ts";
+import { observeConnectedOperation } from "./egress-connected-failure.ts";
+import { summarizeGatewayTurnResult } from "./egress-gateway-turn-observation.ts";
 import { deleteInstalledResource } from "./egress-installed-resource-cleanup.mjs";
 import { createCustodyTransitions } from "./egress-supplier-custody-transitions.mjs";
 import { createOpenShellKubernetesFixture } from "./openshell-kubernetes-real.mjs";
@@ -25,6 +38,10 @@ export function enforcementCapabilities(input) {
 
 /**
  * Owns only confirmed resource IDs; an uncertain create remains in the ledger.
+ * @param {import("node:test").TestContext} t
+ * @param {Awaited<ReturnType<typeof import("./egress-installed-stack.mjs").arrangeRealPrerequisites>>} setup
+ * @param {Awaited<ReturnType<typeof import("./egress-installed-stack.mjs").observePreparedStack>>} stack
+ * @param {Awaited<ReturnType<typeof import("./egress-installed-stack.mjs").createRunEvidence>>} evidence
  */
 export async function registerCleanupAndStartProvider(
   t,
@@ -49,6 +66,9 @@ export async function registerCleanupAndStartProvider(
   // remains in the ledger for the parent; never replay a mutation to hide it.
   t.after(async () => {
     const failures = ledger.pendingCreate ? ["unconfirmed create; reconcile ledger"] : [];
+    if (ledger.pendingDeploy) {
+      failures.push("unreconciled deployment; inspect exact Agent operation in ledger");
+    }
     const clean = async (name, action) => {
       try {
         await action();
@@ -175,12 +195,17 @@ export async function registerCleanupAndStartProvider(
     { ...input.provider, model: controller.model, protect: evidence.protect },
     credentials,
   );
+  /** @param {string} kind @param {unknown} body */
   const create = async (kind, body) => {
     t.signal.throwIfAborted();
-    ledger.pendingCreate = { kind, name: body.name };
+    assert.ok(isRecord(body), "expected a resource creation request");
+    const name = body.name;
+    assert.ok(name === undefined || typeof name === "string", "expected a resource name");
+    ledger.pendingCreate = { kind, name };
     await checkpoint("create-request", { kind, name: body.name });
     const value = await api("POST", `${namespacePath}/${kind}`, body, 201);
-    ledger.resources.push({ kind, id: value.id, name: body.name });
+    assert.ok(hasResourceId(value), "expected the created resource identity");
+    ledger.resources.push({ kind, id: value.id, name });
     delete ledger.pendingCreate;
     await checkpoint("created", { kind, id: value.id });
     return value;
@@ -189,9 +214,11 @@ export async function registerCleanupAndStartProvider(
     placement,
     controllerPods: controllerPods.map(({ metadata }) => metadata.uid),
   });
+  /** @param {unknown} sandbox */
   const recordSandbox = async (sandbox) => {
-    const { name, uid, labels } = sandbox.metadata;
-    const id = labels?.["openshell.ai/sandbox-id"];
+    assert.ok(hasPodIdentity(sandbox), "expected the owned Sandbox identity");
+    const { name, uid } = sandbox.metadata;
+    const id = readString(record(record(sandbox.metadata).labels)["openshell.ai/sandbox-id"]);
     assert.ok(uid && id, "the Sandbox must identify its Kubernetes UID and supplier owner");
     assert.ok(!ownedSandboxes.some((entry) => entry.uid === uid), "fresh owned Sandbox identity");
     ownedSandboxes.push({ name, uid, id });
@@ -209,6 +236,336 @@ export async function registerCleanupAndStartProvider(
   return { provider, create, recordSandbox, recordPods };
 }
 
+const gatewayContainer = "gateway";
+
+/** @param {unknown} pod @param {string} agentId */
+function ownsGateway(pod, agentId) {
+  assert.ok(pod != null, "expected Gateway Pod");
+  const labels = record(record(record(pod).metadata).labels);
+  return (
+    labels["openclaw.dev/agent"] === agentId && labels["openclaw.dev/workload-role"] === "gateway"
+  );
+}
+
+/** @param {unknown} pod @param {string} revisionId */
+function matchesGatewayRevision(pod, revisionId) {
+  const labels = record(record(record(pod).metadata).labels);
+  return labels["openclaw.dev/revision"] === revisionId;
+}
+
+/** @param {unknown} containers */
+function findGatewayContainer(containers) {
+  if (containers == null) {
+    return undefined;
+  }
+  assert.ok(isArray(containers), "expected Gateway container list");
+  const gateway = containers.find((entry) => {
+    assert.ok(entry != null, "expected Gateway container entry");
+    return record(entry).name === gatewayContainer;
+  });
+  return record(gateway);
+}
+
+/** @param {unknown} pod @param {string} image */
+function gatewayImageMatches(pod, image) {
+  return findGatewayContainer(record(record(pod).spec).containers)?.image === image;
+}
+
+/** @param {unknown} pod */
+function gatewayRunningAndReady(pod) {
+  const status = record(record(pod).status);
+  const container = findGatewayContainer(status.containerStatuses);
+  if (
+    status.phase !== "Running" ||
+    record(container?.state).running == null ||
+    container?.ready !== true ||
+    status.conditions == null
+  ) {
+    return false;
+  }
+  assert.ok(isArray(status.conditions), "expected Pod conditions");
+  return status.conditions.some((entry) => {
+    assert.ok(entry != null, "expected Pod condition");
+    const condition = record(entry);
+    return condition.type === "Ready" && condition.status === "True";
+  });
+}
+
+const deploymentStatuses = new Set(["queued", "running", "succeeded", "failed"]);
+const deploymentProgressCodes = new Set([
+  "RECONCILIATION_PENDING",
+  "REVISION_INCOMPLETE",
+  "REVISION_FINALIZATION_INCOMPLETE",
+  "ACTIVE_REVISION_RECOVERY",
+  "WORKSPACE_NODE_PENDING",
+  "AGENT_GATEWAY_UNAVAILABLE",
+  "SANDBOX_GATEWAY_UNAVAILABLE",
+]);
+
+/**
+ * @param {<Result>(label: string, read: () => Promise<Result | undefined>, timeoutMs: number) => Promise<Result>} waitFor
+ * @param {{ api: (method: string, path: string) => Promise<unknown>, checkpoint: (phase: string, details: Record<string, unknown>) => Promise<unknown> }} evidence
+ * @param {{ agentPath: string, deploymentPath: string, revisionId: string }} selection
+ * @returns {Promise<unknown>}
+ */
+export async function waitForProtectedAgentActivation(
+  waitFor,
+  { api, checkpoint },
+  { agentPath, deploymentPath, revisionId },
+) {
+  /** @type {{ status: string, progressCode: string | null, activeRevisionMatches: boolean | null, errorCode?: string } | null} */
+  let last = null;
+  let outcome = "timeout";
+  /** @type {"deployment" | "agent" | null} */
+  let reading = null;
+  /** @type {string | undefined} */
+  let lastPending;
+  let pendingCheckpoints = 0;
+  try {
+    return await waitFor(
+      "protected Agent activation with genuine installed evidence",
+      async () => {
+        reading = "deployment";
+        const response = await api("GET", deploymentPath);
+        assert.ok(response != null, "expected deployment response");
+        const deployment = record(response);
+        const rawStatus = deployment.status;
+        const status =
+          typeof rawStatus === "string" && deploymentStatuses.has(rawStatus)
+            ? rawStatus
+            : "unknown";
+        const progressCode = record(record(deployment.progress).lastAttempt).code;
+        last = {
+          status,
+          progressCode:
+            typeof progressCode === "string" && deploymentProgressCodes.has(progressCode)
+              ? progressCode
+              : null,
+          activeRevisionMatches: null,
+        };
+        if (status === "failed") {
+          reading = null;
+          outcome = "failed";
+          const code = record(deployment.error).code;
+          last.errorCode =
+            typeof code === "string" && Object.hasOwn(DEPLOYMENT_FAILURE_STEPS, code)
+              ? code
+              : "UNKNOWN";
+          assert.fail("The protected Agent deployment failed; inspect the safe checkpoint");
+        }
+        reading = "agent";
+        const current = await api("GET", agentPath);
+        assert.ok(current != null, "expected Agent response");
+        last.activeRevisionMatches = record(current).activeRevisionId === revisionId;
+        reading = null;
+        // The worker publishes the active pointer before finishing activation.
+        if (status === "succeeded" && last.activeRevisionMatches) {
+          return current;
+        }
+        // Record the first observation and changes, with a cap even if the pointer
+        // oscillates. The failure checkpoint always retains the last observation.
+        const pending = JSON.stringify(last);
+        if (pendingCheckpoints < 6 && pending !== lastPending) {
+          pendingCheckpoints += 1;
+          lastPending = pending;
+          await checkpoint("activation-pending", { last }).catch(() => {});
+        }
+        return undefined;
+      },
+      12 * 60_000,
+    );
+  } catch (error) {
+    await checkpoint("activation-failed", {
+      outcome: reading === null ? outcome : "read-error",
+      ...(reading !== null && { reading }),
+      last,
+    }).catch(() => {});
+    throw error;
+  }
+}
+
+/** @typedef {{ metadata: { uid: string, name: string }, spec: { containers: unknown[] } }} InstalledGateway */
+
+/** @param {unknown} pod @returns {pod is InstalledGateway} */
+function hasGatewayIdentity(pod) {
+  return (
+    isRecord(pod) &&
+    isRecord(pod.spec) &&
+    isArray(pod.spec.containers) &&
+    isRecord(pod.metadata) &&
+    typeof pod.metadata.uid === "string" &&
+    pod.metadata.uid.length > 0 &&
+    typeof pod.metadata.name === "string" &&
+    pod.metadata.name.length > 0
+  );
+}
+
+/**
+ * @typedef {{
+ *   waitFor: <Result>(label: string, read: () => Promise<Result | undefined>, timeoutMs: number) => Promise<Result>,
+ *   resources: (kind: string, placement: string, flag: string, selector: string) => Promise<unknown>,
+ * }} GatewaySelection
+ * @param {GatewaySelection} f
+ * @param {{ checkpoint: (phase: string, visible: object, privateDetails?: object) => Promise<void> }} evidence
+ * @param {string} placement
+ * @param {string} agentId
+ * @param {string} revisionId
+ * @param {string} image
+ * @returns {Promise<InstalledGateway>}
+ */
+export async function waitForInstalledGateway(f, evidence, placement, agentId, revisionId, image) {
+  /** @type {Record<string, number> | null} */
+  let last = null;
+  let listing = false;
+  /** @type {InstalledGateway} */
+  let gateway;
+  try {
+    gateway = await f.waitFor(
+      "one ready Gateway Pod for the installed Agent revision",
+      async () => {
+        listing = true;
+        const pods = await observeConnectedOperation("gateway-selection-list", () =>
+          f.resources(
+            "pods",
+            placement,
+            "--selector",
+            `openclaw.dev/agent=${agentId},openclaw.dev/workload-role=gateway`,
+          ),
+        );
+        assert.ok(isArray(pods), "expected Gateway Pod list");
+        const owned = pods.filter((pod) => ownsGateway(pod, agentId));
+        const live = owned.filter((pod) => !record(record(pod).metadata).deletionTimestamp);
+        const current = live.filter((pod) => matchesGatewayRevision(pod, revisionId));
+        const matchingImage = current.filter((pod) => gatewayImageMatches(pod, image));
+        const ready = matchingImage.filter(gatewayRunningAndReady);
+        last = {
+          owned: owned.length,
+          deleting: owned.length - live.length,
+          stale: live.length - current.length,
+          current: current.length,
+          wrongImage: current.length - matchingImage.length,
+          pending: current.filter((pod) => record(record(pod).status).phase === "Pending").length,
+          ready: ready.length,
+        };
+        listing = false;
+        if (current.length === 1 && ready.length === 1 && hasGatewayIdentity(ready[0])) {
+          return ready[0];
+        }
+        return undefined;
+      },
+      120_000,
+    );
+  } catch (error) {
+    // The outer failure formatter intentionally drops assertion text. Keep the
+    // last successful list summary separately, including when the next read fails.
+    await evidence
+      .checkpoint("gateway-selection-failed", {
+        outcome: listing ? "read-error" : "timeout",
+        last,
+      })
+      .catch(() => {});
+    throw error;
+  }
+  await evidence.checkpoint("gateway-selected", { last }, { gatewayUid: gateway.metadata.uid });
+  return gateway;
+}
+
+/** @typedef {Omit<Parameters<ReturnType<typeof createOpenShellKubernetesFixture>["requestCodexTurnFromGatewayPod"]>[0], "namespace" | "gatewayPod" | "container">} GatewayTurnOptions */
+
+/**
+ * @template Snapshot
+ * @param {{
+ *   maybeResource: (kind: string, name: string, placement: string) => Promise<unknown>,
+ *   requestCodexTurnFromGatewayPod: (turn: GatewayTurnOptions & { namespace: string, gatewayPod: string, container: string }) => Promise<unknown>,
+ * }} f
+ * @param {{ ledger: Pick<import("./egress-upgrade-contracts.ts").ConnectedEvidenceLedger, "gatewayExecTarget">, checkpoint: (phase: string, details: object) => Promise<unknown> }} evidence
+ * @param {{ placement: string, agentId: string, revisionId: string, image: string, gateway: InstalledGateway,
+ *   phase: string, custodyTransitions: { snapshot: () => Promise<Snapshot> }, expected?: string }} selection
+ * @param {GatewayTurnOptions} turn
+ */
+export async function requestInstalledGatewayTurn(
+  f,
+  evidence,
+  { placement, agentId, revisionId, image, gateway, phase, custodyTransitions, expected },
+  turn,
+) {
+  const before = await custodyTransitions.snapshot();
+  const { name, uid } = gateway.metadata;
+  const observation = { phase, outcome: "read-error" };
+  evidence.ledger.gatewayExecTarget = observation;
+  const current = await observeConnectedOperation("gateway-exec-target-get", () =>
+    f.maybeResource("pod", name, placement),
+  );
+  const metadata = record(record(current).metadata);
+  if (!current) {
+    observation.outcome = "absent";
+  } else if (metadata.uid !== uid) {
+    observation.outcome = "replaced";
+  } else if (
+    !ownsGateway(current, agentId) ||
+    !matchesGatewayRevision(current, revisionId) ||
+    metadata.deletionTimestamp ||
+    !gatewayImageMatches(current, image) ||
+    !gatewayRunningAndReady(current)
+  ) {
+    observation.outcome = "ineligible";
+  } else {
+    observation.outcome = "eligible";
+  }
+  if (observation.outcome !== "eligible") {
+    await evidence
+      .checkpoint("gateway-exec-blocked", { outcome: observation.outcome })
+      .catch(() => {});
+    assert.fail("the selected Gateway Pod changed or stopped serving before exec");
+  }
+  // Kubernetes exec addresses the Pod by name. This read narrows the race but
+  // cannot bind exec to a UID atomically. Propagate uncertainty without replay.
+  const result = await f.requestCodexTurnFromGatewayPod({
+    ...turn,
+    namespace: placement,
+    gatewayPod: name,
+    container: gatewayContainer,
+  });
+  const nativeTurnResult = summarizeGatewayTurnResult(expected, result);
+  // checkpoint retains the summary in memory before attempting the durable write.
+  await evidence
+    .checkpoint("gateway-turn-result", { turnPhase: phase, nativeTurnResult })
+    .catch(() => {});
+  return { before, result, nativeTurnResult };
+}
+
+/**
+ * @typedef {Record<string, unknown> & { binding: Record<string, unknown> & {
+ *   source: Record<string, unknown> & { source: Record<string, unknown> }, grant: Record<string, unknown>
+ * } }} InstalledRoute
+ * @param {unknown} routes
+ * @returns {routes is [InstalledRoute, ...InstalledRoute[]]}
+ */
+function hasInstalledRoutes(routes) {
+  return (
+    isArray(routes) &&
+    routes.length > 0 &&
+    routes.every((route) => {
+      if (!isRecord(route) || !isRecord(route.binding)) {
+        return false;
+      }
+      const { source, grant } = route.binding;
+      return isRecord(source) && isRecord(source.source) && isRecord(grant);
+    })
+  );
+}
+
+/** @param {unknown} observation @returns {observation is Record<string, unknown> & { enforcement: Record<string, unknown> & { instance_id: string } }} */
+function hasEnforcementInstance(observation) {
+  return isRecord(observation) && hasStringField(observation.enforcement, "instance_id");
+}
+
+/**
+ * @param {Awaited<ReturnType<typeof import("./egress-installed-stack.mjs").arrangeRealPrerequisites>>} setup
+ * @param {Awaited<ReturnType<typeof import("./egress-installed-stack.mjs").observePreparedStack>>} stack
+ * @param {Awaited<ReturnType<typeof import("./egress-installed-stack.mjs").createRunEvidence>>} evidence
+ * @param {{ agent: { id: string, servicePrincipalId: string }, source: { id: string }, revision: Record<string, unknown> & { id: string }, sandbox: unknown, sandboxId: string }} deployment
+ */
 export async function observeInstalledProtection(
   setup,
   stack,
@@ -222,20 +579,25 @@ export async function observeInstalledProtection(
   const { checkpoint } = evidence;
   const { agent, source, revision, sandbox, sandboxId } = deployment;
   const harness = await f.waitForProviderHarnessPod(placement, revision);
+  assert.ok(hasPodIdentity(harness), "expected the enrolled Harness Pod identity");
   await f.assertProviderOwnedHarness(placement, revision, sandbox, harness, "maintainedLauncher");
   f.assertWorkspaceMounts(harness);
   f.assertApprovedOpenShellPrivileges(harness);
   await f.assertGatewayBootstrapPolicies(placement);
   assert.equal(
-    harness.spec.containers.find(({ name }) => name === "agent").image,
+    entries(record(harness.spec).containers).find(({ name }) => name === "agent")?.image,
     input.images.agent,
   );
   assert.equal(
-    harness.spec.initContainers.find(({ name }) => name === "openshell-sandbox-bootstrap")?.image,
+    entries(record(harness.spec).initContainers).find(
+      ({ name }) => name === "openshell-sandbox-bootstrap",
+    )?.image,
     input.images.sandbox,
     "the actual trusted bootstrap must use the selected supplier runtime",
   );
-  const sandboxName = sandbox.metadata.labels["openshell.ai/sandbox-name"];
+  const sandboxName = readString(
+    record(record(record(sandbox).metadata).labels)["openshell.ai/sandbox-name"],
+  );
   const observedSandbox = await gatewayClient.getSandbox(
     { workspace: placement, name: sandboxName },
     AbortSignal.timeout(10_000),
@@ -251,36 +613,50 @@ export async function observeInstalledProtection(
     1,
     "the real worker must record exactly one installed mapping",
   );
-  const installed = installations.rows[0].installation;
+  const installed = record(installations.rows[0]).installation;
+  assert.ok(hasStringField(installed, "sandboxId"));
+  const plan = record(installed.plan);
+  const execution = record(plan.execution);
+  const routes = plan.routes;
+  const enforcement = record(installed.enforcement);
   assert.equal(installed.sandboxId, observedSandbox.id);
-  assert.equal(installed.plan.execution.installationId, installation.id);
-  assert.equal(installed.plan.execution.servicePrincipalId, agent.servicePrincipalId);
-  assert.ok(installed.plan.routes.length > 0, "an empty plan cannot prove protected routing");
+  assert.equal(execution.installationId, installation.id);
+  assert.equal(execution.servicePrincipalId, agent.servicePrincipalId);
+  assert.ok(hasInstalledRoutes(routes), "expected a nonempty installed route plan");
   assert.ok(
-    installed.plan.routes.every(
+    routes.every(
       ({ binding: routeBinding }) =>
         routeBinding.source.source.id === source.id && checkGrant(routeBinding),
     ),
   );
   const custodyCapabilities = enforcementCapabilities(input);
   const readReceipt = async () => {
+    assert.ok(gatewayClient.getSandboxPolicyStatus, "supplier policy-status observation required");
     const status = await gatewayClient.getSandboxPolicyStatus(
       placement,
       sandboxName,
       AbortSignal.timeout(10_000),
     );
     const observation = status.loaded_policy_observation;
-    assert.ok(observation, "LOADED or legacy field 3 cannot substitute for a V1 observation");
+    assert.ok(
+      isRecord(observation),
+      "LOADED or legacy field 3 cannot substitute for a V1 observation",
+    );
+    assert.ok(
+      hasEnforcementInstance(observation),
+      "V1 requires current supervisor enforcement evidence",
+    );
     const receipt = observation.enforcement;
-    assert.ok(receipt, "V1 requires current supervisor enforcement evidence");
+    const policyRevision = record(status.revision);
     assert.equal(receipt.sandbox_id, observedSandbox.id);
-    assert.equal(receipt.instance_id, installed.enforcement?.instanceId);
-    assert.equal(receipt.policy_version, installed.plan.generation);
+    assert.equal(receipt.instance_id, enforcement.instanceId);
+    assert.equal(receipt.policy_version, plan.generation);
     assert.equal(status.active_version, receipt.policy_version);
-    assert.equal(status.revision.policy_hash, observation.source_policy_hash);
-    assert.match(observation.source_policy_hash, /^[a-f0-9]{64}$/);
-    assert.ok(observation.effective_policy);
-    const middleware = observation.effective_policy.network_middlewares["oce-egress"];
+    assert.equal(policyRevision.policy_hash, observation.source_policy_hash);
+    assert.match(readString(observation.source_policy_hash), /^[a-f0-9]{64}$/);
+    const effectivePolicy = observation.effective_policy;
+    assert.ok(isRecord(effectivePolicy));
+    const middleware = record(record(effectivePolicy.network_middlewares)["oce-egress"]);
     assert.deepEqual(
       middleware.credential_connectors ?? [],
       input.credentialConnector
@@ -290,34 +666,45 @@ export async function observeInstalledProtection(
     if (!input.credentialConnector) {
       assert.equal(middleware.execution_authority, true);
       assert.equal(middleware.credential_authority, true);
-      const policies = Object.entries(observation.effective_policy.network_policies).filter(
-        ([name]) => name.startsWith("oce-egress-"),
+      const policies = Object.fromEntries(
+        Object.entries(record(effectivePolicy.network_policies))
+          .filter(([name]) => name.startsWith("oce-egress-"))
+          .map(([name, policy]) => [name, record(policy).binaries ?? []]),
       );
-      assert.ok(policies.length > 0, "fresh operation must have an actual managed route");
-      for (const [, policy] of policies) {
-        assert.deepEqual(policy.binaries ?? [], [], "no caller executable allowlist");
-      }
+      assert.deepEqual(
+        policies,
+        Object.fromEntries(
+          routes.map((route, index) => [
+            `oce-egress-${index}`,
+            route.binding.grant.kind === "inference" ? [{ path: "/**" }] : [],
+          ]),
+        ),
+        "loaded managed routes must match the admitted routes and their binary scopes",
+      );
     }
-    assert.equal(installed.enforcement.policyHash, receipt.policy_hash);
-    const effective = structuredClone(observation.effective_policy);
+    assert.equal(enforcement.policyHash, receipt.policy_hash);
+    const effective = structuredClone(effectivePolicy);
     const name = `_provider_oce_runtime_${createHash("sha256").update(revision.id).digest("hex").slice(0, 16)}`;
     if (!input.credentialConnector && !observation.inert_provider_rule) {
       assert.equal(observation.source_policy_hash, receipt.policy_hash);
     } else {
       assert.equal(observation.inert_provider_rule, name);
-      assert.equal(Object.hasOwn(status.revision.policy.network_policies, name), false);
-      assert.deepEqual(effective.network_policies[name], { name });
-      delete effective.network_policies[name];
+      assert.equal(
+        Object.hasOwn(record(record(policyRevision.policy).network_policies), name),
+        false,
+      );
+      assert.deepEqual(record(effective.network_policies)[name], { name });
+      delete record(effective.network_policies)[name];
       assert.notEqual(observation.source_policy_hash, receipt.policy_hash);
     }
     assert.equal(status.loaded_enforcement, undefined);
-    assert.deepEqual(effective, status.revision.policy);
-    assert.ok([2, "POLICY_STATUS_LOADED"].includes(status.revision.status));
+    assert.deepEqual(effective, policyRevision.policy);
+    assert.ok(policyRevision.status === 2 || policyRevision.status === "POLICY_STATUS_LOADED");
     assert.match(
       receipt.instance_id,
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     );
-    assert.match(receipt.policy_hash, /^[a-f0-9]{64}$/);
+    assert.match(readString(receipt.policy_hash), /^[a-f0-9]{64}$/);
     connectedReceiptRevision(receipt.config_revision);
     connectedReceiptRevision(receipt.provider_env_revision);
     assert.deepEqual(receipt.enforced_capabilities, custodyCapabilities);
@@ -337,22 +724,32 @@ export async function observeInstalledProtection(
       ? "inert_runtime_provider_rule"
       : "source_equals_effective",
   });
+  const gateway = await waitForInstalledGateway(
+    f,
+    evidence,
+    placement,
+    agent.id,
+    revision.id,
+    input.images.gateway,
+  );
+  const gatewayPods = /** @type {const} */ ([gateway]);
   const pods = await resources("pods", placement);
-  const gatewayPods = pods.filter(
-    ({ metadata }) =>
-      metadata.labels?.["openclaw.dev/agent"] === agent.id &&
-      metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
-  );
-  assert.equal(gatewayPods.length, 1);
-  assert.ok(gatewayPods[0].spec.containers.some(({ image }) => image === input.images.gateway));
-  const supervisors = pods.filter(
-    ({ metadata }) =>
-      metadata.labels?.["openshell.ai/sandbox-id"] === installed.sandboxId &&
-      metadata.labels?.["openshell.ai/boundary-role"] === "supervisor",
-  );
+  assert.ok(isArray(pods));
+  const supervisors = pods.filter((pod) => {
+    const labels = record(record(record(pod).metadata).labels);
+    return (
+      labels["openshell.ai/sandbox-id"] === installed.sandboxId &&
+      labels["openshell.ai/boundary-role"] === "supervisor"
+    );
+  });
   assert.equal(supervisors.length, 1, "a separate selected supervisor must own forwarding");
-  assert.ok(supervisors[0].spec.containers.some(({ image }) => image === input.images.supervisor));
   const [supervisor] = supervisors;
+  assert.ok(hasPodIdentity(supervisor));
+  assert.ok(
+    entries(record(supervisor.spec).containers).some(
+      ({ image }) => image === input.images.supervisor,
+    ),
+  );
   const custodyTransitions = createCustodyTransitions({
     gatewayClient,
     workspace: placement,
@@ -372,7 +769,7 @@ export async function observeInstalledProtection(
     readReceipt,
     receipt,
     gatewayPods,
-    installation: installed,
+    installation: { ...installed, enforcement, plan: { ...plan, routes, execution } },
     supervisor,
   };
 }

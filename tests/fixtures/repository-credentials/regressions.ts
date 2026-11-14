@@ -1,0 +1,432 @@
+import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { join } from "node:path";
+import test from "node:test";
+import type { ControlErrorCode } from "../../../apps/controller/src/drivers/repo/access/control-contracts.ts";
+import type { RunningListeners } from "../../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
+import type { JsonValue } from "../../../apps/controller/src/drivers/repo/access/json-value.ts";
+import type { SessionStatus } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
+import { socketDirectory } from "../../helpers/socket-directory.mjs";
+import { registerResourceCleanup, closeAndDispose, type ResourceCleanup } from "./cleanup.ts";
+import {
+  loadRepositoryClientModule,
+  type ClientCommand,
+  type CredentialClientFixture,
+} from "./clients.ts";
+import { runInFixtureContainer } from "./container.ts";
+import { run as runCommand, temporaryDirectory } from "./process.mjs";
+import { startCredentialServiceFixture, gatewayRequest as requestGateway } from "./service.mjs";
+
+type RegressionFixture = Pick<CredentialClientFixture, "config" | "opened" | "tls"> & {
+  listeners: RunningListeners;
+  github: CredentialClientFixture["github"] & {
+    issues: Map<number, { body: string; state: string }>;
+    comments: Map<number, { body: string }>;
+  };
+};
+type GatewayRequestOptions = { method: string; path: string; body?: JsonValue | undefined };
+
+const run = runCommand as ClientCommand;
+const gatewayRequest = requestGateway as (
+  fixture: RegressionFixture,
+  target: string,
+  options: Omit<GatewayRequestOptions, "path">,
+) => Promise<{ status: number; body: string }>;
+
+type DisposalObservation = Pick<SessionStatus, "sessionId" | "state" | "activeUses"> & {
+  cleanup: Pick<SessionStatus["cleanup"], "active" | "pending" | "uncertain" | "auxiliaryPending">;
+};
+
+function isNumberedResource(value: unknown): value is { number: number } {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "number" in value &&
+    typeof value.number === "number"
+  );
+}
+
+async function runningProcessesMentioning(marker: string) {
+  const running: number[] = [];
+  for (const entry of await readdir("/proc")) {
+    if (!/^\d+$/.test(entry)) {
+      continue;
+    }
+    try {
+      const commandLine = await readFile(`/proc/${entry}/cmdline`, "utf8");
+      if (
+        commandLine.includes(marker) &&
+        !/\) Z /.test(await readFile(`/proc/${entry}/stat`, "utf8"))
+      ) {
+        running.push(Number(entry));
+      }
+    } catch (error) {
+      // procfs may lose the task during lookup (ENOENT) or the read (ESRCH).
+      // With hidepid, other users' entries are unreadable (EACCES/EPERM); the
+      // owned command tree runs as this user, so its entries stay readable.
+      if (
+        !["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(
+          (error as NodeJS.ErrnoException).code ?? "",
+        )
+      ) {
+        throw error;
+      }
+    }
+  }
+  return running;
+}
+
+// The published PID once it is complete and its process is live, else undefined.
+function liveDescendantPid(pidFile: string) {
+  try {
+    const value = readFileSync(pidFile, "utf8");
+    if (!/^[1-9]\d*\n$/.test(value)) {
+      return undefined;
+    }
+    const pid = Number(value);
+    return /\) [ZX] /.test(readFileSync(`/proc/${pid}/stat`, "utf8")) ? undefined : pid;
+  } catch (error) {
+    // Not published yet (ENOENT), or the process vanished during the read (ESRCH).
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ESRCH") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+// An owned descendant lives this long unless the command stops it. Settling in
+// time is proven by its expiry marker being absent, not by a wall-clock bound.
+const descendantLifetimeMs = 30000;
+
+// Blocks this thread until the descendant is live. The command's timers cannot
+// fire meanwhile, so its timeout or cancellation always lands on a started
+// descendant however slowly the two Node processes start.
+function holdUntilDescendantRuns(pidFile: string) {
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  const deadline = performance.now() + descendantLifetimeMs;
+  for (;;) {
+    const pid = liveDescendantPid(pidFile);
+    if (pid !== undefined) {
+      return pid;
+    }
+    if (performance.now() > deadline) {
+      throw new Error("descendant did not start");
+    }
+    Atomics.wait(pause, 0, 0, 10);
+  }
+}
+
+// A SIGKILLed process can still be listed until it is scheduled to exit, so poll
+// until the owned tree is gone. A leaked descendant stays until its expiry
+// writes the marker, which the caller rejects.
+async function ownedProcessesAfterExit(pidFile: string, naturalExitFile: string) {
+  const deadline = performance.now() + 2 * descendantLifetimeMs;
+  for (;;) {
+    const running = await runningProcessesMentioning(pidFile);
+    if (running.length === 0 || existsSync(naturalExitFile) || performance.now() > deadline) {
+      return running;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+export function registerCredentialFixtureRegressions() {
+  for (const reason of ["timeout", "output overflow", "cancelled"]) {
+    test(`owned command tree stops on ${reason} without leaking diagnostics`, async (t) => {
+      const directory = await temporaryDirectory(t);
+      const pidFile = join(directory, "descendant.pid");
+      const naturalExitFile = join(directory, "natural-exit");
+      const descendant = `const fs = require('node:fs');
+      fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid) + '\\n');
+      setTimeout(() => fs.writeFileSync(${JSON.stringify(naturalExitFile)}, 'expired'), ${descendantLifetimeMs});
+      ${reason === "output overflow" ? "process.stdout.write('sensitive-fixture-value'.repeat(150000));" : ""}`;
+      const launcher = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], {stdio:'inherit'});`;
+      // Both carry the PID file path in their command lines. Never leave either
+      // running, even when an assertion fails.
+      t.after(async () => {
+        for (const pid of await runningProcessesMentioning(pidFile)) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // It exited after the scan.
+          }
+        }
+      });
+      const controller = new AbortController();
+      // Only the case under test may stop the command: its own timeout fires long
+      // after the descendant would expire, so a command that waits instead fails.
+      const settled = run(process.execPath, ["-e", launcher], {
+        timeout: reason === "timeout" ? 250 : 4 * descendantLifetimeMs,
+        signal: controller.signal,
+      });
+      let startedPid: number | undefined;
+      let readinessError: unknown;
+      if (reason !== "output overflow") {
+        // Overflow needs the event loop to read output; it follows the PID write.
+        try {
+          startedPid = holdUntilDescendantRuns(pidFile);
+        } catch (error) {
+          readinessError = error;
+        }
+      }
+      if (reason === "cancelled") {
+        controller.abort("sensitive-fixture-value");
+      }
+      await assert.rejects(
+        settled,
+        (error: unknown) =>
+          error instanceof Error &&
+          error.message.includes(reason) &&
+          !error.message.includes("sensitive-fixture-value"),
+      );
+      if (readinessError) {
+        throw readinessError;
+      }
+      // A killed orphan may await the container init's reap; a zombie cannot
+      // execute or retain pipes. No running launcher or descendant may survive.
+      assert.deepEqual(
+        await ownedProcessesAfterExit(pidFile, naturalExitFile),
+        [],
+        "owned descendant remains running",
+      );
+      assert.equal(
+        existsSync(naturalExitFile),
+        false,
+        "owned descendant outlived the command (waited for or leaked)",
+      );
+      const pid = Number(await readFile(pidFile, "utf8"));
+      assert.ok(Number.isSafeInteger(pid) && pid > 0, "descendant PID must be valid");
+      if (reason !== "output overflow") {
+        assert.equal(pid, startedPid, `${reason} must observe the owned descendant`);
+      }
+    });
+  }
+
+  test("pre-registered cleanup reconciles accepted creations with lost responses without replay", async (t) => {
+    if (await runInFixtureContainer(t, "tests/fixtures/repository-credentials/regressions.ts")) {
+      return;
+    }
+    // Reconciliation uses the same admitted session and production sender as the
+    // original write, including when the provider accepted it but lost its reply.
+    const serviceFixture: RegressionFixture | undefined = await startCredentialServiceFixture(t, {
+      gateway: { listen: "127.0.0.1:0" },
+    });
+    assert.ok(serviceFixture);
+    const fixture = serviceFixture.github;
+    const send = async ({ method, path, body }: GatewayRequestOptions): Promise<unknown> => {
+      const response = await gatewayRequest(serviceFixture, `/${path}`, { method, body });
+      assert.ok(response.status < 400);
+      return response.body ? JSON.parse(response.body) : undefined;
+    };
+    const repository = "fixture/repository";
+    const prefix = `repos/${repository}`;
+    const parent = await send({
+      method: "POST",
+      path: `${prefix}/issues`,
+      body: { title: "Parent", body: "Unrelated issue" },
+    });
+    const other = await send({
+      method: "POST",
+      path: `${prefix}/pulls`,
+      body: { title: "Unrelated", head: "other", base: "main", body: "Unrelated PR" },
+    });
+    assert.ok(isNumberedResource(parent));
+    assert.ok(isNumberedResource(other));
+    await send({
+      method: "POST",
+      path: `${prefix}/issues/${parent.number}/comments`,
+      body: { body: "Unrelated comment" },
+    });
+    const cleanups: ResourceCleanup[] = [];
+    for (const [kind, label, head] of [
+      ["issues", "issue"],
+      ["comment", "comment"],
+      ["pulls", "rest", "unique-rest"],
+    ] as const) {
+      const marker = `<!-- regression-run:${label} -->`;
+      registerResourceCleanup(cleanups, {
+        request: send,
+        repository,
+        kind,
+        marker,
+        head,
+        issueNumber: parent.number,
+      });
+      const path: string = `${prefix}/${kind === "comment" ? `issues/${parent.number}/comments` : kind}`;
+      const body = { title: "Owned", body: marker, base: "main", ...(head ? { head } : {}) };
+      const posts = (): number =>
+        fixture.trace.filter((entry) => entry.method === "POST" && entry.target === `/${path}`)
+          .length;
+      const postsBefore = posts();
+      fixture.disconnectAfterMutation("POST", `/${path}`);
+      // The provider accepted the write and then lost the connection, so the gateway
+      // reports an uncertain exchange (not an ordinary failure) and never replays it.
+      const lost = await gatewayRequest(serviceFixture, `/${path}`, { method: "POST", body });
+      assert.equal(lost.status, 502, `${label} lost response status`);
+      assert.deepEqual(JSON.parse(lost.body), { error: { code: "exchange-uncertain" } });
+      assert.equal(posts() - postsBefore, 1, `${label} creation must dispatch exactly once`);
+      assert.ok(
+        fixture.trace.at(-1)?.tokenIndex,
+        `${label} creation must authenticate at the controlled origin`,
+      );
+      const resources = kind === "comment" ? fixture.comments : fixture[kind];
+      assert.equal(
+        [...resources.values()].filter((resource) => resource.body === marker).length,
+        1,
+        `${label} creation must be accepted exactly once before fixture cleanup`,
+      );
+    }
+    // A GraphQL create is unsupported here, not an uncertain write. Keep the
+    // refusal separate so it cannot stand in for the accepted/lost-response proof.
+    const beforeGraphql = fixture.trace.length;
+    const refused = await gatewayRequest(serviceFixture, "/graphql", {
+      method: "POST",
+      body: {
+        query:
+          "mutation CreatePullRequest($input: CreatePullRequestInput!) { createPullRequest(input: $input) { pullRequest { id number url } } }",
+        variables: {
+          input: {
+            repositoryId: "R_fixture",
+            title: "Unsupported mutation",
+            body: "<!-- regression-run:unsupported -->",
+            headRefName: "unique-unsupported",
+            baseRefName: "main",
+          },
+        },
+      },
+    });
+    assert.equal(refused.status, 400);
+    assert.equal(fixture.trace.length, beforeGraphql);
+    for (const action of cleanups.reverse()) {
+      await action(AbortSignal.timeout(5000));
+    }
+    assert.equal(fixture.issues.get(parent.number)?.state, "open");
+    assert.equal(fixture.pulls.get(other.number)?.state, "open");
+    assert.equal(fixture.comments.size, 1);
+    assert.equal([...fixture.comments.values()][0]?.body, "Unrelated comment");
+    assert.equal([...fixture.issues.values()].filter((x) => x.state === "closed").length, 1);
+    assert.equal([...fixture.pulls.values()].filter((x) => x.state === "closed").length, 1);
+    assert.equal(
+      fixture.trace.filter(
+        (x) => x.method === "POST" && x.target !== "/app/installations/41/access_tokens",
+      ).length,
+      6,
+    );
+    const missing: ResourceCleanup[] = [];
+    registerResourceCleanup(missing, {
+      request: send,
+      repository,
+      kind: "issues",
+      marker: "<!-- unresolved-run -->",
+    });
+    const [cleanupMissing] = missing;
+    assert.ok(cleanupMissing);
+    await assert.rejects(cleanupMissing(), /unresolved issues identity/);
+  });
+
+  test("control cleanup rejects unavailable and pending disposal through the actual operator client", async (t) => {
+    const { callControl } = await loadRepositoryClientModule<
+      typeof import("../../../apps/controller/src/drivers/repo/github/access/client/operator.ts")
+    >("operator", ["callControl"]);
+    const directory = await socketDirectory(t, "cleanup-control-");
+    const socket = join(directory, "control.sock");
+    const sessionId = "cleanup-session";
+    const resolved: DisposalObservation = {
+      sessionId,
+      state: "DISPOSED",
+      activeUses: 0,
+      cleanup: {
+        active: 0,
+        pending: 0,
+        uncertain: 0,
+        auxiliaryPending: false,
+      },
+    };
+    const pending: DisposalObservation = {
+      ...resolved,
+      state: "CLOSED",
+      cleanup: { ...resolved.cleanup, pending: 1 },
+    };
+    let response: DisposalObservation | { error: ControlErrorCode } = { error: "unavailable" };
+    let statusUnavailable = false;
+    let pendingStatusReads = 0;
+    let statusReads = 0;
+    const server = createServer((request, reply) => {
+      request.resume();
+      let body = response;
+      if (request.method === "GET") {
+        statusReads++;
+        if (statusUnavailable) {
+          body = { error: "unavailable" };
+        } else if (pendingStatusReads > 0) {
+          pendingStatusReads--;
+          body = pending;
+        }
+      }
+      reply.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
+    });
+    await new Promise<void>((resolve) => server.listen(socket, resolve));
+    t.after(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          server.close((error) => {
+            if (error) {
+              reject(error);
+            } else {
+              resolve();
+            }
+          });
+        }),
+    );
+    await assert.rejects(
+      closeAndDispose(callControl, socket, sessionId),
+      /local closure unconfirmed/,
+    );
+    for (const state of ["OPEN", "DISPOSED"] as const) {
+      response = { ...resolved, state, sessionId: state === "OPEN" ? sessionId : "foreign" };
+      await assert.rejects(
+        closeAndDispose(callControl, socket, sessionId),
+        /local closure unconfirmed/,
+      );
+    }
+    response = pending;
+    await assert.rejects(
+      closeAndDispose(callControl, socket, sessionId, { timeoutMs: 60, pollMs: 10 }),
+      /local closure confirmed; disposal pending/,
+    );
+    // Pending cleanup is polled until it resolves. Counting status reads, not the
+    // round trips that happen to fit in a short deadline, keeps this load-independent.
+    response = resolved;
+    pendingStatusReads = 2;
+    statusReads = 0;
+    assert.deepEqual(await closeAndDispose(callControl, socket, sessionId, { pollMs: 10 }), {
+      localClosure: "confirmed",
+      disposal: "confirmed",
+    });
+    assert.equal(statusReads, 3, "pending cleanup must be polled until it resolves");
+    response = { ...resolved, cleanup: { ...resolved.cleanup, uncertain: 1 } };
+    await assert.rejects(
+      closeAndDispose(callControl, socket, sessionId, { timeoutMs: 30, pollMs: 10 }),
+      /disposal pending/,
+    );
+    response = resolved;
+    statusUnavailable = true;
+    await assert.rejects(
+      closeAndDispose(callControl, socket, sessionId),
+      /local closure confirmed/,
+    );
+    statusUnavailable = false;
+    assert.deepEqual(await closeAndDispose(callControl, socket, sessionId), {
+      localClosure: "confirmed",
+      disposal: "confirmed",
+    });
+  });
+}
+
+// Container qualification also selects this fixture directly with source or emitted owners.
+if (import.meta.main) {
+  registerCredentialFixtureRegressions();
+}

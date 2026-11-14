@@ -43,7 +43,7 @@ import {
   assertFailedDeployment,
   runPreparationFailureCase,
   runRuntimeFailureCases,
-} from "../helpers/postgres-worker-revision-scenarios.mjs";
+} from "../helpers/postgres-worker-revision-scenarios.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
   advanceCleanupRetries,
@@ -1498,6 +1498,7 @@ test(
     );
     const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
     const secret = `synthetic-reflected-${randomUUID()}`;
+    const labelRefusal = "': external resource not admitted by required labels";
     const cases = [
       { prefix: "policy contains unsafe content: ", category: "POLICY_SAFETY" },
       { prefix: "policy middleware validation failed: ", category: "POLICY_MIDDLEWARE_VALIDATION" },
@@ -1513,6 +1514,31 @@ test(
         category: "UNKNOWN",
       },
       { prefix: "policy contains unsafe content: ", method: "Health", category: "UNKNOWN" },
+      {
+        prefix: "PersistentVolumeClaim 'fixture/",
+        suffix: labelRefusal,
+        status: grpc.status.FAILED_PRECONDITION,
+        category: "PVC_ADMISSION_LABELS",
+      },
+      {
+        prefix: "RuntimeClass '",
+        suffix: labelRefusal,
+        status: grpc.status.FAILED_PRECONDITION,
+        category: "CLASS_ADMISSION_LABELS",
+      },
+      {
+        prefix: "reflected PersistentVolumeClaim 'fixture/",
+        suffix: labelRefusal,
+        status: grpc.status.FAILED_PRECONDITION,
+        category: "UNKNOWN",
+      },
+      {
+        prefix:
+          "create sandbox failed: gateway is forbidden from reading metadata for RuntimeClass '",
+        suffix: "' (Kubernetes 403); check gateway RBAC",
+        status: grpc.status.INTERNAL,
+        category: "RESOURCE_METADATA_FORBIDDEN",
+      },
     ].map((scenario, index) => ({
       name: `diagnostic-${index}`,
       method: "CreateSandbox",
@@ -1541,7 +1567,10 @@ test(
         // logger must discard it, even though it has no recognizable credential shape.
         callback({
           code: scenario.status,
-          details: scenario.prefix + call.request.annotations["fixture-reflection"],
+          details:
+            scenario.prefix +
+            call.request.annotations["fixture-reflection"] +
+            (scenario.suffix ?? ""),
         });
       },
       Health(_call, callback) {
@@ -1749,6 +1778,55 @@ test(
       status: 422,
     });
     assert.equal(JSON.stringify(events).includes(failure.message), false);
+  },
+);
+
+test(
+  "a worker stopped during queue recovery leaves fresh work for its successor",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 1 });
+    const connection = Promise.withResolvers();
+    await fixture.start(fixture.compute, {
+      emit({ event }) {
+        if (event === "worker.started") {
+          // Hold the worker pool's only connection before its first recovery transaction.
+          connection.resolve(fixture.workerPool.connect());
+        }
+      },
+    });
+    const held = await connection.promise;
+    let candidate;
+    let stopping;
+    try {
+      ({ candidate } = await fixture.admitInitialRevision("shutdown-before-claim"));
+      stopping = fixture.stop();
+    } finally {
+      held.release();
+    }
+    await stopping;
+    const work = await fixture.observerPool.query(
+      `SELECT state, attempt_count, claim_token IS NOT NULL AS has_claim,
+              lease_expires_at IS NOT NULL AS has_lease
+       FROM occ.controller_work WHERE idempotency_key = $1`,
+      [candidate.idempotencyKey],
+    );
+    assert.deepEqual(work.rows, [
+      { state: "queued", attempt_count: 0, has_claim: false, has_lease: false },
+    ]);
+
+    const prepared = [];
+    await fixture.start({
+      ...fixture.compute,
+      async prepareRevision(revision, deploymentContext) {
+        prepared.push(revision.id);
+        return fixture.compute.prepareRevision(revision, deploymentContext);
+      },
+    });
+    const succeeded = await fixture.work(candidate, "succeeded");
+    await fixture.stop();
+    assert.equal(succeeded.attempt_count, 1);
+    assert.deepEqual(prepared, [candidate.id]);
   },
 );
 
@@ -2619,7 +2697,7 @@ revisionTest(
       failure: () =>
         new SandboxRevisionUnsupportedError(
           "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
-          "OpenShell v0.1.5 cannot receive secretKeyRef environment APP_SERVER_TOKEN.",
+          "OpenShell cannot receive secretKeyRef environment APP_SERVER_TOKEN.",
         ),
       expected: {
         error: {
@@ -3228,6 +3306,23 @@ for (const refusal of [
     cause: "ActivationFailedError",
   },
   {
+    label: "that discovers incompatible Codex permission policy",
+    slug: "activation-codex-permission-policy",
+    failure: () =>
+      new ActivationFailedError(
+        "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+        "The Codex Harness reports managed permission requirements incompatible with activation.",
+        ["named-profile-denied", "reviewer-denied"],
+      ),
+    error: {
+      code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+      message:
+        "This Codex runtime’s managed permission policy does not allow the sandbox mode, named profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.",
+    },
+    cause: "ActivationFailedError",
+    diagnosticFailure: "named-profile-denied_reviewer-denied",
+  },
+  {
     label: "whose private Secret write Kubernetes refuses with 403",
     slug: "activation-secret-forbidden",
     failure: () =>
@@ -3302,8 +3397,18 @@ for (const refusal of [
           )
           .at(-1);
         assert.deepEqual(
-          { outcome: last?.outcome, code: last?.code, cause: last?.cause },
-          { outcome: "permanent", code: refusal.error.code, cause: refusal.cause },
+          {
+            outcome: last?.outcome,
+            code: last?.code,
+            cause: last?.cause,
+            failure: last?.failure,
+          },
+          {
+            outcome: "permanent",
+            code: refusal.error.code,
+            cause: refusal.cause,
+            failure: refusal.diagnosticFailure,
+          },
         );
       },
     );

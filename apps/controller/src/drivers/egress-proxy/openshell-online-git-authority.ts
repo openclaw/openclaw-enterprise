@@ -1,5 +1,5 @@
 import { HARNESS_GIT_PROBE_PREFIX } from "../compute/harness-egress-enrollment.ts";
-import type { InstalledGitMaterial } from "../repo/github/credentials/prepared-repository-git.ts";
+import type { InstalledGitMaterial } from "../repo/github/access/prepared-repository-git.ts";
 import { createHash, randomUUID } from "node:crypto";
 import type { Server } from "@grpc/grpc-js";
 import type {
@@ -11,8 +11,8 @@ import type {
 import {
   decodePushedBranchRef,
   normalizePushRefAllowlist,
-} from "../repo/credentials/client-contracts.ts";
-import { selectGitHubRequest } from "../repo/github/credentials/routes/request-selection.ts";
+} from "../repo/access/client-contracts.ts";
+import { selectGitHubRequest } from "../repo/github/access/routes/request-selection.ts";
 import {
   createOpenShellOnlineHttpAuthority,
   type OpenShellOnlineDecision,

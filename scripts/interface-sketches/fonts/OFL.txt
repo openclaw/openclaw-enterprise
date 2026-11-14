@@ -1,4 +1,5 @@
 Bundled unmodified Liberation Sans Regular, Bold and Italic, version 2.1.5.
+Ubuntu package: https://archive.ubuntu.com/ubuntu/pool/main/f/fonts-liberation/fonts-liberation_2.1.5-3_all.deb
 
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: Liberation Fonts

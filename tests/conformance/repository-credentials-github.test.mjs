@@ -1,14 +1,15 @@
+import { prepareProviderScope } from "../../apps/controller/src/drivers/repo/github/access/provider-transport/request-options.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/installation-token-response.ts";
-import { parseUnambiguousJson } from "../../apps/controller/src/drivers/repo/credentials/json-members.ts";
-import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
-import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
+import { parseInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/access/installation-token-response.ts";
+import { parseUnambiguousJson } from "../../apps/controller/src/drivers/json-members.ts";
+import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/access/material.ts";
+import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.ts";
 import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createProviderTransport } from "../../apps/controller/src/drivers/repo/github/credentials/provider-transport.ts";
+import { createProviderTransport } from "../../apps/controller/src/drivers/repo/github/access/provider-transport.ts";
 import {
   requestHead,
   serviceConfigurationData,
@@ -263,16 +264,27 @@ test("provider transport pins destination and exact issuance scope before receiv
   const fixture = await startGitHubFixture(t, { clock });
   const key = createGitHubKeyOwner({ privateKey: fixture.privateKey, appId: "12345", clock });
   t.after(() => key.close());
-  const scope = { installationId: "41", repositoryId: "73", profile: "git-read" };
+  const scope = {
+    id: "grant",
+    isolationId: "revision",
+    appId: "12345",
+    installationId: "41",
+    repositoryId: "73",
+    repository: "fixture/repository",
+    profile: "git-read",
+  };
   for (const { name, origin } of [
     { name: "plaintext origin", origin: "http://localhost" },
     { name: "origin with user info", origin: "https://user@example.test" },
     { name: "origin with path", origin: `${fixture.origin}/path` },
   ]) {
     await t.test(`refuses ${name}`, () => {
-      assert.throws(() => createProviderTransport(origin, fixture.tls.ca, clock, scope), {
-        message: "invalid-provider-origin",
-      });
+      assert.throws(
+        () => createProviderTransport(fixture.tls.ca, clock, prepareProviderScope(origin, scope)),
+        {
+          message: "invalid-provider-origin",
+        },
+      );
     });
   }
   for (const { name, installationId } of [
@@ -284,10 +296,14 @@ test("provider transport pins destination and exact issuance scope before receiv
     await t.test(`refuses installation ${name}`, () => {
       assert.throws(
         () =>
-          createProviderTransport(fixture.origin, fixture.tls.ca, clock, {
-            ...scope,
-            installationId,
-          }),
+          createProviderTransport(
+            fixture.tls.ca,
+            clock,
+            prepareProviderScope(fixture.origin, {
+              ...scope,
+              installationId,
+            }),
+          ),
         { message: "invalid-provider-scope" },
       );
     });
@@ -310,7 +326,11 @@ test("provider transport pins destination and exact issuance scope before receiv
     await t.test(`refuses ${name}`, () => {
       assert.throws(
         () =>
-          createProviderTransport(fixture.origin, fixture.tls.ca, clock, { ...scope, ...changes }),
+          createProviderTransport(
+            fixture.tls.ca,
+            clock,
+            prepareProviderScope(fixture.origin, { ...scope, ...changes }),
+          ),
         refusal,
       );
     });
@@ -322,7 +342,11 @@ test("provider transport pins destination and exact issuance scope before receiv
       return ++installationReads === 1 ? "41" : "42";
     },
   };
-  const transport = createProviderTransport(fixture.origin, fixture.tls.ca, clock, transportScope);
+  const transport = createProviderTransport(
+    fixture.tls.ca,
+    clock,
+    prepareProviderScope(fixture.origin, transportScope),
+  );
   assert.equal(installationReads, 1);
   assert.deepEqual(Object.keys(transport).sort(), ["issue", "revoke"]);
   assert.ok(Object.isFrozen(transport));
@@ -340,7 +364,9 @@ test("provider transport pins destination and exact issuance scope before receiv
       dispatches++;
     },
   });
-  const observeResponse = () => observations++;
+  const observeResponse = () => {
+    observations++;
+  };
   for (const { name, authorization } of [
     { name: "header injection", authorization: "unsafe\r\nHeader: value" },
     { name: "empty authorization", authorization: "" },
@@ -355,16 +381,20 @@ test("provider transport pins destination and exact issuance scope before receiv
   }
   assert.equal(dispatches, 0);
   assert.equal(fixture.issuesOfTokens.length, 0);
-  const issued = await key.withJwt((jwt, assertCurrent) =>
-    transport.issue(jwt, attempt("acquire"), assertCurrent, observeResponse),
-  );
+  let borrowed;
   let token;
-  try {
-    assert.equal(issued.status, 201);
-    token = JSON.parse(issued.body.toString()).token;
-  } finally {
-    issued.body.fill(0);
-  }
+  await key.withJwt((jwt, assertCurrent) =>
+    transport.issue(jwt, attempt("acquire"), assertCurrent, (response) => {
+      observeResponse();
+      borrowed = response.body;
+      assert.equal(response.status, 201);
+      token = JSON.parse(response.body.toString()).token;
+    }),
+  );
+  assert.ok(
+    borrowed.every((byte) => byte === 0),
+    "transport cleared the borrowed body",
+  );
   assert.equal(observations, 1);
   assert.deepEqual(fixture.issuesOfTokens[0].repositoryIds, [73]);
   assert.deepEqual(fixture.issuesOfTokens[0].permissions, {
@@ -375,14 +405,81 @@ test("provider transport pins destination and exact issuance scope before receiv
     checks: "read",
     statuses: "read",
   });
-  const revoked = await transport.revoke(token, attempt("retire"));
-  try {
-    assert.equal(revoked.status, 204);
-  } finally {
-    revoked.body.fill(0);
-  }
+  assert.equal(await transport.revoke(token, attempt("retire")), true);
   assert.equal(dispatches, 2);
   assert.equal(fixture.tokenState()[0].revoked, true);
+
+  for (const failure of [
+    "consumer throws",
+    "cancel after capture",
+    "thenable result",
+    "late rejection",
+    "decorated late rejection",
+  ]) {
+    await t.test(failure, async () => {
+      const controller = new AbortController();
+      const diagnostics = [];
+      let captured;
+      let body;
+      let consumes = 0;
+      let thenCalls = 0;
+      const asynchronous = failure.includes("late rejection") ? Promise.withResolvers() : undefined;
+      if (failure === "decorated late rejection") {
+        Object.assign(asynchronous.promise, {
+          providerExpiresAt: clock.wallNow() + 60000,
+          usableUntil: clock.wallNow() + 30000,
+        });
+      }
+      const issuing = key.withJwt((jwt, assertCurrent) =>
+        transport.issue(
+          jwt,
+          { ...attempt("acquire"), signal: controller.signal },
+          assertCurrent,
+          (response) => {
+            consumes++;
+            body = response.body;
+            captured = JSON.parse(body.toString()).token;
+            if (failure === "consumer throws") {
+              throw new Error("fixture consumer failure");
+            }
+            if (failure === "thenable result") {
+              return {
+                then() {
+                  thenCalls++;
+                },
+              };
+            }
+            if (asynchronous) {
+              return asynchronous.promise;
+            }
+            // A captured credential survives cancellation, but the verdict must not return.
+            controller.abort();
+            return undefined;
+          },
+          (observation) => diagnostics.push(observation),
+        ),
+      );
+      await assert.rejects(issuing, /provider-unavailable/);
+      if (asynchronous) {
+        // No test-side rejection handler: node:test must report any escaped rejection.
+        asynchronous.reject(new Error("late callback rejection"));
+        await new Promise(setImmediate);
+      }
+      assert.equal(consumes, 1);
+      assert.equal(thenCalls, 0, "transport must not invoke arbitrary thenables");
+      assert.ok(body.every((byte) => byte === 0));
+      assert.equal(
+        diagnostics.find((entry) => entry.error)?.error,
+        failure === "cancel after capture" ? "cancelled" : "observer-error",
+      );
+      assert.equal(await transport.revoke(captured, attempt("retire")), true);
+    });
+  }
+  assert.equal(dispatches, 12, "one issue and retirement per token, with no retry");
+  assert.equal(fixture.issuesOfTokens.length, 6);
+  assert.ok(fixture.tokenState().every((token) => token.revoked));
+
+  assert.equal(clock.pendingTimers(), 0);
   assert.deepEqual(fixture.errors, []);
 });
 test("canonical GitHub responses preserve admitted repository identity", async (t) => {

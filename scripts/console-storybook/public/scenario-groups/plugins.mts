@@ -260,7 +260,8 @@ export const pluginsScenarios = {
       click("Add Google Workspace"),
     ],
     description:
-      "Toggle Enable plugin. Open More actions to find Remove Google Workspace. Compare the Plugin policies, Driver policy, and Tools sections. Each shows which settings Google Workspace supports. This fixture simulates the catalog.",
+      "Find Google Workspace in the fixture catalog. Toggle Enable plugin, then find Remove Google Workspace under More actions. Compare Plugin policies, Driver policy, and Tools to see which settings are supported.",
+    gap: "Storybook supplies the catalog and capabilities directly. The saved-Agent browser test checks catalog discovery through the Controller.",
   },
   pluginsNativeLimited: {
     group: "Components/Plugins",

@@ -51,7 +51,13 @@ export interface ExchangeProvider {
   readonly methods: Readonly<
     Pick<
       CredentialProviderDefinition,
-      "classify" | "inject" | "normalizeGrant" | "credentialRejected" | "protectResponse"
+      | "routes"
+      | "normalizeConfig"
+      | "classify"
+      | "inject"
+      | "normalizeGrant"
+      | "credentialRejected"
+      | "protectResponse"
     >
   >;
   readonly isCurrent: () => boolean;
@@ -62,6 +68,11 @@ export interface EgressAuthorityPorts {
   readonly now: () => number;
   installation(peer: EgressPeer): Promise<EgressInstallation | undefined>;
   provider(route: EgressRoute): CredentialProviderDefinition | "ambiguous" | undefined;
+  /** Persist a bounded classification refusal against an authenticated installed route. */
+  classificationRefused?(
+    use: Pick<CapturedEgressUse, "id" | "route" | "installation">,
+    rule: number,
+  ): Promise<void>;
   /**
    * Each call must open a new policy unit, independent of the capture and Secret read.
    * With `stream`, the check runs during a leased response: it is bounded by the lease,
@@ -78,7 +89,7 @@ export interface EgressAuthorityPorts {
     lifetime: CredentialReadLifetime,
     isProviderCurrent: () => boolean,
   ): Promise<VersionedSecretValue & { readonly materialId: string }>;
-  readonly readPrepared?: PreparedTokenIssuer["readWarm"];
+  readonly resolvePrepared?: PreparedTokenIssuer["resolve"];
   /** Check the exact selection, then mint once immediately before the possible-send receipt. */
   authorizeSend(
     use: CapturedEgressUse,
@@ -300,6 +311,8 @@ function captureProvider(
   }
   const ref = immutableCopy(receiver.ref);
   const methods = Object.freeze({
+    routes: receiver.routes,
+    normalizeConfig: receiver.normalizeConfig,
     classify: receiver.classify,
     inject: receiver.inject,
     normalizeGrant: receiver.normalizeGrant,
@@ -318,6 +331,8 @@ function captureProvider(
         current =
           ports.provider(route) === receiver &&
           isDeepStrictEqual(receiver.ref, ref) &&
+          receiver.routes === methods.routes &&
+          receiver.normalizeConfig === methods.normalizeConfig &&
           receiver.classify === methods.classify &&
           receiver.inject === methods.inject &&
           receiver.normalizeGrant === methods.normalizeGrant &&
@@ -556,7 +571,8 @@ export class CredentialProxy implements CredentialProxyExchange {
       return { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
     }
     const deadline = Date.parse(request.deadlineAt);
-    const createdAt = operationCreatedAt(request.id);
+    const requestId = request.id;
+    const createdAt = operationCreatedAt(requestId);
     if (
       createdAt === undefined ||
       createdAt > now + 1000 ||
@@ -568,7 +584,7 @@ export class CredentialProxy implements CredentialProxyExchange {
     ) {
       return { kind: "refused", error: { kind: "deadline_exceeded" } };
     }
-    const replayKey = JSON.stringify([peer.sender, sandboxId, peer.instanceId, request.id]);
+    const replayKey = JSON.stringify([peer.sender, sandboxId, peer.instanceId, requestId]);
     // Refuse a known replay before any I/O; the reservation below checks again.
     if (this.requests.has(replayKey)) {
       return refuse("invalid_handle");
@@ -607,13 +623,26 @@ export class CredentialProxy implements CredentialProxyExchange {
       }
     }
     const matches = [];
+    const refused: { route: EgressRoute; provider: ExchangeProvider; rule: number | undefined }[] =
+      [];
     for (const { route, provider } of candidates) {
       if (!provider.isCurrent()) {
         return refuse("stale_configuration");
       }
       let operation;
+      let rule: number | undefined;
+      let reports = 0;
       try {
-        operation = Reflect.apply(provider.methods.classify, provider.receiver, [route, request]);
+        operation = Reflect.apply(provider.methods.classify, provider.receiver, [
+          route,
+          request,
+          (value: number) => {
+            reports += 1;
+            if (Number.isInteger(value) && value >= 1 && value <= 255) {
+              rule = value;
+            }
+          },
+        ]);
       } catch {
         return refuse("unsupported_operation");
       }
@@ -622,9 +651,30 @@ export class CredentialProxy implements CredentialProxyExchange {
       }
       if (operation) {
         matches.push({ route, provider, operation });
+      } else if (reports > 0) {
+        refused.push({ route, provider, rule: reports === 1 ? rule : undefined });
       }
     }
     if (matches.length !== 1) {
+      // A rule identifies one refused installed route, never a guessed operation.
+      if (matches.length === 0 && refused.length === 1 && !signal.aborted) {
+        const { route, provider, rule } = refused[0]!;
+        if (
+          rule !== undefined &&
+          provider.isCurrent() &&
+          deadline <= createdAt + route.deadlineMs &&
+          this.ports.now() < deadline
+        ) {
+          try {
+            await this.ports.classificationRefused?.(
+              immutableCopy({ id: requestId, route, installation }),
+              rule,
+            );
+          } catch {
+            return { kind: "refused", error: { kind: "unavailable", code: "authority" } };
+          }
+        }
+      }
       return refuse(matches.length > 1 ? "ambiguous_route" : "unsupported_operation");
     }
     const { route, provider, operation } = matches[0]!;
@@ -632,7 +682,7 @@ export class CredentialProxy implements CredentialProxyExchange {
     if (deadline > createdAt + route.deadlineMs || this.ports.now() >= deadline) {
       return { kind: "refused", error: { kind: "deadline_exceeded" } };
     }
-    // Reserve after the side-effect-free installation and route refusals, before capture,
+    // Reserve after installation and classification refusals, before operation capture,
     // policy or Secret I/O. From here a failed attempt cannot reuse its request ID.
     const reserved = this.reserveReplay(replayKey, share, createdAt + 30_000);
     if (reserved) {
@@ -692,6 +742,21 @@ export class CredentialProxy implements CredentialProxyExchange {
       const { evidence } = material;
       if (evidence.kind !== "no_material_required" && material.value === undefined) {
         return { kind: "refused", error: { kind: "not_ready", code: "material_missing" } };
+      }
+      if (source.adoption === "prepared") {
+        // Resolution can wait for the issuer. Recheck the grant and selected token before
+        // disclosing headers to the trusted proxy, even if it never asks for a send permit.
+        const current = await this.ports.check(captured, evidence, undefined, provider);
+        const ended = accessEnded();
+        if (ended) {
+          return { kind: "refused", error: ended };
+        }
+        if (!("key" in current)) {
+          return { kind: "refused", error: current };
+        }
+        if (!isDeepStrictEqual(current, source)) {
+          return refuse("scope_mismatch");
+        }
       }
       const headers =
         evidence.kind === "no_material_required"
@@ -774,10 +839,6 @@ export class CredentialProxy implements CredentialProxyExchange {
     if (!Number.isFinite(remaining) || remaining <= 0) {
       return { kind: "deadline_exceeded" };
     }
-    const lifetime: CredentialReadLifetime = {
-      signal: AbortSignal.any([signal, AbortSignal.timeout(Math.ceil(remaining))]),
-      deadlineAt: request.deadlineAt,
-    };
     if (source.adoption === "prepared") {
       if (
         use.operation.kind !== source.grant.kind ||
@@ -788,21 +849,21 @@ export class CredentialProxy implements CredentialProxyExchange {
         return { kind: "denied", code: "scope_mismatch" };
       }
 
-      const selected = await this.ports.readPrepared?.(source, lifetime);
+      const selected = await this.ports.resolvePrepared?.(source.key, {
+        signal,
+        deadlineAt: request.deadlineAt,
+        minimumValidityMs: remaining,
+      });
       if (!selected) {
         return { kind: "not_ready", code: "material_missing" };
       }
-      const { value, usableUntil, ...selection } = selected;
-      const until = Math.min(
-        deadline,
-        Date.parse(usableUntil),
-        Date.parse(selection.providerExpiresAt),
-      );
-      if (!Number.isFinite(until) || until <= this.ports.now() || lifetime.signal.aborted) {
+      const { accessToken, expiresAt, usableUntil, ...selection } = selected;
+      const until = Math.min(deadline, Date.parse(usableUntil), Date.parse(expiresAt));
+      if (!Number.isFinite(until) || until <= this.ports.now() || signal.aborted) {
         return { kind: "not_ready", code: "expired" };
       }
       return {
-        value,
+        value: accessToken,
         evidence: immutableCopy({
           family: selection.family,
           ownerEpoch: selection.ownerEpoch,
@@ -810,7 +871,7 @@ export class CredentialProxy implements CredentialProxyExchange {
           preparationAttemptId: selection.preparationAttemptId,
           materialId: selection.materialId,
           materialVersion: selection.materialVersion,
-          providerExpiresAt: selection.providerExpiresAt,
+          providerExpiresAt: expiresAt,
           kind: source.schemaVersion === 2 ? "prepared_github" : "prepared_token",
           source: source.key,
           binding: route.binding.binding,
@@ -823,6 +884,10 @@ export class CredentialProxy implements CredentialProxyExchange {
     if (use.operation.kind !== "inference") {
       return { kind: "denied", code: "scope_mismatch" };
     }
+    const lifetime: CredentialReadLifetime = {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(Math.ceil(remaining))]),
+      deadlineAt: request.deadlineAt,
+    };
     const material = await this.ports.read(source, lifetime, provider.isCurrent);
     const observed = Date.parse(material.authoritativeObservedAt);
     const usableUntil = Math.min(

@@ -33,6 +33,7 @@ the Go version in [`go.mod`](../../go.mod), Git, and `tar`:
 
 ```sh
 pnpm install --frozen-lockfile
+pnpm cli:build
 ```
 
 Browser tests also need Chromium; see [browser setup](local.md#console-browser-checks).
@@ -52,7 +53,7 @@ pnpm test                     # Conformance and integration files
 pnpm cli:test                 # Go
 pnpm docs:install             # Browser and docs dependencies
 pnpm test:console-browser     # Chromium
-node --test tests/docs/*.test.mjs tests/helpers/*.test.mjs
+node --test 'tests/docs/*.test.{mjs,ts}' tests/helpers/*.test.mjs
 ```
 
 These commands select test files, but real-service cases may skip without their
@@ -62,12 +63,12 @@ For conformance tests alone, use `pnpm test:conformance`.
 ### Run one test
 
 ```sh
-pnpm test:files --test-reporter=spec -- tests/conformance/contracts.test.mjs
-pnpm test:files --test-name-pattern='the Driver contract exposes' -- tests/conformance/contracts.test.mjs
+pnpm test:files --test-reporter=spec -- tests/conformance/contracts.test.ts
+pnpm test:files --test-name-pattern='the Driver contract exposes' -- tests/conformance/contracts.test.ts
 ```
 
 The second command selects one named case. `test:files` does not prepare
-fixtures or run the workspace check. Run `node scripts/test-files.mjs --help`
+fixtures or run the workspace check. Run `node scripts/test-files.ts --help`
 for options.
 
 ## Integration tests
@@ -109,6 +110,7 @@ only resources created by the run.
 - [PostgreSQL](postgresql.md)
 - [Docker, images, and Helm](docker.md)
 - [Kubernetes, Keycloak, gateway routing, and production TUI](kubernetes.md)
+- [Native Agent browser tests](native-agent-browser.md): real OIDC sign-in and scoped browser chat.
 - [Populated controller return](populated-controller-return.md) checks that the previous controller can read a draft saved by the candidate after a database restore.
 - [OpenShell](openshell.md)
 - [Protected inference](static-egress.md): source checks, PostgreSQL proof, and prepared OpenShell qualification.

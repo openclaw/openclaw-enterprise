@@ -17,6 +17,17 @@
   },
   "files": [
     {
+      "path": "tests/integration/openshell-git-extraction-real.test.ts",
+      "expectedTests": [
+        "OpenShell image extraction reconciles lost create and removal replies",
+        "OpenShell image extraction removes its Docker container after copy cancellation",
+        "OpenShell image extraction removes its Docker container after renamed copy cancellation",
+        "OpenShell image extraction removes a renamed container after delayed creation",
+        "OpenShell image extraction preserves a replacement after losing the create reply",
+        "OpenShell image extraction works without an image default command"
+      ]
+    },
+    {
       "path": "tests/integration/docker-compute-real.test.mjs",
       "expectedTests": [
         "Docker Compose cleanup preserves the selected engine and removes volumes only when requested",

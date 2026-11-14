@@ -16,7 +16,19 @@ export interface CredentialPolicyReductionState {
 }
 
 /** The reduction service needs one transaction, without selecting a State adapter. */
-interface CredentialPolicyReductionUnitOfWork {
+export interface CredentialPolicyReductionUnitOfWork {
+  readonly operations: {
+    findWork(idempotencyKey: string): Promise<
+      | Readonly<{
+          namespaceId: string;
+          agentId?: string;
+          revisionId?: string;
+          agentTarget?: string;
+          namespaceTarget?: string;
+        }>
+      | undefined
+    >;
+  };
   readonly namespaces: {
     lockNamespace(namespaceId: string): Promise<Readonly<Pick<Namespace, "id">> | undefined>;
   };

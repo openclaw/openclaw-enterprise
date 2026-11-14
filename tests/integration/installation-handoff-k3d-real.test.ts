@@ -5,10 +5,11 @@ import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   createKubernetesClient,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 import { parseProductionChart, renderProductionChart } from "../helpers/production-chart.mjs";
 
 type ChartResource = {
@@ -285,7 +286,7 @@ test(
       await writeFile(configPath, JSON.stringify(plan));
       const result = spawnSync(
         process.execPath,
-        ["scripts/diagnose-kubernetes-prerequisites.mjs", "--config", configPath, "--json"],
+        ["scripts/diagnose-kubernetes-prerequisites.ts", "--config", configPath, "--json"],
         { encoding: "utf8", timeout: 100_000 },
       );
       assert.equal(result.error, undefined);
@@ -422,6 +423,7 @@ test("first install retains exact attempt evidence after a lost client", { skip 
       gatewayRouting: { enabled: false },
       images: { controller: `registry.example.invalid/controller@sha256:${"a".repeat(64)}` },
       auth: { baseUrl: "https://occ.example.invalid", secretName: "occ-auth", secretKey: "secret" },
+      agentNativeAdmin: { domain: "agents.example.invalid" },
       bootstrap: {
         adminEmail: "admin@example.invalid",
         password: { claimName: "absent-bootstrap" },
@@ -483,10 +485,15 @@ test("first install retains exact attempt evidence after a lost client", { skip 
       resolve(code);
     }),
   );
-  let job: Awaited<ReturnType<typeof resource>> | undefined;
+  const jobMetadata = async (jobName: string) => {
+    const metadata = asRecord(asRecord(await resource("job", jobName, namespace))?.metadata);
+    assert.ok(typeof metadata?.uid === "string" && metadata.uid, "expected the Job UID");
+    return metadata;
+  };
+  let job: Awaited<ReturnType<typeof jobMetadata>> | undefined;
   for (let attempt = 0; attempt < 100; attempt++) {
     try {
-      job = await resource("job", name, namespace);
+      job = await jobMetadata(name);
       break;
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -504,11 +511,11 @@ test("first install retains exact attempt evidence after a lost client", { skip 
     }
   }
   const captured = JSON.parse(await readFile(join(receipt, "job.json"), "utf8"));
-  assert.equal(captured.uid, job.metadata.uid);
+  assert.equal(captured.uid, job.uid);
   terminate();
   await exited;
   const intent = JSON.parse(await readFile(join(receipt, "intent.json"), "utf8"));
-  assert.equal(job.metadata.annotations["openclaw.dev/installation-attempt"], intent.attempt);
+  assert.equal(asRecord(job.annotations)?.["openclaw.dev/installation-attempt"], intent.attempt);
   assert.match(intent.attempt, /^[a-f0-9]{64}$/);
   assert.equal((await stat(receipt)).mode & 0o777, 0o700);
   assert.equal((await stat(join(receipt, "intent.json"))).mode & 0o777, 0o600);
@@ -525,11 +532,11 @@ test("first install retains exact attempt evidence after a lost client", { skip 
     before,
     "read-only handoff does not rewrite the receipt",
   );
-  assert.equal((await resource("job", name, namespace)).metadata.uid, job.metadata.uid);
+  assert.equal((await jobMetadata(name)).uid, job.uid);
   const retry = spawnSync(occ, args, { encoding: "utf8" });
   assert.equal(retry.status, 1);
   assert.match(retry.stderr, /not confirmed unused|never reuse/);
-  assert.equal((await resource("job", name, namespace)).metadata.uid, job.metadata.uid);
+  assert.equal((await jobMetadata(name)).uid, job.uid);
 
   // A normally returned timeout persists both its separate Helm result and
   // the actual Job UID. Failure still cannot authorize a second install.
@@ -547,10 +554,7 @@ test("first install retains exact attempt evidence after a lost client", { skip 
     outcome: "failed",
   });
   const returnedJob = JSON.parse(await readFile(join(returnedReceipt, "job.json"), "utf8"));
-  assert.equal(
-    returnedJob.uid,
-    (await resource("job", "returned-initialization", namespace)).metadata.uid,
-  );
+  assert.equal(returnedJob.uid, (await jobMetadata("returned-initialization")).uid);
 
   // An upgrade must not inherit the first-install marker, even when Helm
   // retains its values. A replacement cannot silently become the original.

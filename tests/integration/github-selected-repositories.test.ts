@@ -3,8 +3,8 @@ import test from "node:test";
 import {
   prepareProviderScope,
   providerRequestOptions,
-} from "../../apps/controller/src/drivers/repo/github/credentials/provider-transport/request-options.ts";
-import { validateInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/installation-token-response.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/provider-transport/request-options.ts";
+import { validateInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/access/installation-token-response.ts";
 
 const grant = {
   id: "selected-grant",
@@ -40,22 +40,63 @@ test("selected repository issuance sends every selected stable ID and explicit p
   }
 });
 
+test("provider issuance identity follows stable scope across separate Agent grants", () => {
+  const origin = "https://api.github.com";
+  const first = prepareProviderScope(origin, grant);
+  const second = prepareProviderScope(origin, {
+    ...grant,
+    id: "independent-grant",
+    isolationId: "revision-b",
+    repositories: [...grant.repositories].reverse(),
+    permissions: { pull_requests: "write", metadata: "read", contents: "write" },
+  });
+  assert.deepEqual(first.issuance, second.issuance);
+  assert.deepEqual(
+    providerRequestOptions(first, "issue", "fixture-jwt", undefined),
+    providerRequestOptions(second, "issue", "fixture-jwt", undefined),
+  );
+  for (const scope of [
+    prepareProviderScope("https://github.example.com", grant),
+    prepareProviderScope(origin, { ...grant, appId: "11" }),
+    prepareProviderScope(origin, { ...grant, installationId: "21" }),
+    prepareProviderScope(origin, { ...grant, repositories: grant.repositories.slice(1) }),
+    prepareProviderScope(origin, {
+      ...grant,
+      permissions: { ...grant.permissions, contents: "read" },
+    }),
+    prepareProviderScope(origin, {
+      id: grant.id,
+      isolationId: grant.isolationId,
+      appId: grant.appId,
+      installationId: grant.installationId,
+      profile: "github-installation",
+    }),
+  ]) {
+    assert.notDeepEqual(first.issuance, scope.issuance);
+  }
+});
+
 test("selected repository response requires exact IDs, names and permissions and refuses broader credentials", () => {
   const now = Date.now();
   const packet = {
     token: "ghs_" + "a".repeat(36),
     expires_at: new Date(now + 3600000).toISOString(),
     repositories: [
-      { id: 102, full_name: "team/b" },
+      { id: 102, full_name: "TEAM/B" },
       { id: 101, full_name: "team/a" },
     ],
     permissions: grant.permissions,
   };
+  const scope = prepareProviderScope("https://api.github.com", {
+    ...grant,
+    repositories: [...grant.repositories].reverse(),
+  });
+  assert.equal(
+    providerRequestOptions(scope, "issue", "fixture-jwt", undefined).body,
+    '{"repository_ids":[101,102],"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}',
+  );
   const check = (candidate: Record<string, unknown>) =>
-    validateInstallationTokenResponse(201, candidate, Buffer.from(packet.token), now, {
-      ...grant,
-      minimumValidityMs: 60000,
-    });
+    validateInstallationTokenResponse(201, candidate, Buffer.from(packet.token), now, scope, 60000);
   assert.equal(check(packet).kind, "validated");
   assert.equal(check({ ...packet, repository_selection: "selected" }).kind, "validated");
   for (const candidate of [
@@ -65,6 +106,7 @@ test("selected repository response requires exact IDs, names and permissions and
     { ...packet, repositories: [packet.repositories[0], packet.repositories[0]] },
     { ...packet, repositories: [...packet.repositories, { id: 103, full_name: "team/c" }] },
     { ...packet, repositories: [{ id: 101, full_name: "team/renamed" }, packet.repositories[0]] },
+    { ...packet, permissions: { ...packet.permissions, contents: "read" } },
     { ...packet, permissions: { ...packet.permissions, administration: "write" } },
   ]) {
     assert.equal(check(candidate).kind, "rejected");
@@ -75,7 +117,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import {
   validateGitHubRepositoryRegistry,
   resolveSelectedRepositoryGrant,
-} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 
 test("ordinary fresh selections resolve one or N repositories without broadening explicit historical grants", () => {
   const createRegistry = (bPermissions = grant.permissions) =>

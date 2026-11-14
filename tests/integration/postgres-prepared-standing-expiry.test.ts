@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import {
   admitProtectedVersion,
+  controlledProtectedDriver,
   disposeBrokerSession,
   fixture,
   prepare,
   startProtectedOwner,
 } from "../fixtures/prepared-repository-git.mjs";
+import { selectRegisteredRepositoryGitCustody } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
 import { fixtureInstallationId } from "../fixtures/repository-credentials/github.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
@@ -162,7 +164,7 @@ for (const draftPullLimit of [undefined, "none"] as const) {
 function protectedSuccessor(draftPullLimit: "none" | undefined) {
   return async (t: TestContext) => {
     // Start at the real historical authority, including its possibly-spent, never-settled draft.
-    // The installation below is controlled evidence: the standing transfer test exercises release.
+    // The registered recipient below confirms installation; the standing transfer test exercises release.
     const f = await fixture(t, { draftPull: true, draftPullLimit });
     await prepare(f);
     const operation = {
@@ -204,7 +206,8 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
       assert.equal(recovered.materialVersion, used.materialVersion);
       assert.equal(recovered.value, used.value);
     }
-    const owner = await startProtectedOwner(f);
+    const repositoryGitCustody = selectRegisteredRepositoryGitCustody(controlledProtectedDriver);
+    const owner = await startProtectedOwner(f, { repositoryGitCustody });
     const signal = t.signal;
     assert.deepEqual(
       await owner.protectedGit!.readMaterial(
@@ -215,10 +218,11 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
       "a live protocol-1 broker receipt does not authorize protected Git",
     );
     assert.equal(f.gh.issuesOfTokens.length, 1);
-    const { revisionId, sessionId, admissionId, executionId, attempt, observed, route } =
-      await admitProtectedVersion(f);
+    const { revisionId, sessionId, admissionId, executionId, attempt, installation } =
+      await admitProtectedVersion(f, f.revision, { custody: "registered" });
     const exact = owner.protectedGit!;
-    const read = () => exact.readMaterial(route, signal);
+    const route = await exact.recipients.observe(installation);
+    assert.ok(route);
     await owner.maintain();
     assert.equal(f.gh.issuesOfTokens.length, 1, "a live broker predecessor prevents new issuance");
     await disposeBrokerSession(f, attempt.createdAt);
@@ -229,23 +233,27 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
       "closing the broker without settling its token cannot authorize new issuance",
     );
     await f.owner.maintain(); // the previous issuer owns its retirement
-    const recordObserved = (value: typeof observed) =>
-      f.pool.query("update occ.credential_deliveries set observed=$2 where revision_id=$1", [
-        revisionId,
-        JSON.stringify(value),
-      ]);
+    const substituteRecipient = (
+      key: "processInstanceId" | "networkInstanceId" | "attachmentEpoch",
+    ) => ({
+      ...installation,
+      enforcement: {
+        ...installation.enforcement,
+        repositoryGitRecipient: {
+          ...installation.enforcement.repositoryGitRecipient,
+          [key]: "replacement",
+        },
+      },
+    });
     if (!draftPullLimit) {
-      // Plan, Sandbox and policy still match, but this recipient was not bound to the release.
-      const other = { ...observed, processInstanceId: "route-supervisor-B" };
-      await recordObserved(other);
-      await owner.maintain();
-      const denied = await exact.readMaterial({ ...route, observed: other }, signal);
-      assert.ok(denied && "absent" in denied, "another recipient must receive no material");
-      assert.equal(f.gh.issuesOfTokens.length, 1, "must not prepare for an unassociated recipient");
-      await recordObserved(observed);
+      // The same plan and policy cannot bind a recipient absent from the committed release.
+      assert.equal(
+        await exact.recipients.observe(substituteRecipient("processInstanceId")),
+        undefined,
+      );
     }
     await owner.maintain();
-    const material = await read();
+    const material = await exact.readMaterial(route, signal);
     assert.ok(material && "value" in material);
     assert.equal(f.gh.issuesOfTokens.length, 2);
     const installed = {
@@ -260,12 +268,12 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
     const unavailable = { kind: "denied", reason: "unavailable" };
     const anotherBinding = "z".repeat(32);
     if (!draftPullLimit) {
-      // Another binding can observe the same execution. Its installation receipt must not
-      // satisfy the Git binding's proof that this material was installed.
+      // An unrelated binding's receipt must not substitute for this recipient's
+      // installation confirmation, even when it names the same material.
       await f.pool.query(
         `insert into occ.credential_deliveries
            (revision_id,live_revision_id,settlement,namespace_id,agent_id,target,binding_id,worker_instance,desired,observed,material_version,preparation_attempt_id)
-         select revision_id,live_revision_id,settlement,namespace_id,agent_id,target || '{"sandbox":"another-sandbox"}'::jsonb,$5,worker_instance,desired,observed,$3,$4
+         select revision_id,live_revision_id,settlement,namespace_id,agent_id,jsonb_set(target,'{installation,plan,execution,executionId}',to_jsonb($5::text)),$5,worker_instance,desired,observed,$3,$4
          from occ.credential_deliveries where revision_id=$1 and binding_id=$2`,
         [
           revisionId,
@@ -287,20 +295,18 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
         [revisionId, anotherBinding],
       );
     }
-    await f.pool.query(
-      `update occ.credential_deliveries set desired=desired || jsonb_build_object('credentialState','active','expiresAt',$2::text),
-    preparation_attempt_id=$3,material_version=$4 where revision_id=$1 and binding_id=$5`,
-      [
-        revisionId,
-        material.expiresAt,
-        installed.preparationAttemptId,
-        installed.materialVersion,
-        executionId,
-      ],
-    );
+    const pending = await exact.recipients.beginInstall(route, installed);
+    assert.ok(pending);
+    const confirmed = await exact.recipients.confirmInstall(pending);
+    assert.ok(confirmed);
+    installed.route = confirmed;
     const first = request();
     const permit = await exact.authorize(first, installed, signal);
-    assert.equal(permit.kind, "permit", "v4 requires the exact send-start deadline");
+    assert.equal(
+      permit.kind,
+      "permit",
+      "the registered recipient requires the exact send-start deadline",
+    );
     assert.deepEqual(await exact.online.authorize(request(), installed, signal), unavailable);
     await assert.rejects(
       owner.use(request()),
@@ -360,14 +366,16 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
     );
     // A cold owner can recover the committed version for the released recipient. A substituted
     // recipient at the same policy and fence cannot fetch that version, authorize it, or leave a use.
-    const cold = (await startProtectedOwner(f)).protectedGit!;
-    const recovered = await cold.readMaterial(route, signal);
+    const cold = (await startProtectedOwner(f, { repositoryGitCustody })).protectedGit!;
+    const coldRoute = await cold.recipients.observe(installation);
+    assert.ok(coldRoute);
+    const recovered = await cold.readMaterial(coldRoute, signal);
     assert.ok(recovered && "materialVersion" in recovered);
     assert.equal(recovered.materialVersion, installed.materialVersion);
     for (const key of ["processInstanceId", "networkInstanceId", "attachmentEpoch"] as const) {
-      const other = { ...observed, [key]: "replacement" };
-      const replaced = { ...route, observed: other };
-      await recordObserved(other);
+      const other = substituteRecipient(key);
+      assert.equal(await cold.recipients.observe(other), undefined);
+      const replaced = { ...coldRoute, observed: other };
       const denied = await cold.readMaterial(replaced, signal);
       assert.ok(denied && "absent" in denied, `changed ${key} must not receive committed material`);
       const q = request();
@@ -384,7 +392,6 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
         0,
       );
     }
-    await recordObserved(observed);
     await assert.rejects(
       f.state.transact((u) =>
         u.repositorySessions.createAttempt({
@@ -400,6 +407,7 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
     // The conditional installer must get no material and authorization must record no possible use.
     const withdraw = await f.pool.connect();
     const racing = request();
+    const coldInstalled = { ...installed, route: coldRoute };
     try {
       await withdraw.query("BEGIN");
       const id = (await withdraw.query("select pg_backend_pid() id")).rows[0].id;
@@ -408,7 +416,10 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
         "update occ.repository_session_attempts set phase='closing' where admission_id=$1",
         [admissionId],
       );
-      const both = Promise.all([read(), exact.authorize(racing, installed, signal)]);
+      const both = Promise.all([
+        cold.readMaterial(coldRoute, signal),
+        cold.authorize(racing, coldInstalled, signal),
+      ]);
       await waitForLockWaiter(
         f.pool,
         id,

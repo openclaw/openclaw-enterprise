@@ -1,8 +1,8 @@
 import type { Diagram } from "../diagram.ts";
 
 export default {
-  title: "00 From a user’s task to a protected request",
-  subtitle: "OpenClaw Enterprise (OCE) runs the Agent and controls how it can use credentials.",
+  title: "From a user’s task to a protected request",
+  subtitle: "OpenClaw Enterprise (OCE) · selected-repository profile (github-repository)",
   layout: { board: [1180, 450] },
   groups: [
     { id: "oce", title: "OpenClaw Enterprise", role: "control", pin: [240, 82, 658, 310] },

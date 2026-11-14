@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";

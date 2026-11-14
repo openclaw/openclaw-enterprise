@@ -1,17 +1,20 @@
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID, X509Certificate } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import dns from "node:dns";
 import { connect } from "node:net";
 import { basename } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { connect as connectTls } from "node:tls";
-import { availablePort } from "./available-port.mjs";
+import { withBoundedTeardown } from "./bounded-teardown.ts";
+import { availablePort } from "./available-port.ts";
+import { startWorkspaceGatewayRelayContainer } from "./workspace-gateway-relay-container.ts";
 import { request as requestHttps } from "node:https";
-import { promisify } from "node:util";
+import {
+  registerRenderedExternalCleanup,
+  renderGatewayRoutingManifests,
+} from "./workspace-gateway-routing-manifests.ts";
 
-const executeFile = promisify(execFile);
 const gatewayReleaseName = "oce-workspace-files";
 const gatewayName = `${gatewayReleaseName}-agent-gateways`;
 const gatewayServiceKeyName = "occ";
@@ -22,13 +25,6 @@ const certManagerNamespace = process.env.OCC_TEST_CERT_MANAGER_NAMESPACE ?? "cer
 const caSecretName = "oce-workspace-files-ca";
 const caIssuerName = "oce-workspace-files-ca";
 const tlsSecretName = `${gatewayName}-tls`;
-const helmBin = process.env.OCC_HELM_BIN ?? "helm";
-const helmEnvironment = {
-  ...process.env,
-  HELM_CACHE_HOME: process.env.HELM_CACHE_HOME ?? "/tmp/oce-helm-cache",
-  HELM_CONFIG_HOME: process.env.HELM_CONFIG_HOME ?? "/tmp/oce-helm-config",
-  HELM_DATA_HOME: process.env.HELM_DATA_HOME ?? "/tmp/oce-helm-data",
-};
 
 function nonempty(value, name) {
   assert.equal(typeof value, "string", `${name} must be configured.`);
@@ -44,78 +40,6 @@ function gatewayHostname(platformNamespace) {
   return `occ-gateway-${hash(
     `${platformNamespace}/${gatewayName}`,
   )}.${envoyNamespace}.svc.cluster.local`;
-}
-
-async function command(
-  file,
-  args,
-  { env = process.env, timeoutMs = 120_000, redactions = [] } = {},
-) {
-  try {
-    return await executeFile(file, args, { env, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
-  } catch (error) {
-    throw new Error(
-      redact(
-        `${file} ${args.join(" ")} failed with exit ${error.code ?? "unknown"}.\n${String(
-          error.stdout ?? "",
-        )}${String(error.stderr ?? "")}`,
-        redactions,
-      ),
-    );
-  }
-}
-
-function redact(value, redactions) {
-  return redactions
-    .filter((secret) => typeof secret === "string" && secret.length > 0)
-    .reduce((current, secret) => current.split(secret).join("<redacted>"), value);
-}
-
-async function renderGatewayRoutingManifests({
-  releaseNamespace,
-  apiKeySecretName,
-  gatewayClassName,
-  hostname,
-  sandbox,
-}) {
-  const { stdout } = await command(
-    helmBin,
-    [
-      "template",
-      gatewayReleaseName,
-      "deploy/helm/openclaw-enterprise",
-      "--namespace",
-      releaseNamespace,
-      "--values",
-      "deploy/examples/production/values.yaml",
-      // The disposable fixture has one node; production role isolation is verified separately.
-      "--set-json",
-      'controlPlane.nodeSelector={"kubernetes.io/os":"linux"}',
-      "--show-only",
-      "templates/gateway-routing.yaml",
-      "--set",
-      "gatewayRouting.enabled=true",
-      "--set",
-      `gatewayRouting.gatewayClassName=${gatewayClassName}`,
-      "--set",
-      `gatewayRouting.envoyNamespace=${envoyNamespace}`,
-      "--set",
-      `gatewayRouting.hostname=${hostname}`,
-      "--set",
-      `gatewayRouting.apiKeySecretName=${apiKeySecretName}`,
-      "--set",
-      `gatewayRouting.issuerRef.name=${caIssuerName}`,
-      "--set",
-      "gatewayRouting.issuerRef.kind=Issuer",
-      "--set",
-      "gatewayRouting.issuerRef.group=cert-manager.io",
-      ...(sandbox === undefined
-        ? []
-        : ["--set-json", `gatewayRouting.sandbox=${JSON.stringify(sandbox)}`]),
-    ],
-    { env: helmEnvironment },
-  );
-  return stdout;
 }
 
 function yamlScalar(value) {
@@ -207,24 +131,19 @@ async function waitForWorkspaceGatewayTls(hostname, port, waitFor) {
 }
 
 export async function startWorkspaceGatewayHostRelay(
-  context,
+  testContext,
   workspaceGateway,
   { kubectl, resources, waitFor, startPortForwardTarget, gatewayImage },
 ) {
-  const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
-  // Docker Desktop and Podman Machine host networking stays in their Linux VM.
-  // Publish to macOS loopback and use the engine's host alias for the port-forward.
+  const context = withBoundedTeardown(testContext, { label: "Workspace Gateway cleanup" });
   const usesContainerVm = process.platform === "darwin";
-  const relayHost = usesContainerVm
-    ? basename(containerEngine) === "podman"
-      ? "host.containers.internal"
-      : "host.docker.internal"
-    : "127.0.0.1";
-  const dockerRuntimeImage = process.env.OCC_DOCKER_RUNTIME_IMAGE;
-  assert.ok(
-    dockerRuntimeImage,
-    "OCC_DOCKER_RUNTIME_IMAGE is required for the loopback-only Gateway routing relay.",
-  );
+  const dockerRuntimeImage = process.env.OCC_DOCKER_RUNTIME_IMAGE ?? "";
+  if (usesContainerVm) {
+    assert.ok(
+      dockerRuntimeImage,
+      "OCC_DOCKER_RUNTIME_IMAGE is required for the loopback-only Gateway routing relay.",
+    );
+  }
   const gatewayHostname = nonempty(workspaceGateway.routing.hostname, "Gateway hostname");
   const services = await resources(
     "services",
@@ -241,32 +160,6 @@ export async function startWorkspaceGatewayHostRelay(
     /^(?:\d{1,3}\.){3}\d{1,3}$/,
     "the disposable k3d Gateway must expose an IPv4 ClusterIP.",
   );
-  const endpointPort = usesContainerVm ? await availablePort() : 443;
-  if (usesContainerVm) {
-    const envoyHttpsPort = envoyService.spec.ports.find(({ port }) => port === 443);
-    assert.ok(envoyHttpsPort, "the workspace Gateway Service must retain its HTTPS port.");
-    await kubectl(
-      "patch",
-      "service",
-      envoyService.metadata.name,
-      "--namespace",
-      workspaceGateway.routing.envoyNamespace,
-      "--type=json",
-      "--patch",
-      JSON.stringify([
-        {
-          op: "add",
-          path: "/spec/ports/-",
-          value: {
-            name: "oce-host-relay",
-            protocol: envoyHttpsPort.protocol ?? "TCP",
-            port: endpointPort,
-            targetPort: envoyHttpsPort.targetPort ?? envoyHttpsPort.port,
-          },
-        },
-      ]),
-    );
-  }
   const relayPod = `oce-routing-relay-${hash(randomUUID())}`;
   const relayLabels = Object.entries(workspaceGateway.apiPodLabels)
     .map(([name, value]) => `${name}=${value}`)
@@ -309,58 +202,71 @@ export async function startWorkspaceGatewayHostRelay(
     `pod/${relayPod}`,
     "0:8443",
   );
+  // Reuse kubectl's bound socket on Linux; a second listener would race other tests.
+  context.after(() => forwarding.stop());
   const forwardedPort = Number(new URL(forwarding.url).port);
-  const relayName = `oce-openshell-routing-${hash(randomUUID())}`;
-  // Bind/startup failure must still close the forwarding process and owned relay.
-  context.after(async () => {
-    await Promise.allSettled([
-      forwarding.stop(),
-      executeFile(containerEngine, ["stop", "--timeout", "2", relayName]),
-    ]);
-  });
-  const relayProgram = [
-    'const net = require("node:net");',
-    "const targetPort = Number(process.argv[1]);",
-    "const server = net.createServer((client) => {",
-    `  const upstream = net.connect({ host: ${JSON.stringify(relayHost)}, port: targetPort });`,
-    "  client.pipe(upstream).pipe(client);",
-    '  client.on("error", () => upstream.destroy());',
-    '  upstream.on("error", () => client.destroy());',
-    "});",
-    `server.listen(443, ${JSON.stringify(usesContainerVm ? "0.0.0.0" : "127.0.0.1")});`,
-    'process.on("SIGTERM", () => server.close(() => process.exit(0)));',
-  ].join("\n");
-  await executeFile(containerEngine, [
-    "run",
-    "--rm",
-    "-d",
-    "--name",
-    relayName,
-    ...(usesContainerVm ? ["--publish", `127.0.0.1:${endpointPort}:443`] : ["--network", "host"]),
-    "--user",
-    "0",
-    "--stop-timeout",
-    "2",
-    "--entrypoint",
-    "node",
-    dockerRuntimeImage,
-    "-e",
-    relayProgram,
-    String(forwardedPort),
-  ]);
-  await delay(250);
-  let relayRunning = false;
-  try {
-    const inspected = await executeFile(containerEngine, [
-      "inspect",
-      "--format={{.State.Running}}",
+  const endpointPort = usesContainerVm ? await availablePort() : forwardedPort;
+  // In-cluster callers use the same endpoint port through the Envoy Service.
+  const envoyHttpsPort = envoyService.spec.ports.find(({ port }) => port === 443);
+  assert.ok(envoyHttpsPort, "the workspace Gateway Service must retain its HTTPS port.");
+  await kubectl(
+    "patch",
+    "service",
+    envoyService.metadata.name,
+    "--namespace",
+    workspaceGateway.routing.envoyNamespace,
+    "--type=json",
+    "--patch",
+    JSON.stringify([
+      {
+        op: "add",
+        path: "/spec/ports/-",
+        value: {
+          name: "oce-host-relay",
+          protocol: envoyHttpsPort.protocol ?? "TCP",
+          port: endpointPort,
+          targetPort: envoyHttpsPort.targetPort ?? envoyHttpsPort.port,
+        },
+      },
+    ]),
+  );
+  if (usesContainerVm) {
+    // Docker Desktop and Podman Machine host networking stays in their Linux VM.
+    const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
+    const relayHost =
+      basename(containerEngine) === "podman" ? "host.containers.internal" : "host.docker.internal";
+    const relayName = `oce-openshell-routing-${hash(randomUUID())}`;
+    const relayProgram = [
+      'const net = require("node:net");',
+      "const targetPort = Number(process.argv[1]);",
+      "const server = net.createServer((client) => {",
+      `  const upstream = net.connect({ host: ${JSON.stringify(relayHost)}, port: targetPort });`,
+      "  client.pipe(upstream).pipe(client);",
+      '  client.on("error", () => upstream.destroy());',
+      '  upstream.on("error", () => client.destroy());',
+      "});",
+      'server.listen(443, "0.0.0.0");',
+      'process.on("SIGTERM", () => server.close(() => process.exit(0)));',
+    ].join("\n");
+    await startWorkspaceGatewayRelayContainer(context, {
+      containerEngine,
       relayName,
-    ]);
-    relayRunning = inspected.stdout.trim() === "true";
-  } catch {
-    // --rm removes a relay that cannot bind its loopback listener.
+      runArguments: [
+        "--publish",
+        `127.0.0.1:${endpointPort}:443`,
+        "--user",
+        "0",
+        "--stop-timeout",
+        "2",
+        "--entrypoint",
+        "node",
+        dockerRuntimeImage,
+        "-e",
+        relayProgram,
+        String(forwardedPort),
+      ],
+    });
   }
-  assert.equal(relayRunning, true, "the exact host routing relay must own loopback port 443.");
   const originalLookup = dns.lookup;
   dns.lookup = function lookup(hostname, options, callback) {
     if (hostname !== gatewayHostname) {
@@ -383,10 +289,11 @@ export async function startWorkspaceGatewayHostRelay(
 }
 
 export async function createEnvoyWorkspaceGatewayPlan(
-  context,
+  testContext,
   { platformNamespace, sandboxPreview = false },
   helpers,
 ) {
+  const context = withBoundedTeardown(testContext, { label: "Workspace Gateway cleanup" });
   let apiKey = randomBytes(32).toString("base64url");
   const apiKeySecretName = `oce-gateway-api-key-${hash(platformNamespace)}`;
 
@@ -438,18 +345,19 @@ export async function createEnvoyWorkspaceGatewayPlan(
   // would block until the platform Namespace's Gateway is gone. That Namespace may be deleted
   // after this cleanup (finding 1711): request the deletion and let the finalizer complete it.
   context.after(async () => {
-    await helpers
-      .kubectl(
-        "delete",
-        "gatewayclass",
-        gatewayClassName,
-        "--ignore-not-found=true",
-        "--wait=false",
-      )
-      .catch(() => undefined);
+    await helpers.kubectl(
+      "delete",
+      "gatewayclass",
+      gatewayClassName,
+      "--ignore-not-found=true",
+      "--wait=false",
+    );
   });
   const gatewayRoutingManifests = await renderGatewayRoutingManifests({
+    releaseName: gatewayReleaseName,
     releaseNamespace: platformNamespace,
+    envoyNamespace,
+    issuerName: caIssuerName,
     apiKeySecretName,
     gatewayClassName,
     hostname: gatewayHostname(platformNamespace),
@@ -702,47 +610,6 @@ ${entries}
 `,
     { redactions: values.flatMap((value) => [value, Buffer.from(value).toString("base64")]) },
   );
-}
-
-function registerRenderedExternalCleanup(context, manifests, platformNamespace, { kubectl }) {
-  for (const object of renderedNamespacedObjects(manifests)) {
-    if (object.kind !== "NetworkPolicy" || object.namespace === platformNamespace) {
-      continue;
-    }
-    context.after(async () => {
-      await kubectl(
-        "delete",
-        "networkpolicy",
-        object.name,
-        "--namespace",
-        object.namespace,
-        "--ignore-not-found=true",
-      ).catch(() => undefined);
-    });
-  }
-}
-
-function renderedNamespacedObjects(manifests) {
-  return manifests
-    .split(/^---$/mu)
-    .map((document) => {
-      const kind = /^kind:\s*(\S+)\s*$/mu.exec(document)?.[1];
-      const metadataStart = document.search(/^metadata:\s*$/mu);
-      if (kind === undefined || metadataStart < 0) {
-        return undefined;
-      }
-      const metadata = document.slice(metadataStart);
-      const name = /^ {2}name:\s*(\S+)\s*$/mu.exec(metadata)?.[1];
-      const namespace = /^ {2}namespace:\s*(\S+)\s*$/mu.exec(metadata)?.[1];
-      return name === undefined || namespace === undefined
-        ? undefined
-        : { kind, name: unquoteYaml(name), namespace: unquoteYaml(namespace) };
-    })
-    .filter((object) => object !== undefined);
-}
-
-function unquoteYaml(value) {
-  return value.replace(/^"|"$/g, "");
 }
 
 async function ensureCertificateAuthority(namespace, { applyManifest, waitFor, resource }) {

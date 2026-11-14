@@ -141,6 +141,8 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   for (const viewport of [
     { width: 1440, height: 900 },
+    { width: 1101, height: 768 },
+    { width: 1100, height: 768 },
     { width: 1024, height: 768 },
     { width: 390, height: 844 },
   ]) {
@@ -199,18 +201,29 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
       layout.selector.top >= layout.title.bottom,
       `${size}: the selector is under the title`,
     );
-    if (viewport.width === 390) {
-      // Phone: back row (with the actions), title, meta. A name this long takes two lines; the
-      // header still ends well before the old 8-row header did.
-      assert.ok(layout.bottom <= 240 + 34 * (layout.title.lines - 1), `${size}: ${layout.bottom}`);
+    const actions = layout.controls.filter((control) => control.region === "actions");
+    if (viewport.width <= 1100) {
+      // Tablet and phone actions share the back row, leaving the title its own full row.
+      for (const action of actions) {
+        assert.ok(action.bottom <= layout.title.top, `${size}: ${action.name} is above the title`);
+        assert.ok(action.left >= back.right, `${size}: ${action.name} is right of the back link`);
+        assert.ok(
+          Math.abs(action.top - back.top) < 1,
+          `${size}: ${action.name} shares the back row`,
+        );
+      }
     } else {
-      const actions = layout.controls.filter((control) => control.region === "actions");
       for (const action of actions) {
         assert.ok(
           action.left >= layout.title.right,
           `${size}: ${action.name} is right of the title`,
         );
       }
+    }
+
+    if (viewport.width === 390) {
+      // A long phone title may wrap, but the header still ends before the old 8-row header did.
+      assert.ok(layout.bottom <= 240 + 34 * (layout.title.lines - 1), `${size}: ${layout.bottom}`);
     }
 
     // Replacing the rail with a picker must not introduce horizontal overflow on phones.

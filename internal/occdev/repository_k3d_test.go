@@ -20,6 +20,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/openclaw/openclaw-enterprise/internal/devtls"
 )
 
 // preparedRepositoryRegistry is an input registry the worker can prepare: one
@@ -295,7 +297,7 @@ func testDevelopmentRepositoryInstallation(t *testing.T, origin, realNode string
 	}
 	inputs := &developmentRepositoryInputs{registry: preparedRepositoryRegistry(), backendID: "repository-backend", upstreamCIDRs: []string{"192.0.2.10/32"}, appKey: testAppKeyPEM(t)}
 	if origin != "" {
-		issuer, _, err := generateDevelopmentTLS("issuer", "fixture CA", []string{"172.17.0.1"})
+		issuer, _, err := devtls.Generate("issuer", "fixture CA", []string{"172.17.0.1"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -393,7 +395,7 @@ import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadInstallationConfiguration } from './apps/controller/src/composition/installation-config.ts';
 import { prepareProjectedInputs } from './apps/controller/src/composition/repository-credentials/projected-inputs.ts';
-import { createSystemClock } from './apps/controller/src/drivers/repo/credentials/clock.ts';
+import { createSystemClock } from './apps/controller/src/drivers/repo/access/clock.ts';
 const [root, sockets, origin] = process.argv.slice(1);
 const loaded = await loadInstallationConfiguration({ mode: 'production', environment: { OCC_CONFIG_PATH: join(root, 'installation.yaml') } });
 assert.equal(loaded.repositoryGitDriver, undefined);

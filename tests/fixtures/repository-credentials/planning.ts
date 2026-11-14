@@ -3,11 +3,11 @@ import type {
   Denied,
   RequestHead,
   RequestPlan,
-} from "../../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
+} from "../../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type {
   GitHubProfile,
   GitHubTokenConfiguration,
-} from "../../../apps/controller/src/drivers/repo/github/credentials/types.ts";
+} from "../../../apps/controller/src/drivers/repo/github/access/types.ts";
 import { appModule } from "./runtime.mjs";
 import { createControlledClock } from "./clock.mjs";
 import { createResourceScope } from "./resources.mjs";
@@ -31,19 +31,19 @@ export async function createGitHubPlanningFixture(
       { createCustody },
       { validateGitHubConfiguration },
     ]: [
-      typeof import("../../../apps/controller/src/drivers/repo/github/credentials/factory.ts"),
-      typeof import("../../../apps/controller/src/drivers/repo/github/credentials/static-token.ts"),
-      typeof import("../../../apps/controller/src/drivers/repo/credentials/configuration.ts"),
-      typeof import("../../../apps/controller/src/drivers/repo/credentials/sessions.ts"),
-      typeof import("../../../apps/controller/src/drivers/repo/credentials/custody.ts"),
-      typeof import("../../../apps/controller/src/drivers/repo/github/credentials/config.ts"),
+      typeof import("../../../apps/controller/src/drivers/repo/github/access/factory.ts"),
+      typeof import("../../../apps/controller/src/drivers/repo/github/access/static-token.ts"),
+      typeof import("../../../apps/controller/src/drivers/repo/access/configuration.ts"),
+      typeof import("../../../apps/controller/src/drivers/repo/access/sessions.ts"),
+      typeof import("../../../apps/controller/src/drivers/repo/access/custody.ts"),
+      typeof import("../../../apps/controller/src/drivers/repo/github/access/config.ts"),
     ] = await Promise.all([
-      appModule("drivers/repo/github/credentials/factory"),
-      appModule("drivers/repo/github/credentials/static-token"),
-      appModule("drivers/repo/credentials/configuration"),
-      appModule("drivers/repo/credentials/sessions"),
-      appModule("drivers/repo/credentials/custody"),
-      appModule("drivers/repo/github/credentials/config"),
+      appModule("drivers/repo/github/access/factory"),
+      appModule("drivers/repo/github/access/static-token"),
+      appModule("drivers/repo/access/configuration"),
+      appModule("drivers/repo/access/sessions"),
+      appModule("drivers/repo/access/custody"),
+      appModule("drivers/repo/github/access/config"),
     ]);
     const clock = createControlledClock(1700000000000);
     const config = validateServiceConfig(serviceConfigurationData());

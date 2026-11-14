@@ -167,7 +167,12 @@ async function setup(context) {
       configurationKind: "agent",
       configurationGeneration: 1,
       backendId: null,
-      harness: { ...PRODUCTION_HARNESS_DESCRIPTOR, mode: "dedicated" },
+      harness: {
+        ...PRODUCTION_HARNESS_DESCRIPTOR,
+        mode: "dedicated",
+        overrides: {},
+        configuration: {},
+      },
       compute: { id: compute.id, implementation: compute.implementation },
       executionAdmission: { version: 2, mode: "unprotected" },
       harnessAuth: { ...owner.harnessAuth, secretDriverId: secretDriver.id },

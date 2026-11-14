@@ -7,7 +7,7 @@ import {
 import {
   registeredGitRecipientEvidence,
   type RepositoryGitRecipientEvidence,
-} from "../../drivers/repo/credentials/protected-repository-git-installation.ts";
+} from "../../drivers/repo/access/protected-repository-git-installation.ts";
 
 // The host binds a fixed policy to the installed registration. No Driver capability,
 // configuration option or request can supply custody SQL or choose a policy.

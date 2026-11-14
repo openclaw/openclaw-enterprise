@@ -15,7 +15,11 @@ import { startGitSmartHttpFixture } from "../../repository-credentials/git.mjs";
 import { createRepositoryResources } from "../../repository-credentials/github/repository-resources.mjs";
 import { sharedRsaKeyPair } from "../../repository-credentials/shared-keys.mjs";
 
-export async function installationOrigin(t: TestContext, namespaceId: string) {
+export async function installationOrigin(
+  t: TestContext,
+  namespaceId: string,
+  options = { tokenLifetimeMs: 3600_000, maximumIssues: 1 },
+) {
   const tls = await createTlsMaterial(t);
   const { privateKey, publicKey } = sharedRsaKeyPair("installation-journey-app");
   const backendId = "prepared-installation";
@@ -70,22 +74,31 @@ export async function installationOrigin(t: TestContext, namespaceId: string) {
     selected: boolean;
     status: number;
   }[] = [];
+  const traffic = { connections: 0, issuerRequests: 0, workloadRequests: 0, retirementRequests: 0 };
+  const issuePath = "/app/installations/" + githubInstallationId + "/access_tokens";
   let gitUses = 0;
   let issueCount = 0;
+  const issuedTokens = new Set<string>();
   let token: string | undefined;
   let expires = 0;
+  let heldRetirement: { token: string; released: Promise<void> } | undefined;
   const basic = (value: string) =>
     "Basic " + Buffer.from("x-access-token:" + value).toString("base64");
 
   const server = createServer(tls, (req, res) => {
+    // Count ingress before reading or validating anything: rejected requests count too.
+    if (req.url === issuePath) {
+      traffic.issuerRequests++;
+    } else if (req.method === "DELETE" && req.url === "/installation/token") {
+      traffic.retirementRequests++;
+    } else {
+      traffic.workloadRequests++;
+    }
     void (async () => {
       const path = req.url!;
       const auth = req.headers.authorization;
       const body = await text(req);
-      if (
-        req.method === "POST" &&
-        path === "/app/installations/" + githubInstallationId + "/access_tokens"
-      ) {
+      if (req.method === "POST" && path === issuePath) {
         // Check what the production issuer actually sent, including its App signature. A narrowed
         // request cannot accidentally pass this journey. Assertion diagnostics never include a credential.
         assert.ok(body === "{}", "issuance must not narrow repositories or permissions");
@@ -104,9 +117,10 @@ export async function installationOrigin(t: TestContext, namespaceId: string) {
         assert.ok(
           String(jwt.iss) === appId && jwt.iat <= Date.now() / 1000 && Date.now() / 1000 < jwt.exp,
         );
-        assert.equal(++issueCount, 1, "the fixture permits exactly one token issue");
+        assert.ok(++issueCount <= options.maximumIssues, "unexpected additional token issue");
         token = "fixture_installation_" + randomBytes(24).toString("hex");
-        expires = Date.now() + 3600_000;
+        issuedTokens.add(token);
+        expires = Date.now() + options.tokenLifetimeMs;
         res.writeHead(201, { "content-type": "application/json" }).end(
           JSON.stringify({
             token,
@@ -117,7 +131,18 @@ export async function installationOrigin(t: TestContext, namespaceId: string) {
         );
         return;
       }
-      const authenticated = !!token && auth === "Bearer " + token && Date.now() < expires;
+      if (req.method === "DELETE" && path === "/installation/token") {
+        // Rotation retires the superseded token through the provider's real revoke protocol.
+        const held = heldRetirement;
+        if (held && auth === "Bearer " + held.token) {
+          await held.released;
+        }
+        const revoked = auth?.startsWith("Bearer ") && issuedTokens.delete(auth.slice(7));
+        res.writeHead(revoked ? 204 : 401).end();
+        return;
+      }
+      const authenticated =
+        !!token && issuedTokens.has(token) && auth === "Bearer " + token && Date.now() < expires;
       const url = new URL(path, "https://api.github.com");
       // The journey's GraphQL query is for B. REST must resolve the exact repository first.
       const name = path === "/graphql" ? repository : url.pathname.split("/").slice(2, 4).join("/");
@@ -146,6 +171,7 @@ export async function installationOrigin(t: TestContext, namespaceId: string) {
         .end(JSON.stringify("body" in result ? result.body : {}));
     })().catch(() => res.writeHead(500).end());
   });
+  server.on("connection", () => traffic.connections++);
   const apiOrigin = await listen(t, server);
   const createGit: (
     t: TestContext,
@@ -155,7 +181,8 @@ export async function installationOrigin(t: TestContext, namespaceId: string) {
     repository,
     tls,
     authorize: (auth: string | undefined) => {
-      const valid = !!token && auth === basic(token) && Date.now() < expires;
+      const valid =
+        !!token && issuedTokens.has(token) && auth === basic(token) && Date.now() < expires;
       if (valid) {
         gitUses++;
       }
@@ -208,6 +235,17 @@ export async function installationOrigin(t: TestContext, namespaceId: string) {
       apiRequests,
       repositoryRef,
       acceptedGitRequests: () => gitUses,
+      traffic: () => ({ ...traffic }),
+      holdCurrentTokenRetirement() {
+        assert.ok(token && issuedTokens.has(token));
+        const { promise, resolve } = Promise.withResolvers<void>();
+        heldRetirement = { token, released: promise };
+        t.after(() => resolve());
+        return () => {
+          resolve();
+          heldRetirement = undefined;
+        };
+      },
       async verifyTokenStillWorks() {
         assert.ok(token && expires > Date.now());
         assert.equal(
@@ -218,7 +256,7 @@ export async function installationOrigin(t: TestContext, namespaceId: string) {
         assert.equal(
           await directGitStatus(basic(token)),
           200,
-          "after the withdrawal observation, the provider still accepts the exact token",
+          "before retirement completes, the provider still accepts the withdrawn token",
         );
       },
     },

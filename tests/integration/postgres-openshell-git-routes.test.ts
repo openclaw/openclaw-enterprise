@@ -1,20 +1,28 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import pg from "pg";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import {
   type OpenShellGitRouteSnapshot,
   PostgresOpenShellGitRouteStore,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
-import { CredentialDeliveries, PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { seedSessionRevision } from "../conformance/repository-sessions.contract.mjs";
+import {
+  CredentialDeliveries,
+  PostgresPlatformState,
+  PostgresWorkQueue,
+} from "../../packages/occ/src/index.ts";
+import {
+  seedSessionRevision,
+  sessionAttempt,
+} from "../conformance/repository-sessions.contract.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 
 // The persisted OpenShell Git route (migration 0062) as the application role
 // writes it: identity and custody facts only, one holder named by a fence, a pending write
 // and a tombstone that outlive the worker. The runtime's use of it is covered by
-// tests/conformance/openshell-git-runtime.test.mjs with the in-memory store.
+// tests/conformance/selected-openshell-git-runtime.test.ts with the in-memory store.
 const observed = {
   workspace: "team-workspace",
   sandbox: "git-execution",
@@ -104,43 +112,16 @@ test(
       observed: undefined,
     };
     assert.equal(await store.record(revision.id, 1, snapshot), true);
-    // Once bootstrap is settled, replacement can adopt its immutable observation.
-    const adopted = await store.adopt(revision.id, workers[1]!);
-    assert.deepEqual(adopted, {
-      ...route,
-      fence: 2,
-      ...snapshot,
-      writePending: undefined,
-      blocked: undefined,
-    });
-    assert.equal(
-      await store.record(revision.id, 1, snapshot),
-      false,
-      "a stale fence writes nothing",
-    );
-    assert.equal(await store.owns(revision.id, 1), false);
-    assert.equal(await store.writing(revision.id, 1, "rotate"), undefined);
-    assert.equal(await store.block(revision.id, 1, "unknown"), false);
-    assert.equal(await store.owns(revision.id, 2), true);
-    assert.equal(await store.record(revision.id, 2, snapshot), true);
-    assert.deepEqual(await store.adopt(revision.id, workers[2]!), {
-      ...route,
-      fence: 3,
-      generation: { ...generation, ...bootstrapping },
-      material: undefined,
-      observed: undefined,
-      writePending: undefined,
-      blocked: undefined,
-    });
+    assert.equal(await store.owns(revision.id, 1), true);
     // A provider write in flight stays visible to the next worker with the facts before it.
     const candidate = { materialVersion: randomUUID(), preparationAttemptId: randomUUID() };
     assert.equal(
-      await store.writing(revision.id, 3, "rotate"),
+      await store.writing(revision.id, 1, "rotate"),
       undefined,
       "rotation cannot reserve an absent material target",
     );
-    assert.equal(await store.writing(revision.id, 3, "rotate", candidate), 4);
-    assert.equal(await store.writing(revision.id, 4, "rotate", candidate), undefined);
+    assert.equal(await store.writing(revision.id, 1, "rotate", candidate), 2);
+    assert.equal(await store.writing(revision.id, 2, "rotate", candidate), undefined);
     const { rows: pending } = await pool.query(
       "SELECT target_material_version, target_preparation_attempt_id FROM occ.credential_deliveries WHERE revision_id=$1",
       [revision.id],
@@ -151,7 +132,7 @@ test(
         target_preparation_attempt_id: candidate.preparationAttemptId,
       },
     ]);
-    assert.equal(await store.owns(revision.id, 4), true);
+    assert.equal(await store.owns(revision.id, 2), true);
     const expiresAt = new Date(Date.now() + 600_000).toISOString();
     const active: OpenShellGitRouteSnapshot = {
       generation: { ...generation, resourceVersion: "12", credentialState: "active", expiresAt },
@@ -159,17 +140,17 @@ test(
       observed,
     };
     assert.equal(
-      await store.record(revision.id, 4, active),
+      await store.record(revision.id, 2, active),
       false,
       "C cannot substitute for the pending B operation",
     );
     assert.equal(
-      await store.writing(revision.id, 4, "rotate", active.material),
+      await store.writing(revision.id, 2, "rotate", active.material),
       undefined,
       "uncertain B consumes the installation opportunity",
     );
     assert.equal(
-      await store.record(revision.id, 4, {
+      await store.record(revision.id, 2, {
         ...active,
         material: {
           ...candidate,
@@ -180,33 +161,24 @@ test(
       "the original attempt with a different version is also refused",
     );
     const installedB = { ...active, material: candidate };
-    assert.equal(await store.record(revision.id, 4, installedB), true);
-    assert.equal((await store.adopt(revision.id, workers[0]!))?.fence, 5);
-    const held = await store.adopt(revision.id, workers[1]!);
-    assert.deepEqual(held, {
-      ...route,
-      fence: 6,
-      ...installedB,
-      writePending: undefined,
-      blocked: undefined,
-    });
+    assert.equal(await store.record(revision.id, 2, installedB), true);
     // Only the known identity keys fit the observation; a material version is a uuid.
     await assert.rejects(
-      store.record(revision.id, 6, {
+      store.record(revision.id, 2, {
         ...active,
         observed: Object.assign({}, observed, { token: "x" }),
       }),
       /Invalid OpenShell delivery observation/,
     );
     await assert.rejects(
-      store.record(revision.id, 6, {
+      store.record(revision.id, 2, {
         ...active,
         material: { materialVersion: "version-one", preparationAttemptId: randomUUID() },
       }),
       /invalid input syntax for type uuid/,
     );
     await assert.rejects(
-      store.record(revision.id, 6, {
+      store.record(revision.id, 2, {
         ...active,
         generation: { ...active.generation, resourceVersion: "rv-12" },
       }),
@@ -216,24 +188,28 @@ test(
       "SELECT * FROM occ.credential_deliveries WHERE revision_id = $1",
       [revision.id],
     );
-    assert.equal(stored[0].worker_instance, workers[1]!);
+    assert.equal(stored[0].worker_instance, workers[0]!);
     assert.equal(JSON.stringify(stored).includes("token"), false);
 
-    // The first tombstone stays: no later adoption moves the fence, no later block or
-    // withdrawal changes the reason, and a stale or current fence writes nothing more.
-    assert.equal(await store.block(revision.id, 6, "supervisor_replaced"), true);
-    assert.equal(await store.block(revision.id, 6, "unknown"), false);
-    assert.deepEqual(await store.adopt(revision.id, workers[2]!), {
-      ...held,
+    // A replacement cannot inherit the observed hook. It atomically takes the fence and
+    // closes the route; neither the old holder nor its replacement can install material.
+    const held = await store.adopt(revision.id, workers[1]!);
+    assert.deepEqual(held, {
+      ...route,
+      fence: 3,
+      ...installedB,
       writePending: undefined,
-      blocked: "supervisor_replaced",
+      blocked: "worker_replaced",
     });
-    // Closed at the holder's fence, the route answers its reason, not a replacement.
-    assert.equal(await store.owns(revision.id, 6), "supervisor_replaced");
-    assert.equal(await store.owns(revision.id, 5), false);
-    assert.equal(await store.record(revision.id, 6, active), false);
+    assert.equal(await store.owns(revision.id, 2), false);
+    assert.equal(await store.owns(revision.id, 3), "worker_replaced");
+    assert.equal(await store.record(revision.id, 2, active), false);
+    assert.equal(await store.record(revision.id, 3, active), false);
+    assert.equal(await store.writing(revision.id, 3, "rotate", candidate), undefined);
+    assert.equal(await store.block(revision.id, 3, "unknown"), false);
+    assert.deepEqual(await store.adopt(revision.id, workers[2]!), held);
     await store.withdraw({ revisionId: revision.id });
-    assert.equal((await store.adopt(revision.id, workers[2]!))?.blocked, "supervisor_replaced");
+    assert.deepEqual(await store.adopt(revision.id, workers[2]!), held);
 
     // Withdrawal of a revision or a whole Namespace tombstones its open routes, whoever
     // holds them.
@@ -245,17 +221,13 @@ test(
     };
     await store.open(second, workers[0]!);
     await store.withdraw({ namespaceId: revision.namespaceId });
-    assert.equal(
-      (await store.adopt(other.id, workers[1]!))?.blocked,
-      undefined,
-      "another Namespace",
-    );
+    assert.equal(await store.owns(other.id, 1), true, "another Namespace");
     await store.withdraw({ namespaceId: other.namespaceId });
     // Withdrawal leaves the fence: its holder reads the reason (finding 2218).
-    assert.equal(await store.owns(other.id, 2), "withdrawn");
+    assert.equal(await store.owns(other.id, 1), "withdrawn");
     assert.deepEqual(await store.adopt(other.id, workers[1]!), {
       ...second,
-      fence: 2,
+      fence: 1,
       generation: undefined,
       material: undefined,
       observed: undefined,
@@ -311,20 +283,27 @@ test(
 
 test(
   "Git expiry permanently fences earlier route holders and grants only one conditional send",
-  {
-    ...requiresPostgres,
-    timeout: 60_000,
-  },
-  async (t) => {
+  { ...requiresPostgres, timeout: 60_000 },
+  retainedGitWithdrawal(false),
+);
+test(
+  "finite Git removal is revision scoped and wins concurrent cold route adoption",
+  { ...requiresPostgres, timeout: 60_000 },
+  retainedGitWithdrawal(true),
+);
+
+function retainedGitWithdrawal(removal: boolean) {
+  return async (t: TestContext) => {
     const pool = testPool(t, { connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);
     const { repositoryCredentials } =
       await import("../fixtures/repository-credentials/session-state.mjs");
-    // The worker and supplier tests exercise crossing the deadline. This is the store's
-    // completed-deadline input; the binding remains attached to its live, desired-running Agent.
+    // The worker tests cross the real deadline. This store proof starts after expiry or
+    // removes an admitted finite binding while its deadline is still in the future.
     const { revision } = await seedSessionRevision(
       state,
-      repositoryCredentials({ deadlineWallMs: Date.now() - 1 }),
+      repositoryCredentials({ deadlineWallMs: Date.now() + (removal ? 120_000 : -1) }),
+      { createdAt: new Date().toISOString() },
     );
     const { id, namespaceId, agentId } = revision;
     await state.transact((unit) =>
@@ -337,8 +316,8 @@ test(
       randomUUID(),
     );
     const launch = "a".repeat(64);
-    const expire = (r = revision) =>
-      store.expire(r as unknown as AgentRevision, workspace, sandbox);
+    const expire = (r = revision, finiteScopeIsCurrent = !removal) =>
+      store.expire(r as unknown as AgentRevision, workspace, sandbox, finiteScopeIsCurrent);
     assert.equal(await expire(), undefined, "an unwitnessed bootstrap cannot produce retention");
     const snapshot: OpenShellGitRouteSnapshot = {
       retainedLaunchHash: launch,
@@ -375,6 +354,233 @@ test(
       "a worker cannot substitute another deadline",
     );
     assert.equal(await store.owns(id, 2), true);
+    assert.equal(
+      await expire(revision, false),
+      undefined,
+      "elapsed time cannot authorize withdrawal after finite scope substitution",
+    );
+    assert.equal(await store.owns(id, 2), true, "a refused reduction leaves no tombstone");
+    assert.equal(
+      (
+        await pool.query("SELECT 1 FROM occ.credential_delivery_reductions WHERE revision_id=$1", [
+          id,
+        ])
+      ).rowCount,
+      0,
+      "a refused reduction leaves no durable apply obligation",
+    );
+    if (removal) {
+      // The target already has an installed route. An unrelated committed withdrawal
+      // cannot authorize subtracting its still-live finite grant.
+      const { revision: other } = await seedSessionRevision(
+        state,
+        repositoryCredentials({ deadlineWallMs: Date.now() + 120_000 }),
+        { createdAt: new Date().toISOString() },
+      );
+      await state.transact((unit) =>
+        unit.agents.compareAndSetActiveRevision(
+          other.namespaceId,
+          other.agentId,
+          undefined,
+          other.id,
+        ),
+      );
+      for (const current of [revision, other]) {
+        await state.transact(async (unit) => {
+          await unit.namespaces.lockNamespace(current.namespaceId);
+          await unit.agents.lockAgent(current.namespaceId, current.agentId);
+          const attempt = sessionAttempt(current, { createdAt: new Date().toISOString() });
+          await unit.repositorySessions.createAttempt(attempt);
+          await unit.repositorySessions.advanceAttempt({
+            admissionId: attempt.admissionId,
+            expectedPhase: "opening",
+            phase: "open",
+            sessionId: randomUUID(),
+            updatedAt: new Date().toISOString(),
+          });
+        });
+      }
+      const withdraw = async (
+        unit: Parameters<Parameters<PostgresPlatformState["transact"]>[0]>[0],
+        current: typeof revision,
+      ) => {
+        await unit.agents.updateConfiguration(
+          current.namespaceId,
+          current.agentId,
+          current.configurationId,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          [],
+        );
+        await unit.repositorySessions.withdrawFinite(
+          { namespaceId: current.namespaceId, agentId: current.agentId, revisionId: current.id },
+          new Date().toISOString(),
+        );
+      };
+      const owner = { namespaceId, agentId, revisionId: id };
+      const queue = new PostgresWorkQueue(pool);
+      const before = await state.read(async (view) => ({
+        agent: await view.agents.findAgent(namespaceId, agentId),
+        attempts: await view.repositorySessions.listRevisionAttempts(owner),
+      }));
+      // Missing deployment provenance cannot be replaced by an editor's authority. The
+      // entire mutation rolls back, including the binding and open session state.
+      await assert.rejects(
+        state.transact(async (unit) => {
+          await unit.namespaces.lockNamespace(namespaceId);
+          await unit.agents.lockAgent(namespaceId, agentId);
+          await withdraw(unit, revision);
+        }),
+        { name: "ScopeViolationError" },
+      );
+      assert.deepEqual(
+        await state.read(async (view) => ({
+          agent: await view.agents.findAgent(namespaceId, agentId),
+          attempts: await view.repositorySessions.listRevisionAttempts(owner),
+        })),
+        before,
+      );
+      assert.equal(await queue.repositoryExpiryState(owner), undefined);
+      for (const current of [revision, other]) {
+        await state.transactWithQueue(async (unit, work) => {
+          await unit.namespaces.lockNamespace(current.namespaceId);
+          await unit.agents.lockAgent(current.namespaceId, current.agentId);
+          const key = `agent_revision:${current.id}:reconcile`;
+          await work.enqueue({
+            idempotencyKey: key,
+            namespaceId: current.namespaceId,
+            agentId: current.agentId,
+            revisionId: current.id,
+            actorId: current.servicePrincipalId,
+            availableAt: new Date(),
+          });
+          const claim = await work.claim();
+          assert.ok(claim);
+          assert.equal(claim.idempotencyKey, key);
+          await work.complete(claim);
+        });
+      }
+      await state.transact(async (unit) => {
+        await unit.namespaces.lockNamespace(other.namespaceId);
+        await unit.agents.lockAgent(other.namespaceId, other.agentId);
+        await withdraw(unit, other);
+      });
+      assert.equal(await expire(), undefined, "another revision's removal is not authority");
+      assert.equal(await store.owns(id, 2), true);
+
+      // Prove ordering through PostgreSQL's lock graph, not a timer: cold adoption must
+      // wait for this removal transaction and preserve its installed recipient afterward.
+      const applicationName = `finite-removal-adopter-${randomUUID()}`;
+      const adopter = new PostgresOpenShellGitRouteStore(
+        testPool(t, {
+          connectionString: databaseUrl,
+          application_name: applicationName,
+          max: 1,
+        }),
+      );
+      const admissionApplication = `finite-removal-admission-${randomUUID()}`;
+      const admissionState = new PostgresPlatformState(
+        testPool(t, {
+          connectionString: databaseUrl,
+          application_name: admissionApplication,
+          max: 1,
+        }),
+      );
+      const admission = sessionAttempt(revision, { createdAt: new Date().toISOString() });
+      let inserted: ReturnType<PostgresPlatformState["transact"]> | undefined;
+      let adopted: ReturnType<PostgresOpenShellGitRouteStore["adopt"]> | undefined;
+      try {
+        await state.transact(async (unit) => {
+          await unit.namespaces.lockNamespace(namespaceId);
+          await unit.agents.lockAgent(namespaceId, agentId);
+          adopted = adopter.adopt(id, randomUUID());
+          void adopted.catch(() => {});
+          await waitFor("cold adoption waits for the Agent removal lock", async () => {
+            const waiting = await pool.query(
+              `SELECT pid FROM pg_stat_activity WHERE application_name=$1
+             AND cardinality(pg_blocking_pids(pid)) > 0`,
+              [applicationName],
+            );
+            return waiting.rowCount === 1 ? true : undefined;
+          });
+          // INSERT begins before removal commits. Its admission trigger must reread
+          // withdrawal after obtaining these locks, not reuse its statement snapshot.
+          inserted = admissionState.transact((admissionUnit) =>
+            admissionUnit.repositorySessions.createAttempt(admission),
+          );
+          void inserted.catch(() => {});
+          await waitFor("session INSERT waits for the removal transaction", async () => {
+            const waiting = await pool.query(
+              `SELECT pid FROM pg_stat_activity WHERE application_name=$1
+               AND cardinality(pg_blocking_pids(pid)) > 0`,
+              [admissionApplication],
+            );
+            return waiting.rowCount === 1 ? true : undefined;
+          });
+          await withdraw(unit, revision);
+        });
+        await assert.rejects(
+          inserted!,
+          { name: "RepositorySessionWithdrawnError" },
+          "an INSERT started before removal must see withdrawal after its lock wait",
+        );
+        assert.equal(
+          await state.read((view) => view.repositorySessions.findAttempt(admission.admissionId)),
+          undefined,
+        );
+        const result = await adopted;
+        assert.equal(result?.blocked, "repository_expired");
+        assert.equal(result?.fence, 2, "removal does not grant a new Git holder");
+        assert.equal(result?.observed?.executionId, id);
+      } finally {
+        await adopted?.catch(() => {});
+        await inserted?.catch(() => {});
+      }
+
+      // Cleanup cannot be abandoned. Repeating removal while its work is claimed must
+      // preserve the holder, original actor and attempt instead of scheduling a second owner.
+      const pendingOwners = new Set([other.id, id]);
+      let removalClaim: Awaited<ReturnType<PostgresWorkQueue["claim"]>>;
+      while (pendingOwners.size > 0) {
+        const claim = await queue.claim();
+        assert.ok(claim);
+        assert.ok(pendingOwners.delete(claim.revisionId!));
+        if (claim.revisionId === id) {
+          const held = await queue.findWork(claim.idempotencyKey);
+          await assert.rejects(queue.fail(claim, { code: "REPOSITORY_CLEANUP_FAILED" }), {
+            name: "ScopeViolationError",
+          });
+          assert.deepEqual(await queue.findWork(claim.idempotencyKey), held);
+          removalClaim = claim;
+        } else {
+          await queue.complete(claim);
+        }
+      }
+      assert.ok(removalClaim);
+      const held = await queue.findWork(removalClaim.idempotencyKey);
+      assert.equal(held?.state, "claimed");
+      await state.transact(async (unit) => {
+        await unit.namespaces.lockNamespace(namespaceId);
+        await unit.agents.lockAgent(namespaceId, agentId);
+        await withdraw(unit, revision);
+      });
+      assert.deepEqual(await queue.findWork(removalClaim.idempotencyKey), held);
+      assert.equal(await queue.claim(), undefined);
+      await queue.complete(removalClaim);
+    }
+    // Pending or denied Stop is intent, not authority to abandon committed Git removal.
+    // Natural expiry has no such exception and remains running-only.
+    await state.transact((unit) =>
+      unit.agents.transitionAgentDesiredRuntimeState(namespaceId, agentId, "running", "stopped"),
+    );
+    if (!removal) {
+      assert.equal(await expire(), undefined, "stopped intent cannot use the natural expiry path");
+      await state.transact((unit) =>
+        unit.agents.transitionAgentDesiredRuntimeState(namespaceId, agentId, "stopped", "running"),
+      );
+    }
     const frozen = await expire();
     assert.equal(frozen?.retainedLaunchHash, launch);
     assert.equal(await store.owns(id, 2), "repository_expired");
@@ -392,8 +598,8 @@ test(
     await store.withdraw({ revisionId: id });
     assert.equal(await expire(), undefined, "explicit stop supersedes a witnessed withdrawal");
     assert.equal(await store.confirmDetached(id, launch, request, "epoch-two"), true);
-  },
-);
+  };
+}
 
 test(
   "delivery obligations survive Agent cleanup without reopening use",
@@ -476,65 +682,6 @@ test(
       }),
       undefined,
     );
-  },
-);
-
-test(
-  "a bootstrap refused before its write is cleared and reserved again at the next fence",
-  requiresPostgres,
-  async (t) => {
-    // Finding 2210: the worker that opened the route proves its bootstrap write unsent and
-    // clears it; the next pass adopts the empty route and reserves the bootstrap again.
-    const pool = testPool(t, { connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
-    const { revision } = await seedSessionRevision(state);
-    const store = new PostgresOpenShellGitRouteStore(pool);
-    const route = {
-      revisionId: revision.id,
-      namespaceId: revision.namespaceId,
-      agentId: revision.agentId,
-      bindingId: "r".repeat(32),
-      workspace: observed.workspace,
-      sandbox: observed.sandbox,
-    };
-    await store.open(route, randomUUID());
-    assert.equal(await store.cancelWriting(revision.id, 1), true);
-    const empty = {
-      generation: undefined,
-      material: undefined,
-      observed: undefined,
-      writePending: undefined,
-      blocked: undefined,
-    };
-    assert.deepEqual(await store.adopt(revision.id, randomUUID()), {
-      ...route,
-      fence: 2,
-      ...empty,
-    });
-    assert.equal(await store.writing(revision.id, 1, "bootstrap"), undefined, "a stale fence");
-    assert.equal(await store.writing(revision.id, 2, "bootstrap"), 3);
-    assert.equal(
-      await store.cancelWriting(revision.id, 1),
-      false,
-      "a stale clear cannot clear the new reservation",
-    );
-    const generation = {
-      credentialState: "bootstrap" as const,
-      expiresAt: "",
-      providerId: observed.providerId,
-      resourceVersion: "1",
-      profileVersion: "1",
-    };
-    assert.equal(
-      await store.record(revision.id, 3, { generation, material: undefined, observed: undefined }),
-      true,
-    );
-    assert.deepEqual(await store.adopt(revision.id, randomUUID()), {
-      ...route,
-      fence: 4,
-      ...empty,
-      generation,
-    });
   },
 );
 
@@ -623,7 +770,7 @@ for (const operation of ["bootstrap", "rotate"] as const) {
         target_preparation_attempt_id: operation === "rotate" ? b.preparationAttemptId : null,
         target_material_version: operation === "rotate" ? b.materialVersion : null,
         write_pending: operation,
-        blocked: "withdrawn",
+        blocked: "worker_replaced",
       });
     },
   );
@@ -823,6 +970,7 @@ test(
         revision as unknown as AgentRevision,
         observed.workspace,
         observed.sandbox,
+        true,
       ),
     );
     const request = randomUUID();

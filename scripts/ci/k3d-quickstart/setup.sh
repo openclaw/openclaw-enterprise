@@ -11,7 +11,7 @@ mkdir -p -m 700 "$RUN_DIR"
 install -m 600 docs/snippets/openshell-quickstart/plugin-network-policy.yaml "$RUN_DIR/artifacts.yaml"
 install -m 600 docs/snippets/openshell-quickstart/configure-installation.mjs "$RUN_DIR/configure-installation.mjs"
 source docs/snippets/openshell-quickstart/stage-session.sh
-node scripts/ci/k3d-quickstart/setup-blocks.mjs "$RUN_DIR"
+node scripts/ci/k3d-quickstart/setup-blocks.ts "$RUN_DIR"
 source "$RUN_DIR/setup-before-browser.sh"
 
 # Verify the bootstrap file in the same Agent workspace before and after onboarding.
@@ -29,6 +29,6 @@ workspace_check -f BOOTSTRAP.md
 
 save_session
 export agent namespace revision CONSOLE_ORIGIN
-node scripts/ci/k3d-quickstart/browser.mjs onboard
+node scripts/ci/k3d-quickstart/browser.ts onboard
 workspace_check ! -e BOOTSTRAP.md
 source "$RUN_DIR/setup-after-browser.sh"

@@ -26,6 +26,16 @@ export function cleanEnvironment(extra = {}) {
   };
 }
 
+export class FixtureCommandTimeoutError extends Error {}
+
+/**
+ * @param {string} command
+ * @param {readonly string[]} [args]
+ * @param {{cwd?: string | URL | undefined, env?: NodeJS.ProcessEnv | undefined,
+ *   input?: string | NodeJS.ArrayBufferView | undefined, timeout?: number | undefined,
+ *   allowFailure?: boolean | undefined, signal?: AbortSignal | undefined}} [options]
+ * @returns {Promise<{code: number | null, stdout: string, stderr: string}>}
+ */
 export async function run(
   command,
   args,
@@ -90,6 +100,7 @@ export async function run(
   child.stdout.on("data", (chunk) => collect("stdout", chunk));
   child.stderr.on("data", (chunk) => collect("stderr", chunk));
   child.stdin.on("error", () => {});
+  /** @type {Promise<number | null>} */
   const closed = new Promise((resolve) => {
     finish = resolve;
     child.once("error", () => stop("spawn failed"));
@@ -106,6 +117,9 @@ export async function run(
     const code = await closed;
     // Do not serialize command arguments, output, or cancellation reasons:
     // any of them can contain credentials supplied by the client.
+    if (failure === "timeout") {
+      throw new FixtureCommandTimeoutError("command failed (timeout)");
+    }
     if (failure || (code !== 0 && !allowFailure)) {
       throw new Error(`command failed (${failure ?? `exit ${code}`})`);
     }
@@ -128,6 +142,7 @@ export async function temporaryDirectory(t, prefix = "repository-credentials-") 
 // the first call in a directory of its own. Every certificate minted from that key and subject
 // would verify the others anyway, so later calls lose nothing by reusing it; each still gets its
 // own key and cert files.
+/** @type {ReturnType<typeof mintFixtureCertificate> | undefined} */
 let fixtureCertificate;
 
 async function mintFixtureCertificate() {
@@ -170,7 +185,7 @@ export async function createTlsMaterial(t) {
   const keyFile = join(directory, "key.pem");
   const certFile = join(directory, "cert.pem");
   await writeFile(keyFile, sharedRsaPrivateKeyPem("repository-credentials-tls"), { mode: 0o600 });
-  await writeFile(certFile, cert);
+  await writeFile(certFile, cert, { mode: 0o644 });
   return {
     key: await readFile(keyFile),
     cert: Buffer.from(cert),
@@ -180,7 +195,7 @@ export async function createTlsMaterial(t) {
   };
 }
 
-// Like tests/helpers/listen.mjs (note: positional `port` before `host`, and it returns an
+// Like tests/helpers/listen.ts (note: positional `port` before `host`, and it returns an
 // https URL), but self-contained: the isolation fixture mounts this directory alone into
 // its containers, where tests/helpers is absent.
 export async function listen(t, server, port = 0, host = "127.0.0.1") {

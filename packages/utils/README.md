@@ -28,7 +28,7 @@ scripts cannot import this package from tenant images.
 Verify the shared behavior with:
 
 ```sh
-node --test tests/conformance/utils.test.mjs
+node --test tests/conformance/utils.test.ts
 ```
 
 Also run the affected consumers' conformance or integration tests. Fixed digest

@@ -1,0 +1,317 @@
+import { createHash } from "node:crypto";
+import { lstat } from "node:fs/promises";
+import { isAbsolute, join, resolve } from "node:path";
+import { isClientSessionId, readClientConfiguration, type ClientFiles } from "./config.ts";
+import {
+  hasControlCharacter,
+  normalizePushRefAllowlist,
+  repositoryCredentialClientStringKeys,
+} from "../../../access/client-contracts.ts";
+import {
+  assertPrivateDirectory,
+  clientSessionFileMaxBytes,
+  readPrivateFile,
+} from "./private-files.ts";
+
+export const repositoryMaterialRoot = "/run/oce/repository-credentials";
+export const repositorySelectionVariable = "OCE_REPOSITORY_SELECTION";
+
+export interface RuntimeRepositoryBinding {
+  readonly repositoryRef: string;
+  readonly sessionId: string;
+  readonly deadlineWallMs: number;
+  readonly directory: string;
+  readonly materialDirectory: string;
+  readonly client: ClientFiles["client"];
+  readonly configuration: ClientFiles;
+}
+
+export interface RuntimeRepositoryManifest {
+  readonly generation: string;
+  readonly bindings: readonly RuntimeRepositoryBinding[];
+}
+
+export function buildOperatorRepositoryManifest(
+  directory: string,
+  configuration: ClientFiles,
+): RuntimeRepositoryManifest {
+  const resolvedDirectory = resolve(directory);
+  return {
+    generation: "",
+    bindings: [
+      {
+        repositoryRef: "operator",
+        sessionId: configuration.sessionId,
+        deadlineWallMs: configuration.deadlineWallMs,
+        directory: resolvedDirectory,
+        materialDirectory: resolvedDirectory,
+        client: configuration.client,
+        configuration,
+      },
+    ],
+  };
+}
+
+function record(value: unknown, keys: readonly string[]): Record<string, unknown> {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== keys.length ||
+    !keys.every((key) => Object.hasOwn(value, key))
+  ) {
+    throw new Error("invalid-repository-material");
+  }
+  return value as Record<string, unknown>;
+}
+
+const digest = (value: unknown): string =>
+  createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+function readPublicClient(value: unknown): ClientFiles["client"] {
+  const hasPolicy =
+    value !== null && typeof value === "object" && Object.hasOwn(value, "pushRefAllowlist");
+  const client = record(value, [
+    ...repositoryCredentialClientStringKeys,
+    ...(hasPolicy ? ["pushRefAllowlist"] : []),
+  ]);
+  if (
+    !Object.entries(client).every(
+      ([key, item]) => key === "pushRefAllowlist" || typeof item === "string",
+    )
+  ) {
+    throw new Error("invalid-repository-material");
+  }
+  if (hasPolicy) {
+    normalizePushRefAllowlist(client.pushRefAllowlist);
+  }
+  return Object.freeze(client) as unknown as ClientFiles["client"];
+}
+
+function clientsAgree(first: ClientFiles["client"], second: ClientFiles["client"]): boolean {
+  return (
+    repositoryCredentialClientStringKeys.every((key) => first[key] === second[key]) &&
+    JSON.stringify(first.pushRefAllowlist) === JSON.stringify(second.pushRefAllowlist)
+  );
+}
+
+async function validateMaterialFiles(directory: string, hasPublicCa: boolean): Promise<void> {
+  await assertPrivateDirectory(directory);
+  await assertPrivateDirectory(join(directory, "gh"));
+  // Validate the complete generation without loading another binding's bearer.
+  for (const [name, maximum] of Object.entries(clientSessionFileMaxBytes)) {
+    if (name === "ca.pem" && !hasPublicCa) {
+      continue;
+    }
+    const stat = await lstat(join(directory, name));
+    if (
+      !stat.isFile() ||
+      stat.isSymbolicLink() ||
+      stat.uid !== process.getuid?.() ||
+      (stat.mode & 0o777) !== 0o600 ||
+      stat.nlink !== 1 ||
+      stat.size === 0 ||
+      stat.size > maximum
+    ) {
+      throw new Error("invalid-repository-material");
+    }
+  }
+}
+
+function assertManifestRootPath(directory: string): void {
+  if (
+    !isAbsolute(directory) ||
+    resolve(directory) !== directory ||
+    directory.length > 4096 ||
+    hasControlCharacter(directory)
+  ) {
+    throw new Error("invalid-repository-material");
+  }
+}
+
+async function readManifestJson(root: string): Promise<unknown> {
+  return JSON.parse(
+    (await readPrivateFile(join(root, "manifest.json"), 256 * 1024)).toString("utf8"),
+  );
+}
+
+/** Read the Compute-owned, immutable Pod generation once for this invocation. */
+export async function readRuntimeRepositoryManifest(
+  root = repositoryMaterialRoot,
+  finalRoot = root,
+): Promise<RuntimeRepositoryManifest> {
+  for (const directory of [root, finalRoot]) {
+    assertManifestRootPath(directory);
+  }
+  await assertPrivateDirectory(root);
+  await assertPrivateDirectory(join(root, "sessions"));
+  const parsed = record(await readManifestJson(root), ["version", "generation", "bindings"]);
+  if (
+    parsed.version !== 1 ||
+    typeof parsed.generation !== "string" ||
+    !/^[a-f0-9]{64}$/.test(parsed.generation) ||
+    !Array.isArray(parsed.bindings) ||
+    parsed.bindings.length === 0 ||
+    parsed.bindings.length > 16
+  ) {
+    throw new Error("invalid-repository-material");
+  }
+  const refs = new Set<string>();
+  const sessions = new Set<string>();
+  const bindings: RuntimeRepositoryBinding[] = [];
+  for (const value of parsed.bindings) {
+    const binding = record(value, [
+      "repositoryRef",
+      "sessionId",
+      "deadlineWallMs",
+      "directory",
+      "client",
+    ]);
+    if (
+      typeof binding.repositoryRef !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(binding.repositoryRef) ||
+      !isClientSessionId(binding.sessionId) ||
+      typeof binding.deadlineWallMs !== "number" ||
+      !Number.isSafeInteger(binding.deadlineWallMs) ||
+      binding.deadlineWallMs <= 0 ||
+      refs.has(binding.repositoryRef) ||
+      sessions.has(binding.sessionId)
+    ) {
+      throw new Error("invalid-repository-material");
+    }
+    const directoryName = digest([binding.repositoryRef, binding.sessionId]);
+    const directory = join(finalRoot, "sessions", directoryName);
+    if (binding.directory !== directory) {
+      throw new Error("invalid-repository-material");
+    }
+    const client = readPublicClient(binding.client);
+    const materialDirectory = join(root, "sessions", directoryName);
+    const configuration = await readClientConfiguration(materialDirectory);
+    record(configuration, ["sessionId", "deadlineWallMs", "client", "hasPublicCa"]);
+    readPublicClient(configuration.client);
+    if (
+      configuration.sessionId !== binding.sessionId ||
+      configuration.deadlineWallMs !== binding.deadlineWallMs ||
+      !clientsAgree(client, configuration.client)
+    ) {
+      throw new Error("invalid-repository-material");
+    }
+    await validateMaterialFiles(materialDirectory, configuration.hasPublicCa);
+    refs.add(binding.repositoryRef);
+    sessions.add(binding.sessionId);
+    bindings.push(
+      Object.freeze({
+        repositoryRef: binding.repositoryRef,
+        sessionId: binding.sessionId,
+        deadlineWallMs: binding.deadlineWallMs,
+        directory,
+        materialDirectory,
+        client,
+        configuration,
+      }),
+    );
+  }
+  const tuples = bindings.map(({ repositoryRef, sessionId }) => [repositoryRef, sessionId]);
+  // References are unique, so their adjacent order also determines the tuple order.
+  if (
+    bindings.some(
+      (binding, index) => index > 0 && bindings[index - 1]!.repositoryRef > binding.repositoryRef,
+    ) ||
+    digest(tuples) !== parsed.generation
+  ) {
+    throw new Error("invalid-repository-material");
+  }
+  return Object.freeze({ generation: parsed.generation, bindings: Object.freeze(bindings) });
+}
+
+/**
+ * The gateway and canonical origins in a manifest's public binding metadata, read
+ * without session material. Full validation, which every bearer release needs,
+ * requires each session's client.json to agree with these fields.
+ */
+export async function readManifestOrigins(
+  root: string,
+  generation: string,
+): Promise<ReadonlySet<string>> {
+  assertManifestRootPath(root);
+  const parsed = (await readManifestJson(root)) as {
+    version?: unknown;
+    generation?: unknown;
+    bindings?: unknown;
+  } | null;
+  const bindings = parsed?.bindings;
+  // Only the generation the rendered configuration names, which its helper serves.
+  if (
+    parsed?.version !== 1 ||
+    parsed.generation !== generation ||
+    !Array.isArray(bindings) ||
+    bindings.length === 0
+  ) {
+    throw new Error("invalid-repository-material");
+  }
+  const origins = new Set<string>();
+  for (const binding of bindings) {
+    const client = (binding as { client?: Record<string, unknown> } | null)?.client;
+    if (typeof client?.gatewayOrigin !== "string" || typeof client.canonicalApiHost !== "string") {
+      throw new Error("invalid-repository-material");
+    }
+    origins.add(new URL(client.gatewayOrigin).origin);
+    origins.add(new URL(`https://${client.canonicalApiHost}`).origin);
+  }
+  return origins;
+}
+
+export function requireCurrentBinding(
+  binding: Pick<RuntimeRepositoryBinding, "deadlineWallMs">,
+): void {
+  if (binding.deadlineWallMs <= Date.now()) {
+    throw new Error("repository-session-expired");
+  }
+}
+
+export function inheritedRepositoryBinding(
+  manifest: RuntimeRepositoryManifest,
+  environment: NodeJS.ProcessEnv,
+): RuntimeRepositoryBinding | undefined {
+  const inherited = environment[repositorySelectionVariable];
+  const reference = environment.OCE_REPOSITORY_REF;
+  let pinned: RuntimeRepositoryBinding | undefined;
+  if (inherited !== undefined) {
+    if (inherited.length > 1024) {
+      throw new Error("invalid-repository-selection");
+    }
+    const tuple: unknown = JSON.parse(inherited);
+    if (
+      !Array.isArray(tuple) ||
+      tuple.length !== 3 ||
+      !tuple.every((part) => typeof part === "string") ||
+      tuple[0] !== manifest.generation
+    ) {
+      throw new Error("invalid-repository-selection");
+    }
+    pinned = manifest.bindings.find(
+      (binding) => binding.repositoryRef === tuple[1] && binding.sessionId === tuple[2],
+    );
+    if (!pinned) {
+      throw new Error("invalid-repository-selection");
+    }
+  }
+  if (reference !== undefined) {
+    const selected = manifest.bindings.find((binding) => binding.repositoryRef === reference);
+    if (!selected || (pinned && selected !== pinned)) {
+      throw new Error("conflicting-repository-selection");
+    }
+    pinned = selected;
+  }
+  if (pinned) {
+    requireCurrentBinding(pinned);
+  }
+  return pinned;
+}
+
+export function repositorySelection(
+  manifest: RuntimeRepositoryManifest,
+  binding: RuntimeRepositoryBinding,
+): string {
+  return JSON.stringify([manifest.generation, binding.repositoryRef, binding.sessionId]);
+}

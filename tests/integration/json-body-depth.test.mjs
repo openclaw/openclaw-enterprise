@@ -27,15 +27,17 @@ async function createFixture(t) {
 
 // Sends `text` as the exact request body, without re-encoding it.
 async function sendRaw(fixture, method, path, text) {
-  const response = await fetch(new URL(path, fixture.origin), {
-    method,
-    headers: {
-      ...authenticatedHeaders(fixture.session, { origin: fixture.origin }),
-      "content-type": "application/json",
-    },
-    body: text,
-    signal: AbortSignal.timeout(60_000),
-  });
+  const response = await fixture.fetch(
+    new Request(new URL(path, fixture.origin), {
+      method,
+      headers: {
+        ...authenticatedHeaders(fixture.session, { origin: fixture.origin }),
+        "content-type": "application/json",
+      },
+      body: text,
+      signal: AbortSignal.timeout(60_000),
+    }),
+  );
   return { status: response.status, body: await response.json() };
 }
 

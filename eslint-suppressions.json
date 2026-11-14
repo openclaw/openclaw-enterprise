@@ -42,27 +42,7 @@
       "count": 1
     }
   },
-  "scripts/ci/logging.mjs": {
-    "preserve-caught-error": {
-      "count": 1
-    }
-  },
-  "scripts/ci/openshell.mjs": {
-    "preserve-caught-error": {
-      "count": 1
-    }
-  },
   "scripts/ci/prepare.mjs": {
-    "preserve-caught-error": {
-      "count": 1
-    }
-  },
-  "tests/conformance/test-files.test.mjs": {
-    "no-empty": {
-      "count": 1
-    }
-  },
-  "tests/helpers/envoy-workspace-gateway.mjs": {
     "preserve-caught-error": {
       "count": 1
     }
@@ -77,11 +57,6 @@
       "count": 1
     }
   },
-  "tests/integration/controller-lifecycle.test.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    }
-  },
   "tests/integration/docker-compute-real.test.mjs": {
     "preserve-caught-error": {
       "count": 2
@@ -90,11 +65,6 @@
   "tests/integration/occ-api.test.mjs": {
     "no-useless-escape": {
       "count": 10
-    }
-  },
-  "tests/integration/postgres-backend-ownership.test.mjs": {
-    "no-useless-assignment": {
-      "count": 1
     }
   },
   "tests/integration/postgres-migration-compatibility.test.mjs": {

@@ -682,6 +682,7 @@ for (const [from, to] of [
                   access.status === "available"
                     ? {
                         status: "available",
+                        mode: "admin",
                         host,
                         origin: `https://${host}`,
                         activeRevisionId: current.id,
