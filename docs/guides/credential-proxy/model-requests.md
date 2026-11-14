@@ -175,9 +175,25 @@ that the workload passed installation checks or can answer a model turn.
 
 ### Dedicated native OpenClaw
 
-The source implementation supports model-only admission version 8. Installed
-qualification is pending. Use one OpenAI Responses model with the same HTTPS
-origin in the saved provider and source. Compute verifies the installation and
+Before saving the Agent, check [native worker support](../../reference/harness-execution.md#native-worker-support)
+and the [OpenShell Sandbox prerequisites](../../reference/drivers/openshell-sandbox.md#writable-runtime-state).
+Set `kubernetes.userNamespaces: false`, use at most one ServiceAccount in
+`gateway.operatorWorkspaceResources`, and keep the pinned Gateway's default UID and GID.
+
+Follow [Create an Agent](../../reference/console/create-and-deploy.md#create-an-agent)
+for the supported OpenAI, OpenClaw and Dedicated selections. In the native
+Configuration, set the selected model’s [`agentRuntime.id`](../../reference/harness-execution.md#native-runtime-selection)
+to `openclaw` and use one OpenAI Responses model with complete
+[model metadata](../../reference/drivers/kubernetes-compute/model-provider.md#harness-behavior).
+With the CLI, use that native Configuration's ID and `executionMode: dedicated` in the [Agent creation and access-binding commands](../deploy/openshell-credential-sources.md#create-the-agent-and-grant-the-source).
+Set both `harnessAuth.sourceId` and `credentialSources[0].sourceId` to the
+online-request `SOURCE_ID` created above. Grant the new Agent's service
+principal `operate` on that source. Run `occ agent runtime-credentials provision "$AGENT_ID"`, then
+[deploy with provider overrides](../topics/agent-revisions.md#choose-a-harness-destination):
+set `modelProvider.protocol` to `openai-responses` and `modelProvider.baseUrl`
+to the source's exact `config.authorized_base_url`.
+
+Native model-only admission uses version 8. Installed qualification is pending. Compute verifies the installation and
 signs the execution release before the first model probe. Processes within that
 enrolled execution can use its loopback sender under the same model grant.
 Each request requires current IAM permission and supervisor credential injection.

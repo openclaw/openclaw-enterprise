@@ -1911,7 +1911,13 @@ test(
   exerciseProtectedNativeWorkerStartup,
 );
 
-test("native Compute resumes signed startup across preparation passes", async (t) => {
+test("native Compute resumes signed startup across preparation passes", (t) =>
+  exerciseNativeComputeEnrollment(t, false));
+
+test("native Compute observes the accepted release after bootstrap connections drop", (t) =>
+  exerciseNativeComputeEnrollment(t, true));
+
+async function exerciseNativeComputeEnrollment(t, dropConnections) {
   const { InstalledDriver } = await import("../../packages/occ/src/index.ts");
   const { createOpenAiRequestProvider } =
     await import("../../apps/controller/src/drivers/egress-proxy/openai-provider.ts");
@@ -2041,24 +2047,59 @@ test("native Compute resumes signed startup across preparation passes", async (t
   let held;
   let provisions;
   let posts = 0;
+  const { createServer } = await import("node:http");
+  const { getServiceDocument, postServiceDocument } =
+    await import("../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts");
+  const { HARNESS_EGRESS_ENROLLMENT_PATH } =
+    await import("../../apps/controller/src/drivers/compute/egress-enrollment.ts");
+  let dropPath;
+  const exchanges = [];
+  const server = createServer(async (request, response) => {
+    assert.equal(request.headers.authorization, "Bearer test-transport");
+    const answer = (code, json) => {
+      response.writeHead(code, { "content-type": "application/json" });
+      response.end(JSON.stringify(json));
+    };
+    if (request.url === "/openclaw/runtime/status") {
+      statusReads++;
+    } else {
+      assert.equal(request.url, HARNESS_EGRESS_ENROLLMENT_PATH);
+    }
+    if (request.method === "POST") {
+      posts++;
+      const chunks = [];
+      for await (const chunk of request) {
+        chunks.push(chunk);
+      }
+      receipt = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      exchanges.push("applied release");
+      if (dropConnections) {
+        request.socket.destroy();
+        return;
+      }
+      answer(200, { enrolled: true, startupId });
+    } else if (dropPath === request.url) {
+      request.socket.destroy();
+    } else if (request.url === "/openclaw/runtime/status") {
+      answer(200, { runtimeFailure: held });
+    } else {
+      exchanges.push(receipt ? "read receipt" : "read challenge");
+      answer(status, receipt ? { acceptedRelease: receipt } : challenge);
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const transport = {
+    endpoint: `http://127.0.0.1:${server.address().port}`,
+    requestTimeoutMs: 2000,
+  };
   const client = {
     getSandbox: async () => ({
       id: installed.sandboxId,
       mainProcessInstanceId: liveProcess,
     }),
-    getServiceDocument: async (_url, path, token) => {
-      assert.equal(token, "test-transport");
-      if (path === "/openclaw/runtime/status") {
-        statusReads++;
-        return { status: 200, json: { runtimeFailure: held } };
-      }
-      return { status, json: receipt ? { acceptedRelease: receipt } : challenge };
-    },
-    postServiceDocument: async (_url, _path, _token, body) => {
-      posts++;
-      receipt = body;
-      return { status: 200, json: { enrolled: true, startupId } };
-    },
+    getServiceDocument: (...args) => getServiceDocument(transport, ...args),
+    postServiceDocument: (...args) => postServiceDocument(transport, ...args),
   };
   const sandboxDriver = {
     ...nativeSandboxIdentity(),
@@ -2154,6 +2195,23 @@ test("native Compute resumes signed startup across preparation passes", async (t
     assert.equal(scenario.read("Secret", nodeName).data.deviceId, undefined);
     assert.equal(posts, 0);
   };
+  if (dropConnections) {
+    for (const [code, path] of [
+      [200, HARNESS_EGRESS_ENROLLMENT_PATH],
+      [503, "/openclaw/runtime/status"],
+    ]) {
+      await t.test(`a dropped GET on ${path} leaves enrollment pending`, async () => {
+        status = code;
+        dropPath = path;
+        const waiting = await prepare();
+        assert.equal(waiting.ready, false);
+        assert.equal(waiting.runtimeFailure, undefined);
+        assertNoNodeAccepted();
+        assert.deepEqual(withdrawals, []);
+      });
+    }
+    dropPath = undefined;
+  }
   await t.test("a pre-release hold returns only authenticated runtime evidence", async () => {
     status = 503;
     const failure = {
@@ -2166,7 +2224,7 @@ test("native Compute resumes signed startup across preparation passes", async (t
     const waiting = await prepare();
     assert.equal(waiting.ready, false);
     assert.deepEqual(waiting.runtimeFailure, failure);
-    assert.equal(statusReads, 1);
+    assert.equal(statusReads, dropConnections ? 2 : 1);
     assertNoNodeAccepted();
     held = undefined;
     assert.equal((await prepare()).ready, false);
@@ -2186,9 +2244,17 @@ test("native Compute resumes signed startup across preparation passes", async (t
   await assert.rejects(prepare(), /challenge does not match the admitted execution/);
   assertNoNodeAccepted();
   challenge.startupId = originalStartupId;
+  exchanges.length = 0;
   assert.equal((await prepare()).ready, false);
   assert.equal(scenario.read("Secret", nodeName).data.deviceId, undefined);
   assert.equal(posts, 1);
+  assert.deepEqual(exchanges, ["read challenge", "applied release"]);
+  assert.deepEqual(withdrawals, []);
+  state.connected = false;
+  assert.equal((await prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
+  assert.deepEqual(exchanges, ["read challenge", "applied release", "read receipt"]);
+  assert.deepEqual(withdrawals, []);
+
   liveProcess = "replacement";
   await assert.rejects(prepare(), /startup process does not match this execution/);
   liveProcess = installed.enforcement.instanceId;
@@ -2225,15 +2291,15 @@ test("native Compute resumes signed startup across preparation passes", async (t
   liveConfiguration = installed.enforcement.configurationId;
   held = undefined;
   state.connected = true;
-  await prepare();
-  await prepare();
+  assert.equal((await prepare()).ready, false);
+  assert.equal((await prepare()).ready, false);
   markReady(gatewayName);
   assert.equal(withdrawals.length, 1);
   assert.equal(withdrawals[0].revision.id, revision.id);
   assert.equal(withdrawals[0].workspaceNodeEnrolled, true);
   assert.equal((await prepare()).ready, true);
   assert.equal(posts, 1);
-});
+}
 
 test("native OpenClaw preparation and activation use only outbound Sandbox enrollment", async () => {
   const provisions = [];

@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
-updated: 2026-11-13
-last_updated_session: authoring-run/f8aa4876-3732-417e-8cd0-2ad6f7be515e
+updated: 2026-11-14
+last_updated_session: authoring-run/7302bf11-60df-4686-9b2e-b1db20bad058
 ---
 
 # Authorize model credentials per request
@@ -96,7 +96,10 @@ credential material.
 
 The native worker waits for Compute’s signed release before it probes the
 selected model or connects its node. Compute keeps the revision pending while
-the bootstrap listener starts. It reads an early failure from the authenticated
+the bootstrap listener starts. If a challenge read, status read or release POST
+times out or loses its connection, Compute waits for the next preparation pass
+within the deployment deadline. It reads the current challenge or signed receipt
+before sending another release. Compute reads an early failure from the authenticated
 status endpoint and records the bounded diagnostic. Acknowledging the release
 leaves the revision pending until a later preparation pass verifies the
 signed receipt against the current Sandbox, process, configuration and key.
@@ -252,6 +255,8 @@ continuity during binding removal.
 None.
 
 ## Changelog
+
+- 2026-11-14 00:56: Describe native enrollment after a lost bootstrap connection. (authoring-run/7302bf11-60df-4686-9b2e-b1db20bad058 - a876762e34c760e2fa85f08c1ee9b2a1ed45beea)
 
 - 2026-11-13 23:54: Explain how probe group cleanup affects native node readiness. (authoring-run/f8aa4876-3732-417e-8cd0-2ad6f7be515e - bf0aa6c75570ea9be83f46612ce50e59914a63f9)
 
