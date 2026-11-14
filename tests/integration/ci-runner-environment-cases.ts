@@ -52,8 +52,12 @@ export async function checkGatewayRoutingEnvironment(t: TestContext) {
     },
     execFile: async (command, args) => {
       if (command === "openssl") {
-        const certificate = args[args.indexOf("-out") + 1];
-        const key = args[args.indexOf("-keyout") + 1];
+        const certificateFlag = args.indexOf("-out");
+        const keyFlag = args.indexOf("-keyout");
+        assert.ok(certificateFlag >= 0, "openssl requires -out");
+        assert.ok(keyFlag >= 0, "openssl requires -keyout");
+        const certificate = args[certificateFlag + 1];
+        const key = args[keyFlag + 1];
         assert.ok(certificate && key);
         await writeFile(certificate, "synthetic certificate");
         await writeFile(key, "synthetic key");
