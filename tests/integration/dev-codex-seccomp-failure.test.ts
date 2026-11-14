@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { mkdir, open, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { buffer } from "node:stream/consumers";
 import test, { type TestContext } from "node:test";
 
 import { asRecord } from "../../packages/utils/src/index.ts";
@@ -53,8 +54,8 @@ async function prepare(
   const env: NodeJS.ProcessEnv = { ...process.env, DOCKER_HOST: dockerHost, PATH: tools };
   delete env.NODE_TEST_CONTEXT;
   // The kubectl fixture takes a copy of stderr while the preparation process is still running.
-  const stderrPath = join(state, "stderr.log");
-  const stderrFile = await open(stderrPath, "w", 0o600);
+  const stderrFile = await open(join(state, "stderr.log"), "wx+", 0o600);
+  let stderr: string;
   let result: SpawnSyncReturns<string>;
   try {
     result = spawnSync(process.execPath, [script, state, image, "1"], {
@@ -64,10 +65,10 @@ async function prepare(
       timeout: 30_000,
       stdio: ["ignore", "pipe", stderrFile.fd],
     });
+    stderr = (await buffer(stderrFile.createReadStream({ start: 0 }))).toString("utf8");
   } finally {
     await stderrFile.close();
   }
-  const stderr = await readFile(stderrPath, "utf8");
   assert.ifError(result.error);
   assert.equal(result.signal, null);
   await inspect?.(state);
