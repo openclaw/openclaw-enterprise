@@ -4,16 +4,51 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { Type, type TSchema } from "typebox";
+import { Check } from "typebox/value";
+import { IsSchema } from "typebox/schema";
+import {
+  InstallationResponse,
+  NamespaceResponse,
+  NamespaceListResponse,
+  PresetResponse,
+  PresetListResponse,
+  ConfigurationResponse,
+} from "../../packages/contracts/src/api/resources.ts";
+import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
+
+type SelectedModules = {
+  "apps/controller/src/composition/production.ts": typeof import("../../apps/controller/src/composition/production.ts");
+  "apps/controller/src/composition/installation-config.ts": typeof import("../../apps/controller/src/composition/installation-config.ts");
+  "apps/controller/src/drivers/configuration/filesystem/index.ts": typeof import("../../apps/controller/src/drivers/configuration/filesystem/index.ts");
+  "apps/controller/src/worker.ts": typeof import("../../apps/controller/src/worker.ts");
+  "packages/iam/src/index.ts": typeof import("../../packages/iam/src/index.ts");
+  "tests/helpers/development.mjs": typeof import("./development.ts");
+  "tests/helpers/secret-driver.mjs": typeof import("./secret-driver.ts");
+  "tests/helpers/auth-session.mjs": typeof import("./auth-session.mjs");
+};
 
 // Each phase loads the selected controller in a fresh process. Persistence,
 // authentication, startup seeding, and Configuration storage remain real.
 const [repository, directory, phase] = process.argv.slice(2);
+assert.ok(repository && directory && phase);
 let input = "";
 for await (const chunk of process.stdin) {
   input += chunk;
 }
-const saved = JSON.parse(input);
-const load = (path) => import(pathToFileURL(join(repository, path)));
+const saved: unknown = JSON.parse(input);
+const savedSchema = Type.Object({
+  installation: Type.Object({ id: Type.String(), name: Type.String(), createdAt: Type.String() }),
+  namespaceId: Type.String(),
+  edited: PresetResponse.properties.data,
+  custom: PresetResponse.properties.data,
+  savedConfiguration: ConfigurationResponse.properties.data,
+});
+// Bind the selected revision's modules to their source-owned contracts. The
+// process can load a before checkout; normal API validation detects incompatibility.
+async function load<P extends keyof SelectedModules>(path: P): Promise<SelectedModules[P]> {
+  return import(pathToFileURL(join(repository!, path)).href);
+}
 const { composeProduction } = await load("apps/controller/src/composition/production.ts");
 const { loadInstallationConfiguration } = await load(
   "apps/controller/src/composition/installation-config.ts",
@@ -29,24 +64,31 @@ const { authenticatedHeaders, signInWithEmailPassword } = await load(
   "tests/helpers/auth-session.mjs",
 );
 const requireDependency = createRequire(join(repository, "apps/controller/package.json"));
-const pg = requireDependency("pg");
+const pg: typeof import("pg") = requireDependency("pg");
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
+const authSecret = process.env.OCC_AUTH_SECRET;
+assert.ok(databaseUrl && authSecret);
 const authBaseURL = "https://console.oce.localhost";
-const configuration = JSON.parse(await readFile(join(directory, "startup.json"), "utf8"));
+const configuration: unknown = JSON.parse(await readFile(join(directory, "startup.json"), "utf8"));
+assert.ok(Check(Type.Record(Type.String(), Type.Unknown()), configuration));
 const runtime = await loadInstallationConfiguration({
   mode: "production",
   environment: {},
   startupConfiguration: { configuration, logging: { level: "error" } },
 });
 assert.ok(runtime);
-const drivers = {
+const drivers: InstallationRuntimeDrivers = {
   installation: runtime.installation,
-  defaultPresets: runtime.defaultPresets,
-  shadowedDefaultPresets: runtime.shadowedDefaultPresets,
-  bundledPresetVersions: runtime.bundledPresetVersions,
+  ...(runtime.defaultPresets === undefined ? {} : { defaultPresets: runtime.defaultPresets }),
+  ...(runtime.shadowedDefaultPresets === undefined
+    ? {}
+    : { shadowedDefaultPresets: runtime.shadowedDefaultPresets }),
+  ...(runtime.bundledPresetVersions === undefined
+    ? {}
+    : { bundledPresetVersions: runtime.bundledPresetVersions }),
   // Namespace provisioning uses the existing external Compute fixture. No Agent
   // is deployed: this scenario proves saved state, not a Kubernetes runtime.
-  computeDriver: createReadyComputeDriver(configuration.drivers.compute.id, {
+  computeDriver: createReadyComputeDriver(runtime.installation.drivers.compute.id, {
     async preflight() {
       return { warnings: [] };
     },
@@ -57,20 +99,26 @@ const drivers = {
     return new NativeIAMDriver(state, runtime.installation.drivers.iam);
   },
 };
-let app;
-let worker;
+let app: Awaited<ReturnType<typeof composeProduction>> | undefined;
+let worker: ReturnType<typeof createControllerWorker> | undefined;
 try {
   app = await composeProduction({
     mode: "production",
     host: "127.0.0.1",
     databaseUrl,
-    authSecret: process.env.OCC_AUTH_SECRET,
+    authSecret,
     authBaseURL,
     nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     drivers,
   });
+  const schemas = Object.fromEntries(
+    Object.entries(app.getSchemas()).map(([id, schema]): [string, TSchema] => {
+      assert.ok(IsSchema(schema));
+      return [id, schema];
+    }),
+  );
   const endpoint = await app.listen({ port: 0, host: "127.0.0.1" });
-  const localFetch = (input, options) => {
+  const localFetch: typeof fetch = (input, options) => {
     const request = new Request(input, options);
     const url = new URL(request.url);
     assert.ok([endpoint, authBaseURL].includes(url.origin));
@@ -91,9 +139,16 @@ try {
     fetch: localFetch,
     origin: authBaseURL,
     email: "preset-upgrade@example.test",
+    rememberMe: undefined,
     password: (await readFile(join(directory, "initial-admin-password"), "utf8")).trim(),
   });
-  async function request(method, path, payload, expectedStatus = 200) {
+  async function request<S extends TSchema>(
+    schema: S,
+    method: string,
+    path: string,
+    payload?: unknown,
+    expectedStatus = 200,
+  ) {
     const response = await localFetch(`${endpoint}${path}`, {
       method,
       headers: authenticatedHeaders(session, {
@@ -102,11 +157,14 @@ try {
       }),
       ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
     });
-    const body = await response.json();
+    const body: unknown = await response.json();
     assert.equal(response.status, expectedStatus, `${method} ${path}: ${JSON.stringify(body)}`);
-    return body.data;
+    assert.ok(body && typeof body === "object" && "data" in body);
+    const data = body.data;
+    assert.ok(Check(schemas, schema, data), `Invalid response for ${method} ${path}`);
+    return data;
   }
-  async function readyNamespace(id) {
+  async function readyNamespace(id: string) {
     worker = createControllerWorker({
       pool: new pg.Pool({ connectionString: databaseUrl }),
       mode: "production",
@@ -118,37 +176,53 @@ try {
       await worker.start();
       const deadline = Date.now() + 10000;
       while (
-        (await request("GET", `/namespaces/${id}`)).status !== "ready" &&
+        (await request(NamespaceResponse.properties.data, "GET", `/namespaces/${id}`)).status !==
+          "ready" &&
         Date.now() < deadline
       ) {
         await delay(20);
       }
-      assert.equal((await request("GET", `/namespaces/${id}`)).status, "ready");
+      assert.equal(
+        (await request(NamespaceResponse.properties.data, "GET", `/namespaces/${id}`)).status,
+        "ready",
+      );
     } finally {
       await worker.stop();
       worker = undefined;
     }
   }
   // Capabilities come from current Drivers; compare persisted identity across versions.
-  const { id, name, createdAt } = await request("GET", "/installation");
+  const { id, name, createdAt } = await request(
+    InstallationResponse.properties.data,
+    "GET",
+    "/installation",
+  );
   const installation = { id, name, createdAt };
   if (phase === "seed") {
-    const namespaces = await request("GET", "/namespaces");
+    const namespaces = await request(NamespaceListResponse.properties.data, "GET", "/namespaces");
     assert.equal(namespaces.length, 1);
     const namespace = namespaces[0];
+    assert.ok(namespace);
     await readyNamespace(namespace.id);
     const presetsPath = `/namespaces/${namespace.id}/presets`;
-    const defaults = await request("GET", presetsPath);
+    const defaults = await request(PresetListResponse.properties.data, "GET", presetsPath);
     assert.deepEqual(defaults.map(({ name }) => name).sort(), [
       "Standard Codex",
       "Standard OpenClaw",
       "default-codex",
     ]);
     const bundled = defaults.find(({ name }) => name === "Standard Codex");
-    const edited = await request("PATCH", `${presetsPath}/${bundled.id}`, {
-      template: { agent: { name: "Operator edited starter" } },
-    });
+    assert.ok(bundled);
+    const edited = await request(
+      PresetResponse.properties.data,
+      "PATCH",
+      `${presetsPath}/${bundled.id}`,
+      {
+        template: { agent: { name: "Operator edited starter" } },
+      },
+    );
     const custom = await request(
+      PresetResponse.properties.data,
       "POST",
       presetsPath,
       {
@@ -163,6 +237,7 @@ try {
       201,
     );
     const savedConfiguration = await request(
+      ConfigurationResponse.properties.data,
       "POST",
       `/namespaces/${namespace.id}/configurations`,
       {
@@ -177,13 +252,17 @@ try {
     // Record independently chosen operator values and their real API responses,
     // including stable resource IDs and generations.
     assert.deepEqual(edited.template, { agent: { name: "Operator edited starter" } });
-    assert.equal(custom.template.agent.name, "Custom teammate");
-    assert.equal(
-      custom.template.agent.initialWorkspaceFiles["AGENTS.md"],
-      "Keep these operator instructions.",
-    );
+    assert.deepEqual(custom.template, {
+      agent: {
+        name: "Custom teammate",
+        initialWorkspaceFiles: { "AGENTS.md": "Keep these operator instructions." },
+      },
+    });
     assert.equal(installation.name, "Operator installation");
-    assert.equal(savedConfiguration.values.logging.consoleLevel, "warn");
+    assert.deepEqual(savedConfiguration.values, {
+      logging: { consoleLevel: "warn", consoleStyle: "json" },
+      diagnostics: { otel: { logs: true, captureContent: false } },
+    });
     process.stdout.write(
       JSON.stringify({
         installation,
@@ -194,25 +273,47 @@ try {
       }),
     );
   } else {
+    assert.ok(Check(schemas, savedSchema, saved));
     assert.deepEqual(installation, saved.installation);
     const presetsPath = `/namespaces/${saved.namespaceId}/presets`;
     for (const preset of [saved.edited, saved.custom]) {
-      assert.deepEqual(await request("GET", `${presetsPath}/${preset.id}`), preset);
+      assert.deepEqual(
+        await request(PresetResponse.properties.data, "GET", `${presetsPath}/${preset.id}`),
+        preset,
+      );
     }
     assert.deepEqual(
       await request(
+        ConfigurationResponse.properties.data,
         "GET",
         `/namespaces/${saved.namespaceId}/configurations/${saved.savedConfiguration.id}`,
       ),
       saved.savedConfiguration,
     );
-    assert.equal((await request("GET", `/namespaces/${saved.namespaceId}`)).status, "ready");
+    assert.equal(
+      (await request(NamespaceResponse.properties.data, "GET", `/namespaces/${saved.namespaceId}`))
+        .status,
+      "ready",
+    );
     if (phase === "disabled") {
       // Disabling defaults affects future Namespaces while retaining existing
       // operator state. A new Namespace proves the startup switch took effect.
-      const namespace = await request("POST", "/namespaces", { name: "Defaults disabled" }, 201);
+      const namespace = await request(
+        NamespaceResponse.properties.data,
+        "POST",
+        "/namespaces",
+        { name: "Defaults disabled" },
+        201,
+      );
       await readyNamespace(namespace.id);
-      assert.deepEqual(await request("GET", `/namespaces/${namespace.id}/presets`), []);
+      assert.deepEqual(
+        await request(
+          PresetListResponse.properties.data,
+          "GET",
+          `/namespaces/${namespace.id}/presets`,
+        ),
+        [],
+      );
     }
   }
 } finally {

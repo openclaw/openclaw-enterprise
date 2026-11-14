@@ -65,7 +65,7 @@ test(
       env: environment,
       timeout: 20000,
     });
-    const fixture = join(repository, "tests/helpers/preset-upgrade-process.mjs");
+    const fixture = join(repository, "tests/helpers/preset-upgrade-process.ts");
     // Keep expected API state in parent memory across real controller exits.
     // No response snapshot is written to disk or read back into request paths.
     let saved: unknown;

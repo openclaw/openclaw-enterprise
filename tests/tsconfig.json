@@ -28,6 +28,7 @@
     "resolveJsonModule": true
   },
   "include": [
+    "helpers/preset-upgrade-process.ts",
     "integration/sandbox-driver-namespace-provider-cases.ts",
     "integration/sandbox-driver-protected-git-configuration-cases.ts",
     "integration/sandbox-driver-protected-git-execution-cases.ts",
