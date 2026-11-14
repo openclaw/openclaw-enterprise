@@ -175,6 +175,7 @@ function schemaConstraints(schema: unknown) {
     ["maximum", "maximum"],
     ["minItems", "min items"],
     ["maxItems", "max items"],
+    ["minProperties", "min properties"],
     ["maxProperties", "max properties"],
     ["uniqueItems", "unique items"],
   ] as const) {
