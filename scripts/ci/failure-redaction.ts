@@ -17,7 +17,7 @@ type RedactedFailure<T> = T extends
   ((...args: never[]) => unknown) | (abstract new (...args: never[]) => object)
   ? T
   : T extends object
-    ? Omit<T, "message" | "frame" | "stack"> & {
+    ? Partial<Omit<T, "message" | "frame" | "stack">> & {
         message: string | undefined;
         frame: string | undefined;
       }
