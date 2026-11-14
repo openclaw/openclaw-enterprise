@@ -4325,7 +4325,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 throw new ConfigurationFailure(
                   "Existing split-layout Gateway storage prevents this single-cluster upgrade. " +
                     "Keep the previous controller version and adopt each storage namespace as " +
-                    "its tenant namespace first (scripts/split-layout-adopt.mjs). See the " +
+                    "its tenant namespace first (scripts/split-layout-adopt.ts). See the " +
                     "Kubernetes Compute upgrade requirements.",
                 );
               }
