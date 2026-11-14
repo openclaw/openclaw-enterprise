@@ -7414,8 +7414,7 @@ export class ControllerWorker {
     withdrawnInterval?: number,
   ): Promise<void> {
     const interval = withdrawnInterval ?? this.revisionMaintenanceInterval(revision)!;
-    const availableAt = new Date(Date.now() + interval);
-    let maintenanceBucket = Math.floor(availableAt.getTime() / interval);
+    let maintenanceBucket = Math.floor((Date.now() + interval) / interval);
     const maintenancePrefix = `agent_revision:${revision.id}:maintenance:`;
     const currentBucket = previousMaintenanceKey.startsWith(maintenancePrefix)
       ? Number(previousMaintenanceKey.slice(maintenancePrefix.length))
@@ -7430,14 +7429,17 @@ export class ControllerWorker {
     ) {
       maintenanceBucket = currentBucket + 1;
     }
-    await queue.enqueue({
-      idempotencyKey: `agent_revision:${revision.id}:maintenance:${maintenanceBucket}`,
-      namespaceId: revision.namespaceId,
-      agentId: revision.agentId,
-      revisionId: revision.id,
-      actorId: claim.actorId,
-      availableAt,
-    });
+    await queue.enqueue(
+      {
+        idempotencyKey: `agent_revision:${revision.id}:maintenance:${maintenanceBucket}`,
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        actorId: claim.actorId,
+      },
+      undefined,
+      { delayMs: interval },
+    );
   }
 
   private async appendRevisionObservation(

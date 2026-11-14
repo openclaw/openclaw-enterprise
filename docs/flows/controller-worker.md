@@ -350,11 +350,12 @@ public explanations. Memory State has no attempt.
 Legacy terminal rows derive `reason_code` from matching activation or terminal
 reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`, with `NULL` `result_data`.
 
-If Compute declares maintenance, activation schedules observations for this version.
-Incomplete observations, Compute bindings, and dependency retries or expired claims
-exhausting attempts close the item and schedule another while the version stays
-selected and running within its credential deadline; outages never retire it. Each
-claim reauthorizes its actor. Successor keys use strictly later time buckets despite clock skew.
+Activation schedules maintenance at the shortest applicable Compute,
+repository, or matching Sandbox interval. PostgreSQL calculates regular due
+times from its clock. Successor keys increase despite clock or interval changes.
+Each claim reauthorizes its actor. Exhausted observation, binding, dependency,
+or claim retries can schedule another item while the version stays selected,
+running, and within its credential deadline. Outages never retire it.
 
 `worker.completed` reports the target, outcome, and code. On `namespace.ensure`,
 it can also report a [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)

@@ -69,24 +69,38 @@ function maintenanceSandbox(maintenanceIntervalMs: number): SandboxDriver {
   };
 }
 
-async function waitForQueuedMaintenance(
+async function waitForMaintenanceSuccessor(
   fixture: MaintenanceFixture,
   revision: { readonly id: string },
+  expectedMs: number,
   previous = "",
 ) {
-  return waitFor("one queued successor for the active revision", async () => {
+  return waitFor("one successor for the active revision", async () => {
     const work = await fixture.observerPool.query<{
       idempotency_key: string;
       available_at: Date;
       created_at: Date;
+      state: string;
+      is_future: boolean;
     }>(
-      `SELECT idempotency_key, available_at, created_at FROM occ.controller_work
+      `SELECT idempotency_key, available_at, created_at, state,
+              available_at > clock_timestamp() AS is_future
+       FROM occ.controller_work
        WHERE namespace_id = $1 AND revision_id = $2 AND idempotency_key LIKE $3
-         AND state = 'queued' AND idempotency_key <> $4`,
+         AND ($4 = '' OR created_at > (
+           SELECT created_at FROM occ.controller_work WHERE idempotency_key = $4
+         ))
+       ORDER BY created_at`,
       [fixture.namespace.id, revision.id, `agent_revision:${revision.id}:maintenance:%`, previous],
     );
-    assert.ok(work.rows.length <= 1, "concurrent workers must not queue two successors");
-    return work.rows[0];
+    const [next] = work.rows;
+    if (next !== undefined) {
+      assertMaintenanceDelay(next, expectedMs);
+      assert.equal(next.state, "queued");
+      assert.equal(next.is_future, true, "the database must see the successor as ineligible");
+    }
+    assert.ok(work.rows.length <= 1, "a pass must produce exactly one successor");
+    return next;
   });
 }
 
@@ -238,19 +252,12 @@ export function registerComputeSingletonMaintenanceCases(): void {
           async activateRevision() {},
         };
         const wallNow = Date.now.bind(Date);
-        // Start away from a bucket boundary, with ample separation from the database clock.
-        const initialClockOffsetMs = 85_000 - (wallNow() % 60_000);
-        let clockOffsetMs = initialClockOffsetMs;
+        let clockOffsetMs = 0;
         context.mock.method(Date, "now", () => wallNow() + clockOffsetMs);
 
         await fixture.start(compute);
         await fixture.work(revision);
-        const first = await waitForQueuedMaintenance(fixture, revision);
-        assert.equal(
-          Number(first.idempotency_key.split(":").at(-1)),
-          Math.floor(first.available_at.getTime() / initialInterval),
-          "the first worker must persist a compatible time-bucket key",
-        );
+        const first = await waitForMaintenanceSuccessor(fixture, revision, initialInterval);
         await fixture.stop();
 
         // The replacement processes share the real queue and contend for each existing row.
@@ -260,20 +267,26 @@ export function registerComputeSingletonMaintenanceCases(): void {
         await replacement.start(compute);
         await contender.start(compute);
         let previous = first;
-        for (const offsetMs of [-10_000, -10_000, 10_000]) {
-          clockOffsetMs = initialClockOffsetMs + offsetMs;
+        // Keep both replacements more than a full interval behind PostgreSQL.
+        // The final pass also checks that a fast worker cannot extend the cadence.
+        for (const offsetMs of [-120_000, -130_000, 120_000]) {
+          clockOffsetMs = offsetMs;
           const madeDue = await fixture.observerPool.query(
             "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1 AND state = 'queued'",
             [previous.idempotency_key],
           );
           assert.equal(madeDue.rowCount, 1);
-          const next = await waitForQueuedMaintenance(fixture, revision, previous.idempotency_key);
+          const next = await waitForMaintenanceSuccessor(
+            fixture,
+            revision,
+            60_000,
+            previous.idempotency_key,
+          );
           assert.ok(
             Number(next.idempotency_key.split(":").at(-1)) >
               Number(previous.idempotency_key.split(":").at(-1)),
             "every pass needs a new increasing durable key",
           );
-          assertMaintenanceDelay(next, 60_000 + clockOffsetMs);
           const completed = await fixture.observerPool.query<{
             state: string;
             attempt_count: number;
@@ -304,6 +317,7 @@ export function registerComputeSingletonMaintenanceCases(): void {
       // immutable snapshot and transfer its claimed upkeep through the real cleanup adapter.
       const revisionId = `rev_${randomUUID()}`;
       const idempotencyKey = `agent_revision:${revisionId}:maintenance:1`;
+      const reconcileKey = `agent_revision:${revisionId}:reconcile`;
       await state.transactWithQueue(async (unit, work) => {
         const seed = await unit.revisions.findRevision(fixture.namespace.id, owner.id, original.id);
         assert.ok(seed);
@@ -335,18 +349,30 @@ export function registerComputeSingletonMaintenanceCases(): void {
         );
         assert.equal(active?.activeRevisionId, revisionId);
         await work.enqueue({
-          idempotencyKey,
+          idempotencyKey: reconcileKey,
           namespaceId: fixture.namespace.id,
           agentId: owner.id,
           revisionId,
           actorId: fixture.actor.id,
           availableAt: new Date(0),
         });
+        await work.enqueue({
+          idempotencyKey,
+          namespaceId: fixture.namespace.id,
+          agentId: owner.id,
+          revisionId,
+          actorId: fixture.actor.id,
+          availableAt: new Date(1),
+        });
       });
       const originalClaim = await queue.claim();
       assert.equal(originalClaim?.idempotencyKey, original.idempotencyKey);
       assert.ok(originalClaim);
       await queue.complete(originalClaim, { code: "REVISION_SUPERSEDED" });
+      const activeReconcile = await queue.claim();
+      assert.equal(activeReconcile?.idempotencyKey, reconcileKey);
+      assert.ok(activeReconcile);
+      await queue.complete(activeReconcile, {});
       const interrupted = await queue.claim();
       assert.equal(interrupted?.idempotencyKey, idempotencyKey);
       assert.ok(interrupted);
@@ -364,10 +390,14 @@ export function registerComputeSingletonMaintenanceCases(): void {
       let observations = 0;
       await fixture.start({
         ...fixture.compute,
+        activationOrder: "beforeCommit",
         maintenanceIntervalMs: 60_000,
         async preflight() {},
         async prepareRevision() {
           assert.fail("withdrawal must not prepare the retained revision");
+        },
+        async activateRevision() {
+          assert.fail("withdrawal must not reactivate the retained revision");
         },
         async stopRevision() {
           assert.fail("successful withdrawal must retain the runtime");
@@ -385,12 +415,29 @@ export function registerComputeSingletonMaintenanceCases(): void {
           return item?.state === "succeeded" ? item : undefined;
         },
       );
-      await fixture.stop();
       assert.equal(completed.reasonCode, "REPOSITORY_ACCESS_WITHDRAWN");
       assert.equal(observations, 1);
+      const next = await waitForMaintenanceSuccessor(
+        fixture,
+        { id: revisionId },
+        5_000,
+        idempotencyKey,
+      );
+      // Leave the due time untouched so PostgreSQL admits the next supervision pass.
+      const successor = await waitForMaintenanceSuccessor(
+        fixture,
+        { id: revisionId },
+        5_000,
+        next.idempotency_key,
+      );
+      await fixture.stop();
+      const supervised = await queue.findWork(next.idempotency_key);
+      assert.equal(supervised?.state, "succeeded");
+      assert.equal(supervised?.reasonCode, "REPOSITORY_ACCESS_WITHDRAWN");
+      assert.equal(supervised?.attemptCount, 1);
+      assert.notEqual(successor.idempotency_key, next.idempotency_key);
+      assert.equal(observations, 2);
       assert.equal(await fixture.activeRevision(owner), revisionId);
-      const next = await waitForQueuedMaintenance(fixture, { id: revisionId });
-      assertMaintenanceDelay(next, 5_000);
     },
   );
 
