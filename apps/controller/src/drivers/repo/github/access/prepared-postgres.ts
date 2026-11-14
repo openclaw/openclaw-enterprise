@@ -101,6 +101,8 @@ type FamilyOwner = Readonly<{
   owns?: string;
   /** Lock the authority that can move to a different family before checking active to record an intent. */
   lockIssuance?: string;
+  /** Remote preparation also serializes against adoption of the committed witness. */
+  lockPreparationWitness?: string;
   driver?: import("@openclaw-enterprise/contracts").DriverRegistrationRef;
 }>;
 
@@ -460,8 +462,12 @@ export class PreparedGitHubPostgres {
         if (familyId !== key) {
           throw new Error("Family mismatch.");
         }
-        if (change && this.owner.lockIssuance) {
+        const witnessLock = this.owner.lockPreparationWitness;
+        if ((change || witnessLock !== undefined) && this.owner.lockIssuance) {
           await c.query(this.owner.lockIssuance, [source]);
+        }
+        if (witnessLock !== undefined) {
+          await c.query(witnessLock, [source]);
         }
         const { rows } = await c.query(
           `SELECT admission, enabled, ${this.owner.active} AS live,

@@ -42,6 +42,8 @@ export function sendProviderRequest({
     let consumed = false;
     let failed = false;
     let settled = false;
+    let checkingDispatch = false;
+    let closed = false;
     let cancelDeadline: () => void = () => {};
     let stage: ProviderObservation["stage"] = "fence";
     const report = (observation: ProviderObservation) => {
@@ -58,7 +60,7 @@ export function sendProviderRequest({
 
     // A dispatched request settles only after its actual close event.
     const settle = () => {
-      if (settled) {
+      if (settled || checkingDispatch) {
         return;
       }
       settled = true;
@@ -170,7 +172,10 @@ export function sendProviderRequest({
       request = httpsRequest(prepared.options);
       report({ stage: "request-created" });
       request.on("error", (error) => fail(providerErrorClass(error)));
-      request.on("close", settle);
+      request.on("close", () => {
+        closed = true;
+        settle();
+      });
       request.on("response", receiveResponse);
       const send = () => {
         if (failed) {
@@ -197,14 +202,35 @@ export function sendProviderRequest({
           fail();
         }
       };
+      const sendWhenAdmitted = () => {
+        if (failed) {
+          return;
+        }
+        if (attempt.withDispatchFence === undefined) {
+          send();
+          return;
+        }
+        checkingDispatch = true;
+        // A failed database acknowledgement after request.end leaves a possible provider
+        // effect under the existing attempt. Do not settle success until the read returns.
+        void attempt
+          .withDispatchFence(send)
+          .catch(() => fail("admission-fenced"))
+          .finally(() => {
+            checkingDispatch = false;
+            if (closed) {
+              settle();
+            }
+          });
+      };
       request.once("socket", (socket) => {
         socket.once("secureConnect", () => report({ stage: "tls-ready" }));
         if (socket.connecting) {
           socket.once("connect", observeDispatch);
-          socket.once("secureConnect", send);
+          socket.once("secureConnect", sendWhenAdmitted);
         } else {
           observeDispatch();
-          send();
+          sendWhenAdmitted();
         }
       });
       cancelDeadline = clock.schedule(Math.min(30000, remaining), () => fail("deadline"));

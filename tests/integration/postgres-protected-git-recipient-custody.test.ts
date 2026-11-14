@@ -1,7 +1,36 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
+import { access, cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:https";
+import { connect, createServer as createTcpServer } from "node:net";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createHash, randomUUID, X509Certificate } from "node:crypto";
+import {
+  cleanEnvironment,
+  createTlsMaterial,
+  listen,
+  run,
+} from "../fixtures/repository-credentials/process.mjs";
+import { loadPreparedGitIssuerSelection } from "../../apps/controller/src/composition/repository-credentials/issuer-selection.ts";
+import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
+import { availablePort } from "../helpers/available-port.mjs";
+import { certificateAuthority, signedLeaf } from "../helpers/certificates.mjs";
+import { connectRemotePreparedGit } from "../../apps/controller/src/backends/repository-credentials/remote-prepared-git.ts";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
+import { stopProcess } from "../helpers/stop-process.mjs";
+import { waitFor, within } from "../helpers/wait-for.mjs";
+import type {
+  RecipientCommand,
+  RecipientSend,
+} from "../fixtures/driver-packages/protected-execution-driver/remote-repository-git.ts";
+import { selectGitHubRequest } from "../../apps/controller/src/drivers/repo/github/access/routes/request-selection.ts";
 import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts";
 import test, { type TestContext } from "node:test";
+import type { Pool } from "pg";
 import {
   selectBundledRepositoryGitCustody,
   selectRegisteredRepositoryGitCustody,
@@ -9,19 +38,40 @@ import {
 import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/egress-proxy/openshell-repository-git-evidence.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import { postgresRepositorySessions } from "../../packages/occ/src/state/postgres-repository-sessions.ts";
-import { CredentialDeliveries } from "../../packages/occ/src/index.ts";
+import {
+  CredentialDeliveries,
+  OpenClawController,
+  ResourceStateConflictError,
+} from "../../packages/occ/src/index.ts";
+import { authorizedPrincipal, registerCoreDrivers } from "../helpers/postgres-backend-state.mjs";
+import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import type {
   AdmittedRepositoryBinding,
   AgentRevision,
   DriverRegistrationRef,
   PreparedGitHubUseRequest,
+  PreparedGitHubRepositoryUseRequest,
+  RepositoryGitMaterialVersion,
+  RepositoryGitOnlineDecision,
   RepositoryGitSendDecision,
 } from "../../packages/contracts/src/index.ts";
-import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import {
+  resolveGitHubRepositoryBinding,
+  type GitHubRepositoryRegistry,
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { fixture } from "../fixtures/prepared-repository-git.mjs";
 import { standingGitOrigin } from "../helpers/prepared-standing-git-peer.ts";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
-import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, withPool } from "../helpers/postgres-database.mjs";
+import { createFastifyApp } from "../../apps/controller/src/index.ts";
+import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
+import { injectJson } from "../helpers/inject-json.mjs";
+import { signInToControllerApp } from "../helpers/auth-session.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
+import { createRuntimeComputeDriver } from "./postgres-agent-provisioning-transport-fixture.ts";
 
 test(
   "only the installed Git recipient owner may use its material or retire its ended admission",
@@ -1451,6 +1501,7 @@ async function admitProtectedSession(
   deadlineWallMs = f.deadlineWallMs,
   pendingMember?: string,
   mode?: 5 | 6 | 7,
+  installationId = "test",
 ) {
   if (mode === 6) {
     assert.equal(binding.profile, "github-installation");
@@ -1481,7 +1532,7 @@ async function admitProtectedSession(
       servicePrincipalId,
       revisionId,
       executionId,
-      installationId: "test",
+      installationId,
     },
     sandboxDriverId: driver.id,
     egressDriverId: driver.id,
@@ -1581,6 +1632,1631 @@ async function admitProtectedSession(
   });
   return { installation, sessionId, admissionId, revisionId };
 }
+
+test(
+  "remote Worker uses only committed selected-repository material for its enrolled recipient",
+  { ...requiresPostgres, timeout: 100_000 },
+  async (t) => {
+    assert.ok(databaseUrl);
+    const f = await fixture(t);
+    await disposeNativeSession(f);
+    const entries = [
+      { repositoryRef: "selected", repository: "fixture/repository", repositoryId: "73" },
+    ];
+    const peer = await standingGitOrigin(t, f.revision.namespaceId, 600_000, undefined, false, {
+      entries,
+      selectedRepositoryIds: ["73"],
+      permissions: { contents: "write", metadata: "read", pull_requests: "write" },
+    });
+    // Hold the issuer's next TLS connection after durable intent but before any HTTP
+    // bytes can reach GitHub. The controlled peer still verifies the real HTTPS request.
+    let gate: { connected(): void; resume: Promise<void> } | undefined;
+    const upstream = new URL(peer.gh.origin);
+    const issuerOrigin = await listen(
+      t,
+      createTcpServer((socket) => {
+        socket.on("error", () => socket.destroy());
+        const forward = () => {
+          if (socket.destroyed) {
+            return;
+          }
+          const target = connect({ host: upstream.hostname, port: Number(upstream.port) });
+          target.on("error", () => socket.destroy());
+          socket.once("close", () => target.destroy());
+          target.once("close", () => socket.destroy());
+          socket.pipe(target).pipe(socket);
+        };
+        const held = gate;
+        if (held === undefined) {
+          forward();
+          return;
+        }
+        gate = undefined;
+        held.connected();
+        void held.resume.then(forward);
+      }),
+    );
+    // A shared registry can retain the co-located profile without routing it
+    // through the remote authority selected for this Installation.
+    const registry: GitHubRepositoryRegistry = {
+      ...peer.registry,
+      backendId: f.registry.backendId,
+      repositories: [
+        ...peer.registry.repositories,
+        {
+          repositoryRef: "co-located",
+          repository: "fixture/co-located",
+          repositoryId: "74",
+          namespaces: [
+            {
+              namespaceId: f.revision.namespaceId,
+              profiles: ["git-write"],
+              transport: "git-only",
+              pushRefAllowlist: ["refs/heads/review"],
+            },
+          ],
+        },
+      ],
+    };
+    const binding = resolveGitHubRepositoryBinding(registry, {
+      namespaceId: f.revision.namespaceId,
+      repositoryRef: "selected",
+      profile: "github-repository",
+    });
+    const driverId = "remote-git-fixture";
+    // Repo owns the session. The external Sandbox and Proxy registration owns its recipient.
+    const repositoryDriverId = f.revision.repositoryCredentials!.driver.id;
+    const { directory, entry } = await protectedDriverPackage(t, driverId, "remote-repository-git");
+    const root = fileURLToPath(new URL("../../", import.meta.url));
+    const source = join(root, "apps/controller");
+    const stage = join(directory, "stage");
+    const controller = join(stage, "apps/controller");
+    const workerEntry = join(controller, "src/worker.mjs");
+    await mkdir(controller, { recursive: true });
+    await Promise.all([
+      cp(join(source, "src"), join(controller, "src"), { recursive: true }),
+      cp(join(source, "node_modules"), join(controller, "node_modules"), { recursive: true }),
+      symlink(join(source, "plugins"), join(controller, "plugins")),
+      symlink(join(root, "deploy"), join(stage, "deploy")),
+      symlink(join(root, "node_modules"), join(stage, "node_modules")),
+      symlink(join(root, "packages"), join(stage, "packages")),
+      writeFile(
+        join(controller, "package.json"),
+        JSON.stringify({ type: "module", dependencies: { [driverId]: "1.0.0" } }),
+      ),
+    ]);
+    await symlink(entry, join(controller, "node_modules", driverId));
+    const listenPort = await availablePort();
+    const tls = await createTlsMaterial(t);
+    const ca = await certificateAuthority(directory, {
+      caName: "Prepared Git fixture CA",
+      caKeyPem: undefined,
+    });
+    const issuerIdentity = await signedLeaf(directory, ca, {
+      name: "issuer",
+      commonName: "localhost",
+      subjectAltName: "DNS:localhost,IP:127.0.0.1",
+      keyPem: undefined,
+    });
+    const workerIdentity = await signedLeaf(directory, ca, {
+      name: "worker",
+      commonName: "Prepared Git fixture Worker",
+      usage: "clientAuth",
+      subjectAltName: undefined,
+      keyPem: undefined,
+    });
+    const otherIdentity = await signedLeaf(directory, ca, {
+      name: "other-worker",
+      commonName: "Unenrolled fixture Worker",
+      usage: "clientAuth",
+      subjectAltName: undefined,
+      keyPem: undefined,
+    });
+    const issuerEndpoint = "https://127.0.0.1:" + listenPort;
+    const client = {
+      issuerEndpoint,
+      issuerCaPath: ca.caPath,
+      workerCertificatePath: workerIdentity.certPath,
+      workerPrivateKeyPath: workerIdentity.keyPath,
+    };
+    // A hostname-valid mTLS endpoint can still speak a different protocol.
+    let unrelatedProbes = 0;
+    let unrelatedStatus = 200;
+    const unrelated = await listen(
+      t,
+      createServer(
+        {
+          cert: issuerIdentity.cert,
+          key: issuerIdentity.key,
+          ca: await readFile(ca.caPath),
+          requestCert: true,
+          rejectUnauthorized: true,
+        },
+        async (req, res) => {
+          assert.equal(req.url, "/v1/prepared-git/authority");
+          assert.equal(req.method, "POST");
+          for await (const _chunk of req) {
+            // Drain the request before returning a successful response for a different protocol.
+          }
+          unrelatedProbes++;
+          if (unrelatedStatus === 204) {
+            res.writeHead(204).end();
+          } else {
+            res.writeHead(200, { "content-type": "application/json" }).end('{"unrelated":true}');
+          }
+        },
+      ),
+    );
+    await assert.rejects(connectRemotePreparedGit({ ...client, issuerEndpoint: unrelated }), {
+      message: "PREPARED_REPOSITORY_GIT_UNAVAILABLE",
+    });
+    unrelatedStatus = 204;
+    await assert.rejects(connectRemotePreparedGit({ ...client, issuerEndpoint: unrelated }), {
+      message: "PREPARED_REPOSITORY_GIT_UNAVAILABLE",
+    });
+    assert.equal(unrelatedProbes, 2);
+    const platform = await f.state.loadInstallation();
+    assert.ok(platform);
+    const enrollment = {
+      namespaceId: f.agent.namespaceId,
+      agentId: f.agent.id,
+      servicePrincipalId: f.agent.servicePrincipalId,
+    };
+    // The production Compute preflight requires an authenticated Kubernetes API. This
+    // controlled peer serves the two read operations only and never supplies Git evidence.
+    const kubeOrigin = await listen(
+      t,
+      createServer(tls, (req, res) => {
+        const path = new URL(req.url!, "https://fixture.invalid").pathname;
+        if (req.method !== "GET" || req.headers.authorization !== "Bearer fixture-kube-reader") {
+          res.writeHead(403).end();
+        } else if (path === "/version") {
+          res
+            .writeHead(200, { "content-type": "application/json" })
+            .end(JSON.stringify({ gitVersion: "v1.36.0" }));
+        } else if (path === "/api/v1/namespaces") {
+          res
+            .writeHead(200, { "content-type": "application/json" })
+            .end(JSON.stringify({ apiVersion: "v1", kind: "NamespaceList", items: [] }));
+        } else {
+          res.writeHead(404).end();
+        }
+      }),
+    );
+    const kubeconfigPath = join(directory, "kubeconfig.json");
+    await writeFile(
+      kubeconfigPath,
+      JSON.stringify({
+        apiVersion: "v1",
+        kind: "Config",
+        clusters: [
+          {
+            name: "fixture",
+            cluster: { server: kubeOrigin, "certificate-authority": tls.certFile },
+          },
+        ],
+        contexts: [{ name: "fixture", context: { cluster: "fixture", user: "fixture" } }],
+        users: [{ name: "fixture", user: { token: "fixture-kube-reader" } }],
+        "current-context": "fixture",
+      }),
+      { mode: 0o600 },
+    );
+    const configPath = join(directory, "installation.json");
+    const registryPath = join(directory, "registry.json");
+    const issuerPath = join(directory, "issuer.json");
+    const readyPath = join(directory, "worker-ready");
+    const base = createInstallationDriverConfiguration();
+    const compute = base.drivers.compute.configuration;
+    const { gatewayClients: _gatewayClients, ...network } = compute.network;
+    await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
+    const configuration = {
+      ...base,
+      presets: { includeDefaults: false },
+      backend: [
+        {
+          id: registry.backendId,
+          type: "github",
+          configuration: { registryPath },
+          drivers: { repo: repositoryDriverId },
+        },
+      ],
+      repository: {
+        id: repositoryDriverId,
+        configuration: { sessionDurationSeconds: 180 },
+        preparedGitHub: { ...client, enrollment },
+      },
+      drivers: {
+        ...base.drivers,
+        compute: {
+          ...base.drivers.compute,
+          configuration: {
+            ...compute,
+            authentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
+            network,
+            runtime: {
+              ...compute.runtime,
+              channels: { proxyUrl: "http://10.42.0.15:3128" },
+            },
+            gatewayRouting: {
+              hostname: "agents.example.test",
+              gatewayName: "gateways",
+              gatewayNamespace: "occ-system",
+              envoyNamespace: "envoy",
+            },
+          },
+        },
+        sandbox: {
+          id: driverId,
+          package: driverId,
+          configuration: {
+            origin: peer.origin.origin,
+            peerOrigin: "https://127.0.0.1:1",
+            capabilityOrigin: "https://127.0.0.1:2",
+            certFile: peer.tls.certFile,
+            releaseKey: "unused-before-release",
+          },
+        },
+        credential_proxy: { id: driverId, configuration: {} },
+      },
+    };
+    await writeFile(configPath, JSON.stringify(configuration), { mode: 0o600 });
+    const env = cleanEnvironment({
+      NODE_ENV: "production",
+      OCC_CONFIG_PATH: configPath,
+      OCC_DATABASE_URL: databaseUrl,
+    });
+    const mutationPath = join(directory, "mutation.json");
+    const mutationMarker = join(directory, "mutation.log");
+    const sandbox = configuration.drivers.sandbox;
+    const mutation = (failClose: boolean, hashEquivalent = false, missingTransport = false) => ({
+      ...configuration,
+      drivers: {
+        ...configuration.drivers,
+        sandbox: {
+          ...sandbox,
+          configuration: {
+            ...sandbox.configuration,
+            releaseKey: (missingTransport ? "missing-transport:" : "mutate:") + mutationMarker,
+            policyReduction: failClose,
+            ...(hashEquivalent ? { mutationWitness: {} } : {}),
+          },
+        },
+      },
+    });
+    for (const [failClose, hashEquivalent, missingTransport, startupCode] of [
+      [false, false, false, "DRIVER_CONFIGURATION_INVALID"],
+      [true, false, false, "WORKER_STARTUP_FAILED"],
+      [false, true, false, "DRIVER_CONFIGURATION_INVALID"],
+      [false, false, true, "WORKER_STARTUP_FAILED"],
+      [true, false, true, "WORKER_STARTUP_FAILED"],
+    ] as const) {
+      await writeFile(mutationMarker, "");
+      await writeFile(
+        mutationPath,
+        JSON.stringify(mutation(failClose, hashEquivalent, missingTransport)),
+        {
+          mode: 0o600,
+        },
+      );
+      await assert.rejects(
+        loadInstallationConfiguration({
+          mode: "production",
+          packageRoot: controller,
+          environment: { ...env, OCC_CONFIG_PATH: mutationPath },
+        }),
+        (error) => {
+          const primary = failClose ? (error as AggregateError).cause : error;
+          assert.match(
+            String(primary),
+            missingTransport
+              ? /Sandbox access and Credential Proxy transport/
+              : /Driver changed its configuration/,
+          );
+          if (failClose) {
+            assert.ok(error instanceof AggregateError);
+            assert.match(String(error.errors[1]), /Controlled close failure/);
+          }
+          return true;
+        },
+      );
+      assert.equal(await readFile(mutationMarker, "utf8"), "created\nclosed\n");
+      await writeFile(mutationMarker, "");
+      const rejected = await run(process.execPath, [workerEntry], {
+        allowFailure: true,
+        signal: t.signal,
+        env: {
+          ...env,
+          OCC_CONFIG_PATH: mutationPath,
+          OCC_WORKER_READINESS_PATH: readyPath,
+        },
+      });
+      assert.equal(rejected.code, 1);
+      assert.ok(
+        rejected.stderr.includes('"code":"' + startupCode + '"'),
+        JSON.stringify({
+          failClose,
+          hashEquivalent,
+          missingTransport,
+          startupCode,
+          stderr: rejected.stderr,
+        }),
+      );
+      if (!failClose && !missingTransport) {
+        assert.ok(rejected.stderr.includes('"/drivers/sandbox/configuration"'), rejected.stderr);
+      }
+      assert.equal(await readFile(mutationMarker, "utf8"), "created\nclosed\n");
+      await assert.rejects(access(readyPath), { code: "ENOENT" });
+    }
+
+    const nullConfiguration = {
+      ...configuration,
+      drivers: {
+        ...configuration.drivers,
+        sandbox: {
+          ...sandbox,
+          configuration: { ...sandbox.configuration, mutationWitness: null },
+        },
+      },
+    };
+    const declared = JSON.stringify(nullConfiguration);
+    const boundaryEnv = { ...env, OCC_CONFIG_PATH: mutationPath };
+    const loadBoundaryWorker = () =>
+      loadInstallationConfiguration({
+        mode: "production",
+        packageRoot: controller,
+        environment: boundaryEnv,
+      });
+    await writeFile(mutationPath, declared, { mode: 0o600 });
+    const nullWorker = await loadBoundaryWorker();
+    assert.ok(nullWorker?.repositoryGitDriver);
+    try {
+      const selected = await loadPreparedGitIssuerSelection(boundaryEnv, controller);
+      assert.equal(selected.repositoryGitCustody.kind, "selected");
+      assert.deepEqual(selected.repositoryGitCustody.driver, nullWorker.repositoryGitDriver.ref);
+    } finally {
+      await nullWorker.repositoryGitDriver.close();
+    }
+    for (const invalid of [".inf", ".nan"]) {
+      await writeFile(
+        mutationPath,
+        declared.replace('"mutationWitness":null', '"mutationWitness":' + invalid),
+        { mode: 0o600 },
+      );
+      await assert.rejects(loadBoundaryWorker(), { name: "ConfigurationValidationError" });
+      await assert.rejects(loadPreparedGitIssuerSelection(boundaryEnv, controller), {
+        message: "PREPARED_GIT_ISSUER_CONFIGURATION_INVALID",
+      });
+    }
+
+    // Co-located custody still accepts a factory that normalizes its input.
+    const localMutation = mutation(false);
+    const local = {
+      ...localMutation,
+      repository: {
+        ...localMutation.repository,
+        preparedGitHub: {
+          privateKeyPath: peer.privateKeyPath,
+          custodyKeyPath: peer.custodyKeyPath,
+          apiOrigin: issuerOrigin,
+          issuerCaPath: peer.tls.certFile,
+        },
+      },
+    };
+    async function localRegistration() {
+      await writeFile(mutationPath, JSON.stringify(local), { mode: 0o600 });
+      const loaded = await loadInstallationConfiguration({
+        mode: "production",
+        packageRoot: controller,
+        environment: { ...env, OCC_CONFIG_PATH: mutationPath },
+      });
+      assert.ok(loaded?.repositoryGitDriver);
+      await loaded.repositoryGitDriver.close();
+      return loaded.repositoryGitDriver.ref;
+    }
+    const normalized = await localRegistration();
+    local.drivers.sandbox.configuration.releaseKey = "changed";
+    assert.deepEqual(await localRegistration(), normalized);
+    // The controller commits the reference produced by the real production loader.
+    // Neither the issuer fixture nor a canned digest chooses the admitted registration.
+    const drivers = await loadInstallationConfiguration({
+      mode: "production",
+      packageRoot: controller,
+      environment: env,
+    });
+    const policy = drivers?.repositoryAdmission?.policy;
+    assert.ok(policy);
+    const namespace = { namespaceId: f.revision.namespaceId };
+    assert.deepEqual(
+      (await policy.listCatalog(namespace)).options.map(({ repositoryRef }) => repositoryRef),
+      ["selected"],
+    );
+    assert.deepEqual(
+      policy.resolveBindings({
+        ...namespace,
+        bindings: [{ repositoryRef: "selected", profile: "github-repository" }],
+      }).bindings,
+      [binding],
+    );
+    assert.throws(
+      () =>
+        policy.resolveBindings({
+          ...namespace,
+          bindings: [{ repositoryRef: "co-located", profile: "git-write" }],
+        }),
+      { name: "ScopeViolationError" },
+    );
+    const owner = drivers?.repositoryGitDriver;
+    assert.ok(owner);
+    const registration = owner.ref;
+    try {
+      const actor = authorizedPrincipal(await f.state.loadNativeIAMState());
+      assert.ok(actor);
+      const deployment = OpenClawController.forInstallation(
+        platform,
+        { state: f.state, backends: drivers.installation.backend },
+        drivers.repositoryAdmission,
+      );
+      registerCoreDrivers(deployment, f.state);
+      const secretDriver = createTestSecretDriver();
+      deployment.registerDriver(secretDriver);
+      deployment.selectDriver("secret", secretDriver.id);
+      deployment.installDriver(owner, ["sandbox", "credential_proxy"]);
+      const configurationEffects = createTestConfigurationDriver({
+        id: "remote-provisioning-configuration",
+        exact: true,
+      });
+      const writes: { namespaceId: string; id: string }[] = [];
+      const configurationRead = configurationEffects.read;
+      let configurationReads = 0;
+      configurationEffects.read = (reference) => {
+        configurationReads++;
+        return configurationRead(reference);
+      };
+      const createExact = configurationEffects.createExact!;
+      let loseConfigurationReply = false;
+      configurationEffects.createExact = async (configuration) => {
+        const created = await createExact(configuration);
+        writes.push({ namespaceId: created.namespaceId, id: created.id });
+        if (loseConfigurationReply) {
+          throw new Error("Fixture lost the Configuration write response.");
+        }
+        return created;
+      };
+      const runtimeEffects = createRuntimeComputeDriver();
+      const runtimeAdmission = drivers.computeDriver;
+      let computePlanChecks = 0;
+      const compute: typeof runtimeEffects = {
+        ...runtimeEffects,
+        id: "remote-provisioning-compute",
+        validateAgentProvisioning(input) {
+          computePlanChecks++;
+          runtimeAdmission.validateAgentProvisioning!(input);
+        },
+        validateRepositoryCredentials:
+          runtimeAdmission.validateRepositoryCredentials!.bind(runtimeAdmission),
+        validateHarnessAuth: runtimeAdmission.validateHarnessAuth!.bind(runtimeAdmission),
+      };
+      // A real plan admitted before recipient enrollment remains readable and recoverable.
+      const { recipient: _recipient, ...priorAdmission } = drivers.repositoryAdmission!;
+      const prior = OpenClawController.forInstallation(
+        platform,
+        { state: f.state, backends: drivers.installation.backend },
+        priorAdmission,
+      );
+      registerCoreDrivers(prior, f.state);
+      prior.registerDriver(secretDriver);
+      prior.selectDriver("secret", secretDriver.id);
+      prior.installDriver(owner, ["sandbox", "credential_proxy"]);
+      for (const controller of [deployment, prior]) {
+        controller.registerDriver(configurationEffects);
+        controller.selectDriver("configuration", configurationEffects.id);
+        controller.registerDriver(compute);
+        controller.selectDriver("compute", compute.id);
+      }
+      const configuration = await deployment.createConfiguration(actor.id, {
+        namespaceId: enrollment.namespaceId,
+        kind: "agent",
+        values: createHarnessConfiguration("codex", "fixture"),
+      });
+      const secret = await deployment.createSecret(actor.id, {
+        namespaceId: enrollment.namespaceId,
+        name: "Second Agent model key",
+        value: "fixture-model-key",
+      });
+      const otherAgent = await deployment.createAgent(
+        actor.id,
+        {
+          namespaceId: enrollment.namespaceId,
+          configurationId: configuration.id,
+          name: "Second repository Agent",
+          executionMode: "dedicated",
+          harnessAuth: {
+            method: "api_key",
+            source: { kind: "secret", namespaceId: enrollment.namespaceId, id: secret.id },
+          },
+          repositoryBindings: [{ repositoryRef: "selected", profile: "github-repository" }],
+        },
+        resolveApprovedHarness,
+      );
+      const other = { namespaceId: enrollment.namespaceId, agentId: otherAgent.id };
+      await assert.rejects(deployment.deployAgent(actor.id, other, resolveApprovedHarness), {
+        name: ResourceStateConflictError.name,
+        message:
+          "The Installation has no prepared repository credential enrollment for this Agent.",
+      });
+      assert.deepEqual(
+        await f.state.read((view) =>
+          view.revisions.listRevisionMetadata(other.namespaceId, other.agentId),
+        ),
+        [],
+      );
+      const auth = await createPostgresControllerAuth({
+        pool: f.pool,
+        installationId: platform.id,
+        mode: "development",
+        baseURL: "https://console.oce.localhost",
+        agentDomain: "agents.oce.localhost",
+        secret: "fixture-provisioning-session-" + randomUUID(),
+      });
+      const credentials = { email: `fixture-${randomUUID()}@example.test`, password: randomUUID() };
+      const account = await auth.createAccount(credentials);
+      const seed = auth.principalSeed(account, { grant: "none" });
+      await f.state.appendNativeIAMPrincipal(seed);
+      await f.pool.query(
+        `INSERT INTO occ.iam_access_bindings
+           (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
+         SELECT 'binding-' || gen_random_uuid(), namespace_id, $1, role_id, resource_kind, resource_id
+         FROM occ.iam_access_bindings WHERE identity_subject_id = $2`,
+        [seed.principal.id, actor.id],
+      );
+      const appFor = (controller: OpenClawController) =>
+        createFastifyApp({
+          controller,
+          iamDriver: controller.selectedDriver("iam"),
+          computeDriver: compute,
+          configurationDriver: configurationEffects,
+          secretDriver,
+          resolveHarness: resolveApprovedHarness,
+          auditSink: f.state.auditSink,
+          auth,
+          development: { enabled: false },
+        });
+      const app = appFor(deployment);
+      const priorApp = appFor(prior);
+      try {
+        const session = await signInToControllerApp(app, credentials);
+        const namespaceId = enrollment.namespaceId;
+        const path = `/namespaces/${namespaceId}/agents/provision`;
+        const bindings = [{ repositoryRef: "selected", profile: "github-repository" }];
+        const request = () => ({
+          requestId: `req_${randomUUID()}`,
+          name: `Provisioning fixture ${randomUUID()}`,
+          executionMode: "dedicated",
+          configuration: { kind: "agent", values: createHarnessConfiguration("codex", "fixture") },
+          harnessAuth: {
+            method: "api_key",
+            source: { kind: "secret", namespaceId, id: secret.id },
+          },
+        });
+        const counts = async () =>
+          (
+            await f.pool.query(
+              `SELECT
+              (SELECT count(*) FROM occ.agent_provisioning_work WHERE namespace_id=$1) AS jobs,
+              (SELECT count(*) FROM occ.controller_work WHERE namespace_id=$1) AS work,
+              (SELECT count(*) FROM occ.configurations WHERE namespace_id=$1) AS configurations,
+              (SELECT count(*) FROM occ.agents WHERE namespace_id=$1) AS agents,
+              (SELECT count(*) FROM occ.agent_revisions WHERE namespace_id=$1) AS revisions,
+              (SELECT count(*) FROM occ.audit_events WHERE namespace_id=$1
+                 AND action='openclaw.agents.provision' AND outcome='success') AS accepted`,
+              [namespaceId],
+            )
+          ).rows[0];
+        const admit = async (target: typeof app, body: object) => {
+          const response = await injectJson(target, "POST", path, { session, body });
+          assert.equal(response.statusCode, 202, response.body);
+          const { workId, url } = response.json().data.provisioning;
+          assert.equal(typeof workId, "string");
+          assert.equal(typeof url, "string");
+          return { workId: workId as string, url: url as string };
+        };
+        const status = async (url: string) => {
+          const response = await injectJson(app, "GET", url, { session });
+          assert.equal(response.statusCode, 200, response.body);
+          return response.json().data;
+        };
+        // The real Slack Driver reads two bound Secrets and posts auth.test over its
+        // controlled transport. The ineligible requests must never start that work.
+        const slackBotValue = "xoxb-" + randomUUID();
+        const slackAppValue = "xapp-" + randomUUID();
+        const bot = await deployment.createSecret(actor.id, {
+          namespaceId,
+          name: "Channel bot fixture",
+          value: slackBotValue,
+        });
+        const slackApp = await deployment.createSecret(actor.id, {
+          namespaceId,
+          name: "Channel app fixture",
+          value: slackAppValue,
+        });
+        let providerPosts = 0;
+        const slack = new SlackChannelDriver(async (url, options) => {
+          const sent = new Request(url, options);
+          assert.equal(sent.url, "https://slack.com/api/auth.test");
+          assert.equal(sent.method, "POST");
+          assert.ok(sent.headers.get("authorization") === "Bearer " + slackBotValue);
+          providerPosts++;
+          return Response.json({ ok: true, bot_id: "B123", team_id: "T123" });
+        });
+        deployment.registerDriver(slack);
+        deployment.selectDriver("channel", slack.id);
+        const original = request();
+        const channelConfiguration = {
+          ...original.configuration,
+          values: {
+            ...original.configuration.values,
+            channels: {
+              slack: {
+                enabled: true,
+                mode: "socket",
+                appToken: "${APP_TOKEN}",
+                botToken: "${BOT_TOKEN}",
+              },
+            },
+          },
+          secretBindings: {
+            APP_TOKEN: { source: { kind: "secret" as const, namespaceId, id: slackApp.id } },
+            BOT_TOKEN: { source: { kind: "secret" as const, namespaceId, id: bot.id } },
+          },
+        };
+        const withChannel = { ...original, configuration: channelConfiguration };
+        const updated = await deployment.updateConfiguration(actor.id, {
+          namespaceId,
+          configurationId: configuration.id,
+          values: channelConfiguration.values,
+          secretBindings: channelConfiguration.secretBindings,
+        });
+        const deployPath = `/namespaces/${namespaceId}/agents/${otherAgent.id}`;
+        const firstIntent = {
+          key: "enrollment-fixture",
+          expectedConfigurationId: updated.id,
+          expectedGeneration: updated.generation,
+        };
+        const effectCounts = () => ({
+          configurationReads,
+          configurationWrites: writes.length,
+          secretCalls: secretDriver.calls.length,
+          providerPosts,
+          computePlanChecks,
+          computeRuntimeCalls: runtimeEffects.calls.length,
+          gitIssuances: peer.gh.issuesOfTokens.length,
+        });
+        const before = await counts();
+        const refusedEffects = effectCounts();
+        for (const [name, url, body] of [
+          ["repositoryBindings", path, { ...withChannel, repositoryBindings: bindings }],
+          [
+            "repositoryAccess",
+            path,
+            {
+              ...withChannel,
+              repositoryAccess: {
+                defaultProfile: "github-repository",
+                repositories: [{ repositoryRef: "selected" }],
+              },
+            },
+          ],
+          ["deploy", deployPath + "/deploy", {}],
+          ["deploy-first", deployPath + "/deploy-first", firstIntent],
+        ] as const) {
+          const beforeRequest = effectCounts();
+          const refused = await injectJson(app, "POST", url, { session, body });
+          assert.equal(refused.statusCode, 409, refused.body);
+          assert.equal(refused.json().error.code, "RESOURCE_CONFLICT");
+          assert.match(
+            refused.json().error.message,
+            /no prepared repository credential enrollment/,
+          );
+          assert.deepEqual(await counts(), before);
+          const afterRequest = effectCounts();
+          t.diagnostic(
+            `${name} 409: ${JSON.stringify({
+              configurationReads:
+                afterRequest.configurationReads - beforeRequest.configurationReads,
+              secretCalls: afterRequest.secretCalls - beforeRequest.secretCalls,
+              providerPosts: afterRequest.providerPosts - beforeRequest.providerPosts,
+              computePlanChecks: afterRequest.computePlanChecks - beforeRequest.computePlanChecks,
+            })}`,
+          );
+        }
+        assert.deepEqual(effectCounts(), refusedEffects);
+        // Agent deploy is granted, but without Configuration read neither deployment
+        // route may reveal whether the target matches the configured recipient.
+        const deployer = {
+          email: `fixture-${randomUUID()}@example.test`,
+          password: randomUUID(),
+        };
+        const deployerAccount = await auth.createAccount(deployer);
+        const deployerSeed = auth.principalSeed(deployerAccount, { grant: "none" });
+        await f.state.appendNativeIAMPrincipal(deployerSeed);
+        const deployRole = `role-${randomUUID()}`;
+        await f.pool.query(
+          "INSERT INTO occ.iam_roles(id, namespace_id, name, permissions) VALUES($1, $2, $3, $4::jsonb)",
+          [
+            deployRole,
+            namespaceId,
+            "Deploy fixture",
+            JSON.stringify([{ action: "deploy", resourceKind: "agent" }]),
+          ],
+        );
+        await f.pool.query(
+          `INSERT INTO occ.iam_access_bindings
+             (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
+           VALUES ($1, $2, $3, $4, 'agent', $5)`,
+          [
+            `binding-${randomUUID()}`,
+            namespaceId,
+            deployerSeed.principal.id,
+            deployRole,
+            otherAgent.id,
+          ],
+        );
+        const deployOnly = await signInToControllerApp(app, deployer);
+        for (const [route, body] of [
+          ["/deploy", {}],
+          ["/deploy-first", firstIntent],
+        ] as const) {
+          const denied = await injectJson(app, "POST", deployPath + route, {
+            session: deployOnly,
+            body,
+          });
+          assert.equal(denied.statusCode, 403, denied.body);
+          assert.equal(denied.json().error.code, "FORBIDDEN");
+          assert.match(denied.json().error.message, /Configuration read/);
+          assert.doesNotMatch(denied.body, /repository credential enrollment/);
+        }
+        const deniedProvision = await injectJson(app, "POST", path, {
+          session: deployOnly,
+          body: { ...withChannel, repositoryBindings: bindings },
+        });
+        assert.equal(deniedProvision.statusCode, 403, deniedProvision.body);
+        assert.equal(deniedProvision.json().error.code, "FORBIDDEN");
+        assert.doesNotMatch(deniedProvision.body, /repository credential enrollment/);
+        t.diagnostic(
+          "Unauthorized provisioning and both deploy routes returned 403 before enrollment or credential I/O.",
+        );
+        assert.deepEqual(await counts(), before);
+        assert.deepEqual(effectCounts(), refusedEffects);
+
+        const acceptedChannel = await admit(app, withChannel);
+        assert.equal(providerPosts, refusedEffects.providerPosts + 1);
+        assert.deepEqual(
+          secretDriver.calls.slice(refusedEffects.secretCalls).map(({ operation }) => operation),
+          ["withValue", "withValue"],
+        );
+        const afterAcceptance = effectCounts();
+        const afterChannelAdmission = await counts();
+        assert.deepEqual(await admit(app, withChannel), acceptedChannel);
+        assert.equal((await status(acceptedChannel.url)).status, "queued");
+        assert.equal(providerPosts, afterAcceptance.providerPosts);
+        assert.equal(secretDriver.calls.length, afterAcceptance.secretCalls);
+        const afterReplay = await counts();
+        assert.equal(afterReplay.jobs, afterChannelAdmission.jobs);
+        assert.equal(afterReplay.work, afterChannelAdmission.work);
+        t.diagnostic(
+          "No-repository provisioning: 202, two Secret reads and one provider POST. Replay and status add no credential I/O.",
+        );
+
+        const claim = async (workId: string) => {
+          const claimToken = randomUUID();
+          const claimed = await f.pool.query(
+            `UPDATE occ.controller_work SET state='claimed', attempt_count=attempt_count+1,
+               claim_token=$2::uuid, lease_expires_at=clock_timestamp()+interval '10 minutes',
+               updated_at=clock_timestamp()
+             WHERE idempotency_key=$1 AND work_kind='provisioning' AND state='queued'`,
+            [workId, claimToken],
+          );
+          assert.equal(claimed.rowCount, 1, "claim only the named provisioning work");
+          const work = await f.state.read((view) => view.operations.findWork(workId));
+          assert.ok(work?.leaseExpiresAt);
+          assert.equal(work.kind, "provisioning");
+          return {
+            ...work,
+            state: "claimed" as const,
+            claimToken,
+            leaseExpiresAt: work.leaseExpiresAt,
+            ageMs: work.updatedAt.getTime() - work.createdAt.getTime(),
+          };
+        };
+        const process = async (target: OpenClawController, workId: string) =>
+          target.processAgentProvisioning(await claim(workId), resolveApprovedHarness);
+        const legacy = { ...request(), repositoryBindings: bindings };
+        const queued = await admit(priorApp, legacy);
+        assert.deepEqual(await admit(app, legacy), queued);
+        const changed = await injectJson(app, "POST", path, {
+          session,
+          body: { ...legacy, name: request().name },
+        });
+        assert.equal(changed.statusCode, 409, changed.body);
+        assert.equal((await status(queued.url)).status, "queued");
+        assert.deepEqual(await process(deployment, queued.workId), {
+          outcome: "permanent",
+          code: "PROVISIONING_REJECTED",
+        });
+        const failed = await status(queued.url);
+        assert.equal(failed.status, "failed");
+        assert.equal(failed.agentId, undefined);
+        assert.equal(failed.configurationId, undefined);
+        assert.equal(failed.revisionId, undefined);
+        assert.deepEqual(await admit(app, legacy), queued);
+        assert.deepEqual(writes, []);
+        assert.deepEqual(runtimeEffects.calls, []);
+        const refusedRetry = await injectJson(app, "POST", queued.url + "/retry", { session });
+        assert.equal(refusedRetry.statusCode, 409, refusedRetry.body);
+
+        // Earlier Configuration writes are inspected and cleaned up even when new work is refused.
+        const interrupted = await admit(priorApp, { ...request(), repositoryBindings: bindings });
+        loseConfigurationReply = true;
+        const lost = await process(prior, interrupted.workId);
+        loseConfigurationReply = false;
+        assert.equal(lost.outcome, "retry");
+        assert.equal(lost.code, "PROVISIONING_OUTCOME_UNKNOWN");
+        assert.equal(writes.length, 1);
+        const written = writes[0]!;
+        assert.ok(configurationEffects.stored(written));
+        assert.deepEqual(await process(deployment, interrupted.workId), {
+          outcome: "permanent",
+          code: "PROVISIONING_REJECTED",
+        });
+        assert.equal(writes.length, 1, "the Configuration was never sent again");
+        assert.equal(configurationEffects.stored(written), undefined);
+        assert.deepEqual(runtimeEffects.calls, []);
+
+        for (const repository of [
+          {},
+          { repositoryBindings: [] },
+          { repositoryAccess: { defaultProfile: "github-repository", repositories: [] } },
+        ]) {
+          const body = { ...request(), ...repository };
+          const accepted = await admit(app, body);
+          assert.deepEqual(await admit(app, body), accepted);
+          const claimed = await claim(accepted.workId);
+          const cancelled = await f.state.transact((unit) =>
+            unit.provisioning.cancel(claimed, {
+              code: "PROVISIONING_CANCELLED",
+              message: "Fixture finished before worker dispatch.",
+            }),
+          );
+          assert.equal(cancelled.status, "cancelled");
+          const cancelledStatus = await status(accepted.url);
+          assert.equal(cancelledStatus.status, "failed");
+          assert.equal(cancelledStatus.error.code, "PROVISIONING_CANCELLED");
+          assert.deepEqual(await admit(app, body), accepted);
+        }
+        // A claim accepted before enrollment can have a saved Agent when Stop cancels it.
+        // Hold its transport write before dispatch, then exercise the public Stop route.
+        const partialBody = { ...request(), repositoryBindings: bindings };
+        const partial = await admit(priorApp, partialBody);
+        let effects = 0;
+        const cancelled = await prior.processAgentProvisioning(
+          await claim(partial.workId),
+          resolveApprovedHarness,
+          {
+            async runEffect(operation) {
+              effects++;
+              if (effects === 1) {
+                return operation(t.signal);
+              }
+              const current = await status(partial.url);
+              assert.equal(typeof current.agentId, "string");
+              assert.equal(typeof current.configurationId, "string");
+              assert.equal(current.revisionId, undefined);
+              assert.deepEqual(await admit(app, partialBody), partial);
+              const stopped = await injectJson(
+                app,
+                "POST",
+                `/namespaces/${namespaceId}/agents/${current.agentId}/stop`,
+                { session },
+              );
+              assert.equal(stopped.statusCode, 200, stopped.body);
+              throw new Error("Fixture stopped before the transport write.");
+            },
+          },
+        );
+        assert.equal(effects, 2);
+        assert.deepEqual(cancelled, { outcome: "permanent", code: "PROVISIONING_CANCELLED" });
+        assert.equal((await status(partial.url)).error.code, "PROVISIONING_CANCELLED");
+        assert.deepEqual(runtimeEffects.calls, []);
+        t.diagnostic(
+          "Saved work retained replay and status, fenced new writes, and cleaned up an earlier landed Configuration.",
+        );
+        // Admit a first deployment without repository selections, then save desired Git
+        // settings on that same Agent. New revisions now require enrollment, while
+        // the receipt for the original deployment remains recoverable.
+        const withoutProxy = OpenClawController.forInstallation(
+          platform,
+          { state: f.state, backends: drivers.installation.backend },
+          drivers.repositoryAdmission,
+        );
+        registerCoreDrivers(withoutProxy, f.state);
+        for (const driver of [configurationEffects, compute, secretDriver, slack]) {
+          withoutProxy.registerDriver(driver);
+          withoutProxy.selectDriver(driver.capability, driver.id);
+        }
+        withoutProxy.installDriver(owner, ["sandbox"]);
+        await deployment.updateAgent(actor.id, {
+          ...other,
+          configurationId: updated.id,
+          repositoryBindings: [],
+        });
+        const beforeFirstDeploy = effectCounts();
+        const receiptApp = appFor(withoutProxy);
+        const completed = await (async () => {
+          try {
+            return await injectJson(receiptApp, "POST", deployPath + "/deploy-first", {
+              session,
+              body: firstIntent,
+            });
+          } finally {
+            await receiptApp.close();
+          }
+        })();
+        assert.equal(completed.statusCode, 202, completed.body);
+        const afterFirstDeploy = effectCounts();
+        assert.equal(afterFirstDeploy.providerPosts, beforeFirstDeploy.providerPosts + 1);
+        await deployment.updateAgent(actor.id, {
+          ...other,
+          configurationId: updated.id,
+          repositoryBindings: bindings,
+        });
+        const afterRepositorySave = effectCounts();
+        const completedCounts = await counts();
+        const receiptPath = [
+          deployPath + "/deploy-first",
+          firstIntent.key,
+          firstIntent.expectedConfigurationId,
+          firstIntent.expectedGeneration,
+        ].join("/");
+        for (const [response, code] of [
+          [
+            await injectJson(app, "POST", deployPath + "/deploy-first", {
+              session,
+              body: firstIntent,
+            }),
+            202,
+          ],
+          [await injectJson(app, "GET", receiptPath, { session }), 200],
+        ] as const) {
+          assert.equal(response.statusCode, code, response.body);
+          assert.deepEqual(response.json().data, completed.json().data);
+        }
+        assert.deepEqual(effectCounts(), afterRepositorySave);
+        assert.deepEqual(await counts(), completedCounts);
+        t.diagnostic(
+          "First deploy validated Slack once. After Git selections changed, replay and recovery returned the saved receipt without new effects.",
+        );
+      } finally {
+        await Promise.all([app.close(), priorApp.close()]);
+      }
+    } finally {
+      await owner.close();
+    }
+    const { installation, admissionId, sessionId, revisionId } = await admitProtectedSession(
+      f,
+      registration,
+      binding,
+      [binding],
+      f.deadlineWallMs,
+      undefined,
+      undefined,
+      platform.id,
+    );
+    const committed = await f.pool.query(
+      "SELECT installation#>'{plan,driver}' AS driver FROM occ.egress_installations WHERE revision_id=$1",
+      [revisionId],
+    );
+    assert.deepEqual(committed.rows, [{ driver: registration }]);
+    const workerInstanceId = randomUUID();
+    const deliveryKey = {
+      ...installation.plan.execution,
+      bindingId: installation.plan.execution.executionId,
+    };
+    const foreignWorker = randomUUID();
+    const witnessClient = await f.pool.connect();
+    try {
+      // A committed, otherwise valid release belongs to a different Worker instance.
+      assert.equal(
+        await new CredentialDeliveries(witnessClient).observe(
+          deliveryKey,
+          { transport: "registered-repository-git/v1", installation },
+          foreignWorker,
+        ),
+        1,
+      );
+    } finally {
+      witnessClient.release();
+    }
+    const issuerConfiguration = {
+      listenHost: "127.0.0.1",
+      listenPort,
+      serverCertificatePath: issuerIdentity.certPath,
+      serverPrivateKeyPath: issuerIdentity.keyPath,
+      workerCaPath: ca.caPath,
+      workerFingerprintSha256: new X509Certificate(workerIdentity.cert).fingerprint256
+        .replaceAll(":", "")
+        .toLowerCase(),
+      workerInstanceId,
+      ...enrollment,
+      installationId: platform.id,
+      privateKeyPath: peer.privateKeyPath,
+      custodyKeyPath: peer.custodyKeyPath,
+      apiOrigin: issuerOrigin,
+      issuerCaPath: peer.tls.certFile,
+    };
+    const issuerEntry = join(controller, "src/prepared-git-issuer.ts");
+    for (const refusal of [
+      {
+        configuration: { ...issuerConfiguration, servicePrincipalId: "stale-principal" },
+        databaseUrl,
+      },
+      {
+        configuration: { ...issuerConfiguration, installationId: "ins_" + randomUUID() },
+        databaseUrl,
+      },
+      {
+        configuration: issuerConfiguration,
+        databaseUrl: "postgresql://occ_app@127.0.0.1:" + (await availablePort()) + "/unavailable",
+      },
+    ]) {
+      await writeFile(issuerPath, JSON.stringify(refusal.configuration), { mode: 0o600 });
+      const refused = await run(process.execPath, [issuerEntry, issuerPath], {
+        allowFailure: true,
+        signal: AbortSignal.any([t.signal, AbortSignal.timeout(12_000)]),
+        env: { ...env, OCC_DATABASE_URL: refusal.databaseUrl },
+      });
+      assert.equal(refused.code, 1);
+      assert.match(refused.stderr, /PREPARED_GIT_ISSUER_STARTUP_FAILED/);
+      assert.doesNotMatch(refused.stdout, /prepared-git-issuer.ready/);
+    }
+    await writeFile(issuerPath, JSON.stringify(issuerConfiguration), { mode: 0o600 });
+    const migrationUrl = process.env.OCC_TEST_PREPARED_GIT_MIGRATION_DATABASE_URL;
+    if (migrationUrl !== undefined) {
+      const appTarget = new URL(databaseUrl);
+      const migratorTarget = new URL(migrationUrl);
+      assert.ok(
+        [appTarget, migratorTarget].every(
+          (url) =>
+            url.protocol === "postgresql:" &&
+            url.hostname === "127.0.0.1" &&
+            /^\/openclaw_ci_postgres_protected_git_recipient_custo_[a-f0-9]{12}$/.test(
+              url.pathname,
+            ) &&
+            url.search === "" &&
+            url.hash === "",
+        ) &&
+          appTarget.port === migratorTarget.port &&
+          appTarget.pathname === migratorTarget.pathname &&
+          appTarget.username === "occ_app" &&
+          migratorTarget.username === "occ_migrator",
+        "Both roles must use the same disposable recipient custody database.",
+      );
+      await withPool(migrationUrl, async (migrator: Pool) => {
+        await migrator.query(
+          "REVOKE UPDATE (next_check_at) ON occ.prepared_github_families FROM occ_app",
+        );
+        try {
+          // The actual application role cannot execute the family claim's write, even with no rows.
+          await assert.rejects(
+            f.pool.query(
+              "UPDATE occ.prepared_github_families SET next_check_at = clock_timestamp() WHERE false",
+            ),
+            { code: "42501" },
+          );
+          const refused = await run(process.execPath, [issuerEntry, issuerPath], {
+            allowFailure: true,
+            signal: AbortSignal.any([t.signal, AbortSignal.timeout(12_000)]),
+            env,
+          });
+          assert.equal(refused.code, 1);
+          assert.match(refused.stderr, /PREPARED_GIT_ISSUER_STARTUP_FAILED/);
+          assert.doesNotMatch(refused.stdout, /prepared-git-issuer.ready/);
+          await assert.rejects(connectRemotePreparedGit(client), {
+            message: "PREPARED_REPOSITORY_GIT_UNAVAILABLE",
+          });
+        } finally {
+          await migrator.query(
+            "GRANT UPDATE (next_check_at) ON occ.prepared_github_families TO occ_app",
+          );
+        }
+        t.diagnostic(
+          "The issuer refused the missing family claim grant; the migrator restored it.",
+        );
+      });
+    } else {
+      t.diagnostic("The missing-grant control requires the managed PostgreSQL file fixture.");
+    }
+    const evaluationMarker = join(directory, "issuer-driver-evaluation");
+    const issuer = spawn(process.execPath, [issuerEntry, issuerPath], {
+      env: { ...env, OCC_TEST_REPOSITORY_DRIVER_EVALUATION_MARKER: evaluationMarker },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let issuerStdout = "";
+    let issuerStderr = "";
+    issuer.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      issuerStdout += chunk;
+    });
+    issuer.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+      issuerStderr += chunk;
+    });
+    const issuerClosed = once(issuer, "close");
+    try {
+      await waitFor(
+        "the issuer entrypoint's readiness event",
+        () => {
+          assert.equal(issuer.exitCode, null, issuerStderr);
+          return issuerStdout.includes('{"event":"prepared-git-issuer.ready"}\n') || undefined;
+        },
+        15_000,
+      );
+      await assert.rejects(access(evaluationMarker), { code: "ENOENT" });
+      // Trust in the client CA alone must never enroll another Worker certificate.
+      await assert.rejects(
+        connectRemotePreparedGit({
+          issuerEndpoint,
+          issuerCaPath: ca.caPath,
+          workerCertificatePath: otherIdentity.certPath,
+          workerPrivateKeyPath: otherIdentity.keyPath,
+        }),
+        { message: "PREPARED_REPOSITORY_GIT_UNAVAILABLE" },
+      );
+      const worker = spawn(process.execPath, [workerEntry], {
+        env: { ...env, OCC_WORKER_READINESS_PATH: readyPath },
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
+      });
+      let workerStderr = "";
+      assert.ok(worker.stdout && worker.stderr);
+      worker.stdout.resume();
+      worker.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+        workerStderr += chunk;
+      });
+      const workerClosed = once(worker, "close");
+      try {
+        await waitFor(
+          "the production Worker's queue readiness",
+          async () => {
+            assert.equal(worker.exitCode, null, workerStderr);
+            return access(readyPath).then(
+              () => true,
+              (error: NodeJS.ErrnoException) => {
+                if (error.code !== "ENOENT") {
+                  throw error;
+                }
+                return undefined;
+              },
+            );
+          },
+          15_000,
+        );
+        const command = async <T>(input: RecipientCommand): Promise<T> => {
+          const abort = new AbortController();
+          try {
+            const reply = once(worker, "message", { signal: abort.signal });
+            worker.send(input);
+            const [message] = await within(reply, "recipient " + input.kind + " response");
+            assert.ok(Object.hasOwn(message, "result"), JSON.stringify(message));
+            return (message as { result: T }).result;
+          } finally {
+            abort.abort();
+          }
+        };
+        assert.equal(
+          await command({
+            kind: "observe",
+            installation: {
+              ...installation,
+              enforcement: {
+                ...installation.enforcement,
+                repositoryGitRecipient: {
+                  ...installation.enforcement.repositoryGitRecipient,
+                  processInstanceId: "different-process",
+                },
+              },
+            },
+          }),
+          false,
+        );
+        assert.equal(
+          await command({
+            kind: "observe",
+            installation: {
+              ...installation,
+              plan: {
+                ...installation.plan,
+                execution: {
+                  ...installation.plan.execution,
+                  servicePrincipalId: "other-principal",
+                },
+              },
+            },
+          }),
+          false,
+        );
+        assert.equal(await command({ kind: "observe", installation }), false);
+        // Multiple maintenance passes have an eligible release but no enrolled witness.
+        await delay(5500, undefined, { signal: t.signal });
+        assert.equal(peer.gh.issuesOfTokens.length, 0);
+        const absent = await installedRows(f, admissionId, binding.grant.grantId);
+        assert.deepEqual(absent.uses, []);
+        const prepared = await f.pool.query(
+          `SELECT f.source_id, a.id FROM occ.prepared_github_families f
+           LEFT JOIN occ.prepared_github_attempts a USING (source_id) WHERE f.source_id=$1`,
+          ["repository-git:" + admissionId],
+        );
+        assert.deepEqual(prepared.rows, []);
+        const adoption = await f.pool.connect();
+        try {
+          await new CredentialDeliveries(adoption).adopt(deliveryKey, workerInstanceId);
+        } finally {
+          adoption.release();
+        }
+        assert.equal(await command({ kind: "observe", installation }), true);
+        const version = await waitFor(
+          "issuer maintenance to commit and install material",
+          async () => {
+            const current = await command<RepositoryGitMaterialVersion | string>({
+              kind: "prepare",
+            });
+            return typeof current === "string" ? undefined : current;
+          },
+          { timeoutMs: 15_000, intervalMs: 100 },
+        );
+        const repository = entries[0]!.repository;
+        const advertise: RecipientSend = {
+          method: "GET",
+          path: "/" + repository + ".git/info/refs?service=git-upload-pack",
+        };
+        const prepareUse = (outbound: RecipientSend) => {
+          const api = outbound.path.startsWith("/repos/");
+          const logicalOrigin = api ? "https://api.github.com" : "https://github.com";
+          const target = new URL(outbound.path, logicalOrigin);
+          const selected = selectGitHubRequest(
+            {
+              target: {
+                reportedScheme: "https",
+                host: target.hostname,
+                port: 443,
+                method: outbound.method,
+                path: target.pathname,
+                query: target.search.slice(1),
+              },
+              headers: outbound.contentType ? [["content-type", outbound.contentType]] : [],
+              body: Buffer.from(outbound.body ?? "", "base64"),
+            },
+            { scope: "github-repository", repositories: entries },
+            randomUUID,
+          );
+          assert.ok("selected" in selected);
+          assert.notEqual(selected.selected.operation, "create-draft-pull");
+          const operation = selected.selected.operation;
+          assert.ok(operation !== "create-draft-pull");
+          return {
+            sessionId,
+            exchangeId: randomUUID(),
+            requestDigestSha256: createHash("sha256")
+              .update(
+                JSON.stringify([
+                  outbound.method,
+                  api ? issuerOrigin : peer.origin.origin,
+                  outbound.path,
+                  outbound.contentType ?? null,
+                  outbound.body ?? null,
+                ]),
+              )
+              .digest("hex"),
+            deadlineAt: new Date(Date.now() + 5000).toISOString(),
+            providerInstanceId: binding.grant.providerInstanceId,
+            grantId: binding.grant.grantId,
+            scope: "github-repository",
+            installationId: registry.githubInstallationId,
+            repositories: entries.map(({ repository, repositoryId }) => ({
+              repository,
+              repositoryId,
+            })),
+            operation,
+          } satisfies PreparedGitHubRepositoryUseRequest;
+        };
+        const request = () => prepareUse(advertise);
+        const use = (
+          q: PreparedGitHubRepositoryUseRequest,
+          wrongVersion?: string,
+          outbound = advertise,
+        ) =>
+          command<{
+            decision: RepositoryGitOnlineDecision;
+            status?: number;
+            contentType?: string;
+            responseBody?: string;
+          }>({
+            kind: "use",
+            request: q,
+            outbound,
+            ...(wrongVersion === undefined ? {} : { wrongVersion }),
+          });
+        const positive = request();
+        const accepted = await use(positive);
+        assert.equal(accepted.status, 200);
+        assert.equal(accepted.contentType, "application/x-git-upload-pack-advertisement");
+        assert.ok(accepted.responseBody);
+        const canonicalRef = "refs/heads/existing-branch";
+        const canonicalCommit = await peer.origin.ref(canonicalRef);
+        assert.ok(accepted.responseBody.includes(canonicalCommit + " " + canonicalRef));
+        assert.equal(accepted.decision.kind, "allow");
+        const { replyBy } = accepted.decision;
+        const role = await f.pool.query("SELECT current_user");
+        assert.equal(role.rows[0].current_user, "occ_app");
+        const uses = await installedRows(f, admissionId, positive.grantId);
+        assert.equal(uses.uses.length, 1);
+        assert.deepEqual(uses.claims, []);
+        const [row] = uses.uses;
+        assert.deepEqual(
+          {
+            exchange: row.exchange_id,
+            admission: row.admission_id,
+            attempt: row.attempt_id,
+            material: row.material_version,
+            digest: row.request_digest_sha256,
+            operation: row.operation,
+            replyBy: row.authorization_reply_by.toISOString(),
+          },
+          {
+            exchange: positive.exchangeId,
+            admission: admissionId,
+            attempt: version.preparationAttemptId,
+            material: version.materialVersion,
+            digest: positive.requestDigestSha256,
+            operation: positive.operation,
+            replyBy,
+          },
+        );
+        const delivery = await f.pool.query(
+          "SELECT fence, worker_instance, write_pending, preparation_attempt_id, material_version FROM occ.credential_deliveries WHERE revision_id=$1 AND binding_id=$2",
+          [installation.plan.execution.revisionId, installation.plan.execution.executionId],
+        );
+        assert.equal(delivery.rowCount, 1);
+        assert.deepEqual(delivery.rows[0], {
+          fence: row.recipient_fence,
+          worker_instance: workerInstanceId,
+          write_pending: null,
+          preparation_attempt_id: version.preparationAttemptId,
+          material_version: version.materialVersion,
+        });
+        assert.equal(
+          (await use(positive)).decision.kind,
+          "denied",
+          "no replay of a committed exchange",
+        );
+        assert.equal(
+          (
+            await use({
+              ...request(),
+              repositories: [{ repository: "fixture/outside", repositoryId: "74" }],
+            })
+          ).decision.kind,
+          "denied",
+        );
+        assert.equal((await use(request(), randomUUID())).decision.kind, "denied");
+        assert.equal(
+          (
+            await use({
+              ...request(),
+              deadlineAt: new Date(Date.now() - 1).toISOString(),
+            })
+          ).decision.kind,
+          "denied",
+        );
+        // Prepare a real new commit and pack in a private local repository. Only the
+        // installed sender can transmit the receive-pack request using committed material.
+        const seed = join(directory, "push-source");
+        const git = (args: string[], input?: string) =>
+          run("git", args, { signal: t.signal, input });
+        await git(["clone", "--quiet", peer.origin.bare, seed]);
+        await git([
+          "-C",
+          seed,
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.test",
+          "commit",
+          "--allow-empty",
+          "-m",
+          "Remote prepared Git fixture change",
+        ]);
+        const pushedCommit = (await git(["-C", seed, "rev-parse", "HEAD"])).stdout.trim();
+        assert.notEqual(pushedCommit, canonicalCommit);
+        const packPrefix = join(directory, "prepared-git-pack");
+        const packId = (
+          await git(
+            ["-C", seed, "pack-objects", "--revs", packPrefix],
+            pushedCommit + "\n^" + canonicalCommit + "\n",
+          )
+        ).stdout.trim();
+        const pack = await readFile(packPrefix + "-" + packId + ".pack");
+        const receive = `${canonicalCommit} ${pushedCommit} ${canonicalRef}\0report-status\n`;
+        const header = (Buffer.byteLength(receive) + 4).toString(16).padStart(4, "0");
+        const push: RecipientSend = {
+          method: "POST",
+          path: "/" + repository + ".git/git-receive-pack",
+          contentType: "application/x-git-receive-pack-request",
+          body: Buffer.concat([Buffer.from(header + receive + "0000"), pack]).toString("base64"),
+        };
+        const pushUse = prepareUse(push);
+        assert.equal(pushUse.operation, "receive-pack");
+        const pushed = await use(pushUse, undefined, push);
+        assert.equal(pushed.decision.kind, "allow");
+        assert.equal(pushed.status, 200);
+        assert.equal(pushed.contentType, "application/x-git-receive-pack-result");
+        assert.match(pushed.responseBody ?? "", /unpack ok/);
+        assert.equal(await peer.origin.ref(canonicalRef), pushedCommit);
+        assert.equal((await use(pushUse, undefined, push)).decision.kind, "denied");
+        const head = canonicalRef.slice("refs/heads/".length);
+        const draft: RecipientSend = {
+          method: "POST",
+          path: "/repos/" + repository + "/pulls",
+          contentType: "application/json",
+          body: Buffer.from(
+            JSON.stringify({ draft: true, title: "Fixture draft", head, base: "main" }),
+          ).toString("base64"),
+        };
+        const draftUse = prepareUse(draft);
+        assert.equal(draftUse.operation, "github-rest");
+        const opened = await use(draftUse, undefined, draft);
+        assert.equal(opened.decision.kind, "allow");
+        assert.equal(opened.status, 201);
+        assert.ok(opened.responseBody);
+        const pull = JSON.parse(opened.responseBody);
+        assert.deepEqual(
+          { draft: pull.draft, head: pull.head.ref, base: pull.base.ref, state: pull.state },
+          { draft: true, head, base: "main", state: "open" },
+        );
+        assert.equal((await use(draftUse, undefined, draft)).decision.kind, "denied");
+        assert.equal(peer.gh.pulls.size, 1);
+        assert.equal(
+          peer.gh.trace.filter(({ method, target }) => method === "POST" && target === draft.path)
+            .length,
+          1,
+        );
+        const committedUses = await installedRows(f, admissionId, positive.grantId);
+        assert.deepEqual(committedUses.claims, []);
+        assert.equal(committedUses.uses.length, 3);
+        for (const q of [positive, pushUse, draftUse]) {
+          const receipt = committedUses.uses.find((use) => use.exchange_id === q.exchangeId);
+          assert.ok(receipt);
+          assert.equal(receipt.operation, q.operation);
+          assert.equal(receipt.request_digest_sha256, q.requestDigestSha256);
+          assert.equal(receipt.recipient_fence, row.recipient_fence);
+          assert.equal(receipt.material_version, version.materialVersion);
+          assert.equal(receipt.attempt_id, version.preparationAttemptId);
+        }
+        const connected = Promise.withResolvers<void>();
+        const resume = Promise.withResolvers<void>();
+        gate = { connected: connected.resolve, resume: resume.promise };
+        try {
+          await f.pool.query(
+            "UPDATE occ.prepared_github_families SET next_check_at=clock_timestamp() WHERE source_id=$1",
+            ["repository-git:" + admissionId],
+          );
+          await within(connected.promise, "renewal TCP connection", 12_000);
+          const current = await f.pool.query(
+            "SELECT state,custody FROM occ.prepared_github_attempts WHERE source_id=$1 AND id<>$2",
+            ["repository-git:" + admissionId, version.preparationAttemptId],
+          );
+          assert.deepEqual(current.rows, [{ state: "issuing", custody: "intent" }]);
+          const replacement = await f.pool.connect();
+          try {
+            await new CredentialDeliveries(replacement).adopt(deliveryKey, foreignWorker);
+          } finally {
+            replacement.release();
+          }
+        } finally {
+          gate = undefined;
+          resume.resolve();
+        }
+        await waitFor("a fenced renewal to settle in original custody", async () => {
+          const stopped = await f.pool.query(
+            "SELECT state,custody,material_version FROM occ.prepared_github_attempts WHERE source_id=$1 AND id<>$2",
+            ["repository-git:" + admissionId, version.preparationAttemptId],
+          );
+          return stopped.rows[0]?.state === "quarantined" ? stopped.rows : undefined;
+        }).then((rows) =>
+          assert.deepEqual(rows, [
+            {
+              state: "quarantined",
+              custody: "intent",
+              material_version: null,
+            },
+          ]),
+        );
+        assert.equal(
+          peer.gh.issuesOfTokens.length,
+          1,
+          "A witness replaced before TLS completion cannot mint",
+        );
+        assert.equal(await command({ kind: "read" }), "unprepared");
+        assert.equal((await use(request())).decision.kind, "denied");
+        assert.equal(
+          peer.gh.trace.filter(({ method }) => method === "DELETE").length,
+          0,
+          "A successor witness alone does not retire a live admission",
+        );
+        assert.ok(
+          await f.state.transact((unit) =>
+            unit.repositorySessions.advanceAttempt({
+              admissionId,
+              expectedPhase: "open",
+              phase: "closing",
+              updatedAt: new Date().toISOString(),
+            }),
+          ),
+        );
+        assert.equal((await use(request())).decision.kind, "denied");
+        assert.equal(await command({ kind: "read" }), "withdrawn");
+        assert.equal((await use(prepareUse(push), undefined, push)).decision.kind, "denied");
+        assert.equal((await use(prepareUse(draft), undefined, draft)).decision.kind, "denied");
+        assert.deepEqual(await installedRows(f, admissionId, positive.grantId), committedUses);
+        // Positive OCC withdrawal lets the original issuer retire its historic token even
+        // though it can no longer prepare or serve material against the successor witness.
+        await waitFor(
+          "original issuer to retire the ended admission",
+          async () => {
+            const retired = await f.pool.query(
+              "SELECT custody FROM occ.prepared_github_attempts WHERE id=$1",
+              [version.preparationAttemptId],
+            );
+            return retired.rows[0]?.custody === "revoked" || undefined;
+          },
+          { timeoutMs: 12_000 },
+        );
+        assert.equal(peer.gh.trace.filter(({ method }) => method === "DELETE").length, 1);
+        assert.equal(peer.gh.issuesOfTokens.length, 1);
+        assert.deepEqual(peer.origin.traffic(), { connections: 2, requests: 2 });
+        assert.equal(peer.gh.pulls.size, 1);
+        t.diagnostic(
+          "One issuer token, three committed exchanges, a verified Git ref update, and one REST draft. Wrong mTLS identity, replay and withdrawal were denied.",
+        );
+      } finally {
+        await stopProcess(worker, { graceMs: 5000 });
+        const [code, signal] = await within(workerClosed, "Worker exit");
+        t.diagnostic(
+          "Worker exit " +
+            code +
+            " signal " +
+            signal +
+            "; stderr " +
+            (workerStderr.trim() || "(empty)"),
+        );
+      }
+      assert.equal(worker.exitCode, 0);
+      assert.equal(worker.signalCode, null);
+    } finally {
+      await stopProcess(issuer, { graceMs: 5000 });
+      const [code, signal] = await within(issuerClosed, "issuer exit");
+      t.diagnostic(
+        "Issuer exit " +
+          code +
+          " signal " +
+          signal +
+          "; stdout " +
+          issuerStdout.trim() +
+          "; stderr " +
+          (issuerStderr.trim() || "(empty)"),
+      );
+    }
+    assert.equal(issuer.exitCode, 0);
+    assert.equal(issuer.signalCode, null);
+    await assert.rejects(access(evaluationMarker), { code: "ENOENT" });
+  },
+);
 
 for (const removal of [
   "B session",

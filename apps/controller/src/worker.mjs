@@ -5,6 +5,7 @@ import {
   PreparedGitHubAppKeyError,
   startPreparedGitHubGitOwner,
 } from "./backends/repository-credentials/prepared-git-owner.ts";
+import { connectRemotePreparedGit } from "./backends/repository-credentials/remote-prepared-git.ts";
 import { bindRepositoryGitTransport } from "./composition/repository-credentials/transport.ts";
 import { repositoryGitAuthority } from "./composition/repository-credentials/custody-selection.ts";
 import {
@@ -107,6 +108,7 @@ let receiptServer;
 let repositoryGitTransport;
 let preparedRepositoryGit;
 let preparedGitHub;
+let protectedDriver;
 async function closeMetrics() {
   metricsClosing ??= (async () => {
     try {
@@ -170,6 +172,7 @@ try {
     }
   }
   const drivers = await loadInstallationConfiguration({ mode, startupConfiguration });
+  protectedDriver = drivers?.protectedDriver;
   let computeDriver;
   if (drivers === undefined && mode === "development") {
     const { createDevelopmentDockerComputeDriver } =
@@ -203,17 +206,26 @@ try {
     });
   }
   if (repositoryOwner && drivers.preparedRepositoryGit) {
-    const { issuerCaPath, ...owner } = drivers.preparedRepositoryGit;
-    preparedRepositoryGit = await startPreparedGitHubGitOwner({
-      ...repositoryOwner,
-      ...owner,
-      ...(issuerCaPath ? { ca: Buffer.from(await readPublicCaBundle(issuerCaPath)) } : {}),
-      pool,
-      registry: drivers.repositoryRegistry,
-      ...repositoryGitAuthority(drivers),
-      report: (code, context, severity = "error") =>
-        emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
-    });
+    const configuration = drivers.preparedRepositoryGit;
+    if ("issuerEndpoint" in configuration) {
+      preparedRepositoryGit = await connectRemotePreparedGit(configuration);
+    } else {
+      const { issuerCaPath, ...owner } = configuration;
+      preparedRepositoryGit = await startPreparedGitHubGitOwner({
+        ...repositoryOwner,
+        ...owner,
+        ...(issuerCaPath ? { ca: Buffer.from(await readPublicCaBundle(issuerCaPath)) } : {}),
+        pool,
+        registry: drivers.repositoryRegistry,
+        ...repositoryGitAuthority(drivers),
+        report: (code, context, severity = "error") =>
+          emitOccLogEvent(logger, {
+            event: `worker.${severity}`,
+            code,
+            ...context,
+          }),
+      });
+    }
     repositoryGitTransport = await bindRepositoryGitTransport(
       drivers,
       preparedRepositoryGit.protectedGit,
@@ -305,8 +317,9 @@ try {
   }
   if (worker !== undefined) {
     await worker.stop().catch(() => {});
-  } else if (pool !== undefined) {
-    await pool.end();
+  } else {
+    await protectedDriver?.close().catch(() => {});
+    await pool?.end();
   }
   try {
     const mode = process.env.NODE_ENV === "production" ? "production" : "development";

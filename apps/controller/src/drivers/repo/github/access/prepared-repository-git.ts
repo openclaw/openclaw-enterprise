@@ -59,13 +59,25 @@ type PullRow = {
 function pullReceipt(row: PullRow, conflict = false): OperationReceipt {
   const { operation_id: operationId, receipt_id: receiptId, outcome } = row;
   if (conflict) {
-    return { kind: "recorded", status: 409, body: { error: "operation_conflict" } };
+    return {
+      kind: "recorded",
+      status: 409,
+      body: { error: "operation_conflict" },
+    };
   }
   if (outcome !== "created") {
-    return { kind: "recorded", status: 409, body: { operationId, receiptId, error: outcome } };
+    return {
+      kind: "recorded",
+      status: 409,
+      body: { operationId, receiptId, error: outcome },
+    };
   }
   const result = validateDraftProjection(row.projection, row.scope);
-  return { kind: "recorded", status: 201, body: { operationId, receiptId, ...result } };
+  return {
+    kind: "recorded",
+    status: 201,
+    body: { operationId, receiptId, ...result },
+  };
 }
 
 /** The grant's one draft create was already claimed: at an installed sender a second one is
@@ -110,9 +122,29 @@ export interface PreparedRepositorySession {
   readonly bindings?: RepositoryRevisionState["bindings"];
 }
 
+const enrolledScope = "current_setting('occ.repository_git_worker_scope')::jsonb";
+const enrolledAgent = `(${enrolledScope}->>'namespaceId',${enrolledScope}->>'agentId')`;
+const enrolledRelease = `AND (s.namespace_id,s.agent_id)=${enrolledAgent}
+  AND i.id=${enrolledScope}->>'installationId'
+  AND p.installation#>>'{plan,execution,installationId}'=i.id
+  AND p.installation#>>'{plan,execution,servicePrincipalId}'=${enrolledScope}->>'servicePrincipalId'
+  AND g.service_principal_id=${enrolledScope}->>'servicePrincipalId'
+  AND r.worker_instance=(${enrolledScope}->>'instanceId')::uuid
+  AND s.cleanup_context#>>'{binding,profile}'='github-repository'
+  AND p.installation#>>'{plan,repositoryGitAuthorization}'='online-request'`;
+
+const lockIssuanceAgent = `SELECT FROM occ.agents WHERE (namespace_id,id) =
+  ($1::jsonb #>> '{session,namespaceId}', $1::jsonb #>> '{session,agentId}') FOR SHARE`;
+const lockIssuanceWitness = `SELECT FROM occ.repository_session_attempts s
+  JOIN occ.credential_deliveries r USING(namespace_id,agent_id,revision_id)
+  JOIN occ.egress_installations p USING(namespace_id,agent_id,revision_id)
+  WHERE (s.revision_id,r.binding_id)=($1::jsonb #>> '{session,revisionId}',
+    $1::jsonb #>> '{session,credentialProxyExecution,executionId}')
+  ORDER BY s.repository_ref, s.admission_id FOR SHARE OF s,r,p`;
+
 /** The session snapshot binds the Agent and the exact installation used for Compute release or the broker generation.
  * The deadline is checked live instead of extending or treating the snapshot as a lease. */
-function sessionQuery(proxy: Recipient): string {
+function sessionQuery(proxy: Recipient, enrolled = false): string {
   // An old protected sender without a selected Driver may already hold material or have sent
   // a request. Without a selected Driver we can neither adopt that custody nor retire it.
   if (proxy?.kind === "unavailable") {
@@ -158,6 +190,7 @@ function sessionQuery(proxy: Recipient): string {
   LEFT JOIN LATERAL (${selectedRepositoryGrantSql("s.admission_id")}) grant_state ON true
   CROSS JOIN occ.installation i
   WHERE s.phase='open' AND s.live_revision_id=s.revision_id
+  ${enrolled ? enrolledRelease : ""}
   AND ${
     proxy
       ? `s.broker_protocol=2 AND s.session_id IS NOT NULL
@@ -343,12 +376,22 @@ export interface PreparedRepositoryGitForeignRetirement {
   readonly providerExpiresAt: string;
 }
 
+export interface PreparedRepositoryGitWorker {
+  readonly instanceId: string;
+  readonly installationId: string;
+  readonly servicePrincipalId: string;
+  readonly namespaceId: string;
+  readonly agentId: string;
+}
+
 export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   private readonly deliveryWorker = randomUUID();
+  private readonly enrolledWorker: PreparedRepositoryGitWorker | undefined;
   private readonly authority: string;
   private readonly policy: Policy;
   private readonly proxy: Recipient;
   private readonly adoption: readonly PreparedRepositoryGitSource["adoption"][];
+  private readonly issuanceSessions: string;
 
   constructor(
     pool: PostgresPool,
@@ -356,27 +399,36 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     authority: string,
     policy: Policy,
     custody: RepositoryGitCustody,
+    enrolledWorker?: PreparedRepositoryGitWorker,
   ) {
     if (custody === undefined) {
       throw new Error("REPOSITORY_GIT_CUSTODY_REQUIRED");
     }
     const proxy: Recipient = custody.kind === "native-broker" ? undefined : custody;
+    if (enrolledWorker && !proxy?.policy?.controllerWitness) {
+      throw new Error("PREPARED_REPOSITORY_GIT_WORKER_REQUIRES_REGISTERED_WITNESS");
+    }
     const driver = proxy?.driver;
-    const adoption: PreparedRepositoryGitSource["adoption"][] = [
-      driver ? protectedGitAdoption : legacyAdoption,
-    ];
-    if (installationRecipient(proxy)) {
+    const adoption: PreparedRepositoryGitSource["adoption"][] = enrolledWorker
+      ? [selectedGitAdoption]
+      : [driver ? protectedGitAdoption : legacyAdoption];
+    if (!enrolledWorker && installationRecipient(proxy)) {
       adoption.push(installationGitAdoption, selectedGitAdoption);
     }
+    const issuanceSessions = sessionQuery(proxy, enrolledWorker !== undefined);
     super(pool, key, authority, {
-      active: active(sessionQuery(proxy)),
+      active: active(issuanceSessions),
       // Fence an issuance intent against a concurrently replaced active revision. After the
       // Agent lock is acquired, store() checks live authority at a new READ COMMITTED snapshot.
-      lockIssuance: `SELECT FROM occ.agents WHERE (namespace_id,id) =
-        ($1::jsonb #>> '{session,namespaceId}', $1::jsonb #>> '{session,agentId}') FOR SHARE`,
+      lockIssuance: lockIssuanceAgent,
+      ...(enrolledWorker && { lockPreparationWitness: lockIssuanceWitness }),
       adoption,
       owns: driver
-        ? repositoryGitOwnerPredicate
+        ? repositoryGitOwnerPredicate +
+          (enrolledWorker
+            ? ` AND (f.source#>>'{session,namespaceId}',f.source#>>'{session,agentId}') = ${enrolledAgent}
+              AND f.source#>>'{session,installationId}'=${enrolledScope}->>'installationId'`
+            : "")
         : proxy
           ? "false"
           : repositoryGitBrokerOwnerPredicate,
@@ -384,13 +436,68 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     });
     this.proxy = proxy;
     this.adoption = adoption;
+    this.issuanceSessions = issuanceSessions;
     this.authority = authority;
-    this.policy = policy;
+    this.enrolledWorker = enrolledWorker;
+    this.policy = enrolledWorker
+      ? (session) =>
+          session.binding.profile === "github-repository" && this.inWorkerScope(session)
+            ? policy(session)
+            : undefined
+      : policy;
   }
 
   /** Background discovery only. Admission and key lookup are not reachable from use().
    * `onForeignRetired` is told, after commit, of each family of an earlier issuer authority
    * (another GitHub API origin or CA) retired in this pass: its token cannot be revoked here. */
+  protected override transaction<T>(work: (c: PostgresClient) => Promise<T>): Promise<T> {
+    if (!this.enrolledWorker) {
+      return super.transaction(work);
+    }
+    return super.transaction(async (c) => {
+      await c.query("SELECT set_config('occ.repository_git_worker_scope', $1, true)", [
+        JSON.stringify(this.enrolledWorker),
+      ]);
+      return work(c);
+    });
+  }
+
+  private inWorkerScope(scope: Pick<PreparedRepositoryGitWorker, "namespaceId" | "agentId">) {
+    return (
+      !this.enrolledWorker ||
+      (scope.namespaceId === this.enrolledWorker.namespaceId &&
+        scope.agentId === this.enrolledWorker.agentId)
+    );
+  }
+
+  private async ownsDelivery(c: PostgresClient, key: { revisionId: string; bindingId: string }) {
+    if (!this.enrolledWorker) {
+      return true;
+    }
+    const { instanceId, installationId, namespaceId, agentId, servicePrincipalId } =
+      this.enrolledWorker;
+    return (
+      (
+        await c.query(
+          `SELECT FROM occ.credential_deliveries
+       WHERE revision_id=$1 AND binding_id=$2 AND worker_instance=$3
+         AND namespace_id=$4 AND agent_id=$5
+         AND target#>>'{installation,plan,execution,installationId}'=$6
+         AND target#>>'{installation,plan,execution,servicePrincipalId}'=$7 FOR SHARE`,
+          [
+            key.revisionId,
+            key.bindingId,
+            instanceId,
+            namespaceId,
+            agentId,
+            installationId,
+            servicePrincipalId,
+          ],
+        )
+      ).rowCount === 1
+    );
+  }
+
   async discover(
     onForeignRetired?: (retired: PreparedRepositoryGitForeignRetirement) => void,
   ): Promise<PreparedRepositoryGitSource[]> {
@@ -416,12 +523,15 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         FROM stopped s JOIN moved m USING (source_id) WHERE s.foreign`,
         [this.adoption, this.authority],
       );
-      const { rows } = await c.query(sessions);
+      const { rows } = await c.query(this.issuanceSessions);
       return {
         sources: (rows as { session: PreparedRepositorySession }[]).flatMap(
           ({ session }) => this.policy(session) ?? [],
         ),
-        foreign: retired as { session: PreparedRepositorySession; provider_expires_at: Date }[],
+        foreign: retired as {
+          session: PreparedRepositorySession;
+          provider_expires_at: Date;
+        }[],
       };
     });
     for (const { session, provider_expires_at: expires } of foreign) {
@@ -439,7 +549,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     source: PreparedRepositoryGitSource,
     version: string,
   ): Promise<GitHubPreparationAdmission | undefined> {
-    const sessions = sessionQuery(this.proxy);
+    const sessions = this.issuanceSessions;
     const live = active(sessions);
     const familyId = source.key.source.id;
     const admission: GitHubPreparationAdmission = {
@@ -451,6 +561,10 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       grant: source.grant,
     };
     return this.transaction(async (c) => {
+      if (this.enrolledWorker) {
+        await c.query(lockIssuanceAgent, [source]);
+        await c.query(lockIssuanceWitness, [source]);
+      }
       await c.query(
         `INSERT INTO ${families}(source_id,source,issuer,admission)
         SELECT $1, $2::jsonb, '{"kind":"worker-mounted-github-app-key"}', $3::jsonb
@@ -508,7 +622,11 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         [revisionId, legacyAdoption],
       ),
     );
-    const sessions = rows as { ref: string; quarantined: boolean; ready: boolean }[];
+    const sessions = rows as {
+      ref: string;
+      quarantined: boolean;
+      ready: boolean;
+    }[];
     if (sessions.some(({ quarantined }) => quarantined)) {
       return "quarantined";
     }
@@ -564,7 +682,13 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
                 return decision;
               }
               const { revisionId, fence } = binding.route;
-              return { ...decision, scope, operation: q.operation, revisionId, fence };
+              return {
+                ...decision,
+                scope,
+                operation: q.operation,
+                revisionId,
+                fence,
+              };
             },
           } satisfies NonNullable<RepositoryGitAuthority<Allow>["githubInstallation"]>),
         }),
@@ -598,18 +722,30 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
          AND target#>'{installation,plan,driver}'=${selectedRepositoryGitDriver}`,
       [revisionId, JSON.stringify(observed)],
     );
-    return rows.length === 1
-      ? { revisionId, bindingId: (rows[0] as { binding_id: string }).binding_id }
-      : undefined;
+    if (rows.length === 1) {
+      const key = {
+        revisionId,
+        bindingId: (rows[0] as { binding_id: string }).binding_id,
+      };
+      return (await this.ownsDelivery(c, key)) ? key : undefined;
+    }
+    return undefined;
   }
 
   private readonly recipients: ProtectedRepositoryGitAuthority["recipients"] = Object.freeze({
     observe: async (installation) => {
-      if (!this.proxy?.policy?.controllerWitness) {
+      const { execution } = installation.plan;
+      if (
+        !this.proxy?.policy?.controllerWitness ||
+        !this.inWorkerScope(execution) ||
+        (this.enrolledWorker &&
+          (execution.installationId !== this.enrolledWorker.installationId ||
+            execution.servicePrincipalId !== this.enrolledWorker.servicePrincipalId))
+      ) {
         return;
       }
       return this.transaction(async (c) => {
-        const revisionId = installation.plan.execution.revisionId;
+        const { revisionId } = execution;
         const same = `p.revision_id=$1 AND p.installation=$2::jsonb
           AND p.installation#>'{plan,driver}' = ${selectedRepositoryGitDriver}`;
         const values = [revisionId, JSON.stringify(installation)];
@@ -624,11 +760,17 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           return;
         }
         const fence = await new CredentialDeliveries(c).observe(
-          { ...installation.plan.execution, bindingId: installation.plan.execution.executionId },
+          { ...execution, bindingId: execution.executionId },
           { transport: repositoryGitDeliveryTransport, installation },
-          this.deliveryWorker,
+          this.enrolledWorker?.instanceId ?? this.deliveryWorker,
         );
-        if (fence !== undefined) {
+        if (
+          fence !== undefined &&
+          (await this.ownsDelivery(c, {
+            revisionId,
+            bindingId: execution.executionId,
+          }))
+        ) {
           return { revisionId, fence, observed: installation };
         }
       });
@@ -652,7 +794,10 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         const fence = await new CredentialDeliveries(c).beginInstall(
           key,
           route.fence,
-          { transport: repositoryGitDeliveryTransport, installation: observed },
+          {
+            transport: repositoryGitDeliveryTransport,
+            installation: observed,
+          },
           version,
         );
         if (fence !== undefined) {
@@ -679,7 +824,10 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         const currentFence = await new CredentialDeliveries(c).confirmInstall(
           key,
           fence,
-          { transport: repositoryGitDeliveryTransport, installation: observed },
+          {
+            transport: repositoryGitDeliveryTransport,
+            installation: observed,
+          },
           { preparationAttemptId, materialVersion },
         );
         if (currentFence !== undefined) {
@@ -723,8 +871,12 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     | undefined
   > {
     let bytes: Buffer | undefined;
-    const withdrawn: RepositoryGitMaterialAbsence = Object.freeze({ absent: "withdrawn" });
-    const unprepared: RepositoryGitMaterialAbsence = Object.freeze({ absent: "unprepared" });
+    const withdrawn: RepositoryGitMaterialAbsence = Object.freeze({
+      absent: "withdrawn",
+    });
+    const unprepared: RepositoryGitMaterialAbsence = Object.freeze({
+      absent: "unprepared",
+    });
     try {
       signal.throwIfAborted();
       const { revisionId } = route;
@@ -732,6 +884,9 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         const current = await lockLiveSession(c, "live_revision_id", revisionId, this.proxy);
         if (!current) {
           return current === null ? withdrawn : unprepared;
+        }
+        if (this.enrolledWorker && !(await this.deliveryKey(c, revisionId, route.observed))) {
+          return unprepared;
         }
         if (this.proxy?.kind === "selected") {
           // The session transaction holds the current route, approval and Agent. Only the
@@ -857,7 +1012,12 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         result;
       return Object.freeze(
         decide(
-          { exchangeId, requestDigestSha256, preparationAttemptId, materialVersion },
+          {
+            exchangeId,
+            requestDigestSha256,
+            preparationAttemptId,
+            materialVersion,
+          },
           decisionBy,
         ),
       );
@@ -887,7 +1047,12 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           materialVersion,
           decisionBy: sendStartBy,
         } = decision;
-        const receipt = { exchangeId, preparationAttemptId, materialVersion, sendStartBy };
+        const receipt = {
+          exchangeId,
+          preparationAttemptId,
+          materialVersion,
+          sendStartBy,
+        };
         if (!open || signal.aborted || Date.now() >= Date.parse(receipt.sendStartBy)) {
           throw new Error("PREPARED_REPOSITORY_GIT_UNAVAILABLE");
         }
@@ -985,6 +1150,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       const { revisionId, fence, observed } = installed!.route!;
       if (
         revisionId !== current.session.revisionId ||
+        (this.enrolledWorker && !(await this.deliveryKey(c, revisionId, observed))) ||
         !(
           await c.query(this.proxy.policy.evidence.installed, [
             revisionId,
@@ -1019,7 +1185,14 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         return fail();
       }
       const { operationId, apiOrigin, repository, head, base } = pull;
-      scope = { operationId, apiOrigin, repository, head, base, repositoryId: q.repositoryId };
+      scope = {
+        operationId,
+        apiOrigin,
+        repository,
+        head,
+        base,
+        repositoryId: q.repositoryId,
+      };
       const {
         rows: [prior],
       } = unlimited

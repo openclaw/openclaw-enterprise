@@ -109,27 +109,19 @@ repository:
     privateKeyPath: /etc/openclaw/prepared-repository/private-key.pem
 ```
 
-Keep the ordinary required Driver settings alongside this fragment. One GitHub
-Backend is supported and may coexist with one ChatGPT Backend. Its member ID
-must match `repository.id`. With this configuration, the API and worker use the
-built-in GitHub registry policy. They require no public Repo Driver registration.
-Omit both the GitHub Backend and `repository` to leave Git unconfigured.
-Existing configurations may keep or omit `repository.policyMode: built-in` with
-the same policy and protected sender identity. Startup rejects other values and
-the retired `drivers.repo` selection. Drain admitted work on its original owner
-before changing senders. The registry's Backend ID must match the definition,
-and the session duration must fit the registry's maximum.
-See [prepared native Git](repository-credentials/prepared-native-git.md#install-and-check)
-for delivery settings.
+One GitHub Backend can coexist with a ChatGPT Backend. Its Repo member
+matches `repository.id`. To leave Git unconfigured, omit both the Backend and
+`repository`. Startup accepts an omitted `repository.policyMode` or `built-in`
+and rejects `drivers.repo`. The registry's Backend ID must match and the session
+duration must fit its maximum. See [prepared native Git](repository-credentials/prepared-native-git.md#install-and-check)
+for co-located delivery with bundled Kubernetes Compute and no Sandbox.
+Drain admitted work on its original owner before switching senders.
 
-The API, worker, and credential service consume the same immutable, versioned
-registry ConfigMap. Its exact Namespace, repository, and profile policies own
-admission; no repository list is stored in Helm values. Follow the
-[repository credential reference](repository-credentials.md) for registry fields
-and the [operator guide](../guides/repository-credentials.md) for service setup.
-The capability requires the bundled Kubernetes Compute Driver without a Sandbox
-Driver; admitted Agents must use a supported
-[runtime and authentication combination](repository-credentials.md).
+#### Remote prepared Git issuer
+
+Use a [remote prepared Git issuer](repository-credentials/remote-prepared-git-issuer.md)
+to deliver the online `github-repository` profile through an external Sandbox and
+Credential Proxy registration.
 
 ### OpenShell gateway
 

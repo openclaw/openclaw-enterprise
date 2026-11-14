@@ -111,7 +111,7 @@ export type {
 } from "@openclaw-enterprise/contracts";
 import { InstalledDriver } from "./installed-driver.ts";
 
-export { InstalledDriver } from "./installed-driver.ts";
+export { InstalledDriver, installedDriverReference } from "./installed-driver.ts";
 import type { DriverByCapability } from "@openclaw-enterprise/contracts";
 import {
   DriverConfigurationRegistry,
@@ -1728,6 +1728,9 @@ const FIXED_PROTECTED_SOURCE_REFUSALS = Object.freeze({
     "This credential source holds a prepared or credential-free protected grant, which is not rotated in place. To replace it, create a new source, bind it in place of this one, then delete this one.",
 });
 
+const REPOSITORY_RECIPIENT_NOT_ENROLLED =
+  "The Installation has no prepared repository credential enrollment for this Agent.";
+
 /**
  * The provisioning status message for a worker failure. Only the shared duplicate-name,
  * Compute refusal, Secret Driver ownership, missing ChatGPT Backend, repository and Credential
@@ -1740,7 +1743,9 @@ const FIXED_PROTECTED_SOURCE_REFUSALS = Object.freeze({
 function provisioningFailureMessage(code: string, error: unknown): string {
   if (code === "PROVISIONING_REJECTED") {
     if (
-      (error instanceof ResourceStateConflictError && error.message === AGENT_NAME_CONFLICT) ||
+      (error instanceof ResourceStateConflictError &&
+        (error.message === AGENT_NAME_CONFLICT ||
+          error.message === REPOSITORY_RECIPIENT_NOT_ENROLLED)) ||
       // Fixed, id-free text naming the Credential Proxy refusal (finding 2360).
       error instanceof CredentialProxyRepositoryOnlyError ||
       error instanceof CredentialSourceUnprotectedError ||
@@ -2251,6 +2256,11 @@ type InstallationRepositoryAdmission = Readonly<{
     }): RepositoryCredentialResolution;
   };
   backendId: string;
+  recipient?: Readonly<{
+    namespaceId: string;
+    agentId: string;
+    servicePrincipalId: string;
+  }>;
 }>;
 
 export class OpenClawController {
@@ -3795,7 +3805,28 @@ export class OpenClawController {
     // The request fingerprint covers the original input and preparation choice, so retries
     // reuse the saved plan even if Installation routing changes.
     let reservedAgentId: string | undefined;
-    if (replay === undefined) {
+    let preparationRefusal: { error: unknown } | undefined;
+    if (
+      replay === undefined &&
+      this.installationRepositoryAdmission?.recipient !== undefined &&
+      (input.repositoryBindings !== undefined || input.repositoryAccess !== undefined)
+    ) {
+      try {
+        rejectCrossNamespaceSecretSources(
+          input.namespaceId,
+          configurationInput.secretBindings,
+          harnessAuth,
+        );
+        const { repositoryBindings } = this.repositorySettings(input.namespaceId, input);
+        // A new Agent cannot use the enrolled recipient. Check before preparing its
+        // Configuration or calling Drivers, then repeat admission under the Namespace lock.
+        this.requireRepositoryDeploymentRecipient(repositoryBindings?.length);
+      } catch (error) {
+        // Let an exact receipt that committed after the first lookup win under the lock.
+        preparationRefusal = { error };
+      }
+    }
+    if (replay === undefined && preparationRefusal === undefined) {
       if (configurationPreparation !== undefined) {
         reservedAgentId = this.nextIdentifier("agent");
         configurationInput = normalizeProvisioningConfiguration({
@@ -3862,6 +3893,9 @@ export class OpenClawController {
         }
         return result;
       }
+      if (preparationRefusal !== undefined) {
+        throw preparationRefusal.error;
+      }
 
       const workId = `agent-provisioning:${createHash("sha256")
         .update(`${namespace.id}\0${principalId}\0${requestId}`)
@@ -3895,6 +3929,8 @@ export class OpenClawController {
       );
       await validateContent();
       const { repositoryBindings, repositoryAccess } = this.repositorySettings(namespace.id, input);
+      // Provisioning creates a new Agent and principal. It cannot reuse the enrolled recipient.
+      this.requireRepositoryDeploymentRecipient(repositoryBindings?.length);
       // Refuse repository bindings the topology cannot deliver, with Agent create's 409, before
       // queueing work the worker's admission would refuse (finding 1145). Unlike Agent save, a
       // Compute Driver without repository support is refused here too: deployment would be.
@@ -4128,6 +4164,14 @@ export class OpenClawController {
         return Object.freeze({
           provisioning: provisioningProgress(record, observed, this.clock()),
         });
+      }
+      // A retry may inspect and clean up an effect that an earlier claim already began.
+      // The worker fences all new writes after that reconciliation.
+      if (
+        record.progress.pendingEffect === undefined &&
+        unrecordedProvisioningConfiguration(record.progress) === undefined
+      ) {
+        this.requireProvisioningRepositoryRecipient(record, agent);
       }
       const retried = await state.provisioning.retryByWorkId(namespaceId, workId, principalId);
       const requestId = this.requestAuditId.getStore();
@@ -13120,7 +13164,7 @@ export class OpenClawController {
           "The expected Configuration generation is unavailable. Recover the original first-deployment receipt after an uncertain result, then review the current Configuration before deploying.",
         );
       }
-      return { metadata };
+      return { agent, metadata };
     });
     if (initial.receipt !== undefined) {
       return initial.receipt;
@@ -13128,7 +13172,12 @@ export class OpenClawController {
     let preparation: FirstDeploymentGuard["preparation"];
     try {
       preparation = {
-        prepared: await this.prepareDeploymentChannels(principalId, target, initial.metadata),
+        prepared: await this.prepareDeploymentChannels(
+          principalId,
+          target,
+          initial.agent,
+          initial.metadata,
+        ),
       };
     } catch (error) {
       // A concurrent matching admission wins over a fresh-only preparation failure.
@@ -13270,7 +13319,7 @@ export class OpenClawController {
       id: input.agentId,
       namespaceId: input.namespaceId,
     });
-    const metadata = await this.read(async (state) => {
+    const { agent, metadata } = await this.read(async (state) => {
       const agent = await state.agents.findAgent(input.namespaceId, input.agentId);
       if (agent === undefined) {
         throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
@@ -13280,14 +13329,19 @@ export class OpenClawController {
         id: agent.configurationId,
         namespaceId: input.namespaceId,
       });
-      return state.configurations.findConfiguration(input.namespaceId, agent.configurationId);
+      const metadata = await state.configurations.findConfiguration(
+        input.namespaceId,
+        agent.configurationId,
+      );
+      return { agent, metadata };
     });
-    return this.prepareDeploymentChannels(principalId, input, metadata);
+    return this.prepareDeploymentChannels(principalId, input, agent, metadata);
   }
 
   private async prepareDeploymentChannels(
     principalId: string,
     input: DeployAgentInput,
+    agent: Readonly<Agent>,
     metadata:
       | Readonly<
           Pick<
@@ -13300,6 +13354,9 @@ export class OpenClawController {
     if (metadata?.kind !== "agent") {
       throw new ScopeViolationError("The Agent Configuration is unavailable.");
     }
+    // Both callers have authorized the exact Agent and Configuration. Refuse an
+    // ineligible recipient before backend or provider I/O and recheck under the Agent lock.
+    this.requireRepositoryDeploymentRecipient(agent.repositoryBindings?.length, agent);
     const namespaceId = input.namespaceId;
     const agentId = input.agentId;
     const configurationId = metadata.id;
@@ -13463,6 +13520,10 @@ export class OpenClawController {
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
+      this.requireRepositoryDeploymentRecipient(
+        lockedAgent.repositoryBindings?.length,
+        lockedAgent,
+      );
       if (typeof resolveHarness !== "function") {
         throw new DependencyUnavailableError("The selected Harness descriptor is unavailable.");
       }
@@ -16012,17 +16073,18 @@ export class OpenClawController {
     if (namespace.status !== "ready") {
       throw new NamespaceNotReadyError();
     }
-    if (record.agentId !== undefined) {
-      const agent = await state.agents.lockAgent(namespace.id, record.agentId);
-      if (
-        agent === undefined ||
-        agent.status !== "active" ||
-        agent.desiredRuntimeState !== "stopped"
-      ) {
-        throw new ResourceStateConflictError("The Agent lifecycle changed during provisioning.");
-      }
+    const agent =
+      record.agentId === undefined
+        ? undefined
+        : await state.agents.lockAgent(namespace.id, record.agentId);
+    if (
+      record.agentId !== undefined &&
+      (agent === undefined || agent.status !== "active" || agent.desiredRuntimeState !== "stopped")
+    ) {
+      throw new ResourceStateConflictError("The Agent lifecycle changed during provisioning.");
     }
     await this.authorizeProvisioningRecord(state, record.actorId, record);
+    this.requireProvisioningRepositoryRecipient(record, agent);
     return state.provisioning.checkpoint(claim, {
       completedPhase: record.completedPhase,
       status: "running",
@@ -18599,6 +18661,36 @@ export class OpenClawController {
       ]),
     );
     return immutableCopy(bindings.map(({ repositoryRef }) => selections.get(repositoryRef)!));
+  }
+
+  private requireProvisioningRepositoryRecipient(
+    record: Readonly<AgentProvisioningRecord>,
+    agent: Readonly<Agent> | undefined,
+  ): void {
+    if (agent !== undefined) {
+      this.requireRepositoryDeploymentRecipient(agent.repositoryBindings?.length, agent);
+    } else {
+      // Admission saves both request forms as canonical bindings.
+      const bindings = record.plan.repositoryBindings;
+      this.requireRepositoryDeploymentRecipient(Array.isArray(bindings) ? bindings.length : 0);
+    }
+  }
+
+  private requireRepositoryDeploymentRecipient(
+    bindingCount: number | undefined,
+    agent?: Pick<Agent, "namespaceId" | "id" | "servicePrincipalId">,
+  ): void {
+    const recipient = this.installationRepositoryAdmission?.recipient;
+    if (
+      recipient !== undefined &&
+      bindingCount &&
+      (agent === undefined ||
+        recipient.namespaceId !== agent.namespaceId ||
+        recipient.agentId !== agent.id ||
+        recipient.servicePrincipalId !== agent.servicePrincipalId)
+    ) {
+      throw new ResourceStateConflictError(REPOSITORY_RECIPIENT_NOT_ENROLLED);
+    }
   }
 
   private admitRepositoryCredentials(

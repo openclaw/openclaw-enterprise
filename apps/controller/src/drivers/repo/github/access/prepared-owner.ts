@@ -24,6 +24,7 @@ interface PreparationOptions {
   readonly ca?: Uint8Array;
   readonly renewBeforeMs: number;
   readonly minimumValidityMs: number;
+  readonly recheckBeforeSend?: boolean;
   readonly observe?: (diagnostic: GitHubPreparationDiagnostic) => void;
 }
 
@@ -75,6 +76,7 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
         ...bounds,
         assertAdmitted,
         observeDispatch: assertAdmitted,
+        ...(options.recheckBeforeSend && { withDispatchFence: assertIssuing }),
       };
       return key.withJwt(async (jwt, assertCurrent) => {
         await assertIssuing();

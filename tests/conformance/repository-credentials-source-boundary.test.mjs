@@ -15,6 +15,13 @@ const preparedConfiguration = "drivers/repo/github/access/prepared-configuration
 const preparedGit = "drivers/repo/github/access/prepared-repository-git.ts";
 const openShellEvidence = "drivers/egress-proxy/openshell-repository-git-evidence.ts";
 const custodySelection = "composition/repository-credentials/custody-selection.ts";
+const issuer = "composition/repository-credentials/issuer.ts";
+const issuerSelection = "composition/repository-credentials/issuer-selection.ts";
+const packageResolution = "composition/driver-package-resolution.ts";
+const startupFile = "composition/startup-file.ts";
+const logging = "logging.ts";
+const remotePreparedGit = "backends/repository-credentials/remote-prepared-git.ts";
+const issuerEntrypoint = "prepared-git-issuer.ts";
 const evidenceImport = "../../drivers/egress-proxy/openshell-repository-git-evidence.ts";
 const entrypoints = [
   "repository-credentials.ts",
@@ -22,6 +29,12 @@ const entrypoints = [
   sharedFields,
   sharedJsonMembers,
   openShellEvidence,
+  issuerEntrypoint,
+  packageResolution,
+  "composition/external-protected-driver-selection.ts",
+  "composition/installation-selection.ts",
+  startupFile,
+  logging,
 ];
 
 async function appendSource(root, file, source, check) {
@@ -99,6 +112,61 @@ test("credential source boundary rejects new raw capabilities in the real source
       "repository credential registry admits hashing",
       "drivers/repo/github/access/registry.ts",
       'import { createHash as hash } from "node:crypto"; void hash;',
+    ],
+
+    // These are the reviewed issuer edges. Aliases must retain the imported
+    // member's authority rather than gaining the rest of its module.
+    [
+      "remote prepared Git admits its exact HTTPS and TLS members",
+      remotePreparedGit,
+      `import { createServer as boundaryServer, request as boundaryRequest } from "node:https";
+       import { createSecureContext as boundaryContext, TLSSocket as BoundarySocket } from "node:tls";
+       void boundaryServer; void boundaryRequest; void boundaryContext; void BoundarySocket;`,
+    ],
+    [
+      "issuer admits its pool and address validator",
+      issuer,
+      `import { createPostgresPool as boundaryPool } from "@openclaw-enterprise/occ";
+       import { isIP as boundaryIsIP } from "node:net"; void boundaryPool; void boundaryIsIP;`,
+    ],
+    [
+      "issuer selection admits metadata resolution and registration projection",
+      issuerSelection,
+      `import { resolveDriverPackage as boundaryResolve } from "../driver-package-resolution.ts";
+       import { externalProtectedDriverSelection as boundarySelection } from "../external-protected-driver-selection.ts";
+       import { installedDriverReference as boundaryReference, validateBackendDefinitions as boundaryBackends } from "@openclaw-enterprise/occ";
+       import { validateConfiguration as boundaryValidate } from "@openclaw-enterprise/contracts";
+       void boundaryResolve; void boundarySelection; void boundaryReference; void boundaryBackends; void boundaryValidate;`,
+    ],
+    [
+      "package metadata resolution admits only its named file and metadata readers",
+      packageResolution,
+      `import { readFile as boundaryRead, realpath as boundaryRealpath, stat as boundaryStat } from "node:fs/promises";
+       import { findPackageJSON as boundaryManifest } from "node:module";
+       void boundaryRead; void boundaryRealpath; void boundaryStat; void boundaryManifest;`,
+    ],
+    [
+      "startup admits immediate named YAML destructuring and its environment",
+      startupFile,
+      `const { loadYaml: boundaryYaml } = await import("@kubernetes/client-node");
+       void boundaryYaml; void process.env;`,
+    ],
+    [
+      "startup can re-export exactly the shared field validators",
+      startupFile,
+      'export { closed as boundaryClosed, nonempty as boundaryNonempty, object as boundaryObject } from "./installation-fields.ts";',
+    ],
+    [
+      "logging admits the default logger with a type-only binding",
+      logging,
+      'import boundaryPino, { type Logger as BoundaryLogger } from "pino"; void boundaryPino;',
+    ],
+    [
+      "issuer entrypoint admits only its startup and orderly process members",
+      issuerEntrypoint,
+      `import { startPreparedGitIssuer as boundaryStart } from "./composition/repository-credentials/issuer.ts";
+       void boundaryStart; void process.argv; void process.env; void process.once;
+       void process.stdout; void process.stderr; void process.exitCode;`,
     ],
 
     [
@@ -219,6 +287,230 @@ test("credential source boundary rejects new raw capabilities in the real source
       'import { readFile } from "node:fs/promises";',
       /unreviewed runtime import from node:fs\/promises \(readFile\)/,
       sharedJsonMembers,
+    ],
+    // The issuer additions are literal source/member admissions, not module or
+    // directory exceptions. Each mutation exercises the real guard on that owner.
+    [
+      "neighboring backend cannot acquire the issuer HTTPS transport",
+      'import { request } from "node:https";',
+      /unreviewed runtime import from node:https/,
+      "backends/repository-credentials/boundary-neighbor.ts",
+    ],
+    [
+      "neighboring composition cannot acquire package metadata resolution",
+      'import { resolveDriverPackage } from "../driver-package-resolution.ts";',
+      /driver-package-resolution.ts is not reviewed for/,
+      "composition/repository-credentials/boundary-neighbor.ts",
+    ],
+    [
+      "remote transport cannot acquire an adjacent HTTPS member",
+      'import { Agent as BoundaryAgent } from "node:https";',
+      /unreviewed runtime import from node:https/,
+      remotePreparedGit,
+    ],
+    [
+      "remote transport cannot acquire an arbitrary TLS connector",
+      'import { connect as boundaryConnect } from "node:tls";',
+      /unreviewed runtime import from node:tls/,
+      remotePreparedGit,
+    ],
+    [
+      "issuer cannot acquire an adjacent OCC runtime class",
+      'import { InstalledDriver as BoundaryDriver } from "@openclaw-enterprise/occ";',
+      /unreviewed runtime import from @openclaw-enterprise\/occ/,
+      issuer,
+    ],
+    [
+      "startup cannot inherit the entrypoint output capability",
+      'process.stdout.write("boundary");',
+      /raw process capability stdout/,
+      startupFile,
+    ],
+    [
+      "issuer selection cannot acquire an adjacent contracts member",
+      'import { validateConfiguration as boundaryValidate, requireConfiguration } from "@openclaw-enterprise/contracts";',
+      /unreviewed runtime import from @openclaw-enterprise\/contracts/,
+      issuerSelection,
+    ],
+    [
+      "issuer selection cannot inherit the startup environment capability",
+      "void process.env;",
+      /raw process capability env/,
+      issuerSelection,
+    ],
+    [
+      "issuer entrypoint cannot acquire process execution",
+      'process.getBuiltinModule("node:child_process");',
+      /raw process capability getBuiltinModule/,
+      issuerEntrypoint,
+    ],
+    ...[
+      [
+        "createRequire",
+        'import { createRequire as boundaryRequire } from "node:module";',
+        /unreviewed issuer source import from node:module/,
+      ],
+      [
+        "register",
+        'import { register as boundaryRegister } from "node:module";',
+        /unreviewed issuer source import from node:module/,
+      ],
+      [
+        "registerHooks",
+        'import { registerHooks as boundaryHooks } from "node:module";',
+        /unreviewed issuer source import from node:module/,
+      ],
+      [
+        "additional file reader",
+        'import { open as boundaryOpen } from "node:fs/promises";',
+        /unreviewed issuer source import from node:fs\/promises/,
+      ],
+      [
+        "file writer",
+        'import { writeFile as boundaryWrite } from "node:fs/promises";',
+        /unreviewed issuer source import from node:fs\/promises/,
+      ],
+      [
+        "default metadata import",
+        'import boundaryModule from "node:module";',
+        /unreviewed issuer source import from node:module/,
+      ],
+      [
+        "namespace metadata import",
+        'import * as boundaryModule from "node:module";',
+        /unreviewed issuer source import from node:module/,
+      ],
+      [
+        "namespace file import",
+        'import * as boundaryFs from "node:fs/promises";',
+        /unreviewed issuer source import from node:fs\/promises/,
+      ],
+      [
+        "evaluating a resolved entry",
+        "await import(boundaryResolved.entryUrl.href);",
+        /nonliteral module loading/,
+      ],
+      ["generated executable code", 'Function("return 1")();', /raw global Function/],
+    ].map(([label, source, expected]) => [
+      `package metadata resolution rejects ${label}`,
+      source,
+      expected,
+      packageResolution,
+    ]),
+    ...[
+      ["full package loader", 'import { loadDriverPackage } from "../driver-packages.ts";'],
+      [
+        "full installation loader",
+        'import { loadInstallationConfiguration } from "../installation-config.ts";',
+      ],
+      ["Worker entrypoint", 'import "../../worker.mjs";'],
+      ["unscanned neighboring helper", 'import "../boundary-unscanned.ts";'],
+    ].map(([label, source]) => [
+      `issuer selection cannot load ${label}`,
+      source,
+      /runtime import has no scanned credential source/,
+      issuerSelection,
+    ]),
+    ...[
+      [
+        "additional member",
+        'const { loadYaml: boundaryYaml, KubeConfig: BoundaryKube } = await import("@kubernetes/client-node");',
+      ],
+      [
+        "rest binding",
+        'const { loadYaml: boundaryYaml, ...boundaryRest } = await import("@kubernetes/client-node");',
+      ],
+      ["module namespace", 'const boundaryYamlModule = await import("@kubernetes/client-node");'],
+      [
+        "later destructuring",
+        'const boundaryYamlModule = await import("@kubernetes/client-node"); const { loadYaml: boundaryYaml } = boundaryYamlModule;',
+      ],
+      ["unawaited import", 'const { loadYaml: boundaryYaml } = import("@kubernetes/client-node");'],
+      [
+        "computed property",
+        'const { ["loadYaml"]: boundaryYaml } = await import("@kubernetes/client-node");',
+      ],
+      [
+        "default value",
+        'const { loadYaml: boundaryYaml = undefined } = await import("@kubernetes/client-node");',
+      ],
+      [
+        "import options",
+        'const { loadYaml: boundaryYaml } = await import("@kubernetes/client-node", {});',
+      ],
+    ].map(([label, source]) => [
+      `startup YAML exception rejects ${label}`,
+      source,
+      /unreviewed issuer source import from @kubernetes\/client-node/,
+      startupFile,
+    ]),
+    [
+      "startup YAML exception rejects a dynamic module target",
+      'const boundaryModule = "@kubernetes/client-node"; const { loadYaml: boundaryYaml } = await import(boundaryModule);',
+      /nonliteral module loading/,
+      startupFile,
+    ],
+    [
+      "a neighboring owner cannot use the named YAML exception",
+      'const { loadYaml: boundaryYaml } = await import("@kubernetes/client-node");',
+      /unreviewed runtime import from @kubernetes\/client-node/,
+      issuerSelection,
+    ],
+    [
+      "startup cannot export a YAML binding before its declaration",
+      'export { boundaryYaml }; const { loadYaml: boundaryYaml } = await import("@kubernetes/client-node");',
+      /raw I\/O binding cannot be re-exported/,
+      startupFile,
+    ],
+    ...[
+      [
+        "namespace import",
+        'import * as boundaryPino from "pino";',
+        /only the reviewed default pino import is permitted/,
+      ],
+      [
+        "named default import",
+        'import { default as boundaryPino } from "pino";',
+        /only the reviewed default pino import is permitted/,
+      ],
+      [
+        "extra runtime binding",
+        'import boundaryPino, { destination as boundaryDestination } from "pino";',
+        /only the reviewed default pino import is permitted/,
+      ],
+      [
+        "direct re-export",
+        'export { default as boundaryPino } from "pino";',
+        /unreviewed issuer source export from pino/,
+      ],
+      [
+        "local re-export",
+        'import boundaryPino from "pino"; export { boundaryPino };',
+        /raw I\/O binding cannot be re-exported/,
+      ],
+    ].map(([label, source, expected]) => [
+      `logging rejects logger ${label}`,
+      source,
+      expected,
+      logging,
+    ]),
+    [
+      "startup cannot expand its shared field re-export",
+      'export { openShellRepositoryConfiguration as boundaryRepository } from "./installation-fields.ts";',
+      /unreviewed issuer source export/,
+      startupFile,
+    ],
+    [
+      "startup cannot directly re-export its raw file reader",
+      'export { readFile as boundaryRead } from "node:fs/promises";',
+      /unreviewed issuer source export from node:fs\/promises/,
+      startupFile,
+    ],
+    [
+      "startup cannot re-export its local raw file reader",
+      "export { readFile as boundaryRead };",
+      /raw I\/O binding cannot be re-exported/,
+      startupFile,
     ],
     // These mutations must be rejected at the evidence file itself: merely
     // exempting the selector's import or ignoring this file cannot pass.
@@ -456,7 +748,7 @@ test("credential source boundary rejects new raw capabilities in the real source
     [
       "old startup import stays denied for installation",
       'import { startupConfiguration } from "../../../composition/startup-file.ts";',
-      /runtime import has no scanned credential source/,
+      /startup-file.ts is not reviewed for/,
       installation,
     ],
     [
@@ -468,7 +760,7 @@ test("credential source boundary rejects new raw capabilities in the real source
     [
       "old startup import stays denied for preparedConfiguration",
       'import { startupConfiguration } from "../../../../composition/startup-file.ts";',
-      /runtime import has no scanned credential source/,
+      /startup-file.ts is not reviewed for/,
       preparedConfiguration,
     ],
     [

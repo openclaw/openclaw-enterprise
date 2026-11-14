@@ -2,6 +2,7 @@ import { closed, nonempty, object } from "../../../composition/installation-fiel
 import type { ConfigurationRecord } from "../../../composition/installation-fields.ts";
 import type { PreparedRepositoryGitConfiguration } from "../../../backends/repository-credentials/prepared-git-owner.ts";
 import { preparedGitHubConfiguration } from "./access/prepared-configuration.ts";
+import { remotePreparedGitConfiguration } from "../../../backends/repository-credentials/remote-prepared-git-config.ts";
 
 /** Interpret portable repository configuration after integration extracts transport. */
 export function githubRepositoryConfiguration(selection: ConfigurationRecord) {
@@ -22,9 +23,14 @@ export function githubRepositoryConfiguration(selection: ConfigurationRecord) {
     prepared:
       selection.preparedGitHub === undefined
         ? undefined
-        : (preparedGitHubConfiguration(
-            selection.preparedGitHub,
-            true,
-          ) as PreparedRepositoryGitConfiguration),
+        : Object.hasOwn(
+              object(selection.preparedGitHub, "repository.preparedGitHub"),
+              "issuerEndpoint",
+            )
+          ? remotePreparedGitConfiguration(selection.preparedGitHub)
+          : (preparedGitHubConfiguration(
+              selection.preparedGitHub,
+              true,
+            ) as PreparedRepositoryGitConfiguration),
   };
 }

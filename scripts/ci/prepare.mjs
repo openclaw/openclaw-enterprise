@@ -3957,6 +3957,9 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     if (relativeFile === "tests/integration/postgres-worker-audit.test.ts") {
       env.OCC_TEST_WORKER_AUDIT_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
+    if (relativeFile === "tests/integration/postgres-protected-git-recipient-custody.test.ts") {
+      env.OCC_TEST_PREPARED_GIT_MIGRATION_DATABASE_URL = database.migrationUrl;
+    }
     if (
       relativeFile === "tests/integration/auth-maintain.test.ts" ||
       relativeFile === "tests/integration/postgres-break-glass-auth-maintain.test.ts"
