@@ -5,6 +5,7 @@
   "fileConcurrency": 8,
   "parallelFiles": [
     "tests/integration/dev-up.test.mjs",
+    "tests/integration/dev-up-compose-startup.test.ts",
     "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
     "tests/integration/occ-api-joint-plugin-deployment.test.ts",
@@ -565,7 +566,10 @@
       ]
     },
     {
-      "path": "tests/integration/dev-up-compose.test.mjs",
+      "path": "tests/integration/dev-up-compose.test.mjs"
+    },
+    {
+      "path": "tests/integration/dev-up-compose-startup.test.ts",
       "expectedTests": [
         "dev-up builds the default runtime only when real Compose leaves runtime images unselected",
         "dev-up preserves a selected custom runtime image and skips the quickstart build",
