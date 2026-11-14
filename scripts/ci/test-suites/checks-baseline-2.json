@@ -87,7 +87,7 @@
     "tests/integration/repository-runtime-materialization.test.ts",
     "tests/conformance/repository-credentials-contracts.test.ts",
     "tests/integration/plugin-driver-startup.test.ts",
-    "tests/integration/repository-credentials-config.test.mjs",
+    "tests/integration/repository-credentials-config.test.ts",
     "tests/integration/kubernetes-peer-status.test.mjs",
     "tests/conformance/repository-credentials-lifecycle.test.ts",
     "tests/integration/ssh-compute-startup.test.mjs",
@@ -557,7 +557,7 @@
       ]
     },
     {
-      "path": "tests/integration/repository-credentials-config.test.mjs"
+      "path": "tests/integration/repository-credentials-config.test.ts"
     },
     {
       "path": "tests/integration/protected-repository-metadata-read.test.mjs"
