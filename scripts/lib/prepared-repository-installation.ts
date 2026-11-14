@@ -16,6 +16,9 @@ export const PREPARED_REPOSITORY_DIRECTORY = "/etc/openclaw/prepared-repository"
 export function preparedRepositoryInstallation({
   id = REPOSITORY_DRIVER_ID,
   sessionDurationSeconds,
+}: {
+  id?: string;
+  sessionDurationSeconds: number;
 }) {
   return {
     id,
@@ -32,7 +35,13 @@ export function preparedRepositoryInstallation({
 }
 
 /** The GitHub Backend whose repository bindings that driver serves. */
-export function preparedRepositoryBackend({ backendId, driverId = REPOSITORY_DRIVER_ID }) {
+export function preparedRepositoryBackend({
+  backendId,
+  driverId = REPOSITORY_DRIVER_ID,
+}: {
+  backendId: string;
+  driverId?: string;
+}) {
   return {
     id: backendId,
     type: "github",
