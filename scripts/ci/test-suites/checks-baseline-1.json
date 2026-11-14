@@ -19,6 +19,7 @@
     "tests/integration/openshell-quickstart-policy.test.ts",
     "tests/conformance/codex-native-startup.test.mjs",
     "tests/conformance/occ-api-security.test.mjs",
+    "tests/conformance/occ-runtime-logs-security.test.ts",
     "tests/integration/configuration-startup.test.mjs",
     "tests/integration/installation-change-preflight.test.mjs",
     "tests/conformance/kubernetes-secret-driver.test.mjs",
@@ -298,6 +299,25 @@
     },
     {
       "path": "tests/conformance/occ-api-security.test.mjs"
+    },
+    {
+      "path": "tests/conformance/occ-runtime-logs-security.test.ts",
+      "expectedTests": [
+        "runtime status and log reads enforce their permission tiers before any Driver call",
+        "a delegated read_logs principal reads and downloads logs without administer",
+        "an Agent-level read_logs grant covers every revision, including later deployments",
+        "runtime log cursors bind one principal and view and are re-authorized on every poll",
+        "minLevel filters log lines on the server and a cursor still resumes after hidden lines",
+        "an expired runtime log cursor starts a new audited view with a labelled gap",
+        "a cursor whose Pod is gone starts a new audited view of the Pod that is read",
+        "runtime routes reject the Agent draft and unknown revisions without a Driver call",
+        "log polls describe only the requested source and skip Event lists",
+        "runtime log failures are fixed, content-free and never read after an audit failure",
+        "a version without a Sandbox names the log sources and policy suggestions it lacks",
+        "runtime log reads retain allowance through backward and restored wall clocks",
+        "runtime routes answer 501 when the Driver, its logging owner or the operator switch opts out",
+        "runtime log downloads use the log tier and are audited once per download"
+      ]
     },
     {
       "path": "tests/conformance/runtime-logs-admission.test.ts"
