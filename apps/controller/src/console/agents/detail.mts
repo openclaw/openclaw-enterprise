@@ -1804,22 +1804,7 @@ export async function renderAgentDetail(
       detailPane.querySelector<HTMLButtonElement>('button[data-opens="configuration-editor"]');
     const editStart = edit ? editorTarget() : null;
     if (edit && !editStart && !detailLoadFinished) {
-      const tab = selectedTab;
-      void Promise.resolve(details).then(
-        () => {
-          const focused = document.activeElement;
-          if (
-            context.isCurrent() &&
-            !deleting &&
-            selectedTab === tab &&
-            (!focused || focused === document.body || focused === tabControls.get(tab)) &&
-            editorTarget()
-          ) {
-            openVersionDetail({ ...options, edit });
-          }
-        },
-        () => {},
-      );
+      openAfterDetailsLoad(editorTarget, () => openVersionDetail({ ...options, edit }));
     }
     if (editStart && !editStart.disabled) {
       // Entering the editor focuses it without scrolling; the editor is then brought into view.
@@ -1848,10 +1833,21 @@ export async function renderAgentDetail(
     // Deploy again opens the draft at its deploy step, whose card can end below a phone's
     // fold when the version detail is at the top: the card is brought to the top, with its
     // Deploy new version focused when the reader can press it (finding 1898).
-    const actions = deploy ? versionSummary.querySelector(":scope > .agent-draft-actions") : null;
+    const deployTarget = () => versionSummary.querySelector(":scope > .agent-draft-actions");
+    const actions = deploy ? deployTarget() : null;
     if (deploy && !actions && !detailLoadFinished) {
-      // The card is built once the draft's own reads land: open it then, unless the reader has
-      // moved on (another tab, or focus taken elsewhere) in the meantime.
+      openAfterDetailsLoad(deployTarget, () => openVersionDetail({ ...options, deploy }));
+    }
+    const deployButton = actions?.querySelector<HTMLButtonElement>("button.primary");
+    if (deployButton && !isUnavailable(deployButton)) {
+      deployButton.focus({ preventScroll: true });
+    } else {
+      tabControls.get(selectedTab)?.focus({ preventScroll: true });
+    }
+    scrollToVersionDetail(options, actions ?? detailPane);
+
+    // The reader may move focus or leave the tab while the draft loads.
+    function openAfterDetailsLoad(findTarget: () => Element | null, open: () => void) {
       const tab = selectedTab;
       void Promise.resolve(details).then(
         () => {
@@ -1861,21 +1857,14 @@ export async function renderAgentDetail(
             !deleting &&
             selectedTab === tab &&
             (!focused || focused === document.body || focused === tabControls.get(tab)) &&
-            versionSummary.querySelector(":scope > .agent-draft-actions")
+            findTarget()
           ) {
-            openVersionDetail({ ...options, deploy });
+            open();
           }
         },
         () => {},
       );
     }
-    const deployButton = actions?.querySelector<HTMLButtonElement>("button.primary");
-    if (deployButton && !isUnavailable(deployButton)) {
-      deployButton.focus({ preventScroll: true });
-    } else {
-      tabControls.get(selectedTab)?.focus({ preventScroll: true });
-    }
-    scrollToVersionDetail(options, actions ?? detailPane);
   }
   // Opened by a recovery link: show its tab once this page shows. Logs waits for its output
   // first and scrolls itself.
