@@ -1993,6 +1993,12 @@ export class ControllerWorker {
     return undefined;
   }
 
+  private sandboxMaintenanceInterval(revision: Readonly<AgentRevision>): number | undefined {
+    return this.sandbox?.id === revision.sandboxDriverId
+      ? this.sandbox?.maintenanceIntervalMs
+      : undefined;
+  }
+
   private revisionMaintenanceInterval(revision: Readonly<AgentRevision>): number | undefined {
     const repositoryInterval =
       revision.repositoryCredentials === undefined
@@ -2001,15 +2007,11 @@ export class ControllerWorker {
     const standingInterval = revision.repositoryCredentials?.standingApprovalId
       ? Math.max(100, Math.min(10_000, (this.repositoryCredentials.validate(revision) ?? 1) * 100))
       : undefined;
-    const sandboxInterval =
-      this.sandbox?.id === revision.sandboxDriverId
-        ? this.sandbox?.maintenanceIntervalMs
-        : undefined;
     const intervals = [
       this.maintenanceIntervalMs,
       repositoryInterval,
       standingInterval,
-      sandboxInterval,
+      this.sandboxMaintenanceInterval(revision),
     ].filter((interval): interval is number => interval !== undefined);
     return intervals.length === 0 ? undefined : Math.min(...intervals);
   }
@@ -2476,6 +2478,7 @@ export class ControllerWorker {
         if (!maintenancePending && expiryRevision.repositoryCredentials?.standingApprovalId) {
           const interval = Math.min(
             this.maintenanceIntervalMs ?? Infinity,
+            this.sandboxMaintenanceInterval(expiryRevision) ?? Infinity,
             this.repositoryCleanupRetryMs,
           );
           await this.enqueueMaintenance(queue, claim, expiryRevision, previous, interval);
@@ -7411,14 +7414,14 @@ export class ControllerWorker {
     withdrawnInterval?: number,
   ): Promise<void> {
     const interval = withdrawnInterval ?? this.revisionMaintenanceInterval(revision)!;
-    const candidateAvailableAt = new Date(Date.now() + interval);
-    let maintenanceBucket = Math.floor(candidateAvailableAt.getTime() / interval);
+    const availableAt = new Date(Date.now() + interval);
+    let maintenanceBucket = Math.floor(availableAt.getTime() / interval);
     const maintenancePrefix = `agent_revision:${revision.id}:maintenance:`;
     const currentBucket = previousMaintenanceKey.startsWith(maintenancePrefix)
       ? Number(previousMaintenanceKey.slice(maintenancePrefix.length))
       : undefined;
-    // Clock skew must not deduplicate the successor against its completed claim.
-    let availableAt = candidateAvailableAt;
+    // A clock adjustment or cadence change can leave the next time bucket behind
+    // the durable key. Advance the key without interpreting a prior bucket as a date.
     if (
       currentBucket !== undefined &&
       Number.isSafeInteger(currentBucket) &&
@@ -7426,11 +7429,6 @@ export class ControllerWorker {
       maintenanceBucket <= currentBucket
     ) {
       maintenanceBucket = currentBucket + 1;
-      // After withdrawal the interval may be longer than the standing renewal interval.
-      // Advance the key, but do not reinterpret the old bucket at that slower cadence.
-      if (withdrawnInterval === undefined) {
-        availableAt = new Date(maintenanceBucket * interval);
-      }
     }
     await queue.enqueue({
       idempotencyKey: `agent_revision:${revision.id}:maintenance:${maintenanceBucket}`,

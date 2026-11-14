@@ -10,6 +10,8 @@ import type {
   RuntimeFailureEvidence,
   SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
+import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
+import { PostgresWorkQueue } from "../../packages/occ/src/state/postgres-work-queue.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import {
   requiresPostgres,
@@ -53,6 +55,50 @@ async function setup(
   const fixture = await setupSingletonWorker(context, { sandboxDriver });
   // The JavaScript fixture infers a zero-argument default emitter. The Worker supplies the event.
   return { ...fixture, start: fixture.start as MaintenanceFixture["start"] };
+}
+
+function maintenanceSandbox(maintenanceIntervalMs: number): SandboxDriver {
+  return {
+    id: "maintenance-sandbox",
+    implementation: "fixture",
+    capability: "sandbox",
+    facets: ["process"],
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    maintenanceIntervalMs,
+    async cleanup() {},
+  };
+}
+
+async function waitForQueuedMaintenance(
+  fixture: MaintenanceFixture,
+  revision: { readonly id: string },
+  previous = "",
+) {
+  return waitFor("one queued successor for the active revision", async () => {
+    const work = await fixture.observerPool.query<{
+      idempotency_key: string;
+      available_at: Date;
+      created_at: Date;
+    }>(
+      `SELECT idempotency_key, available_at, created_at FROM occ.controller_work
+       WHERE namespace_id = $1 AND revision_id = $2 AND idempotency_key LIKE $3
+         AND state = 'queued' AND idempotency_key <> $4`,
+      [fixture.namespace.id, revision.id, `agent_revision:${revision.id}:maintenance:%`, previous],
+    );
+    assert.ok(work.rows.length <= 1, "concurrent workers must not queue two successors");
+    return work.rows[0];
+  });
+}
+
+function assertMaintenanceDelay(
+  work: { available_at: Date; created_at: Date },
+  expectedMs: number,
+): void {
+  const delayMs = work.available_at.getTime() - work.created_at.getTime();
+  assert.ok(
+    Math.abs(delayMs - expectedMs) < 2_000,
+    `expected ${expectedMs} ms, scheduled ${delayMs} ms`,
+  );
 }
 
 export function registerComputeSingletonMaintenanceCases(): void {
@@ -142,15 +188,7 @@ export function registerComputeSingletonMaintenanceCases(): void {
     "a Sandbox schedules active maintenance without granting that pass permission to create a Harness",
     requiresPostgres,
     async (context) => {
-      const fixture = await setup(context, {
-        id: "maintenance-sandbox",
-        implementation: "fixture",
-        capability: "sandbox",
-        facets: ["process"],
-        supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
-        maintenanceIntervalMs: 75,
-        async cleanup() {},
-      });
+      const fixture = await setup(context, maintenanceSandbox(75));
       const owner = await fixture.agent();
       const candidate = await fixture.revision(owner, 1);
       const observations: {
@@ -182,6 +220,177 @@ export function registerComputeSingletonMaintenanceCases(): void {
         { revisionId: candidate.id, active: null, existingOnly: undefined },
         { revisionId: candidate.id, active: candidate.id, existingOnly: true },
       ]);
+    },
+  );
+
+  for (const initialInterval of [60_000, 30_000]) {
+    test(
+      `Sandbox maintenance keeps a durable cadence across restart from ${initialInterval} to 60000 ms`,
+      requiresPostgres,
+      async (context) => {
+        const fixture = await setup(context, maintenanceSandbox(initialInterval));
+        const owner = await fixture.agent();
+        const revision = await fixture.revision(owner, 1);
+        const compute: ComputeDriver = {
+          ...fixture.compute,
+          activationOrder: "beforeCommit",
+          async preflight() {},
+          async activateRevision() {},
+        };
+        const wallNow = Date.now.bind(Date);
+        // Start away from a bucket boundary, with ample separation from the database clock.
+        const initialClockOffsetMs = 85_000 - (wallNow() % 60_000);
+        let clockOffsetMs = initialClockOffsetMs;
+        context.mock.method(Date, "now", () => wallNow() + clockOffsetMs);
+
+        await fixture.start(compute);
+        await fixture.work(revision);
+        const first = await waitForQueuedMaintenance(fixture, revision);
+        assert.equal(
+          Number(first.idempotency_key.split(":").at(-1)),
+          Math.floor(first.available_at.getTime() / initialInterval),
+          "the first worker must persist a compatible time-bucket key",
+        );
+        await fixture.stop();
+
+        // The replacement processes share the real queue and contend for each existing row.
+        // Only the due time is advanced by the test so the real worker claims the original key.
+        const replacement = await setup(context, maintenanceSandbox(60_000));
+        const contender = await setup(context, maintenanceSandbox(60_000));
+        await replacement.start(compute);
+        await contender.start(compute);
+        let previous = first;
+        for (const offsetMs of [-10_000, -10_000, 10_000]) {
+          clockOffsetMs = initialClockOffsetMs + offsetMs;
+          const madeDue = await fixture.observerPool.query(
+            "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1 AND state = 'queued'",
+            [previous.idempotency_key],
+          );
+          assert.equal(madeDue.rowCount, 1);
+          const next = await waitForQueuedMaintenance(fixture, revision, previous.idempotency_key);
+          assert.ok(
+            Number(next.idempotency_key.split(":").at(-1)) >
+              Number(previous.idempotency_key.split(":").at(-1)),
+            "every pass needs a new increasing durable key",
+          );
+          assertMaintenanceDelay(next, 60_000 + clockOffsetMs);
+          const completed = await fixture.observerPool.query<{
+            state: string;
+            attempt_count: number;
+          }>("SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1", [
+            previous.idempotency_key,
+          ]);
+          assert.deepEqual(completed.rows, [{ state: "succeeded", attempt_count: 1 }]);
+          previous = next;
+        }
+        await replacement.stop();
+        await contender.stop();
+        assert.equal(await fixture.activeRevision(owner), revision.id);
+      },
+    );
+  }
+
+  test(
+    "standing repository withdrawal schedules the retained runtime at its Sandbox cadence",
+    requiresPostgres,
+    async (context) => {
+      const fixture = await setup(context, maintenanceSandbox(5_000));
+      const owner = await fixture.agent();
+      const original = await fixture.revision(owner, 1);
+      const state = new PostgresPlatformState(fixture.observerPool);
+      const queue = new PostgresWorkQueue(fixture.observerPool);
+
+      // Represent a live revision whose standing approval has been removed. Persist its
+      // immutable snapshot and transfer its claimed upkeep through the real cleanup adapter.
+      const revisionId = `rev_${randomUUID()}`;
+      const idempotencyKey = `agent_revision:${revisionId}:maintenance:1`;
+      await state.transactWithQueue(async (unit, work) => {
+        const seed = await unit.revisions.findRevision(fixture.namespace.id, owner.id, original.id);
+        assert.ok(seed);
+        await unit.revisions.createRevision({
+          ...seed,
+          id: revisionId,
+          revision: 2,
+          repositoryCredentials: {
+            driver: { id: "repository-fixture", implementation: "fixture" },
+            standingApprovalId: randomUUID(),
+            standingApprovalGeneration: 1,
+            standingApprovalScopeFingerprint: "a".repeat(64),
+            deadlineWallMs: Date.now() - 1_000,
+            bindings: [
+              {
+                repositoryRef: "repo-fixture",
+                profile: "git-write",
+                backendId: "repository-backend-fixture",
+                grant: { providerInstanceId: "host", repositoryId: "repo", grantId: "grant" },
+              },
+            ],
+          },
+        });
+        const active = await unit.agents.compareAndSetActiveRevision(
+          fixture.namespace.id,
+          owner.id,
+          undefined,
+          revisionId,
+        );
+        assert.equal(active?.activeRevisionId, revisionId);
+        await work.enqueue({
+          idempotencyKey,
+          namespaceId: fixture.namespace.id,
+          agentId: owner.id,
+          revisionId,
+          actorId: fixture.actor.id,
+          availableAt: new Date(0),
+        });
+      });
+      const originalClaim = await queue.claim();
+      assert.equal(originalClaim?.idempotencyKey, original.idempotencyKey);
+      assert.ok(originalClaim);
+      await queue.complete(originalClaim, { code: "REVISION_SUPERSEDED" });
+      const interrupted = await queue.claim();
+      assert.equal(interrupted?.idempotencyKey, idempotencyKey);
+      assert.ok(interrupted);
+      const cleanup = await state.transactWithQueue(async (_unit, work) => {
+        const queued = await work.enqueueRepositoryCleanup(
+          interrupted,
+          { namespaceId: fixture.namespace.id, agentId: owner.id, revisionId },
+          "standing-withdrawal",
+        );
+        await work.complete(interrupted, { code: "REPOSITORY_STANDING_APPROVAL_REMOVED" });
+        return queued;
+      });
+      assert.ok(cleanup);
+
+      let observations = 0;
+      await fixture.start({
+        ...fixture.compute,
+        maintenanceIntervalMs: 60_000,
+        async preflight() {},
+        async prepareRevision() {
+          assert.fail("withdrawal must not prepare the retained revision");
+        },
+        async stopRevision() {
+          assert.fail("successful withdrawal must retain the runtime");
+        },
+        async retireExpiredRepositoryAccess(revision) {
+          assert.equal(revision.id, revisionId);
+          observations++;
+          return "withdrawn";
+        },
+      });
+      const completed = await waitFor(
+        "withdrawal to finish without retiring the runtime",
+        async () => {
+          const item = await queue.findWork(cleanup.idempotencyKey);
+          return item?.state === "succeeded" ? item : undefined;
+        },
+      );
+      await fixture.stop();
+      assert.equal(completed.reasonCode, "REPOSITORY_ACCESS_WITHDRAWN");
+      assert.equal(observations, 1);
+      assert.equal(await fixture.activeRevision(owner), revisionId);
+      const next = await waitForQueuedMaintenance(fixture, { id: revisionId });
+      assertMaintenanceDelay(next, 5_000);
     },
   );
 
