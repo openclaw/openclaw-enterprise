@@ -125,7 +125,7 @@
     "tests/conformance/repository-credentials-source-boundary.test.mjs": 9700,
     "tests/conformance/repository-credentials-tool-evidence.test.ts": 100,
     "tests/conformance/repository-material-store.test.ts": 200,
-    "tests/conformance/repository-runtime-material.test.mjs": 3200,
+    "tests/conformance/repository-runtime-material.test.ts": 3200,
     "tests/conformance/repository-sessions-memory.test.ts": 300,
     "tests/conformance/repository-transactions.test.mjs": 200,
     "tests/conformance/runtime-gateway-state-migration.test.ts": 400,

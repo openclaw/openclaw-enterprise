@@ -67,7 +67,7 @@
     "tests/integration/repository-credentials-restart.test.ts",
     "tests/conformance/plugin-driver.test.mjs",
     "tests/integration/ci-image-reconciliation.test.ts",
-    "tests/conformance/repository-runtime-material.test.mjs",
+    "tests/conformance/repository-runtime-material.test.ts",
     "tests/integration/repository-credentials-server-timeout.test.ts",
     "tests/integration/protected-repository-metadata-read.test.mjs",
     "tests/integration/repository-credentials-http.test.ts",
@@ -643,7 +643,7 @@
       ]
     },
     {
-      "path": "tests/conformance/repository-runtime-material.test.mjs"
+      "path": "tests/conformance/repository-runtime-material.test.ts"
     },
     {
       "path": "tests/conformance/repository-sessions-memory.test.ts"
