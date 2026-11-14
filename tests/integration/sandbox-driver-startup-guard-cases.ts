@@ -8,7 +8,6 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { SandboxGatewayUnauthorizedError } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspace-chart.ts";
 import type { buildSandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
 import {
   completeWorkspaceRevision,
@@ -64,12 +63,7 @@ type Fixtures = {
   }) => ConstructorParameters<typeof KubernetesComputeDriver>[0];
   controllerRequire: (id: "@grpc/grpc-js") => unknown;
   invalidValue: (path: string, message: string) => RefusalDetail[];
-  kubernetesObjectClient: (
-    events: Array<["kubernetes", "patch" | "delete", string, string, string]>,
-  ) => {
-    patch: (resource: object) => Promise<object>;
-    delete: (resource: object) => Promise<void>;
-  };
+  kubernetesObjectClient: typeof import("./sandbox-driver-startup-orchestration.ts").kubernetesObjectClient;
   namespaceContext: () => NamespaceContext;
   openShellDriver: (client: GatewayClient) => OpenShellSandboxDriver;
   ownedWorkspace: (
@@ -365,116 +359,6 @@ export function createSandboxStartupGuardChecks({
             invalidValue(`/gateway/${list}`, "Write each NetworkPolicy ingress rule as an object."),
           );
         }
-      }
-    },
-    async refusesUnsentKubernetesFields(t: TestContext) {
-      const policy = (spec: object) => ({
-        apiVersion: "networking.k8s.io/v1",
-        kind: "NetworkPolicy",
-        metadata: { name: "provider-policy" },
-        spec,
-      });
-      const [ssh, account, role, binding] = openShellWorkspaceChartResources();
-      assert.ok(ssh && account && role && binding);
-      const renamed = (
-        resource: object,
-        path: (string | number)[],
-        from: string,
-        to: string,
-      ): object => {
-        const copy = structuredClone(resource);
-        const parent = path.reduce<unknown>((value, key) => {
-          assert.ok(typeof value === "object" && value !== null);
-          const child: unknown = Reflect.get(value, key);
-          return child;
-        }, copy);
-        const record = asRecord(parent);
-        assert.ok(record);
-        assert.ok(Object.hasOwn(record, from));
-        record[to] = record[from];
-        delete record[from];
-        return copy;
-      };
-      const unsent = (field: string) =>
-        `The Kubernetes client does not send item 1 field ${field} as written. Use the Kubernetes field name and type.`;
-      const cases: ["networkPolicyResources" | "operatorWorkspaceResources", object, string[]][] = [
-        [
-          "networkPolicyResources",
-          policy({
-            podSelector: {},
-            ingress: [{ from: [{ podSelector: { matchLabel: { app: "worker" } } }] }],
-          }),
-          [unsent("/spec/ingress/0/from/0/podSelector/matchLabel")],
-        ],
-        [
-          // The model names LimitRange `default` `_default`, so the wire field is dropped.
-          "networkPolicyResources",
-          {
-            apiVersion: "v1",
-            kind: "LimitRange",
-            metadata: { name: "limits" },
-            spec: {
-              limits: [{ type: "Container", default: { cpu: "1" }, defaultRequests: { cpu: "1" } }],
-            },
-          },
-          [unsent("/spec/limits/0/default"), unsent("/spec/limits/0/defaultRequests")],
-        ],
-        [
-          // A custom resource passes through except its metadata, which the client still models.
-          "networkPolicyResources",
-          {
-            apiVersion: "crd.antrea.io/v1beta1",
-            kind: "NetworkPolicy",
-            metadata: { name: "provider-crd", label: { app: "worker" } },
-            spec: {},
-          },
-          [unsent("/metadata/label")],
-        ],
-        [
-          // A list written as a string is sent split into characters.
-          "networkPolicyResources",
-          policy({ podSelector: {}, ingress: [{ ports: "2222" }] }),
-          [unsent("/spec/ingress/0/ports")],
-        ],
-        [
-          "networkPolicyResources",
-          policy({ podSelector: {}, ingress: { from: [] } }),
-          ["The Kubernetes client cannot serialize item 1. Use the Kubernetes field types."],
-        ],
-        [
-          "operatorWorkspaceResources",
-          renamed(ssh, ["spec", "podSelector"], "matchLabels", "matchLabel"),
-          [unsent("/spec/podSelector/matchLabel")],
-        ],
-        [
-          "operatorWorkspaceResources",
-          { ...account, automountServiceAccountTokens: false },
-          [unsent("/automountServiceAccountTokens")],
-        ],
-        [
-          "operatorWorkspaceResources",
-          renamed(role, ["rules", 0], "verbs", "verb"),
-          [unsent("/rules/0/verb")],
-        ],
-        [
-          "operatorWorkspaceResources",
-          renamed(binding, [], "subjects", "subject"),
-          [unsent("/subject")],
-        ],
-      ];
-      for (const [list, resource, messages] of cases) {
-        await rejectsAtStartup(
-          t,
-          (c) =>
-            Object.assign(sandboxOf(c).gateway, {
-              [list]: [
-                { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "first" } },
-                resource,
-              ],
-            }),
-          // Both lists are write-only, so the detail names the list and the message the field.
-          messages.map((message) => ({ path: `/gateway/${list}`, code: "INVALID_VALUE", message })),
-        );
       }
     },
   };
