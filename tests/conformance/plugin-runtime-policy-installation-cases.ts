@@ -377,6 +377,4 @@ export function registerInstallAndGrantCases() {
     );
     assert.equal(calls.length, 0);
   });
-
-  // The file-transfer entry of OpenClaw's live `plugins.list` answer.
 }

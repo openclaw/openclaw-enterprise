@@ -46,9 +46,6 @@ function workspaceNodeState(sandbox: RuntimeSandbox) {
   return { nodeId, failure };
 }
 
-// OpenClaw dynamic tools that execute against the Gateway Pod's local disk or shell,
-// type into its terminals, proxy its ports, or change its configuration, plugins
-
 function workspacePoll(intervals: RuntimeInterval[]): RuntimeInterval {
   const poll = intervals.find(({ ms }) => ms === 1000);
   assert.ok(poll, "the wrapper polls the binding every second");

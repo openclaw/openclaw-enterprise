@@ -50,6 +50,9 @@ export function installedPluginResponses(): SpawnResponse[] {
   ];
 }
 
+// OpenClaw dynamic tools that execute against the Gateway Pod's local disk or shell,
+// type into its terminals, proxy its ports, or change its configuration, plugins
+// or installed version.
 export const GATEWAY_LOCAL_CODEX_TOOLS = [
   "ls",
   "read",
