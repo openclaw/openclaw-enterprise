@@ -19,11 +19,15 @@ Compose supports control-plane startup and Namespace operations.
 
 Start the Docker Compute preview with
 `OCC_DEVELOPMENT_COMPUTE_DRIVER=docker ./scripts/dev-up`; with no selection,
-startup uses the Kubernetes-only profile. Or run the host/startup cases:
+startup uses the Kubernetes-only profile. Run the startup and preflight cases:
 
 ```sh
-node --test tests/integration/dev-up-compose.test.mjs
+node --test tests/integration/dev-up-compose-startup.test.ts \
+  tests/integration/dev-up-compose.test.mjs
 ```
+
+The tests run the launcher and render configuration with Compose. Fixture commands
+stand in for engine operations such as starting services and copying the service key.
 
 On macOS, follow the Podman prerequisite in the [startup flow](../flows/docker-compose-development/startup.md).
 Use the cleanup command printed by `dev-up` to preserve the database and credentials.

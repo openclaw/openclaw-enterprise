@@ -32,6 +32,7 @@ const bashExecutable = "/bin/bash";
 // Callers isolate scenario environments in fixture.env and leave the parent PATH,
 // cwd and provider executables unchanged. Reuse discovery, never scenario renders.
 let configurationProvider;
+/** @type {Promise<string> | undefined} */
 let cliBuild;
 let cliDirectory;
 after(async () => {
@@ -854,6 +855,23 @@ async function writeFakeCommand(fake, path, command) {
   );
 }
 
+/**
+ * @typedef {"docker" | "podman"} ContainerEngine
+ * @typedef {"success" | "bootstrap-failed" | "worker-exited" | "worker-timeout" | "api-unauthorized" | "api-mismatch"} StartupScenario
+ * @typedef {{
+ *   engine?: ContainerEngine,
+ *   scenario?: StartupScenario,
+ *   dockerAlias?: boolean,
+ *   podmanDockerApi?: boolean,
+ *   podmanJsonConfig?: boolean,
+ *   dockerPlatformName?: string,
+ *   macosPodmanMachine?: "rootful" | "rootless",
+ *   containerConnection?: string,
+ *   containerHost?: string,
+ * }} FixtureOptions
+ * @param {import("node:test").TestContext} t
+ * @param {FixtureOptions} [options]
+ */
 async function createFixture(t, options = {}) {
   const directory = await realpath(await temporaryDirectory(t, "openclaw-dev-up-"));
 
@@ -991,6 +1009,14 @@ exit 86
 
 // Only external engine and cluster commands are inert. Configuration rendering,
 // selection, state ownership, rollback, and authenticated HTTP use the real code.
+/**
+ * @typedef {"success" | "cancelled-creation" | "docker-stack-holds-api-port" | "node-dns-refused" |
+ *   "compose-up-failed" | "compose-down-failed" | "cluster-create-rolled-back" | "cluster-create-failed" |
+ *   "cluster-delete-failed" | "readiness-blocked" | "api-unauthorized" | "api-mismatch"} LifecycleScenario
+ * @param {Awaited<ReturnType<typeof createFixture>>} fixture
+ * @param {LifecycleScenario} [scenario]
+ * @param {{engine?: ContainerEngine}} [options]
+ */
 async function prepareLifecycleCommands(fixture, scenario = "success", options = {}) {
   const engine = options.engine ?? "docker";
   const bin = join(fixture.directory, "bin");
@@ -1037,6 +1063,7 @@ async function writeOverride(fixture, name, lines) {
   return path;
 }
 
+/** @param {{ directory: string }} fixture */
 async function customRuntimeOverride(fixture) {
   return writeOverride(fixture, "compose.custom-runtime.yaml", [
     "services:",
@@ -1048,6 +1075,7 @@ async function customRuntimeOverride(fixture) {
   ]);
 }
 
+/** @param {{ directory: string }} fixture */
 async function perImageOverride(fixture) {
   return writeOverride(fixture, "compose.per-image.yaml", [
     "services:",
@@ -1059,6 +1087,7 @@ async function perImageOverride(fixture) {
   ]);
 }
 
+/** @param {{ directory: string }} fixture */
 async function publicControllerOverride(fixture) {
   return writeOverride(fixture, "compose.public-controller.yaml", [
     "services:",
@@ -1068,6 +1097,10 @@ async function publicControllerOverride(fixture) {
   ]);
 }
 
+/**
+ * @param {{ emptyEnv: string }} fixture
+ * @param {string} [overridePath]
+ */
 function composeOptions(fixture, overridePath) {
   const options = [
     "--env-file",
@@ -1086,6 +1119,19 @@ function composeOptions(fixture, overridePath) {
 // Like spawnSync with encoding utf8 (status, signal, stdout, stderr, and error on a
 // failed start or timeout), but without blocking this process: its command server must
 // answer the fake commands the program runs.
+/**
+ * @typedef {{
+ *   status: number | null,
+ *   signal: NodeJS.Signals | null,
+ *   stdout: string,
+ *   stderr: string,
+ *   error: Error | undefined,
+ * }} CommandResult
+ * @param {string} command
+ * @param {string[]} args
+ * @param {{ cwd?: string | undefined, env?: NodeJS.ProcessEnv | undefined, timeout?: number }} [options]
+ * @returns {Promise<CommandResult>}
+ */
 function runCommand(command, args, { cwd, env, timeout } = {}) {
   return new Promise((resolveRun) => {
     const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -1113,6 +1159,10 @@ function runCommand(command, args, { cwd, env, timeout } = {}) {
   });
 }
 
+/**
+ * @param {string[]} args
+ * @param {NodeJS.ProcessEnv} env
+ */
 function runDevUp(args, env) {
   return runCommand(bashExecutable, ["scripts/dev-up", ...args], {
     cwd: env.DEV_UP_FIXTURE_REPOSITORY,
@@ -1120,6 +1170,7 @@ function runDevUp(args, env) {
   });
 }
 
+/** @param {NodeJS.ProcessEnv} env */
 function runDevDown(env) {
   return runCommand(bashExecutable, ["scripts/dev-down"], {
     cwd: env.DEV_UP_FIXTURE_REPOSITORY,
@@ -1129,10 +1180,19 @@ function runDevDown(env) {
 
 // A dev-up log the fixture may not have written yet: a missing file is no records, and blank
 // lines are skipped.
+/**
+ * @param {string} path
+ * @returns {Promise<unknown[]>}
+ */
 function readJsonLines(path) {
   return readJsonLinesFile(path, { missingOk: true, skipBlank: true });
 }
 
+/**
+ * @template {{ args: string[] }} Invocation
+ * @param {Invocation[]} logs
+ * @returns {Invocation[]}
+ */
 function composeInvocations(logs) {
   return logs.filter(
     (entry) =>
