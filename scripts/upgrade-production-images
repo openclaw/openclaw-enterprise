@@ -42,7 +42,8 @@ only to keep a reviewed custom configuration.
 For a controller/broker upgrade, --verify-agent with --verify-agent-namespace
 requires the same active revision and Ready workload Pods before completion.
 It needs exact Agent read/operate and active AgentRevision read permissions.
---timeout-seconds bounds each wait (default 900, at most 86400).
+--timeout-seconds bounds each wait (default 900; Agent replacement 3600; at most 86400).
+The replacement default includes up to 30 minutes for admitted work to complete.
 --doctor-heap-mib sets OpenClaw Doctor's heap cap (default 384); raise it only
 after Doctor ran out of heap. It can change on --resume.
 EOF
@@ -424,6 +425,7 @@ occ=occ
 verify_agent=
 verify_agent_namespace=
 timeout_seconds=900
+replacement_timeout_seconds=3600
 doctor_heap_mib=384
 resume=0
 preflight_only=0
@@ -471,7 +473,7 @@ while (($#)); do
         --occ) occ=$2 ;;
         --verify-agent) verify_agent=$2 ;;
         --verify-agent-namespace) verify_agent_namespace=$2 ;;
-        --timeout-seconds) timeout_seconds=$2 ;;
+        --timeout-seconds) timeout_seconds=$2; replacement_timeout_seconds=$2 ;;
         --doctor-heap-mib) doctor_heap_mib=$2 ;;
       esac
       shift 2
@@ -2440,6 +2442,44 @@ else
   : >"$deployments"
 fi
 
+replacement_occ_read() {
+  local timeout_message=$1 remaining_seconds=$((deadline - SECONDS))
+  shift
+  ((remaining_seconds > 0)) || die "$timeout_message"
+  # Keep OCC's per-request timeout. A deployment status read may make several
+  # requests, so the remaining replacement window bounds the whole process.
+  python3 - "$remaining_seconds" "$timeout_message" "${occ_json[@]}" "$@" <<'PYTHON'
+import os
+import signal
+import subprocess
+import sys
+
+
+def interrupt(signum, _frame):
+    raise SystemExit(128 + signum)
+
+
+for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(signum, interrupt)
+
+seconds, message, *command = sys.argv[1:]
+process = subprocess.Popen(command, stdin=subprocess.DEVNULL, start_new_session=True)
+try:
+    status = process.wait(timeout=int(seconds))
+except subprocess.TimeoutExpired:
+    print(f"upgrade-production-images: {message}", file=sys.stderr)
+    status = 1
+finally:
+    if process.returncode is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+sys.exit(status if status >= 0 else 128 - status)
+PYTHON
+}
+
 # A failing CLI can still print a complete status. Publish the snapshot only
 # after the command succeeds and its output contains one known deployment state.
 poll_deployment_status() (
@@ -2447,7 +2487,8 @@ poll_deployment_status() (
   local snapshot status
   snapshot=$(mktemp "${destination}.XXXXXXXX") || return
   trap 'rm -f "$snapshot"' EXIT
-  "${occ_json[@]}" --namespace "$namespace_id" agent deployment-status "$agent_id" "$deployment_id" \
+  replacement_occ_read "Agent $agent_id deployment $deployment_id status could not be read before the upgrade timeout." \
+    --namespace "$namespace_id" agent deployment-status "$agent_id" "$deployment_id" \
     >"$snapshot" || return
   status=$(jq -ser 'select(length == 1) | .[0].status | select(IN("queued","running","succeeded","failed"))' "$snapshot") ||
     die "OCC returned an invalid deployment status for $deployment_id."
@@ -2456,6 +2497,9 @@ poll_deployment_status() (
   printf '%s\n' "$status"
 )
 
+# Agent replacement has its own observation budget after dispatch. Preserve the
+# shorter bounds for controller recovery, Doctor and other release phases.
+deadline=$((SECONDS + replacement_timeout_seconds))
 pending=$target_count
 while ((pending > 0)); do
   ((SECONDS < deadline)) || die "$pending Agent deployments remained incomplete at the upgrade timeout."
@@ -2472,7 +2516,8 @@ while ((pending > 0)); do
     esac
   done <"$deployments"
   ((failed == 0)) || die "at least one Agent deployment failed; inspect $evidence_dir/status."
-  ((pending == 0)) || sleep 2
+  remaining_seconds=$((deadline - SECONDS))
+  ((pending == 0 || remaining_seconds <= 0)) || sleep "$((remaining_seconds < 2 ? remaining_seconds : 2))"
 done
 
 doctor_targets="$evidence_dir/doctor-targets.jsonl"
@@ -2485,7 +2530,9 @@ while IFS= read -r deployment; do
     dedicated) expected_runtime_count=2 ;;
     *) die "Agent $agent_id returned unsupported execution mode $execution_mode." ;;
   esac
-  selected=$("${occ_json[@]}" --namespace "$namespace_id" agent get "$agent_id" | jq -er '.activeRevisionId')
+  active_agent=$(replacement_occ_read "Agent $agent_id active revision could not be read before the upgrade timeout." \
+    --namespace "$namespace_id" agent get "$agent_id")
+  selected=$(jq -er '.activeRevisionId' <<<"$active_agent")
   [[ "$selected" == "$deployment_id" ]] ||
     die "Agent $agent_id selected $selected instead of deployment $deployment_id."
   pods="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").pods.json"
@@ -2517,9 +2564,10 @@ while IFS= read -r deployment; do
         break
       fi
     fi
-    ((SECONDS < deadline)) ||
+    remaining_seconds=$((deadline - SECONDS))
+    ((remaining_seconds > 0)) ||
       die "Agent $agent_id revision Pods did not become ready before the upgrade timeout."
-    sleep 2
+    sleep "$((remaining_seconds < 2 ? remaining_seconds : 2))"
   done
 
   if ! gateway=$(

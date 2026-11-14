@@ -19,6 +19,7 @@ Use `--controller-image` for API and worker. Repository credentials also require
 `--runtime-image` updates Gateway and runtime images, redeploying running Agents
 concurrently. Allow capacity for overlapping versions. API and worker stop during
 migration and rollout.
+See [completion waiting and timeouts](../../reference/agents/planned-replacement.md#release-observation-window).
 
 Keep the checkout unchanged and exclusive; evidence/baselines stay outside the chart.
 Chart files are verified before cluster access.
