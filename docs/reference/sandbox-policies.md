@@ -105,6 +105,9 @@ application with its requester, operation ID, snapshot, and expected provider
 resource version. The worker rechecks authority, ownership, lifecycle, and the
 current ceiling before effects. It preserves defaults from the admitted revision.
 A concurrent provider update causes a conflict instead of an overwrite.
+OCC rejects a save that removes a pending application. After the worker records
+`applied` or `failed`, a save that advances the policy to its next version can
+clear the application record.
 
 `pending` means enforcement is unconfirmed. `applied` requires the provider's
 complete desired policy to match the admitted candidate and its active, loaded

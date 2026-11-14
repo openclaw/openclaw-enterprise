@@ -185,6 +185,9 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preControlPlaneAudit";
   }
   if (count === 77 && completedCount > 77) {
+    return "prePendingSandboxPolicyApplication";
+  }
+  if (count === 78 && completedCount > 78) {
     return "preNamespacePluginReleases";
   }
   if (count === completedCount) {

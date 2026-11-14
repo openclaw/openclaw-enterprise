@@ -97,6 +97,7 @@
     "tests/conformance/service-account-driver.test.ts",
     "tests/conformance/iam.test.mjs",
     "tests/conformance/platform-state-memory.test.mjs",
+    "tests/conformance/sandbox-policy-persistence.test.ts",
     "tests/conformance/contracts.test.mjs",
     "tests/conformance/presets.test.ts",
     "tests/integration/production-healthcheck.test.mjs",
@@ -339,6 +340,10 @@
     },
     {
       "path": "tests/conformance/platform-state-memory.test.mjs"
+    },
+    {
+      "path": "tests/conformance/sandbox-policy-persistence.test.ts",
+      "expectedTests": ["memory SandboxPolicy keeps pending custody until explicit settlement"]
     },
     {
       "path": "tests/conformance/pr-status.test.ts"

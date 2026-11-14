@@ -2564,6 +2564,11 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     };
   }
 
+  async function runWithInjectedFault(f, name, ...args) {
+    await f.failNext(name);
+    await assert.rejects(f.run(...args), injectedFault);
+  }
+
   registerRetainedFleetPreflightTests(fixture, injectedFault);
   registerUpgradeContinuityTests({
     fixture,
@@ -2650,8 +2655,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
 
   test("resume refuses a pending Installation write if the Secret became immutable", async (t) => {
     const f = await fixture(t);
-    await f.failNext("fail-scale-worker");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "fail-scale-worker");
     const events = await f.events();
     assert.deepEqual(events, ["scale-api"]);
     const state = await f.state();
@@ -2943,8 +2947,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     for (const field of ["manifest", "hook"]) {
       await t.test(field, async (subtest) => {
         const f = await immutableInstallationSwitch(subtest, { agent: true });
-        await f.failNext("lost-helm-response");
-        await assert.rejects(f.run(), injectedFault);
+        await runWithInjectedFault(f, "lost-helm-response");
         const accepted = await f.state();
         const changed = structuredClone(accepted);
         if (field === "manifest") {
@@ -2979,8 +2982,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     const f = await immutableInstallationSwitch(t);
     // Interrupt a prepared attempt before the first write, then change each
     // retained object's identity independently before resuming that attempt.
-    await f.failNext("fail-scale-api");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "fail-scale-api");
     const prepared = await f.state();
     for (const key of ["secret", "installationSuccessor"]) {
       const changed = structuredClone(prepared);
@@ -2999,12 +3001,10 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
 
   test("immutable Installation reference resumes partial quiescence and accepted submission without duplicate dispatch", async (t) => {
     const f = await immutableInstallationSwitch(t, { agent: true });
-    await f.failNext("fail-scale-worker");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "fail-scale-worker");
     assert.deepEqual(await f.events(), ["scale-api"]);
     assert.equal((await f.state()).worker, 1);
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run("--resume"), injectedFault);
+    await runWithInjectedFault(f, "lost-helm-response", "--resume");
     assert.equal((await f.state()).helmSubmissions, 1);
     assert.equal((await f.state()).dispatches, 0);
     // A Ready Pod still mounting the predecessor is not adoption of the staged
@@ -3029,8 +3029,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
   test("immutable Installation reference survives same-candidate Helm recovery and acknowledged resume", async (t) => {
     const f = await immutableInstallationSwitch(t, { recoveryHooks: true });
     await loseHelmResponseWithCompletedHook(f);
-    await f.failNext("fail-rollout-api");
-    await assert.rejects(f.run(...recoverHelm), injectedFault);
+    await runWithInjectedFault(f, "fail-rollout-api", ...recoverHelm);
     assert.equal((await f.state()).version, 3);
     assert.equal((await f.state()).rollbackSubmissions, 1);
     await f.run("--resume");
@@ -3183,8 +3182,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
 
   test("resume reads an accepted Secret write before Helm and preserves its other data", async (t) => {
     const f = await fixture(t);
-    await f.failNext("lost-secret-response");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "lost-secret-response");
     const interrupted = await f.state();
     assert.match(
       Buffer.from(interrupted.secret.data["installation.yaml"], "base64").toString(),
@@ -3269,8 +3267,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
 
   test("resume refuses an intervening same-values Helm revision even with checked history", async (t) => {
     const f = await fixture(t);
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "lost-helm-response");
     const state = await f.state();
     assert.equal(state.version, 2);
     // Another operator submits identical values after the accepted request. Its
@@ -3289,8 +3286,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
 
   test("resume refuses missing, empty or malformed Helm submission evidence", async (t) => {
     const f = await fixture(t);
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "lost-helm-response");
     const events = await f.events();
     const path = join(f.evidence, "helm-started");
     const original = JSON.parse(await readFile(path, "utf8"));
@@ -3315,8 +3311,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
 
   test("resume rejects invalid intent paths before any new submission", async (t) => {
     const f = await fixture(t);
-    await f.failNext("fail-scale-worker");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "fail-scale-worker");
     const events = await f.events();
     const path = join(f.evidence, "helm-started");
     // No Helm request exists at revision 1. A directory must not look absent,
@@ -3344,8 +3339,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       await t.test(changed, async (t) => {
         const f = await fixture(t, { candidates: true });
         const before = await f.state();
-        await f.failNext("lost-helm-response");
-        await assert.rejects(f.run(), injectedFault);
+        await runWithInjectedFault(f, "lost-helm-response");
         const events = await f.events();
         // Returning either object to its accepted baseline still conflicts with
         // the deployed candidate; checked history cannot authorize another Helm.
@@ -3371,12 +3365,10 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
 
   test("a nonaccepted Helm submission retries the same successor after checked history", async (t) => {
     const f = await fixture(t);
-    await f.failNext("reject-helm-submission");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "reject-helm-submission");
     assert.equal((await f.state()).version, 1);
     await assert.rejects(f.run("--resume"), /migration --check/);
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
+    await runWithInjectedFault(f, "lost-helm-response", "--resume", "--migration-history-checked");
     await assertHelmIntent(f, 1, 2);
     await f.run("--resume");
     assert.equal((await f.state()).version, 2);
@@ -3478,8 +3470,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     const values = JSON.parse(await readFile(path, "utf8"));
     values.database = { ...values.database, upgradeMigration: "separate" };
     await writeFile(path, JSON.stringify(values));
-    await f.failNext("fail-scale-worker");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "fail-scale-worker");
     await assert.rejects(
       f.run("--resume", "--migration-history-checked"),
       (error) => error.code === 3 && /separate database deployment/.test(error.stderr),
@@ -3603,8 +3594,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       chart: { installation: (installation) => installation },
       databaseAnswer: () => ({ rows: [{ id: databaseId }] }),
     });
-    await f.failNext("fail-scale-worker");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "fail-scale-worker");
     const path = join(f.evidence, "native-command-failures.tsv");
     const receipt = "quiescence-scale\tworker\t9\n";
     assert.equal(await readFile(path, "utf8"), receipt);
@@ -3645,8 +3635,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     assert.deepEqual(await f.events(), ["scale-api"]);
     databaseId = "ins_test";
     // A later failed attempt appends its observation instead of erasing the first.
-    await f.failNext("fail-scale-worker");
-    await assert.rejects(f.run("--resume"), injectedFault);
+    await runWithInjectedFault(f, "fail-scale-worker", "--resume");
     assert.equal(await readFile(path, "utf8"), receipt + receipt);
     await f.run("--resume");
     assert.equal(await readFile(path, "utf8"), receipt + receipt);
@@ -3664,8 +3653,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     // would hide a resume subshell that continues running after its parent is signalled.
     const fault = { mode: null };
     const f = await fixture(t, { preflightFault: fault });
-    await f.failNext("fail-scale-worker");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "fail-scale-worker");
     const before = await f.state();
     const originalCheck = await readFile(join(f.evidence, "preflight-migration.log"));
     fault.mode = "interrupt";
@@ -3718,8 +3706,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
 
   test("a lost resumed migration acknowledgement preserves the original recovery path", async (t) => {
     const f = await fixture(t);
-    await f.failNext("fail-scale-worker");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "fail-scale-worker");
     const before = await f.state();
     const originalParameters = await readFile(join(f.evidence, "parameters.json"));
     const originalCheck = await readFile(join(f.evidence, "preflight-migration.log"));
@@ -3859,8 +3846,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
 
   test("failed Helm migration keeps old writers stopped and requires checked history and a terminal Job", async (t) => {
     const f = await fixture(t);
-    await f.failNext("fail-migration");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "fail-migration");
     assert.equal((await f.state()).api, 0);
     assert.equal((await f.state()).worker, 0);
     await assert.rejects(f.run("--resume"), /migration --check/);
@@ -3883,8 +3869,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
     // The accepted failure consumed revision 2. A retry must bind revision 3;
     // losing its response must still resume without a third submission.
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
+    await runWithInjectedFault(f, "lost-helm-response", "--resume", "--migration-history-checked");
     await assertHelmIntent(f, 2, 3);
     await f.run("--resume");
     assert.equal((await f.state()).version, 3);
@@ -3896,8 +3881,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
   describe("resume evidence directory ownership", { concurrency: 2 }, () => {
     test("resume binds stale prepared copies to the original evidence directory before live access", async (t) => {
       const f = await fixture(t, { agent: true });
-      await f.failNext("fail-rollout-worker");
-      await assert.rejects(f.run(), injectedFault);
+      await runWithInjectedFault(f, "fail-rollout-worker");
       const copy = join(f.directory, "stale-copy");
       await cp(f.evidence, copy, { recursive: true });
 
@@ -3930,8 +3914,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       for (const change of ["move", "replacement", "missing identity"]) {
         await t.test(change, async (t) => {
           const f = await fixture(t, { agent: true });
-          await f.failNext("fail-scale-worker");
-          await assert.rejects(f.run(), injectedFault);
+          await runWithInjectedFault(f, "fail-scale-worker");
           const moved = join(f.directory, "moved-evidence");
           if (change === "missing identity") {
             const path = join(f.evidence, "parameters.json");
@@ -3968,8 +3951,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       for (const alias of ["original", "relative", "parent symlink"]) {
         await t.test(alias, async (t) => {
           const f = await fixture(t, { agent: true });
-          await f.failNext("fail-scale-worker");
-          await assert.rejects(f.run(), injectedFault);
+          await runWithInjectedFault(f, "fail-scale-worker");
           let evidence = f.evidence;
           if (alias === "relative") {
             evidence = relative(repository, f.evidence);
@@ -4018,8 +4000,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
 
       // Shell command substitution would strip the newline, redirecting both
       // the lock and evidence writes into the pre-existing sibling directory.
-      await f.failNext("fail-scale-worker");
-      await assert.rejects(f.run("--evidence-dir", evidence), injectedFault);
+      await runWithInjectedFault(f, "fail-scale-worker", "--evidence-dir", evidence);
       assert.equal(await readFile(siblingParameters, "utf8"), sentinel);
       assert.deepEqual(await readdir(f.evidence), ["parameters.json"]);
       assert.ok(existsSync(join(evidence, "prepared")));
@@ -4176,8 +4157,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     const f = await fixture(t, { agent: true });
     // The second poll writes a complete succeeded response before the CLI exits with an error.
     await f.failNext("deployment-status-running");
-    await f.failNext("fail-deployment-status-after-output");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "fail-deployment-status-after-output");
     assert.equal(existsSync(join(f.evidence, "completed")), false);
     const snapshot = join(f.evidence, "status/ns_test--agt_test--rev_new.json");
     const identity = { namespaceId: "ns_test", agentId: "agt_test", deploymentId: "rev_new" };
@@ -4852,8 +4832,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
 
   test("resume refuses a pending Helm release or unrelated Secret changes", async (t) => {
     const f = await fixture(t);
-    await f.failNext("lost-secret-response");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "lost-secret-response");
     const state = await f.state();
     state.helmStatus = "pending-upgrade";
     await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
@@ -4870,8 +4849,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
 
   test("resume rejects malformed protected inputs before another mutation", async (t) => {
     const f = await fixture(t);
-    await f.failNext("lost-secret-response");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "lost-secret-response");
     const path = join(f.directory, "values.json");
     const original = await readFile(path, "utf8");
     const events = await f.events();
@@ -4898,8 +4876,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       "comparison-file permissions require an unprivileged user",
     );
     const f = await fixture(t, { controllerOnly: true });
-    await f.failNext("fail-scale-worker");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "fail-scale-worker");
     const path = join(f.directory, "values.json");
     const values = JSON.parse(await readFile(path, "utf8"));
     const changed = JSON.stringify({ ...values, outsideReviewedUpgrade: true });
@@ -4959,8 +4936,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       simulatePair: true,
     });
     // The Secret write succeeds, but its client loses the response before Helm.
-    await f.failNext("lost-secret-response");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "lost-secret-response");
     const interrupted = await f.state();
     const liveInstallation = JSON.parse(
       Buffer.from(interrupted.secret.data["installation.yaml"], "base64").toString(),
@@ -5022,8 +4998,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
 
   test("resume refuses altered reviewed candidates before another mutation", async (t) => {
     const f = await fixture(t, { candidates: true });
-    await f.failNext("lost-secret-response");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "lost-secret-response");
     const path = join(f.directory, "candidate-values.json");
     const candidate = JSON.parse(await readFile(path, "utf8"));
     candidate.api.channelDirectoryProxyUrl = "http://198.51.100.26:3128";
@@ -5046,8 +5021,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
         cases.push(
           t.test(name, async (subtest) => {
             const f = await fixture(subtest);
-            await f.failNext("fail-scale-worker");
-            await assert.rejects(f.run(), injectedFault);
+            await runWithInjectedFault(f, "fail-scale-worker");
             const events = await f.events();
             // An interrupted release must use the frozen candidate and Agent inventory.
             await writeFile(join(f.evidence, name), "{}\n");
@@ -7183,8 +7157,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     );
     podSpec.containers.pop();
     await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
-    await f.failNext("fail-rollout-api");
-    await assert.rejects(f.run(...recoverHelm), injectedFault);
+    await runWithInjectedFault(f, "fail-rollout-api", ...recoverHelm);
     const acknowledged = await f.state();
     const live = acknowledged.recoveryResources["Deployment/broker-worker"].spec.template.spec;
     live.containers.push(worker);
@@ -7232,8 +7205,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       );
     }
     await writeFile(join(f.directory, "state.json"), JSON.stringify(pending));
-    await f.failNext("fail-rollout-api");
-    await assert.rejects(f.run(...recoverHelm), injectedFault);
+    await runWithInjectedFault(f, "fail-rollout-api", ...recoverHelm);
     const acknowledged = await f.state();
     acknowledged.recoveryResources["EnvoyProxy/gateway"].spec = previous.spec;
     await writeFile(join(f.directory, "state.json"), JSON.stringify(acknowledged));
@@ -7274,8 +7246,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     await writeFile(join(f.directory, "state.json"), JSON.stringify(corrected));
     // Rollback is acknowledged but ordinary acceptance is interrupted. Resume
     // must finish acceptance without rerunning migration or rollback.
-    await f.failNext("fail-rollout-api");
-    await assert.rejects(f.run(...recoverHelm), injectedFault);
+    await runWithInjectedFault(f, "fail-rollout-api", ...recoverHelm);
     assert.equal((await f.state()).version, 3);
     const acknowledged = await f.state();
     const preflightCount = acknowledged.preflight.created.length;
@@ -7372,21 +7343,18 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
       assert.equal(createHash("sha256").update(bytes).digest("hex"), intent.attempt.valuesSha256);
       return bytes;
     }
-    await f.failNext("fail-migration");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "fail-migration");
     const original = await assertHelmIntent(f, 1, 2);
     const originalValues = await assertProtectedValues(f.evidence, original, newController);
     const preparation = await f.readEvidence("parameters.json");
     // The retry's dry-run fails after staging values, before replacing the local
     // values or publishing a new intent. The failed submission stays authoritative.
-    await f.failNext("fail-server-dry-run");
-    await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
+    await runWithInjectedFault(f, "fail-server-dry-run", "--resume", "--migration-history-checked");
     assert.deepEqual(await assertHelmIntent(f, 1, 2), original);
     assert.deepEqual(await readFile(valuesPath), originalValues);
     await assert.rejects(f.run("--resume"), /migration --check/);
     assert.equal((await f.state()).helmSubmissions, 1);
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
+    await runWithInjectedFault(f, "lost-helm-response", "--resume", "--migration-history-checked");
     const retry = await assertHelmIntent(f, 2, 3);
     assert.notEqual(retry.attempt.nonce, original.attempt.nonce);
     assert.deepEqual(
@@ -7406,12 +7374,15 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
 
   test("a retry published before Helm accepts it can resume from its exact predecessor", async (t) => {
     const f = await fixture(t);
-    await f.failNext("fail-migration");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "fail-migration");
     const original = await assertHelmIntent(f, 1, 2);
     // B is published, but Helm refuses it before creating a revision. A remains live.
-    await f.failNext("reject-helm-submission");
-    await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
+    await runWithInjectedFault(
+      f,
+      "reject-helm-submission",
+      "--resume",
+      "--migration-history-checked",
+    );
     const retry = await assertHelmIntent(f, 2, 3);
     assert.notEqual(retry.attempt.nonce, original.attempt.nonce);
     const predecessor = await f.state();
@@ -7441,8 +7412,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
     for (const stagedFileExists of [false, true]) {
       await t.test(stagedFileExists ? "after staging" : "before staging", async (subtest) => {
         const f = await fixture(subtest);
-        await f.failNext("reject-helm-submission");
-        await assert.rejects(f.run(), injectedFault);
+        await runWithInjectedFault(f, "reject-helm-submission");
         const intent = await assertHelmIntent(f, 1, 2);
         const original = await f.readEvidence("helm-started");
         const directory = join(f.evidence, "helm-attempts", intent.attempt.nonce);
@@ -7468,8 +7438,7 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
 
   test("ordinary resume rejects a well-formed revision pair that differs from the immutable intent", async (t) => {
     const f = await fixture(t);
-    await f.failNext("lost-helm-response");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "lost-helm-response");
     const original = await assertHelmIntent(f, 1, 2);
     const state = await f.state();
     state.version = 3;
@@ -7535,14 +7504,17 @@ await describe("production image upgrade recovery", { concurrency: 3 }, async ()
 
   test("a staged retry with replaced local values still cannot replace the published attempt", async (t) => {
     const f = await fixture(t);
-    await f.failNext("fail-migration");
-    await assert.rejects(f.run(), injectedFault);
+    await runWithInjectedFault(f, "fail-migration");
     const original = await assertHelmIntent(f, 1, 2);
     const preparation = await f.readEvidence("parameters.json");
     // Simulate loss at the last native read after local values replacement, before
     // publishing the next intent. Resume must require explicit reconciliation.
-    await f.failNext("fail-before-helm-intent");
-    await assert.rejects(f.run("--resume", "--migration-history-checked"), injectedFault);
+    await runWithInjectedFault(
+      f,
+      "fail-before-helm-intent",
+      "--resume",
+      "--migration-history-checked",
+    );
     assert.notEqual(
       (await yamlFile(join(f.directory, "values.json"))).installation.upgradeAttemptId,
       original.attempt.nonce,
