@@ -5519,12 +5519,7 @@ test("OpenShell Envoy cleanup reports rejected deletes and continues remaining c
               if (args[0] === "get") {
                 return JSON.stringify({ items: [{ spec: { podCIDR: "10.42.0.0/24" } }] });
               }
-              assert.equal(args[0], "delete");
-              assert.ok(args.includes("--ignore-not-found=true"));
-              if (args[1] === "gatewayclass") {
-                assert.ok(args.includes("--wait=false"));
-              }
-              attempted.push(args[1]);
+              attempted.push(args);
               if (args[1] === refused) {
                 throw new Error("fixture delete rejected");
               }
@@ -5539,10 +5534,27 @@ test("OpenShell Envoy cleanup reports rejected deletes and continues remaining c
             await hook();
           }
         }, /fixture delete rejected/);
-        assert.equal(attempted[0], "fixture aggregate");
-        assert.equal(attempted[1], "relay cleanup");
-        assert.ok(attempted.includes("gatewayclass"));
-        assert.ok(attempted.includes("networkpolicy"));
+        // The raw aggregate runs first. The shared group then runs in reverse registration order,
+        // deleting the external policy while the release Namespace owns its own policy.
+        assert.deepEqual(attempted, [
+          "fixture aggregate",
+          "relay cleanup",
+          [
+            "delete",
+            "networkpolicy",
+            "oce-workspace-files-e276c4f1bbb5-envoy-dataplane",
+            "--namespace",
+            process.env.OCC_TEST_ENVOY_GATEWAY_NAMESPACE ?? "envoy-gateway-system",
+            "--ignore-not-found=true",
+          ],
+          [
+            "delete",
+            "gatewayclass",
+            "oce-workspace-files-e8b6103c0fcb",
+            "--ignore-not-found=true",
+            "--wait=false",
+          ],
+        ]);
       }
     },
   );
