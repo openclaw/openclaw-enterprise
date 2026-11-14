@@ -18,7 +18,7 @@ are routed and the internal Codex transport is connected or fails closed.
 - Trigger: profile rendering and authorized Agent deployment through the durable worker.
 - Sources: `scripts/render-installation-profile.mjs:buildRendered`,
   `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver`,
-  and `apps/controller/src/gateway-proxy.mjs:createGatewayProxyServer`.
+  and `apps/controller/src/gateway-proxy.ts:createGatewayProxyServer`.
 - Preconditions: supported topology, ready Namespace, selected Compute Driver,
   and a protected Installation configuration. Proxy credentials are not accepted.
 
@@ -106,7 +106,7 @@ workers use their separate unproxied configuration and initiate the Gateway conn
 
 ### 4. Relay or reject external traffic
 
-`apps/controller/src/gateway-proxy.mjs:createGatewayProxyServer` validates the
+`apps/controller/src/gateway-proxy.ts:createGatewayProxyServer` validates the
 operator host list and accepts only CONNECT/TCP 443 for matching destinations.
 An explicit `"*"` entry matches all hosts without changing CONNECT syntax or port
 checks. The chart still excludes private/reserved IPv4 upstreams through its

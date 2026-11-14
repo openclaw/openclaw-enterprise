@@ -31,7 +31,7 @@ spec:
         - name: gateway-proxy
           image: {{ .Values.images.controller | quote }}
           args:
-            - apps/controller/src/gateway-proxy.mjs
+            - apps/controller/src/gateway-proxy.ts
           securityContext:
             {{- include "openclaw.containerSecurity" . | nindent 12 }}
           resources:

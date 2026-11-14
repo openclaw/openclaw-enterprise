@@ -1,6 +1,12 @@
 import { createServer } from "node:http";
 import net from "node:net";
+import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
+
+type ClientSocket = Duplex & { resetAndDestroy(): unknown };
+function isClientSocket(socket: Duplex): socket is ClientSocket {
+  return "resetAndDestroy" in socket && typeof socket.resetAndDestroy === "function";
+}
 
 const DEFAULT_PORT = 3128;
 const CONNECT_TIMEOUT_MS = 10_000;
@@ -17,12 +23,12 @@ const DEFAULT_ALLOWED_HOSTS = [
   "*.slack-msgs.com",
 ];
 
-function validateAllowedHosts(hosts) {
+function validateAllowedHosts(hosts: unknown): asserts hosts is string[] {
   if (
     !Array.isArray(hosts) ||
     hosts.length > 256 ||
     hosts.some(
-      (host) =>
+      (host: unknown) =>
         typeof host !== "string" ||
         host.length > 253 ||
         (host !== "*" &&
@@ -37,7 +43,7 @@ function validateAllowedHosts(hosts) {
   }
 }
 
-function parsePort(value) {
+function parsePort(value: string | undefined) {
   if (value === undefined || value === "") {
     return DEFAULT_PORT;
   }
@@ -51,7 +57,7 @@ function parsePort(value) {
   return port;
 }
 
-function parseConnectTarget(target) {
+function parseConnectTarget(target: string | undefined) {
   const match = /^([A-Za-z0-9.-]+):([0-9]+)$/.exec(target ?? "");
   if (match === null) {
     return undefined;
@@ -60,10 +66,10 @@ function parseConnectTarget(target) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     return undefined;
   }
-  return { host: match[1].toLowerCase(), port };
+  return { host: match[1]!.toLowerCase(), port };
 }
 
-function isAllowedConnectTarget(target, allowedHosts) {
+function isAllowedConnectTarget(target: string | undefined, allowedHosts: readonly string[]) {
   const parsed = parseConnectTarget(target);
   return (
     parsed !== undefined &&
@@ -76,7 +82,7 @@ function isAllowedConnectTarget(target, allowedHosts) {
   );
 }
 
-function closeOnSocketError(socket) {
+function closeOnSocketError(socket: ClientSocket) {
   let closing = false;
   socket.on("error", () => {
     if (closing) {
@@ -87,7 +93,7 @@ function closeOnSocketError(socket) {
   });
 }
 
-function reject(socket, statusCode, message) {
+function reject(socket: ClientSocket, statusCode: number, message: string) {
   socket.end(`HTTP/1.1 ${statusCode} ${message}\r\nConnection: close\r\n\r\n`);
 }
 
@@ -95,7 +101,7 @@ function reject(socket, statusCode, message) {
 // of sending a FIN, so the client cannot take a cut reply as whole. With nothing queued, every
 // byte is already with the kernel (a shutdown may still be in flight, when a reset would fail
 // and leak the handle), so a plain close is right.
-function cutClient(socket) {
+function cutClient(socket: ClientSocket) {
   if (socket.writableLength > 0) {
     socket.resetAndDestroy();
     return;
@@ -112,7 +118,7 @@ function cutClient(socket) {
 // everything and closed its side, and cut it at `drainTimeoutMs`. Anything else (an upstream
 // close with no EOF) still closes the client now. The native admin WebSocket relay
 // (gateway/native-admin-proxy.ts) has its own copy: this file runs standalone, with no imports.
-function closeClientWhenDrained(clientSocket, drainTimeoutMs) {
+function closeClientWhenDrained(clientSocket: ClientSocket, drainTimeoutMs: number) {
   if (clientSocket.destroyed) {
     return;
   }
@@ -129,15 +135,15 @@ function closeClientWhenDrained(clientSocket, drainTimeoutMs) {
 // Bound pending client writes even below the high-water mark, where no drain event fires.
 // Keep normal pause/resume backpressure without timing out idle Socket Mode tunnels.
 // EOF hands ownership back to closeClientWhenDrained, which preserves complete replies.
-function forwardToClient(upstream, clientSocket, drainTimeoutMs) {
-  let timer;
+function forwardToClient(upstream: net.Socket, clientSocket: ClientSocket, drainTimeoutMs: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let pendingWrites = 0;
   let stopped = false;
   const clear = () => {
     clearTimeout(timer);
     timer = undefined;
   };
-  const write = (chunk) => {
+  const write = (chunk: Uint8Array | string) => {
     if (stopped) {
       return;
     }
@@ -189,7 +195,7 @@ function forwardToClient(upstream, clientSocket, drainTimeoutMs) {
 export function createGatewayProxyServer({
   clientDrainTimeoutMs = CLIENT_DRAIN_TIMEOUT_MS,
   allowedHosts = DEFAULT_ALLOWED_HOSTS,
-} = {}) {
+}: { clientDrainTimeoutMs?: number; allowedHosts?: unknown } = {}) {
   validateAllowedHosts(allowedHosts);
   const server = createServer((request, response) => {
     response.writeHead(405, { "content-type": "text/plain; charset=utf-8" });
@@ -197,6 +203,9 @@ export function createGatewayProxyServer({
   });
 
   server.on("connect", (request, clientSocket, head) => {
+    if (!isClientSocket(clientSocket)) {
+      throw new TypeError("CONNECT requires a reset-capable socket");
+    }
     // Attach this before reject(). A refused CONNECT that resets emits
     // EPIPE or ECONNRESET while the 403 is written; without a listener
     // that error exits the process.
@@ -207,7 +216,7 @@ export function createGatewayProxyServer({
       return;
     }
     const target = parseConnectTarget(request.url);
-    const upstream = net.connect({ host: target.host, port: target.port });
+    const upstream = net.connect({ host: target!.host, port: target!.port });
     let connected = false;
     upstream.setTimeout(CONNECT_TIMEOUT_MS);
     upstream.once("connect", () => {
@@ -248,7 +257,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       ? DEFAULT_ALLOWED_HOSTS
       : JSON.parse(process.env.OCC_GATEWAY_PROXY_ALLOWED_HOSTS);
   const server = createGatewayProxyServer({ allowedHosts });
-  const sockets = new Set();
+  const sockets = new Set<net.Socket>();
   server.on("connection", (socket) => {
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));

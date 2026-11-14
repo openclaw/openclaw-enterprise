@@ -28,6 +28,10 @@
     "resolveJsonModule": true
   },
   "include": [
+    "helpers/gateway-proxy.ts",
+    "conformance/gateway-proxy-reset.test.ts",
+    "conformance/gateway-proxy-tunnel.test.ts",
+    "fixtures/runtime-gateway-proxy.ts",
     "integration/sandbox-driver-namespace-provider-cases.ts",
     "integration/sandbox-driver-protected-git-configuration-cases.ts",
     "integration/sandbox-driver-protected-git-execution-cases.ts",

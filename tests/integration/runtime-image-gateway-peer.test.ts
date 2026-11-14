@@ -521,13 +521,13 @@ test(
     ]);
     await chmod(join(directory, "key.pem"), 0o644);
     for (const [file, source] of [
-      ["fixture.mjs", new URL("../fixtures/runtime-gateway-proxy.mjs", import.meta.url)],
-      [
-        "gateway-proxy.mjs",
-        new URL("../../apps/controller/src/gateway-proxy.mjs", import.meta.url),
-      ],
+      ["fixture.mjs", new URL("../fixtures/runtime-gateway-proxy.ts", import.meta.url)],
+      ["gateway-proxy.mjs", new URL("../../apps/controller/src/gateway-proxy.ts", import.meta.url)],
     ] as const) {
-      await writeFile(join(directory, file), await readFile(source));
+      await writeFile(
+        join(directory, file),
+        stripTypeScriptTypes(await readFile(source, "utf8"), { mode: "strip" }),
+      );
     }
     await runDocker(["network", "create", prefix]);
     // CI may use a remote Docker daemon: local temporary paths are not valid

@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import net from "node:net";
+import type { TestContext } from "node:test";
 import { join } from "node:path";
 import { reservedPortArgs, reservePort } from "./available-port.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 /**
- * Starts the bundled Gateway proxy (apps/controller/src/gateway-proxy.mjs) as a child process and
+ * Starts the bundled Gateway proxy (apps/controller/src/gateway-proxy.ts) as a child process and
  * resolves once it logs the port it bound. By default OCC_GATEWAY_PROXY_PORT is 0; with
  * `fixedPort` the helper holds a free port with reservePort() until the proxy has bound it,
  * passes it, and requires the proxy to bind exactly that port. Without SO_REUSEPORT the
@@ -19,8 +20,18 @@ import { temporaryDirectory } from "./temporary-directory.mjs";
  * what the proxy has written so far.
  */
 export async function startGatewayProxy(
-  t,
-  { fixedPort = false, upstreamPort, upstreamHosts = ["slack.com"], allowedHosts } = {},
+  t: TestContext,
+  {
+    fixedPort = false,
+    upstreamPort,
+    upstreamHosts = ["slack.com"],
+    allowedHosts,
+  }: {
+    fixedPort?: boolean;
+    upstreamPort?: number;
+    upstreamHosts?: string[];
+    allowedHosts?: readonly string[];
+  } = {},
 ) {
   const preload =
     upstreamPort === undefined
@@ -44,12 +55,17 @@ export async function startGatewayProxy(
     if (fixedPort) {
       assert.equal(proxy.port, port, "the proxy listens on OCC_GATEWAY_PROXY_PORT");
     }
-    return proxy;
+    return { ...proxy, port: proxy.port };
   }
 }
 
-async function spawnGatewayProxy(t, preload, port, allowedHosts) {
-  const child = spawn(process.execPath, [...preload, "apps/controller/src/gateway-proxy.mjs"], {
+async function spawnGatewayProxy(
+  t: TestContext,
+  preload: string[],
+  port: number,
+  allowedHosts: readonly string[] | undefined,
+) {
+  const child = spawn(process.execPath, [...preload, "apps/controller/src/gateway-proxy.ts"], {
     cwd: new URL("../../", import.meta.url),
     env: {
       ...process.env,
@@ -63,8 +79,8 @@ async function spawnGatewayProxy(t, preload, port, allowedHosts) {
   t.after(() => child.kill());
   let stderr = "";
   child.stderr.setEncoding("utf8");
-  let timer;
-  const listening = await new Promise((resolve, reject) => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const listening = await new Promise<number | undefined>((resolve, reject) => {
     // Generous: a CPU-starved runner can take seconds just to load the proxy.
     timer = setTimeout(() => reject(new Error(`Gateway proxy did not start: ${stderr}`)), 30_000);
     child.stderr.on("data", (chunk) => {
@@ -81,7 +97,11 @@ async function spawnGatewayProxy(t, preload, port, allowedHosts) {
   return { child, port: listening, stderr: () => stderr };
 }
 
-async function writeDnsFixture(t, upstreamPort, upstreamHosts) {
+async function writeDnsFixture(
+  t: TestContext,
+  upstreamPort: number,
+  upstreamHosts: readonly string[],
+) {
   const directory = await temporaryDirectory(t, "openclaw-gateway-proxy-test-");
   const path = join(directory, "dns-fixture.mjs");
   await writeFile(
@@ -120,16 +140,16 @@ net.connect = (...args) => {
 }
 
 /** Sends `CONNECT target` to the proxy on `port` and returns its response head. */
-export async function connectThroughProxy(port, target) {
+export async function connectThroughProxy(port: number, target: string) {
   return requestThroughProxy(port, `CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`);
 }
 
 /** Writes raw `request` bytes to the proxy on `port` and returns its response head. */
-export async function requestThroughProxy(port, request) {
+export async function requestThroughProxy(port: number, request: string) {
   const socket = net.connect({ host: "127.0.0.1", port });
   let response = "";
   try {
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error("proxy response timeout")), 10_000);
       const finish = () => {
         clearTimeout(timeout);

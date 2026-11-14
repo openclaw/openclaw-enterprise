@@ -235,6 +235,6 @@ telemetry backends. Its `files/dashboard.json` is also the Compose metrics
 dashboard; Compose provisioning and scraper configurations remain under
 `deploy/metrics/development/`.
 
-The bundled Gateway CONNECT server lives at `apps/controller/src/gateway-proxy.mjs`;
+The bundled Gateway CONNECT server lives at `apps/controller/src/gateway-proxy.ts`;
 its chart resources are `deploy/helm/openclaw-enterprise/templates/gateway-proxy.yaml`.
 The operator guide owns bundled/external selection and destination policy.

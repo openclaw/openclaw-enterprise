@@ -78,7 +78,7 @@
     "tests/integration/ci-image-pull.test.ts",
     "tests/integration/ci-download-pinned.test.ts",
     "tests/integration/ci-registry-transport.test.ts",
-    "tests/conformance/gateway-proxy-tunnel.test.mjs",
+    "tests/conformance/gateway-proxy-tunnel.test.ts",
     "tests/conformance/slack-proxy-backpressure.test.ts",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
     "tests/integration/qa-fixture-inputs.test.mjs",
@@ -124,7 +124,7 @@
     "tests/conformance/plugin-runtime-templates.test.ts",
     "tests/integration/ci-logging.test.ts",
     "tests/integration/ci-go-test.test.ts",
-    "tests/conformance/gateway-proxy-reset.test.mjs",
+    "tests/conformance/gateway-proxy-reset.test.ts",
     "tests/conformance/native-admin-upgrade-reset.test.mjs",
     "tests/conformance/repository-credentials-custody.test.ts",
     "tests/conformance/repository-credentials-receive-pack.test.mjs",
@@ -435,13 +435,13 @@
       "path": "tests/conformance/bounded-response-reads.test.ts"
     },
     {
-      "path": "tests/conformance/gateway-proxy-reset.test.mjs"
+      "path": "tests/conformance/gateway-proxy-reset.test.ts"
     },
     {
       "path": "tests/conformance/native-admin-upgrade-reset.test.mjs"
     },
     {
-      "path": "tests/conformance/gateway-proxy-tunnel.test.mjs"
+      "path": "tests/conformance/gateway-proxy-tunnel.test.ts"
     },
     {
       "path": "tests/conformance/slack-proxy-backpressure.test.ts"

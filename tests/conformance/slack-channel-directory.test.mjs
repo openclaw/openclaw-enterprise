@@ -13,7 +13,7 @@ import {
   connectThroughProxy,
   requestThroughProxy,
   startGatewayProxy,
-} from "../helpers/gateway-proxy.mjs";
+} from "../helpers/gateway-proxy.ts";
 import { within } from "../helpers/wait-for.mjs";
 
 const { Agent, fetch: undiciFetch } = createRequire(

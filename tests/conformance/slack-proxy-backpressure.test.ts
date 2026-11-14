@@ -4,7 +4,7 @@ import net from "node:net";
 import { Duplex } from "node:stream";
 import test, { type TestContext } from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
-import { createGatewayProxyServer } from "../../apps/controller/src/gateway-proxy.mjs";
+import { createGatewayProxyServer } from "../../apps/controller/src/gateway-proxy.ts";
 import { listen } from "../helpers/listen.ts";
 
 const writeBudgetMs = 100;

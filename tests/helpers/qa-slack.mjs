@@ -16,7 +16,7 @@ export async function prepareQaSlack(f) {
     const compose = loadYaml(await readFile(path, "utf8"));
     compose.services["gateway-proxy"] = {
       image: f.controllerDockerImage,
-      entrypoint: ["node", "apps/controller/src/gateway-proxy.mjs"],
+      entrypoint: ["node", "apps/controller/src/gateway-proxy.ts"],
       environment: { NODE_ENV: "production", OCC_GATEWAY_PROXY_PORT: "3128" },
       networks: { development: {} },
       read_only: true,
