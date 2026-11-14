@@ -97,11 +97,13 @@
               }
             ],
             "hidden": [
+              "guides/deploy/eks-openshell-installation",
               "guides/README",
               "guides/repository-credentials/openshell-read-only",
               "guides/repository-credentials/openshell-git-renewal",
               "guides/kubernetes-setup",
-              "guides/deploy/quickstart-session"
+              "guides/deploy/quickstart-session",
+              "guides/deploy/native-admin-domain-recovery"
             ]
           },
           {
@@ -228,12 +230,20 @@
                         "label": "Authorization"
                       },
                       {
+                        "page": "reference/authorization/default-users",
+                        "label": "Default Users"
+                      },
+                      {
                         "page": "reference/service-accounts",
                         "label": "Service Accounts"
                       },
                       {
                         "page": "reference/authentication/external-sign-in",
                         "label": "External Sign-In"
+                      },
+                      {
+                        "page": "reference/authentication/team-enrollment",
+                        "label": "OIDC Account Enrollment"
                       },
                       {
                         "page": "reference/authentication/service-api-keys",
@@ -266,6 +276,10 @@
                     "label": "Credential Proxy Threat Model"
                   },
                   {
+                    "page": "reference/connection-templates",
+                    "label": "Connection Templates"
+                  },
+                  {
                     "page": "reference/credential-sources",
                     "label": "Credential Sources"
                   },
@@ -296,6 +310,10 @@
                       {
                         "page": "guides/topics/plugins",
                         "label": "Overview"
+                      },
+                      {
+                        "page": "guides/topics/openclaw-plugins",
+                        "label": "OpenClaw Plugins"
                       },
                       {
                         "page": "guides/topics/plugins-configure",
@@ -359,6 +377,10 @@
                   {
                     "page": "reference/drivers/selection",
                     "label": "Quickstart"
+                  },
+                  {
+                    "page": "reference/drivers/namespace-lifecycle",
+                    "label": "Namespace Lifecycle"
                   },
                   {
                     "group": "Compute",
@@ -432,6 +454,10 @@
                       {
                         "page": "reference/drivers/openshell-sandbox/harness-providers",
                         "label": "OpenShell Harness Providers"
+                      },
+                      {
+                        "page": "reference/drivers/openshell-sandbox/namespace-gateway",
+                        "label": "Namespace Gateway"
                       }
                     ]
                   },
@@ -561,7 +587,8 @@
               "reference/repository-credentials/development-token",
               "reference/repository-credentials/openshell-git",
               "reference/repository-credentials/openshell-git-refusals",
-              "reference/repository-credentials/openshell-git-restarts"
+              "reference/repository-credentials/openshell-git-restarts",
+              "reference/repository-credentials/worker-replacement"
             ]
           },
           {
@@ -733,12 +760,28 @@
                     "label": "Image Upgrades"
                   },
                   {
+                    "page": "guides/deploy/separate-database-upgrade",
+                    "label": "Separate Database Deployment"
+                  },
+                  {
+                    "page": "guides/deploy/immutable-installation-upgrade",
+                    "label": "Immutable Installation"
+                  },
+                  {
                     "page": "guides/deploy/production-installation-changes",
                     "label": "Installation Changes"
                   },
                   {
                     "page": "guides/deploy/production-upgrade-recovery",
                     "label": "Upgrade Recovery"
+                  },
+                  {
+                    "page": "guides/deploy/production-preflight-cleanup",
+                    "label": "Preflight Cleanup"
+                  },
+                  {
+                    "page": "guides/deploy/production-helm-recovery",
+                    "label": "Helm Recovery"
                   },
                   {
                     "page": "guides/deploy/split-layout-upgrade",
@@ -773,7 +816,9 @@
               }
             ],
             "hidden": [
+              "guides/deploy/production-installation-preparation",
               "guides/deploy/service-keys",
+              "guides/deploy/oidc-upgrade",
               "guides/deploy/local-operations",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",
@@ -932,15 +977,18 @@
               "testing/docker",
               "testing/ssh",
               "testing/kubernetes",
+              "testing/native-agent-browser",
               "testing/populated-controller-return",
               "testing/slack",
               "testing/plugins",
               "testing/openshell",
               "testing/openshell-oauth",
               "testing/openshell-coverage",
+              "testing/openshell-permission-diagnostics",
               "testing/ci/openshell-execution",
               "testing/repository-credentials",
               "testing/static-egress",
+              "testing/static-egress-upgrade",
               "testing/protected-repository-custody"
             ]
           },
@@ -1203,6 +1251,7 @@
               "flows/platform-startup",
               "flows/production-startup",
               "flows/coordinated-production-upgrade",
+              "flows/coordinated-production-upgrade/preflight-cleanup",
               "flows/tenant-restore",
               "flows/docker-compose-development/startup",
               "flows/docker-compose-development/keycloak",
@@ -1231,6 +1280,7 @@
               "flows/harness-execution-topology",
               "flows/compute-driver-lifecycle-hooks",
               "flows/openshell-sandbox-provisioning",
+              "flows/connection-templates",
               "flows/credential-source-lifecycle",
               "flows/credential-source-refresh",
               "flows/driver-plugin-loading",
@@ -1309,18 +1359,18 @@
         "authenticate-the-image-builder-to-ecr": "/guides/deploy/eks-openshell-setup/#authenticate-the-image-builder-to-ecr",
         "configure-network-enforcement-and-storage": "/guides/deploy/eks-openshell-setup/#configure-network-enforcement-and-storage",
         "enable-console-workspace-files": "/guides/deploy/eks-openshell-setup/#enable-console-workspace-files",
-        "configure-the-protected-copies-and-install": "/guides/deploy/eks-openshell-setup/#configure-the-protected-copies-and-install",
-        "verify-workspace-routing": "/guides/deploy/eks-openshell-setup/#verify-workspace-routing",
+        "configure-the-protected-copies-and-install": "/guides/deploy/eks-openshell-installation/#configure-the-protected-copies-and-install",
+        "verify-workspace-routing": "/guides/deploy/eks-openshell-installation/#verify-workspace-routing",
         "update-an-existing-eks-installation": "/guides/deploy/production-upgrade/"
       }
     },
     {
       "from": "/guides/deploy/eks-openshell-browser/",
-      "to": "/guides/deploy/eks-openshell-setup/#configure-browser-access",
+      "to": "/guides/deploy/eks-openshell-installation/#configure-browser-access",
       "anchors": {
-        "set-the-production-browser-origins-before-installing-occ": "/guides/deploy/eks-openshell-setup/#set-the-production-browser-origins-before-installing-occ",
-        "read-the-protected-initial-owner-files": "/guides/deploy/eks-openshell-setup/#read-the-protected-initial-owner-files",
-        "install-the-loopback-tls-listener": "/guides/deploy/eks-openshell-setup/#install-the-loopback-tls-listener"
+        "set-the-production-browser-origins-before-installing-occ": "/guides/deploy/eks-openshell-installation/#set-the-production-browser-origins-before-installing-occ",
+        "read-the-protected-initial-owner-files": "/guides/deploy/eks-openshell-installation/#read-the-protected-initial-owner-files",
+        "install-the-loopback-tls-listener": "/guides/deploy/eks-openshell-installation/#install-the-loopback-tls-listener"
       }
     },
     {

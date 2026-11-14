@@ -32,7 +32,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { CREDENTIAL_PROXY_ONE_SOURCE } from "../helpers/refusal-text.mjs";
 
 test(
@@ -94,22 +94,32 @@ test(
         // The reduction protocol needs distinct upstreams. Only the primary source is a Harness
         // model source; a separate fixture provider owns the auxiliary API destination.
         const auxiliaryOrigin = origin.replace("provider.example.test", "second.example.test");
-        const auxiliary = createOpenAiStaticProvider({
-          protocol: "openai-responses",
-          baseUrl: `${auxiliaryOrigin}/v1`,
-        });
+        const auxiliary = createOpenAiStaticProvider();
         const auxiliaryType = { ...auxiliary.sourceType, type: "auxiliary-inference" };
         delete auxiliaryType.harnessAuth;
         const auxiliaryProvider = {
           ...auxiliary,
           ref: { ...auxiliary.ref, id: "auxiliary-inference" },
           sourceType: auxiliaryType,
+          routes(
+            source: Parameters<typeof auxiliary.routes>[0],
+            binding: Parameters<typeof auxiliary.routes>[1],
+          ) {
+            return auxiliary.routes(source, binding, {
+              modelProvider: {
+                protocol: "openai-responses",
+                baseUrl: `${auxiliaryOrigin}/v1`,
+                supportsStandaloneWebSearch: false,
+              },
+            });
+          },
         };
-        // This test-owned catalogue adapter delegates validation and routing to the real provider.
-        // Registration remains live through the Proxy; no Gateway copy is invented for this type.
+        // The auxiliary type separates the two routes in this protocol fixture. Delegate its
+        // registration to the real OpenAI Gateway path before explicit Proxy adoption.
         const gateway = app.controller.selectedDriver("credential_gateway");
         const listTypes = gateway.listSourceTypes.bind(gateway);
         const validate = gateway.validateSourceConfig.bind(gateway);
+        const register = gateway.registerSource.bind(gateway);
         t.mock.method(gateway, "listSourceTypes", async (...args: Parameters<typeof listTypes>) => [
           ...(await listTypes(...args)),
           auxiliaryType,
@@ -118,6 +128,15 @@ test(
           input.type === auxiliaryType.type
             ? auxiliary.normalizeConfig(input.config)
             : validate(input),
+        );
+        t.mock.method(
+          gateway,
+          "registerSource",
+          (context: Parameters<typeof register>[0], input: Parameters<typeof register>[1]) =>
+            register(
+              context,
+              input.type === auxiliaryType.type ? { ...input, type: "openai" } : input,
+            ),
         );
         const sandbox = new Proxy(app.controller.selectedDriver("sandbox"), {
           get(target, key) {
@@ -159,7 +178,15 @@ test(
         };
         owner = new InstalledDriver(
           { id: proxy.id, implementation: proxy.implementation, configuration: {} },
-          { capabilities: { sandbox, credential_proxy: proxy } },
+          {
+            capabilities: { sandbox, credential_proxy: proxy },
+            namespaceLifecycleHooks: {
+              // The replacement exercises policy reduction on an already-provisioned execution.
+              async ensureNamespace() {
+                assert.fail("Policy reduction must not reinitialize Namespace infrastructure.");
+              },
+            },
+          },
         );
         app.controller.installDriver(owner, ["sandbox", "credential_proxy"]);
         compute = createTestKubernetesComputeDriver("policy-reduction-compute", {
@@ -181,7 +208,13 @@ test(
             },
           });
           assert.equal(result.status, 201, JSON.stringify(result.body));
-          return result.data;
+          // Both sources must be protected before binding; selecting a Proxy alone
+          // no longer enrolls a newly registered Gateway source.
+          const adopted = await app.request("PATCH", `${path}/${result.data.id}`, {
+            body: { adoption: "live", authorityScope: "execution" },
+          });
+          assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
+          return adopted.data;
         };
         const source = await createSource(
           "first-reduced-source",

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-11-03
-last_updated_session: authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc
+updated: 2026-11-14
+last_updated_session: authoring-run/b17203e9-337c-40cf-9a41-0139532525fe
 ---
 
 # Installation Profile Rendering Flow
@@ -9,7 +9,7 @@ last_updated_session: authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc
 ## Overview
 
 An operator passes a profile, JSON inputs, and output directory to
-`scripts/render-installation-profile.mjs`. It validates inputs, resolves omitted
+`scripts/render-installation-profile.ts`. The renderer validates inputs, resolves omitted
 hosted Codex destinations, and writes paired Helm values, Installation YAML, and
 preflight. This flow ends at those files. Operators still prepare the cluster
 and Secrets, apply Helm, and configure hosted/runtime tokens, optional ChatGPT
@@ -17,10 +17,10 @@ service accounts, the repository registry, and Slack consumers.
 
 ## Entry Points
 
-- Trigger: `node scripts/render-installation-profile.mjs --profile openclaw|codex --input <json> --out-dir <dir>`.
-- Source: `scripts/render-installation-profile.mjs:parseArgs`,
-  `scripts/render-installation-profile.mjs:buildRendered`, and
-  `scripts/render-installation-profile.mjs:resolveHostedDiscoveryCidrs`.
+- Trigger: `node scripts/render-installation-profile.ts --profile openclaw|codex --input <json> --out-dir <dir>`.
+- Source: `scripts/render-installation-profile.ts:runInstallationProfileCli`,
+  `scripts/render-installation-profile.ts:buildRendered`, and
+  `scripts/render-installation-profile.ts:resolveHostedDiscoveryCidrs`.
 - Assumptions: The caller runs from the repository root with installed
   dependencies, a trusted profile under `deploy/profiles/`, and site inputs that
   contain no plaintext credentials.
@@ -55,7 +55,10 @@ graph TD
 
 ### 1. Parse arguments and select the profile
 
-`scripts/render-installation-profile.mjs:parseArgs`
+`scripts/render-installation-profile.ts:parseArgs`
+
+Direct Node execution runs the CLI. Importing the module exposes the renderer
+and its refusal type without running the command.
 
 `parseArgs` accepts `--profile`, `--input`, and `--out-dir`; other flags fail
 before output. Profiles are `openclaw` or `codex`, with no `default`. JSON supplies
@@ -73,7 +76,7 @@ files remain untouched.
 
 ### 2. Load profile and site input
 
-`scripts/render-installation-profile.mjs:readProfile`
+`scripts/render-installation-profile.ts:readProfile`
 
 `deploy/profiles/` supplies profile identity and PluginDriver selection. JSON
 supplies site images, domains, CIDRs, Secrets, and repository registry names.
@@ -82,7 +85,7 @@ Codex CIDRs make Helm values depend on DNS.
 
 ### 3. Validate every supplied input
 
-`scripts/render-installation-profile.mjs:buildInput`
+`scripts/render-installation-profile.ts:buildInput`
 
 Closed sections reject unknown fields, including unused readiness flags;
 OpenClaw rejects Codex-only inputs.
@@ -129,7 +132,7 @@ and repository Secrets cannot match `occ-installation-startup`, `occ-database`,
 collector Secrets, or earlier listed Secrets. Only the two public CA Secrets
 may share one; collisions fail preflight.
 
-`scripts/render-installation-profile.mjs:nodeSelector` checks
+`scripts/render-installation-profile.ts:nodeSelector` checks
 `controlPlane.nodeSelector`, `runtime.nodeSelector` and
 `runtime.gatewayNodeSelector` against the chart and bootstrap-volume helper's
 Kubernetes label-key and label-value rules (values may be empty). Compute copies
@@ -143,11 +146,15 @@ characters total, without a per-segment cap. Namespace names and unqualified
 label names/values retain their 63 limit. The chart and
 `scripts/prepare-bootstrap-volume:is_dns_subdomain` share this prefix/claim
 rule; the chart checks peers only for nonempty maps. Repository Backend IDs
-follow their rule within 200 UTF-16 code units, as in the chart.
+follow their rule within 200 UTF-16 code units, as in the chart. After composing
+all Backends, preflight also checks the startup rule that their IDs are unique.
+A repository Backend cannot use `chatgpt-primary` when managed ChatGPT accounts
+are enabled; that ID remains valid without the ChatGPT Backend. A collision
+produces failed preflight without either deployment file.
 
 ### 4. Build Helm values
 
-`scripts/render-installation-profile.mjs:buildRendered`
+`scripts/render-installation-profile.ts:buildRendered`
 
 `controlPlane.databaseCa.key` allows letters, digits, `.`, `_`, or `-`, at most
 253 characters; neither `.` nor a `..` prefix. Thus `..ca.pem` and 254-character
@@ -192,7 +199,7 @@ profile schema accepts only string labels.
 
 ### 5. Build Installation startup YAML
 
-`scripts/render-installation-profile.mjs:buildRendered`
+`scripts/render-installation-profile.ts:buildRendered`
 
 The Installation output selects Kubernetes Configuration, native IAM,
 Kubernetes Compute, Kubernetes Secrets, default Preset seeding, and the profile
@@ -230,7 +237,7 @@ dot does not, because the suffix would start a new label with a hyphen.
 
 ### 6. Resolve hosted discovery egress
 
-`scripts/render-installation-profile.mjs:resolveHostedDiscoveryCidrs`
+`scripts/render-installation-profile.ts:resolveHostedDiscoveryCidrs`
 
 After validation, hosted `codex-plugin` with omitted `codex.modelDiscoveryCidrs`
 queries IPv4 addresses for `auth.openai.com` and `chatgpt.com` with a resolver timeout of 1.5 seconds and one try. Sorted unique
@@ -246,7 +253,7 @@ refreshes live policy.
 
 ### 7. Write outputs and preflight
 
-`scripts/render-installation-profile.mjs:writeYaml`
+`scripts/render-installation-profile.ts:renderYaml`
 
 On success, the renderer serializes a deterministic `installation.yaml`, hashes
 those exact bytes with SHA-256, and sets `controlPlane.installationChecksum` in
@@ -264,15 +271,18 @@ Input-loading failures exit without a preflight report.
 The preflight report lists warnings, external prerequisites, and the next
 operator steps. It tells the operator to update the Installation startup Secret
 before the Helm upgrade, so API and worker pod-template annotations roll when
-startup-only configuration changes. The report does not claim live readiness:
+startup-only configuration changes. The Slack proxy reads its configuration from its
+Pod template. Removing the checksum annotation from a previously annotated proxy
+triggers one rollout. Later Installation checksum changes preserve its Pod template.
+The report does not claim live readiness:
 Helm rendering, Secret creation, runtime proof, hosted discovery, Slack consumer
 activation, and repository registry creation need separate evidence.
 
 ## Debugging and Verification
 
-- Run `node --test tests/integration/profile-renderer.test.mjs` to exercise the
+- Run `node --test tests/integration/profile-renderer.test.ts` to exercise the
   CLI and inspect generated profile output.
-- `tests/integration/profile-preflight-chart-parity.test.mjs` runs trusted proxy
+- `tests/integration/profile-preflight-chart-parity.test.ts` runs trusted proxy
   CIDRs and client address headers, namespaces, node selectors, sign-in Secret
   names and keys, controller images, claim names, Backend IDs and free-text
   values through the renderer and `helm template`, plus the API parser or
@@ -306,11 +316,21 @@ activation, and repository registry creation need separate evidence.
 
 ## Changelog
 
+- 2026-11-14 12:18: Run the installation profile command directly from its TypeScript source in the accompanying change. (authoring-run/b17203e9-337c-40cf-9a41-0139532525fe - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
+
+- 2026-11-14 13:26: Keep the public renderer entry point and point to its strict TypeScript owner in the accompanying change. (authoring-run/b8058a93-be93-46c4-a823-6c9397935811 - cc06a6ec22b7071dc7913086a0d891da53d8f8be)
+
+- 2026-11-13: Document how Installation checksum changes affect the Slack proxy during chart upgrades. (authoring-run/6240a4c1-6718-4317-861f-b786ad5020b9, accompanying change)
+
 - 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
 
 - 2026-10-28 20:25: Refuse input/output file collisions before cleanup in the accompanying change. (authoring-run/ebaa9b91-58b3-47dc-97d9-ad103250247d - 420d76bcbd15dcd3644e474d413484c35ce22797)
 
+- 2026-10-19 04:34: Preserve Backend ID checks and upstream CA mount alias rules in the ordinary main merge. (authoring-run/4a78d437-454c-4401-81af-914631ec80fd - 839abfa1235847cdd0b2a9a31ae9212f560fe985)
+
 - 2026-10-18 14:40: Compare database CA mount destinations with Helm. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - bcf4fbcf0)
+
+- 2026-10-17 17:55: Refuse composed Backend ID collisions before deployment files are written. (authoring-run/e4102058-8f0c-46a5-9b80-14c6ba6d7801 - 7b3a70b371fd914540fbc05e3a8080b2bbb1dd6d)
 
 - 2026-10-13 16:26: Merge current profile validation while retaining hosted discovery DNS snapshots and explicit network policy inputs. (authoring-run/1e1d633d-329d-462f-b077-6cb27c43a6e4 - da72ecf45a0989b857fd7f05d8238a38a979eb64)
 

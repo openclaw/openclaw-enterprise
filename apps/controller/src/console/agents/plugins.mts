@@ -14,6 +14,7 @@ import {
   button,
   element,
   focusSaveOutcome,
+  jsonObjectDiagnostic,
   revealStatus,
   setUnavailable,
   statusBlock,
@@ -207,9 +208,8 @@ export function renderAgentPlugins(
   const hasBoundCredential =
     agent.harnessAuth?.method === "credential_source" ||
     (agent.harnessAuth?.method === "codex_pat" && agent.harnessAuth.source?.kind === "secret");
-  const harnessId = configuredHarnessId(snapshot.values);
-  const codex = harnessId === "codex";
-  const dedicatedOpenClaw = harnessId === "openclaw" && agent.executionMode === "dedicated";
+  const codex = configuredHarnessId(snapshot.values) === "codex";
+  // The saved capabilities already resolve the OpenClaw Harness, including the default.
   let openClawDriver = false;
   // Codex serves curated plugins only to ChatGPT logins; an API-key Agent gets each
   // selected plugin disabled at deployment with PLUGIN_AUTH_REQUIRED.
@@ -228,7 +228,7 @@ export function renderAgentPlugins(
     canDiscover: () =>
       !updateDenied &&
       (openClawDriver
-        ? dedicatedOpenClaw && catalogCredential === "none"
+        ? agent.executionMode === "dedicated" && catalogCredential === "none"
         : codex &&
           !apiKeyAuth &&
           (catalogCredential === "none" ||
@@ -403,20 +403,20 @@ export function renderAgentPlugins(
     ) {
       return;
     }
-    let plugins: unknown;
-    try {
-      plugins = JSON.parse(input.value);
-      if (plugins === null || typeof plugins !== "object" || Array.isArray(plugins)) {
-        throw new Error();
-      }
-    } catch {
-      input.setCustomValidity("Enter a valid Plugin selections JSON object.");
+    const diagnostic = jsonObjectDiagnostic(input.value);
+    if (diagnostic.kind !== "valid") {
+      input.setCustomValidity(
+        diagnostic.kind === "number-range"
+          ? diagnostic.message
+          : "Enter a valid Plugin selections JSON object.",
+      );
       // The error goes under the field, opening its section, without the browser's bubble; the
       // status line does not repeat it.
       validateFields([input]);
       feedback.textContent = "";
       return;
     }
+    const plugins = diagnostic.value;
     pending = true;
     saveError.textContent = "";
     feedback.textContent = "Checking saved plugin selections…";

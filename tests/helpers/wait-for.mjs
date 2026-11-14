@@ -10,6 +10,13 @@ import { setTimeout as delay } from "node:timers/promises";
 // recent error from any read (even if later reads returned undefined) and keeps it as `cause`.
 // `description` may be a function, called once at the deadline, so the failure can report
 // the state that was still wrong.
+/**
+ * @template T
+ * @param {string | (() => string)} description
+ * @param {() => T | undefined | PromiseLike<T | undefined>} read
+ * @param {number | null | { timeoutMs?: number, intervalMs?: number, retryErrors?: boolean }} [options]
+ * @returns {Promise<T>}
+ */
 export async function waitFor(description, read, options = {}) {
   const {
     timeoutMs = 10_000,
@@ -57,6 +64,13 @@ export async function waitUntil(description, check, options) {
 // Polls `read` like waitFor (same options, passed through), except that `false` also
 // means "not yet": for reads that answer false until they can return the awaited value.
 // Unlike waitUntil, other falsy results (null, 0, "") end the wait and are returned.
+/**
+ * @template T
+ * @param {Parameters<typeof waitFor>[0]} description
+ * @param {() => T | false | undefined | PromiseLike<T | false | undefined>} read
+ * @param {Parameters<typeof waitFor>[2]} [options]
+ * @returns {Promise<T>}
+ */
 export function waitForResult(description, read, options) {
   return waitFor(
     description,

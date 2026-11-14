@@ -1,3 +1,8 @@
+import type {
+  NamespaceEnsureResult,
+  NamespaceDeleteResult,
+  NamespaceDeletionEligibility,
+} from "../namespace-lifecycle.ts";
 import type { ConfigurationValidationOptions } from "../configuration/index.ts";
 import type { CredentialAttachmentStatus } from "../credential-gateway/index.ts";
 import type {
@@ -32,7 +37,7 @@ import type {
   AgentRuntimeLogChunk,
   AgentRuntimeLogRequest,
 } from "../../runtime-logs.ts";
-import type { SandboxHarnessObservation } from "../sandbox/index.ts";
+import type { SandboxNamespaceContext, SandboxHarnessObservation } from "../sandbox/index.ts";
 import type { WorkspaceSetup } from "../../workspace-setup.ts";
 
 export interface ComputeRevisionContext {
@@ -57,35 +62,12 @@ export interface WorkloadLaunchContext {
 }
 
 export interface ComputeLifecycleHooks {
-  afterNamespacePrepared?(namespace: Readonly<Namespace>, signal: AbortSignal): Promise<void>;
   beforeWorkloadStart?(
     revision: Readonly<AgentRevision>,
     launch: WorkloadLaunchContext,
     signal: AbortSignal,
   ): Promise<void>;
   beforeWorkloadStop?(revision: Readonly<AgentRevision>, signal: AbortSignal): Promise<void>;
-  beforeNamespaceDelete?(namespace: Readonly<Namespace>, signal: AbortSignal): Promise<void>;
-}
-
-export type NamespaceLifecycleFailure = "retryable" | "permanent";
-
-export interface NamespaceEnsureResult extends Scope {
-  readonly namespaceId: string;
-  readonly namespaceReady: boolean;
-  readonly failure?: NamespaceLifecycleFailure;
-  /**
-   * Optional bounded, non-secret operator explanation of `failure`, at most 256 printable
-   * characters. It names only this Namespace's own placement, never another tenant's
-   * identifiers or marker values. The worker logs it; status and audit keep only `failure`.
-   * The log keeps only letters, digits, spaces and `. _ : / @ -`; other text is dropped.
-   */
-  readonly reason?: string;
-}
-
-export interface NamespaceDeleteResult extends Scope {
-  readonly namespaceId: string;
-  readonly namespaceDeleted: boolean;
-  readonly failure?: NamespaceLifecycleFailure;
 }
 
 export interface PluginDeploymentWarning {
@@ -216,7 +198,17 @@ export interface ComputePreflightResult {
   readonly warnings: readonly ComputePreflightWarning[];
 }
 
+/** Prospective repository-only assessment; never authority to retain or release an execution. */
+export type RepositoryWorkerRestartDisposition =
+  "original-worker-required" | "reverification-supported" | "not-applicable" | "unknown";
+
 export interface ComputeDriver extends Driver {
+  /** Read existing owner evidence without adopting, refreshing, or verifying a live execution. */
+  repositoryWorkerRestartDisposition?(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<RepositoryWorkerRestartDisposition>;
+
   /**
    * Read only the selected revision's existing Harness. Never prepare, adopt, attach,
    * repair, release or authorize an execution. Missing support provides no assurance.
@@ -312,8 +304,25 @@ export interface ComputeDriver extends Driver {
     /** Catalog entry for a `credential_source` binding; absent for every other method. */
     credentialSourceType?: CredentialSourceType,
   ): void;
+  /** Validate and normalize the Driver-owned deployment request without side effects. */
+  normalizeHarnessOverrides?(
+    overrides: Readonly<Record<string, unknown>>,
+  ): Readonly<Record<string, unknown>>;
+  /** Resolve immutable Harness settings before credential and egress admission. */
+  resolveHarnessConfiguration?(
+    harness: RevisionHarnessDescriptor,
+    auth: HarnessAuthSnapshot,
+    configuration: OpenClawConfigurationDocument,
+  ): Readonly<Record<string, unknown>>;
+  /** Check source consent against the resolved settings before any credential delivery. */
+  validateHarnessCredentialSources?(
+    harness: RevisionHarnessDescriptor,
+    sources: readonly Readonly<import("../../index.ts").CredentialSource>[],
+  ): void;
   /**
-   * Withdraw expired Git access or a standing grant durably withdrawn before its first deadline.
+   * Withdraw expired Git access or a durably withdrawn standing or finite grant.
+   * Finite withdrawal requires committed removal from the original admitted set, not merely
+   * changed configuration or unavailable Git evidence.
    * Observe that withdrawal again after a restart. Never grant
    * access, replace the runtime, or repeat an uncertain detach. Return `withdrawn` only after
    * verifying Git is revoked and the same independently authorized inference runtime is ready.
@@ -365,8 +374,22 @@ export interface ComputeDriver extends Driver {
     readonly secretRef: ServiceAccountCredential["secretRef"];
   }): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
+  /**
+   * Private WSS base for native chat, with an equivalent HTTPS UI endpoint. The Driver
+   * must enforce a session-writing ceiling across HTTP and WebSocket, including device
+   * grants. Undefined means unsupported; callers must not use the admin endpoint instead.
+   */
+  getGatewayChatEndpoint?(revision: AgentRevision): string | undefined;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;
+  checkNamespaceDeletion?(
+    namespace: Readonly<Namespace>,
+    signal: AbortSignal,
+  ): Promise<NamespaceDeletionEligibility>;
+  resolveSandboxNamespaceContext?(
+    namespace: Readonly<Namespace>,
+    signal: AbortSignal,
+  ): Promise<SandboxNamespaceContext>;
   /**
    * The Namespace as the paired Sandbox and Credential Gateway see it: `name` is this
    * Compute Driver's runtime placement. Required to register Credential Gateway sources.
@@ -397,6 +420,8 @@ export interface ComputeDriver extends Driver {
    */
   withdrawHarnessExposure?(revision: Readonly<AgentRevision>, signal: AbortSignal): Promise<void>;
   /** Verify the existing execution without creating, replacing or repairing it. */
+  /** Throws OCC's RepositoryExecutionRequiresRedeployError only when durable evidence
+   * proves repository access cannot resume on this execution. Missing evidence remains undefined. */
   verifyRepositoryExecution?(
     revision: Readonly<AgentRevision>,
     signal: AbortSignal,

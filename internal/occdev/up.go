@@ -28,14 +28,19 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	r := newRunner(opts)
-	sandboxDriver := r.setting("OCC_DEVELOPMENT_SANDBOX_DRIVER", "none")
-	if sandboxDriver != "none" && sandboxDriver != "openshell" {
-		return fmt.Errorf("OCC_DEVELOPMENT_SANDBOX_DRIVER must be none or openshell")
+	for _, key := range []string{"OCC_AUTH_COOKIE_DOMAIN", "OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN"} {
+		if _, present := r.env[key]; present {
+			return fmt.Errorf("%s is no longer supported; browser session cookies derive their domain from the Console and Agent hosts", key)
+		}
 	}
-	controlPlane := r.setting("OCC_DEVELOPMENT_CONTROL_PLANE", "compose")
-	if controlPlane != "compose" && controlPlane != "kubernetes" {
-		return fmt.Errorf("OCC_DEVELOPMENT_CONTROL_PLANE must be compose or kubernetes")
+	profile := resolveProfile(r.env)
+	if err := profile.CheckSandboxDriver(); err != nil {
+		return err
 	}
+	if err := profile.CheckControlPlane(); err != nil {
+		return err
+	}
+	sandboxDriver, controlPlane := profile.SandboxDriver, profile.ControlPlane
 	if err := r.protectedEgressSelection(); err != nil {
 		return err
 	}
@@ -90,7 +95,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	state := &developmentState{Repository: opts.Repository, Version: 3, ComputeDriver: "kubernetes", SandboxDriver: sandboxDriver, ComposeProject: r.setting("OCC_DEVELOPMENT_COMPOSE_PROJECT", "openclaw-enterprise-development-kubernetes"), Cluster: r.setting("OCC_DEVELOPMENT_KUBERNETES_CLUSTER", "occ-dev-"+strings.ToLower(rand.Text()[:10])), directory: directory, KeyPath: opts.KeyOutput, KeyOwned: opts.KeyOutput == ""}
 	state.SandboxNetworkPolicies = networkPolicies
 	state.SandboxNetworkPolicyCeiling = ceiling
-	if sandboxDriver == "openshell" {
+	{
 		browserPort, err := positiveSetting(r, "OCC_DEVELOPMENT_BROWSER_PORT", 8443, 65535)
 		if err != nil {
 			return err
@@ -98,14 +103,14 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if browserPort == port {
 			return fmt.Errorf("browser and Kubernetes API ports must differ")
 		}
-		consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
+		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
 		state.BrowserPort = browserPort
 		state.BrowserOrigin = developmentBrowserOrigin(consoleHost, browserPort)
 		state.NativeAdminDomain = agentDomain
 		r.env["OCC_DEVELOPMENT_BROWSER_PORT"] = strconv.Itoa(browserPort)
 		r.env["OCC_DEVELOPMENT_BROWSER_ORIGIN"] = state.BrowserOrigin
 		r.env["OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN"] = agentDomain
-		r.env["OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN"] = cookieDomain
+		r.env["OCC_AGENT_NATIVE_ADMIN_ENABLED"] = strconv.FormatBool(sandboxDriver == "openshell")
 		r.env["OCC_DEVELOPMENT_BROWSER_TLS_CERT"] = filepath.Join(directory, "browser-tls.crt")
 		r.env["OCC_DEVELOPMENT_BROWSER_TLS_KEY"] = filepath.Join(directory, "browser-tls.key")
 	}
@@ -214,8 +219,11 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if state.BrowserPort != 0 && parsedAPI.Port() == strconv.Itoa(state.BrowserPort) {
 		return fmt.Errorf("browser and controller API ports must differ")
 	}
-	snapshot, err := yaml.Marshal(escapeInterpolation(rendered))
-	if err != nil {
+	hostPorts := []developmentHostPort{{renderedAPIPort, "OPENCLAW_DEV_PORT"}, {port, "OCC_DEVELOPMENT_KUBERNETES_API_PORT"}}
+	if state.BrowserPort != 0 {
+		hostPorts = append(hostPorts, developmentHostPort{state.BrowserPort, "OCC_DEVELOPMENT_BROWSER_PORT"})
+	}
+	if err := r.checkDevelopmentHostPorts(ctx, developmentStack{composeProject: state.ComposeProject, cluster: state.Cluster}, hostPorts); err != nil {
 		return err
 	}
 	// The exclusive directory claim is the ownership boundary, including concurrent starts.
@@ -232,7 +240,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if result == nil {
 			return
 		}
-		if os.Getenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE") != "" {
+		if started && os.Getenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE") != "" {
 			// Inspection override: keep the failed stack, the state directory, and
 			// any copied service key for diagnosis; occ dev down with the same
 			// state directory performs the cleanup.
@@ -257,7 +265,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 			}
 		}
 		if cleanupErr != nil {
-			result = errors.Join(result, fmt.Errorf("rollback incomplete; preserving %s for occ dev down: %w", directory, cleanupErr))
+			result = errors.Join(result, fmt.Errorf("rollback incomplete; preserving %s for occ dev down; clean up with %s: %w", directory, kubernetesDownCommand(directory, sandboxDriver, opts.Repository), cleanupErr))
 		}
 	}()
 	if err := exclusiveWrite(filepath.Join(directory, ".openclaw-development"), []byte(stateMarker), 0600); err != nil {
@@ -268,6 +276,13 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	if err := exclusiveWrite(filepath.Join(directory, "state.json"), stateData, 0600); err != nil {
+		return err
+	}
+	if err := prepareComposeBootstrapSQL(rendered, state); err != nil {
+		return err
+	}
+	snapshot, err := yaml.Marshal(escapeInterpolation(rendered))
+	if err != nil {
 		return err
 	}
 	if err := exclusiveWrite(filepath.Join(directory, "compose.yaml"), snapshot, 0600); err != nil {
@@ -314,7 +329,8 @@ func Up(ctx context.Context, opts Options) (result error) {
 		}
 		clusterArgs = append(clusterArgs, "--image", clusterImage, "--servers", "1", "--agents", "0", "--network", state.ComposeProject+"_development", "--api-port", fmt.Sprintf("127.0.0.1:%d", port), "--k3s-arg", "--tls-san=k3d-"+state.Cluster+"-serverlb@server:*", "--k3s-arg", fmt.Sprintf("--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<%d%%,nodefs.inodesFree<5%%,imagefs.available<%d%%,imagefs.inodesFree<5%%@server:*", threshold, threshold), "--kubeconfig-update-default=false", "--kubeconfig-switch-context=false")
 		if err := r.createK3dCluster(ctx, clusterArgs...); err != nil {
-			clusterCreationFailed = true
+			// A create that k3d fully rolled back leaves nothing to clean up.
+			clusterCreationFailed = !r.k3dRolledBackCleanly(ctx, err, state.Cluster)
 			return err
 		}
 		if err := r.checkDevelopmentNodeDNS(ctx, state); err != nil {
@@ -428,6 +444,8 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if err := configureDevelopmentRouting(state, routing.trustedProxyCIDRs, routing.endpoint); err != nil {
 			return err
 		}
+	}
+	{
 		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
 		if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
 			return err
@@ -435,8 +453,8 @@ func Up(ctx context.Context, opts Options) (result error) {
 	}
 	fmt.Fprintln(r.opts.Out, "Starting the Compose controller and Kubernetes worker...")
 	buildOption := "--build"
-	if routing != nil {
-		if err := r.prepareComposeRoutingFiles(ctx, state); err != nil {
+	if routing != nil || state.BrowserPort != 0 {
+		if err := r.prepareComposePrivateFiles(ctx, state, routing != nil); err != nil {
 			return err
 		}
 		buildOption = "--no-build"
@@ -478,11 +496,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if state.BrowserPort != 0 {
 		fmt.Fprintf(r.opts.Out, "Browser console: %s/console/\nBrowser CA certificate: %s\n", state.BrowserOrigin, filepath.Join(directory, "browser-ca.crt"))
 	}
-	cleanupSandbox := ""
-	if sandboxDriver == "openshell" {
-		cleanupSandbox = " OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell"
-	}
-	fmt.Fprintf(r.opts.Out, "OpenClaw Enterprise development stack is ready.\nContainer engine: %s\nControl plane: Compose\nCompute Driver: Kubernetes\nSandbox Driver: %s\nAPI URL: %s\nInstallation ID: %s\nService key file: %s\nKubeconfig: %s\nKubernetes context: k3d-%s\n\nCleanup:\n  env OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes%s OCC_DEVELOPMENT_STATE_DIRECTORY=%s %s dev down\n", r.engine, sandboxDriver, apiURL, installation, state.KeyPath, filepath.Join(directory, "kubeconfig"), state.Cluster, cleanupSandbox, shellQuote(directory), shellQuote(filepath.Join(opts.Repository, "bin", "occ")))
+	fmt.Fprintf(r.opts.Out, "OpenClaw Enterprise development stack is ready.\nContainer engine: %s\nControl plane: Compose\nCompute Driver: Kubernetes\nSandbox Driver: %s\nAPI URL: %s\nInstallation ID: %s\nService key file: %s\nKubeconfig: %s\nKubernetes context: k3d-%s\n\nCleanup:\n  %s\n", r.engine, sandboxDriver, apiURL, installation, state.KeyPath, filepath.Join(directory, "kubeconfig"), state.Cluster, kubernetesDownCommand(directory, sandboxDriver, opts.Repository))
 	return nil
 }
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
@@ -670,7 +684,7 @@ func (r *runner) waitReady(ctx context.Context, s *developmentState, url string,
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return false, nil
 		}
-		_, err = r.composeOutput(ctx, s, "exec", "-T", "worker-kubernetes", "node", "scripts/production-healthcheck.mjs", "worker", "ready")
+		_, err = r.composeOutput(ctx, s, "exec", "-T", "worker-kubernetes", "node", "scripts/production-healthcheck.ts", "worker", "ready")
 		return err == nil, nil
 	})
 }

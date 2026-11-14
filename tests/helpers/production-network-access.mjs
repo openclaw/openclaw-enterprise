@@ -11,8 +11,8 @@ import {
   kubectlArguments,
   kubernetesHash,
   validateExplicitK3dLoopbackContext,
-} from "./kubernetes-real.mjs";
-import { kubectlGetJson } from "./kubernetes-api-read.mjs";
+} from "./kubernetes-real.ts";
+import { kubectlGetJson } from "./kubernetes-api-read.ts";
 import {
   parseProductionChart,
   productionCollectorValues,
@@ -819,7 +819,13 @@ print(json.dumps(payload))
         namespaceId: `ns_${randomUUID()}`,
         agentId: `agt_${randomUUID()}`,
         servicePrincipalId: `principal-${randomUUID()}`,
-        harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+        harness: {
+          id: "codex",
+          version: "1.0.0",
+          mode: "dedicated",
+          overrides: {},
+          configuration: {},
+        },
         harnessAuth: { method: "runtime" },
         configuration: {
           plugins: {

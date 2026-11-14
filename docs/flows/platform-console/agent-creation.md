@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-04
-last_updated_session: "authoring-run/386aa943-15cf-49cd-b53e-05831b4a7da0"
+updated: 2026-11-13
+last_updated_session: authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4
 ---
 
 # Console Agent creation
@@ -27,6 +27,7 @@ user-visible behavior.
 ```mermaid
 graph TD
   A["Create Agent form"] --> B["Plugins, model, and repository choices"]
+  B -->|repository access required and missing| H["Explain the requirement before provisioning"]
   B -->|supported Dedicated| C["Queue provisioning with inline Configuration"]
   C --> D["Worker creates resources, grants and first deployment"]
   B -->|ordinary draft| E["Validate, then POST Configuration and Agent"]
@@ -91,6 +92,13 @@ The warning names the affected `models.providers.<provider>.models` field. The
 edit sends no write request. [Correct the list and retry](../../reference/console/create-and-deploy.md#create-an-agent)
 to apply the model.
 
+Before a model change rewrites the JSON, `readModelConfiguration` rejects values
+that parse as infinity, including nested numbers such as `1e400`. Serialization
+would otherwise replace them with `null`. The form skips the rewrite, keeps the
+raw draft, and focuses **Configuration JSON** with an inline error. The same
+number check stops **Create Agent** before any writes. Replace the value with a
+number closer to zero and retry the action.
+
 Submission still matches the primary Configuration model to `model.value` and
 uses the normal server validation.
 
@@ -108,6 +116,11 @@ submitted `repositoryAccess`. Retained drafts keep selections through failed
 discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE`
 or `meta.notConfigured` (no `repository` settings) permits creation without bindings, and only without retained selections; other
 failures block submission.
+
+The credential catalog includes ordinary Gateway sources even when a Git Proxy
+is selected. Repository access remains optional in the form. An ordinary Gateway
+source without protected sources or repository bindings needs no Proxy admission.
+Source-free deployment follows the [protected admission flow](../credential-source-egress.md#1-admit-source-and-install-the-revision-plan).
 
 ### 4. Submit provisioning or an ordinary draft
 
@@ -132,9 +145,14 @@ is refused before any write. It then checks the Agent name, draft values with th
 `secretBindings`, plugins and the planned `harnessAuth`
 (only the method for a Secret it saves next or registers with a Credential Gateway; none for
 ChatGPT sign-in) with
-`POST /namespaces/:namespaceId/agents/validate`, which refuses a name another Agent has with
-Agent create's `409` and a channel token reference without a binding with Configuration
-create's `400`. `list.mts:channelBindingRefusal` shows that refusal, and the same one from
+`POST /namespaces/:namespaceId/agents/validate`. After Agent create authorization,
+OCC rejects Configuration Secret bindings that name another Namespace, then applies
+Configuration create's size, content, and required Configuration Driver admission checks
+to the unsaved Configuration. It next checks the Agent's plugins and topology, then refuses
+a name another Agent has with Agent create's `409`. A channel token reference without a
+binding receives Configuration create's `400`. Preflight writes nothing; Secret existence
+and `operate` checks stay with the actual writes. `list.mts:channelBindingRefusal` shows
+the channel refusal, and the same one from
 provisioning, only under the Configuration JSON;
 the Slack drawer requires both token Secrets while Slack is enabled. It then posts
 `{kind: "agent", values, secretBindings}` to `.../configurations` and submits its ID,
@@ -146,6 +164,9 @@ stops the grant; **Retry credential access** reads the saved Agent again without
 An unrecognized success leaves the outcome unknown and blocks another create.
 For an uncertain Credential Source registration, **Check credential registration** reads
 the source for this request and confirms its type and Secret references before continuing.
+After a known registration refusal, empty checks retain the refusal and the saved Secret.
+They do not retry writes. A confirmed validation refusal unlocks source correction;
+other known refusals keep the same registration for an explicit **Create Agent** retry.
 If the Console times out waiting for validation, it stops before the save step,
 keeps the form entries, and lets the caller select **Create Agent** to try again.
 Success opens `revision=draft`.
@@ -156,11 +177,25 @@ Agent/Configuration for [workspace setup](../workspace-files.md).
 
 `create.mts:grantConfigurationSecretAccess` grants exact Secret `operate` for final
 same-Namespace `env` bindings. Failure retains the Agent; **Retry credential access**
-rereads grants without duplication. Grants are Installation administration: a session
-known not to administer the Installation sends no IAM request and names the administrator
-step, and a member's refused grant offers no retry. After a refused Installation read, the
-"Your access" status block above the form gives the permission answer: create allowed,
-refused, or not checked. A failed permission read adds **Retry permission check**, which
+rereads grants without duplication. A session known not to administer the Installation sends
+no IAM request and opens the saved draft: the member's
+[deploy writes these grants](../namespace-iam-policy.md#6-default-users-owners-and-deploy-time-grants).
+After a refused Installation read, **Your access** shows whether Agent `create`
+is allowed, refused, or unchecked. When allowed,
+`create.mts:loadNamespaceCapabilities` reads `GET /namespaces/:namespaceId/agent-capabilities`.
+`packages/occ/src/index.ts:getNamespaceAgentCapabilities` checks
+[Agent `create` on the requested collection](../../reference/authorization.md#authorization-decisions)
+before resolving that Namespace by ID. The API returns `403` on denial and `404`
+if an authorized request names a missing Namespace. The lookup needs no
+Namespace `read` grant.
+
+The form applies these capabilities as it applies the Installation's. The
+Namespace response gives the form the credential source types to register a
+model Secret with a Credential Gateway as in step 4. It omits
+`agentProvisioning`, so the form saves a draft. When browser access is enabled,
+the response includes `nativeAdmin` and the form offers **Enable browser chat**.
+[Agent browser access](../../reference/agent-native-admin.md) owns the later
+access checks. A failed permission read adds **Retry permission check**, which
 rereads only that answer. A retry that refuses create shows the refusal a fresh load shows,
 without the form. Failed Agent writes retain Configuration ID
 and lock JSON/Harness for explicit reuse. Writes never retry automatically; drafts
@@ -191,6 +226,19 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-13 05:52: Trace Configuration Driver admission and cross-Namespace Secret binding checks before Agent creation saves resources. (authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4 - 4ecf71da20e0606cb4f78fc90551462af11b4981)
+
+- 2026-11-12 19:08: Limit the Proxy bypass to Agents with ordinary Gateway sources. (authoring-run/9928fd4c-05a8-4ce6-b0d6-5322a30b0fe8 - 988124f27)
+
+- 2026-11-12 18:36: Preserve credential registration refusals across empty status checks. (authoring-run/e0dff858-3588-44ee-9ffa-b67c8dd4dfe5 - 4478a18a7)
+
+- 2026-11-12 16:13: Trace Agent create authorization, Namespace lookup, and browser-access capability discovery. (authoring-run/2aa6ee22-af84-4f68-8186-9da30e578f98 - a7d3cf24896836c7e1d05c5850749f4bfd042fe3)
+
+- 2026-11-11 19:04: Keep ordinary Gateway model delivery independent of Git Proxy selection. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb511)
+
+- 2026-11-10 13:36: Show a confirmed repository-only Credential Proxy requirement before provisioning. (authoring-run/f0decdaf-c71f-47f9-b2e5-c5bd6b1dfee1 - 07c2a00c82e8a10635533eb1a27b110b52b90f14)
+- 2026-11-05: A member reads the Namespace's Agent capabilities after a refused Installation read, registers a model Secret with a Credential Gateway, and opens the draft without an IAM request. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
+- 2026-11-05 18:37: Explain the Configuration number range refusal on Create. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)
 - 2026-11-04 22:06: Explain which Create Agent settings stay in place when an invalid plugin list blocks a Codex change. (authoring-run/386aa943-15cf-49cd-b53e-05831b4a7da0 - e109eba64ea0e81c02513f81f9c892a832dc1b69)
 - 2026-10-25: The per-Secret `operate` remedy names an exact-Secret grant; the Agents list gives Create Agent's next step when Agent create is denied. (findings 2507, 2508)
 - 2026-10-25: Refuse a typed model key, and disable the Preset's **Create new Secret**, where `operate` is denied on a readable Secret. (fix-2492, finding 2492)

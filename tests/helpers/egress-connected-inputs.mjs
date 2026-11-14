@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { isIP } from "node:net";
 import { isAbsolute, posix } from "node:path";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
@@ -50,7 +51,11 @@ export function takeConnectedControllerBinding(env) {
 
 // Inputs describe an already installed, disposable protected stack. They do not
 // authorize this test to install a gateway, change trust, or relax admission.
-export function validateConnectedInputs(input, controller, { wholeExecution = false } = {}) {
+export function validateConnectedInputs(
+  input,
+  controller,
+  { wholeExecution = false, allowControllerUpgrade = false } = {},
+) {
   assert.equal(input.version, 2);
   assert.equal(input.apiOrigin, controller.apiOrigin, "controller origin disagrees with runner");
   assert.equal(input.namespaceId, controller.namespaceId, "tenant disagrees with runner");
@@ -109,8 +114,28 @@ export function validateConnectedInputs(input, controller, { wholeExecution = fa
     assert.equal(pin.image, input.images.agent);
     assert.equal(pin.verification, "operator-verified-image-executable");
   }
-  for (const head of [input.oceCommit, input.supplierCommit]) {
+  for (const head of [input.oceCommit, input.harnessCommit, input.supplierCommit]) {
     assert.match(head ?? "", /^[a-f0-9]{40}$/);
+  }
+  if (input.controllerUpgrade !== undefined) {
+    assert.equal(allowControllerUpgrade, true, "this caller does not perform controller upgrades");
+    const upgrade = input.controllerUpgrade;
+    assert.equal(wholeExecution, true, "controller upgrades require the whole-execution lane");
+    assert.deepEqual(Object.keys(upgrade).sort(), ["fromCommit", "fromImage", "timeoutMs"]);
+    assert.match(upgrade.fromCommit ?? "", /^[a-f0-9]{40}$/);
+    assert.notEqual(upgrade.fromCommit, input.oceCommit, "select different controller revisions");
+    assert.match(upgrade.fromImage ?? "", /^[^\s@]+@sha256:[a-f0-9]{64}$/);
+    assert.notEqual(
+      upgrade.fromImage.split("@sha256:")[1],
+      input.images.controller.split("@sha256:")[1],
+      "select different controller image digests",
+    );
+    assert.ok(
+      Number.isSafeInteger(upgrade.timeoutMs) &&
+        upgrade.timeoutMs >= 60_000 &&
+        upgrade.timeoutMs <= 15 * 60_000,
+      "controller upgrade must allow between one and fifteen minutes",
+    );
   }
   const gateway = new URL(input.openShellBackend.endpoint);
   assert.equal(gateway.protocol, "https:");
@@ -142,11 +167,33 @@ export function validateConnectedInputs(input, controller, { wholeExecution = fa
   assert.ok(isIP(input.provider.bindHost), "explicit provider listener IP is required");
   assert.ok(
     Number.isSafeInteger(input.provider.bindPort) &&
-      input.provider.bindPort > 1024 &&
+      input.provider.bindPort > 0 &&
       input.provider.bindPort < 65536,
   );
+  if (wholeExecution) {
+    // The supplier terminal exchange only supports inspected HTTPS on 443.
+    assert.equal(input.provider.bindPort, 443, "execution authority requires HTTPS port 443");
+  } else {
+    assert.ok(input.provider.bindPort > 1024);
+  }
   assert.equal(Number(provider.port || 443), input.provider.bindPort);
   return input;
+}
+
+// Both installed callers bind their evidence before touching the prepared stack.
+export function assertConnectedCheckout(input) {
+  const git = (...args) =>
+    execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  assert.equal(git("rev-parse", "HEAD"), input.harnessCommit, "selected harness checkout");
+  assert.equal(
+    git("status", "--porcelain", "--untracked-files=all"),
+    "",
+    "installed qualification requires a clean checkout",
+  );
+  git("merge-base", "--is-ancestor", input.oceCommit, input.harnessCommit);
+  if (input.controllerUpgrade) {
+    git("merge-base", "--is-ancestor", input.controllerUpgrade.fromCommit, input.oceCommit);
+  }
 }
 
 // The gateway client loads proto3 with defaults:false and longs:String. An

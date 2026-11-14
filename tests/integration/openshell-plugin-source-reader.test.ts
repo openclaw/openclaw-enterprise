@@ -10,12 +10,10 @@ import {
 import { CODEX_ACCOUNT_CONFIG } from "../../apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import type { Backend, Namespace } from "../../packages/contracts/src/index.ts";
-import type * as Grpc from "../../apps/controller/node_modules/@grpc/grpc-js/build/src/index.js";
-import type * as ProtoLoader from "../../apps/controller/node_modules/@grpc/proto-loader/build/src/index.js";
+import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID, X509Certificate } from "node:crypto";
-import { createRequire } from "node:module";
 import test from "node:test";
 import { createServer } from "node:http";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -63,22 +61,20 @@ test("OpenShell source discovery uses the selected Backend reader with no Gatewa
     new X509Certificate(ordinary.cert).fingerprint256,
     new X509Certificate(operator.cert).fingerprint256,
   );
-  const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
   const proto = fileURLToPath(
     new URL(
       "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
       import.meta.url,
     ),
   );
-  const grpc: typeof Grpc = require("@grpc/grpc-js");
-  const loader: typeof ProtoLoader = require("@grpc/proto-loader");
   const definition = loader.loadSync(proto, { keepCase: true });
   const server = new grpc.Server();
   t.after(() => server.forceShutdown());
   type PeerCall = { role: string; request: unknown };
   const observed: PeerCall[] = [];
   const peerErrors: unknown[] = [];
-  let providerName = name;
+  const ownedProvider = { name, type: name, managedBy: "openclaw-enterprise", sourceId };
+  let returnedProvider = ownedProvider;
   // Hold the actual operator RPC at the verified peer, after observing its identity.
   let holdExport: ((finish: () => void) => void) | undefined;
   const receive = (
@@ -108,21 +104,17 @@ test("OpenShell source discovery uses the selected Backend reader with no Gatewa
       }
     };
   };
-  // Dynamic protobuf loading exposes a package tree; only this service is used.
-  const loaded = grpc.loadPackageDefinition(definition) as unknown as {
-    openshell: { v1: { OpenShell: { service: Grpc.ServiceDefinition } } };
-  };
-  server.addService(loaded.openshell.v1.OpenShell.service, {
+  server.addService(openShellService(grpc.loadPackageDefinition(definition)), {
     GetProvider: receive("ordinary", ordinary, () => ({
       provider: {
         metadata: {
-          name: providerName,
+          name: returnedProvider.name,
           labels: {
-            "app.kubernetes.io/managed-by": "openclaw-enterprise",
-            "openclaw.dev/credential-source-id": sourceId,
+            "app.kubernetes.io/managed-by": returnedProvider.managedBy,
+            "openclaw.dev/credential-source-id": returnedProvider.sourceId,
           },
         },
-        type: name,
+        type: returnedProvider.type,
         config: {
           [CODEX_ACCOUNT_CONFIG]: JSON.stringify({
             accountId: "synthetic-account",
@@ -209,7 +201,7 @@ test("OpenShell source discovery uses the selected Backend reader with no Gatewa
     }),
   );
   const credentialSource = {
-    kind: "credential_source",
+    kind: "credential_source" as const,
     id: sourceId,
     namespaceId: namespace.id,
   };
@@ -357,18 +349,24 @@ test("OpenShell source discovery uses the selected Backend reader with no Gatewa
   assert.equal(allowed.data.nextCursor, "second-page");
   assert.equal(JSON.stringify(allowed.body).includes(accessToken), false);
 
-  providerName = openShellProviderName(randomUUID());
-  const denied = await request();
-  assert.notEqual(denied.status, 200);
-  assert.equal(JSON.stringify(denied.body).includes(accessToken), false);
+  const otherSourceId = randomUUID();
+  const otherName = openShellProviderName(otherSourceId);
+  for (const mismatch of [
+    { name: otherName },
+    { type: otherName },
+    { managedBy: "other-manager" },
+    { sourceId: otherSourceId },
+  ]) {
+    returnedProvider = { ...ownedProvider, ...mismatch };
+    const before: number = observed.length;
+    const denied = await request();
+    assert.equal(denied.status, 404, JSON.stringify(mismatch));
+    assert.equal(JSON.stringify(denied.body).includes(accessToken), false);
+    assert.deepEqual(observed.slice(before), [metadataObservation]);
+    assert.equal(catalogCalls, 1, "a rejected lookup must not reach the plugin catalog");
+  }
   assert.deepEqual(peerErrors, []);
-  assert.deepEqual(
-    observed,
-    [metadataObservation, exportObservation, metadataObservation],
-    "the mismatched returned name must stop discovery before a second export",
-  );
-  assert.equal(catalogCalls, 1, "a rejected lookup must not reach the plugin catalog");
-  providerName = name;
+  returnedProvider = ownedProvider;
 
   const remove = (binding: (typeof sourceBindings)[number]) => {
     const index = fixture.policy.bindings.indexOf(binding);

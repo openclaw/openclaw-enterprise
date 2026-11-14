@@ -299,8 +299,21 @@ export interface CredentialProviderDefinition {
     models: readonly string[],
     config?: Readonly<Record<string, string>>,
   ): InferenceGrant | GitHubMetadataGrant | CredentialFreeMetadataGrant | PreparedTokenGrant;
-  routes(source: Readonly<CredentialSource>, binding: EgressBinding): readonly EgressRoute[];
-  classify(route: EgressRoute, request: EgressRequest): EgressOperation | undefined;
+  routes(
+    source: Readonly<CredentialSource>,
+    binding: EgressBinding,
+    harnessConfiguration?: Readonly<Record<string, unknown>>,
+  ): readonly EgressRoute[];
+  /**
+   * On refusal, optionally report one stable provider-owned rule ID (1–255).
+   * IDs must not encode request data. Report synchronously, only for a matched
+   * destination; accepted operations and ambiguous diagnostics discard the ID.
+   */
+  classify(
+    route: EgressRoute,
+    request: EgressRequest,
+    refused?: (rule: number) => void,
+  ): EgressOperation | undefined;
   inject(value: string): readonly (readonly [string, string])[];
   /** Positive provider evidence only; status alone never identifies rejected credentials. */
   credentialRejected(response: EgressResponse): boolean;

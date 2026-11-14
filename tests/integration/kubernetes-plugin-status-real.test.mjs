@@ -19,7 +19,7 @@ import {
   retryKubectlRead,
   retryKubectlWrite,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 
 const execute = promisify(execFile);
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
@@ -226,6 +226,12 @@ function revision(driver, owner, agentId, number, harnessAuth) {
     servicePrincipalId: `service-agent-${agentId}`,
     createdAt: new Date().toISOString(),
   };
+  candidate.harness.overrides = {};
+  candidate.harness.configuration = driver.resolveHarnessConfiguration(
+    candidate.harness,
+    candidate.harnessAuth,
+    candidate.configuration,
+  );
   candidate.compute.admission = driver.admitRevision(candidate);
   return candidate;
 }

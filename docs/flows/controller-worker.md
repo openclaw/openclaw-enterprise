@@ -1,17 +1,17 @@
 ---
 created: 2026-08-28
-updated: 2026-11-03
-last_updated_session: 01a12074-7896-7f63-99fe-9f42e9041d02
+updated: "2026-11-14"
+last_updated_session: "authoring-run/1be06605-515e-4261-8b21-d0d796809916"
 ---
 
 # Controller Worker Flow
 
 ## Overview
 
-The worker claims PostgreSQL work, rechecks authorization, calls Compute, and
-saves claim-protected Namespace, Agent stop/deletion, and revision results. The
-[controller reference](../reference/controller.md) owns the contract and the
-[deployment guide](../guides/deploy.md) owns process setup.
+The worker claims PostgreSQL work, rechecks authorization, and calls Compute.
+It saves Namespace, Agent stop/deletion, and revision results under its claim.
+See the [controller reference](../reference/controller.md) and
+[deployment guide](../guides/deploy.md).
 
 ## Entry Points
 
@@ -34,7 +34,8 @@ graph TD
     subgraph Worker["Independent controller worker"]
         C["Validate startup and attach lifecycle Drivers"] --> D["Recover expired claims and claim eligible work"]
         B --> D
-        D --> E["Reload exact resources and current IAM state"]
+        D -->|claim saved| E["Reload exact resources and current IAM state"]
+        D -->|claim audit insert fails| D
         E --> F{"Authorized and valid?"}
         F -->|yes| G["Invoke Compute while renewing the claim lease"]
         F -->|no| H["Persist permanent failure under the live claim"]
@@ -65,11 +66,9 @@ removes stale readiness, and constructs `ControllerWorker` with an
 application-role pool. Development without `OCC_CONFIG_PATH` preflights Docker;
 production requires explicit configuration.
 
-`start()` loads the bootstrapped Installation, validates native IAM, and attaches
-selected Configuration, Sandbox, and IAM hooks to Compute. Shared composition
-supplies Kubernetes Compute's optional Sandbox Driver. Selected hooks require
-`setLifecycleDrivers`; unsupported capabilities stop startup. Every worker runs
-available Compute preflight before emitting `worker.started` and entering `run()`.
+`start()` loads Installation state, validates IAM, attaches selected workload hooks
+to Compute, and composes Namespace hooks for OCC. Unsupported selections stop
+startup. Compute preflight precedes `worker.started` and `run()`.
 
 Metrics scrapes read lifecycle and backlog state through
 `packages/occ/src/state/postgres-metrics.ts:PostgresMetricsSnapshot.collect`
@@ -87,9 +86,9 @@ follow finalization independently of logging.
 `packages/occ/src/index.ts:OpenClawController`,
 `packages/occ/src/state/postgres-state.ts:operations.append`
 
-Authorized operations call `operations.append`, which verifies exact ownership
-and invokes `PostgresWorkQueue.enqueue`. State, admission audit and work commit or roll back
-together.
+`operations.append` checks ownership, then calls `PostgresWorkQueue.enqueue`.
+When audit is enabled, the resource change, work, and `controller_work.queued`
+record commit together. The record links the request ID to the work ID.
 
 Agent deployment keeps the validated `deploy` request and decision with the
 saved version; the API's audit event uses that decision's IAM Driver, principal,
@@ -118,22 +117,19 @@ reauthorizes normally.
 `apps/controller/src/worker.ts:ControllerWorker.run`,
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.claim`
 
-Each loop calls `recoverStale()`, one native-exposure sweep step
-(`withdrawHarnessExposure` for one listed active-at-start or failed version,
-five logged attempts) on idle passes and after every five claimed passes, then
-`claim()`. The
-[PostgreSQL queue](../../packages/occ/src/state/postgres-work-queue.ts) selects
-eligible work with `FOR UPDATE SKIP LOCKED`, assigning claim token, lease
-deadline and attempt increment. Another live Agent or Namespace claim
-prevents concurrent ownership.
+Each pass calls `recoverStale()`. When idle and every five claims,
+`withdrawHarnessExposure` sweeps one active-at-start or failed version with
+five logged attempts. On shutdown, interrupted claims follow lease recovery.
 
-Empty queues wait for the configured delay. After each pass, `health()` queries work,
-calls `onHealthy`, and emits `worker.health`; both are required. Serialized
-failures emit `HEALTH_UNAVAILABLE`, consuming no retries.
+`FOR UPDATE SKIP LOCKED` protects each claim. With audit enabled, PostgreSQL
+saves the claim and `controller_work.claimed` record together. The worker starts
+after commit. An insert failure leaves work queued. Each attempt has a new ID,
+even when the count repeats. The lease token stays in the queue.
 
-At pass start and claim renewal, `onProgress` updates liveness. Packaged probes
-require regular marker files; liveness restarts stale workers. Client
-`query_timeout` usually frees stuck passes. See
+`health()` queries work, calls `onHealthy`, and emits
+`worker.health`. Serialized `HEALTH_UNAVAILABLE` failures consume no retries.
+
+`onProgress` marks pass start and renewal. Probes restart stalled workers. See
 [worker settings](../reference/settings/operations.md#controller-worker-environment).
 
 ### 4. Reload ownership and reauthorize before infrastructure effects
@@ -179,7 +175,10 @@ and rejects ownership or Compute-Driver mismatches before teardown.
 `apps/controller/src/worker.ts:ControllerWorker.observeRevision`,
 `apps/controller/src/worker.ts:ControllerWorker.withClaimHeartbeat`
 
-Namespace dispatch calls `ensureNamespace` or `deleteNamespace`. Version
+Namespace dispatch uses `OpenClawController.observeNamespaceLifecycle` and
+`packages/occ/src/namespace-lifecycle.ts:reconcileNamespaceLifecycle` for
+[ordered, claim-cancelled setup and cleanup](../reference/drivers/namespace-lifecycle.md).
+Results join claim-protected audit evidence. Version
 dispatch optionally binds the exact Agent, then calls `prepareRevision` with its
 immutable snapshot. A wrong owner or invalid observation fails permanently;
 a pending observation defers convergence.
@@ -234,7 +233,8 @@ failure does not imply lease loss.
 
 The [Kubernetes implementation](../../apps/controller/src/drivers/compute/kubernetes/index.ts)
 and [Docker execution flow](docker-compose-development.md) own infrastructure and
-Sandbox dispatch.
+Sandbox dispatch. Namespace deletion checks Compute eligibility before provider
+hooks; an unclaimed external namespace skips those hooks and is retained by Compute.
 
 When `prepareRevision` rejects, the worker asks Compute for an optional validated
 failure description (Kubernetes names the stage and maps only reviewed
@@ -359,9 +359,8 @@ claim reauthorizes its actor. Successor keys use strictly later time buckets des
 `worker.completed` reports the target, outcome, and code. On `namespace.ensure`,
 it can also report a [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)
 from the current pass. The hint stays out of the Driver observation.
-A Namespace pass that observes the same pending state this worker last audited,
-such as a terminating namespace, writes no new lifecycle audit or `reconcile` row;
-a changed pending state or the terminal pass does.
+A result links to the claim by its attempt ID. A repeat of the same pending
+state can skip `reconcile` and use `controller_work.deferred` for that attempt.
 Lease loss reports `worker.error` `CLAIM_LOST` instead of stale lifecycle state.
 On `SIGTERM` or `SIGINT`, shutdown aborts in-flight work, waits for the loop,
 removes readiness, closes the other parts and then PostgreSQL, and emits `worker.stopped`.
@@ -375,36 +374,38 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Debugging and Verification
 
-- `worker.started` names `computeDriverId` and optional `sandboxDriverId`.
-  Ready `worker.health` confirms a pending-work query; neither proves a model turn.
-- `worker.startup-error` reports invalid mode, database, Installation, Driver
-  selection, or preflight before processing. Probes inspect a private readiness
-  marker; the worker has no HTTP endpoint.
-- For queued operations, compare API and worker database and Installation
-  configuration, then inspect `worker.completed` and `worker.error`. Check
-  current IAM state for `ACTOR_REVOKED` or `AUTHORIZATION_DENIED`; `DEPENDENCY_UNAVAILABLE`
-  retries within `OCC_WORKER_MAX_ATTEMPTS`; `CLAIM_LOST` ends publication ownership. A
-  version pass [deferred](../reference/controller/reconciliation.md#deferred-namespace-and-agent-convergence)
-  on a dependency logs `dependency` and `cause` (`unreachable`, `timeout` or `unavailable`); other failures log their error class in
-  `cause` and, for HTTP errors, `status`.
+- `worker.started` names the Drivers. Ready `worker.health` confirms a work query.
+- `worker.startup-error` reports startup failures. The
+  [worker exec probe](../../scripts/production-healthcheck.ts) checks the
+  readiness and progress markers.
+- For queued work, compare API and worker database and Installation settings.
+  Check `worker.completed` and `worker.error`. Check IAM for `ACTOR_REVOKED` or
+  `AUTHORIZATION_DENIED`. `DEPENDENCY_UNAVAILABLE` retries within
+  `OCC_WORKER_MAX_ATTEMPTS`. `CLAIM_LOST` ends publication rights.
+  A [dependency deferral](../reference/controller/reconciliation.md#deferred-namespace-and-agent-convergence)
+  logs `dependency` and `cause` (`unreachable`, `timeout` or `unavailable`).
+  Other failures log the error class in `cause` and the HTTP `status` when present.
 - `worker.compute-prepare-failed` names the failed Driver stage without the raw
   exception; match its `workId` or `revisionId` to the next `worker.completed`.
 - [Version](../../tests/integration/postgres-worker-agent-revision.test.mjs),
   [credential-sources](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs),
   [health](../../tests/integration/postgres-worker-agent-revision-health.test.mjs),
   [replacement](../../tests/integration/postgres-worker-agent-revision-replacement.test.mjs),
-  [refused-stop](../../tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs),
-  [refused-wait](../../tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs),
-  [yielded-redeploy](../../tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.mjs),
-  [teardown](../../tests/integration/postgres-worker-agent-revision-teardown.test.mjs),
-  [stop](../../tests/integration/postgres-worker-agent-revision-stop.test.mjs) and
-  [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.mjs)
+  [refused-stop](../../tests/integration/postgres-worker-agent-revision-refused-stop.test.ts),
+  [refused-wait](../../tests/integration/postgres-worker-agent-revision-refused-wait.test.ts),
+  [yielded-redeploy](../../tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.ts),
+  [teardown](../../tests/integration/postgres-worker-agent-revision-teardown.test.ts),
+  [stop](../../tests/integration/postgres-worker-agent-revision-stop.test.ts),
+  [claim audit](../../tests/integration/postgres-worker-audit.test.ts) and
+  [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.ts)
   require PostgreSQL; none proves model execution.
 - [OCC API](../../tests/integration/occ-api.test.mjs) checks deploy audit attribution
   and append-failure rollback after an IAM Driver change.
-- [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.mjs) and
-  [k3d](../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs) tests
-  verify composition and infrastructure.
+- [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.ts),
+  [Installation configuration](../../tests/integration/sandbox-driver-installation-configuration.test.ts)
+  and [IPv6 endpoints](../../tests/integration/sandbox-driver-ipv6-endpoints.test.ts)
+  check startup. [k3d tests](../../tests/helpers/openshell-sandbox-workflows.mjs)
+  check infrastructure.
 
 ## Related docs
 
@@ -423,8 +424,9 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Changelog
 
-- 2026-11-03 21:08: Reject directory markers. (01a12074-7896-7f63-99fe-9f42e9041d02 - b627f0997c12d10aaa87f764eac1019c67199d2f)
+- 2026-11-14 12:25: Document the TypeScript worker probe. (authoring-run/1be06605-515e-4261-8b21-d0d796809916 - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
 
-- 2026-10-30 17:22: Shutdown stops the loop before readiness and parts close. (fix-2997)
+- 2026-11-12 14:03: Save development claim evidence. (authoring-run/b3f389f0-d5ed-434d-930a-11b1f97eef2d - 8658496ea654b960bebabca40d18c7d71994db50)
+- 2026-11-10 16:32: Preserve safe partial Namespace teardown. (authoring-run/cc94d782-dafd-44ca-bc46-6d902f4ae4d1 - dde53dee8)
 
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.

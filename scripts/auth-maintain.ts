@@ -1,6 +1,4 @@
 import { readFile } from "node:fs/promises";
-import { realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { NativeIAMDriver } from "../packages/iam/src/index.ts";
 import {
   createPostgresPool,
@@ -207,25 +205,7 @@ export async function authMaintain({
   return status;
 }
 
-// Run the command only when this file is the entry point, not when a test imports it.
-// Node before 24.2 lacks import.meta.main; its entry URL is the realpath of argv[1].
-function startedAsEntryPoint() {
-  try {
-    const entry = process.argv[1];
-    if (entry === undefined) {
-      return false;
-    }
-    const path = realpathSync(entry);
-    return (
-      path === fileURLToPath(import.meta.url) ||
-      path === fileURLToPath(new URL("./auth-maintain.mjs", import.meta.url))
-    );
-  } catch {
-    // No argv[1], or not a file (node --eval with arguments): this module was imported.
-    return false;
-  }
-}
-if (import.meta.main || startedAsEntryPoint()) {
+if (import.meta.main) {
   await authMaintain({
     environment: process.env,
     args: process.argv.slice(2),

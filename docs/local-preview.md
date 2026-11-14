@@ -63,7 +63,7 @@ presentation; use the build, formatting, link checks, and visual inspection.
 The full repository checks (`pnpm format:check` and `pnpm openapi:check`) require
 the controller workspace dependencies from `pnpm install --frozen-lockfile`.
 Both API Markdown pages can also be checked against the checked-in OpenAPI
-contract with `node scripts/generate-occ-api-reference.mjs --check`.
+contract with `node scripts/generate-occ-api-reference.ts --check`.
 
 ## Edit the source
 
@@ -112,8 +112,8 @@ readable on GitHub. Both views use `docs/assets/compute-driver-matrix.json`.
 After updating reviewed data and its baseline commit, regenerate the fallback:
 
 ```sh
-node scripts/generate-compute-matrix.mjs
-node scripts/generate-compute-matrix.mjs --check
+node scripts/generate-compute-matrix.ts
+node scripts/generate-compute-matrix.ts --check
 npm run docs:build
 ```
 
@@ -125,7 +125,7 @@ not Driver behavior or live deployment.
 The [PluginDriver feature matrix](reference/drivers/plugin-matrix.md) uses the
 same layout and evidence controls, with a status filter matching either Driver.
 Its data lives in `docs/assets/plugin-driver-matrix.json`. Regenerate with
-`node scripts/generate-plugin-matrix.mjs`, check with the same command plus
+`node scripts/generate-plugin-matrix.ts`, check with the same command plus
 `--check`, then rebuild and open `/reference/drivers/plugin-matrix/`.
 
 The custom renderer accepts raw HTML, but GitHub

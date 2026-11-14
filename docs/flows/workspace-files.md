@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-11-05
-last_updated_session: authoring-run/813d3dd8-d371-45db-a6f1-d70156152311
+updated: 2026-11-11
+last_updated_session: authoring-run/1e3b3e18-4b6f-4cdb-b1a6-c99b3336bb19
 ---
 
 # Agent Workspace Files Flow
@@ -69,8 +69,9 @@ graph TD
 
 ### 1. Creation validates and privately stages the inputs
 
-`apps/controller/src/console/agents/create.mts` fills four textareas from
-`workspace-defaults.mjs` and submits their values with `WORKSPACE_DEFAULTS_ID`.
+`apps/controller/src/console/agents/create.mts` prefills four textareas from
+`/console/workspace-defaults.mjs` (`packages/contracts/src/workspace-defaults.ts`).
+It submits their values with `WORKSPACE_DEFAULTS_ID`.
 `apps/controller/src/index.ts:createFastifyApp` rejects a stale defaults identity;
 `packages/contracts/src/workspace-setup.ts:normalizeInitialWorkspaceFiles`
 rejects unknown names, invalid Unicode, NUL, and values above 16 KiB UTF-8.
@@ -121,23 +122,23 @@ acknowledgments. The verifier uses `OPENCLAW_WORKSPACE_DIR` after relocation.
 The runner validates setup identity and workspace paths, rejecting symlinks and
 conflicting contents. First setup requires the installed OpenClaw version and
 template digest to match `WORKSPACE_DEFAULTS_VERSION` and `WORKSPACE_DEFAULTS_ID`
-in `packages/contracts/src/workspace-defaults.mjs`.
+in `packages/contracts/src/workspace-defaults.ts`.
 Native `setup` initializes workspace/Git without starting Gateway. Kubernetes init
 containers use Gateway resource budgets. Supplied files, including empty strings,
 atomically replace only absent, stock, or already-submitted content. The runner
 reruns setup for `BOOTSTRAP.md`, verifies results, and atomically writes
 `.oce-workspace-setup.json`.
 
-Matching markers skip replay; incomplete writes retry the same checks.
-Missing or mismatched markers after recorded completion block startup, preserving
-later edits. Errors omit document contents.
+Matching markers skip replay; incomplete writes revalidate. After recorded
+completion, missing/mismatched markers block startup, preserving edits.
+Kubernetes initializer logs can include allowlisted codes such as `EROFS`.
+Temporary-directory cleanup preserves an earlier setup error.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:safeRuntimeFailureObservation`
-reports refusals (exit 2) as `WORKSPACE_SETUP_REFUSED`; OpenShell raises
-`SandboxWorkspaceSetupRefusedError`. Kubernetes retries other failures
-(`WORKSPACE_SETUP_RETRYING`). OpenShell reports only RPC status or setup
-exit/timeout. Docker retries failed setup; preparation never stops a running one
-and stays unready meanwhile. `checkedAt` records termination/observation time.
+reports exit 2 as `WORKSPACE_SETUP_REFUSED`; other failures retry
+(`WORKSPACE_SETUP_RETRYING`). OpenShell raises `SandboxWorkspaceSetupRefusedError` on refusal,
+reporting RPC status or exit/timeout only. Docker retries failures without
+interrupting setup, staying unready. `checkedAt` records termination/observation time.
 
 ### 3. Activation clears staged contents and keeps completion metadata
 
@@ -154,7 +155,7 @@ live edits after activation do not update it.
 
 ### 4. Composition configures private access
 
-`apps/controller/src/api-startup.mjs:startApi` validates the optional absolute
+`apps/controller/src/api-startup.ts:startApi` validates the optional absolute
 `OCC_GATEWAY_API_KEY_PATH` before opening the database. Production and
 PostgreSQL development composition bind the selected Compute Driver to
 `createWorkspaceFilesAccess`. The worker uses that key for node enrollment.
@@ -243,13 +244,14 @@ owns recovery. Native provisioning requires Sandbox; expired unpaired setup awai
   The memory flush run gets Gateway-local `read` and `write`, so
   `agents.defaults.compaction.memoryFlush.enabled` is `false`. Codex's native
   tools act in the Harness; file-transfer reaches it through the node.
-- The Harness reaches the model itself, so the Gateway's `codex` and `openai`
-  provider rows keep only their models: overrides (`request`, `headers`,
-  `params`, `localService`) are dropped, and an authored transport (always for
-  `codex`) becomes the `http://127.0.0.1:9` stub. A session switched to
-  OpenClaw's built-in runtime with
-  `/model <ref> --runtime openclaw` runs in the Gateway with no reachable model,
-  and Codex never hands that runtime a turn.
+- For a Codex workspace-node Gateway’s `codex` and `openai` rows,
+  `pinCodexProviderTransport` drops request overrides and replaces authored transports (always for `codex`) with
+  `http://127.0.0.1:9`, blocking Gateway-local model access.
+  Model `reasoning`, `thinkingLevelMap`, and valid nonempty
+  `compat.supportedReasoningEfforts` remain. All other `compat` fields are
+  stripped; specifically, `thinkingLevels` would trigger native fallback.
+  [Capabilities](../reference/harness-execution.md#native-runtime-selection)
+  are authored, not inferred.
 - At startup Gateway emits `runtime.gateway_settings_overridden` naming, never
   valuing, replaced or dropped settings. `occ agent logs` exposes names; the
   Collector exports only the [event](common-logging.md#7-collector-exports-only-operational-classes).
@@ -341,10 +343,9 @@ replays it. Cleanup closes the native client.
 
 ## Debugging and Verification
 
-- For setup failure, check Agent revision and work status, the selected Driver's
-  support, native release, defaults identity and durable workspace placement.
-  Do not delete a completion marker to force a replay; missing initialized
-  storage needs operator recovery, not the creation payload.
+- Check revision/work status, Driver support, native release/defaults
+  identity and durable workspace placement. Missing initialized storage needs
+  operator recovery, not creation payload replay or completion-marker deletion.
 - A stale `workspaceDefaultsId` rejects creation with `409 RESOURCE_CONFLICT`;
   reload the Console create form and resubmit. Creation
   does not prove runtime initialization; verify the selected version and live content.
@@ -375,6 +376,10 @@ replays it. Cleanup closes the native client.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 23:39: Preserve safe initializer error codes and earlier setup errors. (authoring-run/1e3b3e18-4b6f-4cdb-b1a6-c99b3336bb19 - 707390bb16f132b70addcf3079a81bf493387712)
+
+- 2026-11-11 09:02: Retain native effort capabilities without request overrides. (authoring-run/34b5633f-b4b7-4b67-98ff-d5b3c3ab1a6b - 9f30b1e6b9f6552865d47fedd6d0b82729bf70fb)
 
 - 2026-11-05 00:00: Clarify enrollment limits. (authoring-run/813d3dd8-d371-45db-a6f1-d70156152311 - a23d33a4d561d0678410a993e5c10a8cddf1a720)
 

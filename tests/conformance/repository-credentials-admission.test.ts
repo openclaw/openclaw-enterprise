@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
-import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
+import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import type {
   Clock,
   DriverCustody,
   RepositoryBackendFactory,
-} from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
-import type { ShutdownSummary } from "../../apps/controller/src/drivers/repo/credentials/service-contracts.ts";
+} from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import type { ShutdownSummary } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";

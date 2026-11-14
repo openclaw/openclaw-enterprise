@@ -1,7 +1,7 @@
 # Diagnose Kubernetes installation prerequisites
 
 Before installing OCE, run the read-only prerequisite check from a matching
-checkout with Node.js 24, `kubectl`, and your trusted kubeconfig. Prepare the target
+checkout with Node.js satisfying `engines.node` in the selected release checkout's `package.json`, `kubectl`, and your trusted kubeconfig. Prepare the target
 namespace and prerequisite controllers through your infrastructure workflow first.
 The command does not create resources, update policies, change your current
 context, or run commands inside Pods.
@@ -80,9 +80,9 @@ configured credential plugin when applicable. It does not request Kubernetes Sec
 ## Run and interpret the checks
 
 ```bash
-node scripts/diagnose-kubernetes-prerequisites.mjs --config "$RUN_DIR/prerequisites.json"
+node scripts/diagnose-kubernetes-prerequisites.ts --config "$RUN_DIR/prerequisites.json"
 # Save machine-readable evidence privately when needed.
-node scripts/diagnose-kubernetes-prerequisites.mjs \
+node scripts/diagnose-kubernetes-prerequisites.ts \
   --config "$RUN_DIR/prerequisites.json" --json > "$RUN_DIR/prerequisite-result.json"
 ```
 

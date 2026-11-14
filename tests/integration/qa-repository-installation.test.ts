@@ -6,7 +6,7 @@ import test, { type TestContext } from "node:test";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { loadConfiguration } from "../../apps/controller/src/composition/repository-credentials/config.ts";
-import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import {
   PREPARED_REPOSITORY_DIRECTORY,
   REPOSITORY_CONTROL_SOCKET,
@@ -98,6 +98,7 @@ async function startWorkerOwner(loaded: LoadedInstallation) {
   return startPreparedGitHubGitOwner({
     ...owner,
     ...prepared,
+    repositoryGitCustody: { kind: "unavailable" },
     // Startup validates before it touches the database; maintenance stays off.
     pool: {} as Parameters<typeof startPreparedGitHubGitOwner>[0]["pool"],
     startWorker: false,
@@ -167,7 +168,12 @@ test("QA repository inputs start the controller, worker owner and repository ser
     mode: "production",
     environment: { OCC_CONFIG_PATH: join(root, "installation.yaml") },
   });
-  assert.ok(loaded?.repositoryOwner && loaded.repositoryPolicy && loaded.preparedRepositoryGit);
+  assert.ok(loaded?.repositoryOwner && loaded.repositoryAdmission && loaded.preparedRepositoryGit);
+  assert.equal(Object.hasOwn(loaded, "repositoryPolicy"), false);
+  assert.equal(Object.hasOwn(loaded.installation.drivers, "repo"), false);
+  assert.equal(loaded.repositoryAdmission.policyMode, "built-in");
+  assert.equal(loaded.repositoryAdmission.backendId, registry.backendId);
+  assert.equal(loaded.repositoryAdmission.policy.id, installation.repository.id);
   assert.equal(loaded.repositoryGitDriver, undefined);
   assert.equal("authorityIdentity" in loaded ? loaded.authorityIdentity : undefined, undefined);
   assert.equal(
@@ -177,8 +183,10 @@ test("QA repository inputs start the controller, worker owner and repository ser
   assert.equal(typeof loaded.nativeRepositorySender, "object");
   assert.equal(loaded.repositoryOwner.backendId, "github-qa");
   assert.equal(
-    loaded.repositoryPolicy.resolve({ namespaceId: "ns_qa", bindings: [{ repositoryRef: "qa" }] })
-      .bindings[0]?.profile,
+    loaded.repositoryAdmission.policy.resolveBindings({
+      namespaceId: "ns_qa",
+      bindings: [{ repositoryRef: "qa" }],
+    }).bindings[0]?.profile,
     "git-write",
   );
 

@@ -12,8 +12,8 @@ ref=application
 APP_SLUG=oce-test-repo-access
 WRITE_REGISTRY=qa-git-write
 READ_REGISTRY=qa-git-read
-node "$dir/git-fixture.mjs" issue read
-trap 'node "$dir/git-fixture.mjs" revoke read || exit 1' EXIT
+node "$dir/git-fixture.ts" issue read
+trap 'node "$dir/git-fixture.ts" revoke read || exit 1' EXIT
 GH_TOKEN=$(cat "$RUN_DIR/git-read.token")
 export GH_TOKEN
 test "$(gh api "repos/$repo" --jq .id)" = "$repo_id"
@@ -48,7 +48,7 @@ kube -n "$PLATFORM_NS" create configmap qa-git-ca --from-file="ca.crt=$RUN_DIR/g
 kube -n "$PLATFORM_NS" create configmap qa-git-issuer --from-file="gateway-public.pem=$RUN_DIR/gateway-public.pem"
 helmopts=(--kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS")
 helm get values openshell-gateway "${helmopts[@]}" --all -o json > "$RUN_DIR/openshell-values.json"
-node "$dir/git-configure.mjs"
+node "$dir/git-configure.ts"
 
 request POST "$base/agents/$agent/stop" > "$RUN_DIR/git-stop.json"
 stopped() { request GET "$base/agents/$agent" | jq -e '.data.desiredRuntimeState=="stopped" and .data.activeRevisionId==null' >/dev/null; }
@@ -56,7 +56,7 @@ for ((i=0;i<90;i++)); do if stopped; then break; fi; sleep 2; done
 stopped
 kube -n "$TENANT_NAMESPACE" apply -f "$RUN_DIR/git-egress.json"
 upgrade_installation
-helm upgrade openshell-gateway "$OCC_DEVELOPMENT_STATE_DIRECTORY/openshell/chart/helm-chart-0.1.6.tgz" \
+helm upgrade openshell-gateway "$OCC_DEVELOPMENT_STATE_DIRECTORY/openshell/chart/helm-chart-0.1.8.tgz" \
   "${helmopts[@]}" -f "$RUN_DIR/openshell-git-values.json" --wait
 kube -n "$PLATFORM_NS" rollout status statefulset/openshell-gateway --timeout=3m
 kube -n "$PLATFORM_NS" exec -i deployment/openclaw-enterprise-worker -c worker -- \
@@ -66,7 +66,7 @@ jq -e '.success==true' "$RUN_DIR/github-worker-check.json" >/dev/null
 request GET "$base/agents/$agent/repository-options" |
   jq -e --arg ref "$ref" 'any(.data[];.repositoryRef==$ref and (.allowedProfiles|index("github-repository"))!=null)' >/dev/null
 guide_step() {
-  node "$dir/guide-bash.mjs" "$guide" "$1" > "$RUN_DIR/git-guide-step.sh"
+  node "$dir/guide-bash.ts" "$guide" "$1" > "$RUN_DIR/git-guide-step.sh"
   source "$RUN_DIR/git-guide-step.sh"
 }
 GIT_SESSION_MODE=owner guide_step 'stop_git_test()'
