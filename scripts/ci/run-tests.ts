@@ -832,7 +832,7 @@ async function main() {
         "prepared-signin accepts no file, command, preparation or manifest overrides",
       );
     }
-    const { runPreparedSigninCase } = await import("./prepared-signin-case.mjs");
+    const { runPreparedSigninCase } = await import("./prepared-signin-case.ts");
     const exitCode: number = await runPreparedSigninCase(repositoryRoot, (root, lane, file) =>
       runFile(root, lane, file, { statePath: null, prepareFile: null }, async (step) => step()),
     );

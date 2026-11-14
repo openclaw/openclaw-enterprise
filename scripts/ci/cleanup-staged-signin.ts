@@ -7,30 +7,21 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import {
-  assertHostedSigninJob as validateHostedSigninJob,
+  assertHostedSigninJob,
   readPreparedSigninCluster,
   readSettledSigninCase,
   readStagedSignin,
-} from "../../tests/helpers/signin/staged.mjs";
+} from "../../tests/helpers/signin/staged.ts";
 import {
   bindLocalRehearsalCluster,
   runFixtureCommand,
   type FixtureRun,
 } from "../../tests/helpers/production-rehearsal-custody.ts";
-import { caseName } from "./prepared-signin-case.mjs";
+import { caseName } from "./prepared-signin-case.ts";
 import { restrictStagingProcess } from "./prepare-staged-signin.ts";
 
 const run: FixtureRun = (command, args, options) =>
   runFixtureCommand(command, args, options, String, true);
-const assertHostedSigninJob: (
-  environment: NodeJS.ProcessEnv,
-) => asserts environment is NodeJS.ProcessEnv & {
-  GITHUB_WORKSPACE: string;
-  RUNNER_TEMP: string;
-  GITHUB_RUN_ID: string;
-  GITHUB_RUN_ATTEMPT: string;
-  STAGING_INSTALLATION: string;
-} = validateHostedSigninJob;
 
 async function admitCleanup(planHash: string, preparedHash: string) {
   const e = process.env;
@@ -48,40 +39,27 @@ async function admitCleanup(planHash: string, preparedHash: string) {
     workflowSha,
     installation: e.STAGING_INSTALLATION,
   });
-  const prepared: unknown = await readPreparedSigninCluster(e, preparedHash, planHash, staged);
-  const returned: unknown = await readSettledSigninCase(e, preparedHash, planHash);
-  const owned = asRecord(prepared);
-  const settled = asRecord(returned);
-  assert.ok(owned && settled);
-  const { cluster, clusterUID, serverID, nodeUID, stateSha256 } = owned;
-  assert.ok(
-    typeof cluster === "string" &&
-      typeof clusterUID === "string" &&
-      typeof serverID === "string" &&
-      typeof nodeUID === "string" &&
-      typeof stateSha256 === "string",
-  );
-  assert.ok(typeof settled.sha256 === "string" && typeof settled.exitCode === "number");
-  const signinPlan: unknown = staged.signinPlan;
+  const prepared = await readPreparedSigninCluster(e, preparedHash, planHash, staged);
+  const settled = await readSettledSigninCase(e, preparedHash, planHash);
   return {
     runnerTemp: e.RUNNER_TEMP,
     dir: join(e.RUNNER_TEMP, "staging-installed-signin"),
     planHash,
     preparedHash,
-    signinPlan,
+    signinPlan: staged.signinPlan,
     owned: {
-      cluster,
-      clusterUID,
-      serverID,
-      nodeUID,
-      stateSha256,
-      membership: owned.membership,
+      cluster: prepared.cluster,
+      clusterUID: prepared.clusterUID,
+      serverID: prepared.serverID,
+      nodeUID: prepared.nodeUID,
+      stateSha256: prepared.stateSha256,
+      membership: prepared.membership,
       workflowSha,
-      runId: e.GITHUB_RUN_ID,
-      runAttempt: e.GITHUB_RUN_ATTEMPT,
+      runId: prepared.runId,
+      runAttempt: prepared.runAttempt,
       installation: e.STAGING_INSTALLATION,
     },
-    settled: { sha256: settled.sha256, exitCode: settled.exitCode },
+    settled,
   };
 }
 
@@ -123,10 +101,8 @@ async function caseEvidence({ dir, signinPlan, owned, planHash, preparedHash }: 
   const proof = join(folder, entry.name, "proof.json");
   assert.equal(await realpath(proof), proof);
   const reader = fileURLToPath(new URL("./staged-signin-proof.py", import.meta.url));
-  const plan = asRecord(signinPlan);
-  const previous = asRecord(plan?.previous)?.version;
-  const candidate = asRecord(plan?.candidate)?.version;
-  assert.ok((previous === 2 || previous === 3) && candidate === 3);
+  const previous = signinPlan.previous.version;
+  const candidate = signinPlan.candidate.version;
   const output: unknown = JSON.parse(
     await run(
       "python3",
@@ -161,11 +137,12 @@ async function releaseCluster(
   assert.equal(current.clusterUID, owned.clusterUID);
   assert.equal(current.serverID, owned.serverID);
   assert.equal(current.nodeUID, owned.nodeUID);
-  const membership = await current.cleanupIdentity();
+  const membership: unknown = await current.cleanupIdentity();
   assert.deepEqual(membership, owned.membership);
-  const networkID: unknown = membership.networkID;
-  assert.ok(typeof networkID === "string");
-  const volumeEntries: unknown[] = membership.volumes;
+  const observed = asRecord(membership);
+  assert.ok(typeof observed?.networkID === "string" && Array.isArray(observed.volumes));
+  const { networkID } = observed;
+  const volumeEntries: readonly unknown[] = observed.volumes;
   const volumes = volumeEntries.map((value) => {
     const volume = asRecord(value);
     assert.ok(typeof volume?.name === "string" && typeof volume.createdAt === "string");

@@ -84,7 +84,7 @@ test(
       "Select exactly one local controller rehearsal",
     );
     const preparedHash = process.env.OCC_TEST_SIGNIN_PREPARED_SHA256;
-    const signinReader = signinSelected ? await import("../helpers/signin/staged.mjs") : undefined;
+    const signinReader = signinSelected ? await import("../helpers/signin/staged.ts") : undefined;
     if (preparedHash) {
       assert.ok(signinReader, "the prepared cluster is dedicated to the sign-in case");
       signinReader.assertHostedSigninJob(process.env);
@@ -126,7 +126,7 @@ test(
         planHash,
         stagedSignin,
       ));
-    const support = stagedSignin ? await import("../helpers/signin/support-images.mjs") : undefined;
+    const support = stagedSignin ? await import("../helpers/signin/support-images.ts") : undefined;
     const supportReferences = support && (await support.signinSupportReferences());
     const images = Object.fromEntries(
       [

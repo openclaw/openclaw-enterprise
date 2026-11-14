@@ -3,10 +3,12 @@ import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   assertHostedSigninJob,
+  assertSigninHash,
   readPreparedSigninCluster,
   readStagedSignin,
-} from "../../tests/helpers/signin/staged.mjs";
+} from "../../tests/helpers/signin/staged.ts";
 import { restrictStagingProcess } from "./prepare-staged-signin.ts";
+import type { PreparedSigninRunFile } from "./run-tests.ts";
 
 const relativePath = "tests/integration/production-tui-k3d-real.test.mjs";
 export const caseName =
@@ -14,11 +16,7 @@ export const caseName =
 
 // The outer Linux supervisor owns descendant settlement. The CI runner owns
 // reporter parsing, skip/todo checks and timeouts; only this case may qualify.
-/**
- * @param {string} root
- * @param {import("./run-tests.ts").PreparedSigninRunFile} runFile
- */
-export async function runPreparedSigninCase(root, runFile) {
+export async function runPreparedSigninCase(root: string, runFile: PreparedSigninRunFile) {
   const e = process.env;
   assertHostedSigninJob(e);
   const planHash = e.OCC_TEST_SIGNIN_PLAN_SHA256;
@@ -33,6 +31,8 @@ export async function runPreparedSigninCase(root, runFile) {
     installation: e.STAGING_INSTALLATION,
   });
   const receipt = await readPreparedSigninCluster(e, preparedHash, planHash, staged);
+  assertSigninHash(planHash);
+  assertSigninHash(preparedHash);
   const directory = join(e.RUNNER_TEMP, "staging-installed-signin");
   e.HOME = join(directory, "home");
   e.DOCKER_CONFIG = join(directory, "docker");
@@ -59,6 +59,7 @@ export async function runPreparedSigninCase(root, runFile) {
     },
   };
   const result = await runFile(root, lane, file);
+  const [test] = result.tests;
   const ok =
     result.status === "passed" &&
     result.nodeExitCode === 0 &&
@@ -68,9 +69,9 @@ export async function runPreparedSigninCase(root, runFile) {
     result.counts.total === 1 &&
     result.counts.passed === 1 &&
     result.tests.length === 1 &&
-    result.tests[0].name === caseName &&
-    result.tests[0].status === "passed" &&
-    result.tests[0].file === relativePath;
+    test?.name === caseName &&
+    test.status === "passed" &&
+    test.file === relativePath;
   const outcome = {
     kind: "staging-signin-case",
     workflowSha: e.GITHUB_WORKFLOW_SHA,
