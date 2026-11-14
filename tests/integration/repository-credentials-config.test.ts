@@ -47,7 +47,7 @@ test("prepared startup accepts TLS without an App key or provider calls and reje
       privateKeyFile: key,
     },
   };
-  async function save(value = input) {
+  async function save(value: unknown = input) {
     await writeFile(file, JSON.stringify(value), { mode: 0o600 });
   }
   const registryFile = join(directory, "registry.json");
@@ -103,7 +103,7 @@ test("prepared startup accepts TLS without an App key or provider calls and reje
     await import("../../apps/controller/src/drivers/repo/access/clock.ts");
   const loaded = await loadConfiguration(file, createSystemClock());
   try {
-    assert.equal(loaded.repositoryDescriptions, undefined);
+    assert.equal("repositoryDescriptions" in loaded, false);
     assert.equal("resolve" in loaded.factory, false);
     const { createCredentialService } =
       await import("../fixtures/repository-credentials/service.ts");
@@ -164,7 +164,7 @@ test("prepared startup accepts TLS without an App key or provider calls and reje
   for (const [selected, profile] of [
     [active, "git-read"],
     [previous, "git-full"],
-  ]) {
+  ] as const) {
     await mkdir(selected, { mode: 0o700 });
     await writeFile(
       join(selected, "config.json"),
@@ -274,7 +274,7 @@ test("development token authority loads only with both opt-ins and never reaches
       pushRefAllowlist: ["refs/heads/agent/*"],
     },
   };
-  const save = (value = input) => writeFile(file, JSON.stringify(value), { mode: 0o600 });
+  const save = (value: unknown = input) => writeFile(file, JSON.stringify(value), { mode: 0o600 });
   const development = { developmentAuthority: true };
   await save();
   // The config literal alone is not enough: the process flag is the second opt-in.
@@ -341,7 +341,7 @@ test("development token authority loads only with both opt-ins and never reaches
 test("production deployment inputs never name the development token authority", async () => {
   // Lint: only files whose names contain "development" may enable the kind.
   const root = new URL("../../", import.meta.url);
-  const files = async (path) => {
+  const files = async (path: string) => {
     const entries = await readdir(new URL(path, root), { recursive: true, withFileTypes: true });
     return entries
       .filter((entry) => entry.isFile())
@@ -420,7 +420,7 @@ test("service admission bounds are finite and retain an explicit long-task polic
   assert.equal(specific.gitFetchStallMs, 4000);
   assert.equal(specific.gitFetchFirstHeaderMs, 6000);
   // The control socket limit is 103 bytes, matching the control client and the Driver schema.
-  const socketPath = (bytes) => `/run/${"s".repeat(bytes - "/run/.sock".length)}.sock`;
+  const socketPath = (bytes: number) => `/run/${"s".repeat(bytes - "/run/.sock".length)}.sock`;
   const longest = socketPath(103);
   assert.equal(Buffer.byteLength(longest), 103);
   assert.equal(
@@ -432,8 +432,16 @@ test("service admission bounds are finite and retain an explicit long-task polic
   assert.ok(multibyte.length < 103 && Buffer.byteLength(multibyte) > 103);
   // Every guard refuses with the same message, so each input breaks exactly one guard:
   // removing any guard lets its input through.
-  const gateway = (patch) => ({ ...input, gateway: { ...input.gateway, ...patch } });
-  const policy = (patch) => ({ ...input, sessionPolicy: { ...input.sessionPolicy, ...patch } });
+  const gateway = (patch: Partial<typeof input.gateway>) => ({
+    ...input,
+    gateway: { ...input.gateway, ...patch },
+  });
+  const policy = (
+    patch: Partial<typeof input.sessionPolicy> | { maximumDurationSeconds: undefined },
+  ) => ({
+    ...input,
+    sessionPolicy: { ...input.sessionPolicy, ...patch },
+  });
   const profiles = Array.from({ length: 16 }, (_, index) => `profile-${index}`);
   for (const changed of [
     ...[0, -1, Infinity, NaN].map((exchangeMs) => ({ ...input, limits: { exchangeMs } })),
@@ -468,8 +476,7 @@ test("protected file transfers its candidate only after descriptor cleanup", asy
       async (t) => {
         const open = fs.open;
         const from = Buffer.from;
-        let scratch;
-        let candidate;
+        const observed: { scratch?: Buffer; candidate?: Buffer } = {};
         let closed = false;
         t.after(() => {
           t.mock.restoreAll();
@@ -477,18 +484,27 @@ test("protected file transfers its candidate only after descriptor cleanup", asy
         });
         // Read a real protected file and close the real descriptor. Faults occur at
         // the filesystem boundary; the production reader still owns every buffer.
-        t.mock.method(fs, "open", async (...args) => {
+        t.mock.method(fs, "open", async (...args: Parameters<typeof open>) => {
           const handle = await open(...args);
           const read = handle.read;
           const close = handle.close;
-          t.mock.method(handle, "read", async (...args) => {
-            scratch = args[0];
-            const result = await read.apply(handle, args);
-            if (failure === "read") {
-              throw new Error("fixture read failed");
-            }
-            return result;
-          });
+          t.mock.method(
+            handle,
+            "read",
+            new Proxy(read, {
+              async apply(target, receiver, args: unknown[]) {
+                const [buffer] = args;
+                if (Buffer.isBuffer(buffer)) {
+                  observed.scratch = buffer;
+                }
+                const result: unknown = await Reflect.apply(target, receiver, args);
+                if (failure === "read" && Buffer.isBuffer(buffer)) {
+                  throw new Error("fixture read failed");
+                }
+                return result;
+              },
+            }),
+          );
           t.mock.method(handle, "close", async () => {
             await close.call(handle);
             closed = true;
@@ -498,16 +514,25 @@ test("protected file transfers its candidate only after descriptor cleanup", asy
           });
           return handle;
         });
-        t.mock.method(Buffer, "from", (...args) => {
-          const result = from(...args);
-          if (Buffer.isBuffer(args[0]) && args[0].buffer === scratch?.buffer) {
-            candidate = result;
-          }
-          return result;
-        });
+        t.mock.method(
+          Buffer,
+          "from",
+          new Proxy(from, {
+            apply(target, receiver, args: unknown[]) {
+              const result: unknown = Reflect.apply(target, receiver, args);
+              const [source] = args;
+              if (Buffer.isBuffer(source) && source.buffer === observed.scratch?.buffer) {
+                assert.ok(Buffer.isBuffer(result));
+                observed.candidate = result;
+              }
+              return result;
+            },
+          }),
+        );
         syncBuiltinESMExports();
         const result = await readProtectedFile(path, 1024);
         assert.equal(closed, true);
+        const { scratch, candidate } = observed;
         assert.ok(scratch);
         assert.ok(scratch.every((byte) => byte === 0));
         if (failure) {
@@ -519,7 +544,8 @@ test("protected file transfers its candidate only after descriptor cleanup", asy
             assert.equal(candidate, undefined);
           }
         } else {
-          assert.equal(result.ok, true);
+          assert.ok(result.ok);
+          assert.ok(candidate);
           assert.equal(result.bytes, candidate);
           assert.equal(result.bytes.toString(), contents);
           // Successful transfer leaves disposal with the actual caller.

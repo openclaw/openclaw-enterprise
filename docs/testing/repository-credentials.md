@@ -55,7 +55,7 @@ authorized equivalent environment.
 For native selection and routing, run:
 
 ```sh
-node --test tests/integration/repository-credentials-client-config.test.mjs \
+node --test tests/integration/repository-credentials-client-config.test.ts \
   tests/integration/repository-credentials-router.test.mjs
 ```
 
