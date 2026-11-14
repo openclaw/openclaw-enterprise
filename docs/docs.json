@@ -546,6 +546,10 @@
                         "label": "Native Git with a Prepared Credential"
                       },
                       {
+                        "page": "reference/repository-credentials/remote-prepared-git-issuer",
+                        "label": "Remote Git Issuer"
+                      },
+                      {
                         "page": "reference/repository-credentials/protected-openshell-git",
                         "label": "Protected Git with OpenShell"
                       },

@@ -2251,6 +2251,11 @@ type InstallationRepositoryAdmission = Readonly<{
     }): RepositoryCredentialResolution;
   };
   backendId: string;
+  recipient?: Readonly<{
+    namespaceId: string;
+    agentId: string;
+    servicePrincipalId: string;
+  }>;
 }>;
 
 export class OpenClawController {
@@ -13463,6 +13468,7 @@ export class OpenClawController {
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
+      this.requireRepositoryDeploymentRecipient(lockedAgent);
       if (typeof resolveHarness !== "function") {
         throw new DependencyUnavailableError("The selected Harness descriptor is unavailable.");
       }
@@ -15778,6 +15784,7 @@ export class OpenClawController {
     }
     // Retry keeps this admission before its lifecycle checks; status only reads saved progress.
     if (agent !== undefined && statusRead !== "status") {
+      this.requireRepositoryDeploymentRecipient(agent);
       this.admitRepositoryCredentials(
         agent,
         compute,
@@ -18599,6 +18606,21 @@ export class OpenClawController {
       ]),
     );
     return immutableCopy(bindings.map(({ repositoryRef }) => selections.get(repositoryRef)!));
+  }
+
+  private requireRepositoryDeploymentRecipient(agent: Readonly<Agent>): void {
+    const recipient = this.installationRepositoryAdmission?.recipient;
+    if (
+      recipient &&
+      agent.repositoryBindings?.length &&
+      (recipient.namespaceId !== agent.namespaceId ||
+        recipient.agentId !== agent.id ||
+        recipient.servicePrincipalId !== agent.servicePrincipalId)
+    ) {
+      throw new ResourceStateConflictError(
+        "The Installation has no prepared repository credential enrollment for this Agent.",
+      );
+    }
   }
 
   private admitRepositoryCredentials(

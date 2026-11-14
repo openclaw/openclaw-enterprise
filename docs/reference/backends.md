@@ -119,25 +119,9 @@ Drain admitted work on its original owner before switching senders.
 
 #### Remote prepared Git issuer
 
-With bundled Kubernetes Compute, select one pinned external Sandbox and
-Credential Proxy registration. In `repository.preparedGitHub`, set
-`issuerEndpoint` to a canonical HTTPS origin and supply mounted paths
-`issuerCaPath`, `workerCertificatePath` and `workerPrivateKeyPath`.
-Remove the native sender and co-located key options. Omit bundled OpenShell
-repository delivery, Credential Gateway and Credential Refresh.
-
-Run `node apps/controller/src/prepared-git-issuer.ts /absolute/issuer.json`
-with `NODE_ENV=production`, `OCC_DATABASE_URL` for the application role and
-`OCC_CONFIG_PATH` for the same Installation and registry.
-The issuer JSON requires `listenHost` (specific IP), `listenPort`,
-`serverCertificatePath`, `serverPrivateKeyPath`, `workerCaPath`,
-`workerFingerprintSha256` (64 lowercase hex digits), `workerInstanceId` (v4 UUID),
-`installationId`, `namespaceId`, `agentId`, `servicePrincipalId`,
-`privateKeyPath` and `custodyKeyPath`. Optional `apiOrigin` and `issuerCaPath`
-select the upstream GitHub API and its CA. Use canonical absolute paths.
-The issuer mounts the App, custody and server TLS keys. The selected
-online `github-repository` profile uses GitHub ref protection and registry
-permissions. Co-located callers can use other profiles. See the [startup flow](../flows/production-startup.md).
+Use a [remote prepared Git issuer](repository-credentials/remote-prepared-git-issuer.md)
+to deliver the online `github-repository` profile through an external Sandbox and
+Credential Proxy registration.
 
 ### OpenShell gateway
 

@@ -112,5 +112,6 @@ export async function loadPreparedGitIssuerSelection(
     repositoryOwner,
     registry,
     repositoryGitCustody: selectRegisteredRepositoryGitCustody(driver),
+    enrollment: repository.prepared.enrollment,
   };
 }

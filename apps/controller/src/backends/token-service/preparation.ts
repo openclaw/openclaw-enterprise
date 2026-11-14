@@ -5,8 +5,8 @@ import { preparationAdmitted, sameTokenAdmission } from "./custody.ts";
 export interface TokenIssue {
   readonly attemptId: string;
   readonly bounds: Readonly<{ signal: AbortSignal; deadlineMonoMs: number }>;
-  /** Check after obtaining the issuer input, immediately before possible dispatch. */
-  assertIssuing(): Promise<void>;
+  /** A synchronous dispatch, when supplied, runs under the store's current-authority read. */
+  assertIssuing(dispatch?: () => void): Promise<void>;
   /** Transfer candidate ownership to cleanup custody before validating it or awaiting transport close. */
   capture(candidate: Uint8Array): void;
   /** Record a complete provider answer that refused issuance. Never for a lost or partial answer. */
@@ -122,7 +122,7 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
           bounds,
           // The issuer might await its signing input before this check. Recovery could have
           // fenced this attempt in the meantime. Publication must independently recheck it.
-          async assertIssuing() {
+          async assertIssuing(dispatch) {
             observe({ stage: "fence" });
             const issuing = await store.readCurrent(admission.familyId, (row) => {
               const admissionCurrent = preparationAdmitted(row, admission);
@@ -141,21 +141,25 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
                     sameTokenAdmission(entry.admission, admission)
                   );
                 });
-              return issuing ? { observedAt: row.observedAt } : undefined;
+              // The store's clock bounds settlement. Our clock signs the provider JWT and
+              // must not run ahead. No await separates this check and a supplied dispatch.
+              const currentBounds = issuing ? inBounds() : undefined;
+              const clockTolerance =
+                currentBounds && row?.observedAt !== undefined
+                  ? clock.wallNow() - row.observedAt <= storeClockToleranceMs
+                  : undefined;
+              observe({
+                stage: "fence",
+                ...(currentBounds !== undefined ? { inBounds: currentBounds } : {}),
+                ...(clockTolerance !== undefined ? { clockTolerance } : {}),
+              });
+              if (!issuing || !currentBounds || clockTolerance === false) {
+                return false;
+              }
+              dispatch?.();
+              return true;
             });
-            // Settlement measures the attempt in the store's clock, but our clock sets the JWT
-            // expiry that bounds when the provider can still mint: ours must not run ahead.
-            const currentBounds = issuing ? inBounds() : undefined;
-            const clockTolerance =
-              issuing && currentBounds && issuing.observedAt !== undefined
-                ? clock.wallNow() - issuing.observedAt <= storeClockToleranceMs
-                : undefined;
-            observe({
-              stage: "fence",
-              ...(currentBounds !== undefined ? { inBounds: currentBounds } : {}),
-              ...(clockTolerance !== undefined ? { clockTolerance } : {}),
-            });
-            if (!issuing || !currentBounds || clockTolerance === false) {
+            if (!issuing) {
               observe({ stage: "fence", error: "admission-fenced" });
               throw new Error("preparation-fenced");
             }

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-11-14"
-last_updated_session: "authoring-run/87b49445-92f3-4be2-ad7e-f25fb734ab11"
+last_updated_session: "authoring-run/dfd9adb7-a9e9-438a-ae1a-ab73c7fe7079"
 ---
 
 # Production Startup Flow
@@ -300,19 +300,18 @@ The API and Worker load the registry matching `repository.id`. A bad co-located
 App key prevents Worker readiness (`PREPARED_GITHUB_APP_KEY_INVALID`).
 The API loads no App key.
 
-For a [separate prepared Git issuer](../reference/backends.md#remote-prepared-git-issuer),
-the Worker checks that the external Driver preserves its declared registration.
-A mismatch prevents readiness. The Worker closes a registration refused after
-creation. Successful cleanup yields `DRIVER_CONFIGURATION_INVALID`. A close
-failure yields `WORKER_STARTUP_FAILED`.
+For a [remote issuer](../reference/repository-credentials/remote-prepared-git-issuer.md),
+deployment admission checks the declared enrollment. The Worker validates the
+external Driver registration and closes it if configuration or transport
+validation fails. A configuration mismatch yields `DRIVER_CONFIGURATION_INVALID`
+after successful cleanup.
 
-`apps/controller/src/composition/repository-credentials/issuer-selection.ts:loadPreparedGitIssuerSelection`
+`apps/controller/src/composition/repository-credentials/issuer.ts:startPreparedGitIssuer`
 
-The issuer derives the same registration from Installation configuration and
-package metadata. The Worker loads the Driver. The issuer retains App and
-custody keys and verifies the enrolled Worker certificate. The Worker connects
-over mutual TLS before binding its sender. Custody checks committed release,
-Worker, recipient, fence and material before recording use.
+The issuer checks enrollment, database Installation and custody schema. The
+Worker requires the issuer probe over mutual TLS before binding its sender.
+Custody checks the enrolled witness before preparation and dispatch. It checks
+the release, recipient, fence and material before use.
 
 `apps/controller/src/composition/repository-credentials/projected-inputs.ts:prepareProjectedInputs`
 
@@ -397,6 +396,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 02:01: Trace issuer enrollment and readiness. (authoring-run/dfd9adb7-a9e9-438a-ae1a-ab73c7fe7079 - d0a92127b46be95d855f47b9559cf4e51e24c3ca)
 
 - 2026-11-14 01:36: Trace the remote issuer and Worker registration checks. (authoring-run/87b49445-92f3-4be2-ad7e-f25fb734ab11 - 7a3279d4c81772d2880e36b69b3f46382c1d2a7c)
 

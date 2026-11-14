@@ -329,12 +329,17 @@ test("production composition separates repository policy from protected and expl
   assert.deepEqual(scope.pushRefAllowlist, ["refs/heads/review"]);
   assert.equal(scope.pullRequestBase, "main");
   assert.equal(scope.draftPullLimit, "one-per-grant");
-  // Remote startup accepts only its four mounted TLS settings and external delivery.
+  // Remote startup requires a fixed enrollment and the external delivery route.
   const remotePrepared = {
     issuerEndpoint: "https://issuer.example.test:9443",
     issuerCaPath: "/unmounted/issuer-ca.pem",
     workerCertificatePath: "/unmounted/worker.pem",
     workerPrivateKeyPath: "/unmounted/worker-key.pem",
+    enrollment: {
+      namespaceId,
+      agentId: "agt_" + randomUUID(),
+      servicePrincipalId: "service-agent-" + randomUUID(),
+    },
   };
   const remote = {
     ...configuration,
@@ -344,6 +349,7 @@ test("production composition separates repository policy from protected and expl
   assert.deepEqual(loadedRemote.preparedRepositoryGit, remotePrepared);
   await loadedRemote.protectedDriver!.close();
   for (const [preparedGitHub, reason] of [
+    [{ ...remotePrepared, enrollment: undefined }, /preparedGitHub.enrollment/],
     [
       { ...remotePrepared, privateKeyPath: "/unmounted/app.pem" },
       /unsupported option privateKeyPath/,

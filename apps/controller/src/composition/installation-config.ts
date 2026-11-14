@@ -115,7 +115,7 @@ import {
   selectGitHubRepositoryPolicy,
 } from "./repository-credentials/github-selection.ts";
 import { selected, type SelectedDriverConfiguration } from "./installation-selection.ts";
-import type { RemotePreparedGitConfiguration } from "../backends/repository-credentials/remote-prepared-git-config.ts";
+import type { RemotePreparedGitSelection } from "../backends/repository-credentials/remote-prepared-git-config.ts";
 import { loadRepositoryPolicy } from "./repository-credentials/policy.ts";
 import type { PreparedRepositoryGitConfiguration } from "../backends/repository-credentials/prepared-git-owner.ts";
 import { createOpenShellBackend, type OpenShellGateway } from "../backends/openshell.ts";
@@ -249,10 +249,16 @@ export interface InstallationRuntimeDrivers {
   readonly repositoryPolicy?: RepositoryPolicyDriver;
   readonly repositoryAdmission?: Awaited<
     ReturnType<typeof loadRepositoryPolicy>
-  >["repositoryAdmission"] & { readonly policyMode?: "built-in" };
+  >["repositoryAdmission"] & {
+    readonly policyMode?: "built-in";
+    readonly recipient?: Readonly<{
+      namespaceId: string;
+      agentId: string;
+      servicePrincipalId: string;
+    }>;
+  };
   readonly nativeRepositorySender?: NativeRepositorySender;
-  readonly preparedRepositoryGit?:
-    PreparedRepositoryGitConfiguration | RemotePreparedGitConfiguration;
+  readonly preparedRepositoryGit?: PreparedRepositoryGitConfiguration | RemotePreparedGitSelection;
   readonly repositoryTransport?: RepositoryTransportBinding;
   readonly repositoryRegistry?: Awaited<
     ReturnType<typeof loadRepositoryPolicy>
@@ -1384,6 +1390,7 @@ export async function loadInstallationConfiguration(options: {
       const owner = await createExternalProtectedDriver(sandboxPackage.module, sandbox, {
         repositoryAuthorityIdentity:
           repositoryDeliveryMode === "protected" ? repositoryRuntime?.authorityIdentity : undefined,
+        requireRepositoryGitTransport: repositoryDeliveryMode === "protected",
         ...(remoteConfiguration === undefined ? {} : { remoteConfiguration }),
       });
       return { sandboxDriver: owner.require("sandbox"), protectedDriver: owner };
@@ -1448,9 +1455,10 @@ export async function loadInstallationConfiguration(options: {
           backend: openShell!,
         });
   const repositoryGitDriver = repositoryDeliveryMode === "protected" ? protectedDriver : undefined;
-  // This check admits an implementation to try installation. Compute still verifies its
-  // actual recipient and enforcement before release or the first eligible material read.
-  repositoryGitDriver?.requireRepositoryGitTransport();
+  // The external factory validates its transport before transferring registration ownership.
+  if (sandboxPackage === undefined) {
+    repositoryGitDriver?.requireRepositoryGitTransport();
+  }
   let computeDriver: ComputeDriver;
   if (computePackage !== undefined) {
     computeDriver = createExternalDriver(
@@ -1558,6 +1566,7 @@ export async function loadInstallationConfiguration(options: {
       repositoryAdmission: Object.freeze({
         ...repositoryRuntime.repositoryAdmission,
         policyMode: "built-in" as const,
+        ...(remotePreparedGit && { recipient: preparedRepositoryGit.enrollment }),
       }),
     }),
     ...(preparedRepositoryGit ? { preparedRepositoryGit } : {}),

@@ -7,7 +7,7 @@ import type { ProviderScope } from "./provider-transport/request-options.ts";
 export type ProviderAttempt = Pick<
   AttemptContext,
   "signal" | "deadlineMonoMs" | "assertAdmitted" | "observeDispatch"
->;
+> & { readonly withDispatchFence?: (dispatch: () => void) => Promise<void> };
 
 export interface ProviderResponse {
   readonly status: number;

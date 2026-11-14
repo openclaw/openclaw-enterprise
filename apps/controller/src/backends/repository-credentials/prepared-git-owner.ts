@@ -382,6 +382,7 @@ export async function startPreparedGitHubGitOwner(
             clock,
             apiOrigin,
             getKey: async () => key,
+            recheckBeforeSend: options.enrolledWorker !== undefined,
             ...(ca ? { ca } : {}),
             renewBeforeMs: 600_000,
             minimumValidityMs: 60_000,

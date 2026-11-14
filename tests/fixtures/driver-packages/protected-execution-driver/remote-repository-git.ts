@@ -71,20 +71,29 @@ export function createDriver(
   const { mutationWitness, ...configuration } = options.configuration;
   const original = createRepositoryDriver({ ...options, configuration });
   // Change a valid startup value to exercise registration refusal and owner cleanup.
-  const marker = options.configuration.releaseKey.startsWith("mutate:")
-    ? options.configuration.releaseKey.slice("mutate:".length)
-    : undefined;
+  const { releaseKey } = options.configuration;
+  const missingTransport = releaseKey.startsWith("missing-transport:");
+  const marker =
+    releaseKey.startsWith("mutate:") || missingTransport
+      ? releaseKey.slice(releaseKey.indexOf(":") + 1)
+      : undefined;
   if (marker !== undefined) {
     appendFileSync(marker, "created\n");
-    if (mutationWitness === undefined) {
+    const capabilities = { ...original.capabilities };
+    if (missingTransport) {
+      const { repositoryAccess: _repositoryAccess, ...sandbox } = capabilities.sandbox!;
+      capabilities.sandbox = sandbox;
+    } else if (mutationWitness === undefined) {
       options.configuration.releaseKey = "changed";
     } else {
       options.configuration.mutationWitness = new Date(0);
     }
     return {
       ...original,
+      capabilities,
       async close() {
         await original.close?.();
+        await new Promise<void>((resolve) => setImmediate(resolve));
         appendFileSync(marker, "closed\n");
         if (options.configuration.policyReduction) {
           throw new Error("Controlled close failure.");

@@ -111,10 +111,15 @@ export async function startPreparedGitIssuer(
     throw unavailable();
   }
   const settings = await configuration(path);
-  const { repositoryOwner, registry, repositoryGitCustody } = await loadPreparedGitIssuerSelection(
-    environment,
-    packageRoot,
-  );
+  const { repositoryOwner, registry, repositoryGitCustody, enrollment } =
+    await loadPreparedGitIssuerSelection(environment, packageRoot);
+  if (
+    settings.enrolledWorker.namespaceId !== enrollment.namespaceId ||
+    settings.enrolledWorker.agentId !== enrollment.agentId ||
+    settings.enrolledWorker.servicePrincipalId !== enrollment.servicePrincipalId
+  ) {
+    throw unavailable();
+  }
   const {
     serverCertificatePath,
     serverPrivateKeyPath,
@@ -129,21 +134,54 @@ export async function startPreparedGitIssuer(
     serverPrivateKeyPath,
     workerCaPath,
   );
-  const pool = await createPostgresPool(databaseUrl, {
-    keepAlive: true,
-    keepAliveInitialDelayMillis: 10_000,
-    connectionTimeoutMillis: 5000,
-    query_timeout: 5000,
-  });
+  let pool: Awaited<ReturnType<typeof createPostgresPool>> | undefined;
   let owner: Awaited<ReturnType<typeof startPreparedGitHubGitOwner>> | undefined;
   try {
+    const database = await createPostgresPool(databaseUrl, {
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10_000,
+      connectionTimeoutMillis: 5000,
+      statement_timeout: 4000,
+      query_timeout: 5000,
+    });
+    pool = database;
+    // Resolve the custody tables and required privileges on this connection without
+    // writing or requiring a live revision, release, witness or prepared token.
+    const ready = await database.query(
+      `SELECT FROM occ.installation i
+       JOIN occ.agents a ON (a.namespace_id,a.id,a.service_principal_id)=($2,$3,$4)
+       WHERE i.id=$1
+         AND current_setting('transaction_read_only') = 'off'
+         AND has_table_privilege('occ.credential_deliveries', 'INSERT')
+         AND has_column_privilege('occ.credential_deliveries', 'fence', 'UPDATE')
+         AND has_table_privilege('occ.prepared_github_families', 'INSERT')
+         AND has_column_privilege('occ.prepared_github_families', 'enabled', 'UPDATE')
+         AND has_table_privilege('occ.prepared_github_attempts', 'INSERT')
+         AND has_column_privilege('occ.prepared_github_attempts', 'custody', 'UPDATE')
+         AND has_table_privilege('occ.prepared_repository_git_uses', 'INSERT')
+         AND NOT EXISTS (SELECT live_revision_id, worker_instance, target FROM occ.credential_deliveries LIMIT 0)
+         AND NOT EXISTS (SELECT installation FROM occ.egress_installations LIMIT 0)
+         AND NOT EXISTS (SELECT cleanup_context, phase FROM occ.repository_session_attempts LIMIT 0)
+         AND NOT EXISTS (SELECT admission, enabled, next_check_at FROM occ.prepared_github_families LIMIT 0)
+         AND NOT EXISTS (SELECT state, custody, sealed, material_version FROM occ.prepared_github_attempts LIMIT 0)
+         AND NOT EXISTS (SELECT recipient_fence FROM occ.prepared_repository_git_uses LIMIT 0)`,
+      [
+        settings.enrolledWorker.installationId,
+        enrollment.namespaceId,
+        enrollment.agentId,
+        enrollment.servicePrincipalId,
+      ],
+    );
+    if (ready.rowCount !== 1) {
+      throw unavailable();
+    }
     owner = await startPreparedGitHubGitOwner({
       ...repositoryOwner,
       repositoryGitCustody,
       ...options,
       ...(ca === undefined ? {} : { ca }),
       registry,
-      pool,
+      pool: database,
       report: (code, context) => process.stderr.write(JSON.stringify({ code, ...context }) + "\n"),
     });
     if (!owner.protectedGit) {
@@ -158,16 +196,29 @@ export async function startPreparedGitIssuer(
           try {
             await owner?.close();
           } finally {
-            await pool.end();
+            await database.end();
           }
         }
       },
     };
   } catch (error) {
+    const failures: unknown[] = [];
     try {
       await owner?.close();
-    } finally {
-      await pool.end();
+    } catch (failure) {
+      failures.push(failure);
+    }
+    try {
+      await pool?.end();
+    } catch (failure) {
+      failures.push(failure);
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(
+        [error, ...failures],
+        "Prepared Git issuer startup and cleanup failed.",
+        { cause: error },
+      );
     }
     throw error;
   } finally {

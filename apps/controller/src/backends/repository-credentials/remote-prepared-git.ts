@@ -332,7 +332,11 @@ export async function connectRemotePreparedGit(
           if (res.statusCode === 204) {
             res.resume();
             resolve(undefined);
-          } else if (res.statusCode === 200 && res.headers["content-type"] === "application/json") {
+          } else if (
+            !("operation" in input && input.operation === "probe") &&
+            res.statusCode === 200 &&
+            res.headers["content-type"] === "application/json"
+          ) {
             void readJson(res).then(
               (value) => resolve(value as T),
               () => reject(unavailable()),

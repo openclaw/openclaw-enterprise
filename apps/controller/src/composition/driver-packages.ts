@@ -141,6 +141,7 @@ export async function createExternalProtectedDriver(
   options: {
     // Composition that changes the installed authority must also change its durable identity.
     readonly repositoryAuthorityIdentity: string | undefined;
+    readonly requireRepositoryGitTransport: boolean;
     readonly remoteConfiguration?: ConfigurationRecord;
   },
 ): Promise<InstalledDriver> {
@@ -183,6 +184,9 @@ export async function createExternalProtectedDriver(
     }
     owner.require("sandbox");
     owner.require("credential_proxy");
+    if (options.requireRepositoryGitTransport) {
+      owner.requireRepositoryGitTransport();
+    }
     return owner;
   } catch (error) {
     let cleanupFailure: { error: unknown } | undefined;

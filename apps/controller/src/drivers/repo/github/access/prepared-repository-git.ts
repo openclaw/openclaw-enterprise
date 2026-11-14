@@ -122,9 +122,29 @@ export interface PreparedRepositorySession {
   readonly bindings?: RepositoryRevisionState["bindings"];
 }
 
+const enrolledScope = "current_setting('occ.repository_git_worker_scope')::jsonb";
+const enrolledAgent = `(${enrolledScope}->>'namespaceId',${enrolledScope}->>'agentId')`;
+const enrolledRelease = `AND (s.namespace_id,s.agent_id)=${enrolledAgent}
+  AND i.id=${enrolledScope}->>'installationId'
+  AND p.installation#>>'{plan,execution,installationId}'=i.id
+  AND p.installation#>>'{plan,execution,servicePrincipalId}'=${enrolledScope}->>'servicePrincipalId'
+  AND g.service_principal_id=${enrolledScope}->>'servicePrincipalId'
+  AND r.worker_instance=(${enrolledScope}->>'instanceId')::uuid
+  AND s.cleanup_context#>>'{binding,profile}'='github-repository'
+  AND p.installation#>>'{plan,repositoryGitAuthorization}'='online-request'`;
+
+const lockIssuanceAgent = `SELECT FROM occ.agents WHERE (namespace_id,id) =
+  ($1::jsonb #>> '{session,namespaceId}', $1::jsonb #>> '{session,agentId}') FOR SHARE`;
+const lockIssuanceWitness = `SELECT FROM occ.repository_session_attempts s
+  JOIN occ.credential_deliveries r USING(namespace_id,agent_id,revision_id)
+  JOIN occ.egress_installations p USING(namespace_id,agent_id,revision_id)
+  WHERE (s.revision_id,r.binding_id)=($1::jsonb #>> '{session,revisionId}',
+    $1::jsonb #>> '{session,credentialProxyExecution,executionId}')
+  ORDER BY s.repository_ref, s.admission_id FOR SHARE OF s,r,p`;
+
 /** The session snapshot binds the Agent and the exact installation used for Compute release or the broker generation.
  * The deadline is checked live instead of extending or treating the snapshot as a lease. */
-function sessionQuery(proxy: Recipient): string {
+function sessionQuery(proxy: Recipient, enrolled = false): string {
   // An old protected sender without a selected Driver may already hold material or have sent
   // a request. Without a selected Driver we can neither adopt that custody nor retire it.
   if (proxy?.kind === "unavailable") {
@@ -170,6 +190,7 @@ function sessionQuery(proxy: Recipient): string {
   LEFT JOIN LATERAL (${selectedRepositoryGrantSql("s.admission_id")}) grant_state ON true
   CROSS JOIN occ.installation i
   WHERE s.phase='open' AND s.live_revision_id=s.revision_id
+  ${enrolled ? enrolledRelease : ""}
   AND ${
     proxy
       ? `s.broker_protocol=2 AND s.session_id IS NOT NULL
@@ -370,6 +391,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   private readonly policy: Policy;
   private readonly proxy: Recipient;
   private readonly adoption: readonly PreparedRepositoryGitSource["adoption"][];
+  private readonly issuanceSessions: string;
 
   constructor(
     pool: PostgresPool,
@@ -393,19 +415,19 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     if (!enrolledWorker && installationRecipient(proxy)) {
       adoption.push(installationGitAdoption, selectedGitAdoption);
     }
+    const issuanceSessions = sessionQuery(proxy, enrolledWorker !== undefined);
     super(pool, key, authority, {
-      active: active(sessionQuery(proxy)),
+      active: active(issuanceSessions),
       // Fence an issuance intent against a concurrently replaced active revision. After the
       // Agent lock is acquired, store() checks live authority at a new READ COMMITTED snapshot.
-      lockIssuance: `SELECT FROM occ.agents WHERE (namespace_id,id) =
-        ($1::jsonb #>> '{session,namespaceId}', $1::jsonb #>> '{session,agentId}') FOR SHARE`,
+      lockIssuance: lockIssuanceAgent,
+      ...(enrolledWorker && { lockPreparationWitness: lockIssuanceWitness }),
       adoption,
       owns: driver
         ? repositoryGitOwnerPredicate +
           (enrolledWorker
-            ? " AND (f.source#>>'{session,namespaceId}',f.source#>>'{session,agentId}') = " +
-              "(current_setting('occ.repository_git_worker_scope')::jsonb->>'namespaceId'," +
-              "current_setting('occ.repository_git_worker_scope')::jsonb->>'agentId')"
+            ? ` AND (f.source#>>'{session,namespaceId}',f.source#>>'{session,agentId}') = ${enrolledAgent}
+              AND f.source#>>'{session,installationId}'=${enrolledScope}->>'installationId'`
             : "")
         : proxy
           ? "false"
@@ -414,6 +436,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     });
     this.proxy = proxy;
     this.adoption = adoption;
+    this.issuanceSessions = issuanceSessions;
     this.authority = authority;
     this.enrolledWorker = enrolledWorker;
     this.policy = enrolledWorker
@@ -500,7 +523,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         FROM stopped s JOIN moved m USING (source_id) WHERE s.foreign`,
         [this.adoption, this.authority],
       );
-      const { rows } = await c.query(sessions);
+      const { rows } = await c.query(this.issuanceSessions);
       return {
         sources: (rows as { session: PreparedRepositorySession }[]).flatMap(
           ({ session }) => this.policy(session) ?? [],
@@ -526,7 +549,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     source: PreparedRepositoryGitSource,
     version: string,
   ): Promise<GitHubPreparationAdmission | undefined> {
-    const sessions = sessionQuery(this.proxy);
+    const sessions = this.issuanceSessions;
     const live = active(sessions);
     const familyId = source.key.source.id;
     const admission: GitHubPreparationAdmission = {
@@ -538,6 +561,10 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       grant: source.grant,
     };
     return this.transaction(async (c) => {
+      if (this.enrolledWorker) {
+        await c.query(lockIssuanceAgent, [source]);
+        await c.query(lockIssuanceWitness, [source]);
+      }
       await c.query(
         `INSERT INTO ${families}(source_id,source,issuer,admission)
         SELECT $1, $2::jsonb, '{"kind":"worker-mounted-github-app-key"}', $3::jsonb
