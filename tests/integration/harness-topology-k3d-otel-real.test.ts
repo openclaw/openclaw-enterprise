@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import {
   arrangeProductionTopology,
   assertActualModelTurn,
   assertKubernetesOtelLogs,
   requiresProductionClusterOtelLogs,
 } from "../helpers/harness-topology-k3d-real.mjs";
+import { assertRuntimePodIdentity } from "../helpers/harness-topology-otel.ts";
 import { boundedTeardown } from "../helpers/bounded-teardown.ts";
 
 // The topology registers its platform Namespace delete before the worker and port-forward stops.
 // Run them newest-first, each bounded and all attempted (finding 1711).
-const topologyTeardown = (testContext) =>
+const topologyTeardown = (testContext: TestContext) =>
   boundedTeardown(testContext, { label: "production topology teardown" });
 
 test(
@@ -18,8 +19,9 @@ test(
   { ...requiresProductionClusterOtelLogs, timeout: 600_000 },
   async (testContext) => {
     const { context } = topologyTeardown(testContext);
-    const topology = await arrangeProductionTopology(context, "embedded");
+    const topology = await arrangeProductionTopology(context, "embedded", undefined);
     assert.equal(topology.harnessPod, undefined, "embedded execution must not create a Codex Pod");
+    assertRuntimePodIdentity(topology.gatewayPod);
     await assertActualModelTurn(topology);
     await assertKubernetesOtelLogs(topology);
   },
@@ -30,8 +32,10 @@ test(
   { ...requiresProductionClusterOtelLogs, timeout: 600_000 },
   async (testContext) => {
     const { context } = topologyTeardown(testContext);
-    const topology = await arrangeProductionTopology(context, "dedicated");
+    const topology = await arrangeProductionTopology(context, "dedicated", undefined);
     assert.ok(topology.harnessPod, "dedicated production must start a real separate Codex Pod");
+    assertRuntimePodIdentity(topology.gatewayPod);
+    assertRuntimePodIdentity(topology.harnessPod);
     await assertActualModelTurn(topology);
     await assertKubernetesOtelLogs(topology);
   },
