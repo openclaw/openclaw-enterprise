@@ -21,7 +21,7 @@ import {
   catalogDigest,
   initialSchemaState,
   migrationCatalog,
-} from "../../scripts/migration-catalog.mjs";
+} from "../../scripts/migration-catalog.ts";
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { PostgresWorkQueue } from "../../packages/occ/src/index.ts";

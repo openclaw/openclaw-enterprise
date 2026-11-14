@@ -660,6 +660,7 @@ function signinBuildInputs(root: string, revision: string) {
     "scripts/migrate-production.mjs",
     "scripts/migration-history.mjs",
     "scripts/migration-catalog.mjs",
+    "scripts/migration-catalog.ts",
     "scripts/bootstrap-installation.mjs",
     "scripts/auth-maintain.mjs",
     "scripts/auth-maintain.ts",
