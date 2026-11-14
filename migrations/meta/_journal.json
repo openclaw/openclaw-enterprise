@@ -561,6 +561,13 @@
       "when": 1787000000080,
       "tag": "0080_protected_download_late_confirmation",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1787000000081,
+      "tag": "0081_protected_download_installation",
+      "breakpoints": true
     }
   ]
 }

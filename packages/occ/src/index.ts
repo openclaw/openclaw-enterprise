@@ -11729,8 +11729,7 @@ export class OpenClawController {
           signal,
           protectedDownloadLimits: this.protectedDownloads,
         },
-        sandboxPolicy,
-        proxyPolicy,
+        pair,
         installed,
         policy.applied,
         desired,
@@ -11762,6 +11761,7 @@ export class OpenClawController {
         this.selectedDriver("compute") !== compute ||
         sandbox.protectedDownloadPolicy !== sandboxPolicy ||
         proxy.protectedDownloadPolicy !== proxyPolicy ||
+        proxy.observeDownloadEnforcement !== pair.observeEnforcement ||
         current.namespace?.status !== "ready" ||
         current.agent?.activeRevisionId !== revision.id ||
         current.agent.servicePrincipalId !== revision.servicePrincipalId ||
@@ -11784,6 +11784,7 @@ export class OpenClawController {
         compute,
         sandboxPolicy,
         proxyPolicy,
+        observeEnforcement: pair.observeEnforcement,
         previous: prepared.previous,
         expected: prepared.prepared.fence,
         desiredSourcePolicyHash: prepared.prepared.sourcePolicyHash,
@@ -12314,6 +12315,8 @@ export class OpenClawController {
         this.selectedProxyOwner() !== status.owner ||
         this.selectedDriver("compute") !== status.compute ||
         status.owner.require("sandbox").protectedDownloadPolicy !== status.sandboxPolicy ||
+        status.owner.require("credential_proxy").observeDownloadEnforcement !==
+          status.observeEnforcement ||
         status.owner.require("credential_proxy").protectedDownloadPolicy !== status.proxyPolicy
       ) {
         throw stale();

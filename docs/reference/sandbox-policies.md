@@ -92,10 +92,11 @@ Enable [Installation download settings](configuration.md#protected-downloads).
 The Sandbox and Credential Proxy must confirm effective rules on the running
 revision. Stock OpenShell 0.1.8 lacks this Driver pair.
 
-Before production use, verify the Drivers publish the installation used for model
-access and any configured Git route. In the same protected shell, test a fresh
-download, withdraw access and verify a fresh connection is denied. Model and Git
-access should survive both changes.
+Live edits require a Credential Proxy that verifies the installation used for
+signed model requests. Revisions with protected repository Git or a credential
+policy reducer refuse edits before writing. On a supporting pair, test a fresh
+download and a fresh denial after withdrawal from the same protected shell.
+Verify a signed model request succeeds after each change.
 
 Under **Network policy**, enable policy editing. In **Protected downloads**,
 choose **Add destination**, enter the hostname and choose **Allow download**.

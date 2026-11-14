@@ -193,6 +193,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 79 && completedCount > 79) {
     return "preProtectedDownloadLateConfirmation";
   }
+  if (count === 80 && completedCount > 80) {
+    return "preProtectedDownloadInstallation";
+  }
   if (count === completedCount) {
     return "completed";
   }
@@ -410,6 +413,21 @@ export async function migrateWithHistory(
       }
       return history;
     }
+    if (
+      history === "preProtectedDownloadInstallation" ||
+      history === "preProtectedDownloadLateConfirmation"
+    ) {
+      // Run the same reviewed, read-only check before Drizzle can issue any DDL.
+      // 0081 repeats it under table locks until the installation and ledger commit.
+      const index = manifest.entries.findIndex(
+        ({ tag }) => tag === "0081_protected_download_installation",
+      );
+      const check = migrations[index]?.sql.find((sql) =>
+        sql.trimStart().startsWith("DO $check_download_upgrade$"),
+      );
+      if (!check) refuse("the protected download upgrade check is missing");
+      await client.query(check);
+    }
     if (!checkOnly) {
       if (history === "completed") {
         // Keep Drizzle's refusal on read-only sessions, including standbys,
@@ -425,6 +443,11 @@ export async function migrateWithHistory(
       await db.dialect.migrate(migrations, db.session, { migrationsFolder: directory });
     }
     return history;
+  } catch (error) {
+    // Drizzle wraps SQL failures inside its transaction; pg returns them directly during --check.
+    const failure = error?.cause ?? error;
+    if (failure?.code === "P0081") refuse(failure.message);
+    throw error;
   } finally {
     try {
       if (locked) {

@@ -204,6 +204,8 @@ export interface EgressInstallation {
   readonly sandboxId: string;
   readonly sender: EgressRef;
   readonly installedAt: string;
+  /** Loaded provider version for a confirmed download edit. The admitted plan stays immutable. */
+  readonly downloadPolicyVersion?: number;
   /** Adapter-verified installation fence. Historical evidence must be revalidated for each use. */
   readonly enforcement: {
     readonly instanceId: string;
@@ -546,6 +548,13 @@ export interface CredentialProxyDriver extends Driver {
     context: ProxyRevisionContext,
     prepared: ProxyWiring,
   ): Promise<EgressInstallation | undefined>;
+  /** Independently read the exact loaded signed-exchange enforcement at this provider version.
+   * Required for live download edits. Repository Git has a separate route publication contract. */
+  observeDownloadEnforcement?(
+    context: ProxyRevisionContext,
+    sandboxId: string,
+    policyVersion: number,
+  ): Promise<EgressInstallation["enforcement"] | undefined>;
   /** Query the counterpart again; persisted installation records are not readiness leases. */
   verifyInstallation(
     context: ProxyRevisionContext,

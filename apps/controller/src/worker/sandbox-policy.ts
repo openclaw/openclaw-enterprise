@@ -1,5 +1,5 @@
 import {
-  observeOriginalDownload,
+  readOriginalDownloadWrite,
   reconcileProtectedDownload,
 } from "./protected-download-policy.ts";
 import { randomUUID } from "node:crypto";
@@ -342,6 +342,15 @@ async function policyPass(
         return { dispatchId: policy.application.id };
       }
       if (result.state === "applied") {
+        if (
+          !(await unit.credentialSources.publishDownloadInstallation(
+            result.predecessor,
+            result.successor,
+            policy.application!.id,
+          ))
+        ) {
+          throw new Error("The current credential installation changed during confirmation.");
+        }
         await recordApplicationResult(unit, options, claim, result.policy);
         await queue.complete(claim);
         return "success";
@@ -590,6 +599,15 @@ export async function settleOriginalProtectedDownload(
         }),
       );
       if (result.state === "applied") {
+        if (
+          !(await unit.credentialSources.publishDownloadInstallation(
+            result.predecessor,
+            result.successor,
+            policy.application!.id,
+          ))
+        ) {
+          return;
+        }
         await recordApplicationResult(unit, options, work, result.policy, "failed");
       }
       return;
@@ -634,7 +652,7 @@ export async function settleOriginalProtectedDownload(
     ) {
       return;
     }
-    let evidence;
+    let write;
     try {
       const context = {
         namespace: await options.compute.resolveSandboxNamespace(namespace),
@@ -644,7 +662,7 @@ export async function settleOriginalProtectedDownload(
         signal: options.signal,
       };
       options.signal.throwIfAborted();
-      evidence = await observeOriginalDownload(
+      write = await readOriginalDownloadWrite(
         context,
         {
           operationId: old.operationId,
@@ -653,16 +671,19 @@ export async function settleOriginalProtectedDownload(
           desired: old.desired,
           desiredSourcePolicyHash: old.desiredSourcePolicyHash,
         },
-        old.acknowledgedWrite,
+        undefined,
         pair.sandboxPolicy,
-        pair.proxyPolicy,
       );
+      // Its receipt establishes a past write. Keep custody while the old recipient
+      // can still enforce a different policy from its published installation.
+      if (!write || !(await pair.proxy.verifyInstallation(context, installed))) {
+        return;
+      }
     } catch {
       // Missing evidence, including a timed-out provider, leaves this exact operation unresolved.
       return;
     }
     if (
-      !evidence ||
       options.signal.aborted ||
       !(await authority(options, work, policy, unit, old.action)) ||
       options.signal.aborted ||
@@ -692,8 +713,8 @@ export async function settleOriginalProtectedDownload(
         operationId: old.operationId,
         revisionId: old.revisionId,
         policyVersion: old.policyVersion,
-        providerVersion: String(evidence.write.policyVersion),
-        disposition: "confirmed-applied",
+        providerVersion: String(write.policyVersion),
+        disposition: "published-installation-verified",
       },
     });
   });

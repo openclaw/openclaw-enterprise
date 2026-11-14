@@ -3,6 +3,7 @@ import {
   validProtectedDownloadApplication,
   validProtectedDownloadReceipt,
   validProtectedDownloadPolicyFence,
+  type EgressInstallation,
   type Agent,
   type AgentRevision,
   type ComputeDriver,
@@ -39,7 +40,12 @@ type Result =
   | { state: "pending"; acknowledgedWrite?: ProtectedDownloadPolicyWrite }
   | { state: "not-applied"; reason: string }
   | { state: "dispatch" }
-  | { state: "applied"; policy: SandboxPolicy };
+  | {
+      state: "applied";
+      policy: SandboxPolicy;
+      predecessor: EgressInstallation;
+      successor: EgressInstallation;
+    };
 
 export async function reconcileProtectedDownload(
   options: {
@@ -116,6 +122,9 @@ export async function reconcileProtectedDownload(
   ) {
     return { state: "failed", reason: "SANDBOX_POLICY_VALIDATION_FAILED" };
   }
+  if (!(await protectedDownloadProfileCurrent(proxy, plan, signal))) {
+    return unsupported;
+  }
   const installed = await unit.credentialSources.findRevisionEgressInstallation(
     namespace.id,
     revision.id,
@@ -134,6 +143,9 @@ export async function reconcileProtectedDownload(
     !protectedDownloadPeerMatches(installed, application.expected.peer) ||
     installed.sandboxId !== application.expected.sandboxId ||
     installed.enforcement.instanceId !== application.expected.instanceId ||
+    installed.enforcement.configurationId !== application.expected.configurationId ||
+    installed.enforcement.policyHash !== application.expected.effectivePolicyHash ||
+    (installed.downloadPolicyVersion ?? plan.generation) !== application.expected.policyVersion ||
     (policy.applied?.kind === "protected_downloads" && policy.applied.revisionId === revision.id
       ? !isDeepStrictEqual(
           {
@@ -146,18 +158,12 @@ export async function reconcileProtectedDownload(
           policy.applied.confirmedDownloadDestinations,
           application.previousDownloadDestinations,
         )
-      : installed.enforcement.configurationId !== application.expected.configurationId ||
-        installed.enforcement.policyHash !== application.expected.effectivePolicyHash ||
-        application.expected.policyVersion !== plan.generation ||
-        application.previousDownloadDestinations.length !== 0)
+      : application.previousDownloadDestinations.length !== 0)
   ) {
     return uncertain;
   }
   if (!(await protectedDownloadSourcesCurrent(unit.credentialSources, revision))) {
     return uncertain;
-  }
-  if (!(await protectedDownloadProfileCurrent(proxy, plan, signal))) {
-    return unsupported;
   }
   const context = {
     namespace: await options.compute.resolveSandboxNamespace(namespace),
@@ -190,8 +196,7 @@ export async function reconcileProtectedDownload(
     }
     const qualification = await prepareProtectedDownloadPair(
       context,
-      sandbox,
-      verifier,
+      pair,
       installed,
       policy.applied,
       desired,
@@ -249,6 +254,26 @@ export async function reconcileProtectedDownload(
     return uncertain;
   }
   const { fence, write } = evidence;
+  const enforcement = await pair.observeEnforcement.call(
+    proxy,
+    context,
+    fence.sandboxId,
+    fence.policyVersion,
+  );
+  if (
+    !enforcement ||
+    !isDeepStrictEqual(enforcement, {
+      ...installed.enforcement,
+      configurationId: fence.configurationId,
+      policyHash: fence.effectivePolicyHash,
+    })
+  ) {
+    return uncertain;
+  }
+  const successor = { ...installed, enforcement, downloadPolicyVersion: fence.policyVersion };
+  if (!(await proxy.verifyInstallation(context, successor))) {
+    return uncertain;
+  }
   const receipt = {
     kind: "protected_downloads" as const,
     operationId: write.operationId,
@@ -273,12 +298,18 @@ export async function reconcileProtectedDownload(
   }
   signal.throwIfAborted();
   const current = protectedDownloadDriverPair(owner);
-  if (current?.sandboxPolicy !== sandbox || current.proxyPolicy !== verifier) {
+  if (
+    current?.sandboxPolicy !== sandbox ||
+    current.proxyPolicy !== verifier ||
+    current.observeEnforcement !== pair.observeEnforcement
+  ) {
     return unsupported;
   }
   const { reason: _reason, ...operation } = application;
   return {
     state: "applied",
+    predecessor: installed,
+    successor,
     policy: {
       ...policy,
       applied: receipt,
@@ -310,16 +341,26 @@ function matchesIntent(
   );
 }
 
-/** Both active and superseded operations require the same authenticated post-write evidence. */
-export async function observeOriginalDownload(
+/** A committed operation identifies a past write even when its policy is no longer loaded. */
+export async function readOriginalDownloadWrite(
+  context: ProtectedDownloadPolicyContext,
+  change: ProtectedDownloadPolicyChange,
+  acknowledgedWrite: ProtectedDownloadPolicyWrite | undefined,
+  sandbox: Pick<NonNullable<SandboxDriver["protectedDownloadPolicy"]>, "readReceipt">,
+) {
+  const write = acknowledgedWrite ?? (await sandbox.readReceipt(context, change));
+  return write.state === "committed" && matchesIntent(change, write) ? write : undefined;
+}
+
+async function observeOriginalDownload(
   context: ProtectedDownloadPolicyContext,
   change: ProtectedDownloadPolicyChange,
   acknowledgedWrite: ProtectedDownloadPolicyWrite | undefined,
   sandbox: Pick<NonNullable<SandboxDriver["protectedDownloadPolicy"]>, "readReceipt" | "observe">,
   verifier: Pick<NonNullable<CredentialProxyDriver["protectedDownloadPolicy"]>, "verify">,
 ) {
-  const write = acknowledgedWrite ?? (await sandbox.readReceipt(context, change));
-  if (write.state !== "committed" || !matchesIntent(change, write)) {
+  const write = await readOriginalDownloadWrite(context, change, acknowledgedWrite, sandbox);
+  if (!write) {
     return undefined;
   }
   const observed = await sandbox.observe(context, change, write);

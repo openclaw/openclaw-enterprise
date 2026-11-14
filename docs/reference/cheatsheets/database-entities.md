@@ -235,7 +235,8 @@ See [protected inference](../credential-sources/protected-inference.md).
 
 - `sender_id`, `sandbox_id`
 - `namespace_id`, `agent_id`, `revision_id`
-- `installation`
+- `installation` (immutable launch receipt)
+- `download_installation` (latest confirmed signed-model installation after a download edit)
 
 ### `credential_deliveries`
 

@@ -788,6 +788,11 @@ export type CredentialSourceBlockingReference = "reference" | "withdrawal_work";
 export interface CredentialSourceRepository extends CredentialSourceReadRepository {
   rejectEgressMaterial(evidence: EgressMaterialEvidence): Promise<void>;
   recordEgressInstallation(installation: EgressInstallation): Promise<void>;
+  publishDownloadInstallation(
+    expected: EgressInstallation,
+    successor: EgressInstallation,
+    operationId: string,
+  ): Promise<boolean>;
   saveCredentialPolicyReduction(
     namespaceId: string,
     revisionId: string,
@@ -1490,6 +1495,7 @@ interface PlatformSnapshot {
   readonly credentialPolicyReductions: Map<string, CredentialPolicyReductionState>;
   readonly credentialWithdrawals: Map<string, Readonly<StoredCredentialWithdrawal>>;
   readonly egressInstallations: Map<string, Readonly<EgressInstallation>>;
+  readonly downloadInstallations: Map<string, Readonly<EgressInstallation>>;
   readonly egressRejected: Set<string>;
   readonly serviceAccounts: Map<string, Readonly<ServiceAccount>>;
   readonly agents: Map<string, Readonly<Agent>>;
@@ -1615,6 +1621,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     connectionSessions: new Map(snapshot.connectionSessions),
     presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, storedCopy(preset)])),
     secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, storedCopy(secret)])),
+    downloadInstallations: new Map(snapshot.downloadInstallations),
     egressRejected: new Set(snapshot.egressRejected),
     egressSendReceipts: new Map(snapshot.egressSendReceipts),
     egressInstallations: new Map(
@@ -2968,7 +2975,7 @@ function repositories(
         observed.plan.generation > current.plan.generation
           ? observed
           : current,
-      original,
+      snapshot.downloadInstallations.get(original.plan.execution.revisionId) ?? original,
     );
   const credentialSources: CredentialSourceRepository = {
     listCredentialPolicyReductions: async (namespaceId, revisionId) =>
@@ -3008,7 +3015,38 @@ function repositories(
       snapshot.credentialPolicyReductions.set(key, immutableCopy(next));
       return true;
     },
+    publishDownloadInstallation: async (expected, successor, operationId) => {
+      const { namespaceId, revisionId } = expected.plan.execution;
+      const current = await credentialSources.findRevisionEgressInstallation(
+        namespaceId,
+        revisionId,
+      );
+      const key = agentKey(namespaceId, expected.plan.execution.agentId);
+      const agent = snapshot.agents.get(key);
+      const application = snapshot.sandboxPolicies.get(key)?.application;
+      if (
+        application?.kind !== "protected_downloads" ||
+        application.id !== operationId ||
+        application.revisionId !== revisionId ||
+        application.writeState !== "dispatched" ||
+        (application.state !== "pending" && application.state !== "failed") ||
+        agent?.activeRevisionId !== revisionId ||
+        agent.status !== "active" ||
+        agent.desiredRuntimeState !== "running" ||
+        !isDeepStrictEqual(current, expected) ||
+        (await credentialSources.listCredentialPolicyReductions(namespaceId, revisionId)).length > 0
+      ) {
+        return false;
+      }
+      snapshot.downloadInstallations.set(revisionId, immutableCopy(successor));
+      return true;
+    },
     recordEgressInstallation: async (installation) => {
+      if (installation.downloadPolicyVersion !== undefined) {
+        throw new ResourceStateConflictError(
+          "A download successor cannot establish a launch installation.",
+        );
+      }
       const execution = installation.plan.execution;
       const revision = (
         snapshot.revisions.get(agentKey(execution.namespaceId, execution.agentId)) ?? []
@@ -4853,6 +4891,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     credentialPolicyReductions: new Map(),
     credentialWithdrawals: new Map(),
     egressInstallations: new Map(),
+    downloadInstallations: new Map(),
     egressRejected: new Set(),
     egressSendReceipts: new Map(),
     serviceAccounts: new Map(),

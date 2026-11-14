@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-14"
-last_updated_session: "authoring-run/93600afa-cffe-4f18-ad2d-497f7e5fbc82"
+last_updated_session: "authoring-run/f6460323-c8a2-416b-b521-debdfee5a4dd"
 ---
 
 # Agent sandbox policy flow
@@ -88,24 +88,25 @@ repository admission can carry the Sandbox Driver's explicitly acknowledged
 identity, version and empty additions before runtime credential provisioning.
 That immutable snapshot remains ineligible for ordinary live apply.
 
-Changing **Downloads** requires enabled editing, [Installation limits](../reference/configuration.md#protected-downloads),
-and a qualified Sandbox and Credential Proxy pair. Stock OpenShell lacks this capability.
-OCC checks Agent `manage_policy` and SandboxPolicy `read` and `update`. Granting
-or withdrawing Agent approval also requires Installation `administer`.
+**Protected downloads** requires editing, [Installation limits](../reference/configuration.md#protected-downloads)
+and a qualified Sandbox and Credential Proxy pair. Stock OpenShell lacks the pair.
+OCC checks Agent `manage_policy`, SandboxPolicy `read` and `update`, and
+Installation `administer` for approval changes.
 
-OCC saves the desired change and queues one operation on the running revision.
-For **Disable**, `packages/occ/src/protected-download-policy.ts:projectProtectedDownloadPolicy`
-removes the exact entry. `apps/controller/src/console/agents/sandbox-policy.mts:renderDownloads`
-keeps exact edit controls. When the revision’s last receipt omits a path,
-its row names any confirmed host-wide rule with the same scheme, hostname and port.
+OCC saves the edit and queues one operation. **Disable** removes the exact entry.
+The Console shows [covering host rules](../guides/topics/agent-sandbox-policy.md#check-access-after-disabling-a-protected-download).
+Pre-write refusal restores approvals and desired entries. Late confirmation reads
+the original write. The worker verifies both Drivers, authority and loaded
+signed-model enforcement, then commits the installation, policy receipt and
+audit together. Fresh credential checks read that installation. Git and
+credential reduction retain their own protocols. Superseded work verifies the
+original Sandbox's published installation. **Refresh** reads current policy.
 
-The worker records intent before writing. A pre-write refusal restores the prior
-approval and desired lists. After a dispatched operation fails,
-`apps/controller/src/worker/sandbox-policy.ts:settleOriginalProtectedDownload` checks
-current authority, the original receipt and both Drivers’ evidence on the same
-running revision. It can confirm the operation without another provider write.
-Further edits on that revision wait for confirmation. **Refresh** in the
-**Protected downloads** panel reads the result. See the [operator procedure](../guides/topics/agent-sandbox-policy.md#check-access-after-disabling-a-protected-download).
+For 0079–0080, migration 0081 checks serving confirmations, unresolved follow-ons
+even after retirement, and retained work. A first dispatch needs the original
+work item and matching launch on the current model-only revision without
+credential reduction. `migrateWithHistory` runs the same check before migration;
+0081 repeats it under lock. [Settle the edit before retirement](../guides/topics/agent-sandbox-policy.md#retire-a-protected-download-edit-before-upgrade).
 
 Protected Codex repository preparation compiles the revision's qualified artifact
 snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
@@ -275,6 +276,12 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-14 17:15: Trace the upgrade check for a first dispatched download edit. (authoring-run/f6460323-c8a2-416b-b521-debdfee5a4dd - 74bcbb41a5b38213399e246ddc8b470ddf63f9be)
+
+- 2026-11-14 16:24: Trace protected download upgrade refusal. (authoring-run/c9d81f84-0483-472c-9f89-c7430765425b - df69496a69ac34d354afeb79515ec8285789d44c)
+
+- 2026-11-14 15:40: Trace publication and fresh signed credential checks after a download edit. (authoring-run/dfe13c23-443e-4bff-b8f5-2ebdb68e803e - df69496a69ac34d354afeb79515ec8285789d44c)
 
 - 2026-11-14 15:01: Trace host-wide coverage after an exact download edit and late receipt confirmation on the running revision. (authoring-run/93600afa-cffe-4f18-ad2d-497f7e5fbc82 - df69496a69ac34d354afeb79515ec8285789d44c)
 

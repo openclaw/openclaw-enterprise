@@ -210,7 +210,16 @@ function workerFixture() {
     capability: "credential_proxy",
     configureRevision: unexpected,
     wiringStatus: unexpected,
-    verifyInstallation: unexpected,
+    observeDownloadEnforcement: async () =>
+      setup.loaded
+        ? {
+            ...installed.enforcement,
+            configurationId: setup.loaded.configurationId,
+            policyHash: setup.loaded.effectivePolicyHash,
+          }
+        : installed.enforcement,
+    verifyInstallation: async (_context, installation) =>
+      installation.enforcement.policyHash === setup.loaded?.effectivePolicyHash,
     removeRevision: unexpected,
     bindRepositoryGit: unexpected,
     sourceControl,
@@ -286,7 +295,7 @@ function workerFixture() {
       desiredDownloadDestinations: [destination],
     },
   };
-  const installed: EgressInstallation = {
+  let installed: EgressInstallation = {
     installedAt: createdAt,
     sender: sourceControl.sender,
     plan: revision.egressPlan,
@@ -348,6 +357,11 @@ function workerFixture() {
         credentialSources: {
           ...base.credentialSources,
           findRevisionEgressInstallation: async () => installed,
+          publishDownloadInstallation: async (expected, successor) => {
+            assert.deepEqual(expected, installed);
+            installed = successor;
+            return true;
+          },
         },
         audit: {
           ...base.audit,
@@ -397,6 +411,7 @@ function workerFixture() {
   return {
     setup,
     agent,
+    revision,
     claim,
     proxy,
     options,
@@ -469,6 +484,33 @@ test("protected worker refuses revoked administration, a replaced revision, chan
         f.options.protectedDownloads.executablePaths = ["/usr/bin/wget"];
       },
       "SANDBOX_POLICY_CEILING_CHANGED",
+    ],
+    [
+      "repository route requires its own publication",
+      (f) => {
+        Object.assign(f.revision.egressPlan, {
+          repositoryGit: {
+            driver: { id: "repository", implementation: "controlled" },
+            deadlineWallMs: Date.now() + 60_000,
+            bindings: [],
+          },
+        });
+      },
+      "SANDBOX_POLICY_UNSUPPORTED",
+    ],
+    [
+      "credential reduction has a separate generation",
+      (f) => {
+        Object.assign(f.revision.egressPlan, { policyReductionVersion: 1 });
+      },
+      "SANDBOX_POLICY_UNSUPPORTED",
+    ],
+    [
+      "signed exchange cannot observe a successor",
+      (f) => {
+        delete f.proxy.observeDownloadEnforcement;
+      },
+      "SANDBOX_POLICY_UNSUPPORTED",
     ],
     [
       "proxy",
@@ -892,6 +934,9 @@ test("original recovery requires current actor authority, original receipt and e
   assert.ok(retained);
   f.setup.disagree = false;
   await settle();
+  assert.ok(retained, "the superseded write still differs from the published installation");
+  f.proxy.verifyInstallation = async () => true;
+  await settle();
   assert.equal(retained, undefined);
   assert.deepEqual(f.setup.audit.at(-1)?.details, {
     agentId: work.agentId,
@@ -899,7 +944,7 @@ test("original recovery requires current actor authority, original receipt and e
     revisionId,
     policyVersion,
     providerVersion: "2",
-    disposition: "confirmed-applied",
+    disposition: "published-installation-verified",
   });
   assert.deepEqual(f.policy(), successorSnapshot);
   assert.equal(f.setup.writes, 1);

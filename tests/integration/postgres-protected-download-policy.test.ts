@@ -18,6 +18,7 @@ import {
   SandboxPolicyViewResponse,
   SandboxPolicyResponse,
 } from "../../packages/contracts/src/api/sandbox-policy.ts";
+import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
@@ -85,6 +86,17 @@ test(
     let source = { ...original, network_policies: original.network_policies };
     assert.ok(Object.keys(source.network_policies).length > 0);
     assert.ok(!JSON.stringify(source).includes(destination.host));
+    const initialRequest = f.capture();
+    const initial = await f.resolve(initialRequest);
+    assert.ok(
+      initial.ready,
+      "the serving installation accepts the signed model request before editing",
+    );
+    assert.ok((await f.authorize(f.permitRequest(initialRequest, initial.ready))).allowed);
+    assert.ok(
+      (await f.protect(initialRequest, await f.send(initialRequest, initial.ready)))
+        .response_complete,
+    );
     const metadata = await f.deployAgent(f.namespace.id, f.agent.id);
     const replacement = await f.state.read((unit) =>
       unit.revisions.findRevision(f.namespace.id, f.agent.id, metadata.id),
@@ -109,6 +121,13 @@ test(
     const replacementPolicy = structuredClone(attachment.configuration);
     const publicKey = generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" }).x;
     assert.ok(publicKey);
+    const originalRuntime = {
+      sandbox,
+      evidence: observed.evidence,
+      policy: observed.policy,
+      observation: observed.observation,
+      policyHash: observed.policyHash,
+    };
     Object.assign(f.observed, {
       sandbox: {
         ...sandbox,
@@ -133,6 +152,14 @@ test(
     });
     const replacementInstallation = await f.egress.wiringStatus(replacementContext, attachment);
     assert.ok(replacementInstallation);
+    const replacementRuntime = {
+      sandbox: observed.sandbox,
+      evidence: observed.evidence,
+      policy: observed.policy,
+      observation: observed.observation,
+      policyHash: observed.policyHash,
+    };
+    Object.assign(f.observed, originalRuntime);
     await f.state.transact((unit) =>
       unit.credentialSources.recordEgressInstallation(replacementInstallation),
     );
@@ -143,6 +170,7 @@ test(
     );
     let activeRevision: ProtectedDownloadPolicyContext["revision"] = f.revision;
     let hideConfirmation = false;
+    let oldObservationRead = false;
     let oldEvidence:
       { fence: ProtectedDownloadPolicyFence; receipt: ProtectedDownloadPolicyWrite } | undefined;
     const writes: { revisionId: string; operationId: string; sandboxId: string }[] = [];
@@ -246,6 +274,12 @@ test(
         };
       },
       async readReceipt(context, change) {
+        if (oldEvidence && context.revision.id === f.revision.id) {
+          checkContext(context, f.revision);
+          assert.equal(oldEvidence.receipt.operationId, change.operationId);
+          oldObservationRead = true;
+          return hideConfirmation ? { state: "unconfirmed" } : { ...oldEvidence.receipt };
+        }
         checkContext(context);
         if (
           lateReceipt === "missing" ||
@@ -297,6 +331,25 @@ test(
           sourcePolicyHash: hash,
           effectivePolicyHash: hash,
         };
+        requireRecord(observed.evidence);
+        requireRecord(observed.observation);
+        observed.policy = sourceFor(enabled);
+        observed.policyHash = hash;
+        Object.assign(observed.evidence, {
+          policy_hash: hash,
+          policy_version: fence.policyVersion,
+        });
+        Object.assign(observed.observation, {
+          effective_policy: observed.policy,
+          source_policy_hash: hash,
+        });
+        const enforcement = await f.egress.observeDownloadEnforcement(
+          context,
+          fence.sandboxId,
+          fence.policyVersion,
+        );
+        assert.ok(enforcement);
+        fence = { ...fence, configurationId: enforcement.configurationId };
         receipt = {
           state: "committed",
           sandboxId: fence.sandboxId,
@@ -459,6 +512,15 @@ test(
       for (const [action, target, expected, revoked] of cases) {
         const previousReceipt = view.policy.applied;
         const previousProviderOperation: string | undefined = operationId;
+        const previousHash = fence.effectivePolicyHash;
+        const checkExchange =
+          !revoked &&
+          (!previousReceipt || (action === "withdraw-approval" && expected.length === 0));
+        const held = f.capture();
+        held.verified_execution_policy_hash = previousHash;
+        const heldPermit: ReturnType<typeof f.permitRequest> | undefined = checkExchange
+          ? f.permitRequest(held, (await f.resolve(held)).ready)
+          : undefined;
         if (revoked) {
           revokeBeforeApply = () =>
             f.pool.query("DELETE FROM occ.iam_access_bindings WHERE id=$1", [adminBinding.id]);
@@ -532,6 +594,41 @@ test(
         assert.deepEqual(view.policy.downloadDestinations, expected);
         assert.deepEqual(view.policy.approvedDownloadDestinations, expected);
         assert.deepEqual(enabled, expected);
+        if (heldPermit) {
+          assert.ok(
+            (await f.authorize(heldPermit)).refused,
+            "a pre-edit resolution cannot authorize a new send",
+          );
+          const current = await new ProtectedExecutionDriver(f.installedDriver).current(
+            { ...f.context, signal: t.signal },
+            {
+              currentEgressInstallation: () =>
+                f.state.read((unit) =>
+                  unit.credentialSources.findRevisionEgressInstallation(
+                    f.namespace.id,
+                    f.revision.id,
+                  ),
+                ),
+            },
+            async () => true,
+          );
+          assert.equal(current.enforcement.configurationId, fence.configurationId);
+          const request = f.capture();
+          request.verified_execution_policy_hash = fence.effectivePolicyHash;
+          const resolved = await f.resolve(request);
+          assert.ok(
+            resolved.ready,
+            "the serving installation accepts the signed model request after confirmed edit: " +
+              JSON.stringify(resolved.refused),
+          );
+          assert.ok((await f.authorize(f.permitRequest(request, resolved.ready))).allowed);
+          assert.ok(
+            (await f.protect(request, await f.send(request, resolved.ready))).response_complete,
+          );
+          const stale = f.capture();
+          stale.verified_execution_policy_hash = previousHash;
+          assert.equal((await f.resolve(stale)).refused.code, f.refusalCode("DENIED"));
+        }
         previousId = application.id;
       }
       // The provider withdrew a confirmed download on the serving Sandbox, but
@@ -595,6 +692,14 @@ test(
       assert.equal(failed.application?.id, lateId);
       assert.equal(failed.application?.state, "failed");
       assert.deepEqual(failed.applied, priorPolicy.applied);
+      for (const hash of [
+        fence.effectivePolicyHash,
+        priorPolicy.applied.fence.effectivePolicyHash,
+      ]) {
+        const pendingRequest = f.capture();
+        pendingRequest.verified_execution_policy_hash = hash;
+        assert.equal((await f.resolve(pendingRequest)).refused.code, f.refusalCode("DENIED"));
+      }
 
       // The Sandbox's original receipt cannot settle a failed edit if the
       // Credential Proxy disagrees about the effective policy.
@@ -648,7 +753,23 @@ test(
         [{ revisionId: f.revision.id, operationId: lateId, sandboxId: f.installation.sandboxId }],
       );
       assert.deepEqual(await queue.findWork(lateKey), terminal);
-      assert.deepEqual(await servingWorkload(), serving);
+      const published = await servingWorkload();
+      assert.deepEqual(published.agent, serving.agent);
+      assert.deepEqual(published.revision, serving.revision);
+      assert.equal(
+        published.installation?.enforcement.policyHash,
+        settled.applied.fence.effectivePolicyHash,
+      );
+      assert.equal(published.installation?.sandboxId, serving.installation?.sandboxId);
+      const launch = await f.pool.query(
+        "SELECT installation FROM occ.egress_installations WHERE revision_id=$1",
+        [f.revision.id],
+      );
+      assert.deepEqual(launch.rows[0].installation, f.installation);
+      await f.state.transact((unit) =>
+        unit.credentialSources.recordEgressInstallation(f.installation),
+      );
+      assert.deepEqual(await servingWorkload(), published);
       const lateAudit = (await f.state.transact((unit) => unit.audit.list())).filter(
         (event) =>
           event.action === "openclaw.agents.sandbox_policy.application" &&
@@ -681,6 +802,13 @@ test(
       });
       view = await getView();
 
+      const retainedRuntime = {
+        sandbox: originalRuntime.sandbox,
+        policy: observed.policy,
+        policyHash: observed.policyHash,
+        evidence: { ...originalRuntime.evidence },
+        observation: { ...originalRuntime.observation },
+      };
       hideConfirmation = true;
       const priorWitness = (await policy()).applied;
       const uncertain = await apply("approve-and-enable", uncertainDestination);
@@ -712,6 +840,7 @@ test(
       assert.equal(view.protectedDownloads.reason, "installation-unconfirmed");
       assert.equal((await apply("approve-and-enable", earlierDestination)).status, 409);
       assert.deepEqual((await policy()).applied, priorWitness);
+      Object.assign(f.observed, replacementRuntime);
       activeRevision = replacement;
       source = attachment.configuration;
       enabled = [];
@@ -819,10 +948,28 @@ test(
         JSON.stringify(await queue.findWork(oldKey)).includes(oldEvidence.fence.instanceId),
         false,
       );
+      Object.assign(f.observed, originalRuntime);
+      oldObservationRead = false;
       hideConfirmation = false;
       await restartWorker();
-      await waitFor("authenticated original read clears private receipt", async () =>
-        (await oldRow()).recovery === null ? true : undefined,
+      await waitFor("the superseded effect is observed", () => oldObservationRead || undefined);
+      assert.deepEqual((await oldRow()).recovery, retained);
+      Object.assign(f.observed, retainedRuntime);
+      const oldPublished = await f.state.read((unit) =>
+        unit.credentialSources.findRevisionEgressInstallation(f.namespace.id, f.revision.id),
+      );
+      assert.ok(oldPublished);
+      assert.ok(
+        await f.egress.verifyInstallation(
+          { ...f.context, signal: AbortSignal.timeout(5000) },
+          oldPublished,
+        ),
+        "the restored old Sandbox loaded its exact published installation",
+      );
+      await restartWorker();
+      await waitFor(
+        "verified restoration of the published installation clears private receipt",
+        async () => ((await oldRow()).recovery === null ? true : undefined),
       );
       const settlement = await f.state.transact((unit) => unit.audit.list());
       const disposition = settlement.filter(
@@ -837,7 +984,7 @@ test(
         revisionId: f.revision.id,
         policyVersion: uncertainPolicy.version,
         providerVersion: String(oldEvidence.fence.policyVersion),
-        disposition: "confirmed-applied",
+        disposition: "published-installation-verified",
       });
       const applied = (await policy()).applied;
       assert.ok(applied?.kind === "protected_downloads");

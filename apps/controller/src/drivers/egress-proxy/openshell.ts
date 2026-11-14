@@ -547,6 +547,23 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         });
   }
 
+  async observeDownloadEnforcement(
+    context: ProxyRevisionContext,
+    sandboxId: string,
+    policyVersion: number,
+  ): Promise<EgressInstallation["enforcement"] | undefined> {
+    this.assertPlan(context);
+    if (
+      context.plan.repositoryGit ||
+      !Number.isInteger(policyVersion) ||
+      policyVersion < 1 ||
+      policyVersion > 0xffffffff
+    ) {
+      return undefined;
+    }
+    return (await this.loadedPolicy(context, sandboxId))?.enforcement(policyVersion);
+  }
+
   async verifyInstallation(
     context: ProxyRevisionContext,
     installation: EgressInstallation,
@@ -563,6 +580,14 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     }
     // Compare the same live registration, effective configuration and recipient. In the
     // observed preview this is a fresh observation, not a stock lock against operator changes.
+    if (installation.downloadPolicyVersion !== undefined) {
+      const current = await this.observeDownloadEnforcement(
+        context,
+        installation.sandboxId,
+        installation.downloadPolicyVersion,
+      );
+      return current !== undefined && isDeepStrictEqual(current, installation.enforcement);
+    }
     const observed = await this.loadedPolicy(context, installation.sandboxId);
     return isDeepStrictEqual(await observed?.enforcement(), installation.enforcement);
   }
@@ -594,7 +619,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     return {
       status,
       sandboxId,
-      enforcement: async () => {
+      enforcement: async (version = context.plan.generation) => {
         const witness = context.plan.repositoryGit
           ? context.plan.repositoryGitAuthorization === "request-hook-observed" &&
             context.revision.executionAdmission.version === 6 &&
@@ -603,13 +628,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
             : this.mandatoryEnforcement
               ? await this.mandatoryEnforcement(context, sandboxId)
               : this.repositoryGitEnforcement(context, status, sandboxId)
-          : enforcementEvidence(
-              status,
-              sandboxId,
-              context.plan.generation,
-              context.revision.id,
-              this.options,
-            );
+          : enforcementEvidence(status, sandboxId, version, context.revision.id, this.options);
         if (!witness) {
           return undefined;
         }

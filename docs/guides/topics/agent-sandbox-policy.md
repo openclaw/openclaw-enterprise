@@ -103,6 +103,39 @@ For **Pending confirmation**, **Unconfirmed**, or **Confirmation failed**, choos
 to the change and revision you submitted. If you cannot match them, the outcome of
 your change is still unknown. See [protected download approvals and status](../../reference/sandbox-policies.md#downloads-on-a-running-protected-agent).
 
+## Retire a protected download edit before upgrade
+
+Run the [candidate preflight](../deploy/production-upgrade.md#rehearse-before-the-maintenance-window)
+with the previous API and worker still running. Its migration Job runs
+`scripts/migrate-production.mjs --check` before writers stop. If the check reports
+a protected download edit, record the Namespace, Agent, revision, and operation IDs.
+
+1. Keep the previous controller, database, and original Sandbox available. On the
+   Agent's **Network policy** tab, refresh **Protected downloads** and open **Receipt details**.
+   Match **Receipt operation** and its revision to the reported IDs. If a follow-on
+   is pending or unconfirmed, match **Request operation** to the reported ID and wait
+   for the receipt for that same operation. An earlier confirmation cannot settle it.
+   For retained work, the previous worker reads the superseded operation separately.
+   Ask your platform operator to match the successful
+   `openclaw.agents.sandbox_policy.reconciliation` audit event to both reported IDs
+   through [approved audit access](audit-log.md#access-and-limitations).
+2. A 0079 controller cannot confirm its current operation after permanent failure.
+   Keep the original runtime and database and give the IDs to the Driver and release
+   maintainers. If they supply a qualified intermediate release through 0080 that
+   supports this Driver pair, use its normal upgrade procedure and let its worker
+   confirm the original request. If the Sandbox or its receipt is unavailable, keep
+   the upgrade on hold for compatible recovery. Refresh reads status. Resubmitting
+   the edit creates a different operation.
+3. After settlement, use **Stop Agent** on the previous release. Wait until the Agent
+   has no active revision. An accepted stop can still be cleaning up the original
+   Sandbox. A completed deployment that already replaced the reported revision also
+   satisfies retirement. Check replacement Driver support before stopping an Agent
+   that must resume service.
+4. Repeat the candidate preflight for each reported operation. When the migration Job
+   exits successfully with `migration.checked`, follow the [production upgrade procedure](../deploy/production-upgrade.md).
+   To resume a stopped Agent, [deploy a new version](../../reference/agents/deployment.md#stop-and-resume).
+   Verify a signed model request, then enable the saved downloads intended for that revision.
+
 ## CLI
 
 Use the same Namespace and authenticated OCC context as other Agent commands:

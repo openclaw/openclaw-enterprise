@@ -1844,9 +1844,23 @@ export const egressInstallations = occSchema.table(
     revisionId: text("revision_id").notNull(),
     agentId: text("agent_id").notNull(),
     installation: jsonb("installation").$type<EgressInstallation>().notNull(),
+    downloadInstallation: jsonb("download_installation").$type<EgressInstallation>(),
   },
   (table) => [
     primaryKey({ columns: [table.senderId, table.sandboxId] }),
+    check(
+      "egress_installations_download_identity",
+      sql`download_installation IS NULL OR (
+        installation->'plan'->'repositoryGit' IS NULL
+        AND download_installation - ARRAY['enforcement','downloadPolicyVersion'] = installation - 'enforcement'
+        AND (download_installation->'enforcement') - ARRAY['configurationId','policyHash'] =
+            (installation->'enforcement') - ARRAY['configurationId','policyHash']
+        AND jsonb_typeof(download_installation->'downloadPolicyVersion') = 'number'
+        AND (download_installation->>'downloadPolicyVersion')::bigint BETWEEN 1 AND 4294967295
+        AND length(download_installation#>>'{enforcement,configurationId}') > 0
+        AND download_installation#>>'{enforcement,policyHash}' ~ '^[a-f0-9]{64}$'
+      ) IS TRUE`,
+    ),
     check(
       "egress_installations_check",
       sql`length(${table.senderId}) BETWEEN 1 AND 200 AND length(${table.sandboxId}) BETWEEN 1 AND 200`,

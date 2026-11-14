@@ -122,6 +122,7 @@ export function bindPlatformUnitOfWork(
       "markCredentialSourceReady",
       "replaceCredentialSourceSecrets",
       "recordEgressInstallation",
+      "publishDownloadInstallation",
       "saveCredentialPolicyReduction",
       "rejectEgressMaterial",
       "admitEgressSource",

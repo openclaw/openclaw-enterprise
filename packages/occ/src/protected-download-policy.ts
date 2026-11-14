@@ -27,7 +27,6 @@ import type {
   ProtectedDownloadPolicyFence,
   ProtectedDownloadPolicyContext,
   ProxyPlan,
-  SandboxDriver,
   ProtectedDownloadEdit,
   ProtectedDownloadDestination,
   SandboxPolicy,
@@ -315,12 +314,13 @@ export async function protectedDownloadProfileCurrent(
   plan: ProxyPlan,
   signal: AbortSignal,
 ): Promise<boolean> {
-  const profile = repositoryGitDeliveryProfile(plan.repositoryGit);
-  return (
-    (!plan.repositoryGit || !!profile) &&
-    (await repositoryGitAuthorization(proxy.sourceControl, signal, profile)) ===
-      (plan.repositoryGitAuthorization ?? "exact-dispatch")
-  );
+  // The signed model exchange can publish its successor in OCC. A repository-bound
+  // revision also needs an atomic publication by its normal Git route owner.
+  // A reducible plan uses its own generation and successor installation protocol.
+  if (plan.repositoryGit || plan.policyReductionVersion !== undefined) {
+    return false;
+  }
+  return (await repositoryGitAuthorization(proxy.sourceControl, signal)) === "exact-dispatch";
 }
 
 /** A new operation qualifies today's limits against the last confirmed enforcement. */
@@ -362,6 +362,7 @@ export function protectedDownloadDriverPair(owner: InstalledDriver) {
   if (
     sandboxPolicy?.version !== 1 ||
     proxyPolicy?.version !== 1 ||
+    typeof proxy.observeDownloadEnforcement !== "function" ||
     typeof sandboxPolicy.prepare !== "function" ||
     typeof sandboxPolicy.apply !== "function" ||
     typeof sandboxPolicy.readReceipt !== "function" ||
@@ -371,13 +372,18 @@ export function protectedDownloadDriverPair(owner: InstalledDriver) {
   ) {
     return undefined;
   }
-  return { sandbox, proxy, sandboxPolicy, proxyPolicy };
+  return {
+    sandbox,
+    proxy,
+    sandboxPolicy,
+    proxyPolicy,
+    observeEnforcement: proxy.observeDownloadEnforcement,
+  };
 }
 
 export async function prepareProtectedDownloadPair(
   context: ProtectedDownloadPolicyContext,
-  sandboxPolicy: NonNullable<SandboxDriver["protectedDownloadPolicy"]>,
-  proxyPolicy: NonNullable<CredentialProxyDriver["protectedDownloadPolicy"]>,
+  pair: NonNullable<ReturnType<typeof protectedDownloadDriverPair>>,
   installed: EgressInstallation,
   applied: SandboxPolicy["applied"],
   desired?: readonly Destination[],
@@ -385,8 +391,8 @@ export async function prepareProtectedDownloadPair(
   const receipt = protectedDownloadRevisionReceipt(applied, context.revision.id);
   const previous = receipt?.confirmedDownloadDestinations ?? [];
   const [prepared, checked] = await Promise.all([
-    sandboxPolicy.prepare(context, previous, desired ?? previous),
-    proxyPolicy.prepare(context, previous, desired ?? previous),
+    pair.sandboxPolicy.prepare(context, previous, desired ?? previous),
+    pair.proxyPolicy.prepare(context, previous, desired ?? previous),
   ]);
   if (prepared.state === "unsupported" || checked.state === "unsupported") {
     return { state: "unsupported" } as const;
@@ -411,12 +417,20 @@ export async function prepareProtectedDownloadPair(
     !protectedDownloadPeerMatches(installed, fence.peer) ||
     fence.sandboxId !== installed.sandboxId ||
     fence.instanceId !== installed.enforcement.instanceId ||
-    (receipt
-      ? !protectedDownloadBaselineMatches(fence, receipt.fence)
-      : fence.configurationId !== installed.enforcement.configurationId ||
-        fence.effectivePolicyHash !== installed.enforcement.policyHash ||
-        fence.policyVersion !== context.plan.generation)
+    fence.configurationId !== installed.enforcement.configurationId ||
+    fence.effectivePolicyHash !== installed.enforcement.policyHash ||
+    fence.policyVersion !== (installed.downloadPolicyVersion ?? context.plan.generation) ||
+    (receipt && !protectedDownloadBaselineMatches(fence, receipt.fence))
   ) {
+    return unconfirmed;
+  }
+  const observed = await pair.observeEnforcement.call(
+    pair.proxy,
+    context,
+    installed.sandboxId,
+    fence.policyVersion,
+  );
+  if (!isDeepStrictEqual(observed, installed.enforcement)) {
     return unconfirmed;
   }
   return { state: "ready", previous, prepared } as const;

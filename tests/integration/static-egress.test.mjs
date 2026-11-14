@@ -3938,8 +3938,12 @@ function controlledDownloadBaseline(f) {
   };
   const readBaseline = async (context, _previous, _desired) => {
     assert.equal(context.revision.id, f.revision.id);
-    const observed = await f.egress.wiringStatus(context, f.attachment);
-    return observed?.enforcement.configurationId === configurationId
+    const observed = await f.egress.observeDownloadEnforcement(
+      context,
+      sandboxId,
+      baseline.fence.policyVersion,
+    );
+    return observed?.configurationId === baseline.fence.configurationId
       ? structuredClone(baseline)
       : { state: "unconfirmed" };
   };
@@ -4007,7 +4011,7 @@ test("ordinary edits preserve confirmed approvals and a fresh withdrawal requali
   // The current HTTP process must requalify the same enforcement to withdraw it.
   const priorVersion = view.policy.version + 1;
   const operationId = crypto.randomUUID();
-  await f.controller.transact(async ({ sandboxPolicies }) => {
+  await f.controller.transact(async ({ sandboxPolicies, credentialSources }) => {
     const current = await sandboxPolicies.find(f.namespace.id, f.agent.id);
     const expected = {
       ...baseline.fence,
@@ -4048,12 +4052,35 @@ test("ordinary edits preserve confirmed approvals and a fresh withdrawal requali
         operationId,
       ),
     );
+    const version = expected.policyVersion + 1;
+    const hash = pending.application.desiredSourcePolicyHash;
+    const loaded = structuredClone(f.observed.policy);
+    loaded.network_policies.download = {
+      binaries: [{ path: "/bin/curl" }],
+      endpoints: [{ host: destination.host, ports: [destination.port] }],
+    };
+    Object.assign(f.observed, { policy: loaded, policyHash: hash });
+    Object.assign(f.observed.evidence, { policy_hash: hash, policy_version: version });
+    Object.assign(f.observed.observation, { effective_policy: loaded, source_policy_hash: hash });
+    const enforcement = await f.egress.observeDownloadEnforcement(
+      { ...f.context, signal: t.signal },
+      f.installation.sandboxId,
+      version,
+    );
+    assert.ok(enforcement);
+    assert.ok(
+      await credentialSources.publishDownloadInstallation(
+        f.installation,
+        { ...f.installation, enforcement, downloadPolicyVersion: version },
+        operationId,
+      ),
+    );
     Object.assign(baseline.fence, {
       providerResourceVersion: "2",
-      configurationId: "confirmed-configuration",
-      policyVersion: expected.policyVersion + 1,
-      sourcePolicyHash: pending.application.desiredSourcePolicyHash,
-      effectivePolicyHash: "c".repeat(64),
+      configurationId: enforcement.configurationId,
+      policyVersion: version,
+      sourcePolicyHash: hash,
+      effectivePolicyHash: enforcement.policyHash,
     });
     const providerVersion = String(baseline.fence.policyVersion);
     assert.ok(

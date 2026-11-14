@@ -641,6 +641,14 @@
       "tag": "0080_protected_download_late_confirmation",
       "breakpoints": true,
       "sha256": "062aa66acea88389444e5fc494b5c51b113db5893f0e30eb86e3bc5fbdacebf5"
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1787000000081,
+      "tag": "0081_protected_download_installation",
+      "breakpoints": true,
+      "sha256": "7f1e9a21d67526af706d8d93d38ca46effa899196c9e66fdfd72780183a61fe4"
     }
   ],
   "initialSchemaStates": {
@@ -750,10 +758,17 @@
       "9f73a1433c4c9bac96506312e733aaa6b2d9bafaa826321a83844537f730f30c",
       "16839f94abe022f962de58562f068880aa55200defa86ec81f7f8204f499f35d",
       "c1d7c2a72b47e2f8e75d3db3b53b87b0ef3407956c31484e45bdd5cfd5c7a135"
+    ],
+    "494aad082c953f18d2e4a57d731fdb9dda61d201978ccb74155d09b7bec31a62": [
+      "88333b722b7f142d85cc528bcd2f09f18bc17d225771cd034817c0ccd5922c5b",
+      "5b561196c8e86ee402b70ec49d99189e9a710e12a75c2aa8363a101f5d53ad34",
+      "f15ce8e2d4dcc61458022c59b02e22a9ebe6c5e46ae1f9426bf0e974776b081f",
+      "c12b3e72ec2fffd1e48184c3f498af4f46efdcbb2ba732239592c92a232de24d",
+      "490a1dd2db5a04175c319be6bd861ea9705027b53595afd0d28735ad6f452d00"
     ]
   },
   "catalogs": {
-    "completed": "ef1f037de86ebcf6614d846c202634d3f845b20305648d23d16cf6f08ca35829",
+    "completed": "494aad082c953f18d2e4a57d731fdb9dda61d201978ccb74155d09b7bec31a62",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
@@ -808,7 +823,8 @@
     "preHumanAuthenticationResults": "9398601c17f3ae475fc41fafd162e6da4383fe37ac25318bd03efc7dfb161600",
     "prePendingSandboxPolicyApplication": "025fa63491e14fb1f90c09d7405bd1fa8b39f7e1bb919d17572b58436391794e",
     "preProtectedDownloadRecovery": "4368f8db721cd6b233dc2c65895de016de99af92f87919db5ba17153c8aba229",
-    "preProtectedDownloadLateConfirmation": "deb1ce083bf7f916965b3d5fd8b387e7015fbd7d76de3c1b9cb08fed7646e0b8"
+    "preProtectedDownloadLateConfirmation": "deb1ce083bf7f916965b3d5fd8b387e7015fbd7d76de3c1b9cb08fed7646e0b8",
+    "preProtectedDownloadInstallation": "ef1f037de86ebcf6614d846c202634d3f845b20305648d23d16cf6f08ca35829"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

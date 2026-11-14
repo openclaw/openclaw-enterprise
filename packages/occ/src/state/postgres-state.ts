@@ -597,7 +597,7 @@ const currentEgressInstallation = `SELECT COALESCE((
   SELECT policy_observed FROM occ.credential_delivery_reductions r
   WHERE r.revision_id=e.revision_id AND r.policy_observed IS NOT NULL
   ORDER BY (r.policy_observed #>> '{plan,generation}')::bigint DESC LIMIT 1
-), installation) AS installation FROM occ.egress_installations e`;
+), download_installation, installation) AS installation FROM occ.egress_installations e`;
 
 const CREDENTIAL_WITHDRAWAL_COLUMNS = `namespace_id, agent_id, revision_id, credential_source_id,
   state, requested_by, requested_at, completed_at, last_reason, last_attempt_at`;
@@ -2931,7 +2931,32 @@ export class PostgresPlatformState implements PlatformStateStore {
           expected,
           next,
         ),
+      publishDownloadInstallation: async (expected, successor, operationId) => {
+        const { namespaceId, agentId, revisionId } = expected.plan.execution;
+        const result = await client.query(
+          `UPDATE occ.egress_installations e SET download_installation=$1::jsonb
+           FROM occ.agents a, occ.sandbox_policies p
+           WHERE (e.namespace_id,e.agent_id,e.revision_id)=($2,$3,$4)
+             AND (a.namespace_id,a.id,a.active_revision_id)=(e.namespace_id,e.agent_id,e.revision_id)
+             AND a.status='active' AND a.desired_runtime_state='running'
+             AND (p.namespace_id,p.agent_id)=(a.namespace_id,a.id)
+             AND p.document#>>'{application,kind}'='protected_downloads'
+             AND p.document#>>'{application,id}'=$6 AND p.document#>>'{application,revisionId}'=e.revision_id
+             AND p.document#>>'{application,writeState}'='dispatched'
+             AND p.document#>>'{application,state}' IN ('pending','failed')
+             AND coalesce(e.download_installation,e.installation)=$5::jsonb
+             AND NOT EXISTS (SELECT FROM occ.credential_delivery_reductions r
+               WHERE r.revision_id=e.revision_id AND r.policy_request IS NOT NULL)`,
+          [successor, namespaceId, agentId, revisionId, expected, operationId],
+        );
+        return result.rowCount === 1;
+      },
       recordEgressInstallation: async (installation) => {
+        if (installation.downloadPolicyVersion !== undefined) {
+          throw new ResourceStateConflictError(
+            "A download successor cannot establish a launch installation.",
+          );
+        }
         const execution = installation.plan.execution;
         const inserted = await client.query(
           `INSERT INTO occ.egress_installations (sender_id, sandbox_id, namespace_id, revision_id, installation, agent_id)

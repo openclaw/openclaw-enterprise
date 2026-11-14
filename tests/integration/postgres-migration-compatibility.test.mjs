@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -9,6 +9,11 @@ import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import pg from "pg";
+import { normalizeHarnessSettings } from "../../apps/controller/src/drivers/compute/model-provider.ts";
+import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
+import { reconcileSandboxPolicy } from "../../apps/controller/src/worker/sandbox-policy.ts";
+import { createReadyComputeDriver } from "../helpers/development.ts";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import {
   assertCredentialSchemaPrivileges,
   assertInjectedMigrationRollback,
@@ -16,7 +21,10 @@ import {
 } from "../helpers/credential-source-owner-upgrade.ts";
 import { request, startController } from "../helpers/postgres-platform-state.ts";
 import { assertPopulatedUpgradeReturn } from "../helpers/populated-upgrade-return.ts";
-import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.mjs";
+import {
+  repositoryBinding,
+  repositoryCredentials,
+} from "../fixtures/repository-credentials/session-state.mjs";
 import {
   catalogDigest,
   initialSchemaState,
@@ -24,7 +32,13 @@ import {
 } from "../../scripts/migration-catalog.mjs";
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
-import { PostgresWorkQueue } from "../../packages/occ/src/index.ts";
+import {
+  DriverConfigurationRegistry,
+  InstalledDriver,
+  PostgresPlatformState,
+  PostgresWorkQueue,
+  protectedDownloadLimitsHash,
+} from "../../packages/occ/src/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   assertReleasedControllerCompatibility,
@@ -1449,12 +1463,21 @@ function receiptsMatchEntries(receipts, entries) {
 async function seedCanonicalAgent(
   db,
   namespace,
-  { computeAdmission, executionAdmission, harnessSettings },
+  {
+    computeAdmission,
+    executionAdmission,
+    harnessSettings,
+    protectedPlan,
+    credentialSources,
+    protectedVersion = 3,
+    harnessConfiguration = {},
+  },
 ) {
   const configuration = `cfg_${randomUUID()}`;
   const agent = `agt_${randomUUID()}`;
   const revision = `rev_${randomUUID()}`;
   const servicePrincipal = `service-agent-${agent}`;
+  const plan = protectedPlan?.({ agent, revision, servicePrincipal });
   await db.app.query(
     "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,$2,'ready',now())",
     [namespace, `migration-${randomUUID()}`],
@@ -1490,12 +1513,20 @@ async function seedCanonicalAgent(
             id: "codex",
             version: "1.0.0",
             mode: "dedicated",
-            ...(harnessSettings ? { overrides: {}, configuration: {} } : {}),
+            ...(harnessSettings ? { overrides: {}, configuration: harnessConfiguration } : {}),
           },
-          harness_auth: { method: "runtime" },
-          ...(executionAdmission
-            ? { execution_admission: { version: 2, mode: "unprotected" } }
-            : {}),
+          harness_auth: {
+            method: "runtime",
+            ...(plan && { protectedExecutionVersion: protectedVersion }),
+          },
+          ...(plan?.repositoryGit && { repository_credentials: plan.repositoryGit }),
+          ...(executionAdmission && {
+            execution_admission: plan
+              ? { version: protectedVersion, mode: "protected" }
+              : { version: 2, mode: "unprotected" },
+          }),
+          ...(plan && { egress_plan: plan, sandbox_driver_id: plan.sandboxDriverId }),
+          ...(credentialSources && { credential_sources: credentialSources }),
           compute: {
             id: "kubernetes",
             implementation: "test",
@@ -1509,7 +1540,7 @@ async function seedCanonicalAgent(
     await db.app.query("ROLLBACK");
     throw error;
   }
-  return { agent, revision };
+  return { agent, revision, plan };
 }
 
 async function seedCanonicalData(
@@ -2024,8 +2055,798 @@ async function canonicalData(db) {
   return result;
 }
 
+function protectedDownloadUpgradeCase(scenario) {
+  return async (context) => {
+    // Close the application pool before the fixture drops its database.
+    let pool;
+    context.after(() => pool?.end());
+    const db = await historyDatabase(context, await migrationHistoryFixture(), "serving_download", {
+      prefix: 80,
+    });
+    pool = await createPostgresPool(db.applicationUrl, { max: 1 });
+    const state = new PostgresPlatformState(pool);
+    const queue = new PostgresWorkQueue(pool);
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const actorId = "migration-fixture";
+    const ref = (id = randomUUID()) => ({ id, generation: 1 });
+    const sender = ref("openshell-egress");
+    const sandboxDriverId = "openshell-sandbox";
+    const modelProvider = createOpenAiStaticProvider();
+    const sourceId = `cs_${randomUUID()}`;
+    const source = {
+      installationId,
+      namespaceId,
+      source: ref(sourceId),
+      backend: ref("openshell"),
+      provider: modelProvider.ref,
+    };
+    const git = scenario === "git";
+    const repository = git
+      ? repositoryCredentials({ bindings: [repositoryBinding({ profile: "git-write" })] })
+      : undefined;
+    const credentialConfig = { authorized_base_url: "https://provider.example.org/v1" };
+    const harnessConfiguration = normalizeHarnessSettings({
+      modelProvider: {
+        protocol: "openai-responses",
+        baseUrl: credentialConfig.authorized_base_url,
+      },
+    });
+    const now = () => new Date().toISOString();
+    const limits = { executablePaths: ["/usr/bin/curl"] };
+    const unexpected = () => assert.fail("Unexpected dependency call in model dispatch recovery");
+    const replay = context.mock.fn(() => assert.fail("Recovery must observe the original write"));
+    let providerEvidence;
+    const readReceipt = context.mock.fn(async (_context, change) =>
+      change.operationId === providerEvidence.receipt.operationId
+        ? providerEvidence.receipt
+        : { state: "unconfirmed" },
+    );
+    const protectedDriver = new InstalledDriver(
+      { id: sender.id, implementation: "openshell", configuration: {} },
+      {
+        capabilities: {
+          sandbox: {
+            id: sandboxDriverId,
+            implementation: "openshell",
+            capability: "sandbox",
+            facets: ["networking"],
+            supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+            cleanup: unexpected,
+            protectedDownloadPolicy: {
+              version: 1,
+              prepare: replay,
+              apply: replay,
+              readReceipt,
+              observe: async () => providerEvidence.observation,
+            },
+          },
+          credential_proxy: {
+            id: sender.id,
+            implementation: "openshell",
+            capability: "credential_proxy",
+            configureRevision: unexpected,
+            wiringStatus: unexpected,
+            removeRevision: unexpected,
+            sourceControl: {
+              backend: source.backend,
+              resolver: source.backend,
+              sender,
+              providers: [modelProvider],
+              assertAvailable: async () => undefined,
+            },
+            observeDownloadEnforcement: async () => providerEvidence.installation.enforcement,
+            verifyInstallation: async (_context, installation) => {
+              assert.deepEqual(installation, providerEvidence.installation);
+              return true;
+            },
+            protectedDownloadPolicy: {
+              version: 1,
+              prepare: replay,
+              verify: async () => providerEvidence.observation,
+            },
+          },
+        },
+      },
+      { sandbox: sandboxDriverId, credential_proxy: sender.id },
+    );
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Migration fixture',now())",
+      [installationId],
+    );
+    const {
+      agent: agentId,
+      revision: revisionId,
+      plan,
+    } = await seedCanonicalAgent(db, namespaceId, {
+      executionAdmission: true,
+      harnessSettings: true,
+      protectedVersion: git ? 4 : 3,
+      harnessConfiguration: git ? {} : harnessConfiguration,
+      credentialSources: git
+        ? undefined
+        : [{ sourceId, sourceType: "openai", credentialProxyId: sender.id }],
+      protectedPlan: ({ agent, revision, servicePrincipal }) => {
+        const execution = {
+          installationId,
+          namespaceId,
+          agentId: agent,
+          revisionId: revision,
+          servicePrincipalId: servicePrincipal,
+          executionId: git ? randomBytes(24).toString("base64url") : randomUUID(),
+        };
+        const grant = modelProvider.normalizeGrant(["fixture-model"], credentialConfig);
+        return {
+          ...ref(),
+          execution,
+          sandboxDriverId,
+          egressDriverId: sender.id,
+          driver: protectedDriver.ref,
+          ...(repository && { repositoryGit: repository }),
+          ...(scenario === "reducer" && { policyReductionVersion: 1 }),
+          routes: git
+            ? []
+            : modelProvider.routes(
+                { config: credentialConfig },
+                {
+                  binding: ref(),
+                  execution,
+                  source,
+                  grant,
+                  grantHash: createHash("sha256").update(JSON.stringify(grant)).digest("hex"),
+                  isolationId: agent,
+                },
+                harnessConfiguration,
+              ),
+        };
+      },
+    });
+    const secret = { kind: "secret", namespaceId, id: `sec_${randomUUID()}` };
+    const secretDriver = ref("kubernetes");
+    await db.app.query(
+      `INSERT INTO occ.secrets (id,namespace_id,name,driver_id,backend_namespace_name,
+        backend_name,backend_key,backend_uid,created_at)
+       VALUES ($1,$2,'Model source',$3,'fixture','model','credential',$4,now())`,
+      [secret.id, namespaceId, secretDriver.id, randomUUID()],
+    );
+    await db.app.query(
+      `INSERT INTO occ.credential_sources (id,namespace_id,name,type,config,driver_id,
+        state,created_at,owner_capability,egress)
+       VALUES ($1,$2,'Model source','openai',$3::jsonb,$4,'ready',now(),'credential_proxy',$5::jsonb)`,
+      [
+        sourceId,
+        namespaceId,
+        credentialConfig,
+        sender.id,
+        {
+          key: source,
+          schemaVersion: 1,
+          adoption: "live",
+          materialRefId: randomUUID(),
+          secret,
+          secretDriver,
+          sender,
+          resolver: ref("openshell"),
+          retention: "none",
+        },
+      ],
+    );
+    await db.app.query(
+      `INSERT INTO occ.credential_source_secrets (namespace_id,credential_source_id,field,secret_id)
+       VALUES ($1,$2,'api_key',$3)`,
+      [namespaceId, sourceId, secret.id],
+    );
+    // Provider evidence is synthetic. The predecessor database enforces the launch and policy
+    // write contracts under occ_app, and the migration commands see exactly those stored rows.
+    const createLaunch = (executionPlan) => ({
+      plan: executionPlan,
+      sender,
+      sandboxId: randomUUID(),
+      installedAt: now(),
+      enforcement: {
+        instanceId: randomUUID(),
+        configurationId: randomUUID(),
+        policyHash: "c".repeat(64),
+        authorityScope: "execution",
+        // A v4 exact-dispatch Git release also has a signed peer key. Its download
+        // fence identifies the independently witnessed repository recipient.
+        peerKeyId: Buffer.alloc(32, 7).toString("base64url"),
+        ...(git && {
+          repositoryGitRecipient: {
+            providerId: randomUUID(),
+            attachmentEpoch: randomUUID(),
+            processInstanceId: randomUUID(),
+            networkInstanceId: randomUUID(),
+          },
+        }),
+      },
+    });
+    const launch = createLaunch(plan);
+    await state.transact(async (unit) => {
+      await unit.credentialSources.recordEgressInstallation(launch);
+      assert.ok(
+        await unit.agents.transitionAgentDesiredRuntimeState(
+          namespaceId,
+          agentId,
+          "stopped",
+          "running",
+        ),
+      );
+      assert.ok(
+        await unit.agents.compareAndSetActiveRevision(namespaceId, agentId, undefined, revisionId),
+      );
+      assert.ok(await unit.agents.setSandboxPolicyEditing(namespaceId, agentId, true));
+    });
+
+    const destination = { scheme: "https", host: "artifacts.example.org", port: 443 };
+    const launchFence = (installation) => ({
+      sandboxId: installation.sandboxId,
+      instanceId: installation.enforcement.instanceId,
+      configurationId: installation.enforcement.configurationId,
+      peer: git
+        ? { repositoryGitRecipient: installation.enforcement.repositoryGitRecipient }
+        : { keyId: installation.enforcement.peerKeyId },
+      installationLimitsHash: protectedDownloadLimitsHash(limits),
+      providerResourceVersion: "1",
+      policyVersion: installation.plan.generation,
+      sourcePolicyHash: "d".repeat(64),
+      effectivePolicyHash: installation.enforcement.policyHash,
+    });
+    const policy = () => state.read((unit) => unit.sandboxPolicies.find(namespaceId, agentId));
+    const workKey = (target, operationId) => `agent:${agentId}:reconcile:${target}:${operationId}`;
+    const claim = async (target, operationId) => {
+      const work = await queue.claim();
+      assert.equal(work?.idempotencyKey, workKey(target, operationId));
+      return work;
+    };
+    const appendWork = (unit, target, operationId) =>
+      unit.operations.append({
+        kind: "agent",
+        action: "reconcile",
+        target,
+        namespaceId,
+        resourceId: agentId,
+        actorId,
+        operationId,
+      });
+    const prepareEdit = async (
+      unit,
+      previous,
+      targetRevisionId,
+      action,
+      desired,
+      expected,
+      sourceHash,
+    ) => {
+      const application = {
+        kind: "protected_downloads",
+        id: randomUUID(),
+        revisionId: targetRevisionId,
+        policyVersion: previous.version + 1,
+        state: "pending",
+        requestedBy: actorId,
+        requestedAt: now(),
+        action,
+        destination,
+        priorDesiredDownloadDestinations: previous.downloadDestinations ?? [],
+        priorApprovedDownloadDestinations: previous.approvedDownloadDestinations ?? [],
+        previousDownloadDestinations:
+          previous.applied?.revisionId === targetRevisionId
+            ? previous.applied.confirmedDownloadDestinations
+            : [],
+        desiredDownloadDestinations: desired,
+        expected,
+        desiredSourcePolicyHash: sourceHash,
+        writeState: "prepared",
+      };
+      const next = {
+        ...previous,
+        version: application.policyVersion,
+        downloadDestinations: desired,
+        approvedDownloadDestinations: [destination],
+        application,
+      };
+      assert.deepEqual(await unit.sandboxPolicies.save(next, previous.version), next);
+      await appendWork(unit, "sandbox_policy", application.id);
+      return next;
+    };
+    const dispatch = async (action, desired, expected, sourceHash) => {
+      const previous = await policy();
+      const next = await state.transact((unit) =>
+        prepareEdit(unit, previous, revisionId, action, desired, expected, sourceHash),
+      );
+      const { application } = next;
+      const work = await claim("sandbox_policy", application.id);
+      await state.transact(async (unit) => {
+        const dispatched = { ...next, application: { ...application, writeState: "dispatched" } };
+        assert.deepEqual(
+          await unit.sandboxPolicies.save(dispatched, next.version, application.id),
+          dispatched,
+        );
+      });
+      return work;
+    };
+    const confirm = async (work, effectivePolicyHash) => {
+      const pending = await policy();
+      const { application } = pending;
+      const fence = {
+        ...application.expected,
+        configurationId: randomUUID(),
+        providerResourceVersion: String(application.expected.policyVersion + 1),
+        policyVersion: application.expected.policyVersion + 1,
+        sourcePolicyHash: application.desiredSourcePolicyHash,
+        effectivePolicyHash,
+      };
+      const providerVersion = String(fence.policyVersion);
+      const applied = {
+        kind: application.kind,
+        operationId: application.id,
+        revisionId,
+        policyVersion: pending.version,
+        providerVersion,
+        appliedAt: now(),
+        confirmedDownloadDestinations: application.desiredDownloadDestinations,
+        fence,
+      };
+      // Before 0081, confirmation wrote the policy and audit while keeping the launch immutable.
+      await state.transactWithQueue(async (unit, transactionQueue) => {
+        const settled = {
+          ...pending,
+          applied,
+          application: {
+            ...application,
+            state: "applied",
+            providerVersion,
+            acknowledgedWrite: {
+              state: "committed",
+              operationId: application.id,
+              sandboxId: fence.sandboxId,
+              policyVersion: fence.policyVersion,
+              sourcePolicyHash: fence.sourcePolicyHash,
+            },
+          },
+        };
+        assert.deepEqual(
+          await unit.sandboxPolicies.save(settled, pending.version, application.id),
+          settled,
+        );
+        await unit.audit.append({
+          id: `aud_${randomUUID()}`,
+          installationId,
+          namespaceId,
+          occurredAt: applied.appliedAt,
+          kind: "mutation",
+          source: "occ",
+          actorId,
+          action: "openclaw.agents.sandbox_policy.application",
+          resource: { kind: "sandbox_policy", id: pending.id, namespaceId },
+          outcome: "success",
+          details: {
+            operationId: application.id,
+            revisionId,
+            policyVersion: pending.version,
+            providerVersion,
+          },
+        });
+        await transactionQueue.complete(work);
+      });
+      return applied;
+    };
+
+    // Compare the persisted JSONB text and every stored row, including queue timestamps and audit.
+    const custody = async () => {
+      const snapshot = {};
+      for (const table of [
+        "agents",
+        "agent_revisions",
+        "sandbox_policies",
+        "egress_installations",
+        "controller_work",
+        "audit_events",
+      ]) {
+        snapshot[table] = (
+          await db.app.query(
+            `SELECT (to_jsonb(t) - 'download_installation')::text AS value FROM occ.${table} AS t ORDER BY value`,
+          )
+        ).rows.map(({ value }) => value);
+      }
+      return snapshot;
+    };
+    const receipts = await historyReceipts(db.migrator);
+    assert.equal(receipts.length, 80);
+    const predecessorState = async () => ({
+      custody: await custody(),
+      receipts: await historyReceipts(db.migrator),
+      columns: (
+        await db.migrator.query(`SELECT 1 FROM pg_catalog.pg_attribute
+        WHERE attrelid='occ.egress_installations'::regclass AND attname='download_installation'
+          AND NOT attisdropped`)
+      ).rowCount,
+    });
+    const assertRefused = async (diagnostic) => {
+      const before = await custody();
+      for (const flag of ["--check", undefined]) {
+        assert.deepEqual(
+          await runHistoryCommand(db, "production", flag, diagnostic),
+          {
+            ok: false,
+            code: "MIGRATION_HISTORY_UNSUPPORTED",
+          },
+          `0081 ${flag ?? "apply"} must refuse the original protected download operation`,
+        );
+        assert.deepEqual(await predecessorState(), { custody: before, receipts, columns: 0 });
+      }
+    };
+    const assertSqlRefused = async (diagnostic) => {
+      const before = await predecessorState();
+      await assert.rejects(
+        migrate(drizzle(db.migrator), { migrationsFolder: migrationsDirectory }),
+        (error) => {
+          const failure = error.cause ?? error;
+          assert.equal(failure.code, "P0081");
+          assert.match(failure.message, diagnostic);
+          return true;
+        },
+      );
+      assert.deepEqual(await predecessorState(), before);
+    };
+
+    const upgrade = async () => {
+      const before = await custody();
+      for (const flag of ["--check", undefined]) {
+        assert.deepEqual(await runHistoryCommand(db, "production", flag), {
+          ok: true,
+          history: "preProtectedDownloadInstallation",
+        });
+        assert.deepEqual(await custody(), before);
+      }
+      assert.deepEqual(
+        (
+          await db.app.query(
+            "SELECT installation,download_installation FROM occ.egress_installations WHERE revision_id=$1",
+            [revisionId],
+          )
+        ).rows,
+        [{ installation: launch, download_installation: null }],
+      );
+      const manifest = JSON.parse(
+        await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
+      );
+      const upgraded = await historyReceipts(db.migrator);
+      assert.equal(upgraded.length, manifest.entries.length);
+      assert.deepEqual(upgraded.slice(0, receipts.length), receipts);
+      assert.ok(receiptsMatchEntries(upgraded, manifest.entries));
+    };
+    const requestStop = async () => {
+      const stopId = randomUUID();
+      await state.transact(async (unit) => {
+        const stopping = await unit.agents.transitionAgentDesiredRuntimeState(
+          namespaceId,
+          agentId,
+          "running",
+          "stopped",
+        );
+        assert.equal(stopping?.activeRevisionId, revisionId);
+        await appendWork(unit, "stopped", stopId);
+      });
+      return stopId;
+    };
+    const retire = async (stopId) => {
+      const stop = await claim("stopped", stopId);
+      await state.transactWithQueue(async (unit, transactionQueue) => {
+        assert.ok(await transactionQueue.heartbeat(stop));
+        const retired = await unit.agents.compareAndClearActiveRevision(
+          namespaceId,
+          agentId,
+          revisionId,
+        );
+        assert.ok(retired);
+        assert.equal(retired.activeRevisionId, undefined);
+        await transactionQueue.complete(stop);
+      });
+    };
+
+    const failEdit = (work, pending, reason, changes = {}) =>
+      state.transactWithQueue(async (unit, transactionQueue) => {
+        const failed = {
+          ...pending,
+          ...changes,
+          application: { ...pending.application, state: "failed", reason },
+        };
+        assert.deepEqual(
+          await unit.sandboxPolicies.save(failed, pending.version, pending.application.id),
+          failed,
+        );
+        await transactionQueue.fail(work, { code: reason });
+        return failed;
+      });
+
+    const desiredSourcePolicyHash = "e".repeat(64);
+    const firstWork = await dispatch(
+      "approve-and-enable",
+      [destination],
+      launchFence(launch),
+      desiredSourcePolicyHash,
+    );
+    const firstPolicy = await policy();
+    const firstApplication = firstPolicy.application;
+    assert.equal(firstPolicy.applied, undefined);
+    assert.equal(firstApplication.writeState, "dispatched");
+    assert.equal(firstWork.idempotencyKey, workKey("sandbox_policy", firstApplication.id));
+    assert.equal(
+      await state.read((unit) =>
+        unit.sandboxPolicies.findProtectedDownloadRecovery(
+          namespaceId,
+          agentId,
+          firstWork.idempotencyKey,
+          actorId,
+        ),
+      ),
+      undefined,
+    );
+    const diagnosticFor = (id) =>
+      new RegExp(`protected download[^\\n]*${id}[^\\n]*retire[^\\n]*--check`);
+    if (git || scenario === "reducer") {
+      await assertRefused(diagnosticFor(firstApplication.id));
+      await assertSqlRefused(diagnosticFor(firstApplication.id));
+    }
+    if (scenario === "model") {
+      await upgrade();
+      // The original provider write committed before upgrade and its reply was lost.
+      // The candidate must recover its receipt and publish the enforcement against the launch.
+      assert.equal(firstApplication.acknowledgedWrite, undefined);
+      const fence = {
+        ...launchFence(launch),
+        configurationId: randomUUID(),
+        providerResourceVersion: "2",
+        policyVersion: 2,
+        sourcePolicyHash: desiredSourcePolicyHash,
+        effectivePolicyHash: "f".repeat(64),
+      };
+      const receipt = {
+        state: "committed",
+        operationId: firstApplication.id,
+        sandboxId: launch.sandboxId,
+        policyVersion: 2,
+        sourcePolicyHash: desiredSourcePolicyHash,
+      };
+      const successor = {
+        ...launch,
+        enforcement: {
+          ...launch.enforcement,
+          configurationId: fence.configurationId,
+          policyHash: fence.effectivePolicyHash,
+        },
+        downloadPolicyVersion: 2,
+      };
+      providerEvidence = {
+        receipt,
+        observation: { ...fence, state: "confirmed", operationId: receipt.operationId },
+        installation: successor,
+      };
+
+      assert.ok(protectedDriver);
+      const outcome = await reconcileSandboxPolicy(
+        {
+          configurations: new DriverConfigurationRegistry(),
+          state,
+          queueOptions: {},
+          driver: protectedDriver.require("sandbox"),
+          compute: createReadyComputeDriver("kubernetes", {
+            implementation: "test",
+            resolveSandboxNamespace: async (namespace) => namespace,
+          }),
+          protectedDriver,
+          protectedDownloads: limits,
+          iam: {
+            id: "fixture-iam",
+            implementation: "test",
+            capability: "iam",
+            lookupIdentity: unexpected,
+            authorize: async ({ principalId }) => ({
+              allowed: principalId === actorId,
+              reason: "migration fixture",
+              driverId: "fixture-iam",
+              evidence: { groupIds: [], bindingIds: [], roleIds: [], restrictionIds: [] },
+            }),
+          },
+          installationId,
+          ceiling: [],
+          signal: new AbortController().signal,
+          maxAttempts: 3,
+          deadlineMs: 60_000,
+          leaseDurationMs: 60_000,
+        },
+        firstWork,
+      );
+      assert.equal(replay.mock.callCount(), 0);
+      assert.equal(readReceipt.mock.callCount(), 1);
+      assert.equal(outcome, "success");
+
+      const recovered = await policy();
+      assert.deepEqual(recovered.application, {
+        ...firstApplication,
+        state: "applied",
+        providerVersion: "2",
+        acknowledgedWrite: receipt,
+      });
+      assert.equal(recovered.applied?.kind, "protected_downloads");
+      assert.equal(recovered.applied.operationId, firstApplication.id);
+      assert.equal(recovered.applied.revisionId, revisionId);
+      assert.deepEqual(recovered.applied.confirmedDownloadDestinations, [destination]);
+      assert.deepEqual(recovered.applied.fence, fence);
+      assert.deepEqual(
+        (
+          await db.app.query(
+            "SELECT installation,download_installation FROM occ.egress_installations WHERE revision_id=$1",
+            [revisionId],
+          )
+        ).rows,
+        [{ installation: launch, download_installation: successor }],
+      );
+      assert.deepEqual(
+        await state.read((unit) =>
+          unit.credentialSources.findRevisionEgressInstallation(namespaceId, revisionId),
+        ),
+        successor,
+      );
+      const recoveredWork = await queue.findWork(firstWork.idempotencyKey);
+      assert.equal(recoveredWork?.state, "succeeded");
+      assert.equal(recoveredWork.attemptCount, firstWork.attemptCount);
+      return;
+    }
+    if (scenario === "retained") {
+      const failed = await failEdit(firstWork, await policy(), "SANDBOX_POLICY_UNCONFIRMED");
+      assert.equal(failed.applied, undefined);
+      const replacementId = `rev_${randomUUID()}`;
+      const execution = {
+        ...plan.execution,
+        revisionId: replacementId,
+        executionId: replacementId,
+      };
+      const replacementPlan = {
+        ...plan,
+        ...ref(),
+        execution,
+        routes: plan.routes.map((route) => ({
+          ...route,
+          route: ref(),
+          binding: { ...route.binding, binding: ref(), execution },
+        })),
+      };
+      await db.app.query(
+        `INSERT INTO occ.agent_revisions
+           (id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
+         SELECT $1,namespace_id,agent_id,2,jsonb_set(admitted_spec,'{egress_plan}',$2::jsonb),backend_id,now()
+         FROM occ.agent_revisions WHERE id=$3`,
+        [replacementId, replacementPlan, revisionId],
+      );
+      const replacement = createLaunch(replacementPlan);
+      await state.transact(async (unit) => {
+        await unit.credentialSources.recordEgressInstallation(replacement);
+        assert.ok(
+          await unit.agents.compareAndSetActiveRevision(
+            namespaceId,
+            agentId,
+            revisionId,
+            replacementId,
+          ),
+        );
+      });
+      // The predecessor must retain the original dispatch and supersede it in one commit.
+      const beforeFirstEdit = {
+        ...failed,
+        downloadDestinations: [],
+        approvedDownloadDestinations: [],
+      };
+      const successor = await state.transact(async (unit) => {
+        assert.ok(await unit.sandboxPolicies.retainProtectedDownloadRecovery(failed));
+        return prepareEdit(
+          unit,
+          beforeFirstEdit,
+          replacementId,
+          "approve-and-enable",
+          [destination],
+          launchFence(replacement),
+          "1".repeat(64),
+        );
+      });
+      // Failing before the new write leaves the original retained dispatch as the sole blocker.
+      await failEdit(
+        await claim("sandbox_policy", successor.application.id),
+        successor,
+        "AUTHORIZATION_DENIED",
+        { downloadDestinations: [], approvedDownloadDestinations: [] },
+      );
+      const retained = await state.read((unit) =>
+        unit.sandboxPolicies.findProtectedDownloadRecovery(
+          namespaceId,
+          agentId,
+          firstWork.idempotencyKey,
+          actorId,
+        ),
+      );
+      assert.equal(retained?.operationId, failed.application.id);
+      assert.equal(retained.revisionId, revisionId);
+      assert.equal(retained.priorConfirmation, undefined);
+      const diagnostic = new RegExp(`protected download[^\\n]*${retained.operationId}`);
+      await assertRefused(diagnostic);
+      await assertSqlRefused(diagnostic);
+      return;
+    }
+    const first = await confirm(firstWork, "f".repeat(64));
+    assert.notEqual(first.fence.effectivePolicyHash, launch.enforcement.policyHash);
+    await assertRefused(new RegExp(`protected download[^\\n]*${first.operationId}`));
+
+    if (git) {
+      // The predecessor confirmed the original dispatch. Retirement releases the gate.
+      await retire(await requestStop());
+    } else {
+      const followup = await dispatch("disable", [], first.fence, "1".repeat(64));
+      const pending = await policy();
+      const followupId = pending.application.id;
+      assert.notEqual(followupId, first.operationId);
+      assert.equal(pending.application.state, "pending");
+      assert.equal(pending.application.writeState, "dispatched");
+      assert.deepEqual(pending.applied, first);
+      if (scenario === "reducer") {
+        // The original work reached its deadline without learning the write outcome. The stop can
+        // complete, leaving the follow-on unresolved and the earlier receipt's revision inactive.
+        await failEdit(followup, pending, "SANDBOX_POLICY_UNCONFIRMED");
+        await retire(await requestStop());
+      } else {
+        await queue.defer(followup, { code: "SANDBOX_POLICY_PENDING" }, { delayMs: 1 });
+        assert.equal((await queue.findWork(followup.idempotencyKey)).state, "queued");
+      }
+      await assertRefused(diagnosticFor(followupId));
+      // The SQL migration also refuses incompatible data after an earlier check has run.
+      await assertSqlRefused(diagnosticFor(followupId));
+      if (scenario === "reducer") {
+        return;
+      }
+
+      // Settle the same operation using its stored dispatch marker, then request a stop. A stop
+      // request leaves the serving pointer in place until the exact runtime stop is confirmed.
+      const settled = await confirm(await claim("sandbox_policy", followupId), "2".repeat(64));
+      assert.equal(settled.operationId, followupId);
+      const stopId = await requestStop();
+      await assertRefused(diagnosticFor(followupId));
+      await retire(stopId);
+    }
+    await upgrade();
+    assert.equal(await queue.claim(), undefined, "upgrade must leave no policy work to redispatch");
+  };
+}
+
 test(
-  "Canonical migration preserves pending SandboxPolicy custody across the published 0076 through 0079 predecessors",
+  "Canonical migration refuses a serving protected download edit until settlement and retirement",
+  requiresHistoryPostgres,
+  async (context) => {
+    await context.test(
+      "current first dispatch on a repository Git revision",
+      protectedDownloadUpgradeCase("git"),
+    );
+    await context.test(
+      "reducible model dispatch and unsettled follow-on after retirement",
+      protectedDownloadUpgradeCase("reducer"),
+    );
+    await context.test(
+      "current first signed model dispatch survives upgrade",
+      protectedDownloadUpgradeCase("model"),
+    );
+    await context.test(
+      "serving confirmation and retirement",
+      protectedDownloadUpgradeCase("serving"),
+    );
+    await context.test(
+      "superseded first dispatch with no prior confirmation",
+      protectedDownloadUpgradeCase("retained"),
+    );
+  },
+);
+
+test(
+  "Canonical migration preserves pending SandboxPolicy custody across the 0076 through 0080 predecessors",
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
@@ -2034,6 +2855,7 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "preProtectedDownloadRecovery"],
       [79, "preProtectedDownloadLateConfirmation"],
+      [80, "preProtectedDownloadInstallation"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -2463,6 +3285,7 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "preProtectedDownloadRecovery"],
       [79, "preProtectedDownloadLateConfirmation"],
+      [80, "preProtectedDownloadInstallation"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2971,6 +3794,7 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "preProtectedDownloadRecovery"],
       [79, "preProtectedDownloadLateConfirmation"],
+      [80, "preProtectedDownloadInstallation"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3170,6 +3994,7 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "preProtectedDownloadRecovery"],
       [79, "preProtectedDownloadLateConfirmation"],
+      [80, "preProtectedDownloadInstallation"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -3263,6 +4088,7 @@ test(
       [77, "prePendingSandboxPolicyApplication"],
       [78, "preProtectedDownloadRecovery"],
       [79, "preProtectedDownloadLateConfirmation"],
+      [80, "preProtectedDownloadInstallation"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3289,6 +4115,7 @@ test(
         // 0079 installs the first recovery trigger after its column, index, and functions.
         // Abort after 0080 replaces the guard so rollback must restore its old body.
         const rollbackTag = [
+          [80, "GRANT"],
           [79, "CREATE FUNCTION"],
           [78, "CREATE TRIGGER"],
           [77, "CREATE FUNCTION"],

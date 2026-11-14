@@ -125,6 +125,16 @@ also binds provider, attachment epoch, process and network identities. These
 fields must describe authenticated backend observations. Matching names or a
 shared registration do not prove no-bypass networking.
 
+A Driver that supports live download edits on signed model routes implements
+`observeDownloadEnforcement`. It reads the authenticated supervisor’s loaded
+policy for the exact Sandbox and provider version. Its ordinary
+`verifyInstallation` must verify that installation again for credential use.
+OCC keeps the original launch receipt and commits the verified installation
+with the policy confirmation. The supported edit protocol excludes repository
+Git because its route owner must also publish the matching recipient evidence.
+Revisions with a credential policy reducer keep its existing generation and
+withdrawal protocol and cannot apply a live download edit.
+
 Provider `routes` receives the resolved revision Harness configuration during
 admission. Request-time authority calls the same provider with the saved settings
 and current source, then compares the requested route with that result. A mismatch
