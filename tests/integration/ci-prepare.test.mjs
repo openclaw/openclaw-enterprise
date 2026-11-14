@@ -4559,20 +4559,22 @@ if (args[0] === "pull") {
       const corepackPath = join(root, "corepack.mjs");
       const stageOf = (query) =>
         query.startsWith("CREATE DATABASE") ? "database-create" : "database-schema";
-      const postgres = await laneFakePostgres(t, {
-        onQuery: async (query) => {
-          const stage = stageOf(query);
-          await appendFile(commandsPath, JSON.stringify(stage) + "\n");
-          if (stage === scenario.stage) {
-            return { error: "secret-canary-server-message" };
-          }
-        },
-      });
-      // A connect failure: nothing listens on the published port any more.
-      if (scenario.failure === "connect") {
-        await postgres.close();
-      }
-      await writePostgresState(statePath, composePostgres("diagnostics", postgres.port));
+      const onQuery = async (query) => {
+        const stage = stageOf(query);
+        await appendFile(commandsPath, JSON.stringify(stage) + "\n");
+        if (stage === scenario.stage) {
+          return { error: "secret-canary-server-message" };
+        }
+      };
+      // Keep the port bound while the child connects. Closing its socket prevents a PostgreSQL session.
+      const port =
+        scenario.failure === "connect"
+          ? await listen(
+              t,
+              createServer((socket) => socket.destroy()),
+            )
+          : (await laneFakePostgres(t, { onQuery })).port;
+      await writePostgresState(statePath, composePostgres("diagnostics", port));
       const commandSource = `#!${process.execPath}
 import { appendFileSync } from "node:fs";
 appendFileSync(process.env.CI_DIAGNOSTIC_COMMANDS, JSON.stringify("database-migrate") + "\\n");
@@ -4612,7 +4614,9 @@ await assert.rejects(() => prepareFile({ lane: "postgres-application",
         10_000,
       );
       assert.equal(result.status, 0, result.stderr);
-      const commands = scenario.failure === "connect" ? [] : await readJsonLines(commandsPath);
+      const commands = await readJsonLines(commandsPath, {
+        missingOk: scenario.failure === "connect",
+      });
       const expected = ["database-create", "database-schema", "database-migrate"];
       assert.deepEqual(
         commands,
