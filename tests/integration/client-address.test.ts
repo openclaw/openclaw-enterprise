@@ -3,11 +3,21 @@ import test from "node:test";
 import {
   clientAddressConfiguration,
   resolveClientAddress,
+  type ClientAddressConfiguration,
 } from "../../apps/controller/src/auth/client-address.ts";
+
+type ProxyEnvironment = Parameters<typeof clientAddressConfiguration>[0];
+
+type ResolutionCase = {
+  configuration: ClientAddressConfiguration | undefined;
+  peer: string;
+  header: Parameters<typeof resolveClientAddress>[2];
+  expected: string;
+};
 
 test("trusted proxy settings are off unless configured and refuse misconfiguration", () => {
   assert.equal(clientAddressConfiguration({}), undefined);
-  const refused = [
+  const refused: [environment: ProxyEnvironment, message: RegExp][] = [
     [{ OCC_AUTH_TRUSTED_PROXY_PRESET: "aws" }, /require OCC_AUTH_TRUSTED_PROXY_CIDRS/],
     [{ OCC_AUTH_CLIENT_IP_HEADER: "x-real-ip" }, /require OCC_AUTH_TRUSTED_PROXY_CIDRS/],
     [{ OCC_AUTH_TRUSTED_PROXY_CIDRS: " " }, /require OCC_AUTH_TRUSTED_PROXY_CIDRS/],
@@ -66,6 +76,7 @@ test("trusted proxy settings are off unless configured and refuse misconfigurati
 
 test("presets fix the client-address header; generic names its own", () => {
   const nginx = clientAddressConfiguration({ OCC_AUTH_TRUSTED_PROXY_CIDRS: "10.42.0.0/16" });
+  assert.ok(nginx);
   assert.equal(nginx.preset, "ingress-nginx");
   assert.equal(nginx.header, "x-forwarded-for");
   const aws = clientAddressConfiguration({
@@ -73,6 +84,7 @@ test("presets fix the client-address header; generic names its own", () => {
     OCC_AUTH_TRUSTED_PROXY_PRESET: "aws",
     OCC_AUTH_CLIENT_IP_HEADER: "x-forwarded-for",
   });
+  assert.ok(aws);
   assert.deepEqual(
     [aws.preset, aws.header, aws.cidrs],
     ["aws", "x-forwarded-for", ["10.0.0.0/16", "2600:1f18::/40"]],
@@ -87,6 +99,7 @@ test("presets fix the client-address header; generic names its own", () => {
     OCC_AUTH_TRUSTED_PROXY_PRESET: "generic",
     OCC_AUTH_CLIENT_IP_HEADER: "x-real-ip",
   });
+  assert.ok(generic);
   assert.equal(generic.header, "x-real-ip");
   assert.equal(generic.trusts("192.0.2.10"), true);
   assert.equal(generic.trusts("192.0.2.11"), false);
@@ -117,7 +130,7 @@ test("trusted proxy CIDRs refuse catch-all IPv6 subnets and mapped addresses wit
 });
 
 test("all mapped trusted proxy spellings use IPv4 subnet widths", () => {
-  for (const [cidr, host] of [
+  const cases: [cidr: string, host: string][] = [
     ["::ffff:192.0.2.1/32", "192.0.2.1"],
     ["::FFFF:c000:201/32", "192.0.2.1"],
     ["0:0:0:0:0:ffff:192.0.2.1/32", "192.0.2.1"],
@@ -125,8 +138,10 @@ test("all mapped trusted proxy spellings use IPv4 subnet widths", () => {
     ["::0:ffff:1.2.3.4/32", "1.2.3.4"],
     ["0000:0000:0000:0000:0000:FFFF:C000:0201/1", "192.0.2.1"],
     ["::ffff:c000:201", "192.0.2.1"],
-  ]) {
+  ];
+  for (const [cidr, host] of cases) {
     const config = clientAddressConfiguration({ OCC_AUTH_TRUSTED_PROXY_CIDRS: cidr });
+    assert.ok(config, cidr);
     // A mapped host at /32 must never grant header authority to unrelated IPv4 peers.
     assert.equal(config.trusts(host), true, cidr);
     assert.equal(config.trusts(`::ffff:${host}`), true, cidr);
@@ -136,7 +151,7 @@ test("all mapped trusted proxy spellings use IPv4 subnet widths", () => {
 });
 
 test("IPv6 trusted proxies outside the mapped catch-all keep their subnet semantics", () => {
-  for (const [cidr, host] of [
+  const cases: [cidr: string, host: string][] = [
     ["::1/128", "::1"],
     ["fd00:10::/64", "fd00:10::1234"],
     ["2600:1f18::/40", "2600:1f18::1"],
@@ -147,8 +162,10 @@ test("IPv6 trusted proxies outside the mapped catch-all keep their subnet semant
     ["64:ff9b::/96", "64:ff9b::192.0.2.1"],
     // Only ::ffff:0:0/96 is IPv4-mapped: a nonzero fifth group keeps an IPv6 host.
     ["::1:ffff:c000:201/128", "::1:ffff:c000:201"],
-  ]) {
+  ];
+  for (const [cidr, host] of cases) {
     const config = clientAddressConfiguration({ OCC_AUTH_TRUSTED_PROXY_CIDRS: cidr });
+    assert.ok(config, cidr);
     assert.equal(config.trusts(host), true, cidr);
     assert.equal(config.trusts("8.8.8.8"), false, cidr);
     assert.equal(config.trusts("192.0.2.1"), false, cidr);
@@ -157,28 +174,50 @@ test("IPv6 trusted proxies outside the mapped catch-all keep their subnet semant
 
 test("the client address comes only from a trusted peer, walking right to left", () => {
   const config = clientAddressConfiguration({ OCC_AUTH_TRUSTED_PROXY_CIDRS: "10.0.0.0/24" });
-  const cases = [
+  assert.ok(config);
+  const trustedPeer = { configuration: config, peer: "10.0.0.9" };
+  const cases: ResolutionCase[] = [
     // Unconfigured or untrusted peers never read the header.
-    [undefined, "10.0.0.9", "1.2.3.4", "10.0.0.9"],
-    [config, "192.0.2.7", "1.2.3.4", "192.0.2.7"],
-    [config, "::ffff:192.0.2.7", "1.2.3.4", "192.0.2.7"],
+    { ...trustedPeer, configuration: undefined, header: "1.2.3.4", expected: "10.0.0.9" },
+    { configuration: config, peer: "192.0.2.7", header: "1.2.3.4", expected: "192.0.2.7" },
+    { configuration: config, peer: "::ffff:192.0.2.7", header: "1.2.3.4", expected: "192.0.2.7" },
     // All mapped peer and hop spellings share the same dotted IPv4 rate-limit key.
-    [undefined, "::FFFF:c000:207", "1.2.3.4", "192.0.2.7"],
-    [config, "0:0:0:0:0:ffff:192.0.2.7", "1.2.3.4", "192.0.2.7"],
-    [config, "0::ffff:10.0.0.9", "::FFFF:c000:207, ::0:ffff:10.0.0.8", "192.0.2.7"],
-    [config, "::ffff:a00:9", "1.2.3.4, unknown", "10.0.0.9"],
+    { configuration: undefined, peer: "::FFFF:c000:207", header: "1.2.3.4", expected: "192.0.2.7" },
+    {
+      configuration: config,
+      peer: "0:0:0:0:0:ffff:192.0.2.7",
+      header: "1.2.3.4",
+      expected: "192.0.2.7",
+    },
+    {
+      configuration: config,
+      peer: "0::ffff:10.0.0.9",
+      header: "::FFFF:c000:207, ::0:ffff:10.0.0.8",
+      expected: "192.0.2.7",
+    },
+    {
+      configuration: config,
+      peer: "::ffff:a00:9",
+      header: "1.2.3.4, unknown",
+      expected: "10.0.0.9",
+    },
     // A client-supplied prefix is skipped: the proxy appended the address it saw.
-    [config, "10.0.0.9", "6.6.6.6, 1.2.3.4", "1.2.3.4"],
-    [config, "::ffff:10.0.0.9", "1.2.3.4, 10.0.0.8, 10.0.0.9", "1.2.3.4"],
-    [config, "10.0.0.9", ["6.6.6.6", "2001:db8::1"], "2001:db8::1"],
+    { ...trustedPeer, header: "6.6.6.6, 1.2.3.4", expected: "1.2.3.4" },
+    {
+      configuration: config,
+      peer: "::ffff:10.0.0.9",
+      header: "1.2.3.4, 10.0.0.8, 10.0.0.9",
+      expected: "1.2.3.4",
+    },
+    { ...trustedPeer, header: ["6.6.6.6", "2001:db8::1"], expected: "2001:db8::1" },
     // Missing, malformed or all-trusted values fall back to the peer.
-    [config, "10.0.0.9", undefined, "10.0.0.9"],
-    [config, "10.0.0.9", "", "10.0.0.9"],
-    [config, "10.0.0.9", "1.2.3.4, unknown", "10.0.0.9"],
-    [config, "10.0.0.9", "1.2.3.4:5678", "10.0.0.9"],
-    [config, "10.0.0.9", "10.0.0.1, 10.0.0.2", "10.0.0.9"],
+    { ...trustedPeer, header: undefined, expected: "10.0.0.9" },
+    { ...trustedPeer, header: "", expected: "10.0.0.9" },
+    { ...trustedPeer, header: "1.2.3.4, unknown", expected: "10.0.0.9" },
+    { ...trustedPeer, header: "1.2.3.4:5678", expected: "10.0.0.9" },
+    { ...trustedPeer, header: "10.0.0.1, 10.0.0.2", expected: "10.0.0.9" },
   ];
-  for (const [configuration, peer, header, expected] of cases) {
+  for (const { configuration, peer, header, expected } of cases) {
     assert.equal(
       resolveClientAddress(configuration, peer, header),
       expected,
