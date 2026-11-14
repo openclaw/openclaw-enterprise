@@ -9,12 +9,12 @@ import type {
   InstallationWire,
   NamespaceWire,
   Permission,
-  ServiceAccountWire,
 } from "../../packages/contracts/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import {
   type createInjectedControllerFixture,
+  createServiceAccount,
   identifier,
   injectedRequest,
 } from "./occ-api-injected-fixture.ts";
@@ -54,16 +54,10 @@ export async function runResourceRoutes({
   defaultNamespace,
   createNamespace,
   createAgent,
-  createServiceAccount,
   missingRevisionId,
   missingAgentId,
 }: ControllerSetup & {
   defaultNamespace(controller: Controller): Promise<NamespaceWire>;
-  createServiceAccount(
-    controller: Controller,
-    namespaceId: string,
-    name: string,
-  ): Promise<ServiceAccountWire>;
   missingAgentId: string;
 }) {
   const controller = await configuredController();
@@ -101,7 +95,7 @@ export async function runResourceRoutes({
   const agent = await createAgent(controller, namespace.id, "research-agent");
   assert.equal(Object.hasOwn(agent, "installationId"), false);
 
-  const account = await createServiceAccount(controller, namespace.id, "research-account");
+  const account = await createServiceAccount(controller.request, namespace.id, "research-account");
   const serviceAccounts = await controller.request(
     "GET",
     `/namespaces/${namespace.id}/service-accounts`,

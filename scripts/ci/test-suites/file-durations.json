@@ -235,6 +235,7 @@
     "tests/integration/native-admin-access.test.mjs": 10200,
     "tests/integration/occ-api.test.mjs": 6600,
     "tests/integration/occ-metrics.test.mjs": 3800,
+    "tests/integration/occ-service-account-lifecycle.test.ts": 3900,
     "tests/integration/oidc-ca-trust.test.mjs": 7800,
     "tests/integration/oidc-id-token.test.mjs": 400,
     "tests/integration/oidc-login-transport.test.ts": 800,

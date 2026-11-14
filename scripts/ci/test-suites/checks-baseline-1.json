@@ -8,6 +8,7 @@
     "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
     "tests/integration/occ-api-joint-plugin-deployment.test.ts",
+    "tests/integration/occ-service-account-lifecycle.test.ts",
     "tests/integration/stored-document-serialization.test.mjs",
     "tests/integration/precompiled-route-compilers.test.ts",
     "tests/integration/route-header-names.test.ts",
@@ -460,6 +461,14 @@
     },
     {
       "path": "tests/integration/occ-api-joint-plugin-deployment.test.ts"
+    },
+    {
+      "path": "tests/integration/occ-service-account-lifecycle.test.ts",
+      "expectedTests": [
+        "a forced ServiceAccount delete without a ChatGPT Backend removes an account whose token nothing can revoke and audits it",
+        "native ServiceAccounts keep private credential references and cannot admit Harness authentication",
+        "native ServiceAccounts reject invalid references and enforce exact Namespace-scoped access"
+      ]
     },
     {
       "path": "tests/integration/stored-document-serialization.test.mjs"
