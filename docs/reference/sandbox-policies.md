@@ -131,7 +131,7 @@ that policy, and the worker does not send it again:
 | `SANDBOX_POLICY_PROTECTED_EXECUTION`   | The version runs under protected execution. Remove the saved rules.                                    |
 | `SANDBOX_POLICY_VALIDATION_FAILED`     | The Driver settings refused the rules. Review, correct and save them.                                  |
 | `SANDBOX_POLICY_PLACEMENT_UNAVAILABLE` | The Compute Driver changed since the version deployed. Deploy a new version.                           |
-| `SANDBOX_POLICY_PROVIDER_FAILED`       | The provider reported failure. Refresh and apply again.                                                |
+| `SANDBOX_POLICY_PROVIDER_FAILED`       | The provider reported failure or changed version. Refresh and apply again.                             |
 | `SANDBOX_POLICY_UNCONFIRMED`           | No confirmation in time; the provider may have applied part. Refresh and retry.                        |
 
 The last

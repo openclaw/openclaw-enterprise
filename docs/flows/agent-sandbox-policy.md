@@ -148,7 +148,11 @@ are bounded by the claim lease. Database and audit failures roll back the pass.
 `apps/controller/src/drivers/sandbox/openshell.ts` verifies exact provider
 ownership, preserves the Sandbox's static policy and generated access, and uses
 native status/UpdateConfig RPCs. A full candidate match plus loaded active version
-is required for `applied`. Transient or unknown outcomes retry within limits;
+is required for `applied`. After a refused write, the worker reads the provider again.
+A matching policy still loading is deferred within the deadline, `applied` is recorded
+only for a loaded active match, and a changed resource version with a nonmatch fails as
+`SANDBOX_POLICY_PROVIDER_FAILED` (the pinned version cannot succeed). Worker shutdown during
+that read rolls back so the next worker recovers the claim; other outcomes retry within limits;
 terminal stale work becomes an unconfirmed failure. The worker calls
 `failAbandonedSandboxPolicies` inside the same `transactWithQueue` that recovers
 exhausted work, so queue failure, application failure, and audit either all commit
