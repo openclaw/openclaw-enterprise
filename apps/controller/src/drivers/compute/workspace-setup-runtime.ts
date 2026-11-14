@@ -187,6 +187,7 @@ function main() {
     if (JSON.stringify(saved) !== JSON.stringify(identity)) fail();
   } else {
     if (setup.completed) fail();
+    if (process.argv[1] === "verify-existing") throw new Error("WORKSPACE_SETUP_RETRY");
     const executable = fs.realpathSync(process.env.OPENCLAW_EXECUTABLE ?? "/app/openclaw.mjs");
     let packageRoot = path.dirname(executable);
     let manifest;

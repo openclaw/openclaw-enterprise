@@ -1398,13 +1398,24 @@ try {
     fs.constants.O_CREAT | fs.constants.O_RDWR | fs.constants.O_NOFOLLOW, 0o600);
   const stat = fs.fstatSync(lock);
   if (!stat.isFile() || stat.nlink !== 1) throw new Error();
-  const acquired = spawnSync("/usr/bin/flock", ["--exclusive", "--timeout", "20", "3"],
-    { stdio: ["ignore", "ignore", "ignore", lock], timeout: 25000 });
+  // A duplicate can arrive while the original initializer still owns the lock.
+  // Share the existing 270-second budget across both stages of this 300-second RPC.
+  const budgetMs = 270000;
+  const deadline = performance.now() + budgetMs;
+  // Let flock time out on its own if its parent dies while waiting.
+  const acquired = spawnSync("/usr/bin/flock", ["--exclusive", "--timeout", String(budgetMs / 1000), "3"],
+    { stdio: ["ignore", "ignore", "ignore", lock], timeout: budgetMs });
   if (acquired.error || acquired.status !== 0) throw new Error();
-  const result = spawnSync(process.execPath, ["-e", ${JSON.stringify(WORKSPACE_SETUP_RUNTIME)}], {
+  const remainingMs = Math.floor(deadline - performance.now());
+  if (remainingMs <= 0) throw new Error();
+  // Only verify an existing marker if a fresh initializer can no longer receive
+  // its full budget. Otherwise a nested writer could outlive this lock holder.
+  const args = ["-e", ${JSON.stringify(WORKSPACE_SETUP_RUNTIME)}];
+  if (remainingMs < 250000) args.push("verify-existing");
+  const result = spawnSync(process.execPath, args, {
     input: fs.readFileSync(0),
     env: { ...process.env, OPENCLAW_WORKSPACE_SETUP_PATH: undefined },
-    stdio: ["pipe", "ignore", "ignore", lock], timeout: 250000,
+    stdio: ["pipe", "ignore", "ignore", lock], timeout: Math.min(250000, remainingMs),
   });
   if (!result.error && [${WORKSPACE_SETUP_REFUSED_EXIT_STATUS},
       ${WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS}, ${WORKSPACE_SETUP_NATIVE_TIMEOUT_EXIT_STATUS}].includes(result.status)) {
