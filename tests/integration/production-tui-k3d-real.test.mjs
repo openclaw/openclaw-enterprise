@@ -559,7 +559,7 @@ test(
       }
       if (signinSelected) {
         const { prepareMaterialization } = await import("../helpers/signin/materialization.mjs");
-        const { providerDns } = await import("../helpers/signin/dns.mjs");
+        const { providerDns } = await import("../helpers/signin/dns.ts");
         dns = providerDns({ system, suffix, custody, localCluster, kubectl, kubeArgs, run });
         const { createOidcProviderMaterial } =
           await import("../helpers/oidc-provider-material.mjs");
@@ -737,7 +737,7 @@ test(
       });
       await waitPod("operator");
       if (signinSelected) {
-        const { operatorExecutor } = await import("../helpers/signin/operator.mjs");
+        const { operatorExecutor } = await import("../helpers/signin/operator.ts");
         signinOperator = await operatorExecutor({
           custody,
           localCluster,
@@ -2026,7 +2026,7 @@ test(
       await custody.assertRelease();
       const { namespace, tenant } = await provisionNamespace({ api, externalRequest, runGuideOcc });
       if (signinSelected) {
-        const { rehearseSignin } = await import("../helpers/signin/scenario.mjs");
+        const { rehearseSignin } = await import("../helpers/signin/scenario.ts");
         try {
           await rehearseSignin({
             rehearsal,

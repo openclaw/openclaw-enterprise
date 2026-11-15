@@ -1,15 +1,52 @@
-import { isDeepStrictEqual } from "node:util";
 import { request } from "node:https";
 import { isIP } from "node:net";
+import { isDeepStrictEqual } from "node:util";
+import { Type } from "typebox";
+import { Check } from "typebox/value";
+import { protectedJSON, type RehearsalCustody } from "../production-rehearsal-custody.ts";
+import type { TransitionFixture } from "./transition.ts";
+
+type Fixture = TransitionFixture<never, never>;
+type FetchOptions = Omit<Parameters<Fixture["consoleFetch"]>[1], "redirect"> & {
+  // Materialization uses the same transport for a discovery request without this option.
+  redirect?: "manual";
+};
+
+const manifestEntry = Type.Object({
+  sha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+  when: Type.Integer(),
+});
+const manifestEntries = Type.Array(manifestEntry, { minItems: 1 });
+const migrationManifest = Type.Object({
+  version: Type.Literal(1),
+  entries: manifestEntries,
+  compatibleLineages: Type.Optional(
+    Type.Object({
+      providerCompleted: Type.Optional(Type.Object({ entries: manifestEntries })),
+    }),
+  ),
+});
+const migrationReceipts = Type.Array(Type.Tuple([Type.Integer(), Type.String(), Type.Integer()]));
+const sessionRow = Type.Object({ id: Type.String() });
+
+function strictlyIncreasing<T>(entries: readonly T[], counter: (entry: T) => number) {
+  let previous = 0;
+  return entries.every((entry) => {
+    const current = counter(entry);
+    const valid = Number.isSafeInteger(current) && current > previous;
+    previous = current;
+    return valid;
+  });
+}
 
 // Address and port come from the fixture-owned forward. Preserve HTTP Host, TLS SNI and verification.
-export function fixtureFetch(origin, address, port, ca) {
+export function fixtureFetch(origin: string, address: string, port: number, ca: string | Buffer) {
   const endpoint = new URL(origin);
   if (endpoint.protocol !== "https:" || !isIP(address) || !ca?.length) {
     throw new Error("invalid TLS fixture");
   }
-  return (url, options) =>
-    new Promise((resolve, reject) => {
+  return (url: URL, options: FetchOptions) =>
+    new Promise<Response>((resolve, reject) => {
       if (url.origin !== origin || url.username || url.password) {
         throw new Error("unexpected TLS origin");
       }
@@ -27,9 +64,14 @@ export function fixtureFetch(origin, address, port, ca) {
           agent: false,
         },
         (res) => {
-          const chunks = [];
+          const chunks: Buffer[] = [];
           let size = 0;
-          res.on("data", (chunk) => {
+          res.on("data", (chunk: unknown) => {
+            if (!Buffer.isBuffer(chunk)) {
+              res.destroy();
+              reject(new Error("invalid fixture response"));
+              return;
+            }
             size += chunk.length;
             if (size > 262144) {
               res.destroy();
@@ -43,9 +85,19 @@ export function fixtureFetch(origin, address, port, ca) {
             try {
               const headers = new Headers();
               for (let i = 0; i < res.rawHeaders.length; i += 2) {
-                headers.append(res.rawHeaders[i], res.rawHeaders[i + 1]);
+                const name = res.rawHeaders[i];
+                const value = res.rawHeaders[i + 1];
+                if (name === undefined || value === undefined) {
+                  throw new Error("invalid fixture response");
+                }
+                headers.append(name, value);
               }
-              resolve(new Response(Buffer.concat(chunks), { status: res.statusCode, headers }));
+              resolve(
+                new Response(Buffer.concat(chunks), {
+                  ...(res.statusCode === undefined ? {} : { status: res.statusCode }),
+                  headers,
+                }),
+              );
             } catch {
               reject(new Error("invalid fixture response"));
             }
@@ -59,13 +111,13 @@ export function fixtureFetch(origin, address, port, ca) {
 
 // Same private psql transport as rehearsePopulatedReturn. No bearer tokens or credential columns selected.
 export function retainedCatalog(
-  custody,
-  userId,
-  installationId,
-  completedHistory,
-  expectedManifest,
+  custody: Pick<RehearsalCustody, "postgres">,
+  userId: string,
+  installationId: string,
+  completedHistory: () => Promise<void>,
+  expectedManifest: unknown,
 ) {
-  const literal = (v) => {
+  const literal = (v: string) => {
     if (typeof v !== "string" || !/^[A-Za-z0-9:._|-]{1,255}$/.test(v)) {
       throw new Error("invalid fixture identifier");
     }
@@ -73,7 +125,7 @@ export function retainedCatalog(
   };
   const uid = literal(userId);
   const iid = literal(installationId);
-  async function sql(query) {
+  async function sql(query: string) {
     return (
       await custody.postgres(
         "psql",
@@ -86,15 +138,15 @@ export function retainedCatalog(
       )
     ).trim();
   }
-  const equal = (a, b) => {
+  const equal = (a: unknown, b: unknown) => {
     if (!isDeepStrictEqual(a, b)) {
       throw new Error("retained state mismatch");
     }
   };
-  let ledger;
-  let account;
-  const sessionFacts = new Map();
-  const readSessions = (ids) =>
+  let ledger: string | undefined;
+  let account: string | undefined;
+  const sessionFacts = new Map<string, string>();
+  const readSessions = (ids: readonly string[]) =>
     sql(`SELECT row_to_json(t) FROM (
     SELECT s.id, s.user_id, s.created_at, s.expires_at, h.method_id, h.version, h.method_version
     FROM occ.session s JOIN occ.human_authentication_sessions h ON h.session_id=s.id
@@ -116,23 +168,17 @@ export function retainedCatalog(
         throw new Error("empty migration ledger");
       }
       if (ledger === undefined) {
-        const validEntries = (entries) =>
-          Array.isArray(entries) &&
-          entries.length > 0 &&
-          entries.every(
-            (entry, index) =>
-              /^[a-f0-9]{64}$/.test(entry?.sha256) &&
-              Number.isSafeInteger(entry.when) &&
-              entry.when > (index === 0 ? 0 : entries[index - 1].when),
-          );
-        if (expectedManifest?.version !== 1 || !validEntries(expectedManifest.entries)) {
+        if (
+          !Check(migrationManifest, expectedManifest) ||
+          !strictlyIncreasing(expectedManifest.entries, (entry) => entry.when)
+        ) {
           throw new Error("invalid expected migration manifest");
         }
         const histories = [expectedManifest.entries];
         const provider = expectedManifest.compatibleLineages?.providerCompleted;
         if (provider !== undefined) {
           if (
-            !validEntries(provider.entries) ||
+            !strictlyIncreasing(provider.entries, (entry) => entry.when) ||
             provider.entries.length > expectedManifest.entries.length
           ) {
             throw new Error("invalid expected migration manifest");
@@ -142,20 +188,16 @@ export function retainedCatalog(
             ...expectedManifest.entries.slice(provider.entries.length),
           ]);
         }
-        const receipts = JSON.parse(current);
+        const receipts = protectedJSON<unknown>(current);
         const matches =
-          Array.isArray(receipts) &&
+          Check(migrationReceipts, receipts) &&
+          strictlyIncreasing(receipts, ([id]) => id) &&
           histories.some(
             (entries) =>
               receipts.length === entries.length &&
               receipts.every(
-                (receipt, index) =>
-                  Array.isArray(receipt) &&
-                  receipt.length === 3 &&
-                  Number.isSafeInteger(receipt[0]) &&
-                  receipt[0] > (index === 0 ? 0 : receipts[index - 1][0]) &&
-                  receipt[1] === entries[index].sha256 &&
-                  receipt[2] === entries[index].when,
+                ([, hash, when], index) =>
+                  hash === entries[index]?.sha256 && when === entries[index]?.when,
               ),
           );
         if (!matches) {
@@ -193,11 +235,15 @@ export function retainedCatalog(
         const rows = (await readSessions([...sessionFacts.keys()])).split("\n");
         equal(rows.length, sessionFacts.size);
         for (const row of rows) {
-          equal(sessionFacts.get(JSON.parse(row).id), row);
+          const parsed = protectedJSON<unknown>(row);
+          if (!Check(sessionRow, parsed)) {
+            throw new Error("invalid retained session");
+          }
+          equal(sessionFacts.get(parsed.id), row);
         }
       }
     },
-    async assertResultRow(login, expected) {
+    async assertResultRow(...[login, expected]: Parameters<Fixture["assertResultRow"]>) {
       const { sessionId, providerId, attemptId, deadline } = login;
       if (
         !["present", "absent", "original-or-pruned"].includes(expected) ||
