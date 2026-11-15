@@ -1,7 +1,7 @@
 ---
 created: "2026-11-10"
-updated: "2026-11-11 14:28"
-last_updated_session: authoring-run/65f55dad-fe22-4033-ba9d-1e73fd0beb87
+updated: "2026-11-15 02:53"
+last_updated_session: authoring-run/5d3adfa9-992f-415a-9264-1efbbeff6d16
 ---
 
 # Authorize model credentials per request
@@ -127,9 +127,11 @@ Agent/revision owner, the exact reconcile key, and no other target.
 Expired claims and terminal candidate work refuse access.
 
 `packages/occ/src/state/postgres-work-queue.ts:lockRequestCredentialWork` holds
-the exact work row with `FOR SHARE NOWAIT`, only for the latest inactive candidate,
+the exact work row with `FOR KEY SHARE NOWAIT`, only for the latest inactive candidate,
 after OCC locks IAM configuration, Namespace and Agent. Active revisions do not
-access work. Only SQLSTATE `55P03` from this keys-only lock statement raises
+access work. The worker can renew a live claim while OCC holds this lock.
+Claiming, completing, deferring, retrying, failing, recovering or deleting the
+work conflicts with the lock. Only SQLSTATE `55P03` from this statement raises
 `RequestCredentialWorkBusyError`, before material access or approval insertion.
 State rolls back the entire policy transaction and releases its client before
 `checkRequestCredential` waits up to 25 ms. The next attempt repeats preliminary
@@ -284,6 +286,8 @@ credential and a reused inspected connection.
 None.
 
 ## Changelog
+
+- 2026-11-15 02:53: Trace claim renewal during the final material read. (authoring-run/5d3adfa9-992f-415a-9264-1efbbeff6d16 - c17c19aaf4c8d958027cf40908b533404545dcec)
 
 - 2026-11-11 14:28: Require the original canonical defer code for the queued readiness marker. (authoring-run/65f55dad-fe22-4033-ba9d-1e73fd0beb87 - 8517dbd0eec3a4fc3d2349754d9d62fc919226e6)
 

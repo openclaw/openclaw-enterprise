@@ -9,6 +9,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
 import test, { type TestContext } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { isDeepStrictEqual, promisify } from "node:util";
 import type {
   RequestCredentialInput,
@@ -30,6 +31,7 @@ import {
   OpenClawController,
   PostgresPlatformState,
   PostgresWorkQueue,
+  type WorkClaim,
   reduceCredentialPolicy,
   type PlatformStateStore,
 } from "../../packages/occ/src/index.ts";
@@ -2437,12 +2439,15 @@ test(
     try {
       await contender.query("BEGIN");
       await contender.query("SET LOCAL lock_timeout = '2s'");
-      assert.ok(await new PostgresWorkQueue(contender).heartbeat(claim));
+      await contender.query(
+        "SELECT idempotency_key FROM occ.controller_work WHERE idempotency_key=$1 FOR UPDATE",
+        [claim.idempotencyKey],
+      );
       const input = request();
       const signal = AbortSignal.timeout(15_000);
       const approving = exchange.authorizeRequestCredential(input, signal);
       await pause.reached;
-      // The worker may acquire its owners after heartbeat, while the request backs
+      // The worker may acquire its owners after locking work, while the request backs
       // off. A retained Namespace lock would deadlock this real worker lock order.
       await contender.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [
         f.namespace.id,
@@ -2538,7 +2543,11 @@ for (const phase of ["authorization", "consumed approval", "final release"] as c
           await contender.query("BEGIN");
           await contender.query("SET LOCAL lock_timeout = '2s'");
           const queue = new PostgresWorkQueue(contender);
-          assert.ok(await queue.heartbeat(claim));
+          // Hold the same lock mode as a claim transition while choosing its outcome.
+          await contender.query(
+            "SELECT idempotency_key FROM occ.controller_work WHERE idempotency_key=$1 FOR UPDATE",
+            [claim.idempotencyKey],
+          );
           operation ??=
             phase === "authorization"
               ? exchange.authorizeRequestCredential(input, signal)
@@ -2576,7 +2585,7 @@ for (const phase of ["authorization", "consumed approval", "final release"] as c
             (await approvals()).rows,
             phase === "authorization" ? [] : [{ consumed: true }],
           );
-          // Release just the owner-lock proof, retaining the real heartbeat lock.
+          // Release just the owner-lock proof, retaining the work transition lock.
           await contender.query("ROLLBACK TO SAVEPOINT owner_lock_proof");
           const reads = f.secretReads;
           if (outcome === "aborted" || outcome === "expired") {
@@ -2701,7 +2710,10 @@ test(
     const contender = await f.pool.connect();
     try {
       await contender.query("BEGIN");
-      assert.ok(await new PostgresWorkQueue(contender).heartbeat(claim));
+      await contender.query(
+        "SELECT idempotency_key FROM occ.controller_work WHERE idempotency_key=$1 FOR UPDATE",
+        [claim.idempotencyKey],
+      );
       const input = request();
       const signal = AbortSignal.timeout(2000);
       assert.equal(await exchange.authorizeRequestCredential(input, signal), "credential");
@@ -2715,3 +2727,351 @@ test(
     }
   },
 );
+
+async function reachedDuringRedemption(
+  barrier: Promise<void>,
+  redemption: Promise<unknown>,
+  description: string,
+): Promise<void> {
+  const waiting = new AbortController();
+  try {
+    await Promise.race([
+      barrier,
+      redemption.then(() => assert.fail(`redemption settled before ${description}`)),
+      sleep(3_000, undefined, { signal: waiting.signal }).then(() =>
+        assert.fail(`redemption did not reach ${description}`),
+      ),
+    ]);
+  } finally {
+    waiting.abort();
+  }
+}
+
+for (const timing of ["during", "after", "expired"] as const) {
+  test(
+    `candidate claim at the final material read: ${timing} (PostgreSQL)`,
+    { ...requiresPostgres, timeout: 30_000 },
+    async (t) => {
+      const { f, revision, exchange, request, grant, pauseFinalMaterialRead } =
+        await requestCredentialFixture(t, { activateRevision: false });
+      const key = `agent_revision:${revision.id}:reconcile`;
+      const claim = await claimIsolatedWork(f.pool, { workId: key });
+      assert.ok(claim);
+      assert.equal(claim.idempotencyKey, key);
+      const heartbeat = await f.pool.connect();
+      try {
+        // A short lease makes expiry observable using database time and the real queue.
+        const original = await new PostgresWorkQueue(heartbeat, {
+          leaseDurationMs: 5_000,
+        }).heartbeat(claim);
+        assert.ok(original);
+        const input = request();
+        const approval = async () => {
+          const result = await f.pool.query<{
+            consumed: boolean;
+            expires_at: Date;
+            observed_at: Date;
+          }>(
+            `SELECT consumed, expires_at, clock_timestamp() AS observed_at
+             FROM occ.request_credential_approvals WHERE request_id = $1`,
+            [input.requestId],
+          );
+          assert.equal(result.rowCount, 1);
+          return result.rows[0]!;
+        };
+        assert.equal(await exchange.authorizeRequestCredential(input, t.signal), "credential");
+        const before = await approval();
+        assert.equal(before.consumed, false);
+        const originalExpiry = original.leaseExpiresAt.getTime();
+        const signal = AbortSignal.any([t.signal, AbortSignal.timeout(15_000)]);
+        const held = pauseFinalMaterialRead();
+        const redemption = exchange.resolveRequestCredential(grant(input), signal);
+        const queue = new PostgresWorkQueue(heartbeat);
+        let material: Awaited<typeof redemption>;
+        let enteredFinalRead = false;
+        let heartbeatError: unknown;
+        let heartbeatSqlstate: unknown;
+        try {
+          await reachedDuringRedemption(
+            held.reached.then(() => {
+              enteredFinalRead = true;
+            }),
+            redemption,
+            "the final Secret read",
+          );
+          const entered = await approval();
+          assert.equal(entered.consumed, true);
+          assert.ok(entered.observed_at.getTime() + 1_500 < originalExpiry);
+          assert.ok(originalExpiry < entered.expires_at.getTime());
+          t.diagnostic(
+            `Final material read held at DB ${entered.observed_at.toISOString()}, original lease ${original.leaseExpiresAt.toISOString()}, approval ${entered.expires_at.toISOString()}`,
+          );
+
+          if (timing === "during") {
+            // A separate autocommit connection must finish the real heartbeat while OCC
+            // still holds the final read. An independent read must see its commit.
+            const backend = await heartbeat.query<{ pid: number }>(
+              "SELECT pg_backend_pid() AS pid",
+            );
+            const pid = backend.rows[0]!.pid;
+            await heartbeat.query("SET lock_timeout = '1s'");
+            const renewing = queue.heartbeat(original).then(
+              (renewed) => ({ renewed, error: undefined }),
+              (error: unknown) => ({ renewed: undefined, error }),
+            );
+            // PostgreSQL can identify the producer backend without logging its SQL or bindings.
+            const contention = await f.pool.query<{ blocker: number; state: string }>(
+              `SELECT pid AS blocker, state FROM pg_stat_activity
+               WHERE pid = ANY(pg_blocking_pids($1))`,
+              [pid],
+            );
+            if (contention.rowCount) {
+              t.diagnostic(
+                `Heartbeat blocker(s) during the final read: ${contention.rows
+                  .map(({ blocker, state }) => `${blocker} (${state})`)
+                  .join(", ")}`,
+              );
+            }
+            const { renewed, error } = await renewing;
+            const committed = await approval();
+            assert.ok(committed.observed_at.getTime() < originalExpiry);
+            t.diagnostic(`Heartbeat returned at DB ${committed.observed_at.toISOString()}`);
+            heartbeatError = error;
+            heartbeatSqlstate =
+              error && typeof error === "object" && "code" in error ? error.code : undefined;
+            const observed = await new PostgresWorkQueue(f.pool).findWork(key);
+            assert.equal(observed?.claimToken, original.claimToken);
+            if (error === undefined) {
+              assert.ok(renewed);
+              assert.equal(renewed.idempotencyKey, key);
+              assert.equal(renewed.claimToken, original.claimToken);
+              assert.equal(observed.leaseExpiresAt?.getTime(), renewed.leaseExpiresAt.getTime());
+              assert.ok(renewed.leaseExpiresAt.getTime() > originalExpiry);
+            } else {
+              assert.equal(
+                heartbeatSqlstate,
+                "55P03",
+                "published regression must be a row lock timeout",
+              );
+              assert.equal(observed.leaseExpiresAt?.getTime(), originalExpiry);
+            }
+          }
+          if (timing !== "after") {
+            // Wait for the original lease boundary on PostgreSQL's clock.
+            await f.pool.query(
+              "SELECT pg_sleep(GREATEST(0, EXTRACT(epoch FROM ($1::timestamptz - clock_timestamp())) + 0.01))",
+              [original.leaseExpiresAt],
+            );
+            const expired = await approval();
+            assert.ok(expired.observed_at.getTime() >= originalExpiry);
+            assert.ok(expired.observed_at < expired.expires_at);
+            if (timing === "expired" || heartbeatError !== undefined) {
+              assert.equal(await queue.heartbeat(original), undefined);
+            } else {
+              const current = await new PostgresWorkQueue(f.pool).findWork(key);
+              assert.ok(current?.leaseExpiresAt);
+              assert.ok(expired.observed_at.getTime() < current.leaseExpiresAt.getTime());
+              t.diagnostic(
+                `Final read still held after original expiry at DB ${expired.observed_at.toISOString()}, renewed lease ${current.leaseExpiresAt.toISOString()}`,
+              );
+            }
+          }
+        } finally {
+          held.release();
+          material = await redemption;
+          if (enteredFinalRead) {
+            await held.settled;
+          }
+        }
+        const after = await approval();
+        assert.equal(after.consumed, true);
+        assert.equal(after.expires_at.getTime(), before.expires_at.getTime());
+        assert.equal(await exchange.resolveRequestCredential(grant(input), signal), undefined);
+        if (timing === "expired" || heartbeatError !== undefined) {
+          assert.equal(material, undefined);
+          const denials = await f.pool.query(
+            `SELECT 1 FROM occ.audit_events
+              WHERE kind = 'authorization_denial' AND details->>'requestId' = $1
+                AND details->>'code' = 'withdrawn'`,
+            [input.requestId],
+          );
+          assert.ok(denials.rowCount);
+          t.diagnostic(
+            `Expired claim refused at DB ${after.observed_at.toISOString()}; approval kept consumed`,
+          );
+          if (heartbeatError !== undefined) {
+            t.diagnostic(
+              "Redemption returned no material, preserved the approval expiry, and refused replay",
+            );
+            throw new Error(
+              `same-claim heartbeat must commit while the final read is held (SQLSTATE ${heartbeatSqlstate})`,
+              { cause: heartbeatError },
+            );
+          }
+          // Recover the same work normally, then reject the prior token while a fresh
+          // approval succeeds under the replacement claim.
+          await new PostgresWorkQueue(f.pool, { random: () => 0 }).recoverStale();
+          const recovered = await claimIsolatedWork(f.pool, { workId: key });
+          assert.ok(recovered);
+          assert.equal(recovered.idempotencyKey, key);
+          assert.notEqual(recovered.claimToken, original.claimToken);
+          assert.equal(await queue.heartbeat(original), undefined);
+          const fresh = request();
+          assert.equal(await exchange.authorizeRequestCredential(fresh, signal), "credential");
+          assert.ok(await exchange.resolveRequestCredential(grant(fresh), signal));
+        } else {
+          assert.ok(material);
+          assert.equal(material.value, "synthetic-key-initial");
+          assert.ok(Date.parse(material.usableUntil) <= before.expires_at.getTime());
+          if (timing === "after") {
+            assert.ok(after.observed_at.getTime() < originalExpiry);
+            const renewed = await queue.heartbeat(original);
+            assert.ok(renewed);
+            assert.equal(renewed.claimToken, original.claimToken);
+          }
+        }
+      } finally {
+        heartbeat.release();
+      }
+    },
+  );
+}
+
+const candidateTransitions = {
+  complete: (queue: PostgresWorkQueue, claim: WorkClaim) => queue.complete(claim),
+  defer: (queue: PostgresWorkQueue, claim: WorkClaim) =>
+    queue.defer(claim, { code: "WORKSPACE_NODE_PENDING" }, { delayMs: 15_000 }),
+  retry: (queue: PostgresWorkQueue, claim: WorkClaim) =>
+    queue.retry(claim, { code: "ACTIVE_REVISION_CHANGED" }),
+};
+
+for (const [transition, apply] of Object.entries(candidateTransitions)) {
+  for (const first of ["reader", "writer"] as const) {
+    test(
+      `candidate ${transition} and final material read: ${first} first (PostgreSQL)`,
+      { ...requiresPostgres, timeout: 30_000 },
+      async (t) => {
+        const fixture = await requestCredentialFixture(t, { activateRevision: false });
+        const { f, revision, exchange, request, grant } = fixture;
+        const key = `agent_revision:${revision.id}:reconcile`;
+        const claim = await claimIsolatedWork(f.pool, { workId: key });
+        assert.ok(claim);
+        assert.equal(claim.idempotencyKey, key);
+        const input = request();
+        const signal = AbortSignal.any([t.signal, AbortSignal.timeout(12_000)]);
+        assert.equal(await exchange.authorizeRequestCredential(input, signal), "credential");
+        const approval = async () => {
+          const { rows } = await f.pool.query<{ consumed: boolean; expires_at: Date }>(
+            "SELECT consumed, expires_at FROM occ.request_credential_approvals WHERE request_id=$1",
+            [input.requestId],
+          );
+          assert.equal(rows.length, 1);
+          return rows[0]!;
+        };
+        const before = await approval();
+        assert.equal(before.consumed, false);
+        const contender = await f.pool.connect();
+        const queue = new PostgresWorkQueue(contender);
+        try {
+          await contender.query("SET statement_timeout = '8s'");
+          if (first === "reader") {
+            const held = fixture.pauseFinalMaterialRead();
+            const redeeming = exchange.resolveRequestCredential(grant(input), signal);
+            let transitioning: Promise<void> | undefined;
+            try {
+              await reachedDuringRedemption(held.reached, redeeming, "the final Secret read");
+              assert.equal((await approval()).consumed, true);
+              const { rows } = await contender.query<{ pid: number }>(
+                "SELECT pg_backend_pid() AS pid",
+              );
+              const pid = rows[0]!.pid;
+              transitioning = apply(queue, claim);
+              const blocking = async () => {
+                const stop = AbortSignal.any([signal, AbortSignal.timeout(2_000)]);
+                while (!stop.aborted) {
+                  const { rows } = await f.pool.query<{ blocked: boolean }>(
+                    "SELECT cardinality(pg_blocking_pids($1)) > 0 AS blocked",
+                    [pid],
+                  );
+                  if (rows[0]?.blocked) {
+                    return;
+                  }
+                  await sleep(10, undefined, { signal: stop });
+                }
+                assert.fail("transition did not wait for the held read");
+              };
+              await Promise.race([
+                blocking(),
+                transitioning.then(() => assert.fail("transition crossed the held final read")),
+              ]);
+              const current = await new PostgresWorkQueue(f.pool).findWork(key);
+              assert.equal(current?.state, "claimed");
+              assert.equal(current.claimToken, claim.claimToken);
+              t.diagnostic(
+                `${transition} is blocked while the consumed approval is at its final read`,
+              );
+            } finally {
+              held.release();
+              await Promise.allSettled([redeeming, transitioning]);
+            }
+            const material = await redeeming;
+            assert.equal(material?.value, "synthetic-key-initial");
+            assert.ok(Date.parse(material.usableUntil) <= before.expires_at.getTime());
+            await transitioning;
+          } else {
+            // Pause the second preliminary read so the real transition can take
+            // the work lock before the final policy transaction starts.
+            const preliminary = fixture.pauseMaterialRead(1);
+            const redeeming = exchange.resolveRequestCredential(grant(input), signal);
+            let contention: ReturnType<typeof fixture.pauseCandidateAttempt> | undefined;
+            try {
+              await reachedDuringRedemption(preliminary.reached, redeeming, "the preliminary read");
+              contention = fixture.pauseCandidateAttempt();
+              await contender.query("BEGIN");
+              await apply(queue, claim);
+              assert.equal((await approval()).consumed, true);
+              assert.equal(
+                (await new PostgresWorkQueue(f.pool).findWork(key))?.claimToken,
+                claim.claimToken,
+              );
+              preliminary.release();
+              await reachedDuringRedemption(contention.reached, redeeming, "the transition lock");
+              const reads = f.secretReads;
+              await contender.query("COMMIT");
+              contention.release();
+              assert.equal(await redeeming, undefined);
+              assert.equal(
+                f.secretReads,
+                reads,
+                "committed transition prevents the final material read",
+              );
+              const denied = await f.pool.query(
+                `SELECT 1 FROM occ.audit_events
+                 WHERE kind='authorization_denial' AND details->>'requestId'=$1
+                   AND details->>'code'='withdrawn'`,
+                [input.requestId],
+              );
+              assert.equal(denied.rowCount, 1);
+              t.diagnostic(`${transition} acquired the work lock first and prevented release`);
+            } finally {
+              preliminary.release();
+              contention?.release();
+              await contender.query("ROLLBACK");
+              await redeeming;
+            }
+          }
+          const current = await new PostgresWorkQueue(f.pool).findWork(key);
+          assert.equal(current?.state, transition === "complete" ? "succeeded" : "queued");
+          assert.equal(current.claimToken, undefined);
+          assert.equal(await queue.heartbeat(claim), undefined);
+          assert.deepEqual(await approval(), { consumed: true, expires_at: before.expires_at });
+          assert.equal(await exchange.resolveRequestCredential(grant(input), signal), undefined);
+          assert.equal(await exchange.authorizeRequestCredential(request(), signal), undefined);
+        } finally {
+          await contender.query("RESET statement_timeout");
+          contender.release();
+        }
+      },
+    );
+  }
+}

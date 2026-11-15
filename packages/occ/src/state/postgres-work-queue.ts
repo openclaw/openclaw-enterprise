@@ -106,6 +106,18 @@ interface WorkRow {
 const CLAIM_AGE_SQL = (alias: string) =>
   `GREATEST(0, EXTRACT(EPOCH FROM clock_timestamp() - ${alias}.created_at) * 1000)::double precision AS age_ms`;
 
+// The credential read fence permits lease-only heartbeat updates. Claim transitions
+// must lock the row explicitly, then check the locked lease again after any wait.
+const LOCK_CLAIM_FOR_TRANSITION_SQL = `
+  locked_claim AS MATERIALIZED (
+    SELECT idempotency_key, lease_expires_at FROM occ.controller_work
+    WHERE idempotency_key = $1
+      AND state = 'claimed'
+      AND claim_token = $2::uuid
+      AND lease_expires_at > clock_timestamp()
+    FOR UPDATE
+  )`;
+
 const MAX_BACKOFF_MS = 300_000;
 export const PENDING_WORK_PREDICATE = "state IN ('queued', 'claimed')";
 const INITIAL_BACKOFF_MS = 1_000;
@@ -1182,7 +1194,10 @@ export class PostgresWorkQueue {
     return count;
   }
 
-  /** Namespace is already held; never wait here on a worker holding work before Agent. */
+  /**
+   * A lease-only heartbeat can run under this lock. Claim, transition, recovery and
+   * deletion must conflict. The owner locks are already held, so never wait on work.
+   */
   async lockRequestCredentialWork(owner: RepositoryRevisionOwner): Promise<boolean> {
     try {
       const locked = await this.client.query(
@@ -1191,7 +1206,7 @@ export class PostgresWorkQueue {
          AND work.namespace_id = $1 AND work.agent_id = $2 AND work.revision_id = $3
          AND work.work_kind = 'lifecycle' AND work.namespace_target IS NULL
          AND work.agent_target IS NULL
-       FOR SHARE OF work NOWAIT`,
+       FOR KEY SHARE OF work NOWAIT`,
         [owner.namespaceId, owner.agentId, owner.revisionId],
       );
       return locked.rows.length === 1;
@@ -1373,7 +1388,7 @@ export class PostgresWorkQueue {
     const reasonCode = safeFailureCode(result.code ?? "RECONCILE_SUCCEEDED");
     const resultData = validateSuccessResultData(result.resultData);
     const completed = await this.client.query(
-      `WITH transitioned AS (
+      `WITH ${LOCK_CLAIM_FOR_TRANSITION_SQL}, transitioned AS (
          UPDATE occ.controller_work
          SET readiness_deferred = false,
              state = 'succeeded',
@@ -1383,10 +1398,9 @@ export class PostgresWorkQueue {
              reason_code = $5::text,
              result_data = $6::jsonb,
              updated_at = clock_timestamp()
-         WHERE idempotency_key = $1
-           AND state = 'claimed'
-           AND claim_token = $2::uuid
-           AND lease_expires_at > clock_timestamp()
+         WHERE idempotency_key = (
+           SELECT idempotency_key FROM locked_claim WHERE lease_expires_at > clock_timestamp()
+         )
          RETURNING *
        ), ${INSERT_EVIDENCE_SQL}`,
       [
@@ -1451,7 +1465,7 @@ export class PostgresWorkQueue {
       throw new ScopeViolationError("The deferred Work evidence option is invalid.");
     }
     const deferred = await this.client.query(
-      `WITH transitioned AS (
+      `WITH ${LOCK_CLAIM_FOR_TRANSITION_SQL}, transitioned AS (
          UPDATE occ.controller_work
          SET readiness_deferred = (work_kind = 'lifecycle'
                AND agent_id IS NOT NULL AND revision_id IS NOT NULL
@@ -1466,10 +1480,9 @@ export class PostgresWorkQueue {
              claim_token = NULL,
              lease_expires_at = NULL,
              updated_at = clock_timestamp()
-         WHERE idempotency_key = $1
-           AND state = 'claimed'
-           AND claim_token = $2::uuid
-           AND lease_expires_at > clock_timestamp()
+         WHERE idempotency_key = (
+           SELECT idempotency_key FROM locked_claim WHERE lease_expires_at > clock_timestamp()
+         )
          RETURNING *
        ), ${INSERT_DEFER_EVIDENCE_SQL}`,
       [
@@ -1500,7 +1513,7 @@ export class PostgresWorkQueue {
     const jitter = this.nextRandom();
     const exhausted = `(attempt_count >= $5::integer AND NOT ${repositoryCleanupSql("work")})`;
     const retried = await this.client.query(
-      `WITH transitioned AS (
+      `WITH ${LOCK_CLAIM_FOR_TRANSITION_SQL}, transitioned AS (
          UPDATE occ.controller_work AS work
          SET readiness_deferred = false,
              state = CASE
@@ -1524,10 +1537,9 @@ export class PostgresWorkQueue {
              END,
              result_data = NULL,
              updated_at = clock_timestamp()
-         WHERE idempotency_key = $1
-           AND state = 'claimed'
-           AND claim_token = $2::uuid
-           AND lease_expires_at > clock_timestamp()
+         WHERE idempotency_key = (
+           SELECT idempotency_key FROM locked_claim WHERE lease_expires_at > clock_timestamp()
+         )
          RETURNING *
        ), ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${INSERT_EVIDENCE_SQL}`,
