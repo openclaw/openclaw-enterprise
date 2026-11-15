@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import type { GatewayClient } from "../../apps/controller/node_modules/@openclaw/gateway-client/dist/index.mjs";
+import type { GatewayClient } from "../../apps/controller/tests/fixtures/plugin-approval-client.ts";
 import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createCodexPolicyMetadataReader } from "./codex-policy-thread-evidence.ts";
@@ -15,7 +15,6 @@ import {
 } from "./plugin-revision-failure-logs.ts";
 import { createPluginTranscriptAssertions } from "./plugin-transcript-assertions.ts";
 
-type GatewayClientOptions = ConstructorParameters<typeof GatewayClient>[0];
 type GatewayEvidenceOptions = Parameters<typeof createGatewaySessionEvidence>[0];
 type Exec = GatewayEvidenceOptions["execGateway"];
 type WaitFor = <Result>(
@@ -503,9 +502,9 @@ export function createNativePluginAssertions({
       if (humanReview !== undefined) {
         // Use the controller's installed Gateway client, loaded only when human review is needed.
         const { GatewayClient: GatewayReviewer } =
-          await import("../../apps/controller/node_modules/@openclaw/gateway-client/dist/index.mjs");
+          await import("../../apps/controller/tests/fixtures/plugin-approval-client.ts");
         const connected = Promise.withResolvers<void>();
-        const reviewerOptions: GatewayClientOptions = {
+        const approvalClient: GatewayClient = new GatewayReviewer({
           url: gateway.url.replace(/^http/, "ws"),
           password,
           clientName: "gateway-client",
@@ -516,18 +515,18 @@ export function createNativePluginAssertions({
           scopes: ["operator.admin"],
           caps: ["plugin-approvals"],
           deviceIdentity: null,
-          onHelloOk: (hello: Parameters<NonNullable<GatewayClientOptions["onHelloOk"]>>[0]) => {
+          onHelloOk: (hello) => {
             if (!hello.auth?.scopes?.includes("operator.admin")) {
               connected.reject(new Error("plugin approval reviewer requires operator.admin"));
               return;
             }
             connected.resolve();
           },
-          onConnectError: (error: Error) => {
+          onConnectError: (error) => {
             connected.reject(error);
             approvalFailure.reject(error);
           },
-          onEvent: (event: Parameters<NonNullable<GatewayClientOptions["onEvent"]>>[0]) => {
+          onEvent: (event) => {
             if (event.event !== "plugin.approval.requested") {
               return;
             }
@@ -575,8 +574,7 @@ export function createNativePluginAssertions({
             })();
             approvalCompleted.catch(approvalFailure.reject);
           },
-        };
-        const approvalClient = new GatewayReviewer(reviewerOptions);
+        });
         reviewer = approvalClient;
         const connectTimer = setTimeout(
           () => connected.reject(new Error("plugin approval reviewer connection timed out")),
@@ -630,7 +628,7 @@ export function createNativePluginAssertions({
       }
       const choices = asRecord(parsed)?.choices;
       const items: readonly unknown[] = Array.isArray(choices) ? choices : [];
-      const content = asRecord(asRecord(items[0])?.message)?.content ?? "";
+      const content = asRecord(asRecord(items[0])?.message)?.content;
       assert.ok(typeof content === "string", "plugin-backed Agent reply content must be a string");
       for (const pattern of expectedPatterns) {
         assert.ok(new RegExp(pattern).test(content), `Agent response did not include ${pattern}.`);
@@ -703,8 +701,8 @@ export function createNativePluginAssertions({
     assert.ok(typeof enabled === "boolean", "native Codex detail must indicate enablement");
     assert.ok(isStringList(appIds), "native Codex detail app IDs must be strings");
     return {
-      runtime: execution.label,
       ...detail,
+      runtime: execution.label,
       summaryId,
       ...(remotePluginId === undefined ? {} : { remotePluginId }),
       installed,
@@ -727,8 +725,18 @@ export function createNativePluginAssertions({
     ]);
     const tools: unknown = JSON.parse(execution.stdout);
     assert.ok(Array.isArray(tools) && tools.length > 0, "selected app tool inventory is empty.");
-    const inventory: unknown[] = tools;
-    return inventory;
+    return tools.map((value: unknown) => {
+      const tool = asRecord(value);
+      assert.ok(tool, "native tool inventory entry must be an object");
+      const { appId, name, transcriptName } = tool;
+      assert.ok(
+        typeof appId === "string" && entry.appIds.includes(appId),
+        "unexpected tool app ID",
+      );
+      assert.ok(typeof name === "string" && name.length > 0, "native tool name must be present");
+      assert.ok(typeof transcriptName === "string", "native tool transcript name must be present");
+      return { ...tool, appId, name, transcriptName };
+    });
   }
 
   async function codexAppConfiguration(agent: AgentSelection) {
@@ -737,7 +745,7 @@ export function createNativePluginAssertions({
     const config = readJsonRecord(execution.stdout);
     const apps = asRecord(config.apps);
     assert.ok(apps, "native Codex app configuration must contain an app map");
-    return { runtime: execution.label, ...config, apps };
+    return { ...config, runtime: execution.label, apps };
   }
 
   async function codexEffectivePluginConfiguration(
@@ -770,7 +778,7 @@ export function createNativePluginAssertions({
       failedOnlyAppIds.length > 0,
       `Codex failure proof requires at least one app mapped only to ${failureEntry.id}.`,
     );
-    const appEntries = (ids: Iterable<string>) =>
+    const appEntries = (ids: readonly string[]) =>
       Object.fromEntries(
         Array.from(ids, (id) => [id, readEnabledConfiguration(appConfig.apps[id])] as const),
       );
@@ -782,7 +790,7 @@ export function createNativePluginAssertions({
       failureBridgeSlug,
       successBridge,
       failureBridge,
-      successApps: appEntries(successAppIds),
+      successApps: appEntries(successEntry.appIds ?? []),
       failedOnlyApps: appEntries(failedOnlyAppIds),
     };
   }
@@ -801,7 +809,7 @@ export function createNativePluginAssertions({
       typeof length === "number" && Number.isSafeInteger(length),
       "workspace sentinel length must be an integer",
     );
-    return { runtime: execution.label, ...result, path, sha256, length, content };
+    return { runtime: execution.label, path, sha256, length, content };
   }
 
   function writeWorkspaceSentinel(
