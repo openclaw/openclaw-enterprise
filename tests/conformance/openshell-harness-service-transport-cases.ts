@@ -24,17 +24,14 @@ import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 
 type RawData = Buffer | ArrayBuffer | Buffer[];
 
-interface WebSocketPeer extends EventEmitter<{
-  message: [data: RawData, isBinary: boolean];
-  close: [code: number, reason: Buffer];
-}> {
+interface WebSocketPeer {
+  on(event: "message", listener: (data: RawData, isBinary: boolean) => void): void;
   send(message: string): void;
   terminate(): void;
 }
 
-interface UpgradePeerServer extends EventEmitter<{
-  connection: [peer: WebSocketPeer, request: IncomingMessage];
-}> {
+interface UpgradePeerServer {
+  emit(event: "connection", peer: WebSocketPeer, request: IncomingMessage): boolean;
   clients: Set<WebSocketPeer>;
   handleUpgrade(
     request: IncomingMessage,
@@ -85,6 +82,16 @@ export function loadWebSocketPeer(): WebSocketModule {
     "The installed ws module must provide the server, peer and frame codec",
   );
   return ws as typeof ws & WebSocketModule;
+}
+
+export async function waitForWebSocketClose(peer: WebSocketPeer, signal: AbortSignal) {
+  assert.ok(peer instanceof EventEmitter);
+  const [code, reason]: readonly unknown[] = await once(peer, "close", { signal });
+  assert.ok(
+    typeof code === "number" && Buffer.isBuffer(reason),
+    "expected a WebSocket close event",
+  );
+  return { code, reason };
 }
 
 export async function listen(server: Server, host = "127.0.0.1"): Promise<number> {
@@ -312,11 +319,10 @@ export function registerOpenShellServiceTransportCases(token: string, serviceUrl
     t.after(() => client.close());
     const deadline = AbortSignal.timeout(5_000);
     const closed = (async () => {
+      assert.ok(peers instanceof EventEmitter);
       const [peer]: readonly unknown[] = await once(peers, "connection", { signal: deadline });
       assert.ok(peer instanceof WebSocket, "expected the upgraded peer");
-      const [code, reason]: readonly unknown[] = await once(peer, "close", { signal: deadline });
-      assert.ok(Buffer.isBuffer(reason), "expected close reason bytes");
-      return { code, reason };
+      return waitForWebSocketClose(peer, deadline);
     })();
     const handshake = client
       .serviceWebSocketHandshake(serviceUrl, token, deadline)

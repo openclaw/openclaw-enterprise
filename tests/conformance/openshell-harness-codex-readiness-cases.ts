@@ -28,6 +28,7 @@ import {
   listen,
   loadWebSocketPeer,
   upgradedSocket,
+  waitForWebSocketClose,
   writeUpgrade,
 } from "./openshell-harness-service-transport-cases.ts";
 
@@ -447,10 +448,10 @@ export function registerOpenShellCodexReadinessCases(token: string, serviceUrl: 
       }),
     ]);
     assert.ok(peer instanceof WebSocket, "expected the upgraded authentication peer");
-    const closed: Promise<readonly unknown[]> = once(peer, "close", { signal: context.signal });
+    const closed = waitForWebSocketClose(peer, context.signal);
     cancelled.abort(reason);
     await rejected;
-    const [code] = await closed;
+    const { code } = await closed;
     assert.equal(code, 1000);
   });
 
