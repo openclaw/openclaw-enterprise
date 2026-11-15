@@ -126,6 +126,7 @@ test(
       ["cleanup", 1, "cleanup failed", ["prepare", "test", "cleanup"]],
       ["cleanup-no-state", 1, "cleanup failed", ["prepare", "test", "cleanup"]],
       ["interrupt-prepare", 130, "SIGINT", ["prepare"]],
+      ["interrupt-before-test-spawn", 130, "SIGINT", ["prepare", "cleanup"]],
       ["interrupt-test", 143, "SIGTERM", ["prepare", "test", "cleanup"]],
       ["interrupt-cleanup", 130, "SIGINT", ["prepare", "test", "cleanup"]],
       ["stuck-SIGINT", 130, "SIGINT", ["prepare"]],
@@ -298,8 +299,32 @@ test(
         for (const name of ["prepare", "run-tests", "cleanup"]) {
           await writeFile(join(root, "scripts/ci", `${name}.mjs`), helper);
         }
+        const nodeArgs = [cli];
+        if (scenario === "interrupt-before-test-spawn") {
+          const preload = join(root, "hold-test-log.mjs");
+          // Keep the log open pending until the wrapper has handled a real SIGINT.
+          await writeFile(
+            preload,
+            `
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { basename } from "node:path";
+const open = fs.open;
+fs.open = async (path, ...args) => {
+  const pending = open(path, ...args);
+  if (basename(path) !== "test.log") return pending;
+  const interrupted = new Promise((resolve) => process.once("SIGINT", resolve));
+  process.kill(process.pid, "SIGINT");
+  const [log] = await Promise.all([pending, interrupted]);
+  return log;
+};
+syncBuiltinESMExports();
+`,
+          );
+          nodeArgs.unshift("--import", preload);
+        }
         const began = performance.now();
-        const result = spawnSync(process.execPath, [cli], {
+        const result = spawnSync(process.execPath, nodeArgs, {
           cwd: root,
           detached: true,
           encoding: "utf8",
@@ -357,6 +382,14 @@ test(
         if (cleanupFailure) {
           assert.match(result.stderr, /cleanup failed/);
         }
+        assert.deepEqual(
+          (await readFile(events, "utf8")).trim().split("\n"),
+          expectedStages.flatMap((stage) =>
+            (stuck || lostSupervisor) && stage === "prepare"
+              ? ["prepare:start"]
+              : [`${stage}:start`, `${stage}:settled`],
+          ),
+        );
         const timing = output.match(
           /prepare_ms=(\d+) test_ms=(\d+) cleanup_ms=(\d+) elapsed_ms=(\d+)/,
         );
@@ -366,14 +399,6 @@ test(
           assert.equal(duration > 0, expectedStages.includes(stage));
         }
         assert.ok(elapsed >= prepare + test + cleanup - 3);
-        assert.deepEqual(
-          (await readFile(events, "utf8")).trim().split("\n"),
-          expectedStages.flatMap((stage) =>
-            (stuck || lostSupervisor) && stage === "prepare"
-              ? ["prepare:start"]
-              : [`${stage}:start`, `${stage}:settled`],
-          ),
-        );
         const directories = (await readdir(root)).filter((name) =>
           name.startsWith("oce-grant-wire-"),
         );

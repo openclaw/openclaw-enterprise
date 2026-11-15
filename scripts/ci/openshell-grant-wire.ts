@@ -130,11 +130,15 @@ async function main() {
   let unknownPreparationOutcome = false;
 
   async function run(stage: keyof typeof durations, script: string, args: string[]) {
-    const stageStarted = performance.now();
-    console.log(`openshell-grant-wire: ${stage}`);
+    let stageStarted: number | undefined;
     try {
       const log = await open(join(directory, `${stage}.log`), "wx", 0o600);
       try {
+        if (stage !== "cleanup") {
+          checkInterruption();
+        }
+        stageStarted = performance.now();
+        console.log(`openshell-grant-wire: ${stage}`);
         const command = [join(root, "scripts/ci", script), ...args];
         const child =
           stage === "prepare"
@@ -202,7 +206,10 @@ async function main() {
       } finally {
         await log.close();
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof PublicFailure) {
+        throw error;
+      }
       throw new PublicFailure(
         `${stage} failed; inspect ${stage}.log in the private run directory.`,
       );
@@ -210,7 +217,9 @@ async function main() {
       if (stage === "prepare") {
         interruptPreparation = undefined;
       }
-      durations[stage] = Math.round(performance.now() - stageStarted);
+      if (stageStarted !== undefined) {
+        durations[stage] = Math.round(performance.now() - stageStarted);
+      }
     }
   }
 
