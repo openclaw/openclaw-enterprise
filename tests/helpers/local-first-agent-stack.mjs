@@ -12,7 +12,7 @@ import {
   redactLogLine,
 } from "../../scripts/ci/failure-redaction.ts";
 import { configurePodmanComposeProvider } from "../../scripts/lib/podman-compose-provider.ts";
-import { selectComposeSubnet } from "./compose-network.mjs";
+import { selectComposeSubnet } from "./compose-network.ts";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const cli = join(root, "bin", "occ");

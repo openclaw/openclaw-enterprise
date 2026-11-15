@@ -8,7 +8,7 @@ import test from "node:test";
 import { once } from "node:events";
 import { createRequire } from "node:module";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { composeConfiguration } from "../helpers/compose.mjs";
+import { composeConfiguration } from "../helpers/compose.ts";
 import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
