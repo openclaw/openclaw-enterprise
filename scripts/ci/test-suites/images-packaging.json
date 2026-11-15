@@ -24,7 +24,7 @@
     "tests/integration/production-image-upgrade-recovery.test.ts",
     "tests/integration/production-upgrade-migration-preflight.test.ts",
     "tests/integration/upgrade-preflight-state.test.ts",
-    "tests/integration/docker-compute-token-retry.test.mjs",
+    "tests/integration/docker-compute-token-retry.test.ts",
     "tests/integration/workspace-setup-runtime.test.ts",
     "tests/integration/production-kubernetes-packaging.test.mjs",
     "tests/integration/production-kubernetes-network-policy.test.ts",
@@ -52,7 +52,7 @@
       ]
     },
     {
-      "path": "tests/integration/docker-compute-token-retry.test.mjs",
+      "path": "tests/integration/docker-compute-token-retry.test.ts",
       "expectedTests": [
         "Docker driver keeps dedicated transport coherent and rejects foreign owners across retries",
         "Docker Namespace deletion cleans up owned containers after its network is removed"

@@ -30,7 +30,7 @@
     "tests/integration/postgres-connection-templates.test.ts",
     "tests/integration/workspace-setup-worker.test.ts",
     "tests/integration/postgres-repository-sessions.test.ts",
-    "tests/integration/postgres-secret-state.test.mjs",
+    "tests/integration/postgres-secret-state.test.ts",
     "tests/integration/postgres-service-account-deletion.test.ts",
     "tests/integration/postgres-service-account-issuance-recovery.test.ts",
     "tests/integration/postgres-service-account-compensation.test.ts",
@@ -222,9 +222,10 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-secret-state.test.mjs",
+      "path": "tests/integration/postgres-secret-state.test.ts",
       "expectedTests": [
         "in-memory state persists Secret metadata and binding references without values",
+        "PostgreSQL PAT Secret bindings enforce exact ownership and reject retired auth methods",
         "PostgreSQL state persists Secret metadata and enforces binding dependencies"
       ]
     },
