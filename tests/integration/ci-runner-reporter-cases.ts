@@ -470,16 +470,6 @@ await registerFiniteConversationTests();
 
   test("the reporter sends interrupted tests and the output tail, newest first, on a timeout", async () => {
     const { default: reporter } = await import("../../scripts/ci/reporter.ts");
-    const render = async (events: Parameters<typeof reporter>[0]) => {
-      let text = "";
-      for await (const chunk of reporter(events)) {
-        text += chunk;
-      }
-      return text
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => parseRunnerRecord(line, "reporter event"));
-    };
     const at = (name: string, line: number, nesting = 1) => ({
       name,
       line,
@@ -491,7 +481,8 @@ await registerFiniteConversationTests();
       type: "test:interrupted";
       data: { file?: string; tests: ReturnType<typeof at>[] };
     } = { type: "test:interrupted", data: { tests: [at("/repo/a.mjs", 1, 0)] } };
-    const sent = await render([
+    let text = "";
+    for await (const chunk of reporter([
       { type: "test:dequeue", data: at("/repo/a.mjs", 1, 0) },
       { type: "test:dequeue", data: at("done", 2) },
       { type: "test:stdout", data: { file: "a.mjs", message: "early\n" } },
@@ -509,7 +500,13 @@ await registerFiniteConversationTests();
       { type: "test:stderr", data: { file: "a.mjs", message: "last words" } },
       interruptedEvent,
       { type: "test:fail", data: { name: "hangs", details: { error: new Error("cancelled") } } },
-    ]);
+    ])) {
+      text += chunk;
+    }
+    const sent = text
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => parseRunnerRecord(line, "reporter event"));
     const [interrupted] = sent;
     assert(interrupted?.type === "test:interrupted");
     const interruption = runnerRecord(interrupted.data, "interruption data");
