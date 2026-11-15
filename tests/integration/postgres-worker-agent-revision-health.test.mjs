@@ -9,7 +9,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
-import { repositoryAttempts } from "../helpers/postgres-worker-revision-support.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   preserveOtherDatabaseClaim,
@@ -28,6 +27,7 @@ import {
   resumeWorkAfterSilentConnection,
   reportProgressThroughOutage,
 } from "./postgres-worker-revision-connectivity-cases.ts";
+import { verifyBrokerCapability } from "./postgres-worker-revision-broker-capability-case.ts";
 import {
   reportHealthDuringCompute,
   renewLeaseDuringSlowHealth,
@@ -130,7 +130,7 @@ test(
       import("../../apps/controller/src/backends/repository-credentials/control-client.ts"),
       import("../fixtures/repository-credentials/registry.mjs"),
       import("../../apps/controller/src/backends/repository-credentials/receipt-server.ts"),
-      import("../fixtures/repository-credentials/control-relay.mjs"),
+      import("../fixtures/repository-credentials/control-relay.ts"),
       import("../fixtures/repository-credentials/resources.mjs"),
       import("node:path"),
     ]);
@@ -196,59 +196,17 @@ test(
         }),
       },
     );
-    // Four jittered retry delays can total nearly 15 seconds before the fifth claim.
-    await fixture.work(incompatible, "failed_permanent", 20_000);
-    assert.equal(healthy, 0);
-    assert.deepEqual(await repositoryAttempts(fixture, incompatible), []);
-    assert.ok(credentials.repositories.every(({ github }) => github.issuesOfTokens.length === 0));
-    // Restoring the real capability permits an explicit new revision.
-    relay.setCapabilitiesHidden(false);
-    await waitFor("worker readiness after compatible broker selection", async () =>
-      healthy > 0 ? true : undefined,
-    );
-    const open = sender.open.bind(sender);
-    let lostSessionId;
-    sender.open = async (input, signal) => {
-      const result = await open(input, signal);
-      if (lostSessionId === undefined && result.kind === "created") {
-        lostSessionId = result.session.sessionId;
-        // The response is lost after the broker creates a session, then the
-        // capability disappears before recovery gets another worker claim.
-        relay.setCapabilitiesHidden(true);
-        throw new Error("repository admission response lost after creation");
-      }
-      return result;
-    };
-    const uncertain = await fixture.revision(owner, 2, { repositoryCredentials: selection });
-    await fixture.work(uncertain, "failed_permanent", 20_000);
-    assert.ok(lostSessionId);
-    await waitFor("lost session disposal after work failure", async () =>
-      (await repositoryAttempts(fixture, uncertain)).find(
-        ({ sessionId }) => sessionId === lostSessionId,
-      )?.phase === "disposed"
-        ? true
-        : undefined,
-    );
-    assert.equal((await repositoryAttempts(fixture, uncertain)).length, 1);
-    // Recovery and disposal ran while capability was absent; fresh material
-    // requires restoring it and explicitly admitting another revision.
-    relay.setCapabilitiesHidden(false);
-    const compatible = await fixture.revision(owner, 3, { repositoryCredentials: selection });
-    await fixture.work(compatible, "succeeded");
-    assert.equal(
-      (await repositoryAttempts(fixture, compatible)).filter(({ phase }) => phase === "open")
-        .length,
-      1,
-    );
-    // Losing the capability again must not gate the real stop and cleanup paths.
-    relay.setCapabilitiesHidden(true);
-    const stop = await fixture.requestStop(owner);
-    await fixture.work(stop, "succeeded");
-    await waitFor("repository cleanup despite the missing capability", async () =>
-      (await repositoryAttempts(fixture, compatible)).every(({ phase }) => phase === "disposed")
-        ? true
-        : undefined,
-    );
+    await verifyBrokerCapability({
+      fixture,
+      owner,
+      selection,
+      incompatible,
+      relay,
+      brokerSocket: credentials.config.gateway.controlSocket,
+      isReady: () => healthy > 0,
+      hasIssuedProviderToken: () =>
+        credentials.repositories.some(({ github }) => github.issuesOfTokens.length > 0),
+    });
   },
 );
 
