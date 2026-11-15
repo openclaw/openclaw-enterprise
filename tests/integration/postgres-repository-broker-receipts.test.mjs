@@ -556,14 +556,14 @@ test(
       randomUUID(),
     );
     await assert.rejects(
-      foreignOwner.dispose(oldAdmissionId, oldInput, oldDisposed),
+      foreignOwner.writeStatus("dispose", oldAdmissionId, oldInput, oldDisposed),
       /RECEIPT_UNAVAILABLE/,
     );
-    await oldOwner.dispose(oldAdmissionId, oldInput, oldDisposed);
+    await oldOwner.writeStatus("dispose", oldAdmissionId, oldInput, oldDisposed);
     // An exact replay is harmless; changed observations cannot overwrite disposal.
-    await oldOwner.dispose(oldAdmissionId, oldInput, oldDisposed);
+    await oldOwner.writeStatus("dispose", oldAdmissionId, oldInput, oldDisposed);
     await assert.rejects(
-      oldOwner.dispose(oldAdmissionId, oldInput, {
+      oldOwner.writeStatus("dispose", oldAdmissionId, oldInput, {
         ...oldDisposed,
         cleanup: { ...oldDisposed.cleanup, revoked: 0 },
       }),
