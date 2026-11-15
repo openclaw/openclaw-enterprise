@@ -282,6 +282,14 @@ export function assertSecretMount(
   );
   assert.equal(mount.mountPath, expected.mountPath, `${label} mount path`);
   assert.equal(mount.readOnly, true, `${label} mount must be read-only`);
+  assert.ok(
+    mount.subPath === undefined || mount.subPath === "",
+    `${label} directory mount must not set subPath`,
+  );
+  assert.ok(
+    mount.subPathExpr === undefined || mount.subPathExpr === "",
+    `${label} directory mount must not set subPathExpr`,
+  );
   assert.deepEqual(
     containerEnv(container, name).filter(({ name }) => name === expected.variable),
     [{ name: expected.variable, value: `${expected.mountPath}/${expected.itemPath}` }],
