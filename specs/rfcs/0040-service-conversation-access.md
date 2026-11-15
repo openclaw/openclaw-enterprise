@@ -37,6 +37,10 @@ A saved Gateway conversation can stay open while its harness attaches a differen
 
 At native admission, the harness rechecks the attachment and its authority to submit. The native turn owner may start a distinct turn, queue the input for a distinct turn, or refuse before accepting input. A service send must never steer a competing turn or answer a pending approval. Checking for an idle thread before submission cannot guarantee that outcome. A Gateway acknowledgment records admission. Reconnecting alone cannot settle an uncertain write. Reconcile the original operation without resending it and keep `outcome_unknown` until operation-specific evidence resolves it.
 
+The OCC conversation key authenticates the caller. The Gateway authenticates its connection to a remote harness separately, and OCE controls the Agent’s model credential. Before enabling sends, the Gateway and OCE must agree on how to bind each inference request to its original submission. For each request, enforce the authenticated Gateway profile’s current model and Access program permissions and the Agent’s current credential grant. Recheck when queued work starts and on each subsequent inference request. A credential installed at startup or a thread ID alone cannot establish those permissions.
+
+The selected credential Driver still owns the withdrawal boundary for an in-flight request. Under [online request authorization](0023-egress-proxy-credential-lifecycle/online-authorization.md), a request that passed the final pre-injection authorization check may finish. Later requests require fresh authorization. Keep remote sends unavailable until the harness can enforce both owners’ decisions.
+
 ## Serving a request
 
 ```mermaid
@@ -64,6 +68,7 @@ OCC returns `401` for invalid, expired or revoked credentials and `403` for insu
 ## Acceptance Criteria
 
 - On a dedicated Codex harness, resume the original thread and correlate its reply. Replace the attachment, then reattach the old thread ID. Verify the old send permission delivers zero input in both cases. Race a competing turn and verify it receives zero machine input. Lose the connection after a possible write and verify zero redispatch. In a separate case, reconnect to an unchanged attachment, verify its continuity, and submit a fresh operation.
+- On a remote harness, complete a permitted turn. In three separate cases, deny the model, the requested Access program, or the Agent’s credential grant while leaving the other two permissions in place. Verify that none reaches the provider. Revoke the Gateway profile’s permission while a submission is queued and verify it makes no provider request. Read permitted saved history with inference unavailable.
 - Issue and rotate a conversation key through an authorized issuer. An ordinary service key for the same principal, a different Agent, and a read-only key attempting a send are each refused before any Gateway write.
 - Start from a human-created named chat owned by the serving profile. Refuse a write to a visible session owned by another profile. For the eligible chat, read its previous reply, submit one new message, observe one Gateway acknowledgment, and read the reply for that run after reconnect while another participant uses the chat. Verify the same stored conversation on the installed runtime.
 - Exercise revoked and expired keys, removed IAM grants, a changed revision, a reset with a reused session ID, a missing or private chat, inherited channel delivery, and command-shaped inputs. Verify that delivery remains local. Verify no cross-conversation read or turn.
