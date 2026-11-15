@@ -763,12 +763,19 @@ exec '${process.execPath}' "$@"
         const before = await readdir(temporary);
         const beforeInspections = await readFile(inspections, "utf8");
         const beforeCommands = await readFile(commands, "utf8");
+        // Node serializes environment strings as UTF-8. Inject the raw byte
+        // with execve while passing the executable and script path as arguments.
         const refusal = spawnSync(
-          "/bin/sh",
+          "python3",
           [
+            "-I",
             "-c",
-            'export "$1=$(printf "%s\\377%s" "$2" "$3")"; exec "$4" "$5"',
-            "sh",
+            String.raw`import os
+import sys
+
+name, prefix, suffix, node, script = sys.argv[1:]
+os.environb[os.fsencode(name)] = os.fsencode(prefix) + b"\xff" + os.fsencode(suffix)
+os.execve(node, [node, script], os.environb)`,
             name,
             prefix,
             suffix,
