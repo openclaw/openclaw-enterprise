@@ -126,10 +126,9 @@ IDs. A deleted Namespace's name stays
 reserved, so each Namespace comes back under a new name. These come back:
 Secrets (you supply the values again), Configurations that an Agent uses,
 Presets, credential sources, Roles, access bindings, service accounts (without
-issued credentials) and Agents. Agents that were running are deployed again.
-The commands below can recover a workspace from a running, dedicated Harness
-Pod. Embedded Agent workspace recovery requires a separate backup. These do
-not come back:
+issued credentials) and Agents. Import attempts to deploy Agents that the bundle
+records as running. Workspace recovery requires a verified backup for each
+Agent workspace you need to keep. These do not come back:
 
 - chat history and other Gateway state (the copy keeps the transcripts for
   reference; loading them into the new Gateway is untested);
@@ -149,6 +148,15 @@ a custom CA. Point `kubectl` at the same Installation's cluster. Keep all
 output private. The files hold Configurations, workspace files, transcripts
 and Secret values.
 
+Before export or capture, pause user, automation and Agent writes to tenant
+resources (including Configurations), workspaces and Gateway state in every
+affected Namespace. Drain queued and in-flight writes. Proceed only with idle
+writers and keep them idle through discard. Keep replacement-tenant user and
+automation writes paused through restore verification. Keep the old API and worker
+ready and retain Kubernetes, Pod and storage access. Use supported storage
+backup if you cannot read an idle workspace through its Pod. Record each Agent's run
+state before stopping it.
+
 1. Export every Namespace visible to the old API credentials. Use a new
    output file:
 
@@ -166,9 +174,10 @@ and Secret values.
    [workspace routing](workspace-routing.md) is configured and the Agent runs.
    These four files are only a partial copy of a workspace.
 
-2. Copy the workspace from each running, dedicated Harness Pod and the listed
-   Gateway state from each running Gateway. An embedded Agent runs its Harness
-   in the Gateway Pod. The Gateway archive omits that workspace:
+2. Copy the workspace from each running, quiesced dedicated Harness Pod and
+   the listed Gateway state from each running Gateway. An embedded Agent runs
+   its Harness in the Gateway Pod. The Gateway archive omits that workspace.
+   Capture in a new, empty private archive directory and verify in step 4:
 
    ```bash
    ARCHIVE=/secure/occ/tenant-archive
@@ -190,26 +199,33 @@ and Secret values.
    `/secure/occ/tenant-secrets.json`, keyed by the old Namespace name, then
    Secret name: `{"team-a": {"model-key": "..."}}`. List the names with
    `jq '.namespaces[] | {name, secrets: [.secrets[].name]}' /secure/occ/tenants.json`.
-4. Before you run `discard`, confirm that the bundle's Namespace names and IDs
-   still match the tenants you intend to delete. Tar can exit successfully while
-   omitting unreadable files. For each archive, compare its list of required files
-   and their contents with the source, and keep the old tenants if any copy is
-   incomplete. The command refuses ambiguous source
-   IDs that the import map cannot represent. It also refuses if a Namespace in the bundle
-   gained an Agent or Secret that the bundle lacks. If export could not read
-   workspace files, recover them and export again. Use
-   `--allow-unread-workspace-files` only if you have verified a separate copy
-   of those files for each affected Agent.
+4. Before `discard`, confirm the maintenance window remains in effect and the
+   bundle's Namespace names and IDs match the intended tenants. If any writer
+   resumed, quiesce it and repeat export, capture and verification. The command
+   refuses ambiguous source IDs the import map cannot represent and Namespaces
+   that gained an Agent or Secret missing from the bundle.
 
-   For each embedded Agent whose workspace must survive, identify its old
-   Namespace and Agent IDs and the actual workspace directory and volume.
-   Use your supported storage backup procedure to keep a complete workspace
-   copy outside the resources that `discard` deletes. Restore the copy to an
-   isolated destination. Record which copy and destination belong to those
-   source IDs. Verify that the restored file list and contents match the
-   source, including nested files. If any required backup or restore check
-   is incomplete, stop before `discard` and keep the source tenants and
-   their volumes.
+   Review every bundled Agent by its old Namespace and Agent IDs. For each
+   workspace you need to keep, record its actual directory, volume, backup
+   location and verified isolated restore location. Keep each complete copy
+   outside resources that `discard` deletes. Plan to import its Namespace and
+   Agent.
+
+   Use the step 2 archive for a running dedicated Harness if it contains the
+   entire workspace. Use a supported storage backup for a stopped dedicated
+   Harness with a workspace claim and no running Pod, for an embedded Agent,
+   or if the archive omits any part of the workspace.
+   Restore each workspace backup to an isolated destination. Compare the
+   restored file list and contents, including nested files, with the quiesced
+   source. Tar can exit successfully while omitting unreadable files. Compare
+   the captured Gateway files you need with their source as well.
+
+   If export could not read workspace files, recover them and export again.
+   Use `--allow-unread-workspace-files` only if you have verified a separate copy
+   of those files for each affected Agent. The four exported files and the
+   override do not satisfy the complete-workspace backup check. If any
+   required archive, workspace backup or restore check is incomplete, stop
+   before `discard` and keep the source tenants and their volumes.
 
    ```bash
    node scripts/split-layout-tenants.ts discard --bundle /secure/occ/tenants.json --yes &&
@@ -263,8 +279,22 @@ and Secret values.
    left unchanged; inspect their account references before resuming an older
    import. See the [tenant restore flow](../../flows/tenant-restore.md).
 
-7. Put each archived dedicated workspace back once the mapped Agent's
-   dedicated Harness Pod runs:
+7. Map both old IDs to the new Namespace and Agent. Verify the Agent belongs
+   to that Namespace and identify its workspace directory and volume. Provision
+   any missing volume through your supported procedure and verify its identity.
+   Quiesce destination writers, including Agents started by import. Keep them
+   idle through file verification and retain Pod access for extraction. Stop if
+   you cannot verify the target or quiesce its writers.
+
+   Before archive extraction or storage restore, compare existing destination
+   file paths and contents with the verified backup. Copy any data the restore
+   would overwrite or remove, including writes during import, outside the
+   restore target. Reconcile differences and stop before restoring if any
+   conflict remains.
+
+   Restore verified step 2 workspace archives once their mapped dedicated
+   Harness Pods are running. Keep only verified `*-agent.tar` files with confirmed
+   restore targets in `$ARCHIVE` when you run the loop:
 
    ```bash
    for tarball in "$ARCHIVE"/*-agent.tar; do
@@ -284,10 +314,10 @@ and Secret values.
    with its verified archive and investigate any extra or missing files or
    differences in contents.
 
-   For an embedded Agent, use the separate backup and the recovery procedure
-   you verified in step 4. Check the old-to-new Namespace and Agent IDs in the
-   import map before you restore to the mapped Agent's workspace. Compare the
-   restored files with the verified backup.
+   For each workspace saved through a separate storage backup, use the
+   recovery procedure you verified in step 4. Restore to the mapped Agent's
+   workspace and compare its file list and contents with the verified backup.
 
-8. Check the Agents (`occ agent list`) and re-issue any service-account
-   credentials.
+8. After restore verification, return Agents to their prior run state using
+   the new IDs. Check the Agents (`occ agent list`), re-issue any service-account
+   credentials and resume user and automation writes.
