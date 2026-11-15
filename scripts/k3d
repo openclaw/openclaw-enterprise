@@ -673,7 +673,7 @@ if [ "$action" = "down" ]; then
     exit 0
   fi
   info "Removing the owned cluster, images, and PostgreSQL resources."
-  node scripts/ci/cleanup.mjs --state "$state_file"
+  node scripts/ci/cleanup.ts --state "$state_file"
   rm -f "$env_file" "$ready_file" "$reset_file"
   echo "$engine_label-backed k3d environment removed."
   exit 0

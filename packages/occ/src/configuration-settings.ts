@@ -270,7 +270,7 @@ export function refuseStoredConfigurationSettings(values: OpenClawConfigurationD
  * The rules deploy admission runs on an Agent's stored Configuration that depend only on its
  * values, in deploy's order: the model provider settings (finding 1549), then
  * refuseStoredConfigurationSettings. The upgrade helper's startup preflight
- * (scripts/upgrade-startup-preflight.mjs) runs it from the selected controller image on each
+ * (scripts/upgrade-startup-preflight.ts) runs it from the selected controller image on each
  * Agent the upgrade will deploy, before any OCC writer stops (findings 2809, 2816). Deploy's
  * other rules read live state (Drivers, Harness, credentials, plugins, repositories), so they
  * run only at deploy.

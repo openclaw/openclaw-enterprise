@@ -15,7 +15,7 @@
     "tests/integration/postgres-trusted-proxy.test.ts",
     "tests/integration/postgres-auth-accounts.test.ts",
     "tests/integration/postgres-password-recovery-only.test.ts",
-    "tests/integration/postgres-oidc-sign-in.test.mjs",
+    "tests/integration/postgres-oidc-sign-in.test.ts",
     "tests/integration/postgres-oidc-tab-binding.test.ts",
     "tests/integration/postgres-oidc-admin-attach.test.ts",
     "tests/integration/postgres-password-default-activation.test.ts",
@@ -142,7 +142,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-oidc-sign-in.test.mjs",
+      "path": "tests/integration/postgres-oidc-sign-in.test.ts",
       "expectedTests": ["PostgreSQL OIDC sign-in admits only attached (issuer, subject) pairs"]
     },
     {

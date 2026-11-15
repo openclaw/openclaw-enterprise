@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { setTimeout } from "node:timers/promises";
 import { openShellSandboxLogReader } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 
-import { observeConnectedOperation, rememberCustodyOutcome } from "./egress-connected-failure.mjs";
+import { isArray, isRecord, readString, record } from "./egress-observation-values.ts";
+import { observeConnectedOperation, rememberCustodyOutcome } from "./egress-connected-failure.ts";
 
 const ringSize = 2000;
 const target = "openshell_supervisor_network::l7::rest::credentials";
@@ -26,18 +27,32 @@ const transitions = new Set([
  * LogPushLayer preserves tracing fields; its console shorthand does not. The
  * gateway binds pushed source and sandbox ID at ingestion, but push is best effort.
  * This is test evidence to join with the receipt and origin, never send authority.
+ * @param {{ gatewayClient: Parameters<typeof openShellSandboxLogReader>[0], workspace: string, sandbox: string,
+ *   sandboxId: string, supervisor: unknown, readSupervisor: () => Promise<unknown> }} setup
  */
 export function createCustodyTransitions(
   { gatewayClient, workspace, sandbox, sandboxId, supervisor, readSupervisor },
   { deliveryTimeoutMs = 20_000, pollIntervalMs = 400 } = {},
 ) {
   const reader = openShellSandboxLogReader(gatewayClient);
-  const { uid } = supervisor.metadata;
-  const containerId = supervisor.status.containerStatuses[0].containerID;
+  const baseline = record(supervisor);
+  const uid = readString(record(baseline.metadata).uid);
+  const statuses = record(baseline.status).containerStatuses;
+  assert.ok(isArray(statuses) && isRecord(statuses[0]), "expected enrolled supervisor container");
+  const containerId = readString(statuses[0].containerID);
   assert.ok(workspace && sandbox && sandboxId && uid && containerId, "enrolled supplier identity");
+  /** @typedef {ReadonlyArray<Readonly<{ event: string, id: string }>>} CustodySnapshot */
+  /** @type {WeakSet<CustodySnapshot>} */
   const snapshots = new WeakSet();
+  /** @type {string[]} */
   let received = [];
+  /** @type {CustodySnapshot} */
   let events = [];
+  /** @type {{
+   *   readAttempts: number, successfulReads: number, lastRead: string, ring: string,
+   *   lineCount: number | null, bufferTotal: number | null, freshCount: number | null,
+   *   labels: string[], sequence: string, evidence: NonNullable<Parameters<typeof rememberCustodyOutcome>[1]["evidence"]> | null
+   * }} */
   const diagnostic = {
     readAttempts: 0,
     successfulReads: 0,
@@ -51,6 +66,7 @@ export function createCustodyTransitions(
     evidence: null,
   };
   let identityCheck = "unobserved";
+  /** @param {CustodySnapshot} before @param {readonly string[]} expected */
   function describeSequence(before, expected) {
     const fresh = events.slice(before.length);
     const id = fresh[0]?.id;
@@ -81,6 +97,7 @@ export function createCustodyTransitions(
     }
     return { fresh, id, unique, ordered };
   }
+  /** @template Result @param {() => Promise<Result>} action */
   async function diagnose(action) {
     try {
       return await action();
@@ -92,14 +109,19 @@ export function createCustodyTransitions(
   async function sameSupervisor() {
     identityCheck = "pending";
     try {
-      const { metadata, status } = await readSupervisor();
+      const supervisor = record(await readSupervisor());
+      const metadata = record(supervisor.metadata);
+      const labels = record(metadata.labels);
       assert.equal(metadata.uid, uid, "selected supervisor UID changed");
       assert.equal(metadata.namespace, workspace, "selected supervisor workspace");
       assert.equal(metadata.deletionTimestamp, undefined, "selected supervisor is retiring");
-      assert.equal(metadata.labels["openshell.ai/sandbox-id"], sandboxId);
-      assert.equal(metadata.labels["openshell.ai/boundary-role"], "supervisor");
-      const [container, ...others] = status.containerStatuses;
+      assert.equal(labels["openshell.ai/sandbox-id"], sandboxId);
+      assert.equal(labels["openshell.ai/boundary-role"], "supervisor");
+      const statuses = record(supervisor.status).containerStatuses;
+      assert.ok(isArray(statuses), "expected supervisor container statuses");
+      const [container, ...others] = statuses;
       assert.equal(others.length, 0, "one selected supervisor container");
+      assert.ok(isRecord(container));
       assert.equal(container.restartCount, 0, "selected supervisor restarted");
       assert.equal(container.containerID, containerId, "selected supervisor container changed");
       identityCheck = "matched";
@@ -113,6 +135,7 @@ export function createCustodyTransitions(
     }
   }
 
+  /** @param {number} timeoutMs */
   async function read(timeoutMs) {
     diagnostic.readAttempts++;
     diagnostic.lastRead = "pending";
@@ -170,7 +193,10 @@ export function createCustodyTransitions(
           "custody transition was not the selected supervisor INFO event",
         );
         assert.ok(
-          requestId.test(id) && transitions.has(event),
+          typeof id === "string" &&
+            requestId.test(id) &&
+            typeof event === "string" &&
+            transitions.has(event),
           "malformed supplier custody transition",
         );
         additions.push(Object.freeze({ event, id }));
@@ -199,6 +225,7 @@ export function createCustodyTransitions(
     // Only reread the log. A matching partial sequence may still be in flight;
     // a missing resolve, explicit no_permit, or terminal transition fails the test.
     // Reuse the original snapshot to follow an acknowledged pending operation to FIN.
+    /** @param {CustodySnapshot} before @param {readonly string[]} expected */
     async expectAfter(before, expected) {
       diagnostic.freshCount = null;
       diagnostic.labels = [];

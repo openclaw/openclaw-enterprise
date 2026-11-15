@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { Pool } from "pg";
 import { Check } from "typebox/value";
@@ -16,7 +17,7 @@ import {
   type OpenClawConfigurationDocument,
   type SecretResponse,
 } from "../../packages/contracts/src/index.ts";
-import { verifyPlatformStateStoreContract } from "../conformance/platform-state-store.contract.mjs";
+import { verifyPlatformStateStoreContract } from "../conformance/platform-state-store.contract.ts";
 import { admittedConfiguration } from "./admitted-configuration.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
 import { reservePort, reservedPortArgs } from "./available-port.ts";
@@ -323,41 +324,48 @@ export async function waitForControllerSignIn(
   const controller = new AbortController();
   const signInSignal = controller.signal;
   const timer = setTimeout(() => controller.abort(), signInTimeoutMs);
-  return waitFor<Session>(
-    () =>
-      `the durable OCC subprocess to become ready:\n${output()}\nLast sign-in attempt: ${lastSignInStatus === undefined ? "no HTTP response" : `HTTP ${lastSignInStatus}`}`,
-    async () => {
+  try {
+    for (;;) {
       assert.equal(
         child.exitCode ?? child.signalCode,
         null,
         `The durable OCC subprocess exited early:\n${output()}`,
       );
       if (signInSignal.aborted) {
-        return undefined;
+        const observation =
+          lastSignInStatus === undefined ? "no HTTP response" : `HTTP ${lastSignInStatus}`;
+        assert.fail(
+          `Timed out waiting for the durable OCC subprocess to become ready:\n${output()}\nLast sign-in attempt: ${observation}.`,
+        );
       }
-      try {
-        return await signInWithEmailPassword({
-          fetch: async (input, init) => {
-            lastSignInStatus = undefined;
-            const request = new Request(input, { ...init, signal: signInSignal });
-            // Retain the Request until transport settles so its dependent signal stays live.
-            const response = await transport.fetchThroughLoopback(request).finally(() => {
-              request.signal.throwIfAborted();
-            });
-            lastSignInStatus = response.status;
-            return response;
-          },
-          origin: browserOrigin,
-          email: adminEmail,
-          password: adminPassword,
-          rememberMe: undefined,
-        });
-      } catch {
-        return undefined;
+      const session = await signInWithEmailPassword({
+        fetch: async (input, init) => {
+          lastSignInStatus = undefined;
+          const request = new Request(input, { ...init, signal: signInSignal });
+          // Retain the Request until transport settles so its dependent signal stays live.
+          const response = await transport.fetchThroughLoopback(request).finally(() => {
+            request.signal.throwIfAborted();
+          });
+          lastSignInStatus = response.status;
+          return response;
+        },
+        origin: browserOrigin,
+        email: adminEmail,
+        password: adminPassword,
+        rememberMe: undefined,
+      }).catch(() => undefined);
+      if (session && !signInSignal.aborted) {
+        return session;
       }
-    },
-    { timeoutMs: signInTimeoutMs, intervalMs: 40 },
-  ).finally(() => clearTimeout(timer));
+      await delay(40, undefined, { signal: signInSignal }).catch((error: unknown) => {
+        if (!signInSignal.aborted) {
+          throw error;
+        }
+      });
+    }
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function spawnWorker(context: TestContext, { kubernetesDrivers = false } = {}) {

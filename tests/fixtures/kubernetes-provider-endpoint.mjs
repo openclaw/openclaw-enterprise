@@ -89,7 +89,19 @@ export function tlsPinnedWorkspaceSetupCode(url, expiresAtMs) {
 
 // In-memory Kubernetes transport plus Sandbox/lifecycle responses. No cluster I/O.
 // Tests own readiness transitions and assertions; prepare/activate remain real Driver calls.
+/**
+ * @param {{
+ *   credentialGatewayDriver?: import("../../packages/contracts/src/index.ts").CredentialGatewayDriver,
+ *   harnessEndpoint?: (context: import("../../packages/contracts/src/index.ts").SandboxHarnessContext) => Promise<import("../../packages/contracts/src/index.ts").SandboxHarnessEndpoint | undefined>,
+ *   providerNetwork?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["network"]["providerHarness"],
+ *   revisionOverrides?: Partial<import("../../packages/contracts/src/index.ts").AgentRevision>,
+ *   servicePrincipalCredentials?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["servicePrincipalCredentials"],
+ *   gatewayRouting?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesGatewayRoutingOptions,
+ *   sandboxDriver?: import("../../packages/contracts/src/index.ts").SandboxDriver,
+ * }} [options]
+ */
 export function providerEndpointFixture({
+  credentialGatewayDriver,
   harnessEndpoint = async () => ({
     url: "ws://tenant--sandbox.openshell.localhost:8080/",
     workspaceRoot: "/sandbox/enterprise",
@@ -97,6 +109,8 @@ export function providerEndpointFixture({
   providerNetwork,
   revisionOverrides,
   servicePrincipalCredentials,
+  gatewayRouting,
+  sandboxDriver,
 } = {}) {
   const hooks = [];
   const provisions = [];
@@ -105,9 +119,12 @@ export function providerEndpointFixture({
   const peerLookups = [];
   const provisioningPolicies = [];
   const fixture = providerReadinessFixture({
+    credentialGatewayDriver,
     providerNetwork,
     revisionOverrides,
     servicePrincipalCredentials,
+    gatewayRouting,
+    sandboxDriver,
     // The Sandbox, and so its relay Pod's labels, exists only once provisioned.
     async workspaceNodePeerLabels({ revision: target }) {
       peerLookups.push(target.id);

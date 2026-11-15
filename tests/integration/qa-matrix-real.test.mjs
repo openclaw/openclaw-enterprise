@@ -103,7 +103,7 @@ test(
     const { prepareQaRepository, verifyQaRepository, stopQaAgent } =
       await import("../helpers/qa-repository.mjs");
     const { verifyQaSlack } = await import("../helpers/qa-slack.mjs");
-    const { assertGatewayModelTurn } = await import("../helpers/kubernetes-real.mjs");
+    const { assertGatewayModelTurn } = await import("../helpers/kubernetes-real.ts");
     const artifacts = process.env.OCC_TEST_QA_ARTIFACTS
       ? resolve(process.env.OCC_TEST_QA_ARTIFACTS)
       : await mkdtemp(join(tmpdir(), "oce-qa-matrix-evidence-"));

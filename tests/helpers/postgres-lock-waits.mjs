@@ -11,7 +11,7 @@ import { waitFor } from "./wait-for.mjs";
  * Waits until a backend waits for a lock that `holderPid` holds and returns the lowest waiting
  * pid (callers expect one waiter). With `count`, waits until at least that many do; with
  * `queryLike`, counts only waiters whose current statement matches that LIKE pattern.
- * @param {any} pool
+ * @param {import("pg").Pool} pool
  * @param {number} holderPid
  * @param {string | (() => string)} description
  * @param {{ count?: number, queryLike?: string, timeoutMs?: number, intervalMs?: number }}
@@ -26,13 +26,15 @@ export function waitForLockWaiter(
   return waitFor(
     description,
     async () => {
-      const waiting = await pool.query(
-        `SELECT pid FROM pg_stat_activity
+      const waiting = await /** @type {Promise<import("pg").QueryResult<{pid: number}>>} */ (
+        pool.query(
+          `SELECT pid FROM pg_stat_activity
          WHERE $1 = ANY(pg_blocking_pids(pid)) AND ($2::text IS NULL OR query LIKE $2)
          ORDER BY pid`,
-        [holderPid, queryLike ?? null],
+          [holderPid, queryLike ?? null],
+        )
       );
-      return waiting.rowCount >= count ? waiting.rows[0].pid : undefined;
+      return (waiting.rowCount ?? 0) >= count ? waiting.rows[0]?.pid : undefined;
     },
     options,
   );

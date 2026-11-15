@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync, type SpawnOptions } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
@@ -36,7 +37,7 @@ const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const selector = join(repositoryRoot, "scripts/ci/impact.ts");
 const pnpmImpact = join(repositoryRoot, "scripts/ci/pnpm-impact.ts");
 const gate = join(repositoryRoot, "scripts/ci/impact-gate.ts");
-const runner = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+const runner = join(repositoryRoot, "scripts/ci/run-tests.ts");
 const read = (path: string) => readFileSync(join(repositoryRoot, path), "utf8");
 const policy = readFileSync(selector, "utf8");
 const ciWorkflow = read(".github/workflows/ci.yml");
@@ -837,7 +838,7 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
   const consumerBlobs = await f.git("rev-parse", "HEAD:" + storybookWorkflow, "HEAD:" + preparer);
   const knownConsumer =
     consumerBlobs ===
-    "08676f57d84dcdec23bb01aae2ebed6c1882f9f2\n47cc6129264ecdfb5271be15c51441e48e990323";
+    "ad55f3c6ecfb551d76984ffd901abe3dfeb9c170\n47cc6129264ecdfb5271be15c51441e48e990323";
   const mode = knownConsumer ? "candidate" : "broad";
   const artifact = join(f.dir, "receipt.json");
   assert.match(
@@ -1947,7 +1948,7 @@ test("documentation workflow selects documentation checks and omits product test
   // Keep the documentation route free of product-test and lane invocations.
   assert.doesNotMatch(
     docs,
-    /run-ci-lane|run-tests\.mjs\s+(?:run|aggregate)|\b(?:pnpm|npm)\s+(?:run\s+)?test(?::|\b)|\bnode\s+--test\b|\bgo\s+test\b/,
+    /run-ci-lane|run-tests\.ts\s+(?:run|aggregate)|\b(?:pnpm|npm)\s+(?:run\s+)?test(?::|\b)|\bnode\s+--test\b|\bgo\s+test\b/,
   );
   for (const name of ["pr-safe", "runtime-image-fixture"]) {
     assert.match(job(name), /needs\.impact\.outputs\.mode == 'full'/, name);
@@ -2091,7 +2092,7 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
   const commands = [
     "bash scripts/ci/setup-tools.sh workflows",
     "actionlint .github/workflows/*.yml",
-    "node scripts/ci/run-tests.mjs audit",
+    "node scripts/ci/run-tests.ts audit",
     ...skipped.flatMap(({ run }) =>
       run === "pnpm lint" ? ["pnpm lint --concurrency 2"] : present(run).split(" && "),
     ),
@@ -3324,7 +3325,7 @@ test("mixed test and code, tooling, workflow or package changes select full", as
     [
       "src/app.ts",
       "scripts/ci/prepare.mjs",
-      "scripts/ci/run-tests.mjs",
+      "scripts/ci/run-tests.ts",
       "scripts/ci/impact-gate.ts",
       ".github/workflows/ci.yml",
       "package.json",
@@ -3655,7 +3656,7 @@ test("workflow runs selected lanes in tests mode and gates them by the verified 
   const required = job("ci-required");
   assert.match(required, /EXPECTED_LANES: \$\{\{ needs\.impact\.outputs\.lanes \}\}/);
   assert.match(required, /impact-gate\.ts [^\n]*--mode tests [^\n]*--lanes "\$EXPECTED_LANES"/);
-  assert.match(required, /run-tests\.mjs aggregate ci [^\n]*--lanes "\$EXPECTED_LANES"/);
+  assert.match(required, /run-tests\.ts aggregate ci [^\n]*--lanes "\$EXPECTED_LANES"/);
   const impact = job("impact");
   for (const [output, step] of [
     ["mode", "select"],
@@ -4212,4 +4213,96 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
     "pr-safe-same-sha": { result: "skipped" },
   });
   assert.deepEqual(Object.keys(targeted).sort(), ["docker-model", "preflight"]);
+});
+
+test("trusted main lint cache trial verifies restored bytes before invoking warm lint", (t) => {
+  const job = present(loadYaml(".github/workflows/lint-cache-trial.yml").jobs.trial);
+  const run = present(job.steps.find((step) => step.id === "warm")?.run);
+  const dir = temporaryDirectorySync(t, "lint-trial-");
+  const cache = join(dir, "seed");
+  const invoked = join(dir, "invoked");
+  const bytes = "clean";
+  writeFileSync(cache, bytes);
+
+  // The marker observes whether the workflow hands the restored file to pnpm.
+  const check = (hit: string, matched: string, expected: boolean) => {
+    rmSync(invoked, { force: true });
+    const result = spawnSync(
+      "bash",
+      ["-e", "-o", "pipefail", "-c", `pnpm() { touch "$INVOKED"; }\n${run}`],
+      {
+        env: {
+          ...process.env,
+          CACHE_FILE: cache,
+          DIGEST: createHash("sha256").update(bytes).digest("hex"),
+          BYTES: String(bytes.length),
+          HIT: hit,
+          MATCHED: matched,
+          EXPECTED: "trial-key",
+          PRIMARY: "trial-key",
+          RESTORE_START: String(Date.now()),
+          GITHUB_OUTPUT: join(dir, "outputs"),
+          INVOKED: invoked,
+        },
+      },
+    );
+    assert.equal(result.status, expected ? 0 : 1);
+    assert.equal(existsSync(invoked), expected);
+  };
+  check("true", "trial-key", true);
+  check("", "", false);
+  check("true", "another-key", false);
+  writeFileSync(cache, "wrong");
+  check("true", "trial-key", false);
+  rmSync(cache);
+  symlinkSync(join(dir, "elsewhere"), cache);
+  writeFileSync(join(dir, "elsewhere"), bytes);
+  check("true", "trial-key", false);
+});
+
+test("lint cache trial requires the lookup-only witness to match the saved seed", (t) => {
+  const steps = present(loadYaml(".github/workflows/lint-cache-trial.yml").jobs.trial).steps;
+  const witness = present(steps.find((step) => step.id === "witness"));
+  const restore = present(steps.find((step) => step.id === "restore"));
+  assert.deepEqual(witness.with, {
+    path: "${{ env.CACHE_FILE }}",
+    key: "${{ steps.trial.outputs.probe }}",
+    "restore-keys": "${{ steps.trial.outputs.key }}",
+    "lookup-only": true,
+  });
+  assert.deepEqual(restore.with, {
+    path: "${{ env.CACHE_FILE }}",
+    key: "${{ steps.trial.outputs.key }}",
+    "fail-on-cache-miss": true,
+  });
+  const run = present(steps.find((step) => step.id === "witnessed")?.run);
+  const dir = temporaryDirectorySync(t, "lint-witness-");
+  const check = (primary: string, hit: string, matched: string) =>
+    spawnSync("bash", ["-eo", "pipefail", "-c", run], {
+      env: {
+        ...process.env,
+        START: String(Date.now()),
+        CACHE_FILE: join(dir, "cache"),
+        GITHUB_OUTPUT: join(dir, "output"),
+        PROBE: "probe",
+        SEED: "seed",
+        PRIMARY: primary,
+        HIT: hit,
+        MATCHED: matched,
+      },
+    }).status;
+  assert.equal(check("probe", "false", "seed"), 0);
+  for (const [primary, hit, matched] of [
+    ["probe", "", ""],
+    ["other", "false", "seed"],
+    ["probe", "true", "probe"],
+    ["probe", "false", "foreign"],
+    ["probe", "", "seed"],
+    ["probe", "False", "seed"],
+    ["", "false", "seed"],
+  ] as const) {
+    assert.equal(check(primary, hit, matched), 1);
+  }
+  writeFileSync(join(dir, "cache"), "unexpected download");
+  assert.equal(check("probe", "false", "seed"), 1);
 });

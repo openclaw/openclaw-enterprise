@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import { verifyRepositorySessionCases } from "./repository-session-state-cases.ts";
 import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.mjs";
 
+/**
+ * @param {import("../../packages/occ/src/state/platform-state.ts").PlatformStateStore} store
+ * @param {import("@openclaw-enterprise/contracts").RepositoryRevisionState} [credentials]
+ * @param {{ createdAt?: string | undefined, namespaceId?: string | undefined, executionMode?: import("@openclaw-enterprise/contracts").HarnessExecutionMode | undefined }} [options]
+ */
 export async function seedSessionRevision(
   store,
   credentials = repositoryCredentials(),
@@ -35,6 +40,7 @@ export async function seedSessionRevision(
     },
     createdAt,
   };
+  /** @satisfies {import("@openclaw-enterprise/contracts").HarnessAuthBinding} */
   const harnessAuth = {
     method: "api_key",
     source: { kind: "secret", namespaceId: namespace.id, id: secret.id },
@@ -55,6 +61,7 @@ export async function seedSessionRevision(
     })),
     createdAt,
   };
+  /** @satisfies {import("@openclaw-enterprise/contracts").AgentRevision} */
   const revision = {
     executionAdmission: { version: 2, mode: "unprotected" },
     id: `rev_${randomUUID()}`,

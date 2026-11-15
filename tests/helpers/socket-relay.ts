@@ -7,7 +7,7 @@ import type { Duplex } from "node:stream";
 // TLS record still queued for the slower reader (finding 2186). A side that closes without a
 // clean end (an error, a reset or a destroy) destroys the other side at once.
 //
-// Keep this function self-contained: runtime-image-startup.test.mjs ships its source into a
+// Keep this function self-contained: runtime-image-startup.test.ts ships its source into a
 // container forwarder.
 export function relaySockets(a: Duplex, b: Duplex) {
   for (const [from, to] of [

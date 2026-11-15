@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { failureSecrets } from "../../scripts/ci/failure-redaction.mjs";
+import { failureSecrets } from "../../scripts/ci/failure-redaction.ts";
 import {
   codexTurnTrace,
   observeSandboxProbe,
@@ -11,7 +11,7 @@ import {
   tokenEchoReply,
 } from "../helpers/k3d-failure-diagnostics.ts";
 import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.ts";
-import { diagnosticRequestTimeout, withinDiagnosticDeadline } from "../helpers/kubernetes-real.mjs";
+import { diagnosticRequestTimeout, withinDiagnosticDeadline } from "../helpers/kubernetes-real.ts";
 import { withHelmInstallDiagnostic } from "../helpers/production-helm-real.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
