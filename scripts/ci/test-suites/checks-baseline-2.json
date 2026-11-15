@@ -61,7 +61,7 @@
     "tests/integration/repository-credentials-driver.test.ts",
     "tests/integration/repository-credentials-sender-recovery.test.ts",
     "tests/integration/known-device-cookie.test.ts",
-    "tests/conformance/postgres-controller-auth-binding.test.mjs",
+    "tests/conformance/postgres-controller-auth-binding.test.ts",
     "tests/integration/repository-credentials-package.test.ts",
     "tests/integration/package-prepack.test.ts",
     "tests/integration/repository-credentials-restart.test.ts",
@@ -109,7 +109,7 @@
     "tests/integration/oidc-id-token.test.ts",
     "tests/integration/repository-credentials-shutdown.test.mjs",
     "tests/conformance/repository-transactions.test.mjs",
-    "tests/integration/google-id-token.test.mjs",
+    "tests/integration/google-id-token.test.ts",
     "tests/integration/first-agent-startup.test.ts",
     "tests/conformance/repository-sessions-memory.test.ts",
     "tests/conformance/repository-credentials-github-token.test.ts",
@@ -722,7 +722,7 @@
       ]
     },
     {
-      "path": "tests/integration/google-id-token.test.mjs"
+      "path": "tests/integration/google-id-token.test.ts"
     },
     {
       "path": "tests/integration/google-login-transport.test.ts"
@@ -752,7 +752,7 @@
       "path": "tests/conformance/postgres-auth-binding.test.ts"
     },
     {
-      "path": "tests/conformance/postgres-controller-auth-binding.test.mjs"
+      "path": "tests/conformance/postgres-controller-auth-binding.test.ts"
     },
     {
       "path": "tests/conformance/schema-auth-boundary-v1.test.ts"
