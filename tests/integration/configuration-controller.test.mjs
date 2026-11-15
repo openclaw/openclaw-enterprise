@@ -446,6 +446,13 @@ async function storedRowAgent(context, valid, { name, secretName, executionMode 
   return { ...agent, configurationDriver: context.configurationDriver, valid };
 }
 
+// A fresh rule-backed fixture with a ready Agent whose stored Configuration selects a runtime.
+async function storedConfigurationFixture(computeId, { name, secretName }) {
+  const context = await kubernetesRuleFixture(computeId, ...configurationRules);
+  const agent = await storedRowAgent(context, runtimeSelected, { name, secretName });
+  return { context, agent };
+}
+
 // Writes a row past OCC, as an older release's create would have stored it.
 async function writePastOcc(configurationDriver, configurationId, values) {
   const stored = configurationDriver
@@ -1214,15 +1221,11 @@ test("Configuration save refuses a Gateway tool policy that every OpenClaw topol
   // Findings 2688 and 2689. Save and deployment run the real Kubernetes Compute rules. The
   // Agent is embedded, the default: its Gateway applies the policy natively, so a policy only
   // dedicated admission refused saved, deployed and then failed every turn.
-  const context = await kubernetesRuleFixture(
-    "compute-tool-policy-integration",
-    ...configurationRules,
-  );
-  const withPolicy = (gatewayPolicy) => ({ ...runtimeSelected, tools: { gatewayPolicy } });
-  const agent = await storedRowAgent(context, runtimeSelected, {
+  const { context, agent } = await storedConfigurationFixture("compute-tool-policy-integration", {
     name: "Tool policy consumer",
     secretName: "tool-policy-key",
   });
+  const withPolicy = (gatewayPolicy) => ({ ...runtimeSelected, tools: { gatewayPolicy } });
   const administrative = setting(
     "tools.gatewayPolicy.allow",
     "must not grant Gateway administrative tools",
@@ -1293,17 +1296,13 @@ test("Configuration save refuses workspace bootstrap settings native setup refus
   // Finding 2699. Compute copies agents.defaults.skipBootstrap and skipOptionalBootstrapFiles into
   // native workspace setup, which refused an invalid one only after deployment started. Every
   // save path and deployment now refuse it, naming the setting and what it accepts.
-  const context = await kubernetesRuleFixture(
-    "compute-bootstrap-integration",
-    ...configurationRules,
-  );
+  const { context, agent } = await storedConfigurationFixture("compute-bootstrap-integration", {
+    name: "Bootstrap consumer",
+    secretName: "bootstrap-key",
+  });
   const withDefaults = (defaults) => ({
     ...runtimeSelected,
     agents: { defaults: { ...runtimeDefaults, ...defaults } },
-  });
-  const agent = await storedRowAgent(context, runtimeSelected, {
-    name: "Bootstrap consumer",
-    secretName: "bootstrap-key",
   });
   const skipBootstrap = setting("agents.defaults.skipBootstrap", "must be true or false");
   const optionalFiles = setting(
@@ -1403,12 +1402,11 @@ test("Configuration save and deployment refuse settings the pinned OpenClaw reti
   // Finding 2709. The OpenClaw pin removed these settings; its config validation refuses them,
   // and doctor --fix cannot rewrite OCE's read-only Configuration, so a saved one failed only
   // when the Gateway started. Every save path and deployment refuse each, whatever its value.
-  const context = await kubernetesRuleFixture("compute-retired-integration", ...configurationRules);
-  const { configurationDriver } = context;
-  const agent = await storedRowAgent(context, runtimeSelected, {
+  const { context, agent } = await storedConfigurationFixture("compute-retired-integration", {
     name: "Retired settings consumer",
     secretName: "retired-key",
   });
+  const { configurationDriver } = context;
   const flushes = "memory flushes use the session model and its fallbacks";
   const retries = "cyber-policy retries use the active model";
   const explicitControls = "configure the individual security controls explicitly";
@@ -1494,15 +1492,11 @@ test("Configuration save and deployment refuse another spelling of the codex or 
   // codex and acpx settings, and Compute renders codex settings, only at the exact key, so a later
   // `Codex` entry would replace what OCE checked: every save path, Agent save and deployment
   // refuse such a key, whatever it holds.
-  const context = await kubernetesRuleFixture(
-    "compute-plugin-key-integration",
-    ...configurationRules,
-  );
-  const { configurationDriver } = context;
-  const agent = await storedRowAgent(context, runtimeSelected, {
+  const { context, agent } = await storedConfigurationFixture("compute-plugin-key-integration", {
     name: "Plugin entry key consumer",
     secretName: "plugin-key",
   });
+  const { configurationDriver } = context;
   const sentinel = `synthetic-url-userinfo-${randomUUID()}`;
   const proxy = `http://u:${sentinel}@proxy.example:3128`;
   const codex = { config: { appServer: { approvalPolicy: "on-request" } } };
@@ -1641,15 +1635,11 @@ test("Configuration save and deployment refuse a model provider key OpenClaw app
   // puts the longer key last, so it wins there), and `OpenAI` alone would do the same while the
   // probe checks the default endpoint. Every save path, Agent save and deployment refuse such a
   // key, whatever its entry holds.
-  const context = await kubernetesRuleFixture(
-    "compute-provider-key-integration",
-    ...configurationRules,
-  );
-  const { configurationDriver } = context;
-  const agent = await storedRowAgent(context, runtimeSelected, {
+  const { context, agent } = await storedConfigurationFixture("compute-provider-key-integration", {
     name: "Model provider key consumer",
     secretName: "provider-key",
   });
+  const { configurationDriver } = context;
   const checked = { baseUrl: "https://api.openai.com/v1" };
   const elsewhere = { baseUrl: "https://models.example/v1" };
   const withProviders = (providers) => ({ ...runtimeSelected, models: { providers } });
@@ -1701,8 +1691,7 @@ test("Configuration save and deployment refuse OpenClaw's $include directive", a
   // settings no rule checked, such as a gateway.auth.mode Kubernetes Compute refuses, from a file
   // in the Gateway's config directory. Every save path, Agent save and deployment refuse it at any
   // depth; configuration-occ.test.ts proves the paths the refusal names.
-  const context = await kubernetesRuleFixture("compute-include-integration", ...configurationRules);
-  const agent = await storedRowAgent(context, runtimeSelected, {
+  const { context, agent } = await storedConfigurationFixture("compute-include-integration", {
     name: "Config include consumer",
     secretName: "config-include",
   });
@@ -1761,8 +1750,7 @@ test("Configuration save and deployment refuse a plugins.allow or plugins.deny O
   // plugins. Where a plugin runtime applies an overlay (plugin approvers, a managed or catalog
   // plugin), the Gateway entrypoint crashes sooner, when it trims each item. Each of these saved
   // and deployed. Now every save path, Agent save and deployment refuse it, naming the setting.
-  const context = await kubernetesRuleFixture("compute-plugin-policy-list", ...configurationRules);
-  const agent = await storedRowAgent(context, runtimeSelected, {
+  const { context, agent } = await storedConfigurationFixture("compute-plugin-policy-list", {
     name: "Plugin policy list consumer",
     secretName: "plugin-policy-list",
   });
@@ -1815,12 +1803,11 @@ test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE
   // failed. Every save path, Agent save and deployment run the rule, for the defaults and for one
   // Agent's entry, which overrides them; configuration-occ.test.ts proves each refused and
   // accepted value.
-  const context = await kubernetesRuleFixture("compute-sandbox-integration", ...configurationRules);
-  const { configurationDriver } = context;
-  const agent = await storedRowAgent(context, runtimeSelected, {
+  const { context, agent } = await storedConfigurationFixture("compute-sandbox-integration", {
     name: "Sandbox consumer",
     secretName: "sandbox-key",
   });
+  const { configurationDriver } = context;
   const [sandboxMode, execHost] = OPENCLAW_SANDBOX_SETTINGS;
   const defaultsMode = openClawSandboxRefusal(sandboxMode, sandboxMode.path);
   const defaultsHost = openClawSandboxRefusal(execHost, execHost.path);
@@ -1918,12 +1905,11 @@ test("Agent save, deployment and the Console's draft hold name the same first st
   // holds a draft's Deploy with the module it serves (stored-configuration-rules.mjs), which
   // checked only some of the rules, so it named a later problem than the 400, or none. For each
   // pair of rules, the row that fails both gets the earlier rule's refusal from all three.
-  const context = await kubernetesRuleFixture("compute-stored-order", ...configurationRules);
-  const { configurationDriver } = context;
-  const agent = await storedRowAgent(context, runtimeSelected, {
+  const { context, agent } = await storedConfigurationFixture("compute-stored-order", {
     name: "Stored order consumer",
     secretName: "stored-order-key",
   });
+  const { configurationDriver } = context;
   // One setting each rule refuses, in deploy's order.
   const problems = [
     ["include", ["agents", "defaults", "$include"], "./defaults.json"],
