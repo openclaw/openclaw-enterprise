@@ -956,7 +956,7 @@ process.exit(73);
         ),
     );
     const covered = (path: string) => patterns.some((pattern) => pattern.test(path));
-    const sources = [];
+    const sources: string[] = [];
     // CI builds the controller's runtime target and the runtime Dockerfile's last
     // stage; only stages those reach are build inputs.
     for (const [dockerfile, target] of [
