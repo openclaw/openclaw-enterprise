@@ -36,12 +36,25 @@ export const serviceAccountHandlers = {
     const accounts = await controller.listServiceAccounts(context.actorId, namespaceId);
     reply.send({ data: accounts.map(clientServiceAccount), meta: { requestId: request.id } });
   },
-  async getServiceAccount({ controller, context, request, reply, params, namespaceId }) {
+  async getServiceAccount({
+    controller,
+    context,
+    request,
+    reply,
+    params,
+    namespaceId,
+    setAuditReadTarget,
+  }) {
     const account = await controller.getServiceAccount(
       context.actorId,
       namespaceId,
       params.serviceAccountId as string,
     );
+    setAuditReadTarget({
+      kind: "service_account",
+      id: account.id,
+      namespaceId: account.namespaceId,
+    });
     reply.send({ data: clientServiceAccount(account), meta: { requestId: request.id } });
   },
   async createServiceAccountCredential({

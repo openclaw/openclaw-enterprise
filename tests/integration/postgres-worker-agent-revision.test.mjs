@@ -43,7 +43,7 @@ import {
   assertFailedDeployment,
   runPreparationFailureCase,
   runRuntimeFailureCases,
-} from "../helpers/postgres-worker-revision-scenarios.mjs";
+} from "../helpers/postgres-worker-revision-scenarios.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
   advanceCleanupRetries,

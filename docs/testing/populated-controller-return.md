@@ -161,6 +161,27 @@ compatible pair does not qualify later schema changes or a deployment of current
 main. Recheck migration, restore and saved-configuration compatibility when
 selecting another pair; retain those limits with the evidence.
 
+## Retain ordinary upgrade observations
+
+The [ordinary TUI upgrade lane](kubernetes.md#run-an-isolated-upgrade-qualification-lane) samples authenticated `GET /installation` through the operator Pod’s
+HTTPS proxy. The runtime window starts before the deliberate interruption and
+includes the checks while both controllers are stopped and the single resume.
+Its success flag covers that sequence. Later fleet checks and model replies have
+their own results. Both receipts use the sample outcomes and cadence described above.
+
+In the fresh `run_dir` from the lane command, retain each available receipt before removing the runner. A phase
+the test never reached has no receipt. An interrupted phase can leave a partial one.
+
+```sh
+for receipt in forward-api-availability.json runtime-api-availability.json; do
+  for source in "$run_dir"/oce-production-tui-*/"$receipt"; do
+    if [ -f "$source" ]; then
+      install -m 600 "$source" "$run_dir/$receipt" || exit 1
+    fi
+  done
+done
+```
+
 ## Check a separate migration while the incumbent serves
 
 Use the same local fixture and image inputs with

@@ -421,7 +421,7 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		gatewayClientNamespace = s.PlatformNamespace
 	}
 	resources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "256Mi"}, "limits": map[string]string{"cpu": "2", "memory": "2Gi"}}
-	// Memory matches the installation profiles (scripts/render-installation-profile.mjs):
+	// Memory matches the installation profiles (scripts/render-installation-profile.ts):
 	// requests cover measured use between turns and limits cover measured peaks.
 	// Gateways hold 2.3-2.4 GiB and peak at 2.8 GiB on their first turn; a dedicated
 	// Codex Gateway with native admin chat was OOM-killed at 2Gi. A Codex Harness held about
@@ -604,7 +604,7 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 // control-plane profile selects a dedicated Codex runtime.
 func (r *runner) prepareDevelopmentCodexSandbox(ctx context.Context, state *developmentState, runtimeImage string, timeoutSeconds int) (string, error) {
 	fmt.Fprintln(r.opts.Out, "Verifying the dedicated Codex sandbox on the owned k3d node...")
-	command := r.command(ctx, "node", "scripts/prepare-development-codex-seccomp.mjs", state.directory, runtimeImage, strconv.Itoa(timeoutSeconds))
+	command := r.command(ctx, "node", "scripts/prepare-development-codex-seccomp.ts", state.directory, runtimeImage, strconv.Itoa(timeoutSeconds))
 	command.Stderr = r.opts.Err
 	output, err := command.Output()
 	if err != nil {

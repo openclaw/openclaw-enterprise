@@ -213,8 +213,26 @@ test("prepared issuer inherits the installation only for its explicit grant; unu
   } as const;
   const narrowed = { ...selected, repositories: [repository], permissions: draft };
   const narrowBody =
-    '{"repository_ids":[5321],"permissions":{"metadata":"read","contents":"write","pull_requests":"write"}}';
+    '{"repository_ids":[5321],"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}';
   await issue(narrow, narrowed, narrowBody, true);
+  // App IDs sign as strings. The legacy issuer accepts a decimal ID beyond JavaScript's safe
+  // integer range because only the repository ID is numeric in the selected issuance body.
+  await issue({ ...narrow, appId: "12345678901234567890" }, narrowed, narrowBody, true);
+  // Both grants use the real issuer path and mint exactly the same effective provider scope.
+  await issue(
+    {
+      id: "independent-grant",
+      isolationId: "another-agent",
+      appId: grant.appId,
+      installationId: grant.installationId,
+      profile: "github-repository",
+      repositories: [{ repositoryId: "5321", repository: repository.full_name }],
+      permissions: { pull_requests: "write", metadata: "read", contents: "write" },
+    },
+    narrowed,
+    narrowBody,
+    true,
+  );
   await issue(narrow, {}, narrowBody, false);
   await issue(narrow, { ...narrowed, repository_selection: "all" }, narrowBody, false);
   await issue(narrow, { ...narrowed, permissions: installed }, narrowBody, false);

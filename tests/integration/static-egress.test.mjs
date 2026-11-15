@@ -574,7 +574,7 @@ test("provider authentication rejection fences the exact material version and en
 });
 
 test("protected admission requires the actual counterpart and exact loaded policy; revision removal deletes only its owned Sandbox", async (t) => {
-  const f = await staticEgressFixture(t);
+  const f = await staticEgressFixture(t, { includeLegacy: true });
   // Inspect the production attachment before protobuf can erase an explicit zero.
   // OpenShell requires omission for automatic TLS termination, not TERMINATE or SKIP.
   for (const [index, route] of f.context.plan.routes.entries()) {
@@ -648,9 +648,21 @@ test("protected admission requires the actual counterpart and exact loaded polic
   assert.equal(refused.status, 503, JSON.stringify(refused.body));
   assert.equal(
     (await f.request("GET", f.path)).data.length,
-    1,
+    2,
     "failed candidate cannot leave admitted source metadata",
   );
+  // Retained Gateway sources need explicit adoption and the same available peer.
+  const retainedBefore = (await f.request("GET", `${f.path}/${f.legacySource.id}`)).data;
+  const gatewayBefore = structuredClone([...f.providers.entries()]);
+  const effectsBefore = [...f.gatewayEffects];
+  const adoption = await f.request("PATCH", `${f.path}/${f.legacySource.id}`, {
+    body: { adoption: "live", authorityScope: "execution" },
+  });
+  assert.equal(adoption.status, 503, JSON.stringify(adoption.body));
+  assert.equal(retainedBefore.egress, undefined);
+  assert.deepEqual((await f.request("GET", `${f.path}/${f.legacySource.id}`)).data, retainedBefore);
+  assert.deepEqual([...f.providers.entries()], gatewayBefore);
+  assert.deepEqual(f.gatewayEffects, effectsBefore);
   await assert.rejects(f.egress.configureRevision(f.context), {
     name: "RetryLaterError",
     message: PROXY_REGISTRATION_UNAVAILABLE,
@@ -3778,16 +3790,13 @@ test("production Compute refuses protected admission and release, including empt
     compute: { ...unprotected.compute, id: compute.id, implementation: compute.implementation },
   });
 
-  // Protection comes from the selected execution policy, not the number of credentials.
-  // Runtime-auth fixtures carry no credential source; their durable plan remains deny-all.
+  // Source-free runtime authentication retains an empty protected plan. Compute without
+  // a qualified protected release must refuse it, even though no credentials are granted.
   const emptyAgent = await f.createAgent(
     f.namespace.id,
     "credential-free",
     f.revision.configuration,
-    {
-      executionMode: "dedicated",
-      harnessAuth: { method: "runtime" },
-    },
+    { executionMode: "dedicated", harnessAuth: { method: "runtime" } },
   );
   const emptyMetadata = await f.deployAgent(f.namespace.id, emptyAgent.id);
   const emptyRevision = await f.controller.transact((unit) =>

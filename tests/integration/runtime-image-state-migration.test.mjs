@@ -1,5 +1,5 @@
 // Runtime image agent database migration smoke tests, split from
-// runtime-image-startup.test.mjs so CI can run them beside it: a Gateway started
+// runtime-image-startup.test.ts so CI can run them beside it: a Gateway started
 // on the released state migrates its agent database once with Doctor, through
 // both the Kubernetes and the Docker development entrypoints.
 import assert from "node:assert/strict";

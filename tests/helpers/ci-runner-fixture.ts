@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { temporaryDirectory } from "./temporary-directory.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
-const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.ts");
 
 // Fixtures live under tmpdir(), which may itself sit inside an unrelated Git
 // checkout. Stop Git's repository search at tmpdir() so the runner never reads
@@ -146,6 +146,19 @@ export function writeRunnerManifest(
   return writeJson(join(root, filename), { version: 1, fileDurations, lanes, groups });
 }
 
+export async function writeRunnerLaneFiles(
+  root: string,
+  lane: string,
+  names: readonly string[],
+  source: string,
+) {
+  const files = names.map((name) => ({ path: `tests/integration/${name}.test.mjs` }));
+  for (const { path } of files) {
+    await writeFile(join(root, path), source);
+  }
+  await writeRunnerManifest(root, { lanes: { [lane]: { files } } });
+}
+
 export async function writeSingleFileRunnerLane(
   root: string,
   lane: string,
@@ -169,10 +182,19 @@ export async function writeFirstAgentCliFixture(root: string, cliBody: string) {
   );
   await mkdir(join(root, "scripts/ci"), { recursive: true });
   await writeFile(
-    join(root, "scripts/ci/failure-redaction.mjs"),
-    await readFile(new URL("../../scripts/ci/failure-redaction.mjs", import.meta.url)),
+    join(root, "scripts/ci/failure-redaction.ts"),
+    await readFile(new URL("../../scripts/ci/failure-redaction.ts", import.meta.url)),
   );
   await writeFile(join(root, "bin/occ"), `#!${process.execPath}\n${cliBody}`, { mode: 0o700 });
+}
+
+export function requireTestResult<T extends { name: string }>(
+  results: readonly T[],
+  name: string,
+): T {
+  const result = results.find((entry) => entry.name === name);
+  assert.ok(result, `Missing test result: ${name}`);
+  return result;
 }
 
 export function runnerArtifactPaths(root: string, name: string) {

@@ -620,16 +620,37 @@ test(
       ).rows,
       [{ actor_id: principalId, key_id: key.id }],
     );
-    // The documented order (create, bind, then issue) passes the coverage check because the
-    // administrator holds every grant now bound to the principal.
+    // The audit permission in this mixed Role applies only to human readers. The administrator
+    // needs the ordinary Agent read grant to issue or revoke the key for this ServicePrincipal.
+    const agentReader = await admin("POST", `/namespaces/${teamId}/iam/roles`, {
+      permissions: [
+        { action: "read", resourceKind: "agent" },
+        { action: "read_audit", resourceKind: "agent" },
+      ],
+    });
+    assert.equal(agentReader.statusCode, 201);
+    const agentReaderBinding = await admin("POST", `/namespaces/${teamId}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: principalId,
+      roleId: id(agentReader),
+      resourceKind: "agent",
+      resourceId: id(agent),
+    });
+    assert.equal(agentReaderBinding.statusCode, 201);
     const second = await admin("POST", "/api/auth/service-keys", {
       servicePrincipalId: principalId,
       namespaceId: teamId,
       name: "member-cli-2",
     });
-    assert.equal(second.statusCode, 201);
+    assert.equal(second.statusCode, 201, second.body);
     const secondKey = issuedKey(second);
     assert.equal((await withKey(secondKey.key, "GET", `/namespaces/${teamId}`)).statusCode, 200);
+    const agentPath = `/namespaces/${teamId}/agents/${id(agent)}`;
+    assert.equal((await withKey(secondKey.key, "GET", agentPath)).statusCode, 200);
+    assert.equal(
+      (await withKey(secondKey.key, "GET", `${agentPath}/audit-events`)).statusCode,
+      401,
+    );
     assert.equal((await admin("DELETE", `/api/auth/service-keys/${secondKey.id}`)).statusCode, 200);
     // The principal cannot be bound in another Namespace, and its key is issued only in its
     // own Namespace scope, never Installation-wide or for a sibling.

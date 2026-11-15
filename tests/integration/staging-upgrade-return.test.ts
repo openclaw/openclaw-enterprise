@@ -1142,9 +1142,9 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
     async () => {},
   );
   assert.equal(result, "complete");
-  const evidence = JSON.parse(
-    await readFile(join(directory, "forward-api-availability.json"), "utf8"),
-  );
+  const controllerPath = join(directory, "forward-api-availability.json");
+  const controllerBytes = await readFile(controllerPath);
+  const evidence = JSON.parse(controllerBytes.toString("utf8"));
   assert.deepEqual(evidence.cadence, {
     startOffsetMs: 10,
     endOffsetMs: 5_510,
@@ -1190,11 +1190,13 @@ test("upgrade availability accounts for stalled slots and final tails on a monot
           throw failure;
         },
         async () => {},
+        "runtime-api-availability.json",
       ),
       (error: unknown) => error === failure,
     );
+    assert.deepEqual(await readFile(controllerPath), controllerBytes);
     const failed = JSON.parse(
-      await readFile(join(directory, "forward-api-availability.json"), "utf8"),
+      await readFile(join(directory, "runtime-api-availability.json"), "utf8"),
     );
     assert.equal(failed.cadence.scheduledSlots, duration === 0 ? 1 : 2);
     assert.equal(failed.cadence.unprobedSlots, failed.cadence.scheduledSlots);

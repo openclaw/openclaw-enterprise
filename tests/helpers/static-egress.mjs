@@ -921,7 +921,10 @@ async function buildStaticEgressFixture(
   };
   const services = grpc.loadPackageDefinition(definition).openshell.middleware.v1;
   function createAuthorityClient(name) {
-    return new services[name](`127.0.0.1:${authorityPort}`, grpc.credentials.createSsl(cert));
+    // Keep the connection on IPv4 loopback and verify the certificate's DNS SAN.
+    return new services[name](`127.0.0.1:${authorityPort}`, grpc.credentials.createSsl(cert), {
+      "grpc.ssl_target_name_override": "localhost",
+    });
   }
   const clients = Object.fromEntries(
     [

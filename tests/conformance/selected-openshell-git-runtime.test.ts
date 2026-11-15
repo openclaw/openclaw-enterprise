@@ -593,6 +593,7 @@ test("old attached v5 provider cleanup preserves unrelated resources", async (t)
 
   // Collection is separate from deleting the captured provider attachments above.
   const closed = structuredClone(store.rows.get(revision.id));
+  assert.ok(closed);
   assert.equal(closed.blocked, "withdrawn");
   const storeCalls = { ...store.calls };
   await reconcile();
@@ -669,9 +670,9 @@ test("fresh repository Git v5 holds and releases one verified launch", async (t)
     const route = args[2];
     assert.ok(route);
     selects.push(structuredClone(route));
-    return route.fence === store.rows.get(revision.id).fence
-      ? read(...args)
-      : { absent: "unprepared" };
+    const row = store.rows.get(revision.id);
+    assert.ok(row);
+    return route.fence === row.fence ? read(...args) : { absent: "unprepared" };
   };
   const update = client.updateProviderCredentialsConditionally?.bind(client);
   assert.ok(update);
@@ -1434,8 +1435,10 @@ test("selected released v5 periodic read crosses admission expiry without grant 
   const admitted = structuredClone(revision.repositoryCredentials!);
   assert.equal(admitted.standingApprovalId, undefined);
   assert.ok(admitted.deadlineWallMs > Date.now());
-  const generation = structuredClone(store.rows.get(revision.id).generation);
-  const material = structuredClone(store.rows.get(revision.id).material);
+  const before = store.rows.get(revision.id);
+  assert.ok(before);
+  const generation = structuredClone(before.generation);
+  const material = structuredClone(before.material);
   const writes = { updates: activity.updates, rotate: f.calls.rotate };
   const read = f.owner.readOpenShellMaterial.bind(f.owner);
   let reads = 0;
@@ -1455,11 +1458,13 @@ test("selected released v5 periodic read crosses admission expiry without grant 
     reason: "material_unavailable",
   });
   assert.equal(entry.blocked, undefined);
-  assert.equal(store.rows.get(revision.id).blocked, undefined);
+  const after = store.rows.get(revision.id);
+  assert.ok(after);
+  assert.equal(after.blocked, undefined);
   assert.equal(await lookup(), undefined);
   assert.deepEqual(revision.repositoryCredentials, admitted);
-  assert.deepEqual(store.rows.get(revision.id).generation, generation);
-  assert.deepEqual(store.rows.get(revision.id).material, material);
+  assert.deepEqual(after.generation, generation);
+  assert.deepEqual(after.material, material);
   assert.deepEqual({ updates: activity.updates, rotate: f.calls.rotate }, writes);
   assert.deepEqual(f.errors(), []);
 });
@@ -2108,6 +2113,7 @@ for (const reason of ["withdrawn", "repository_expired", "worker_replaced"] as c
       assert.equal(await lookup(), undefined);
       assert.equal(f.denials().at(-1)?.reason, "route_blocked");
       if (reason === "worker_replaced") {
+        assert.ok(moved);
         assert.equal(moved.workerInstance, "worker-two");
         assert.ok(moved.fence > before.fence);
         assert.equal(moved.blocked, "worker_replaced");
@@ -2175,11 +2181,12 @@ for (const outcome of [
       receiptReads,
     } = await heldReleased(t);
     const before = structuredClone(store.rows.get(revision.id));
-    assert.ok(before?.generation);
+    assert.ok(before?.generation && before.material);
     assert.equal(before.writePending, undefined);
     assert.equal(before.material.materialVersion, f.owner.material.materialVersion);
     assert.equal(activity.updates, 1);
     assert.ok(await lookup(), "original selected route works before rotation");
+    const { generation: beforeGeneration, material: beforeMaterial } = before;
     const recipient = preview.recipient;
     const authorization = structuredClone(entry.authorization);
     const launchHash = entry.retainedLaunchHash;
@@ -2203,6 +2210,7 @@ for (const outcome of [
       assert.equal(args[1], originalVersion);
       assert.deepEqual(Object.values(args[0].credentials), [nextMaterial.value]);
       const pending = structuredClone(store.rows.get(revision.id));
+      assert.ok(pending?.targetMaterial);
       assert.equal(pending.writePending, "rotate");
       assert.equal(pending.fence, before.fence + 1);
       assert.equal(pending.operationFence, pending.fence);
@@ -2211,13 +2219,13 @@ for (const outcome of [
       assert.equal(pending.targetMaterial.preparationAttemptId, nextMaterial.preparationAttemptId);
       assert.notEqual(
         pending.targetMaterial.preparationAttemptId,
-        before.material.preparationAttemptId,
+        beforeMaterial.preparationAttemptId,
       );
-      assert.notEqual(pending.targetMaterial.materialVersion, before.material.materialVersion);
-      assert.deepEqual(pending.generation, before.generation);
-      assert.deepEqual(pending.material, before.material);
+      assert.notEqual(pending.targetMaterial.materialVersion, beforeMaterial.materialVersion);
+      assert.deepEqual(pending.generation, beforeGeneration);
+      assert.deepEqual(pending.material, beforeMaterial);
       const result = await update(...args);
-      assert.equal(result.id, before.generation.providerId);
+      assert.equal(result.id, beforeGeneration.providerId);
       assert.notEqual(result.resourceVersion, originalVersion);
       assert.ok(result.resourceVersion);
       assert.equal(result.targetReceipts?.length, 1);
@@ -2226,7 +2234,7 @@ for (const outcome of [
       assert.equal(target.kind, "PROVIDER_MUTATION_KIND_UPDATE");
       assert.deepEqual(target.desired, {
         sandbox: f.sandbox.name,
-        provider_id: before.generation.providerId,
+        provider_id: beforeGeneration.providerId,
         provider_resource_version: result.resourceVersion,
       });
       assert.equal(target.receipt_id, updateReceipt(result.resourceVersion));
@@ -2257,7 +2265,7 @@ for (const outcome of [
         await f.runtime["entries"].get(revision.id);
         assert.equal(entry.blocked, "withdrawn");
         assert.equal(entry.installed, undefined);
-        assert.equal(store.rows.get(revision.id).blocked, "withdrawn");
+        assert.equal(store.rows.get(revision.id)?.blocked, "withdrawn");
         assert.equal(await lookup(), undefined);
         assert.equal(f.denials().at(-1)?.reasonCode, "access_withdrawn");
       } else if (outcome === "durable withdrawal") {
@@ -2268,7 +2276,7 @@ for (const outcome of [
         );
         await store.withdraw({ revisionId: revision.id });
         assert.equal(entry.blocked, undefined, "the withheld reply has not discovered withdrawal");
-        assert.equal(store.rows.get(revision.id).blocked, "withdrawn");
+        assert.equal(store.rows.get(revision.id)?.blocked, "withdrawn");
       } else if (outcome === "replacement holder") {
         await assert.rejects(
           prepare(replacement()),
@@ -2276,6 +2284,7 @@ for (const outcome of [
             e instanceof OpenShellGitRouteBlockedError && e.reason === "worker_replaced",
         );
         const row = store.rows.get(revision.id);
+        assert.ok(row);
         assert.equal(row.fence, before.fence + 2);
         assert.notEqual(row.workerInstance, before.workerInstance);
         assert.equal(row.blocked, "worker_replaced");
@@ -2292,6 +2301,7 @@ for (const outcome of [
       await premature.catch(() => {});
     }
     const after = structuredClone(store.rows.get(revision.id));
+    assert.ok(after);
     assert.equal(after.fence, before.fence + (moved ? 2 : 1));
     assert.equal(after.operationFence, before.fence + 1);
     assert.equal(preview.recipient, recipient);
@@ -2310,7 +2320,7 @@ for (const outcome of [
       assert.equal(f.denials().at(-1)?.reason, "route_blocked");
     } else if (outcome !== "accepted") {
       assert.equal(after.writePending, "rotate", "accepted but unowned outcome stays pending");
-      assert.equal(after.targetMaterial.materialVersion, nextMaterial.materialVersion);
+      assert.equal(after.targetMaterial?.materialVersion, nextMaterial.materialVersion);
       assert.deepEqual(after.generation, before.generation);
       assert.deepEqual(after.material, before.material);
       assert.deepEqual(after.observed, before.observed);
@@ -2331,10 +2341,10 @@ for (const outcome of [
       assert.equal(after.blocked, undefined);
       assert.equal(after.writePending, undefined);
       assert.equal(after.targetMaterial, undefined);
-      assert.equal(after.generation.resourceVersion, acceptedVersion);
-      assert.equal(after.material.materialVersion, nextMaterial.materialVersion);
-      assert.equal(after.observed.providerResourceVersion, acceptedVersion);
       assert.ok(acceptedVersion);
+      assert.equal(after.generation?.resourceVersion, acceptedVersion);
+      assert.equal(after.material?.materialVersion, nextMaterial.materialVersion);
+      assert.equal(after.observed?.providerResourceVersion, acceptedVersion);
       const expectedReceipt = updateReceipt(acceptedVersion);
       assert.ok(
         receiptReads.some(
@@ -2529,11 +2539,12 @@ for (const phase of ["before first send", "before send", "after acceptance"] as 
     }
     assert.equal((await lookup()) !== undefined, !first);
     const row = store.rows.get(revision.id);
-    assert.ok(row);
+    assert.ok(row?.generation);
     assert.equal(row.material !== undefined, !first);
     assert.equal(row.generation.credentialState, first ? "bootstrap" : "active");
     const updatesBefore = activity.updates;
     const before = structuredClone(row);
+    assert.ok(before.generation);
     const expected = first
       ? f.owner.material
       : { ...f.owner.material, preparationAttemptId: randomUUID(), materialVersion: randomUUID() };
@@ -2576,7 +2587,7 @@ for (const phase of ["before first send", "before send", "after acceptance"] as 
         assert.ok(passBudget);
         assert.notEqual(args[2], passBudget);
         assert.equal(row.writePending, "rotate");
-        assert.equal(row.generation.resourceVersion, before.generation.resourceVersion);
+        assert.equal(row.generation?.resourceVersion, before.generation?.resourceVersion);
         await waitForExpiry(passBudget);
         assert.equal(args[2].aborted, false, "an accepted update has its own write budget");
       }
@@ -2673,7 +2684,7 @@ for (const { first, outcome } of [true, false].flatMap((first) =>
     const initialRelease = preview.release;
     const originalMaterial = f.owner.material;
     if (!first) {
-      assert.equal(before.material.materialVersion, originalMaterial.materialVersion);
+      assert.equal(before.material?.materialVersion, originalMaterial.materialVersion);
       assert.equal(initialRelease, "acknowledged");
     }
     const originalVersion = entry.binding.resourceVersion;
@@ -2732,6 +2743,7 @@ for (const { first, outcome } of [true, false].flatMap((first) =>
     try {
       await Promise.race([reached.promise, premature]);
       const pending = store.rows.get(revision.id);
+      assert.ok(pending?.targetMaterial && pending.generation && pending.observed);
       assert.equal(reads.length, 2);
       assert.equal(reads[0]?.[2]?.fence, before.fence);
       assert.equal(reads[1]?.[2]?.fence, before.fence + 1);
@@ -2767,6 +2779,7 @@ for (const { first, outcome } of [true, false].flatMap((first) =>
       assert.equal(store.calls.cancelWriting, cancellations);
     }
     const uncertain = structuredClone(store.rows.get(revision.id));
+    assert.ok(uncertain);
     assert.equal(uncertain.fence, before.fence + 1);
     assert.equal(uncertain.operationFence, before.fence + 1);
     assert.equal(uncertain.blocked, undefined);
@@ -2826,6 +2839,7 @@ for (const { first, outcome } of [true, false].flatMap((first) =>
             error instanceof OpenShellGitRouteBlockedError && error.reason === "worker_replaced",
         );
         const moved = structuredClone(store.rows.get(revision.id));
+        assert.ok(moved);
         assert.equal(moved.fence, before.fence + 2);
         assert.notEqual(moved.workerInstance, before.workerInstance);
         assert.equal(moved.blocked, "worker_replaced");
@@ -2835,11 +2849,12 @@ for (const { first, outcome } of [true, false].flatMap((first) =>
         assert.equal(retries.length, 0);
         assert.equal(order.length, 0);
         const after = store.rows.get(revision.id);
+        assert.ok(after);
         assert.equal(after.fence, moved.fence);
         assert.equal(after.workerInstance, moved.workerInstance);
         assert.equal(after.operationFence, before.fence + 1);
         assert.equal(after.writePending, "rotate");
-        assert.equal(after.targetMaterial.materialVersion, nextMaterial.materialVersion);
+        assert.equal(after.targetMaterial?.materialVersion, nextMaterial.materialVersion);
         assert.equal(after.blocked, "worker_replaced");
         assert.deepEqual(f.runtime.route(revision.id), { state: "none" });
         assert.equal(f.runtime.previewReleased(revision.id), false);
@@ -2857,6 +2872,7 @@ for (const { first, outcome } of [true, false].flatMap((first) =>
         assert.equal(retryResults[0], outcome === "not committed");
         assert.equal(entry.unsentWrite, undefined);
         const after = store.rows.get(revision.id);
+        assert.ok(after);
         assert.equal(after.fence, before.fence + (first ? 2 : 1));
         assert.equal(after.workerInstance, before.workerInstance);
         assert.equal(after.operationFence, before.fence + (first ? 2 : 1));
@@ -2889,15 +2905,16 @@ for (const { first, outcome } of [true, false].flatMap((first) =>
         assert.equal(warnings().length, 1);
       }
       const after = store.rows.get(revision.id);
+      assert.ok(after?.generation);
       const firstSent = first && outcome !== "replacement holder";
       const finalVersion = firstSent ? entry.binding.resourceVersion : originalVersion;
       assert.equal(after.generation.resourceVersion, finalVersion);
       if (firstSent) {
-        assert.equal(after.material.materialVersion, originalMaterial.materialVersion);
+        assert.equal(after.material?.materialVersion, originalMaterial.materialVersion);
       } else {
         assert.deepEqual(after.material, before.material);
       }
-      assert.equal(after.observed.providerResourceVersion, finalVersion);
+      assert.equal(after.observed?.providerResourceVersion, finalVersion);
       assert.equal(entry.binding.resourceVersion, finalVersion);
       assert.equal(preview.release, firstSent ? "acknowledged" : initialRelease);
       assert.equal(preview.recipient, recipient);

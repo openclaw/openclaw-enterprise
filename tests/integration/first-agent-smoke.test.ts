@@ -4,6 +4,7 @@ import { createServer, type RequestListener } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { setImmediate as nextTurn } from "node:timers/promises";
 
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
@@ -17,9 +18,9 @@ import {
   smokeSlotNames,
   stoppedGatewaySummary,
   waitFor,
-  waitForDeployment,
   watchCluster,
-} from "../../scripts/ci/first-agent-smoke.mjs";
+} from "../../scripts/ci/first-agent-smoke.ts";
+import { waitForDeployment } from "../../scripts/ci/first-agent-smoke/agents.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandPath } from "../helpers/fake-commands.ts";
 import { listen } from "../helpers/listen.ts";
@@ -212,80 +213,189 @@ function virtualClock() {
 
 const agentPath = "/namespaces/smoke/agents/embedded";
 const deploymentPath = `${agentPath}/deployments/${revision}`;
+const pairedReads = [
+  ["GET", deploymentPath],
+  ["GET", agentPath],
+];
 
-test("deployment poll reports a failed revision while the Agent read is outstanding", async () => {
-  const agent = Promise.withResolvers();
-  const error = { code: "REVISION_STOPPED" };
+test("deployment poll reports a failed revision before a late Agent HTTP 503", async (t) => {
+  const releaseAgent = Promise.withResolvers<void>();
+  const deploymentDelivered = Promise.withResolvers<void>();
+  const agentDelivered = Promise.withResolvers<void>();
+  const deploymentError = { code: "REVISION_STOPPED" };
+  const port = await listen(
+    t,
+    createServer(async (request, response) => {
+      response.setHeader("content-type", "application/json");
+      if (request.url === deploymentPath) {
+        response.end(JSON.stringify({ data: { status: "failed", error: deploymentError } }));
+      } else if (request.url === agentPath) {
+        await releaseAgent.promise;
+        response.writeHead(503).end(JSON.stringify({ error: { code: "UNAVAILABLE" } }));
+      } else {
+        response.writeHead(404).end("{}");
+      }
+    }),
+  );
+  const api = createApi(`http://127.0.0.1:${port}`, "synthetic-smoke-key");
+  const requests: string[][] = [];
+  let agentError: unknown;
   const stack = {
     namespaceId: "smoke",
-    api: (_method: string, path: string) => {
-      if (path === agentPath) {
-        return agent.promise;
+    async api(method: string, path: string) {
+      requests.push([method, path]);
+      try {
+        return await api(method, path);
+      } catch (error) {
+        if (path === agentPath) {
+          agentError = error;
+        }
+        throw error;
+      } finally {
+        if (path === deploymentPath) {
+          deploymentDelivered.resolve();
+        } else if (path === agentPath) {
+          agentDelivered.resolve();
+        }
       }
-      assert.equal(path, deploymentPath);
-      return Promise.resolve({ status: "failed", error });
     },
   };
-  const outcome = waitForDeployment(stack, "embedded", revision, "embedded").catch((e: Error) => e);
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  const observed = await Promise.race([outcome, Promise.resolve("pending")]);
-  agent.reject(new Error("late Agent read failure"));
-  assert.ok(observed instanceof Error);
-  assert.equal(observed.message, `embedded: deployment failed ${JSON.stringify(error)}`);
+  const outcome = waitForDeployment(stack, "embedded", revision, "embedded").catch(
+    (error: unknown) => (error instanceof Error ? error.message : error),
+  );
+  try {
+    assert.deepEqual(requests, pairedReads);
+    await deploymentDelivered.promise;
+    // The deployment JSON has reached the poller. Give its promises a turn to
+    // settle while the Agent response is still deliberately withheld.
+    await nextTurn();
+    const beforeAgent = await Promise.race([outcome, Promise.resolve("pending")]);
+    releaseAgent.resolve();
+    await agentDelivered.promise;
+    await nextTurn();
+    assert.ok(agentError instanceof Error);
+    assert.equal(agentError.message, `GET ${agentPath}: HTTP 503 {"code":"UNAVAILABLE"}`);
+    const diagnostic = `embedded: deployment failed ${JSON.stringify(deploymentError)}`;
+    assert.deepEqual(
+      { beforeAgent, final: await outcome },
+      { beforeAgent: diagnostic, final: diagnostic },
+    );
+    assert.deepEqual(requests, pairedReads);
+  } finally {
+    releaseAgent.resolve();
+    await outcome;
+  }
 });
 
-test("deployment poll propagates an Agent error while the deployment read is outstanding", async () => {
-  const deployment = Promise.withResolvers();
-  const error = new Error("Agent read failed");
+test("deployment poll propagates an earlier Agent read error", async () => {
+  const deployment = Promise.withResolvers<unknown>();
+  const agent = Promise.withResolvers<unknown>();
+  const agentError = new Error("Agent read failed");
+  const requests: string[][] = [];
   const stack = {
     namespaceId: "smoke",
-    api: (_method: string, path: string) => {
+    api(method: string, path: string) {
+      requests.push([method, path]);
+      return path === deploymentPath ? deployment.promise : agent.promise;
+    },
+  };
+  const outcome = waitForDeployment(stack, "embedded", revision, "embedded").catch(
+    (error: unknown) => error,
+  );
+  try {
+    assert.deepEqual(requests, pairedReads);
+    agent.reject(agentError);
+    await nextTurn();
+    assert.equal(await Promise.race([outcome, Promise.resolve("pending")]), agentError);
+  } finally {
+    deployment.reject(new Error("later deployment read failed"));
+    await outcome;
+    await nextTurn();
+  }
+});
+
+test("deployment poll observes a late failed deployment after a synchronous Agent error", async () => {
+  const deployment = Promise.withResolvers<unknown>();
+  const agentError = new Error("Agent callback failed");
+  const requests: string[][] = [];
+  const stack = {
+    namespaceId: "smoke",
+    api(method: string, path: string) {
+      requests.push([method, path]);
       if (path === deploymentPath) {
         return deployment.promise;
       }
-      assert.equal(path, agentPath);
-      return Promise.reject(error);
+      throw agentError;
     },
   };
-  await assert.rejects(
-    waitForDeployment(stack, "embedded", revision, "embedded"),
-    (e) => e === error,
+  const outcome = waitForDeployment(stack, "embedded", revision, "embedded").catch(
+    (error: unknown) => error,
   );
-  deployment.resolve({ status: "succeeded" });
+  try {
+    await nextTurn();
+    assert.equal(await Promise.race([outcome, Promise.resolve("pending")]), agentError);
+  } finally {
+    deployment.resolve({ status: "failed", error: { code: "REVISION_STOPPED" } });
+    // Let Node report an unhandled rejection from the losing branch if one escaped.
+    await nextTurn();
+  }
+  assert.deepEqual(requests, pairedReads);
 });
 
-test("deployment poll starts both final reads together and enforces its deadline", async () => {
+test("deployment poll preserves an already-rejected Agent read's precedence", async () => {
+  const agentError = new Error("Agent read failed");
+  const requests: string[][] = [];
+  const stack = {
+    namespaceId: "smoke",
+    api(method: string, path: string) {
+      requests.push([method, path]);
+      return path === deploymentPath
+        ? Promise.resolve({ status: "failed", error: { code: "REVISION_STOPPED" } })
+        : Promise.reject(agentError);
+    },
+  };
+  const outcome = waitForDeployment(stack, "embedded", revision, "embedded");
+  await assert.rejects(outcome, (error) => error === agentError);
+  await nextTurn();
+  assert.deepEqual(requests, pairedReads);
+});
+
+test("deployment poll requires the active revision and enforces its original deadline", async () => {
+  const otherRevision = "rev_00000000-0000-4000-8000-000000000002";
   for (const latency of [1_500, 3_000]) {
     const clock = virtualClock();
-    const starts: [string, number][] = [];
+    const finalStarts: [string, string, number][] = [];
     const stack = {
       namespaceId: "smoke",
-      api: async (_method: string, path: string) => {
+      async api(method: string, path: string) {
         const start = clock.now();
         const finalPoll = start >= 598_000;
         if (finalPoll) {
-          starts.push([path, start]);
+          finalStarts.push([method, path, start]);
           await Promise.resolve();
           clock.advance(Math.max(0, start + latency - clock.now()));
         }
+        // Neither an active revision still deploying nor a succeeded revision
+        // that is not active is enough to end the poll.
         if (path === agentPath) {
-          return { activeRevisionId: revision };
+          return { activeRevisionId: start === 0 || finalPoll ? revision : otherRevision };
         }
         assert.equal(path, deploymentPath);
-        return { status: finalPoll ? "succeeded" : "queued" };
+        return { status: start === 0 ? "queued" : "succeeded" };
       },
     };
-    const result = waitForDeployment(stack, "embedded", revision, "embedded", clock);
+    const outcome = waitForDeployment(stack, "embedded", revision, "embedded", clock);
     if (latency === 1_500) {
-      await result;
+      await outcome;
     } else {
-      await assert.rejects(result, {
+      await assert.rejects(outcome, {
         message: `Timed out waiting for embedded revision ${revision}: ${JSON.stringify({ deployment: "succeeded", active: revision })}`,
       });
     }
-    assert.deepEqual(starts, [
-      [deploymentPath, 598_000],
-      [agentPath, 598_000],
+    assert.equal(clock.now(), 598_000 + latency);
+    assert.deepEqual(finalStarts, [
+      ["GET", deploymentPath, 598_000],
+      ["GET", agentPath, 598_000],
     ]);
   }
 });

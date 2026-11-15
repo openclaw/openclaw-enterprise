@@ -19,11 +19,15 @@ Compose supports control-plane startup and Namespace operations.
 
 Start the Docker Compute preview with
 `OCC_DEVELOPMENT_COMPUTE_DRIVER=docker ./scripts/dev-up`; with no selection,
-startup uses the Kubernetes-only profile. Or run the host/startup cases:
+startup uses the Kubernetes-only profile. Run the startup and preflight cases:
 
 ```sh
-node --test tests/integration/dev-up-compose.test.mjs
+node --test tests/integration/dev-up-compose-startup.test.ts \
+  tests/integration/dev-up-compose.test.mjs
 ```
+
+The tests run the launcher and render configuration with Compose. Fixture commands
+stand in for engine operations such as starting services and copying the service key.
 
 On macOS, follow the Podman prerequisite in the [startup flow](../flows/docker-compose-development/startup.md).
 Use the cleanup command printed by `dev-up` to preserve the database and credentials.
@@ -45,7 +49,7 @@ resources and verifies that `occ dev down` preserves the database volume unless
 ## Driver regressions
 
 ```sh
-node --test tests/conformance/docker-compute.test.mjs
+node --test tests/conformance/docker-compute.test.ts
 OCC_TEST_DOCKER_TOKEN_RETRY=1 NODE_BASE_IMAGE=node:24-bookworm \
   node --test tests/integration/docker-compute-token-retry.test.mjs
 ```
@@ -115,7 +119,7 @@ See the [Docker Compute support boundary](../reference/drivers/docker-compute.md
 With Docker and Skopeo 1.13.3, run:
 
 ```sh
-OCC_TEST_CONTAINER_REGISTRY=1 node --test tests/integration/container-registry-real.test.mjs
+OCC_TEST_CONTAINER_REGISTRY=1 node --test tests/integration/container-registry-real.test.ts
 ```
 
 The test pulls a digest-pinned registry image and removes its disposable
@@ -139,15 +143,15 @@ docker pull "$CONTROLLER_IMAGE"
 docker pull "$RUNTIME_IMAGE"
 OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_IMAGE" \
   node --test --test-concurrency=1 tests/integration/production-image-startup.test.mjs \
-    tests/integration/runtime-image-startup.test.mjs \
+    tests/integration/runtime-image-startup.test.ts \
     tests/integration/runtime-image-gateway-workspace.test.ts \
     tests/integration/runtime-image-public-github-read.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \
     tests/integration/runtime-image-codex-readiness.test.ts \
     tests/integration/runtime-image-startup-termination.test.ts \
     tests/integration/runtime-image-gateway-unclean-restart.test.ts \
-    tests/integration/runtime-image-gateway-retained-state.test.mjs \
-    tests/integration/runtime-image-gateway-peer.test.mjs \
+    tests/integration/runtime-image-gateway-retained-state.test.ts \
+    tests/integration/runtime-image-gateway-peer.test.ts \
     tests/integration/runtime-image-native-worker.test.mjs \
     tests/integration/runtime-image-state-migration.test.mjs \
     tests/integration/runtime-image-managed-files.test.ts \
@@ -188,7 +192,8 @@ suite above, omitting the `docker pull` commands.
 With Helm and `yq` supporting `eval-all -o=json`:
 
 ```sh
-node --test tests/integration/production-kubernetes-packaging.test.mjs
+node --test tests/integration/production-kubernetes-packaging.test.mjs \
+  tests/integration/production-kubernetes-network-policy.test.ts
 ```
 
 Missing Helm or `yq` skips cases. Rendering does not install the chart or prove
@@ -199,7 +204,7 @@ live admission or NetworkPolicy enforcement. `OCC_HELM_BIN` can select Helm.
 With a Compose provider on `PATH`, run:
 
 ```sh
-node --test tests/integration/development-packaging.test.mjs tests/integration/logging-packaging.test.mjs
+node --test tests/integration/development-packaging.test.mjs tests/integration/logging-packaging.test.ts
 ```
 
 The tests inspect configuration without starting containers. Missing Compose or
@@ -217,12 +222,28 @@ probe and an old broker without durable-admission capability. Then run:
 ```sh
 umask 077
 pair_state_dir=$(mktemp -d)
-node scripts/ci/run-tests.mjs run image-pair-qualification \
+node scripts/ci/run-tests.ts run image-pair-qualification \
   --state "$pair_state_dir/state.json" --results "$pair_state_dir/results.json"
 ```
 
-The lane requires all four images and fails on skipped cases. It checks protocol
-compatibility, not cluster behavior or a live Agent workflow.
+The lane requires all four images and fails on skipped cases. It exercises the
+admission protocol in Docker. The test starts the older broker independently with
+prepared-git inputs to determine which refusal the upgrade command must report.
+If it exits before its control socket opens, the test starts the same image with
+its historical projected inputs.
+It uses a disposable, unregistered App key and a container with no external
+network. It checks the exact HTTP 404 response, then adds only the prepared-git
+authority arguments and verifies that the broker exits before opening the socket.
+The upgrade command uses prepared-git inputs for every invocation.
+
+If cancellation leaves an `oce-old-pair-*` directory under the test's temporary
+directory, read its `owner.json`. The `testOwner` field records the host, PID and
+process start time. On that host, confirm the process has exited or the PID has
+a different start time. For a remaining `oce-old-pair-<probeOwner>` container,
+verify its `org.openclaw.test.owner` and `openclaw.upgrade-probe` labels match
+`testOwner` and `probeOwner`, and its bind mounts point into that directory.
+Remove the container by ID and remove that directory. Leave the fixture in place
+if ownership is uncertain.
 
 ## Runtime image startup test environment
 

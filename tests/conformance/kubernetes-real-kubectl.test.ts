@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { AssertionError } from "node:assert";
-import { execFile, type ExecFileException } from "node:child_process";
+import { ChildProcess, execFile, type ExecFileException } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { once } from "node:events";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { type TestContext } from "node:test";
@@ -12,10 +14,15 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import {
   abandonedTeardownExitGraceMs,
-  assertProbeDenied,
   boundedTeardown,
+  teardownStepLimitMs,
+  withBoundedTeardown,
+} from "../helpers/bounded-teardown.ts";
+import {
+  assertProbeDenied,
   createKubernetesClient,
-  deleteNamespaceExplained as deleteNamespaceExplainedJs,
+  createRealKubernetesFixture,
+  deleteNamespaceExplained,
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
   inlineProbeCommand,
@@ -23,15 +30,13 @@ import {
   namespaceAlreadyTerminating,
   PROBE_DENIED_EXIT_CODE,
   probeDenial,
-  retryKubectlRead as retryKubectlReadJs,
-  retryKubectlWrite as retryKubectlWriteJs,
-  teardownStepLimitMs,
-  withBoundedTeardown,
+  retryKubectlRead,
+  retryKubectlWrite,
   withinDiagnosticDeadline,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 import { refusingPort } from "../helpers/available-port.ts";
 import { listen } from "../helpers/listen.ts";
-import { withEnvironment } from "../helpers/environment.ts";
+import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
 import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import {
@@ -55,26 +60,13 @@ type RetryOptions = {
   log: (message: string) => void;
 };
 type RetryOperation = <T>(operation: () => Promise<T>, options: RetryOptions) => Promise<T>;
-type Kubectl = (...args: string[]) => Promise<string>;
 type DiagnosticSleep = (
   ms: number,
   value: undefined,
   options: { signal: AbortSignal },
 ) => Promise<undefined>;
 
-// The JavaScript helpers accept these fixture inputs at runtime; inference from their defaults
-// otherwise narrows callback return values and treats unused fixture settings as required.
-const retryKubectlRead = retryKubectlReadJs as RetryOperation;
-const retryKubectlWrite = retryKubectlWriteJs as <T>(
-  operation: () => Promise<T>,
-  options: RetryOptions & { applied?: RegExp },
-) => Promise<T | "">;
 const retryModelAtCapacity = retryModelAtCapacityJs as RetryOperation;
-const deleteNamespaceExplained = deleteNamespaceExplainedJs as (
-  kubectl: Kubectl,
-  namespace: string,
-  options?: { timeout?: string; listTimeoutMs?: number; sleep?: DiagnosticSleep },
-) => Promise<unknown>;
 const createOpenShellKubernetesFixture = createOpenShellKubernetesFixtureJs as (options: {
   kubeconfigPath: string;
   kubernetesContext: string;
@@ -136,7 +128,7 @@ function expectError(value: unknown): Error {
 }
 
 const execute = promisify(execFile);
-const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mjs", import.meta.url));
+const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mts", import.meta.url));
 
 // execFile rejects a non-zero kubectl exit with a numeric code and the
 // captured stderr; a spawn failure has a string code and no stderr.
@@ -168,6 +160,120 @@ function recordingOptions() {
       log: (message: string) => logs.push(message),
     },
   };
+}
+
+for (const { name, chunks, exitCode } of [
+  {
+    name: "intact readiness after a banner",
+    chunks: ["starting port-forward\nForwarding from 127.0.0.1:34567 -> 8080\n"],
+  },
+  {
+    name: "split readiness prefix",
+    chunks: ["Forwar", "ding from 127.0.0.1:34567 -> 8080\n"],
+  },
+  {
+    name: "split readiness port",
+    chunks: ["Forwarding from 127.0.0.1:34", "567 -> 8080\n"],
+  },
+  {
+    name: "split overlong banner before readiness",
+    chunks: [
+      "starting port-forward ".repeat(8),
+      "Forwarding from 127.0.0.1:12345 -> 8080\nForwarding from 127.0.0.1:34567 -> 8080\r\n",
+    ],
+  },
+  {
+    name: "unterminated readiness before exit",
+    chunks: ["Forwarding from 127.0.0.1:34567 -> 8080"],
+    exitCode: 7,
+  },
+]) {
+  test(`kubectl port-forward handles ${name}`, { timeout: 5_000 }, async (t) => {
+    const directory = mkdtempSync(join(tmpdir(), "occ-port-forward-"));
+    // Restore PATH before the child and directory cleanup hooks can fail.
+    setEnvironment(t, { PATH: directory });
+    const ack = join(directory, "stdout-ack");
+    const kubeconfigPath = join(directory, "unused-kubeconfig");
+    let cleaningUp = false;
+    let stopChild: (() => Promise<void>) | undefined;
+    const commandReady = writeCommand(
+      directory,
+      "kubectl",
+      `
+const { existsSync } = process.getBuiltinModule("node:fs");
+const { setTimeout } = process.getBuiltinModule("node:timers/promises");
+const chunks = ${JSON.stringify(chunks)};
+for (const [index, chunk] of chunks.entries()) {
+  process.stdout.write(chunk);
+  while (!existsSync(${JSON.stringify(ack)} + index)) await setTimeout(5);
+}
+${exitCode === undefined ? "setInterval(() => {}, 1000);" : `process.exit(${exitCode});`}
+`,
+      { interpreter: process.execPath },
+    );
+    t.after(async () => {
+      cleaningUp = true;
+      await stopChild?.();
+      // Finish any in-progress file operation before removing its directory.
+      await commandReady.catch(() => {});
+      await rm(directory, { recursive: true, force: true });
+    });
+    await commandReady;
+    t.signal.throwIfAborted();
+
+    // Observe the actual pipe reads and release each write only after its bytes
+    // were read. The test exercises the same spawn and readiness path as kubectl.
+    const emit = ChildProcess.prototype.emit;
+    t.mock.method(
+      ChildProcess.prototype,
+      "emit",
+      function (this: ChildProcess, ...args: Parameters<typeof emit>) {
+        if (
+          args[0] === "spawn" &&
+          this.spawnfile === "kubectl" &&
+          this.spawnargs.includes(kubeconfigPath)
+        ) {
+          const { stdout } = this;
+          const closed = new Promise<void>((resolve) => this.once("close", () => resolve()));
+          let remaining = "";
+          let index = 0;
+          const acknowledge = (buffer: Buffer) => {
+            if (cleaningUp || t.signal.aborted) {
+              return;
+            }
+            remaining += buffer.toString();
+            if (remaining === chunks[index]) {
+              writeFileSync(`${ack}${index}`, "");
+              index++;
+              remaining = "";
+            }
+          };
+          stdout?.on("data", acknowledge);
+          stopChild = async () => {
+            stdout?.off("data", acknowledge);
+            if (this.exitCode === null && this.signalCode === null) {
+              this.kill("SIGKILL");
+            }
+            await closed;
+          };
+        }
+        return emit.apply(this, args);
+      },
+    );
+
+    const fixture = createRealKubernetesFixture({ kubeconfigPath, kubernetesContext: "fixture" });
+    const started = fixture.startPortForwardTarget("fixture", "service/gateway", "0:8080");
+    if (exitCode !== undefined) {
+      await assert.rejects(started, /port-forward exited \(7\)/);
+      return;
+    }
+    const forward = await started;
+    try {
+      assert.equal(forward.url, "http://127.0.0.1:34567");
+    } finally {
+      await forward.stop();
+    }
+  });
 }
 
 test("a kubectl read retries a dropped exec stream and returns the next attempt's output", async () => {
@@ -1256,7 +1362,7 @@ test(
   },
 );
 
-const kubernetesHelperUrl = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
+const teardownHelperUrl = new URL("../helpers/bounded-teardown.ts", import.meta.url).href;
 const openShellHelperUrl = new URL("../helpers/openshell-kubernetes-real.mjs", import.meta.url)
   .href;
 const topologyHelperUrl = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url).href;
@@ -1287,7 +1393,7 @@ test(
     // Registering all six as one cleanup would attempt only the worker stop.
     const exited = await runFailingTestScript(`
       import test from "node:test";
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       import { registerOpenShellInstallationCleanups } from ${JSON.stringify(openShellHelperUrl)};
       const attempt = (name) => process.stdout.write("attempted " + name + "\\n");
       test("proof", async (testContext) => {
@@ -1530,7 +1636,7 @@ test(
     const exited = await runFailingTestScript(`
       import test from "node:test";
       import { setTimeout as delay } from "node:timers/promises";
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       test("setup outlives its timeout", { timeout: 200 }, async (testContext) => {
         const { context } = boundedTeardown(testContext, { stepLimitMs: 1000, exitGraceMs: 100 });
         context.after(() => process.stdout.write("attempted early cleanup\\n"));
@@ -1565,7 +1671,7 @@ test(
     const exited = await runFailingTestScript(`
       import { after, beforeEach, describe, it } from "node:test";
       import { setTimeout as delay } from "node:timers/promises";
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       after(async () => {
         await delay(500);
         process.stdout.write("attempted file after\\n");
@@ -1626,7 +1732,7 @@ test(
       import test from "node:test";
       import { rm, writeFile } from "node:fs/promises";
       import { setTimeout as delay } from "node:timers/promises";
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       const acquire = async (path) => {
         await writeFile(path, "held");
         process.stdout.write("acquired " + path + "\\n");
@@ -1664,7 +1770,7 @@ test(
     // which waits for that setup only to its limit.
     const exited = await runFailingTestScript(`
       import test from "node:test";
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       test("never stops", { timeout: 200 }, async (testContext) => {
         boundedTeardown(testContext, { label: "setup", stepLimitMs: 1_000, exitGraceMs: 200 });
         await new Promise(() => setInterval(() => {}, 50));
@@ -1688,7 +1794,7 @@ test(
     // A late registration throws to stop the setup; a list that stopped at its first entry would
     // leave every resource behind the later entries (the pools, Namespaces and directories).
     const exited = await runTestScript(`
-      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { boundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       import {
         productionTopologyCleanupOrder,
         registerProductionTopologyCleanups,
@@ -1793,7 +1899,7 @@ test(
     // cleanup, as before, would attempt only the gateway forward and the worker stop.
     const exited = await runFailingTestScript(`
       import test from "node:test";
-      import { withBoundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import { withBoundedTeardown } from ${JSON.stringify(teardownHelperUrl)};
       import {
         productionTopologyCleanupOrder,
         registerProductionTopologyCleanups,
@@ -1912,7 +2018,7 @@ test(
     // Tests per file: each must reach arrangeProductionTopology, so a new test bumps its count.
     const files = {
       "harness-topology-k3d-real.test.mjs": 7,
-      "harness-topology-k3d-otel-real.test.mjs": 2,
+      "harness-topology-k3d-otel-real.test.ts": 2,
       "harness-topology-k3d-slack-real.test.mjs": 1,
     };
     // Settle every file before asserting, so no child still writes once the directory is removed.
@@ -2289,7 +2395,7 @@ test("only the probe's denial exit code with its stdout report is a denial", () 
 });
 
 // The Gateway container does not mount the probe fixture, so the Gateway
-// connect check (finding 335) runs probe.mjs from its source text.
+// connect check (finding 335) runs the stripped probe source inline.
 async function fakeKubectlExecInline(source: string, ...probeArguments: Array<string | number>) {
   const [node, script, ...args]: unknown[] = inlineProbeCommand(source, ...probeArguments);
   assert.equal(node, "node");

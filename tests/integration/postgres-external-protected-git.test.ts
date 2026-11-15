@@ -2571,7 +2571,7 @@ function externalGitJourney(
         await startWorker();
         await f.work(replacementWork, "failed_permanent");
         assert.equal(
-          (await f.workResult(replacementWork)).rows[0].reason_code,
+          (await f.workResult(replacementWork)).rows[0]?.reason_code,
           "AUTHORIZATION_DENIED",
         );
         await waitFor("original removal resumes after denied replacement", async () => {
@@ -2600,7 +2600,7 @@ function externalGitJourney(
         const maintenance = { id: agentId, idempotencyKey: resumedWork.idempotency_key };
         await f.work(maintenance, "succeeded");
         assert.equal(
-          (await f.workResult(maintenance)).rows[0].reason_code,
+          (await f.workResult(maintenance)).rows[0]?.reason_code,
           "REPOSITORY_ACCESS_WITHDRAWN",
         );
         await f.stop();

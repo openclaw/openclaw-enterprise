@@ -1,6 +1,6 @@
 // The embedded Gateway restart after an unclean stop, shared by
 // runtime-image-gateway-unclean-restart.test.ts (Docker and Kubernetes recovery,
-// Image Runtime Startup 2) and runtime-image-gateway-retained-state.test.mjs
+// Image Runtime Startup 2) and runtime-image-gateway-retained-state.test.ts
 // (operator-confirmed recovery, Image Runtime Startup). Each case takes about a
 // minute of Gateway starts and first turns, so CI runs them in two lanes rather
 // than one after another in one. It starts the wrapper through the same scenario

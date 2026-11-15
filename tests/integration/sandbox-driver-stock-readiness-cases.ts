@@ -10,9 +10,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function verifyStockReadinessEvidence(
-  product: MessageTypeDefinition<object, unknown>,
-  stock: MessageTypeDefinition<object, unknown>,
+  productDefinitions: PackageDefinition,
+  stockDefinitions: PackageDefinition,
 ): void {
+  const readiness = "openshell.v1.ProviderReadinessStatus";
+  const product = message(productDefinitions, readiness);
+  const stock = message(stockDefinitions, readiness);
   const evidence = {
     state: "PROVIDER_READINESS_STATE_READY",
     network_instance_id: "network-one",
@@ -62,14 +65,15 @@ export function verifyStockReadinessEvidence(
 }
 
 function verifyStockRoundTrip(
-  product: MessageTypeDefinition<object, object>,
-  stock: MessageTypeDefinition<object, object>,
+  product: MessageTypeDefinition<object, unknown>,
+  stock: MessageTypeDefinition<object, unknown>,
   evidence: object,
   expectedStock: object,
 ): void {
   const bytes = product.serialize(evidence);
   assert.deepEqual(product.deserialize(bytes), evidence);
   const decoded = stock.deserialize(bytes);
+  assert.ok(isRecord(decoded));
   assert.deepEqual(decoded, expectedStock);
   assert.deepEqual(product.deserialize(stock.serialize(decoded)), expectedStock);
 }
@@ -77,12 +81,13 @@ function verifyStockRoundTrip(
 function message(
   definitions: PackageDefinition,
   name: string,
-): MessageTypeDefinition<object, object> {
+): MessageTypeDefinition<object, unknown> {
   const definition = definitions[name];
   assert.ok(
     definition &&
       "format" in definition &&
       definition.format === "Protocol Buffer 3 DescriptorProto",
+    `Missing protobuf message ${name}`,
   );
   return definition;
 }
