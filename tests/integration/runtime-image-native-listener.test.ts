@@ -2,18 +2,26 @@
 // one after another, so CI can run them on another lane: the pinned Gateway
 // proves why Compute admission refuses native listener TLS and binds that
 // cannot serve Pod-IP traffic.
+import type { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.mjs";
 import assert from "node:assert/strict";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { randomBytes } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { copyFile, chmod, readFile, writeFile } from "node:fs/promises";
+import { isIPv4 } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 import {
   cpuScaledImageTimeoutMs,
   imageSmokeTimeoutMultiplier,
-} from "../helpers/image-smoke-timeout.mjs";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+} from "../helpers/image-smoke-timeout.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { asRecord } from "../../packages/utils/src/objects.ts";
+import type {
+  OpenClawConfigurationDocument,
+  OpenClawConfigurationValue,
+} from "../../packages/contracts/src/index.ts";
+import { isStringArray, type ProxyRequest } from "../fixtures/runtime-native-trusted-proxy.mts";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   image,
@@ -26,6 +34,88 @@ import {
   waitForContainerReady,
 } from "../helpers/runtime-image-startup.mjs";
 import { eachSettled } from "../helpers/child-processes.mjs";
+
+type BindSettings = {
+  bind?: "loopback" | "custom" | "tailnet" | "lan" | "auto";
+  customBindHost?: string;
+};
+type ScopeExpectation =
+  | { status: number; body?: RegExp; nativeSessions?: boolean; scopes?: never }
+  | { status: "hello"; scopes: string[]; body?: never; nativeSessions?: never }
+  | {
+      status: "connect-error" | "operation-ok" | "operation-denied";
+      body?: RegExp;
+      scopes?: never;
+      nativeSessions?: never;
+    };
+type ScopeCase = [
+  label: string,
+  auth: OpenClawConfigurationDocument,
+  adjust: ((configuration: OpenClawConfigurationDocument) => void) | undefined,
+  requests: Array<[ProxyRequest, ScopeExpectation]>,
+];
+
+function isConfigurationValue(value: unknown): value is OpenClawConfigurationValue {
+  if (value === null || typeof value === "boolean" || typeof value === "string") {
+    return true;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+  if (Array.isArray(value)) {
+    return value.every(isConfigurationValue);
+  }
+  return isConfigurationDocument(value);
+}
+
+function isConfigurationDocument(value: unknown): value is OpenClawConfigurationDocument {
+  const record = asRecord(value);
+  return record !== undefined && Object.values(record).every(isConfigurationValue);
+}
+
+function renderNativeGateway(
+  driver: KubernetesComputeDriver,
+  input: OpenClawConfigurationDocument,
+): OpenClawConfigurationDocument {
+  // The production renderer is private, so its emitted declaration has no signature.
+  const output: unknown = driver["kubernetesGatewayConfigurationDocument"](input);
+  assert.ok(isConfigurationDocument(output), "Expected a rendered Gateway configuration document");
+  return output;
+}
+
+function gatewaySettings(configuration: Readonly<Record<string, unknown>>) {
+  const gateway = asRecord(configuration.gateway);
+  assert.ok(gateway, "Missing rendered Gateway settings");
+  return gateway;
+}
+
+function trustedProxySettings(configuration: Readonly<Record<string, unknown>>) {
+  const trustedProxy = asRecord(asRecord(gatewaySettings(configuration).auth)?.trustedProxy);
+  assert.ok(trustedProxy, "Missing rendered trusted-proxy settings");
+  return trustedProxy;
+}
+
+function setCountingProvider(configuration: Readonly<Record<string, unknown>>, apiKey: string) {
+  const model = asRecord(asRecord(asRecord(configuration.models)?.providers)?.openai);
+  assert.ok(model, "Missing rendered OpenAI provider");
+  model.baseUrl = "http://127.0.0.1:18880/v1";
+  model.apiKey = apiKey;
+}
+
+function observations(json: string, count: number): unknown[] {
+  const input: unknown = JSON.parse(json);
+  assert.ok(Array.isArray(input), "Expected an observation array");
+  assert.equal(input.length, count, "Unexpected observation count");
+  return input;
+}
+
+async function containerIPv4(containerName: string, network: string) {
+  const [inspected] = observations((await runDocker(["inspect", containerName])).stdout, 1);
+  const networks = asRecord(asRecord(asRecord(inspected)?.NetworkSettings)?.Networks);
+  const address = asRecord(networks?.[network])?.IPAddress;
+  assert.ok(typeof address === "string" && isIPv4(address), "Missing container IPv4 address");
+  return address;
+}
 
 // The loopback provider owns all possible requests; no model turn is sent.
 const countingProvider = String.raw`
@@ -41,7 +131,7 @@ http.createServer((req, res) => {
 // One docker exec polls the listener (see waitForContainerReady). The wait scales
 // with the runner's CPUs: the lane's other files start runtimes at the same time
 // (finding 2448). The 90 s base keeps the former limit: 80 probes of about 1 s each.
-async function waitForListenerReady(containerName, request) {
+async function waitForListenerReady(containerName: string, request: string) {
   try {
     await waitForContainerReady(containerName, {
       label: "Listener",
@@ -53,12 +143,13 @@ async function waitForListenerReady(containerName, request) {
       (result) => failureTail(commandOutput(result)),
       () => "Docker logs unavailable.",
     );
+    assert.ok(error instanceof Error);
     error.message += `\nContainer logs:\n${logs}`;
     throw error;
   }
 }
 
-async function assertNoModelRequests(containerName) {
+async function assertNoModelRequests(containerName: string) {
   const counter = await runDocker([
     "exec",
     containerName,
@@ -77,12 +168,12 @@ test(
     const directory = await temporaryDirectory(t, "oce-native-listener-tls-");
     // Each case owns its container and configuration file, so both run at once.
     await eachSettled([true, false], async (enabled) => {
-      const configuration = drivers[0][1].kubernetesGatewayConfigurationDocument(
+      const configuration = renderNativeGateway(
+        drivers[0][1],
         createAdmittedRuntimeImageConfiguration("openclaw"),
       );
-      configuration.models.providers.openai.baseUrl = "http://127.0.0.1:18880/v1";
-      configuration.models.providers.openai.apiKey = "synthetic-owned-native-tls";
-      configuration.gateway.tls = {
+      setCountingProvider(configuration, "synthetic-owned-native-tls");
+      gatewaySettings(configuration).tls = {
         enabled,
         autoGenerate: true,
         certPath: "/home/node/tls/cert.pem",
@@ -168,7 +259,7 @@ test(
     const driver = plaintextGatewayComputeDrivers()[0][1];
     const network = `oce-native-bind-${randomBytes(6).toString("hex")}`;
     await runDocker(["network", "create", "--internal", network]);
-    const runtimeCleanups = [];
+    const runtimeCleanups: Array<() => unknown> = [];
     t.after(async () => {
       for (const cleanup of runtimeCleanups.reverse()) {
         await cleanup();
@@ -178,7 +269,7 @@ test(
     const directory = await temporaryDirectory(t, "oce-native-bind-");
     // Each case owns its container and configuration file, so the cases run
     // concurrently on the shared internal network.
-    const bindCases = [
+    const bindCases: ReadonlyArray<[BindSettings, boolean]> = [
       [{ bind: "loopback" }, false],
       [{ bind: "custom", customBindHost: "127.0.0.1" }, false],
       [{ bind: "tailnet" }, false],
@@ -188,13 +279,14 @@ test(
       [{}, true],
     ];
     await eachSettled(bindCases, async ([gateway, reachable], index) => {
-      const configuration = driver.kubernetesGatewayConfigurationDocument(
+      const configuration = renderNativeGateway(
+        driver,
         createAdmittedRuntimeImageConfiguration("openclaw"),
       );
-      delete configuration.gateway.bind;
-      Object.assign(configuration.gateway, gateway);
-      configuration.models.providers.openai.baseUrl = "http://127.0.0.1:18880/v1";
-      configuration.models.providers.openai.apiKey = "synthetic-owned-native-bind";
+      const renderedGateway = gatewaySettings(configuration);
+      delete renderedGateway.bind;
+      Object.assign(renderedGateway, gateway);
+      setCountingProvider(configuration, "synthetic-owned-native-bind");
       const path = join(directory, `openclaw-${index}.json`);
       // Private directory, read-only mount, synthetic input readable by native UID1000.
       await writeFile(path, JSON.stringify(configuration), { mode: 0o644 });
@@ -223,9 +315,7 @@ test(
         containerName,
         '() => fetch("http://127.0.0.1:18791/readyz",{signal:AbortSignal.timeout(5000)}).then(r=>r.status)',
       );
-      const inspected = JSON.parse((await runDocker(["inspect", containerName])).stdout)[0];
-      const address = inspected.NetworkSettings.Networks[network].IPAddress;
-      assert.ok(address);
+      const address = await containerIPv4(containerName, network);
       // One container on the network polls both ports until the status listener
       // answers 200 and the native port settles (200 or refused). The status
       // readiness asks the native Gateway with 2 s limits, so on a CPU-starved
@@ -239,19 +329,24 @@ test(
           "--pull=never",
           "--network",
           network,
+          "-i",
           "--entrypoint",
           "node",
           image,
-          "-e",
-          // A fixed program: the address and expectation are arguments, not code.
-          'const [budget,address,reachable]=process.argv.slice(1);const deadline=Date.now()+Number(budget);const probe=async port=>{try{const r=await fetch("http://"+address+":"+port+"/readyz",{signal:AbortSignal.timeout(3000)});return {port,status:r.status};}catch(e){return {port,error:e.cause?.code??e.name};}};(async()=>{for(;;){const v=await Promise.all([8080,18791].map(probe));if((v[1].status===200&&(reachable==="true"?v[0].status===200:v[0].error==="ECONNREFUSED"))||Date.now()>=deadline){console.log(JSON.stringify(v));return;}await new Promise(r=>setTimeout(r,500));}})();',
+          "--input-type=module-typescript",
+          "-",
           String(remoteBudgetMs),
           address,
           String(reachable),
         ],
         { timeout: remoteBudgetMs + 60_000 * imageSmokeTimeoutMultiplier },
+        await readFile(new URL("../fixtures/runtime-native-listener-peer.mts", import.meta.url)),
       );
-      const [native, status] = JSON.parse(remote.stdout.trim());
+      const [native, status] = observations(remote.stdout, 2).map(asRecord);
+      assert.ok(native);
+      assert.ok(status);
+      assert.equal(native.port, 8080);
+      assert.equal(status.port, 18791);
       assert.equal(status.status, 200);
       if (reachable) {
         assert.equal(native.status, 200);
@@ -272,91 +367,6 @@ test(
   },
 );
 
-// The probe stands in for the proxy on the Gateway's network: native HTTP calls
-// or a WebSocket connect as an operator without a device.
-const trustedProxyProbe = String.raw`
-import WebSocket from "/app/node_modules/ws/index.js";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
-const [address, encoded] = process.argv.slice(2);
-const proxyHeaders = ({ identity, scopes }) => ({
-  "x-real-ip": "192.0.2.10",
-  "x-occ-identity": identity,
-  ...(scopes === undefined ? {} : { "x-openclaw-scopes": scopes }),
-});
-async function http(request) {
-  const invoke = request.operation === "sessions_list";
-  const path = invoke ? "/tools/invoke" : "/sessions/probe-session/kill";
-  const response = await fetch("http://" + address + ":8080" + path, {
-    method: "POST",
-    headers: { ...proxyHeaders(request), ...(invoke ? { "content-type": "application/json" } : {}) },
-    ...(invoke ? { body: JSON.stringify({ tool: "sessions_list", args: {} }) } : {}),
-    signal: AbortSignal.timeout(10000),
-  });
-  return { status: response.status, body: await response.text() };
-}
-function ws(request) {
-  return new Promise((resolve) => {
-    const socket = new WebSocket("ws://" + address + ":8080", { headers: {
-      ...proxyHeaders(request),
-      ...(request.device ? { origin: "https://agent.example.test" } : {}),
-    } });
-    const timer = setTimeout(() => { socket.terminate(); resolve({ status: "timeout" }); }, 15000);
-    const done = (value) => { clearTimeout(timer); socket.close(); resolve(value); };
-    socket.on("unexpected-response", (_request, response) => done({ status: "handshake-refused", http: response.statusCode }));
-    socket.on("error", (error) => done({ status: "error", body: error.message }));
-    socket.on("close", (code, reason) => done({ status: "closed", code, body: String(reason) }));
-    socket.on("message", (data) => {
-      const message = JSON.parse(String(data));
-      if (message.type === "event" && message.event === "connect.challenge") {
-        const client = request.device
-          ? { id: "openclaw-control-ui", version: "1.0.0", platform: "linux", mode: "ui" }
-          : { id: "gateway-client", version: "1.0.0", platform: "linux", mode: "backend" };
-        const scopes = request.requestedScopes ?? [];
-        let device;
-        if (request.device) {
-          const signedAt = Date.now();
-          const nonce = message.payload.nonce;
-          const publicKey = request.device.publicKey.export({ format: "jwk" }).x;
-          const id = createHash("sha256").update(Buffer.from(publicKey, "base64url")).digest("hex");
-          const payload = ["v3", id, client.id, client.mode, "operator", scopes.join(","), String(signedAt), request.password ?? "", nonce, "linux", ""].join("|");
-          device = { id, publicKey, signedAt, nonce, signature: sign(null, Buffer.from(payload), request.device.privateKey).toString("base64url") };
-        }
-        socket.send(JSON.stringify({ type: "req", id: "connect", method: "connect", params: {
-          minProtocol: 4, maxProtocol: 4, client,
-          caps: [], commands: [], role: "operator", scopes,
-          ...(device ? { device } : {}),
-          ...(request.password ? { auth: { password: request.password } } : {}),
-        } }));
-      } else if (message.type === "res" && message.id === "connect") {
-        if (message.ok && request.method) {
-          socket.send(JSON.stringify({ type: "req", id: "operation", method: request.method, params: request.params ?? {} }));
-        } else {
-          done(message.ok
-            ? { status: "hello", scopes: message.payload?.auth?.scopes, deviceToken: message.payload?.auth?.deviceToken }
-            : { status: "connect-error", body: JSON.stringify(message.error) });
-        }
-      } else if (message.type === "res" && message.id === "operation") {
-        done({ status: message.ok ? "operation-ok" : "operation-denied", body: JSON.stringify(message.error ?? message.payload) });
-      }
-    });
-  });
-}
-const requests = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
-const outcomes = await Promise.all(requests.map(async (request) => {
-  if (request.kind !== "ws") return http(request);
-  if (!request.paired) return ws(request);
-  // Pair through the existing admin route, then reuse that privileged device on chat.
-  // This proves an already privileged device cannot widen the chat connection's ceiling.
-  const device = generateKeyPairSync("ed25519");
-  const paired = await ws({ ...request, device, method: undefined, scopes: "operator.admin", requestedScopes: ["operator.admin"] });
-  if (paired.status !== "hello" || paired.deviceToken !== undefined || !paired.scopes.includes("operator.admin")) {
-    return { status: "pairing-failed", body: JSON.stringify({ status: paired.status, scopes: paired.scopes, body: paired.body }) };
-  }
-  return ws({ ...request, device, requestedScopes: ["operator.admin"] });
-}));
-console.log(JSON.stringify(outcomes));
-`;
-
 // Native HTTP APIs ignore identityScopes: a trusted-proxy request without
 // x-openclaw-scopes receives the pinned Gateway's default operator scopes, admin
 // included. Compute requires it for human ingress and private routed access. The admin
@@ -370,19 +380,38 @@ test(
     });
     const network = `oce-native-scopes-${randomBytes(6).toString("hex")}`;
     await runDocker(["network", "create", "--internal", network]);
-    const runtimeCleanups = [];
+    const runtimeCleanups: Array<() => unknown> = [];
     t.after(async () => {
       for (const cleanup of runtimeCleanups.reverse()) {
         await cleanup();
       }
       await runDocker(["network", "rm", network]);
     });
-    const subnet = JSON.parse((await runDocker(["network", "inspect", network])).stdout)[0].IPAM
-      .Config[0].Subnet;
-    assert.ok(subnet);
+    const networkInspection = observations(
+      (await runDocker(["network", "inspect", network])).stdout,
+      1,
+    );
+    const ipam = asRecord(asRecord(networkInspection[0])?.IPAM);
+    assert.ok(Array.isArray(ipam?.Config), "Missing network IPAM configuration");
+    const subnet = asRecord(ipam.Config[0])?.Subnet;
+    assert.ok(typeof subnet === "string", "Missing proxy network subnet");
+    const [networkAddress, prefix, extra] = subnet.split("/");
+    assert.ok(
+      networkAddress &&
+        isIPv4(networkAddress) &&
+        prefix &&
+        /^([0-9]|[12][0-9]|3[0-2])$/.test(prefix) &&
+        extra === undefined,
+      "Invalid proxy network IPv4 CIDR",
+    );
+
     const directory = await temporaryDirectory(t, "oce-native-scopes-");
-    const probePath = join(directory, "probe.mjs");
-    await writeFile(probePath, trustedProxyProbe, { mode: 0o644 });
+    const probePath = join(directory, "probe.mts");
+    await copyFile(
+      new URL("../fixtures/runtime-native-trusted-proxy.mts", import.meta.url),
+      probePath,
+    );
+    await chmod(probePath, 0o644);
     const humanAuth = {
       mode: "trusted-proxy",
       trustedProxy: {
@@ -401,7 +430,7 @@ test(
     // its missing-header/read-only denials; a missing-session 404 alone proves no I/O.
     // WebSocket: a refused proxy identity falls back to device authentication, which this
     // device-less operator connect cannot satisfy; "hello" carries the granted scopes.
-    const scopeCases = [
+    const scopeCases: readonly ScopeCase[] = [
       [
         "human admitted",
         humanAuth,
@@ -463,7 +492,7 @@ test(
           // owner on HTTP when the proxy omits the header, while WebSocket connects honour
           // identityScopes. Should an OpenClaw pin bump close this, drop this case and
           // reconsider the requirement rather than adjust the expectation.
-          delete configuration.gateway.auth.trustedProxy.requiredHeaders;
+          delete trustedProxySettings(configuration).requiredHeaders;
         },
         [
           [{ identity: "oidc:member-01" }, { status: 404, body: /Session not found/ }],
@@ -498,7 +527,7 @@ test(
           identityScopes: { "occ-workspace-files": ["operator.admin"] },
         },
         (configuration) => {
-          configuration.gateway.controlUi = {
+          gatewaySettings(configuration).controlUi = {
             enabled: true,
             allowedOrigins: ["https://agent.example.test"],
           };
@@ -584,20 +613,21 @@ test(
     ];
     await eachSettled(scopeCases, async ([label, auth, adjust, requests], index) => {
       // Admitted configurations are frozen; the auth block is this case's input.
-      const input = structuredClone(createAdmittedRuntimeImageConfiguration("openclaw"));
-      if (auth !== undefined) {
-        input.gateway = { ...input.gateway, auth: structuredClone(auth) };
-      }
-      const configuration = driver.kubernetesGatewayConfigurationDocument(input);
-      assert.deepEqual(configuration.gateway.auth.trustedProxy.requiredHeaders, [
-        "x-openclaw-scopes",
-      ]);
+      const input: OpenClawConfigurationDocument = structuredClone(
+        createAdmittedRuntimeImageConfiguration("openclaw"),
+      );
+      const gateway = input.gateway;
+      assert.ok(gateway && typeof gateway === "object" && !Array.isArray(gateway));
+      const configuration = renderNativeGateway(driver, {
+        ...input,
+        gateway: { ...gateway, auth },
+      });
+      assert.deepEqual(trustedProxySettings(configuration).requiredHeaders, ["x-openclaw-scopes"]);
       // The probe container stands in for the proxy; Compute renders the Installation's
       // CIDRs, which cannot name this test network.
-      configuration.gateway.trustedProxies = [subnet];
+      gatewaySettings(configuration).trustedProxies = [subnet];
       adjust?.(configuration);
-      configuration.models.providers.openai.baseUrl = "http://127.0.0.1:18880/v1";
-      configuration.models.providers.openai.apiKey = "synthetic-owned-native-scopes";
+      setCountingProvider(configuration, "synthetic-owned-native-scopes");
       const path = join(directory, `openclaw-${index}.json`);
       await writeFile(path, JSON.stringify(configuration), { mode: 0o644 });
       const { containerName } = await runGatewaySmoke(
@@ -623,9 +653,7 @@ test(
         containerName,
         '() => fetch("http://127.0.0.1:8080/readyz", {signal: AbortSignal.timeout(5000)}).then(r => r.status)',
       );
-      const inspected = JSON.parse((await runDocker(["inspect", containerName])).stdout)[0];
-      const address = inspected.NetworkSettings.Networks[network].IPAddress;
-      assert.ok(address);
+      const address = await containerIPv4(containerName, network);
       const remote = await runDocker([
         "run",
         "--rm",
@@ -633,37 +661,46 @@ test(
         "--network",
         network,
         "--volume",
-        `${probePath}:/probe.mjs:ro`,
+        `${probePath}:/probe.mts:ro`,
         "--entrypoint",
         "node",
         image,
-        "/probe.mjs",
+        "/probe.mts",
         address,
         Buffer.from(JSON.stringify(requests.map(([request]) => request))).toString("base64url"),
       ]);
-      const outcomes = JSON.parse(remote.stdout.trim());
+      const outcomes = observations(remote.stdout, requests.length).map(asRecord);
       for (const [position, [request, expected]] of requests.entries()) {
         const outcome = outcomes[position];
         const description = `${label}: ${request.operation ?? request.kind ?? "http"} ${request.identity} with ${
           request.scopes === undefined ? "no scope header" : `x-openclaw-scopes=${request.scopes}`
-        }: ${JSON.stringify(outcome)}`;
+        }`;
+        assert.ok(outcome, description);
         assert.equal(outcome.status, expected.status, description);
         if (expected.body !== undefined) {
-          assert.match(outcome.body, expected.body, description);
+          assert.ok(
+            typeof outcome.body === "string" && expected.body.test(outcome.body),
+            description,
+          );
         }
         if (expected.nativeSessions) {
-          const body = JSON.parse(outcome.body);
-          assert.equal(body.ok, true, description);
-          assert.ok(Array.isArray(body.result?.details?.sessions), description);
-          assert.equal(body.result.details.count, body.result.details.sessions.length, description);
+          assert.ok(typeof outcome.body === "string", description);
+          const body = asRecord(JSON.parse(outcome.body));
+          const details = asRecord(asRecord(body?.result)?.details);
+          assert.equal(body?.ok, true, description);
+          assert.ok(Array.isArray(details?.sessions), description);
+          assert.equal(details.count, details.sessions.length, description);
         }
         if (expected.scopes !== undefined) {
+          assert.ok(isStringArray(outcome.scopes), description);
           assert.deepEqual(outcome.scopes, expected.scopes, description);
-          assert.equal(outcome.deviceToken, undefined, description);
+          assert.equal(outcome.hasDeviceToken, false, description);
         }
       }
       await assertNoModelRequests(containerName);
-      t.diagnostic(`${label}: ${outcomes.map(({ status }) => status).join(",")} modelCalls=0`);
+      t.diagnostic(
+        `${label}: ${outcomes.map((outcome) => outcome?.status).join(",")} modelCalls=0`,
+      );
       await runDocker(["rm", "-f", containerName]);
     });
   },
