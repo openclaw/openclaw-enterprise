@@ -228,13 +228,13 @@ one straight after creation.
 
 ## Prepare a backup administrator login
 
-Configure [GitHub App OAuth](#github-sign-in-for-existing-accounts) or
-[OIDC](../../guides/deploy/oidc-sign-in.md), attach the identity to an enabled,
-enrolled administrator, and verify sign-in **before an incident**. GitHub App OAuth
-is not OIDC. External sign-in bypasses password email budgets and queues, not shared
-external limits or controller, database, audit and provider dependencies. Recovery
-is not guaranteed. Resetting a password reserves no admission and invalidates
-known-device recognition.
+Configure [OIDC](../../guides/deploy/oidc-sign-in.md) or
+[Google sign-in](../../guides/deploy/google-sign-in.md). Attach the provider identity
+to an enabled, enrolled administrator account and have that administrator verify
+sign-in **before an incident**. External sign-in bypasses password email budgets
+and queues. It shares external request limits and controller, database, audit and
+provider dependencies, so recovery can still fail. Resetting a password reserves
+no admission and invalidates known-device recognition.
 
 ## Session and recovery controls
 

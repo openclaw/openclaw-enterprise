@@ -9,7 +9,7 @@ status_note: "Retroactive record of changes landed on main from 2026-09-28 throu
 
 - **ID:** RFC-0024
 - **Created:** 2026-10-01
-- **Last updated:** 2026-10-28
+- **Last updated:** 2026-11-15
 - **RFC PR:** [#856](https://github.com/openclaw/openclaw-enterprise/pull/856)
 
 <a id="problem-and-decision"></a>
@@ -38,18 +38,20 @@ an ordinary account's budget or filling the recovery account's queue is a known 
 denial-of-service scenario, even with a correct password. Resetting the password does not
 reserve admission and invalidates existing browser recognition.
 
-Before an incident, configure a backup administrator login such as GitHub App OAuth or OIDC,
-attach its identity to an enabled, enrolled administrator account, and verify sign-in. GitHub
-App OAuth is not generic OIDC. External sign-in avoids the password email failure budget and
-slow lane, but shares external request limits and controller, database, audit and provider
-dependencies. It is not guaranteed recovery; see [backup administrator sign-in](../../docs/reference/authentication/external-sign-in.md#prepare-a-backup-administrator-login).
+Before an incident, configure a [backup administrator login](../../docs/reference/authentication/external-sign-in.md#prepare-a-backup-administrator-login)
+using OpenID Connect (OIDC) or Google sign-in. Attach the provider identity to an enabled, enrolled
+administrator account and have that administrator verify sign-in. External sign-in avoids the
+password email failure budget and slow lane. It shares external request limits and controller,
+database, audit and provider dependencies, so recovery can still fail.
 
 This direction does not accept or merge the RFC. An authentication maintainer must still
 review the combined design, and a human must merge this proposal manually.
 
 This record replaces only [RFC-0007's sign-in admission section](0007-human-federated-sign-in/index.md#sign-in-admission).
-[RFC-0007](0007-human-federated-sign-in/index.md) still defines GitHub sign-in, browser receipts and session keys; [RFC-0001](0001-oidc-sign-in.md)
-defines OpenID Connect (OIDC). For operating instructions, use [password and session authentication](../../docs/reference/authentication.md)
+[RFC-0007](0007-human-federated-sign-in/index.md) defines browser receipts and session keys and
+records the GitHub browser sign-in used in the September–October 2026 implementation. Direct
+GitHub browser sign-in has since been retired. [RFC-0001](0001-oidc-sign-in.md) defines OIDC.
+For operating instructions, use [password and session authentication](../../docs/reference/authentication.md)
 and [external sign-in](../../docs/reference/authentication/external-sign-in.md).
 
 <a id="context"></a>
@@ -59,11 +61,11 @@ and [external sign-in](../../docs/reference/authentication/external-sign-in.md).
 
 ## Follow Emma's attempt through the controller
 
-The password-only configuration calls Better Auth's server API directly, so its router limit
-never protected this path. With GitHub, Google or OIDC configured, the controller instead uses
-its private `/oce/password` endpoint to check a password and issue a session. Both paths now use
-[`passwordFailureAdmission`](../../apps/controller/src/auth/admission.ts). Admission decides whether
-to try the password; only a successful sign-in can establish a session.
+In the September–October 2026 implementation, the password-only configuration called Better Auth's
+server API directly, so its router limit never protected this path. With GitHub, Google or OIDC
+configured, the controller used its private `/oce/password` endpoint to check a password and issue
+a session. Both paths used [`passwordFailureAdmission`](../../apps/controller/src/auth/admission.ts).
+Admission decides whether to try the password. Only a successful sign-in can establish a session.
 
 | What the controller finds                                            | What it does                                                                                                                                                                                                                                                                                                              |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -196,9 +198,9 @@ On a matched attempt, audit `EXTERNAL_IDENTITY_REJECTED` or `PROVIDER_UNAVAILABL
 refusing our client is the latter. The bound browser can distinguish `provider-unavailable` from
 `unavailable` inside OCE. An identity authenticated for a disabled, enrolled account can receive
 `account-disabled`; we audit `ACCOUNT_DISABLED` with the user ID. Unattached or unenrolled identities,
-attempts predating other account changes, and password refusals stay generic. GitHub's optional
-organization or team check can refuse before account lookup, with `MEMBERSHIP_REQUIRED` or
-`MEMBERSHIP_UNAVAILABLE`; its separate design is in
+attempts predating other account changes, and password refusals stay generic. In the recorded
+2026 implementation, GitHub's optional organization or team check could refuse before account
+lookup with `MEMBERSHIP_REQUIRED` or `MEMBERSHIP_UNAVAILABLE`. Its separate design is in
 [#1229](https://github.com/openclaw/openclaw-enterprise/pull/1229).
 
 <a id="open-questions-for-reviewers"></a>
