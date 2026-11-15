@@ -454,9 +454,10 @@ test("selected repository standing approval binds permissions and rechecks deliv
     sandboxDriverId,
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
   });
+  const admittedAt = Date.now();
   const finiteState: RepositoryRevisionState = {
     driver: { id: "repository-credentials", implementation: "github" },
-    deadlineWallMs: Date.parse(base.createdAt) + 3_600_000,
+    deadlineWallMs: admittedAt + 3_600_000,
     bindings: [binding],
   };
   const nativeConfiguration: (harness: "codex", model: string) => AgentRevision["configuration"] =
@@ -464,6 +465,7 @@ test("selected repository standing approval binds permissions and rechecks deliv
   // The persisted revision and its protected Git plan carry the same admitted grant.
   const deliveryRevision = (repositoryCredentials: RepositoryRevisionState): AgentRevision => ({
     ...base,
+    createdAt: new Date(admittedAt).toISOString(),
     configuration: nativeConfiguration("codex", "gpt-5.1"),
     repositoryCredentials,
     executionAdmission: { version: 5, mode: "protected" },
