@@ -541,7 +541,7 @@ test(
       }))!;
     };
     const drivers = await loadDrivers(true);
-    const apiLogs: Record<string, unknown>[] = [];
+    const apiLogs: unknown[] = [];
     const apiDiagnostic = () =>
       redactedQaTail(
         JSON.stringify({ events: apiLogs.slice(-12), transportFailures }),
