@@ -3,7 +3,7 @@ import type { DriverRegistrationRef } from "../../packages/contracts/src/index.t
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
-import { access, writeFile } from "node:fs/promises";
+import { access, rename, writeFile } from "node:fs/promises";
 import https from "node:https";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
@@ -218,6 +218,10 @@ export async function preparedStandingGitPeer(
     transport.mock.restore();
     syncBuiltinESMExports();
   });
+  const issuanceEvents: {
+    code: string;
+    context: Readonly<Record<string, string | number | boolean | undefined>>;
+  }[] = [];
   const startOwner = (selectedRegistry = registry, ownerPool: PostgresPool = pool) =>
     startPreparedGitHubGitOwner(
       {
@@ -230,6 +234,7 @@ export async function preparedStandingGitPeer(
         custodyKeyPath,
         ca: tls.ca,
         startWorker: false,
+        report: (code, context = {}) => issuanceEvents.push({ code, context }),
         gitGrantApprovals: postgresRequestCredentialApprovals,
         prepareGitOnDemand: options.prepareGitOnDemand ?? false,
         ...(options.sharedGitIssuanceGeneration !== undefined && {
@@ -318,6 +323,16 @@ export async function preparedStandingGitPeer(
     registry,
     prepared,
     startOwner,
+    issuanceEvents,
+    async withoutAppKey<T>(exercise: () => Promise<T>): Promise<T> {
+      const parked = privateKeyPath + ".parked";
+      await rename(privateKeyPath, parked);
+      try {
+        return await exercise();
+      } finally {
+        await rename(parked, privateKeyPath);
+      }
+    },
     async rotateAppKey() {
       const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
       await writeFile(privateKeyPath, privateKey.export({ type: "pkcs8", format: "pem" }));

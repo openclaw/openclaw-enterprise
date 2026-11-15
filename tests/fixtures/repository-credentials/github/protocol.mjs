@@ -249,6 +249,8 @@ export function createGitHubProtocol({
     /**
      * Answer issue requests with this status and no token (201 issues again), or with this
      * raw body in place of minting.
+     * @param {number} status
+     * @param {string} [body]
      */
     setIssueStatus(status, body = undefined) {
       issueStatus = status;

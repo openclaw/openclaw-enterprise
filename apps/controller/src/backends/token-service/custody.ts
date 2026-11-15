@@ -29,10 +29,14 @@ export interface TokenAttempt<A extends TokenAdmission> {
   materialVersion?: string;
   /** Retained only for trusted cleanup, never eligible for warm reads. */
   candidate?: Uint8Array;
+  /** Verified provider expiry retained when a settlement-only response contains material. */
+  candidateExpiresAt?: number;
   /** Quarantined on a complete provider answer that refused issuance and carried no token. */
   notIssued?: true;
   /** Set by the store once the durable intent is older than its dispatch window: never dispatch. */
   readonly stale?: true;
+  /** Retained for exact-operation fencing and cleanup, never for publication. */
+  readonly settlementOnly?: true;
 }
 
 /** Private repository fragment. Admission and recovery belong to OCC. */
@@ -57,6 +61,15 @@ export interface TokenReadPort<A extends TokenAdmission> {
 }
 
 export interface TokenPreparationStore<A extends TokenAdmission> extends TokenReadPort<A> {
+  /** Include this exact operation in a bounded projection, even after its live bound ends. */
+  forAttempt?(attemptId: string, admission: A): TokenPreparationStore<A>;
+  /** Exact captured response only; cannot publish or read current material after takeover. */
+  retainCaptured?(
+    admission: A,
+    attemptId: string,
+    candidate: Uint8Array,
+    providerExpiresAt?: number,
+  ): Promise<void>;
   /**
    * Serializable durable transaction/CAS under a family-wide lock shared with
    * admission, withdrawal and takeover. Commit the entire fragment atomically

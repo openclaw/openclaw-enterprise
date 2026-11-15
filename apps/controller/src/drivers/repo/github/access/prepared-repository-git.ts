@@ -326,6 +326,7 @@ type PrepareApprovedGit = (
   source: PreparedRepositoryGitSource,
   deadline: number,
   signal: AbortSignal,
+  warmVersion?: InstalledTokenVersion,
 ) => Promise<void | InstalledTokenVersion>;
 
 type GitGrantDecision =
@@ -353,6 +354,7 @@ type GitUseDecision =
       readonly source: PreparedRepositoryGitSource;
       readonly decisionBy: string;
       readonly needsPreparation: boolean;
+      readonly sharedVersion?: InstalledTokenVersion;
       readonly releaseLifetimeMs: number;
     };
 const sendPermit = (use: GitUse, sendStartBy: string) =>
@@ -1039,12 +1041,17 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       if (!Number.isFinite(releaseLifetimeMs) || releaseLifetimeMs > 30_000 || !active()) {
         return;
       }
-      let sharedVersion: void | InstalledTokenVersion = undefined;
+      let sharedVersion: void | InstalledTokenVersion = authorized.sharedVersion;
       if (authorized.needsPreparation) {
         if (!prepareApproved) {
           return;
         }
-        sharedVersion = await prepareApproved(authorized.source, deadline, signal);
+        sharedVersion = await prepareApproved(
+          authorized.source,
+          deadline,
+          signal,
+          authorized.sharedVersion,
+        );
       }
       if (!active()) {
         return;
@@ -1398,11 +1405,15 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       ) {
         return fail();
       }
+      const sharedVersion = await this.shared?.warmMember(c, source);
       return {
         kind: "redeemed",
         source,
         decisionBy,
-        needsPreparation: this.shared !== undefined || !(await this.tokens.readWarm(c, source)),
+        needsPreparation: this.shared
+          ? !sharedVersion || sharedVersion.usableUntil <= Date.now() + 60_000
+          : !(await this.tokens.readWarm(c, source)),
+        ...(sharedVersion && { sharedVersion }),
         releaseLifetimeMs: approval.remainingLifetimeMs,
       };
     }
