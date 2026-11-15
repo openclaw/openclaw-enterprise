@@ -160,7 +160,7 @@ failure receipt is separate from success aggregation and cannot qualify images.
 Cancellation, runner loss or job timeout can prevent its publication. A passing
 proof does not exercise this failure upload.
 
-Checkout image-build failures identify each failed role (controller or runtime), exit code, known error code or signal, killed flag, elapsed time and configured budget. Process fields come only from Docker command failures; journal and pre-dispatch failures leave them `unknown`. Accessor-backed fields also stay `unknown`. A signal or elapsed time alone does not prove a timeout. The [build helper](../../../tests/helpers/dev-up-model-provider.mjs) preserves original errors for local inspection but excludes their command arguments and output from CI summaries.
+Checkout image-build failures identify each failed role (controller or runtime), exit code, known error code or signal, killed flag, elapsed time and configured budget. Process fields come only from Docker command failures; journal and pre-dispatch failures leave them `unknown`. Accessor-backed fields also stay `unknown`. A signal or elapsed time alone does not prove a timeout. The [build helper](../../../tests/helpers/dev-up-model-provider.ts) preserves original errors for local inspection but excludes their command arguments and output from CI summaries.
 
 The `openshell` dispatch runs two OpenShell lanes on separate VMs. Before either
 starts, the protected environment resolves their controller base image and the

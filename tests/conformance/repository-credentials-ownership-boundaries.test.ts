@@ -20,7 +20,7 @@ import {
   fixtureRepository,
   startGitHubFixture,
 } from "../fixtures/repository-credentials/github.mjs";
-import { requestHead } from "../fixtures/repository-credentials/builders.mjs";
+import { requestHead } from "../fixtures/repository-credentials/request-head.ts";
 import { createGitHubTokenServiceFactory } from "../fixtures/repository-credentials/service-resources.mjs";
 import {
   createServiceConfiguration,
@@ -51,7 +51,7 @@ function fixtureHead(clock: Clock, rawTarget: string): RequestHead {
   const result = requestHead("GET", rawTarget, {}, { receivedMonoMs: clock.monotonicNow() });
   assert.equal(result.contentEncoding, "identity");
   assert.equal(result.framing.kind, "none");
-  return { ...result, contentEncoding: "identity", framing: { ...result.framing, kind: "none" } };
+  return result;
 }
 function requireStatus(service: CredentialServiceOwner, sessionId: string) {
   const result = service.status(sessionId);

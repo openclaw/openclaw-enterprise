@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { chmod, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { AgentRevision, RepositoryRevisionState } from "@openclaw-enterprise/contracts";
+import { controlledProtectedDriver } from "../fixtures/prepared-repository-git.mjs";
 import {
   resolveGitHubRepositoryBinding,
   resolveGitHubStandingApprovalScope,
@@ -9,9 +12,50 @@ import {
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { loadGitHubRepositoryRegistry } from "../../apps/controller/src/composition/repository-credentials/registry.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { repositoryApprovalFingerprint } from "../../packages/occ/src/repository-approval.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { completeSandboxRevision } from "../integration/sandbox-driver-revision-fixture.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
-function registryInput() {
+interface NamespaceInput {
+  namespaceId: string;
+  profiles: string[];
+  pushRefAllowlist?: unknown;
+  transport?: "git-only" | "git-and-draft-pr";
+  pullRequestBase?: string;
+  draftPullLimit?: string | number | boolean | null;
+  permissions?: Record<string, string>;
+  allowStandingApproval?: true;
+  token?: string;
+}
+
+interface RepositoryInput {
+  repositoryRef: string;
+  repositoryId: string;
+  repository: string;
+  namespaces: [NamespaceInput, ...NamespaceInput[]];
+}
+
+interface RegistryInput {
+  version: number;
+  backendId: string;
+  providerInstanceId: string;
+  appId: string;
+  githubInstallationId: string;
+  maximumDurationSeconds: number;
+  allowStandingApprovals?: true;
+  repositories: [RepositoryInput, ...RepositoryInput[]];
+}
+
+type RegistryMutation = (input: RegistryInput) => void;
+
+function namespacePolicy(registry: ReturnType<typeof validateGitHubRepositoryRegistry>) {
+  const policy = registry.repositories[0]?.namespaces[0];
+  assert.ok(policy);
+  return policy;
+}
+
+function registryInput(): RegistryInput {
   return {
     version: 1,
     backendId: "github-primary",
@@ -40,7 +84,11 @@ test("canonical registry fingerprints bind exact authority and the selected Name
   const binding = resolveGitHubRepositoryBinding(registry, request);
   assert.equal(binding.profile, "git-write");
   assert.equal(binding.grant.repositoryId, "34567");
-  assert.equal(registry.repositories[0].repository, "example/application");
+  const [firstRepository] = registry.repositories;
+  assert.ok(firstRepository);
+  const [firstPolicy] = firstRepository.namespaces;
+  assert.ok(firstPolicy);
+  assert.equal(firstRepository.repository, "example/application");
   assert.match(binding.grant.grantId, /^sha256:[a-f0-9]{64}$/);
   // Frozen pre-access-level digest for this same registry/default profile. Deploying
   // broader permission or capability semantics must invalidate the old admission.
@@ -58,9 +106,11 @@ test("canonical registry fingerprints bind exact authority and the selected Name
   const reordered = registryInput();
   reordered.repositories[0].repository = "example/application";
   reordered.repositories[0].namespaces.reverse();
-  reordered.repositories[0].namespaces
-    .find((entry) => entry.namespaceId === "namespace-a")
-    .profiles.reverse();
+  const selectedPolicy = reordered.repositories[0].namespaces.find(
+    (entry) => entry.namespaceId === "namespace-a",
+  );
+  assert.ok(selectedPolicy);
+  selectedPolicy.profiles.reverse();
   assert.deepEqual(
     resolveGitHubRepositoryBinding(validateGitHubRepositoryRegistry(reordered), request),
     binding,
@@ -94,7 +144,7 @@ test("canonical registry fingerprints bind exact authority and the selected Name
     "selected Namespace push refs": (value) => {
       value.repositories[0].namespaces[0].pushRefAllowlist = [];
     },
-  })) {
+  } satisfies Record<string, RegistryMutation>)) {
     await t.test(name, () => {
       const changed = registryInput();
       mutate(changed);
@@ -117,9 +167,9 @@ test("canonical registry fingerprints bind exact authority and the selected Name
       profile: "git-read",
     }).grant.grantId,
   );
-  assert.throws(() => {
-    registry.repositories[0].namespaces[0].profiles.push("git-read");
-  }, TypeError);
+  // Exercise the runtime freeze when a JavaScript caller attempts to append a profile.
+  const appendProfile: (this: readonly string[], profile: string) => number = Array.prototype.push;
+  assert.throws(() => appendProfile.call(firstPolicy.profiles, "git-read"), TypeError);
 });
 
 test("Git-only registry policy binds its transport and exact ref before opening a session", () => {
@@ -173,9 +223,9 @@ test("a draft policy's operator opt-out of the one-draft limit is its own grant"
   const enforced = grant();
   policy.draftPullLimit = "one-per-grant";
   assert.equal(grant(), enforced, "the explicit default is the same grant");
-  assert.equal(Object.hasOwn(registry().repositories[0].namespaces[0], "draftPullLimit"), false);
+  assert.equal(Object.hasOwn(namespacePolicy(registry()), "draftPullLimit"), false);
   policy.draftPullLimit = "none";
-  assert.equal(registry().repositories[0].namespaces[0].draftPullLimit, "none");
+  assert.equal(namespacePolicy(registry()).draftPullLimit, "none");
   assert.notEqual(grant(), enforced, "the opt-out is a new grant");
   for (const value of ["", "unlimited", false, null, 2]) {
     policy.draftPullLimit = value;
@@ -191,7 +241,7 @@ test("a draft policy's operator opt-out of the one-draft limit is its own grant"
 
 test("push-ref policy normalizes branch refs and changes grant identity", () => {
   const request = { namespaceId: "namespace-a", repositoryRef: "application" };
-  const resolvePolicy = (policy) => {
+  const resolvePolicy = (policy: unknown) => {
     const input = registryInput();
     input.repositories[0].namespaces[0].pushRefAllowlist = policy;
     const registry = validateGitHubRepositoryRegistry(input);
@@ -200,7 +250,7 @@ test("push-ref policy normalizes branch refs and changes grant identity", () => 
   const first = resolvePolicy(["refs/heads/z", "refs/heads/agent/*", "refs/heads/z"]);
   const reordered = resolvePolicy(["refs/heads/agent/*", "refs/heads/z"]);
   assert.deepEqual(first.binding, reordered.binding);
-  assert.deepEqual(first.registry.repositories[0].namespaces[0].pushRefAllowlist, [
+  assert.deepEqual(namespacePolicy(first.registry).pushRefAllowlist, [
     "refs/heads/agent/*",
     "refs/heads/z",
   ]);
@@ -212,8 +262,10 @@ test("push-ref policy normalizes branch refs and changes grant identity", () => 
   );
   assert.ok(resolvePolicy(["refs/heads/*"]).binding.grant.grantId);
   assert.equal(
-    resolvePolicy(Array.from({ length: 40 }, (_, index) => `refs/heads/branch-${index}`)).registry
-      .repositories[0].namespaces[0].pushRefAllowlist.length,
+    namespacePolicy(
+      resolvePolicy(Array.from({ length: 40 }, (_, index) => `refs/heads/branch-${index}`))
+        .registry,
+    ).pushRefAllowlist?.length,
     40,
   );
   assert.ok(resolvePolicy(["refs/heads/" + "a/".repeat(150) + "branch"]).binding.grant.grantId);
@@ -280,7 +332,7 @@ test("registry refuses ambiguous repositories, wildcard policy, unsupported prof
     "infinite maximum duration": (value) => {
       value.maximumDurationSeconds = Infinity;
     },
-  })) {
+  } satisfies Record<string, RegistryMutation>)) {
     await t.test(name, () => {
       const input = registryInput();
       mutate(input);
@@ -317,8 +369,15 @@ test("registry refuses ambiguous repositories, wildcard policy, unsupported prof
       { namespaceId: "namespace-a", repositoryRef: "application", profile: null },
       invalidProfile,
     ],
-  })) {
+  } satisfies Record<
+    string,
+    [
+      request: { namespaceId: string; repositoryRef: string; profile?: string | null },
+      expected: RegExp,
+    ]
+  >)) {
     await t.test(name, () => {
+      // @ts-expect-error Null is deliberately sent through the runtime profile validator.
       assert.throws(() => resolveGitHubRepositoryBinding(registry, request), expected);
     });
   }
@@ -378,6 +437,7 @@ test("selected repository standing approval binds permissions and rechecks deliv
   const binding = resolveGitHubRepositoryBinding(registry, request);
   const scopeInput = { namespaceId: request.namespaceId, binding };
   const scope = resolveGitHubStandingApprovalScope(registry, scopeInput);
+  assert.ok(scope);
   assert.equal(scope.repositorySelection, "repository");
   assert.equal(scope.repositoryId, "34567");
   assert.equal(scope.repository, "example/application");
@@ -386,11 +446,60 @@ test("selected repository standing approval binds permissions and rechecks deliv
     metadata: "read",
     pull_requests: "write",
   });
-  const revision = {
-    id: "revision",
+  const sandboxDriverId = controlledProtectedDriver.id;
+  const base = completeSandboxRevision({
+    id: `rev_${randomUUID()}`,
     namespaceId: request.namespaceId,
-    repositoryCredentials: { bindings: [binding], standingApprovalId: "approval" },
+    agentId: `agt_${randomUUID()}`,
+    sandboxDriverId,
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+  });
+  const admittedAt = Date.now();
+  const finiteState: RepositoryRevisionState = {
+    driver: { id: "repository-credentials", implementation: "github" },
+    deadlineWallMs: admittedAt + 3_600_000,
+    bindings: [binding],
   };
+  const nativeConfiguration: (harness: "codex", model: string) => AgentRevision["configuration"] =
+    createHarnessConfiguration;
+  // The persisted revision and its protected Git plan carry the same admitted grant.
+  const deliveryRevision = (repositoryCredentials: RepositoryRevisionState): AgentRevision => ({
+    ...base,
+    createdAt: new Date(admittedAt).toISOString(),
+    configuration: nativeConfiguration("codex", "gpt-5.1"),
+    repositoryCredentials,
+    executionAdmission: { version: 5, mode: "protected" },
+    egressPlan: {
+      id: randomUUID(),
+      generation: 1,
+      driver: controlledProtectedDriver,
+      sandboxDriverId,
+      egressDriverId: sandboxDriverId,
+      execution: {
+        installationId: "installation",
+        namespaceId: base.namespaceId,
+        agentId: base.agentId,
+        servicePrincipalId: base.servicePrincipalId,
+        revisionId: base.id,
+        executionId: randomUUID().replaceAll("-", ""),
+      },
+      repositoryGit: repositoryCredentials,
+      repositoryGitAuthorization: "online-request",
+      routes: [],
+    },
+  });
+  const standingState = {
+    ...finiteState,
+    standingApprovalId: "approval",
+    standingApprovalGeneration: 1,
+    standingApprovalScopeFingerprint: repositoryApprovalFingerprint({
+      namespaceId: base.namespaceId,
+      agentId: base.agentId,
+      binding,
+      scope,
+    }),
+  };
+  const revision = deliveryRevision(standingState);
   assert.deepEqual(createGitHubRepositoryDeliveryResolver(registry)(revision).delivery, {
     scope: "github-repository",
     installationId: "67890",
@@ -415,7 +524,7 @@ test("selected repository standing approval binds permissions and rechecks deliv
     (value) => {
       delete value.repositories[0].namespaces[0].allowStandingApproval;
     },
-  ]) {
+  ] satisfies RegistryMutation[]) {
     const withdrawn = structuredClone(input);
     mutate(withdrawn);
     const current = validateGitHubRepositoryRegistry(withdrawn);
@@ -426,17 +535,15 @@ test("selected repository standing approval binds permissions and rechecks deliv
       /Standing repository policy/,
     );
     assert.doesNotThrow(
-      () =>
-        createGitHubRepositoryDeliveryResolver(current)({
-          ...revision,
-          repositoryCredentials: { bindings: [binding] },
-        }),
+      () => createGitHubRepositoryDeliveryResolver(current)(deliveryRevision(finiteState)),
       "withdrawing standing permission does not reject an independent finite grant",
     );
   }
   for (const mutate of [
     (value) => {
-      value.repositories[0].namespaces[0].permissions.contents = "read";
+      const policy = value.repositories[0].namespaces[0];
+      assert.ok(policy.permissions);
+      policy.permissions.contents = "read";
     },
     (value) => {
       value.repositories[0].repositoryId = "34569";
@@ -444,7 +551,7 @@ test("selected repository standing approval binds permissions and rechecks deliv
     (value) => {
       value.repositories[0].repository = "example/renamed";
     },
-  ]) {
+  ] satisfies RegistryMutation[]) {
     const changed = structuredClone(input);
     mutate(changed);
     const current = validateGitHubRepositoryRegistry(changed);
@@ -456,10 +563,9 @@ test("selected repository standing approval binds permissions and rechecks deliv
   }
   assert.throws(
     () =>
-      createGitHubRepositoryDeliveryResolver(registry)({
-        ...revision,
-        repositoryCredentials: { ...revision.repositoryCredentials, bindings: [binding, binding] },
-      }),
+      createGitHubRepositoryDeliveryResolver(registry)(
+        deliveryRevision({ ...standingState, bindings: [binding, binding] }),
+      ),
     /Standing repository policy/,
     "standing approval never authorizes multiple bindings",
   );

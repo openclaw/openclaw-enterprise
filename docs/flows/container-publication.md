@@ -1,17 +1,16 @@
 ---
 created: 2026-09-21
 updated: 2026-11-14
-last_updated_session: authoring-run/b93b80a6-de4f-4ade-b2de-0a80efedde44
+last_updated_session: authoring-run/a59f5478-cdb3-4f32-8e10-534fb4fba07e
 ---
 
 # Container publication flow
 
 ## Overview
 
-Manual Enterprise publication builds and verifies controller and runtime OCI
-archives on Linux amd64 and arm64. Each public GHCR package receives one
-multi-platform index. Image-only publication is the default. With
-`publish_chart: true`, a separate protected job also tags both indexes with
+Manual publication verifies Linux amd64 and arm64 controller and runtime images
+and publishes their indexes to public GHCR packages. Image-only is the default.
+With `publish_chart: true`, a separate protected job tags both indexes with
 the OCE version and publishes the Helm chart.
 
 ## Entry Points
@@ -261,11 +260,13 @@ must agree before a version tag is written. The staged chart carries the source
 SHA and both digest references in annotations; its default controller image is
 the verified controller digest. Operator values can override that default.
 
-After image publication, the [identity projection](../guides/deploy/published-images.md#read-runtime-download-client-identities)
-checks client provenance against the sealed platform and source selection.
+The [client projection](../guides/deploy/published-images.md#read-runtime-download-client-identities)
+checks image and executable provenance against the authenticated receipt.
+`scripts/ci/runtime-download-client-projection.ts:selectNativeArtifact` supplies the
+separate AMD64 smoke ZIP selection. Gateway builds use both outputs.
 
-Both jobs share the protected environment. Workflow-level concurrency retains
-the publication lock across preparation and both writes; jobs never reacquire it.
+The jobs share the protected environment and hold the workflow lock from
+preparation through publication.
 The chart publisher checks image version tags and any existing chart before writing. Existing tags must resolve to the receipt's digests;
 an existing chart version must have identical packaged files. It rechecks the trusted
 source, CI, environment, and public chart package before each write. After
@@ -313,6 +314,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-14 22:54: Document native ZIP selection. (authoring-run/a59f5478-cdb3-4f32-8e10-534fb4fba07e - e2ca224aa9657568ded513872d2fe6315d8d5301)
 
 - 2026-11-14 15:07: Document optional native tool selection, image verification, and published client identities. (authoring-run/b93b80a6-de4f-4ade-b2de-0a80efedde44 - 1c56c61909b9f480845f4579e2add893207fa759)
 

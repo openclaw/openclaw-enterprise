@@ -151,6 +151,7 @@ import {
   checkSandboxRoutingDomainLimits,
   checkTrustedProxyIdentities,
   checkTrustedProxyProvisioningAdmission,
+  trustedProxyRefusalConfiguration,
   twoClusterOptions,
 } from "./kubernetes-gateway-routing-cases.ts";
 import {
@@ -5525,144 +5526,16 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       /trusted-proxy/i,
     ],
     [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            unsupportedField: true,
-            trustedProxy: {
-              userHeader: "x-occ-identity",
-              allowUsers: ["occ-workspace-files"],
-            },
-            identityScopes: { "occ-workspace-files": ["operator.admin"] },
-          },
-          allowRealIpFallback: true,
-          trustedProxies: ["10.42.0.0/16"],
-        },
-      },
+      trustedProxyRefusalConfiguration({ unsupportedField: true }),
       /gateway\.auth\.unsupportedField is not a supported/i,
     ],
-    [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            trustedProxy: {
-              userHeader: "x-openclaw-operator",
-              allowUsers: ["occ-workspace-files"],
-            },
-            identityScopes: { "occ-workspace-files": ["operator.admin"] },
-          },
-          allowRealIpFallback: true,
-          trustedProxies: ["10.42.0.0/16"],
-        },
-      },
-      /userHeader/i,
-    ],
-    [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            trustedProxy: {
-              userHeader: "x-occ-identity",
-              allowUsers: ["another-user"],
-            },
-            identityScopes: { "occ-workspace-files": ["operator.admin"] },
-          },
-          allowRealIpFallback: true,
-          trustedProxies: ["10.42.0.0/16"],
-        },
-      },
-      /allowUsers/i,
-    ],
-    [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            trustedProxy: {
-              userHeader: "x-occ-identity",
-              allowUsers: ["occ-workspace-files"],
-              allowLoopback: true,
-            },
-            identityScopes: { "occ-workspace-files": ["operator.admin"] },
-          },
-          allowRealIpFallback: true,
-          trustedProxies: ["10.42.0.0/16"],
-        },
-      },
-      /allowLoopback/i,
-    ],
-    [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            trustedProxy: {
-              userHeader: "x-occ-identity",
-              allowUsers: ["occ-workspace-files"],
-              allowLoopback: "false",
-            },
-            identityScopes: { "occ-workspace-files": ["operator.admin"] },
-          },
-          allowRealIpFallback: true,
-          trustedProxies: ["10.42.0.0/16"],
-        },
-      },
-      /allowLoopback/i,
-    ],
-    [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            trustedProxy: {
-              userHeader: "x-occ-identity",
-              allowUsers: ["occ-workspace-files"],
-            },
-            identityScopes: { "occ-workspace-files": ["operator.read"] },
-          },
-          allowRealIpFallback: true,
-          trustedProxies: ["10.42.0.0/16"],
-        },
-      },
-      /identityScopes/i,
-    ],
-    [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            trustedProxy: {
-              userHeader: "x-occ-identity",
-              allowUsers: ["occ-workspace-files"],
-            },
-            identityScopes: { "occ-workspace-files": ["operator.admin"] },
-          },
-          allowRealIpFallback: false,
-          trustedProxies: ["10.42.0.0/16"],
-        },
-      },
-      /allowRealIpFallback/i,
-    ],
-    [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            trustedProxy: {
-              userHeader: "x-occ-identity",
-              allowUsers: ["occ-workspace-files"],
-            },
-            identityScopes: { "occ-workspace-files": ["operator.admin"] },
-          },
-          allowRealIpFallback: true,
-          trustedProxies: [],
-        },
-      },
-      /trustedProxies/i,
-    ],
+    [trustedProxyRefusalConfiguration({ userHeader: "x-openclaw-operator" }), /userHeader/i],
+    [trustedProxyRefusalConfiguration({ allowUsers: ["another-user"] }), /allowUsers/i],
+    [trustedProxyRefusalConfiguration({ allowLoopback: true }), /allowLoopback/i],
+    [trustedProxyRefusalConfiguration({ allowLoopback: "false" }), /allowLoopback/i],
+    [trustedProxyRefusalConfiguration({ identityScopes: ["operator.read"] }), /identityScopes/i],
+    [trustedProxyRefusalConfiguration({ allowRealIpFallback: false }), /allowRealIpFallback/i],
+    [trustedProxyRefusalConfiguration({ trustedProxies: [] }), /trustedProxies/i],
   ]) {
     // Routed native access must come from the driver-rendered immutable native configuration.
     await assert.rejects(

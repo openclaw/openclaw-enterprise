@@ -414,7 +414,7 @@ test(
       const { stdout, stderr } = await execute(
         process.execPath,
         [
-          "tests/fixtures/oidc-ca-consumer.mjs",
+          "tests/fixtures/oidc-ca-consumer.ts",
           JSON.stringify({ environment, ports: { ...ports, "sso.example.test": ssoPort } }),
         ],
         { env: { NODE_EXTRA_CA_CERTS: wiring.output }, timeout: 15000 },

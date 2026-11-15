@@ -2,7 +2,6 @@ import { registerCredentialFixtureRegressions } from "../fixtures/repository-cre
 import assert from "node:assert/strict";
 import test from "node:test";
 import { request } from "node:https";
-import type { RequestHead } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type {
   CredentialServiceOwner,
   ExchangeSender,
@@ -29,7 +28,7 @@ import { run, temporaryDirectory } from "../fixtures/repository-credentials/proc
 import { removeRemoteBranches } from "../fixtures/repository-credentials/workflows.ts";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.mjs";
-import { requestHead } from "../fixtures/repository-credentials/builders.mjs";
+import { requestHead } from "../fixtures/repository-credentials/request-head.ts";
 
 registerCredentialFixtureRegressions();
 
@@ -85,12 +84,7 @@ test("second backend retains renewal through expiry and finalizes through the re
   t.after(() => service.shutdown(1000));
   const opened = service.open({ durationSeconds: 86400, profile: "git-write" });
   const head = () =>
-    requestHead(
-      "GET",
-      "/team/nested/project",
-      {},
-      { receivedMonoMs: clock.monotonicNow() },
-    ) as RequestHead;
+    requestHead("GET", "/team/nested/project", {}, { receivedMonoMs: clock.monotonicNow() });
   const perform = async (sender?: ExchangeSender) => {
     const exchange = service.reserve(opened.bearer, head(), new AbortController().signal);
     assert.ok(!("kind" in exchange));

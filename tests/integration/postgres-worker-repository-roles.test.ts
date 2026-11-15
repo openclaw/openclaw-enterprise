@@ -5,7 +5,11 @@ import type {
   ComputeDriver,
   GitHubRepositoryCredentialBackendDefinition,
 } from "../../packages/contracts/src/index.ts";
-import { OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  isRepositoryCleanupWork,
+  OpenClawController,
+  WorkClaimLostError,
+} from "../../packages/occ/src/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { RepositoryCredentialLifecycle } from "../../apps/controller/src/worker/repository-credentials.ts";
@@ -77,6 +81,190 @@ function repositoryWorkerComposition(
     // Same ID, different object: the public policy must not be ignored.
     ...(mode === "conflicting" ? { repositoryPolicy } : {}),
   };
+}
+
+for (const brokerProtocol of [1, 3] as const) {
+  for (const savedSession of [false, true]) {
+    test(
+      `retained protocol ${brokerProtocol} consumes committed disposal with ${savedSession ? "saved" : "lost"} session ID and no sender`,
+      requiresPostgres,
+      async (context) => {
+        const repository = repositoryBoundary();
+        const queueOptions = { leaseDurationMs: 30_000 };
+        const fixtureOptions = { ...queueOptions, repoDriver: repository.driver };
+        const fixture = await setup(context, fixtureOptions);
+        const { candidate } = await fixture.admitInitialRevision("terminal-receipt", {
+          revision: { repositoryCredentials: repository.snapshot },
+        });
+        const queue = new fixture.PostgresWorkQueue(fixture.observerPool, queueOptions);
+        const original = await queue.claim();
+        assert.ok(original);
+        assert.equal(original.idempotencyKey, candidate.idempotencyKey);
+        const owner = {
+          namespaceId: candidate.namespaceId,
+          agentId: candidate.agentId,
+          revisionId: candidate.id,
+        };
+        const admissionId = randomUUID();
+        const sessionId = randomUUID();
+        const generation = randomUUID();
+        await fixture.state.transact(async ({ repositorySessions: sessions }) => {
+          await sessions.createAttempt({
+            ...owner,
+            admissionId,
+            repositoryRef: repository.snapshot.bindings[0]!.repositoryRef,
+            durationSeconds: 60,
+            deadlineWallMs: repository.snapshot.deadlineWallMs,
+            createdAt: new Date().toISOString(),
+            brokerProtocol,
+          });
+          await sessions.createBrokerReceipt({
+            admissionId,
+            state: "reserved",
+            generation,
+          });
+          const observation = {
+            admissionId,
+            generation,
+            sessionId,
+            deadlineWallMs: repository.snapshot.deadlineWallMs - 1,
+          };
+          await sessions.advanceBrokerReceipt({
+            ...observation,
+            expectedState: "reserved",
+            state: "active",
+          });
+          if (savedSession) {
+            await sessions.advanceAttempt({
+              admissionId,
+              expectedPhase: "opening",
+              phase: "open",
+              sessionId,
+              updatedAt: new Date().toISOString(),
+            });
+          }
+          await sessions.advanceAttempt({
+            admissionId,
+            expectedPhase: savedSession ? "open" : "opening",
+            phase: "closing",
+            updatedAt: new Date().toISOString(),
+          });
+          await sessions.advanceBrokerReceipt({
+            ...observation,
+            expectedState: "active",
+            state: "disposed",
+            revoked: 2,
+            expired: 1,
+          });
+        });
+        await queue.enqueueRepositoryCleanup(original, owner);
+        await queue.complete(original);
+        const claim = await queue.claim();
+        assert.ok(claim && isRepositoryCleanupWork(claim));
+        assert.ok(await queue.heartbeat(claim));
+        const [attempt] = await repositoryAttempts(fixture, candidate);
+        assert.ok(attempt);
+        const readReceipt = () =>
+          fixture.state.read((view) => view.repositorySessions.findBrokerReceipt(admissionId));
+        const receipt = await readReceipt();
+        assert.ok(receipt);
+        assert.equal(receipt.state, "disposed");
+        assert.equal(receipt.sessionId, sessionId);
+        const lifecycle = new RepositoryCredentialLifecycle({
+          state: fixture.state,
+          queueOptions,
+          authorize: async () => assert.fail("terminal consumption cannot authorize"),
+          effect: async () => assert.fail("terminal consumption cannot call a sender"),
+        });
+        if (savedSession) {
+          assert.equal(attempt.phase, "closing");
+          assert.equal(attempt.sessionId, sessionId);
+          const differentSessionId = randomUUID();
+          assert.notEqual(differentSessionId, sessionId);
+          await assert.rejects(
+            lifecycle.cleanupRetained({ ...claim, claimToken: randomUUID() }, [attempt]),
+            WorkClaimLostError,
+          );
+          await assert.rejects(
+            lifecycle.cleanupRetained(claim, [{ ...attempt, sessionId: differentSessionId }]),
+            WorkClaimLostError,
+          );
+          assert.deepEqual(await repositoryAttempts(fixture, candidate), [attempt]);
+          assert.deepEqual(await readReceipt(), receipt);
+          if (brokerProtocol === 3) {
+            // A committed hint cannot authorize fallback when the locked journal is unavailable.
+            // Keep an otherwise usable sender so this distinguishes refusal from missing wiring.
+            const guarded = new RepositoryCredentialLifecycle({
+              state: fixture.state,
+              queueOptions,
+              nativeSender: repository.driver,
+              authorize: async () => assert.fail("cleanup cannot authorize"),
+              effect: async (_claim, operation) => operation(AbortSignal.timeout(5_000)),
+            });
+            const transact = fixture.state.transactWithQueue.bind(fixture.state);
+            const lockedReadAdmissions: string[] = [];
+            const readUnavailable: typeof fixture.state.transactWithQueue = async (
+              operation,
+              options,
+            ) =>
+              transact(async (unit, queue) => {
+                // Keep the frozen, lifetime-bound methods intact; fault only this view's read.
+                return operation(
+                  {
+                    ...unit,
+                    repositorySessions: {
+                      ...unit.repositorySessions,
+                      async findBrokerReceipt(requestedAdmissionId: string) {
+                        lockedReadAdmissions.push(requestedAdmissionId);
+                        if (requestedAdmissionId === admissionId) {
+                          return undefined;
+                        }
+                        return unit.repositorySessions.findBrokerReceipt(requestedAdmissionId);
+                      },
+                    },
+                  },
+                  queue,
+                );
+              }, options);
+            const unavailable = context.mock.method(
+              fixture.state,
+              "transactWithQueue",
+              readUnavailable,
+            );
+            try {
+              assert.deepEqual(await guarded.cleanupRetained(claim, [attempt]), {
+                settled: false,
+                cause: "INVALID_REPOSITORY_DRIVER_OBSERVATION",
+              });
+              assert.equal(unavailable.mock.callCount(), 1);
+              assert.deepEqual(lockedReadAdmissions, [admissionId]);
+            } finally {
+              unavailable.mock.restore();
+            }
+            assert.deepEqual(await repositoryAttempts(fixture, candidate), [attempt]);
+            assert.deepEqual(await readReceipt(), receipt);
+            assert.deepEqual(repository.calls, []);
+          }
+        }
+        // Lost-ID cases go directly to the decisive no-sender terminal read.
+        assert.deepEqual(await lifecycle.cleanupRetained(claim, [attempt]), {
+          settled: true,
+        });
+        const [disposed] = await repositoryAttempts(fixture, candidate);
+        assert.ok(disposed);
+        assert.deepEqual(disposed, {
+          ...attempt,
+          phase: "disposed",
+          sessionId,
+          updatedAt: disposed.updatedAt,
+        });
+        assert.deepEqual(await lifecycle.cleanup(claim, candidate), { settled: true });
+        assert.deepEqual(await repositoryAttempts(fixture, candidate), [disposed]);
+        assert.deepEqual(await readReceipt(), receipt);
+        assert.deepEqual(repository.calls, []);
+      },
+    );
+  }
 }
 
 for (const role of ["repositoryPolicy", "nativeRepositorySender"] as const) {
@@ -377,9 +565,13 @@ test(
   "built-in Worker settles legacy admission through the original repository sender",
   requiresPostgres,
   async (t) => {
-    for (const wrongSender of [false, true]) {
+    for (const mode of ["original", "mismatched", "disposed"] as const) {
       await t.test(
-        wrongSender ? "wrong sender then original sender" : "original sender",
+        {
+          original: "original sender",
+          mismatched: "wrong sender then original sender",
+          disposed: "committed disposal",
+        }[mode],
         async (context) => {
           const repository = repositoryBoundary();
           repository.driver.implementation = "github";
@@ -433,8 +625,24 @@ test(
             admission,
             events,
           );
+          // The original custodian commits disposal while the Worker is stopped.
+          // Restart must consume that receipt even when its configured sender cannot match.
+          const committed = mode === "disposed";
+          if (committed) {
+            assert.ok(opened.sessionId);
+            assert.equal((await repository.dispose(opened.sessionId))?.state, "DISPOSED");
+          }
+          const receipt = committed
+            ? await fixture.state.read((view) =>
+                view.repositorySessions.findBrokerReceipt(opened.admissionId),
+              )
+            : undefined;
+          if (committed) {
+            assert.equal(receipt?.state, "disposed");
+            assert.deepEqual(await repositoryAttempts(fixture, candidate), [closing]);
+          }
           const callsBeforeRestart = repository.calls.length;
-          if (wrongSender) {
+          if (mode === "mismatched") {
             events.length = 0;
             await start("built-in", true);
             await advanceCleanupRetries(fixture, candidate);
@@ -461,7 +669,7 @@ test(
             assert.deepEqual(await repositoryAttempts(fixture, candidate), [closing]);
           }
           events.length = 0;
-          await start("built-in");
+          await start("built-in", committed);
           await advanceCleanupRetries(fixture, candidate);
           await fixture.work(cleanupWork, "succeeded");
           await fixture.work(stop, "succeeded");
@@ -472,9 +680,18 @@ test(
           assert.equal(disposed.admissionId, opened.admissionId);
           assert.equal(disposed.sessionId, opened.sessionId);
           assert.deepEqual(disposed.cleanupContext, closing.cleanupContext);
-          assert.deepEqual(repository.calls.slice(callsBeforeRestart), [
-            { operation: "close", sessionId: opened.sessionId },
-          ]);
+          assert.deepEqual(
+            repository.calls.slice(callsBeforeRestart),
+            committed ? [] : [{ operation: "close", sessionId: opened.sessionId }],
+          );
+          if (committed) {
+            assert.deepEqual(
+              await fixture.state.read((view) =>
+                view.repositorySessions.findBrokerReceipt(opened.admissionId),
+              ),
+              receipt,
+            );
+          }
           const persisted = await fixture.state.read((view) =>
             view.revisions.findRevision(revision.namespaceId, revision.agentId, revision.id),
           );
