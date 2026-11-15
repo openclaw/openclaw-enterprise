@@ -14,9 +14,8 @@ import {
 import type { EmbeddedContainerInspect } from "../../apps/controller/src/drivers/compute/docker/embedded-gateway-recovery.ts";
 import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.ts";
+import { assertGatewayFirstTurnMemory, gatewayMemoryPeak } from "./runtime-image-memory.ts";
 import {
-  assertGatewayFirstTurnMemory,
-  gatewayMemoryPeak,
   image,
   imageTestOptions,
   runDocker,
