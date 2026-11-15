@@ -244,6 +244,7 @@
     "helpers/controlled-tls-origin-scenario.ts",
     "fixtures/plugin-driver-preflight-database-child.ts",
     "fixtures/runtime-image-failure-docker.ts",
+    "fixtures/runtime-state/migration/*.mts",
     "fixtures/runtime-native-worker-restart.ts",
     "fixtures/runtime-google-skill-policy.mts",
     "fixtures/runtime-native-listener-peer.mts",

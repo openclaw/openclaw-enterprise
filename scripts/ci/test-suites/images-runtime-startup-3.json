@@ -9,7 +9,7 @@
     "tests/integration/runtime-image-native-worker.test.ts",
     "tests/integration/runtime-image-node-state-permissions.test.ts",
     "tests/integration/runtime-image-node-state-lock.test.ts",
-    "tests/integration/runtime-image-state-migration.test.mjs",
+    "tests/integration/runtime-image-state-migration.test.ts",
     "tests/integration/runtime-image-native-listener.test.ts",
     "tests/integration/runtime-image-codex-local-plugins.test.ts",
     "tests/helpers/workspace-gateway-relay-container.test.ts"
@@ -49,12 +49,14 @@
       ]
     },
     {
-      "path": "tests/integration/runtime-image-state-migration.test.mjs",
+      "path": "tests/integration/runtime-image-state-migration.test.ts",
       "expectedTests": [
+        "Gateway replacement retains unfinished maintenance on its database mounts",
         "embedded Gateway restart recovers only its signed Pod owner",
         "runtime image migrates a released Gateway's agent database once before starting OpenClaw",
         "runtime image migrates a released agent database before the Docker development Gateway starts OpenClaw",
-        "runtime image migrates an older workspace node's credentials before the dedicated Harness starts"
+        "runtime image migrates an older workspace node's credentials before the dedicated Harness starts",
+        "runtime image migrates an older workspace node's credentials before the dedicated OpenClaw worker connects"
       ]
     },
     {
