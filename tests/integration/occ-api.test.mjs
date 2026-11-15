@@ -490,17 +490,6 @@ function stateWithDeploymentWork(state, deploymentWorks) {
   };
 }
 
-async function createInjectedConfiguration(fixture, namespaceId, values = {}) {
-  const result = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespaceId}/configurations`,
-    { body: { kind: "agent", values } },
-  );
-  assert.equal(result.status, 201);
-  return result.data;
-}
-
 async function firstDeploymentFixture({ ready = true, slackFetch } = {}) {
   let providerCalls = 0;
   const channelDriver = new SlackChannelDriver(async (...args) => {
@@ -7814,8 +7803,10 @@ test("OCC development subprocess requires PostgreSQL-backed startup", async (t) 
 
 test("bodyless OCC routes reject request payloads before IAM or domain side effects", () =>
   runBodylessRoutes({
-    createInjectedFixture,
-    createInjectedConfiguration,
+    configuredController,
+    bootstrap,
+    createNamespace,
+    createAgent,
     missingRevisionId,
   }));
 
@@ -7869,8 +7860,6 @@ test("OCC isolates Namespace ownership and filters collections by exact IAM gran
     bootstrap,
     createNamespace,
     createAgent,
-    createInjectedFixture,
-    createInjectedConfiguration,
     missingRevisionId,
   }));
 
