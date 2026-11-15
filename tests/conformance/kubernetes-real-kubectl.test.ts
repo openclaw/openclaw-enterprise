@@ -580,18 +580,28 @@ if (args[verb] === "logs") {
           AbortSignal.timeout(5_000),
         );
         assert.equal(result, scenario === "valid" ? "selected container log" : undefined, scenario);
-        const calls: Array<{ args: string[]; credentialPresent: boolean }> =
-          await readJsonLines(callsPath);
+        const calls = await readJsonLines(callsPath);
         assert.ok(calls.length > 0, "the reader must invoke the child process");
-        assert.ok(
-          calls.every((call) => !call.credentialPresent),
-          "unrelated credentials must not reach kubectl",
-        );
-        const logCalls = calls.filter((call) => call.args.includes("logs"));
+        const commandArgs = calls.map((call) => {
+          assert.ok(typeof call === "object" && call !== null && !Array.isArray(call));
+          assert.ok(
+            "credentialPresent" in call && typeof call.credentialPresent === "boolean",
+            "kubectl must record a boolean credentialPresent",
+          );
+          assert.equal(
+            call.credentialPresent,
+            false,
+            "unrelated credentials must not reach kubectl",
+          );
+          assert.ok("args" in call, "kubectl must record its command arguments");
+          return call.args;
+        });
+        expectStringArrays(commandArgs);
+        const logCalls = commandArgs.filter((args) => args.includes("logs"));
         assert.equal(logCalls.length, scenario.startsWith("owner-") ? 0 : 1, scenario);
-        for (const call of logCalls) {
-          assert.ok(call.args.includes("--container=agent"));
-          assert.ok(call.args.includes("harness"));
+        for (const args of logCalls) {
+          assert.ok(args.includes("--container=agent"));
+          assert.ok(args.includes("harness"));
         }
       }
     },
