@@ -11,7 +11,7 @@ import {
 import { createServer as createSecureServer } from "node:https";
 import { createRequire } from "node:module";
 import { Socket, type Server } from "node:net";
-import type { Duplex } from "node:stream";
+import { Writable, type Duplex } from "node:stream";
 import test from "node:test";
 import { TLSSocket } from "node:tls";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -45,7 +45,8 @@ interface UpgradePeerServer extends EventEmitter<{
   close(callback: (error?: Error) => void): void;
 }
 
-interface WebSocketReceiver extends NodeJS.WritableStream {
+interface WebSocketReceiver {
+  write(chunk: Buffer): boolean;
   on(event: "message", listener: (data: RawData, isBinary: boolean) => void): this;
   on(event: "conclude", listener: (code: number, reason: Buffer) => void): this;
   once(event: "conclude", listener: (code: number, reason: Buffer) => void): this;
@@ -348,6 +349,7 @@ export function registerOpenShellServiceTransportCases(token: string, serviceUrl
       if (head.length > 0) {
         receiver.write(head);
       }
+      assert.ok(receiver instanceof Writable);
       socket.pipe(receiver);
     });
     const port = await listen(gateway);

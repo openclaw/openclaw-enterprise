@@ -3,6 +3,7 @@ import { EventEmitter, once } from "node:events";
 import { createServer } from "node:http";
 import { createServer as createSecureServer } from "node:https";
 import { createServer as createTcpServer, Socket } from "node:net";
+import { Writable } from "node:stream";
 import test from "node:test";
 import type { TLSSocket } from "node:tls";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -504,6 +505,7 @@ export function registerOpenShellCodexReadinessCases(token: string, serviceUrl: 
           if (head.length > 0) {
             receiver.write(head);
           }
+          assert.ok(receiver instanceof Writable);
           socket.pipe(receiver);
         });
         const port = await listen(gateway);

@@ -26,7 +26,10 @@ async function keyArguments(keyPath, keyPem) {
 
 // A self-signed server (or client) certificate in `directory`, as `<name>.key` and
 // `<name>.crt`. Returns the PEM texts and their paths.
-/** @param {string} directory */
+/**
+ * @param {string} directory
+ * @param {{name?: string, commonName?: string, subjectAltName?: string, keyPem?: string, days?: number}} [options]
+ */
 export async function selfSigned(
   directory,
   {

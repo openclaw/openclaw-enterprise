@@ -91,8 +91,7 @@ export function tlsPinnedWorkspaceSetupCode(url, expiresAtMs) {
  * @typedef {import("../../packages/contracts/src/index.ts").AgentRevision} AgentRevision
  * @typedef {import("../../packages/contracts/src/index.ts").ComputeRevisionContext} ComputeRevisionContext
  * @typedef {Omit<ComputeRevisionContext, "secretEnvironment"> & Partial<Pick<ComputeRevisionContext, "secretEnvironment">>} FixtureRevisionContext
- * @typedef {import("../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js").KubernetesObject} KubernetesObject
- * @typedef {import("../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js").V1Pod} V1Pod
+ * @typedef {{apiVersion: string, kind: string, metadata: {name: string, namespace?: string}, spec?: Record<string, unknown>}} WrittenObject
  */
 
 // In-memory Kubernetes transport plus Sandbox/lifecycle responses. No cluster I/O.
@@ -192,7 +191,7 @@ export function providerEndpointFixture({
   const gatewayName = `gateway-${digest(revision.agentId)}`;
   const gatewayNamespace = kubernetesNamespaceName(tenant.id);
   const objects = new Map();
-  /** @type {KubernetesObject[]} */
+  /** @type {WrittenObject[]} */
   const writes = [];
   const key = (kind, name, target = namespace) =>
     `${kind}:${kind === "Namespace" ? "" : target}:${name}`;
@@ -364,16 +363,16 @@ export function providerEndpointFixture({
      * @param {FixtureRevisionContext} [context]
      */
     prepare(targetRevision = revision, context = authContext(targetRevision)) {
-      return driver.prepareRevision(targetRevision, context);
+      return driver.prepareRevision(targetRevision, { secretEnvironment: [], ...context });
     },
     /**
      * @param {AgentRevision} [targetRevision]
      * @param {FixtureRevisionContext} [context]
      */
     activate(targetRevision = revision, context = authContext(targetRevision)) {
-      return driver.activateRevision(targetRevision, context);
+      return driver.activateRevision(targetRevision, { secretEnvironment: [], ...context });
     },
-    /** @param {(V1Pod | null)[]} pods */
+    /** @param {(ReturnType<typeof fixture.pod> | null)[]} pods */
     observePods(pods) {
       fixture.setObservation({ items: pods });
     },
