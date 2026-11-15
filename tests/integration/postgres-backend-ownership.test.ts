@@ -61,7 +61,7 @@ import {
 import { reservePort } from "../helpers/available-port.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
-import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.mjs";
+import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.ts";
 import { claimIsolatedWork } from "../helpers/postgres-work-claim.mjs";
 import {
   EMBEDDED_API_KEY_REQUIRED,
