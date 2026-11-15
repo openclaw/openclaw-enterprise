@@ -125,27 +125,22 @@ only beside its storage label.
 The [upgrade requirements](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
 own the operator boundary.
 
-`ensureNamespace` prepares one single-cluster tenant namespace, including adopted
-targets; its storage-role label enables discovery. Two-cluster Gateways retain
-their control-cluster target. Dedicated Gateway and Harness Pods, identities,
-and PVCs remain separate. `deliverGatewaySecrets` validates canonical sources;
+`ensureNamespace` prepares single-cluster tenants, including adopted targets,
+with storage-role labels for discovery. Two-cluster Gateways retain their
+control-cluster target. Dedicated Gateway/Harness Pods, identities and PVCs stay
+separate. `deliverGatewaySecrets` validates canonical sources;
 `deliverHarnessAuth` creates selected model/transport projections.
-Transport and Gateway passwords use separate sources across modes. Compute
-retains legacy combined sources for older Pods and copies their password before
-new templates reference the separate source. Concurrent creation adopts only an
-exact-owned, identical password; foreign or conflicting sources fail.
+Transport/Gateway passwords have separate sources. Compute copies legacy
+combined-source passwords for older Pods before referencing separate sources.
+Concurrent creation adopts only exact-owned, identical passwords;
+foreign/conflicting sources fail.
 [Namespaces and isolation](../reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation)
 owns qualified DNS and exact NetworkPolicy/Service selectors. Harness selectors
 include version and network profile; Gateway selectors omit version for stability.
-`deploy/helm/openclaw-execution/templates/routing.yaml` validates DNS and Envoy peer maps
-before rendering NetworkPolicies. Values must be strings or native null; type
-errors identify the setting. For a dotted `routing.gatewayName`, the chart names
-the Envoy Service `occ-harness-<namespace/Gateway identity hash>`. It also hashes
-literal names matching that output shape to keep them apart from generated
-names. Other names keep their Service name. Gateway references and Pod selectors retain the
-original name. `KubernetesComputeDriver.reconcileHarnessRoute` uses that Gateway
-identity and the explicit `executionCluster.harnessRouting.hostname`, not the
-Envoy Service name.
+`deploy/helm/openclaw-execution/templates/routing.yaml` validates DNS/Envoy maps
+(strings or native null), naming type errors before rendering policies. It
+hashes dotted or hash-shaped Service names; Gateway identity and explicit Harness
+hostname stay unchanged. See [execution-chart naming](../testing/kubernetes.md#upgrade-the-execution-chart).
 `runtime.gatewayNodeSelector` places Gateways and private-state initializers.
 `runtime-entrypoints.ts:agentRuntimeReady` and the Docker healthcheck require
 Codex initialization for Compute-owned launches; provider commands remain
