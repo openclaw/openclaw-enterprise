@@ -31,6 +31,12 @@ The auth owner uses a separate Better Auth key configuration. Its server-authore
 
 Use the existing expiry, one-time delivery and revocation mechanisms. OCC cannot retrieve the plaintext later. The proposed CLI writes the one-time response to a new file with mode `0600` and refuses to overwrite it. The provisioning job stores it in the worker’s secret store and retains the nonsecret key ID for revocation. The client reads a protected mount and sends the key in `x-api-key` over verified HTTPS. It can then read, submit and reconcile without a browser or a person relaying messages. To rotate, issue a replacement for the same binding after rechecking authority, switch the worker’s secret mount and revoke the old key ID. The client cannot extend its own grant. Ordinary service keys keep their existing permissions. Conversation keys cannot open the Console, obtain browser cookies, administer an Agent, or authenticate to unrelated OCC routes.
 
+### Conversations backed by a separate native thread
+
+A saved Gateway conversation can stay open while its harness attaches a different native thread. For a service send, the harness identifies that attachment with an opaque generation. OCC binds the key’s `send` permission to that generation. Detaching or replacing the attachment invalidates that permission, even if the old thread is later reattached. A replacement process or connection can continue when the harness verifies the same attachment generation and durable thread. If the harness cannot support a requested send, issuance returns `503`. Reads retain their own Gateway conversation binding.
+
+At native admission, the harness rechecks the attachment and its authority to submit. The native turn owner may start a distinct turn, queue the input for a distinct turn, or refuse before accepting input. A service send must never steer a competing turn or answer a pending approval. Checking for an idle thread before submission cannot guarantee that outcome. A Gateway acknowledgment records admission. Reconnecting alone cannot settle an uncertain write. Reconcile the original operation without resending it and keep `outcome_unknown` until operation-specific evidence resolves it.
+
 ## Serving a request
 
 ```mermaid
@@ -57,6 +63,7 @@ OCC returns `401` for invalid, expired or revoked credentials and `403` for insu
 
 ## Acceptance Criteria
 
+- On a dedicated Codex harness, resume the original thread and correlate its reply. Replace the attachment, then reattach the old thread ID. Verify the old send permission delivers zero input in both cases. Race a competing turn and verify it receives zero machine input. Lose the connection after a possible write and verify zero redispatch. In a separate case, reconnect to an unchanged attachment, verify its continuity, and submit a fresh operation.
 - Issue and rotate a conversation key through an authorized issuer. An ordinary service key for the same principal, a different Agent, and a read-only key attempting a send are each refused before any Gateway write.
 - Start from a human-created named chat owned by the serving profile. Refuse a write to a visible session owned by another profile. For the eligible chat, read its previous reply, submit one new message, observe one Gateway acknowledgment, and read the reply for that run after reconnect while another participant uses the chat. Verify the same stored conversation on the installed runtime.
 - Exercise revoked and expired keys, removed IAM grants, a changed revision, a reset with a reused session ID, a missing or private chat, inherited channel delivery, and command-shaped inputs. Verify that delivery remains local. Verify no cross-conversation read or turn.
