@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { AssertionError } from "node:assert";
-import { execFile, type ExecFileException } from "node:child_process";
+import { ChildProcess, execFile, type ExecFileException } from "node:child_process";
 import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { once } from "node:events";
@@ -19,6 +20,7 @@ import {
 import {
   assertProbeDenied,
   createKubernetesClient,
+  createRealKubernetesFixture,
   deleteNamespaceExplained,
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
@@ -157,6 +159,100 @@ function recordingOptions() {
       log: (message: string) => logs.push(message),
     },
   };
+}
+
+for (const { name, chunks, exitCode } of [
+  {
+    name: "intact readiness after a banner",
+    chunks: ["starting port-forward\nForwarding from 127.0.0.1:34567 -> 8080\n"],
+  },
+  {
+    name: "split readiness prefix",
+    chunks: ["Forwar", "ding from 127.0.0.1:34567 -> 8080\n"],
+  },
+  {
+    name: "split readiness port",
+    chunks: ["Forwarding from 127.0.0.1:34", "567 -> 8080\n"],
+  },
+  {
+    name: "split overlong banner before readiness",
+    chunks: [
+      "starting port-forward ".repeat(8),
+      "Forwarding from 127.0.0.1:12345 -> 8080\nForwarding from 127.0.0.1:34567 -> 8080\r\n",
+    ],
+  },
+  {
+    name: "unterminated readiness before exit",
+    chunks: ["Forwarding from 127.0.0.1:34567 -> 8080"],
+    exitCode: 7,
+  },
+]) {
+  test(`kubectl port-forward handles ${name}`, { timeout: 5_000 }, async (t) => {
+    const directory = await temporaryDirectory(t, "occ-port-forward-");
+    const ack = join(directory, "stdout-ack");
+    await writeCommand(
+      directory,
+      "kubectl",
+      `
+const { existsSync } = process.getBuiltinModule("node:fs");
+const { setTimeout } = process.getBuiltinModule("node:timers/promises");
+const chunks = ${JSON.stringify(chunks)};
+for (const [index, chunk] of chunks.entries()) {
+  process.stdout.write(chunk);
+  while (!existsSync(${JSON.stringify(ack)} + index)) await setTimeout(5);
+}
+${exitCode === undefined ? "setInterval(() => {}, 1000);" : `process.exit(${exitCode});`}
+`,
+      { interpreter: process.execPath },
+    );
+    prependPath(t, directory);
+
+    // Observe the actual pipe reads and release each write only after its bytes
+    // were read. The test exercises the same spawn and readiness path as kubectl.
+    const emit = ChildProcess.prototype.emit;
+    t.mock.method(
+      ChildProcess.prototype,
+      "emit",
+      function (this: ChildProcess, ...args: Parameters<typeof emit>) {
+        if (args[0] === "spawn" && this.spawnfile === "kubectl") {
+          const exited = once(this, "exit");
+          t.after(async () => {
+            if (this.exitCode === null && this.signalCode === null) {
+              this.kill("SIGKILL");
+            }
+            await exited;
+          });
+          let remaining = "";
+          let index = 0;
+          this.stdout?.on("data", (buffer: Buffer) => {
+            remaining += buffer.toString();
+            if (remaining === chunks[index]) {
+              writeFileSync(`${ack}${index}`, "");
+              index++;
+              remaining = "";
+            }
+          });
+        }
+        return emit.apply(this, args);
+      },
+    );
+
+    const fixture = createRealKubernetesFixture({
+      kubeconfigPath: join(directory, "unused-kubeconfig"),
+      kubernetesContext: "fixture",
+    });
+    const started = fixture.startPortForwardTarget("fixture", "service/gateway", "0:8080");
+    if (exitCode !== undefined) {
+      await assert.rejects(started, /port-forward exited \(7\)/);
+      return;
+    }
+    const forward = await started;
+    try {
+      assert.equal(forward.url, "http://127.0.0.1:34567");
+    } finally {
+      await forward.stop();
+    }
+  });
 }
 
 test("a kubectl read retries a dropped exec stream and returns the next attempt's output", async () => {

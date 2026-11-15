@@ -1093,10 +1093,28 @@ export function createRealKubernetesFixture({
         }
         reject(error);
       };
+      let pendingLine: string | null = "";
       const onStdout = (chunk: Buffer) => {
-        const match = chunk.toString().match(/Forwarding from 127\.0\.0\.1:(\d+)/);
-        if (match !== null && settle()) {
-          resolve(`http://127.0.0.1:${match[1]}`);
+        const lines = chunk.toString().split("\n");
+        const tail = lines.pop()!;
+        for (const line of lines) {
+          const match =
+            pendingLine === null
+              ? null
+              : /^Forwarding from 127\.0\.0\.1:(\d{1,5}) -> \d{1,5}\r?$/.exec(pendingLine + line);
+          pendingLine = "";
+          if (match !== null && settle()) {
+            resolve(`http://127.0.0.1:${match[1]}`);
+            return;
+          }
+        }
+        if (pendingLine !== null) {
+          pendingLine += tail;
+          // A kubectl readiness line fits in 64 characters. Skip a longer
+          // incomplete line through its next newline.
+          if (pendingLine.length > 64) {
+            pendingLine = null;
+          }
         }
       };
       const onError = (error: Error) => void rejectAfterCleanup(error);
