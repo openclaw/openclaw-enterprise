@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { codexRuntimeArtifact } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
 import {
   cpuScaledImageTimeoutMs,
@@ -57,7 +55,7 @@ async function verifyRuntimeDownloadClients(image: string) {
 
 export async function verifyCodexPackaging(
   image: string,
-  { historicalCodex, stagingCodexVersion, historicalController }: StartupProfile,
+  { historicalCodex, stagingCodexVersion, controller }: StartupProfile,
 ) {
   const source = historicalCodex
     ? {
@@ -68,13 +66,9 @@ export async function verifyCodexPackaging(
   const nodeSource = parseJson(
     await readFile(new URL("../../deploy/runtime/node/source.json", import.meta.url), "utf8"),
   );
-  assert.equal(
-    source.commit,
-    historicalController?.commit ?? GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
-    "expected a policy-qualified runtime",
-  );
+  assert.equal(source.commit, controller.policySourceCommit, "expected a policy-qualified runtime");
   const defaultPluginPolicy = codexRuntimeArtifact({}, []).configuration.plugins;
-  const codexExecutableSource = AGENT_RUNTIME_ENTRYPOINT.match(
+  const codexExecutableSource = controller.harness.match(
     /^function codexExecutable\(\) \{\n[\s\S]*?\n\}\n/m,
   )?.[0];
   assert.ok(codexExecutableSource, "the Harness entrypoint must define codexExecutable()");

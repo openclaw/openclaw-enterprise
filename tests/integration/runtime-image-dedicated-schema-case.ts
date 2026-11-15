@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import type { TestContext } from "node:test";
-import { NATIVE_WORKER_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
   cpuScaledImageTimeoutMs,
@@ -11,12 +10,15 @@ import { runDocker } from "../helpers/runtime-image-docker.ts";
 import { temporaryGatewayConfiguration } from "../helpers/runtime-image-startup.mjs";
 import { probeRenderedSchema } from "../fixtures/runtime-image-startup/rendered-schema.ts";
 import { record, parseJson, text, list } from "../fixtures/runtime-image-startup/wire.ts";
-import { renderProbe } from "./runtime-image-startup-support.ts";
+import { renderProbe, type StartupProfile } from "./runtime-image-startup-support.ts";
 
 export async function verifyDedicatedSchema(
   t: TestContext,
   image: string,
-  kubernetesGatewayEntrypoint: string,
+  {
+    kubernetesGateway,
+    nativeWorker,
+  }: Pick<StartupProfile["controller"], "kubernetesGateway" | "nativeWorker">,
 ) {
   const configurationPath: string = await temporaryGatewayConfiguration(t, "openclaw");
   const containerName = `oce-runtime-image-native-schema-${randomBytes(6).toString("hex")}`;
@@ -70,8 +72,8 @@ export async function verifyDedicatedSchema(
       timeout: 3 * startupMs + harnessRunMs + 2 * validateMs + 60_000 * imageSmokeTimeoutMultiplier,
     },
     JSON.stringify({
-      gatewayArgs: nodeProgramArguments(kubernetesGatewayEntrypoint),
-      harness: NATIVE_WORKER_ENTRYPOINT,
+      gatewayArgs: nodeProgramArguments(kubernetesGateway),
+      harness: nativeWorker,
       workspaceNodeId: randomBytes(32).toString("hex"),
       startupMs,
       harnessRunMs,
