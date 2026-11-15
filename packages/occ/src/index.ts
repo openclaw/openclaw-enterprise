@@ -1,3 +1,5 @@
+import { setTimeout as wait } from "node:timers/promises";
+
 export { recognizedRuntimeFailureValues } from "./runtime-failure-cause.ts";
 import type { RequestCredentialApproval } from "./ports/request-credential-approvals.ts";
 import { deploymentRepositoryAccessStatus } from "./deployment-repository-access.ts";
@@ -311,6 +313,7 @@ import {
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
+  RequestCredentialWorkBusyError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
   DriverSelectionError,
@@ -7850,8 +7853,41 @@ export class OpenClawController {
       : undefined;
   }
 
-  /** Verify the installed recipient before entering a fresh, short policy transaction. */
   private async checkRequestCredential(
+    owner: InstalledDriver,
+    request: RequestCredentialInput | RequestCredentialApproval,
+    signal: AbortSignal,
+    release?: RequestCredentialRelease,
+  ): Promise<StaticEgressSource | undefined> {
+    while (!signal.aborted && Date.parse(request.deadlineAt) > this.clock().getTime()) {
+      try {
+        return await this.checkRequestCredentialAttempt(owner, request, signal, release);
+      } catch (error) {
+        if (!(error instanceof RequestCredentialWorkBusyError)) {
+          throw error;
+        }
+        // State has rolled back and released every lock. Retry only this policy
+        // check, including fresh preliminary reads and live installation verification.
+        // Consumption and the resolver's original material observations remain outside.
+        const remaining = Date.parse(request.deadlineAt) - this.clock().getTime();
+        if (signal.aborted || remaining <= 0) {
+          return undefined;
+        }
+        try {
+          await wait(Math.min(25, remaining), undefined, { signal });
+        } catch (error) {
+          if (signal.aborted) {
+            return undefined;
+          }
+          throw error;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  /** Verify the installed recipient before entering a fresh, short policy transaction. */
+  private async checkRequestCredentialAttempt(
     owner: InstalledDriver,
     request: RequestCredentialInput | RequestCredentialApproval,
     signal: AbortSignal,
@@ -7929,10 +7965,12 @@ export class OpenClawController {
       // configuration writer's lock order and retain its shared fence through release.
       await state.installations.holdIAMConfiguration("shared");
       const currentNamespace = await this.lockNamespace(state, namespaceId);
+      const candidateOwner = { namespaceId, agentId, revisionId };
       const agent = await state.agents.lockAgent(namespaceId, agentId);
+      if (signal.aborted || Date.parse(request.deadlineAt) <= this.clock().getTime()) {
+        return undefined;
+      }
       if (
-        signal.aborted ||
-        Date.parse(request.deadlineAt) <= this.clock().getTime() ||
         !isDeepStrictEqual(currentNamespace, namespace) ||
         agent?.status !== "active" ||
         agent.executionMode !== "dedicated" ||
@@ -7944,11 +7982,11 @@ export class OpenClawController {
       }
       if (agent.activeRevisionId !== revisionId) {
         const latest = (await state.revisions.listRevisionMetadata(namespaceId, agentId)).at(-1);
-        const work = await state.operations.findWork(`agent_revision:${revisionId}:reconcile`);
+
         if (
           latest?.id !== revisionId ||
-          !work ||
-          controllerWorkDeploymentStatus(work, this.clock()) !== "running"
+          !(await state.operations.lockRequestCredentialWork(candidateOwner)) ||
+          !(await state.operations.requestCredentialCandidateEligible(candidateOwner))
         ) {
           return refuse("withdrawn");
         }
@@ -8059,6 +8097,12 @@ export class OpenClawController {
       if (!decision.allowed) {
         return refuse("unauthorized");
       }
+      const candidateCurrent = () =>
+        agent.activeRevisionId === revisionId ||
+        state.operations.requestCredentialCandidateEligible(candidateOwner);
+      if (!(await candidateCurrent())) {
+        return refuse("withdrawn");
+      }
       if (release) {
         // updateSecret holds this Namespace lock through the backend write. Reuse the
         // current unit for metadata so concurrent releases cannot exhaust the pool.
@@ -8094,6 +8138,9 @@ export class OpenClawController {
         provider.normalizeGrant !== normalizeGrant
       ) {
         return refuse("stale_configuration");
+      }
+      if (!(await candidateCurrent())) {
+        return refuse("withdrawn");
       }
       if ("http" in request) {
         const inserted = await state.requestCredentialApprovals.insert(

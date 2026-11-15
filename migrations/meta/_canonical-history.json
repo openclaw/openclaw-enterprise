@@ -625,6 +625,14 @@
       "tag": "0078_request_credential_assertions",
       "breakpoints": true,
       "sha256": "e8dfabfb85d9aae4dcce2bc7c093eef85338429e18721ca756eb8779043fed4f"
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1787000000079,
+      "tag": "0079_controller_work_readiness",
+      "breakpoints": true,
+      "sha256": "68c6fa1218e05a5aad67199658078027a4c9092e54ce6f13ff982d4f65489b7f"
     }
   ],
   "initialSchemaStates": {
@@ -719,10 +727,16 @@
       "2b664cf16ff58bcbc37d3d504babc102033ebdad06327ad921aa785a5a18648f",
       "a1294bd472c1b30dcf0958d5decf2e860fab04c1d85d57438c726d685cc6cf45",
       "f3814823f60aae5a569d911f2a2d0319b97f04adcf56b5ce005c451621deb372"
+    ],
+    "46f5d1fb2811ca997e4991da9205576001ee1a3810dd0c5983544548a0bf57d0": [
+      "38616218fccb9e52278cc84ff6475432f9b1f9b6deb67ec2d9a76d1171a790d3",
+      "f8341c0b727d37af083c72b172e21fb6e0288a0a5d71a7b28bb691d8f035dc97",
+      "78f7ba9f6e469ff27311b0f2525fe131a2cc50e7e33492b5aee2faf8a4bc3773",
+      "2f9ca8058eec9111bbde82fc228b7670d71b11ef370f361eb7e72a28172d2e6e"
     ]
   },
   "catalogs": {
-    "completed": "4706c23fcadbeb81788201eecb0350142486da5f60749cceae0ec5f2b010712f",
+    "completed": "46f5d1fb2811ca997e4991da9205576001ee1a3810dd0c5983544548a0bf57d0",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
@@ -775,7 +789,8 @@
     "preFiniteRepositorySessionWithdrawal": "c806edfa92f7889a92783f40ea6d0dbed281250ebdc632a363d724f12a2d1d33",
     "preHumanAuthenticationResults": "9398601c17f3ae475fc41fafd162e6da4383fe37ac25318bd03efc7dfb161600",
     "preRequestCredentialApprovals": "3c4fbf128dd283e684211b88abf6c5dbd102463e7eec1dfcf5e7172180c611ed",
-    "preRequestCredentialAssertions": "b4d1785a88e2b6e6306dd9540ccf3dc53c50dd1ca20a5541e57df6d11927b648"
+    "preRequestCredentialAssertions": "b4d1785a88e2b6e6306dd9540ccf3dc53c50dd1ca20a5541e57df6d11927b648",
+    "preControllerWorkReadiness": "4706c23fcadbeb81788201eecb0350142486da5f60749cceae0ec5f2b010712f"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",
@@ -784,7 +799,7 @@
   "catalogEvidence": {
     "postgres": "18.6",
     "drizzleOrm": "0.45.4",
-    "method": "Historical catalogs retain their recorded qualification. The catalog through 0075 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0075 and upgraded canonical restores from prefixes 51 and 74. The native catalog through 0076 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, and 75 upgraded to 0076. The native catalog through 0077 was measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, 75, and 76 plus Provider prefix 76 upgraded to 0077; existing receipts were preserved. The native catalog through 0078 was measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator. Its logical restore aliases were measured from a completed canonical archive and restored canonical prefixes 51, 74, 75, 76 and 77 upgraded to 0078."
+    "method": "Historical catalogs retain their recorded qualification. The catalog through 0075 was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator. Logical restore aliases were measured using pg_dump and pg_restore for canonical and Provider histories through 0075 and upgraded canonical restores from prefixes 51 and 74. The native catalog through 0076 was measured on PostgreSQL 18.6 with stock Drizzle. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, and 75 upgraded to 0076. The native catalog through 0077 was measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, 75, and 76 plus Provider prefix 76 upgraded to 0077; existing receipts were preserved. The native catalog through 0078 was measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator. Its logical restore aliases were measured from a completed canonical archive and restored canonical prefixes 51, 74, 75, 76 and 77 upgraded to 0078. The native catalog through 0079 was measured on PostgreSQL 18.6 with stock Drizzle as occ_migrator. Its logical restore aliases were measured from completed canonical and Provider archives and restored canonical prefixes 51, 74, 75, 76, 77 and 78 upgraded to 0079."
   },
   "compatibleLineages": {
     "providerCompleted": {

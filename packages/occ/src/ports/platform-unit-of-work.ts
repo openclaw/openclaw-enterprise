@@ -239,6 +239,8 @@ export function bindPlatformUnitOfWork(
       "list",
       "findWork",
       "findWorkAttempt",
+      "lockRequestCredentialWork",
+      "requestCredentialCandidateEligible",
       "hasRepositoryExecutionRedeployRequired",
       "hasOutstandingCredentialWithdrawalWork",
       "retryFailedAgentDeletion",

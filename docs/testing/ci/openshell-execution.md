@@ -108,6 +108,90 @@ candidate selection, preparation uses the pinned release charts and images.
 A mirror reference with the same released image digest keeps this release path.
 An image with a different digest requires the complete candidate selection.
 
+### Run the mixed-grant candidate case
+
+The separate `openshell-mixed-grant` lane runs
+[`openshell-mixed-grant-real.test.ts`](../../../tests/integration/openshell-mixed-grant-real.test.ts)
+against the six candidate inputs above. Export them before running these commands
+from the repository root. The fixture verifies the selection and owns its
+installation. It uses controlled model and Git origins, with no live model account.
+The released `openshell` lane retains its existing cases and credential requirements.
+Select the candidate lane explicitly; stock and full-integration groups exclude it.
+
+```sh
+export OCC_OPENSHELL_TEST_ROOT="$(mktemp -d)"
+node scripts/ci/prepare.mjs --lane openshell-mixed-grant \
+  --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
+node scripts/ci/run-tests.mjs run openshell-mixed-grant \
+  --state "$OCC_OPENSHELL_TEST_ROOT/state.json" \
+  --results "$OCC_OPENSHELL_TEST_ROOT/results.json"
+```
+
+Always run cleanup, including after preparation or test failure:
+
+```sh
+node scripts/ci/cleanup.mjs --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
+```
+
+The case requires [on-demand grants, Git withdrawal and retained conversation](../repository-credentials.md#mixed-model-and-git-grants).
+Source checks alone do not qualify an installed candidate; retain its complete
+result and cleanup receipts.
+
+On deployment failure, inspect the retained `mixed-grant-deployment-failed`
+receipt. Its `workerEvents` preserve
+`RUNTIME_AUTHENTICATION_FAILED` and the `check` values `login`, `model-probe`, or
+`other`. An absent `check` leaves the startup step unknown. `login` and
+`model-probe` identify the failing startup step; they do not establish an upstream
+status or credential value.
+
+The receipt also retains up to 8 `modelOrigin` observations with request kind,
+status, count, and an authentication class:
+
+- `missing`: the request has no syntactically valid Bearer credential.
+- `placeholder`: the credential matches the configured guest marker exactly.
+- `rejected`: another Bearer credential fails the configured digest check.
+- `accepted`: the credential matches a configured digest.
+
+An unrecognized authentication class becomes `unknown`. `modelApprovals` retains
+`matched`, `consumed`, and `replayClaimed` counts and up to 4 request-ID hashes
+for approval records that match the selected identity. For both fields, read
+`state` and `truncated` before interpreting the records. An `observed` result
+with no records differs from `unavailable`; a truncated result is incomplete.
+
+`modelDenials` reads the selected Sandbox's log API and checks its immutable
+Supervisor before and after the read. The read and both checks share a
+five-second deadline. It selects entries within the deployment time window.
+Each row contains a scope, a closed reason category, and a count.
+The `model` scope requires an exact HTTPS POST match to the committed model
+endpoint. The `sandbox` scope covers endpointless authority or credential
+failures in the selected Sandbox; it does not identify a model request.
+
+The receipt retains at most 8 rows in total. Each count is at most 2,000, the log
+ring's capacity. A full ring or incomplete result sets `truncated`. An empty
+`observed` result means no retained matching entries; it does not establish that
+no denial occurred. An `unavailable` result is not a zero count. These aggregates
+do not correlate a denial to a request or establish the cause of deployment
+failure. The receipt excludes raw log text, endpoint URLs, and runtime identities.
+
+`modelAuditDenials` counts durable `before_access` authorization denials from
+OCC's audit store. The read selects the deployment time window, Namespace,
+model credential source, revision and the Agent's service principal, plus the
+exact denial action, resource kind and outcome. It retains only counts for
+`unsupported_authority`, `stale_configuration`, `withdrawn`,
+`unsupported_operation`, `unauthorized`, and `other`. It includes no audit
+identities, request IDs or arbitrary details. Read failure or missing admission
+scope produces `unavailable`; observed zero counts mean no matching audit rows.
+Early refusals before the audited authorization path can leave no row, so an
+empty summary does not prove that OCC received or authorized a request. Counts
+do not identify which denial caused the deployment failure.
+
+The combined failure receipt remains limited to 16,384 bytes. Approval totals
+are unchanged; the smaller request hash sample leaves room for the audit counts.
+
+These fields exclude raw credentials and headers. They help diagnose a failed
+deployment; they do not prove that the Supervisor injected a credential or that
+the seven required acceptance checkpoints passed.
+
 ## Interpret timing and proof
 
 OpenShell lifecycle tests print live stage progress with their lane and file:
@@ -115,7 +199,14 @@ OpenShell lifecycle tests print live stage progress with their lane and file:
 operation settles. Later stages identify model, policy and credential checks.
 A lone `started` message identifies the operation still running or interrupted;
 it does not establish failure or completion. Progress contains fixed categories
-only. Final timing receipts and test results remain the completion evidence.
+only. Mixed-grant setup and postdeployment checks also report the last started
+operation, for example
+`openshell-mixed-grant-setup installation gateway-connect`, before the fixture
+finishes. After deployment, the same record uses phase `verification` and the
+current check name, such as `model before Git`, before that check starts.
+These markers use the retained setup receipt's closed phase and operation
+vocabulary; invalid markers and markers with extra fields are discarded.
+Final timing receipts and test results remain the completion evidence.
 
 First-Agent stage measurements appear in `files[].measurements`: Local Setup,
 initial deployment and model calls, reuse after changing only the request nonce, native deployment, native

@@ -547,6 +547,13 @@
       "when": 1787000000078,
       "tag": "0078_request_credential_assertions",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1787000000079,
+      "tag": "0079_controller_work_readiness",
+      "breakpoints": true
     }
   ]
 }

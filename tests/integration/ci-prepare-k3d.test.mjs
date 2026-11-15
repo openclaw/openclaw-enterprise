@@ -12,15 +12,58 @@ import {
   digest,
   fixture,
   fixtureImageCommands,
+  fixtureCommandServer,
   fixturePreparationMetrics,
   immutableImage,
   nodeBaseImage,
+  spawnResult,
   writeFixtureCommand,
 } from "../helpers/ci-prepare-fixture.mjs";
 import { eachSettled } from "../helpers/child-processes.mjs";
 import { waitFor, waitUntil, within } from "../helpers/wait-for.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { bashString, startCommandServer } from "../helpers/fixture-command-server.mjs";
+
+test("fixture k3d inventory follows creation and deletion", async (t) => {
+  const root = await fixture(t);
+  const server = await fixtureCommandServer(t, root);
+  const command = join(root, "k3d");
+  await writeFixtureCommand(command, "k3d", server);
+  const run = async (args) => {
+    const result = await spawnResult(command, args, {
+      env: { CI_FIXTURE_SCENARIO: "success", CI_FIXTURE_LANE: "k3d-model" },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout;
+  };
+  const inventory = async () => {
+    const output = await run(["cluster", "list", "-o", "json"]);
+    t.diagnostic(`k3d cluster list: ${output}`);
+    return JSON.parse(output);
+  };
+  // Cancellation can reach cleanup before create has ever run.
+  assert.deepEqual(await inventory(), []);
+  const cluster = "openclaw-k8s-inventory";
+  await run([
+    "cluster",
+    "create",
+    cluster,
+    "--image",
+    defaultK3sImage,
+    "--servers",
+    "1",
+    "--agents",
+    "0",
+    "--api-port",
+    "127.0.0.1:12345",
+    "--kubeconfig-update-default=false",
+    "--kubeconfig-switch-context=false",
+    "--no-lb",
+  ]);
+  assert.deepEqual(await inventory(), [{ name: cluster }]);
+  await run(["cluster", "delete", cluster]);
+  assert.deepEqual(await inventory(), []);
+});
 
 test("native container preparation summaries", async (t) => {
   const hostEnv = process.env;

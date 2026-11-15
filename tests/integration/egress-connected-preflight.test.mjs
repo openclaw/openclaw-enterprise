@@ -14,6 +14,7 @@ import {
 import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
 import { deleteInstalledResource } from "../helpers/egress-installed-resource-cleanup.mjs";
 import { createKubernetesClient } from "../helpers/kubernetes-real.mjs";
+import { captureMixedGrantFailure } from "../helpers/openshell-mixed-grant-agent.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   encodeSyntheticEvents,
@@ -649,25 +650,100 @@ test("failed custody deployment preserves worker event order across a reused att
     status,
     message: sentinel,
   });
+  emit({
+    ...work,
+    event: "worker.compute-prepare-failed",
+    step: "sandbox_provision",
+    errorClass: "KubernetesPreparationFailure",
+  });
   const completions = [
     {
+      attempt: 5,
       outcome: "pending",
       code: "KUBERNETES_API_UNAVAILABLE",
+      dependency: "kubernetes_api",
       cause: "unavailable",
+      status,
       deployPasses: 5,
     },
     {
+      attempt: 5,
       outcome: "retry",
       code: "DEPENDENCY_UNAVAILABLE",
       cause: "DependencyUnavailableError",
+      method: "GetProviderProfile",
+      grpcStatus: 14,
+      validationCategory: "UNKNOWN",
+      cleanupCause: "SyntaxError",
       deployPasses: 6,
+    },
+    {
+      attempt: 6,
+      outcome: "retry",
+      code: "DEPENDENCY_UNAVAILABLE",
+      cause: "DependencyUnavailableError",
+      method: "CreateSandbox",
+      grpcStatus: 3,
+      validationCategory: "POLICY_SAFETY",
+      cleanupCause: "RangeError",
+      deployPasses: 7,
+    },
+    {
+      attempt: 7,
+      outcome: "retry",
+      code: "DEPENDENCY_UNAVAILABLE",
+      cause: "OpenShellSandboxConfigurationFailure",
+      cleanupCause: "TypeError",
+      deployPasses: 8,
+    },
+    // The same deployment code must retain which held authentication check failed.
+    {
+      attempt: 8,
+      outcome: "permanent",
+      code: "RUNTIME_AUTHENTICATION_FAILED",
+      check: "login",
+      deployPasses: 9,
     },
   ];
   for (const completion of completions) {
     emit({ ...work, event: "worker.completed", result: completion.outcome, ...completion });
   }
+  // These records must not join the selected revision merely because the attempt matches.
+  for (const foreign of [
+    { namespaceId: "ns_other" },
+    { agentId: "agent_other" },
+    { revisionId: "rev_other" },
+    { workId: "agent_revision:rev_other:reconcile" },
+    { operation: "agent.delete" },
+    { attempt: 0 },
+    { attempt: 1.5 },
+  ]) {
+    emit({ ...work, ...foreign, event: "worker.completed", outcome: "retry" });
+  }
+  // A partial log line and unknown fields are diagnostic input, not valid Worker behavior.
+  lines.push("{partial\n", "null\n");
+  // Unknown class names must stay private in preparation as well as completion.
+  emit({ ...work, event: "worker.compute-prepare-failed", step, errorClass: sentinel });
+  emit({
+    ...work,
+    event: "worker.completed",
+    outcome: sentinel,
+    code: sentinel,
+    check: sentinel,
+    cause: sentinel,
+    dependency: sentinel,
+    method: sentinel,
+    validationCategory: sentinel,
+    cleanupCause: sentinel,
+    grpcStatus: 17,
+    status: 99,
+    deployPasses: 0,
+    details: sentinel,
+  });
   const log = lines.join("");
   assert.ok(log.includes(sentinel), "private sentinel must actually reach the collector");
+  assert.ok(log.includes('"method":"' + sentinel + '"'), "unknown method reaches projection");
+  assert.ok(log.includes('"check":"' + sentinel + '"'), "unknown check reaches projection");
 
   // Use the actual installed response decoder, deploy failure, private ledger and public diagnostic.
   const diagnostics = [];
@@ -731,11 +807,435 @@ test("failed custody deployment preserves worker event order across a reused att
     const budgetAttempt = 5;
     assert.deepEqual(failure.workerEvents, [
       { event: "preparation", budgetAttempt, step, errorClass, status, cause: "other" },
-      ...completions.map((fields) => ({ event: "completion", budgetAttempt, ...fields })),
+      {
+        event: "preparation",
+        budgetAttempt,
+        step: "sandbox_provision",
+        errorClass: "KubernetesPreparationFailure",
+      },
+      ...completions.map(({ attempt, ...fields }) => ({
+        event: "completion",
+        budgetAttempt: attempt,
+        ...fields,
+      })),
+      { event: "preparation", budgetAttempt, step, errorClass: "other" },
+      {
+        event: "completion",
+        budgetAttempt,
+        outcome: "other",
+        code: "other",
+        check: "other",
+        cause: "other",
+        dependency: "other",
+        method: "other",
+        cleanupCause: "other",
+      },
     ]);
     assert.ok(
       diagnostics.at(-1).includes(JSON.stringify(failure.workerEvents)),
       "public safe projection",
     );
   }
+});
+
+test("mixed-grant terminal capture rejects malformed observations without inventing availability", async () => {
+  const error = new Error(
+    "MIXED_GRANT_DEPLOYMENT_FAILED: RUNTIME_AUTHENTICATION_FAILED; selected revision failed after provider registration",
+  );
+  const target = { namespaceId: "ns_fixture", agentId: "agent_fixture", id: "rev_fixture" };
+  const receipts = [];
+  const observation = {
+    target,
+    collect: async () => "unavailable",
+    checkpoint: async (event, data) => receipts.push({ event, ...data }),
+  };
+  const unavailableOrigin = { state: "unavailable", truncated: false, events: [] };
+  const unavailableApprovals = {
+    state: "unavailable",
+    truncated: false,
+    matched: 0,
+    consumed: 0,
+    replayClaimed: 0,
+    requestIdHashes: [],
+  };
+  const auditCounts = {
+    unsupported_authority: 0,
+    stale_configuration: 0,
+    withdrawn: 0,
+    unsupported_operation: 0,
+    unauthorized: 0,
+    other: 0,
+  };
+  const unavailableAuditDenials = { state: "unavailable", truncated: false, counts: {} };
+  // Missing optional readers and malformed envelopes cannot claim an empty observed result.
+  for (const readers of [
+    {},
+    {
+      collectModelOrigin: () => ({ state: "PRIVATE_STATE_CANARY", events: [] }),
+      collectModelAuditDenials: async () => ({ state: "observed", counts: {} }),
+      collectModelApprovals: async () => ({
+        state: "observed",
+        requestIdHashes: "PRIVATE_IDS_CANARY",
+      }),
+    },
+  ]) {
+    await captureMixedGrantFailure(error, { ...observation, ...readers });
+    const receipt = receipts.at(-1);
+    assert.equal(receipt.event, "mixed-grant-deployment-failed");
+    assert.equal(receipt.workerEvents, "unavailable");
+    assert.deepEqual(receipt.modelOrigin, unavailableOrigin);
+    assert.deepEqual(receipt.modelApprovals, unavailableApprovals);
+    assert.deepEqual(receipt.modelAuditDenials, unavailableAuditDenials);
+  }
+  // Snapshots cross a trust boundary: invalid numbers and hash-like strings must
+  // not become evidence, while an explicit retention limit remains visible.
+  const hash = "a".repeat(64);
+  await captureMixedGrantFailure(error, {
+    ...observation,
+    collectModelOrigin: () => ({
+      state: "observed",
+      truncated: true,
+      events: [
+        {
+          kind: "probe",
+          status: Infinity,
+          count: Number.MAX_SAFE_INTEGER + 1,
+          harness: "codex",
+          auth: "missing",
+          token: "PRIVATE_TOKEN_CANARY",
+        },
+      ],
+    }),
+    collectModelApprovals: async () => ({
+      state: "observed",
+      truncated: "PRIVATE_TRUNCATED_CANARY",
+      matched: -1,
+      consumed: NaN,
+      replayClaimed: Number.MAX_SAFE_INTEGER + 1,
+      requestIdHashes: [hash, hash.toUpperCase(), "sha256:" + hash, "PRIVATE_REQUEST_CANARY"],
+    }),
+  });
+  assert.deepEqual(receipts.at(-1).modelOrigin, unavailableOrigin);
+  assert.deepEqual(receipts.at(-1).modelApprovals, unavailableApprovals);
+  // A malformed row or hash cannot hide valid evidence; its omission is visible.
+  await captureMixedGrantFailure(error, {
+    ...observation,
+    collectModelOrigin: () => ({
+      state: "observed",
+      truncated: false,
+      events: [
+        { kind: "probe", status: 200, count: 1, harness: "codex", auth: "accepted" },
+        { kind: "probe", status: 99, count: 1, harness: "codex", auth: "accepted" },
+      ],
+    }),
+    collectModelApprovals: async () => ({
+      state: "observed",
+      truncated: false,
+      matched: 1,
+      consumed: 0,
+      replayClaimed: 0,
+      requestIdHashes: [hash, hash.toUpperCase(), "sha256:" + hash, "PRIVATE_REQUEST_CANARY"],
+    }),
+  });
+  assert.deepEqual(receipts.at(-1).modelOrigin, {
+    state: "observed",
+    truncated: true,
+    events: [{ kind: "probe", status: 200, count: 1, harness: "codex", auth: "accepted" }],
+  });
+  assert.deepEqual(receipts.at(-1).modelApprovals, {
+    state: "observed",
+    truncated: true,
+    matched: 1,
+    consumed: 0,
+    replayClaimed: 0,
+    requestIdHashes: [hash],
+  });
+  // Valid empty snapshots remain distinguishable from missing observations.
+  await captureMixedGrantFailure(error, {
+    ...observation,
+    collectModelOrigin: () => ({ state: "observed", truncated: false, events: [] }),
+    collectModelApprovals: async () => ({ ...unavailableApprovals, state: "observed" }),
+    collectModelAuditDenials: async () => ({
+      state: "observed",
+      truncated: false,
+      counts: auditCounts,
+    }),
+  });
+  assert.deepEqual(receipts.at(-1).modelOrigin, { ...unavailableOrigin, state: "observed" });
+  assert.deepEqual(receipts.at(-1).modelApprovals, { ...unavailableApprovals, state: "observed" });
+  assert.deepEqual(receipts.at(-1).modelAuditDenials, {
+    state: "observed",
+    truncated: false,
+    counts: auditCounts,
+  });
+  // Every audit bucket is required. Missing or malformed counts cannot be
+  // reported as a successful zero result; known truncation remains visible.
+  const invalidAuditCounts = [
+    ...Object.keys(auditCounts).map((key) => ({ ...auditCounts, [key]: undefined })),
+    ...[-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "1"].map((other) => ({ ...auditCounts, other })),
+  ];
+  for (const counts of invalidAuditCounts) {
+    await captureMixedGrantFailure(error, {
+      ...observation,
+      collectModelAuditDenials: async () => ({ state: "observed", truncated: true, counts }),
+    });
+    assert.deepEqual(receipts.at(-1).modelAuditDenials, {
+      state: "unavailable",
+      truncated: true,
+      counts: {},
+    });
+  }
+  // Unavailable audit observations never publish counts, even valid-looking ones.
+  for (const truncated of [true, false, "true", 1]) {
+    await captureMixedGrantFailure(error, {
+      ...observation,
+      collectModelAuditDenials: async () => ({
+        state: "unavailable",
+        truncated,
+        counts: auditCounts,
+        requestId: "PRIVATE_AUDIT_ID_CANARY",
+      }),
+    });
+    assert.deepEqual(receipts.at(-1).modelAuditDenials, {
+      state: "unavailable",
+      truncated: truncated === true,
+      counts: {},
+    });
+  }
+  assert.doesNotMatch(JSON.stringify(receipts), /PRIVATE_[A-Z_]+_CANARY/);
+  const captured = receipts.length;
+  // The existing terminal/selected-target gate still owns whether capture runs.
+  await captureMixedGrantFailure(new Error("unrelated"), observation);
+  await captureMixedGrantFailure(error, { ...observation, target: undefined });
+  assert.equal(receipts.length, captured);
+});
+
+test("model denial diagnostics preserve endpoint scope and refuse incomplete identity evidence", async (t) => {
+  const { collectOpenShellModelDenials } = await import("../helpers/openshell-model-denial.ts");
+  const { gitExpiryGateway } = await import("../helpers/openshell-online-git-journey.mjs");
+  const sandboxId = randomUUID();
+  const startedAt = Date.parse("2030-01-01T00:00:00Z");
+  const endpoint = "https://model.example.test:8443/v1/responses";
+  const privateText = "private-denial-" + randomUUID();
+  const identity = { sandboxId, supervisorPodUid: randomUUID(), containerId: randomUUID() };
+  const line = (message, overrides = {}) => ({
+    sandbox_id: sandboxId,
+    event_time: { seconds: startedAt / 1000, nanos: 123000000 },
+    level: "OCSF",
+    target: "ocsf",
+    source: "sandbox",
+    message,
+    fields: {},
+    ...overrides,
+  });
+  // These are serialized d32 OCSF wire shapes, not a running supplier. The real
+  // protobuf codec and production reader decode them before the collector runs.
+  const http = (engine, reason) =>
+    "HTTP:POST [MED] DENIED POST " +
+    endpoint +
+    " [policy:fixture engine:" +
+    engine +
+    "] [" +
+    (engine === "middleware" ? "failed:false transformed:false " : "") +
+    "reason:" +
+    reason +
+    "]";
+  const policy = (reason) =>
+    http("l7", "L7_REQUEST deny POST model.example.test:8443/v1/responses reason=" + reason);
+  const denied = http("middleware", "middleware_denied:oce-model:request_credential_denied");
+  const timeout = http("middleware", "middleware_failed: middleware_timeout").replace(
+    "failed:false",
+    "failed:true",
+  );
+  const valid = [
+    line(policy("POST /v1/responses not permitted by policy")),
+    line(policy("POST /v1/responses not permitted by policy")),
+    line(denied),
+    line(timeout),
+    line(
+      http("middleware", "middleware_failed: " + privateText).replace(
+        "failed:false",
+        "failed:true",
+      ),
+    ),
+    line(http("unknown", privateText)),
+  ];
+  let response = { logs: valid, buffer_total: valid.length };
+  const requests = [];
+  const { client } = await gitExpiryGateway(t, {
+    model: "model",
+    workspace: "workspace",
+    sandbox: "sandbox",
+    revisionId: "revision",
+    deadline: "2030-01-01T00:00:00Z",
+    platformProfile: false,
+    configure(methods) {
+      methods.GetSandboxLogs = (request) => {
+        requests.push(request);
+        return response;
+      };
+    },
+  });
+  const options = {
+    gatewayClient: client,
+    workspace: "workspace",
+    sandbox: "sandbox",
+    sandboxId,
+    modelEndpoint: endpoint,
+    startedAt,
+    endedAt: startedAt + 1000,
+    signal: t.signal,
+    async readSupervisor(signal) {
+      assert.ok(signal instanceof AbortSignal);
+      signal.throwIfAborted();
+      return structuredClone(identity);
+    },
+  };
+  const expected = [
+    { scope: "model", category: "policy-not-permitted", count: 2 },
+    { scope: "model", category: "request-credential-denied", count: 1 },
+    { scope: "model", category: "middleware-timeout", count: 1 },
+    { scope: "model", category: "middleware-failed", count: 1 },
+    { scope: "model", category: "other", count: 1 },
+  ];
+  let result = await collectOpenShellModelDenials(options);
+  assert.deepEqual(result, { state: "observed", truncated: false, events: expected });
+  assert.ok(!JSON.stringify(result).includes(privateText));
+  assert.equal(requests[0].lines, 2000);
+  assert.equal(
+    requests[0].since_time,
+    undefined,
+    "inspect the unfiltered ring before local time selection",
+  );
+
+  // Endpointless authority/credential refusals remain Sandbox diagnostics. They
+  // cannot explain which origin failed, even when their HTTP method is POST.
+  const sandboxEvents = [
+    ["HIGH", "request-authority", "request_authority_mismatch", "request-authority-mismatch"],
+    ["HIGH", "credential-binding", "credential_endpoint_mismatch", "credential-endpoint-mismatch"],
+    ["MED", "credential-binding", "credential_unavailable", "credential-unavailable"],
+    [
+      "HIGH",
+      "credential-binding",
+      "credential_placement_mismatch",
+      "credential-placement-mismatch",
+    ],
+  ];
+  const methodOnly = ([severity, engine, reason]) =>
+    line(
+      "HTTP:POST [" +
+        severity +
+        "] DENIED POST  [policy:fixture engine:" +
+        engine +
+        "] [reason:" +
+        reason +
+        "]",
+    );
+  response = { logs: sandboxEvents.map(methodOnly), buffer_total: 4 };
+  assert.deepEqual(await collectOpenShellModelDenials(options), {
+    state: "observed",
+    truncated: false,
+    events: sandboxEvents.map(([, , , category]) => ({ scope: "sandbox", category, count: 1 })),
+  });
+
+  // Wrong host, port, path, interval, method, source, or authority must never be
+  // promoted into a selected-model denial. Bare tracing has no endpoint join.
+  const excluded = [
+    line(denied.replace("model.example.test", "other.example.test")),
+    line(denied.replace(":8443/", ":9443/")),
+    line(denied.replace("/v1/responses", "/v1/other")),
+    line(denied.replace("/v1/responses", "/v1/responses?private=" + privateText)),
+    line(denied.replaceAll("POST", "GET")),
+    line(denied.replace("DENIED", "ALLOWED")),
+    line(denied, { source: "gateway" }),
+    line(denied, { target: "other" }),
+    line(denied, { fields: { private: privateText } }),
+    line(denied, { event_time: { seconds: startedAt / 1000 - 1, nanos: 0 } }),
+    line(denied, { event_time: { seconds: startedAt / 1000 + 2, nanos: 0 } }),
+    line("Token grant failed before forwarding", {
+      level: "WARN",
+      target: "openshell_supervisor_network::l7::relay",
+      fields: { error: privateText },
+    }),
+    methodOnly(["HIGH", "wrong-engine", "request_authority_mismatch"]),
+  ];
+  response = { logs: excluded, buffer_total: excluded.length };
+  assert.deepEqual(await collectOpenShellModelDenials(options), {
+    state: "observed",
+    truncated: false,
+    events: [],
+  });
+
+  // A delivered suffix is useful but never advertised as a complete ring.
+  response = { logs: valid, buffer_total: valid.length + 1 };
+  assert.deepEqual(await collectOpenShellModelDenials(options), {
+    state: "observed",
+    truncated: true,
+    events: expected,
+  });
+  response = { logs: Array.from({ length: 2000 }, () => line(denied)), buffer_total: 2000 };
+  assert.deepEqual(await collectOpenShellModelDenials(options), {
+    state: "observed",
+    truncated: true,
+    events: [{ scope: "model", category: "request-credential-denied", count: 2000 }],
+  });
+
+  // A verbose failure must still fit the shared diagnostic envelope. Retain
+  // the first eight observed categories and report loss instead of widening it.
+  const many = [
+    ...valid,
+    line(policy("POST /v1/responses blocked by deny rule")),
+    line(policy("request denied by policy")),
+    line(http("middleware", "middleware_denied:other:online_authorization_denied")),
+    line(http("middleware", "middleware_denied:other")),
+    line(
+      http("middleware", "middleware_failed: middleware_chain_timeout").replace(
+        "failed:false",
+        "failed:true",
+      ),
+    ),
+    ...sandboxEvents.map(methodOnly),
+  ];
+  response = { logs: many, buffer_total: many.length };
+  result = await collectOpenShellModelDenials(options);
+  assert.equal(result.state, "observed");
+  assert.equal(result.truncated, true);
+  assert.equal(result.events.length, 8);
+  assert.deepEqual(result.events.slice(0, expected.length), expected);
+
+  for (const logs of [
+    [line(denied, { sandbox_id: randomUUID() })],
+    [line(denied, { event_time: undefined })],
+    [line(denied, { event_time: { seconds: -1, nanos: 0 } })],
+  ]) {
+    response = { logs, buffer_total: logs.length };
+    assert.equal((await collectOpenShellModelDenials(options)).state, "unavailable");
+  }
+  response = { logs: valid, buffer_total: valid.length };
+  let reads = 0;
+  result = await collectOpenShellModelDenials({
+    ...options,
+    async readSupervisor(signal) {
+      signal.throwIfAborted();
+      reads++;
+      return { ...identity, containerId: reads === 1 ? identity.containerId : randomUUID() };
+    },
+  });
+  assert.deepEqual(result, { state: "unavailable", truncated: false, events: [] });
+  assert.equal(reads, 2);
+  assert.equal(
+    (
+      await collectOpenShellModelDenials({
+        ...options,
+        signal: AbortSignal.abort(),
+      })
+    ).state,
+    "unavailable",
+  );
+  response = undefined; // The actual gRPC server returns NOT_FOUND.
+  assert.deepEqual(await collectOpenShellModelDenials(options), {
+    state: "unavailable",
+    truncated: false,
+    events: [],
+  });
 });

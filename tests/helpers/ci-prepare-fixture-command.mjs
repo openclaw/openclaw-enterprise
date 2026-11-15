@@ -759,7 +759,12 @@ async function fakeCommand({
       return finish("apiVersion: v1\n");
     }
     if (equals(args, ["cluster", "list", "-o", "json"])) {
-      return finish(JSON.stringify(state.clusterDeleted ? [] : [{ name: state.cluster }]));
+      // No cluster exists until create records its name, including early cancellation.
+      return finish(
+        JSON.stringify(
+          state.cluster === undefined || state.clusterDeleted ? [] : [{ name: state.cluster }],
+        ),
+      );
     }
     if (equals(args, ["cluster", "delete", state.cluster])) {
       state.clusterDeleted = true;

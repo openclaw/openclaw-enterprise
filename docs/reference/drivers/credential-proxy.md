@@ -85,7 +85,7 @@ this support; they do not qualify stock OpenShell or any installed deployment.
 
 Explicit `authorization: "online-request"` selects an offered provider; eligible
 static sources otherwise use strict admission. Updates retain provider ID/generation.
-This profile requires native IAM backed by the same OCC state. Bundled
+This profile requires native IAM on the same OCC state. Bundled
 `openai-online-request`, generation 1, admits one dedicated Codex HTTPS Responses
 route with an explicit model and no provider-hosted tools.
 
@@ -110,6 +110,8 @@ inference continuity after that removal is not guaranteed. Version 9 does not
 admit `policyReduction`.
 Removing either binding may stop or redeploy execution; uninterrupted use of the
 other path is not guaranteed.
+
+Startup requires [current queue authority](../../flows/credential-source-egress/model-requests.md#2-approve-the-captured-request).
 
 `authorizeRequestCredential` checks the captured request and saves a nonsecret,
 single-use approval. `resolveRequestCredential` authenticates its redemption,

@@ -123,7 +123,8 @@ The worker emits fixed operational event classes through the same logger:
   and a stable result code; for an Agent stop, deletion or credential-source
   withdrawal, an exhausted retry is `outcome: permanent` while `result` stays
   the Driver's classification; AgentRevision operations also include `agentId` and
-  `revisionId`. A failed or deferred version pass adds `cause`: the error class,
+  `revisionId`. A held runtime failure adds its normalized `check` only when the
+  completion code still identifies that failure. A failed or deferred version pass adds `cause`: the error class,
   or for a transient dependency its closed failure code, with `dependency` naming
   the dependency. An HTTP failure adds `status`, and the Kubernetes Status `reason`
   when its cause keeps one, such as `403` and `Forbidden` for a refused Secret
@@ -147,8 +148,8 @@ The worker emits fixed operational event classes through the same logger:
   work's next other line add `stopYields`, the yields this worker counted for it. A provisioning plan that the Compute Driver refuses for a reason the caller
   cannot fix adds that `reason`. A failed Namespace pass adds the Compute Driver's
   `reason` when it gives one: at most 256 printable characters that never carry another
-  tenant's values. These fields stay in the local log; the Collector
-  exports only the result code. Each deployment pass adds worker wall-clock milliseconds:
+  tenant's values. These `reason` fields stay in the local log; the Collector
+  exports the normalized `check` and result code. Each deployment pass adds worker wall-clock milliseconds:
   `durationMs` for the pass, `deployPasses` and summed Compute `prepareMs` so
   far, `readinessWaitMs` from the first unready observation to the first ready
   one (or to now while pending), `activationMs` from the ready observation to

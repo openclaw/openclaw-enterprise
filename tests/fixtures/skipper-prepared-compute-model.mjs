@@ -1,5 +1,5 @@
-// The fixture owner chooses the exact command in a read-only mount. Model requests
-// can identify a prepared turn but cannot supply a command, a token, or another target.
+// The fixture owner chooses the exact command. Model requests can identify a
+// prepared turn but cannot supply a command, a token, or another target.
 import { existsSync, readFileSync } from "node:fs";
 
 // Codex 0.164.0's ExecCommandToolOutput::response_text wraps both exec_command and
@@ -23,12 +23,23 @@ function nativeResult(text) {
 }
 
 export function createSkipperPreparedComputeEvents(commandPath) {
-  let active;
-  return ({ model, request, answerEvents, emit }) => {
+  return createPreparedComputeEvents(() => {
     if (!existsSync(commandPath)) {
       return undefined;
     }
-    const { cmd, id, expiresAt } = JSON.parse(readFileSync(commandPath, "utf8"));
+    return JSON.parse(readFileSync(commandPath, "utf8"));
+  });
+}
+
+/** @param {() => { id: string, cmd: string, expiresAt: number, expectedOutput?: string } | undefined} readCommand */
+export function createPreparedComputeEvents(readCommand) {
+  let active;
+  return ({ model, request, answerEvents, emit }) => {
+    const command = readCommand();
+    if (command === undefined) {
+      return undefined;
+    }
+    const { cmd, id, expiresAt, expectedOutput } = command;
     if (!request.includes(id)) {
       return undefined;
     }
@@ -97,6 +108,9 @@ export function createSkipperPreparedComputeEvents(commandPath) {
       } else {
         const output = parsed.map((result) => result?.output ?? "").join("");
         const markerSeen = output.includes(marker);
+        // The expectation includes any newline written by the command itself.
+        const outputMatched =
+          expectedOutput === undefined || output === expectedOutput + marker + "\n";
         const completed =
           parsed.every(Boolean) &&
           current?.exitCode !== undefined &&
@@ -108,6 +122,7 @@ export function createSkipperPreparedComputeEvents(commandPath) {
           completed &&
           current.exitCode === 0 &&
           markerSeen &&
+          outputMatched &&
           (results.length === 1 || sameSession);
         const sha = output.match(/(?:^|\n)([0-9a-f]{40})(?:\n|$)/)?.[1];
         let status = "unrecognized";
@@ -124,6 +139,7 @@ export function createSkipperPreparedComputeEvents(commandPath) {
           status,
           exitCode: current?.exitCode ?? null,
           sessionPresent: current?.sessionId !== undefined,
+          ...(expectedOutput === undefined ? {} : { outputMatched }),
         });
         return answerEvents(model, ok ? marker : "SKIPPER_INCOMPLETE_" + id);
       }
@@ -136,6 +152,7 @@ export function createSkipperPreparedComputeEvents(commandPath) {
           status: "deadline",
           exitCode: null,
           sessionPresent: false,
+          ...(expectedOutput === undefined ? {} : { outputMatched: false }),
         });
         return answerEvents(model, "SKIPPER_INCOMPLETE_" + id);
       }

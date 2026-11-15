@@ -19,6 +19,7 @@ import {
   HARNESS_EGRESS_ENROLLMENT_PATH,
 } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
@@ -1068,6 +1069,14 @@ test("provider Harness protected execution is released only on current signed in
     },
     currentEgressInstallation: async () => observation,
   };
+  // This fixture initially owns only the predecessor Pod. Protected revisions
+  // remain unobserved until their scenario supplies their exact Pod below.
+  const predecessorPods = core.listNamespacedPod;
+  core.listNamespacedPod = async (request) =>
+    request.labelSelector?.includes("openclaw.dev/workload-role=agent") &&
+    !request.labelSelector.includes("openclaw.dev/revision=" + revision.id)
+      ? { items: [] }
+      : predecessorPods(request);
   // A source cannot claim Proxy ownership under a different admitted source key.
   const conflictingSource = structuredClone(source);
   conflictingSource.egress.key.source.generation += 1;
@@ -1565,6 +1574,111 @@ test("provider Harness protected execution is released only on current signed in
         core.listNamespacedPod = originalList;
         sandbox.enrollHarness = enrollHarness;
         sandbox.harnessEndpoint = harnessEndpoint;
+      }
+    },
+  );
+
+  await t.test(
+    "a protected Codex held failure precedes enrollment and Gateway readiness",
+    async () => {
+      // Exercise Compute ordering with an already committed installation. The
+      // generated Harness HTTP behavior is covered by the status transport tests.
+      const pod = fixture.pod("protected-held-failure");
+      pod.metadata.labels["openclaw.dev/revision"] = protectedRevision.id;
+      pod.metadata.labels["app.kubernetes.io/name"] =
+        "agent-" + digest(protectedRevision.agentId) + "-rev-" + digest(protectedRevision.id);
+      const originalList = core.listNamespacedPod;
+      const { enrollHarness, harnessStatus } = sandbox;
+      const gateway = fixture.gateway();
+      gateway.metadata.annotations["openclaw.dev/agent-revision-id"] = protectedRevision.id;
+      gateway.status = {};
+      save(gateway);
+      core.listNamespacedPod = async (request) =>
+        request.labelSelector.includes("openclaw.dev/revision=" + protectedRevision.id)
+          ? { items: [pod] }
+          : originalList(request);
+      observation = installed;
+      current = true;
+      const sequence = [];
+      sandbox.enrollHarness = async () => sequence.push("enroll");
+      sandbox.harnessStatus = async () => {
+        sequence.push("status");
+        if (harnessAnswer instanceof Error) {
+          throw harnessAnswer;
+        }
+        return harnessAnswer;
+      };
+      try {
+        const endpointCount = fixture.endpoints.length;
+        harnessAnswer = { state: "failed", runtimeFailure: heldFailure };
+        assert.deepEqual(await driver.prepareRevision(protectedRevision, protectedContext), {
+          namespaceId: tenant.id,
+          agentId: protectedRevision.agentId,
+          revisionId: protectedRevision.id,
+          ready: false,
+          runtimeFailure: heldFailure,
+        });
+        assert.deepEqual(sequence.splice(0), ["status"]);
+        assert.equal(fixture.endpoints.length, endpointCount);
+
+        // Neither a starting nor a healthy Harness bypasses enrollment or turns
+        // an unready Agent Gateway into successful preparation.
+        for (const state of ["starting", "serving"]) {
+          harnessAnswer = { state };
+          const before = fixture.endpoints.length;
+          const result = await driver.prepareRevision(protectedRevision, protectedContext);
+          assert.equal(result.ready, false);
+          assert.equal(result.runtimeFailure, undefined);
+          assert.deepEqual(sequence.splice(0), ["status", "enroll"]);
+          assert.equal(fixture.endpoints.length, before + 1);
+          assert.equal(fixture.gateway().status.readyReplicas, undefined);
+        }
+
+        harnessAnswer = new TransientDependencyError(
+          "sandbox_gateway",
+          "unavailable",
+          "The status transport is unavailable.",
+        );
+        assert.equal(
+          (await driver.prepareRevision(protectedRevision, protectedContext)).ready,
+          false,
+        );
+        assert.deepEqual(sequence.splice(0), ["status", "enroll"]);
+
+        harnessAnswer = { state: "failed", runtimeFailure: null };
+        await assert.rejects(
+          driver.prepareRevision(protectedRevision, protectedContext),
+          /Runtime failure status returned invalid data/,
+        );
+        assert.deepEqual(sequence.splice(0), ["status"]);
+
+        const observe = sandbox.harnessStatus;
+        const cancelled = new AbortController();
+        const reason = new Error("preparation cancelled");
+        sandbox.harnessStatus = async () => {
+          sequence.push("status");
+          cancelled.abort(reason);
+          throw new TransientDependencyError("sandbox_gateway", "unavailable", "cancelled read");
+        };
+        await assert.rejects(
+          withComputeAbortSignal(cancelled.signal, () =>
+            driver.prepareRevision(protectedRevision, protectedContext),
+          ),
+          (error) => error === reason,
+        );
+        assert.deepEqual(sequence.splice(0), ["status"]);
+        sandbox.harnessStatus = observe;
+
+        harnessAnswer = { state: "failed", runtimeFailure: heldFailure };
+        pod.status.conditions = [{ type: "Ready", status: "False" }];
+        const result = await driver.prepareRevision(protectedRevision, protectedContext);
+        assert.equal(result.ready, false);
+        assert.equal(result.runtimeFailure, undefined);
+        assert.equal(sequence.includes("status"), false);
+      } finally {
+        core.listNamespacedPod = originalList;
+        sandbox.enrollHarness = enrollHarness;
+        sandbox.harnessStatus = harnessStatus;
       }
     },
   );

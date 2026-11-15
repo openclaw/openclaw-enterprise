@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   RUNTIME_DIAGNOSTIC_CODES,
@@ -5,6 +6,15 @@ import {
   WORKSPACE_SETUP_FAILED,
   WORKSPACE_SETUP_REFUSED,
 } from "../../packages/contracts/src/runtime-failure.mjs";
+
+import { openShellSetupProgress, openShellVerificationOperations } from "./openshell-progress.mjs";
+import {
+  projectInstalledModelApprovals,
+  projectInstalledModelAuditDenials,
+  projectInstalledModelDenials,
+  projectInstalledModelOrigin,
+  projectInstalledWorkerEvent,
+} from "./failure-redaction.mjs";
 
 export const openShellGitRetentionKind = "openshell-git-retention";
 
@@ -329,7 +339,126 @@ for (const name of [
 ]) {
   withdrawalDiagnostics[name] = [name, count];
 }
+const policyDenial = {
+  reason: ["reason", choice("transparent_tcp_policy_denied")],
+  policyReason: ["policyReason", choice("endpoint-not-admitted")],
+  marker: ["marker", choice("policy-dns-ineligible")],
+  host: ["host", choice("github.com")],
+  port: ["port", choice(443)],
+  executable: [
+    "executable",
+    choice(
+      "/usr/lib/git-core/git-remote-https",
+      "/usr/lib/git-core/git-remote-http",
+      "/usr/libexec/git-core/git-remote-https",
+      "/usr/libexec/git-core/git-remote-http",
+    ),
+  ],
+  count: [
+    "count",
+    (value) => (Number.isSafeInteger(value) && value > 0 && value <= 2000 ? value : undefined),
+  ],
+  startedAt: ["startedAt", count],
+  endedAt: ["endedAt", count],
+};
 const events = {
+  "mixed-grant-deployment-failed": {
+    namespaceIdHash: ["namespaceIdHash", hash],
+    agentIdHash: ["agentIdHash", hash],
+    revisionIdHash: ["revisionIdHash", hash],
+    workIdHash: ["workIdHash", hash],
+    registrationStage: ["registrationStage", choice("before", "after")],
+    modelOrigin: ["modelOrigin", projectInstalledModelOrigin],
+    modelApprovals: ["modelApprovals", projectInstalledModelApprovals],
+    modelDenials: ["modelDenials", projectInstalledModelDenials],
+    modelAuditDenials: ["modelAuditDenials", projectInstalledModelAuditDenials],
+    workerEvents: [
+      "workerEvents",
+      (value) => {
+        if (value === "unavailable") {
+          return value;
+        }
+        if (!Array.isArray(value) || value.length === 0 || value.length > 32) {
+          return undefined;
+        }
+        const selected = value.map(projectInstalledWorkerEvent);
+        return selected.every((event) => event !== undefined) ? selected : undefined;
+      },
+    ],
+  },
+  "mixed-grant-failure": {
+    method: [
+      "method",
+      choice(
+        null,
+        "GetWorkspace",
+        "GetSandbox",
+        "GetProvider",
+        "GetProviderProfile",
+        "ExecSandbox",
+      ),
+    ],
+    grpcStatus: [
+      "grpcStatus",
+      (value) =>
+        value === null || (Number.isInteger(value) && value >= 1 && value <= 16)
+          ? value
+          : undefined,
+    ],
+    phase: ["phase", choice("installation", "deployment", ...openShellVerificationOperations)],
+    category: [
+      "category",
+      choice("assertion", "command-timeout", "cancelled", "http", "deployment", "operation"),
+    ],
+    httpStatus: [
+      "httpStatus",
+      (value) => {
+        if (value === null) {
+          return null;
+        }
+        return Number.isInteger(value) && value >= 100 && value <= 599 ? value : undefined;
+      },
+    ],
+  },
+  "mixed-grant-agent-git-tool": {
+    revisionIdHash: ["revisionId", identityHash],
+    turnIdHash: ["turnId", identityHash],
+    sha: ["sha", text(/^[a-f0-9]{40}$/)],
+    exitCode: ["exitCode", choice(0, 128)],
+    commandCount: ["commandCount", choice(1)],
+  },
+  "mixed-grant-model-before-git": {
+    revisionIdHash: ["revisionId", identityHash],
+    turnIdHash: ["turnId", identityHash],
+    providerIdHash: ["providerId", identityHash],
+    sandboxIdHash: ["sandboxId", identityHash],
+    bindingIdHash: ["bindingId", identityHash],
+    requestIdHash: ["requestId", identityHash],
+    assertionConsumed: ["assertionConsumed", choice(true)],
+    gitIssued: ["gitIssued", choice(0)],
+  },
+  "mixed-grant-git-fetched": {
+    revisionIdHash: ["revisionId", identityHash],
+    sha: ["sha", text(/^[a-f0-9]{40}$/)],
+    gitIssued: ["gitIssued", choice(1)],
+    gitRequests: ["gitRequests", count],
+  },
+  "mixed-grant-withdrawal-denied": {
+    boundary: ["boundary", choice("signed-access-withdrawn", "supervisor-policy")],
+  },
+  "mixed-grant-git-withdrawn": {
+    revisionIdHash: ["revisionId", identityHash],
+    sha: ["sha", text(/^[a-f0-9]{40}$/)],
+    gitIssued: ["gitIssued", choice(1)],
+    gitRequests: ["gitRequests", count],
+    exitCode: ["exitCode", choice(128)],
+  },
+  "mixed-grant-conversation-continued": {
+    revisionIdHash: ["revisionId", identityHash],
+    turnIdHash: ["turnId", identityHash],
+    priorTurnObserved: ["priorTurnObserved", choice(true)],
+    gitIssued: ["gitIssued", choice(1)],
+  },
   "withdrawal-decision-unconfirmed": withdrawalDiagnostics,
   "finite-removal-live-denial": {
     boundary: ["boundary", choice("signed-access-withdrawn", "supervisor-policy")],
@@ -388,26 +517,7 @@ const events = {
   },
   "git-policy-denied": {
     stage: ["stage", choice("after-expiry", "after-worker-restart", "after-removal")],
-    reason: ["reason", choice("transparent_tcp_policy_denied")],
-    policyReason: ["policyReason", choice("endpoint-not-admitted")],
-    marker: ["marker", choice("policy-dns-ineligible")],
-    host: ["host", choice("github.com")],
-    port: ["port", choice(443)],
-    executable: [
-      "executable",
-      choice(
-        "/usr/lib/git-core/git-remote-https",
-        "/usr/lib/git-core/git-remote-http",
-        "/usr/libexec/git-core/git-remote-https",
-        "/usr/libexec/git-core/git-remote-http",
-      ),
-    ],
-    count: [
-      "count",
-      (value) => (Number.isSafeInteger(value) && value > 0 && value <= 2000 ? value : undefined),
-    ],
-    startedAt: ["startedAt", count],
-    endedAt: ["endedAt", count],
+    ...policyDenial,
   },
   "retained-execution-failed": {
     stage: ["stage", choice("after-expiry", "after-worker-restart")],
@@ -422,6 +532,7 @@ const events = {
     parentDigest: ["parent", imageDigest],
     imageDigest: ["reference", imageDigest],
     binaryHash: ["binaryHash", hash],
+    manifestDigest: ["manifestDigest", digest],
     configDigest: ["configDigest", digest],
   },
   "finite-git-grant": {
@@ -532,6 +643,25 @@ for (const stage of ["after-expiry", "after-worker-restart"]) {
 /** Closed receipt projection; unknown fields, command output and credentials never pass through. */
 export function projectOpenShellGitRetention(value) {
   if (
+    record(value) &&
+    value.kind === openShellGitRetentionKind &&
+    value.event === "mixed-grant-setup"
+  ) {
+    const selected = openShellSetupProgress({
+      kind: "openshell-mixed-grant-setup",
+      phase: value.phase,
+      operation: value.operation,
+    });
+    return selected
+      ? {
+          kind: value.kind,
+          event: value.event,
+          phase: selected.phase,
+          operation: selected.operation,
+        }
+      : undefined;
+  }
+  if (
     !record(value) ||
     value.kind !== openShellGitRetentionKind ||
     typeof value.event !== "string" ||
@@ -539,7 +669,33 @@ export function projectOpenShellGitRetention(value) {
   ) {
     return undefined;
   }
-  const selected = project(value, events[value.event]);
+  let fields = events[value.event];
+  if (value.event === "mixed-grant-withdrawal-denied") {
+    // Each denial boundary requires its own evidence; neither raw worker logs
+    // nor a policy proof can stand in for the signed request's identity.
+    fields = {
+      ...fields,
+      ...(value.boundary === "signed-access-withdrawn"
+        ? { requestIdHash: ["requestId", identityHash], workerUid: ["workerUid", uuid] }
+        : policyDenial),
+    };
+  }
+  const selected = project(value, fields);
+  if (
+    selected !== undefined &&
+    value.event === "mixed-grant-failure" &&
+    (selected.category === "http") !== (selected.httpStatus !== null)
+  ) {
+    return undefined;
+  }
+  if (
+    selected !== undefined &&
+    value.event === "mixed-grant-withdrawal-denied" &&
+    selected.boundary === "supervisor-policy" &&
+    selected.endedAt < selected.startedAt
+  ) {
+    return undefined;
+  }
   if (
     selected !== undefined &&
     value.event === "withdrawal-origin-witness" &&
@@ -581,4 +737,17 @@ export function projectOpenShellGitRetention(value) {
   return selected === undefined
     ? undefined
     : { kind: openShellGitRetentionKind, event: value.event, ...selected };
+}
+
+/** Project content-free events at their first output; older receipts retain hash inputs. */
+export function emitOpenShellGitRetention(t, value) {
+  const projected = projectOpenShellGitRetention(value);
+  assert.ok(projected, "qualification receipt must have a safe CI projection");
+  const output =
+    value.event === "mixed-grant-setup" ||
+    value.event === "mixed-grant-failure" ||
+    value.event === "mixed-grant-deployment-failed"
+      ? projected
+      : value;
+  t.diagnostic(`openclaw-ci-measurement ${JSON.stringify(output)}`);
 }

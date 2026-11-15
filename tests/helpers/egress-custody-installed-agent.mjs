@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { sha256Hex } from "../../packages/utils/src/hashing.ts";
 import assert from "node:assert/strict";
 import { selectLiveControllerPods } from "./egress-installed-stack.mjs";
+import { collectInstalledWorkerEvents } from "./installed-worker-events.ts";
 import { observeInstalledProtection } from "./egress-installed-agent.mjs";
 import { protectedConfigurationBody, sourceAccessBindingBody } from "./egress-connected-inputs.mjs";
 import {
@@ -117,9 +118,15 @@ export async function activateRepositoryAgent(setup, stack, evidence, owned, adm
         // Read once, before cleanup. Neither an observation nor its failure changes acceptance.
         const target = { id: revision.id, agentId: agent.id, namespaceId: stack.namespace.id };
         const unavailable = () => "unavailable";
-        const workerEvents = await failedWorkerEvents(setup, stack, since, target).catch(
-          unavailable,
-        );
+        const workerEvents = await collectInstalledWorkerEvents({
+          controllerNamespace: setup.input.controllerNamespace,
+          controllerImage: setup.input.images.controller,
+          controllerPods: stack.controllerPods,
+          readControllerPods: (timeout) => selectLiveControllerPods(setup, timeout),
+          kubectl: setup.f.kubectl,
+          since,
+          target,
+        }).catch(unavailable);
         await evidence
           .checkpoint("failed-deployment-observation", { workerEvents }, { revisionId: target.id })
           .catch(unavailable);
@@ -166,101 +173,6 @@ export async function activateRepositoryAgent(setup, stack, evidence, owned, adm
     );
   }
   return { ...installed, revision };
-}
-
-// From Kubernetes preparationFailureDiagnostic. Export only reviewed literals, never log text.
-const preparationCauses = new Map([
-  [
-    "The AgentRevision workload Pods did not terminate before the deadline.",
-    "workload-not-terminated",
-  ],
-  ["Harness transport credential is unavailable.", "harness-transport-unavailable"],
-  [
-    "Compute release requires the exact current committed installation.",
-    "exact-installation-required",
-  ],
-]);
-const known = (value, literals) =>
-  value === undefined ? undefined : literals.split(" ").includes(value) ? value : "other";
-
-async function failedWorkerEvents(setup, stack, since, { id, namespaceId, agentId }) {
-  const { controllerNamespace, images } = setup.input;
-  function identity(pods) {
-    const [pod, extra] = pods.filter(
-      (p) => p.metadata.labels["app.kubernetes.io/component"] === "worker",
-    );
-    assert.ok(pod && !extra);
-    const worker = (c) => c.name === "worker";
-    assert.equal(pod.spec.containers.find(worker).image, images.controller);
-    const { name, uid } = pod.metadata;
-    const { containerID, restartCount, state } = pod.status.containerStatuses.find(worker);
-    assert.ok(uid && containerID && state.running);
-    assert.ok(Number.isSafeInteger(restartCount) && restartCount >= 0);
-    return { name, uid, containerID, restartCount };
-  }
-  const worker = identity(stack.controllerPods);
-  const timeout = "--request-timeout=8s";
-  const checkWorker = async () =>
-    assert.deepEqual(identity(await selectLiveControllerPods(setup, timeout)), worker);
-  await checkWorker();
-  const flags = ["--since-time=" + since, "--limit-bytes=1048576", timeout];
-  const source = [worker.name, "-n", controllerNamespace, "-c", "worker"];
-  const log = await setup.f.kubectl("logs", ...source, ...flags);
-  await checkWorker();
-
-  const events = [];
-  for (const line of log.split("\n")) {
-    let e;
-    try {
-      e = JSON.parse(line);
-    } catch {
-      continue;
-    } // kubectl may start at a partial line
-    if (
-      e?.namespaceId !== namespaceId ||
-      e.agentId !== agentId ||
-      e.revisionId !== id ||
-      e.operation !== "agent_revision.reconcile" ||
-      e.workId !== "agent_revision:" + id + ":reconcile" ||
-      !Number.isSafeInteger(e.attempt) ||
-      e.attempt < 1
-    ) {
-      continue;
-    }
-    // attempt is a retry budget, not a pass ID. Keep source order; never pair or fill in events.
-    const budgetAttempt = e.attempt;
-    if (e.event === "worker.compute-prepare-failed") {
-      events.push({
-        event: "preparation",
-        budgetAttempt,
-        step: known(
-          e.step,
-          "prepare_revision sandbox_provision workspace_setup gateway_deployment",
-        ),
-        errorClass: known(
-          e.errorClass,
-          "DependencyUnavailableError OwnershipFailure KubernetesApiError KubernetesRequestTimeout",
-        ),
-        status:
-          Number.isSafeInteger(e.status) && e.status >= 100 && e.status <= 599
-            ? e.status
-            : undefined,
-        cause: e.message === undefined ? undefined : (preparationCauses.get(e.message) ?? "other"),
-      });
-    } else if (e.event === "worker.completed") {
-      events.push({
-        event: "completion",
-        budgetAttempt,
-        outcome: known(e.outcome, "pending retry permanent success"),
-        code: known(e.code, "DEPENDENCY_UNAVAILABLE KUBERNETES_API_UNAVAILABLE"),
-        cause: known(e.cause, "unavailable DependencyUnavailableError OwnershipFailure"),
-        deployPasses:
-          Number.isSafeInteger(e.deployPasses) && e.deployPasses > 0 ? e.deployPasses : undefined,
-      });
-    }
-  }
-  // Only the latest observed events, possibly a partial history at either end.
-  return events.length ? events.slice(-32) : "unavailable";
 }
 
 // Exercise the real authorizer without getting, listing or projecting a Secret.

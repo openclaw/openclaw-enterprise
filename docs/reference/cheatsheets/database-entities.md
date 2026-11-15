@@ -510,6 +510,7 @@ Queues and tracks controller work for Namespace and Agent lifecycle changes, Age
 - `namespace_target`
 - `agent_target`
 - `state`
+- `readiness_deferred`
 - `available_at`
 - `attempt_count`
 - `claim_token`

@@ -8,24 +8,190 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { openShellGrantCredentialIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-token-grant.ts";
 import {
   openShellGitRetentionKind,
   projectOpenShellGitExpiryObservation,
   projectOpenShellGitMaintenanceCompletion,
-  projectOpenShellGitRetention,
+  emitOpenShellGitRetention,
   selectOpenShellGitWithdrawalDenials,
 } from "../../scripts/ci/openshell-git-retention.mjs";
+import { emitOpenShellSetupProgress } from "../../scripts/ci/openshell-progress.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
 import { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
 import { availablePort } from "./available-port.mjs";
 import { localFirstAgentStack, ownFirstAgentWork } from "./local-first-agent-stack.mjs";
 import { localOpenShellGatewayOptions } from "./local-openshell-gateway.mjs";
 import { stopProcess } from "./stop-process.mjs";
+import { collectInstalledWorkerEvents } from "./installed-worker-events.ts";
+import { deployMixedGrantAgent } from "./openshell-mixed-grant-agent.ts";
+import { collectOpenShellModelDenials } from "./openshell-model-denial.ts";
+import {
+  mixedGrantSupplier,
+  mixedGrantOrigins,
+  gatewayGrantBundle,
+  registerMixedGrantProviders,
+} from "./openshell-mixed-grant-setup.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { loadYaml } = await import(require.resolve("@kubernetes/client-node"));
 const { Agent, fetch } = require("undici");
 const root = fileURLToPath(new URL("../../", import.meta.url));
+// Read only the installed authority's existing approval store. No assertion,
+// replay digest, credential value, or database URL leaves the API container.
+const readModelApprovals = `
+import { createPostgresPool } from './packages/occ/src/index.ts';
+const pool = await createPostgresPool(process.env.OCC_DATABASE_URL, {
+  max: 1, connectionTimeoutMillis: 5000, query_timeout: 10000,
+});
+try {
+  const { rows } = await pool.query(
+    'SELECT request_id AS "requestId", recipient_id AS "recipientId", binding_id AS "bindingId",' +
+    ' namespace_id AS "namespaceId", agent_id AS "agentId", revision_id AS "revisionId",' +
+    ' expected_credential_identity AS "credentialIdentity", consumed,' +
+    ' (assertion_replay_key IS NOT NULL) AS "assertionReplayClaimed"' +
+    ' FROM occ.request_credential_approvals' +
+    ' WHERE namespace_id = $1 AND agent_id = $2 AND revision_id = $3',
+    process.argv.slice(1),
+  );
+  process.stdout.write(JSON.stringify(rows));
+} finally {
+  await pool.end();
+}
+`;
+
+// Count only the selected model's retained approvals. Aggregate in PostgreSQL
+// and hash the bounded request sample before it leaves the API container.
+const readModelApprovalSummary = `
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { createPostgresPool } from './packages/occ/src/index.ts';
+const pool = await createPostgresPool(process.env.OCC_DATABASE_URL, {
+  max: 1, connectionTimeoutMillis: 5000, query_timeout: 10000,
+});
+try {
+  const { rows } = await pool.query(
+    \`WITH selected AS MATERIALIZED (
+      SELECT request_id, consumed, assertion_replay_key IS NOT NULL AS replay_claimed
+      FROM occ.request_credential_approvals
+      WHERE namespace_id = $1 AND agent_id = $2 AND revision_id = $3
+        AND recipient_id = $4 AND binding_id = $5 AND expected_credential_identity = $6
+    )
+    SELECT count(*) AS matched,
+      count(*) FILTER (WHERE consumed) AS consumed,
+      count(*) FILTER (WHERE replay_claimed) AS "replayClaimed",
+      ARRAY(SELECT request_id FROM selected ORDER BY request_id LIMIT 4) AS "requestIds"
+    FROM selected\`,
+    process.argv.slice(1),
+  );
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  const matched = Number(row.matched);
+  const consumed = Number(row.consumed);
+  const replayClaimed = Number(row.replayClaimed);
+  assert.ok([matched, consumed, replayClaimed].every((value) =>
+    Number.isSafeInteger(value) && value >= 0));
+  assert.ok(Array.isArray(row.requestIds) && row.requestIds.length <= 4);
+  const requestIdHashes = row.requestIds.map((id) => {
+    assert.equal(typeof id, 'string');
+    return createHash('sha256').update(id).digest('hex');
+  });
+  process.stdout.write(JSON.stringify({
+    state: 'observed', truncated: matched > 4, matched, consumed, replayClaimed,
+    requestIdHashes,
+  }));
+} finally {
+  await pool.end();
+}
+`;
+
+// Read durable denials for this deployment only. Aggregate inside the API
+// container so audit identities, request IDs and arbitrary details never leave it.
+export const readModelAuditDenials = `
+import assert from 'node:assert/strict';
+import { createPostgresPool } from './packages/occ/src/index.ts';
+const args = process.argv.slice(1);
+assert.equal(args.length, 6);
+assert.ok(args.slice(0, 4).every((value) => value.length > 0));
+const [startedAt, endedAt] = args.slice(4).map(Date.parse);
+assert.ok(Number.isFinite(startedAt) && Number.isFinite(endedAt) && startedAt <= endedAt);
+const pool = await createPostgresPool(process.env.OCC_DATABASE_URL, {
+  max: 1, connectionTimeoutMillis: 5000, query_timeout: 10000,
+});
+try {
+  const { rows } = await pool.query(
+    \`WITH selected AS (
+      SELECT CASE WHEN details->>'code' IN (
+        'unsupported_authority', 'stale_configuration', 'withdrawn',
+        'unsupported_operation', 'unauthorized'
+      ) THEN details->>'code' ELSE 'other' END AS code
+      FROM occ.audit_events
+      WHERE namespace_id = $1 AND resource_id = $2
+        AND details->>'revisionId' = $3 AND actor_id = $4
+        AND kind = 'authorization_denial' AND action = 'openclaw.egress.authorize'
+        AND resource_kind = 'credential_source' AND outcome = 'denied'
+        AND details->>'phase' = 'before_access'
+        AND occurred_at >= $5::timestamptz AND occurred_at <= $6::timestamptz
+    )
+    SELECT count(*) FILTER (WHERE code = 'unsupported_authority') AS unsupported_authority,
+      count(*) FILTER (WHERE code = 'stale_configuration') AS stale_configuration,
+      count(*) FILTER (WHERE code = 'withdrawn') AS withdrawn,
+      count(*) FILTER (WHERE code = 'unsupported_operation') AS unsupported_operation,
+      count(*) FILTER (WHERE code = 'unauthorized') AS unauthorized,
+      count(*) FILTER (WHERE code = 'other') AS other
+    FROM selected\`,
+    args,
+  );
+  assert.equal(rows.length, 1);
+  const counts = Object.fromEntries(Object.entries(rows[0]).map(([code, value]) => {
+    const count = Number(value);
+    assert.ok(Number.isSafeInteger(count) && count >= 0);
+    return [code, count];
+  }));
+  process.stdout.write(JSON.stringify({ state: 'observed', truncated: false, counts }));
+} finally {
+  await pool.end();
+}
+`;
+
+// Admission is intentionally absent from the public revision response. Project
+// only this proof's fields from the committed snapshot, independently of grants.
+const readModelAdmission = `
+import { createPostgresPool } from './packages/occ/src/index.ts';
+const pool = await createPostgresPool(process.env.OCC_DATABASE_URL, {
+  max: 1, connectionTimeoutMillis: 5000, query_timeout: 10000,
+});
+try {
+  const { rows } = await pool.query(
+    \`SELECT r.namespace_id AS "namespaceId", r.agent_id AS "agentId", r.id AS "revisionId",
+      jsonb_build_object(
+        'namespaceId', r.admitted_spec #>> '{egress_plan,execution,namespaceId}',
+        'agentId', r.admitted_spec #>> '{egress_plan,execution,agentId}',
+        'revisionId', r.admitted_spec #>> '{egress_plan,execution,revisionId}'
+      ) AS execution,
+      r.admitted_spec #>> '{egress_plan,authorization}' AS authorization,
+      r.admitted_spec #>> '{egress_plan,repositoryGitAuthorization}' AS "repositoryGitAuthorization",
+      jsonb_array_length(r.admitted_spec #> '{egress_plan,routes}') AS "routeCount",
+      jsonb_build_object(
+        'bindingId', r.admitted_spec #>> '{egress_plan,routes,0,binding,binding,id}',
+        'sourceId', r.admitted_spec #>> '{egress_plan,routes,0,binding,source,source,id}',
+        'grantKind', r.admitted_spec #>> '{egress_plan,routes,0,binding,grant,kind}',
+        'method', r.admitted_spec #>> '{egress_plan,routes,0,method}',
+        'path', r.admitted_spec #>> '{egress_plan,routes,0,path}',
+        'origin', r.admitted_spec #>> '{egress_plan,routes,0,origin}'
+      ) AS route
+    FROM occ.agent_revisions AS r
+    JOIN occ.agents AS a ON a.namespace_id = r.namespace_id AND a.id = r.agent_id
+    JOIN occ.namespaces AS n ON n.id = r.namespace_id AND n.deleted_at IS NULL
+    WHERE r.namespace_id = $1 AND r.agent_id = $2 AND r.id = $3\`,
+    process.argv.slice(1),
+  );
+  process.stdout.write(JSON.stringify(rows));
+} finally {
+  await pool.end();
+}
+`;
+
 const workerLabels = {
   "app.kubernetes.io/name": "openclaw-enterprise",
   "app.kubernetes.io/instance": "openclaw-enterprise",
@@ -78,7 +244,10 @@ export function createOpenShellGitApi({ origin, key, signal, after }) {
     });
     if (!response.ok) {
       await response.body?.cancel();
-      throw new Error(`OCC ${method} ${path} returned HTTP ${response.status}`);
+      throw Object.assign(new Error(`OCC ${method} ${path} returned HTTP ${response.status}`), {
+        code: "OCC_HTTP_FAILURE",
+        status: response.status,
+      });
     }
     if (response.status === 204) {
       return undefined;
@@ -119,9 +288,16 @@ async function waitUntil(description, operation, timeout, signal) {
   throw new Error(`Timed out waiting for ${description}`);
 }
 
-// Keys remain in this private directory or worker-only Secrets. The image build
-// context below receives only public certificates, never either signing key.
-async function certificates(command, directory, originHost, authorityHost) {
+// Keys remain in this private directory or role-specific Secrets. The image build
+// context below receives only public certificates, never private keys.
+async function certificates(
+  command,
+  directory,
+  originHost,
+  authorityHost,
+  modelHost,
+  modelAuthorityHost,
+) {
   const caKey = join(directory, "ca.key");
   const caFile = join(directory, "ca.crt");
   await command("openssl", [
@@ -153,6 +329,7 @@ async function certificates(command, directory, originHost, authorityHost) {
       `subjectAltName=${hosts.map((host) => `DNS:${host}`).join(",")}\nextendedKeyUsage=serverAuth\n`,
       { mode: 0o600 },
     );
+    // DNS identity stays in SAN; the descriptive CN avoids OpenSSL's 64-byte limit.
     await command("openssl", [
       "req",
       "-new",
@@ -160,7 +337,7 @@ async function certificates(command, directory, originHost, authorityHost) {
       "rsa:2048",
       "-nodes",
       "-subj",
-      `/CN=${hosts[0]}`,
+      `/CN=OCE fixture ${name}`,
       "-keyout",
       key,
       "-out",
@@ -190,6 +367,10 @@ async function certificates(command, directory, originHost, authorityHost) {
     ca: await readFile(caFile, "utf8"),
     origin: await issue("origin", ["github.com", "api.github.com", originHost]),
     authority: await issue("authority", [authorityHost]),
+    ...(modelAuthorityHost && {
+      modelAuthority: await issue("model-authority", [modelAuthorityHost]),
+    }),
+    ...(modelHost && { model: await issue("model", [modelHost]) }),
   };
 }
 
@@ -270,15 +451,79 @@ export async function extractOpenShellImageFile({
   }
 }
 
-async function trustedSupervisor({ command, cleanup, directory, cluster, ca, checkpoint }) {
-  // Read the same stock pin used by Local Setup rather than maintaining another
-  // independent image version. Candidate supplier builds are rejected at entry.
+async function trustedSupervisor({
+  command,
+  cleanup,
+  directory,
+  cluster,
+  ca,
+  checkpoint,
+  supplier,
+}) {
+  // The finite case uses Local Setup's stock pin. The mixed case passes its
+  // explicitly verified supplier; both preserve the binary while adding trust.
   const source = await readFile(join(root, "internal/occdev/openshell.go"), "utf8");
-  const parent = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1];
+  const parent =
+    supplier?.images.supervisor ?? source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1];
   assert.match(
     parent ?? "",
-    /^ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.6@sha256:[a-f0-9]{64}$/,
+    supplier
+      ? /^[^\s@]+@sha256:[a-f0-9]{64}$/
+      : /^ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.6@sha256:[a-f0-9]{64}$/,
   );
+  const inspectImage = async (image, options) => {
+    const identity = JSON.parse(
+      await command(
+        "docker",
+        [
+          "image",
+          "inspect",
+          "--format",
+          '{"id":{{json .Id}},"digests":{{json .RepoDigests}}}',
+          image,
+        ],
+        options,
+      ),
+    );
+    assert.match(identity.id, /^sha256:[a-f0-9]{64}$/);
+    assert.ok(Array.isArray(identity.digests));
+    return identity;
+  };
+  const parentIdentity = await inspectImage(parent);
+  const verifyParent = async (options) => {
+    const current = await inspectImage(parent, options);
+    assert.equal(current.id, parentIdentity.id);
+    assert.ok(
+      current.digests.some((digest) => digest.endsWith(parent.slice(parent.lastIndexOf("@")))),
+    );
+  };
+  await verifyParent();
+  // BuildKit resolves digest FROM references through registries. Bind a private
+  // local alias to the selected parent instead, without changing its contents.
+  const alias = `oce-git-supervisor-parent-${randomUUID()}:test`;
+  const aliasExists = async (options) =>
+    (
+      await command(
+        "docker",
+        ["image", "ls", "--quiet", "--no-trunc", "--filter", `reference=${alias}`],
+        options,
+      )
+    ).trim();
+  assert.equal(await aliasExists(), "");
+  let aliasCreated = false;
+  cleanup.push(async () => {
+    const options = { signal: AbortSignal.timeout(30_000), timeout: 30_000 };
+    if (!(await aliasExists(options))) {
+      assert.ok(aliasCreated, "Supervisor parent alias creation is unresolved");
+      return;
+    }
+    assert.equal((await inspectImage(alias, options)).id, parentIdentity.id);
+    await command("docker", ["image", "rm", "--no-prune", alias], options);
+    assert.equal(await aliasExists(options), "");
+    await verifyParent(options);
+  });
+  await command("docker", ["tag", parent, alias]);
+  aliasCreated = true;
   const context = join(directory, "supervisor-trust");
   await mkdir(context, { mode: 0o700 });
   const extract = (image, filename, destination) =>
@@ -294,11 +539,16 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
   );
   await writeFile(
     join(context, "Dockerfile"),
-    `FROM ${parent}\nCOPY --chmod=0644 ca-certificates.crt /etc/ssl/certs/ca-certificates.crt\n`,
+    `FROM ${alias}\nCOPY --chmod=0644 ca-certificates.crt /etc/ssl/certs/ca-certificates.crt\n`,
   );
   const tag = `oce-git-supervisor-${randomUUID()}:test`;
-  await command("docker", ["build", "--network=none", "--tag", tag, context], { timeout: 120_000 });
+  assert.equal((await inspectImage(alias)).id, parentIdentity.id);
+  await command("docker", ["build", "--network=none", "--pull=false", "--tag", tag, context], {
+    timeout: 120_000,
+  });
   cleanup.push(() => command("docker", ["image", "rm", tag]));
+  assert.equal((await inspectImage(alias)).id, parentIdentity.id);
+  await verifyParent();
   await extract(tag, "/openshell-supervisor", join(directory, "trusted-supervisor"));
   const binaryHash = hash(await readFile(join(directory, "stock-supervisor")));
   assert.equal(hash(await readFile(join(directory, "trusted-supervisor"))), binaryHash);
@@ -319,15 +569,91 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
     : `docker.io/library/${importedRepository}`;
   const reference = `${repository}@${imported[2]}`;
   await command("docker", [...containerd, "tag", imported[0], reference]);
-  const configDigest = (
-    await command("docker", ["image", "inspect", "--format", "{{.Id}}", tag])
-  ).trim();
-  assert.match(configDigest, /^sha256:[a-f0-9]{64}$/);
-  await checkpoint("supervisor-trust", { parent, reference, binaryHash, configDigest });
+  const platform = JSON.parse(
+    await command("docker", [
+      "image",
+      "inspect",
+      "--format",
+      '{"os":{{json .Os}},"architecture":{{json .Architecture}}}',
+      tag,
+    ]),
+  );
+  assert.equal(platform.os, "linux");
+  assert.match(platform.architecture, /^[a-z0-9_]+$/);
+  const readContent = async (descriptor) => {
+    assert.match(descriptor.digest, /^sha256:[a-f0-9]{64}$/);
+    // Encode before the text-only command adapter; the digest verifies decoded bytes.
+    const bytes = Buffer.from(
+      await command("docker", [
+        "exec",
+        containerd[1],
+        "sh",
+        "-c",
+        'ctr -n k8s.io content get "$1" | base64',
+        "oce-read-image-content",
+        descriptor.digest,
+      ]),
+      "base64",
+    );
+    if (descriptor.size !== undefined) {
+      assert.ok(Number.isSafeInteger(descriptor.size) && descriptor.size >= 0);
+      assert.equal(bytes.length, descriptor.size, "Imported image content size must match.");
+    }
+    assert.equal("sha256:" + hash(bytes), descriptor.digest, "Imported image content must match.");
+    return JSON.parse(bytes.toString("utf8"));
+  };
+  const rootDigest = imported[2];
+  const manifestTypes = [
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+  ];
+  let descriptor = { digest: rootDigest, mediaType: imported[1] };
+  let manifest = await readContent(descriptor);
+  assert.equal(manifest.schemaVersion, 2);
+  assert.equal(manifest.mediaType, descriptor.mediaType);
+  if (
+    [
+      "application/vnd.oci.image.index.v1+json",
+      "application/vnd.docker.distribution.manifest.list.v2+json",
+    ].includes(manifest.mediaType)
+  ) {
+    assert.ok(Array.isArray(manifest.manifests));
+    const matches = manifest.manifests.filter(
+      (entry) =>
+        entry.platform?.os === platform.os &&
+        entry.platform?.architecture === platform.architecture,
+    );
+    assert.equal(matches.length, 1, "The imported image must have one matching build platform.");
+    descriptor = matches[0];
+    assert.ok(manifestTypes.includes(descriptor.mediaType));
+    manifest = await readContent(descriptor);
+  }
+  assert.equal(manifest.schemaVersion, 2);
+  assert.ok(manifestTypes.includes(manifest.mediaType));
+  assert.equal(manifest.mediaType, descriptor.mediaType);
+  assert.ok(
+    [
+      "application/vnd.oci.image.config.v1+json",
+      "application/vnd.docker.container.image.v1+json",
+    ].includes(manifest.config?.mediaType),
+  );
+  const config = await readContent(manifest.config);
+  assert.equal(config.os, platform.os);
+  assert.equal(config.architecture, platform.architecture);
+  const manifestDigest = descriptor.digest;
+  const configDigest = manifest.config.digest;
+  await checkpoint("supervisor-trust", {
+    parent,
+    reference,
+    binaryHash,
+    manifestDigest,
+    configDigest,
+  });
   const slash = repository.indexOf("/");
   return {
     reference,
     binaryHash,
+    manifestDigest,
     configDigest,
     image: {
       registry: repository.slice(0, slash),
@@ -340,20 +666,38 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
 }
 
 /** Installs the supported model + selected-repository path in its own k3d cluster. */
-export function createOpenShellGitInstallation(t, { witnessIssuedGit = false } = {}) {
-  return ownFirstAgentWork(t)(installOpenShellGit(t, witnessIssuedGit));
+export function createOpenShellGitInstallation(
+  t,
+  { witnessIssuedGit = false, mode = "prepared" } = {},
+) {
+  assert.ok(["prepared", "mixed-grant"].includes(mode), "Unknown installed Git fixture mode");
+  return ownFirstAgentWork(t)(installOpenShellGit(t, witnessIssuedGit, mode === "mixed-grant"));
 }
 
-async function installOpenShellGit(t, witnessIssuedGit) {
+async function installOpenShellGit(t, witnessIssuedGit, mixedGrant) {
+  const measurement = (event, data) => {
+    const value = { kind: openShellGitRetentionKind, event, ...data };
+    emitOpenShellGitRetention(t, value);
+  };
+  const setupCheckpoint = (operation, phase = "installation") => {
+    if (mixedGrant) {
+      measurement("mixed-grant-setup", { phase, operation });
+      emitOpenShellSetupProgress(phase, operation);
+    }
+  };
+  // Emit before the guards: failed setup still reaches the normal CI reporter.
+  setupCheckpoint("input-validation");
   const eventually = (description, operation, timeout = 120_000) =>
     waitUntil(description, operation, timeout, t.signal);
   let tearingDown = false;
   assert.equal(process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER, "openshell");
   assert.equal(process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE, "kubernetes");
-  assert.ok(
-    process.env.OPENAI_API_KEY?.trim(),
-    "OPENAI_API_KEY is required for genuine native startup",
-  );
+  if (!mixedGrant) {
+    assert.ok(
+      process.env.OPENAI_API_KEY?.trim(),
+      "OPENAI_API_KEY is required for genuine native startup",
+    );
+  }
   assert.equal(
     process.env.OCC_DEVELOPMENT_STATE_DIRECTORY,
     undefined,
@@ -370,19 +714,11 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     assert.equal(
       process.env[`OCC_DEVELOPMENT_OPENSHELL_${name}`],
       undefined,
-      "this fixture qualifies stock OpenShell",
+      "this fixture owns its OpenShell selection; ambient overrides are unsupported",
     );
   }
   const cleanup = [];
   const stackCleanup = [];
-  const measurement = (event, data) => {
-    const value = { kind: openShellGitRetentionKind, event, ...data };
-    assert.ok(
-      projectOpenShellGitRetention(value),
-      "qualification receipt must have a safe CI projection",
-    );
-    t.diagnostic(`openclaw-ci-measurement ${JSON.stringify(value)}`);
-  };
   // Stop workloads before the issuer, and run every cleanup even after a failure.
   t.after(async () => {
     tearingDown = true;
@@ -399,21 +735,25 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     }
     measurement("cleanup", { outcome: "passed" });
   });
+  const directory = await mkdtemp(join(tmpdir(), "oce-installed-git-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  setupCheckpoint("supplier-selection");
+  const supplier = mixedGrant ? await mixedGrantSupplier(directory, t.signal) : undefined;
+  setupCheckpoint("local-stack");
   const stack = await localFirstAgentStack(
     {
       diagnostic: (message) => t.diagnostic(message),
       after: (operation) => stackCleanup.push(operation),
     },
-    { modelCredential: "openai" },
+    { modelCredential: mixedGrant ? "controlled" : "openai", supplier },
   );
+  setupCheckpoint("state-readback");
   const state = JSON.parse(await readFile(join(stack.directory, "state.json"), "utf8"));
   assert.equal(state.deploymentMode, "k3d");
   assert.equal(state.sandboxDriver, "openshell");
   assert.equal(state.containerEngine, "docker");
   assert.match(state.cluster, /^occ-dev-first-agent-[a-f0-9]{12}$/);
   assert.match(state.dockerHost, /^unix:\/\//);
-  const directory = await mkdtemp(join(tmpdir(), "oce-installed-git-"));
-  cleanup.push(() => rm(directory, { recursive: true, force: true }));
   // The CI reporter retains only the closed identity/digest/counter projection
   // after this private file is removed, including on passing runs.
   const checkpoint = async (event, data) => {
@@ -460,6 +800,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     "--namespace",
     platform,
   ];
+  setupCheckpoint("api-bootstrap");
   const admin = JSON.parse(
     await readFile(join(stack.directory, "initial-admin-service-key.json"), "utf8"),
   );
@@ -469,38 +810,48 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     signal: t.signal,
     after: (operation) => cleanup.push(operation),
   });
+  setupCheckpoint("namespace-selection");
   const namespaces = await request("GET", "/namespaces");
   const defaults = namespaces.filter(({ name }) => name === "default");
   assert.equal(defaults.length, 1);
   const namespace = await request("GET", `/namespaces/${defaults[0].id}`);
   assert.equal(namespace.status, "ready");
+  setupCheckpoint("workspace-selection");
   const namespaceList = JSON.parse(
     await kube(["get", "namespaces", "-l", "openclaw.dev/namespace", "-o", "json"]),
   );
   assert.equal(namespaceList.items.length, 1);
   const sandboxNamespace = namespaceList.items[0].metadata.name;
   assert.equal(namespaceList.items[0].metadata.labels["openshell.ai/openclaw-workspace"], "true");
-  const secret = await request("POST", `/namespaces/${namespace.id}/secrets`, {
-    name: "installed-git-model",
-    value: process.env.OPENAI_API_KEY,
-  });
-  const registeredModel = await request("POST", `/namespaces/${namespace.id}/credential-sources`, {
-    name: "installed-git-model",
-    type: "openai",
-    config: { authorized_base_url: "https://api.openai.com/v1" },
-    secrets: { api_key: secret.ref },
-  });
-  const modelSource = await eventually("Gateway-owned model source", async () => {
-    const current = await request(
-      "GET",
-      `/namespaces/${namespace.id}/credential-sources/${registeredModel.id}`,
+  let modelSource;
+  if (!mixedGrant) {
+    const secret = await request("POST", `/namespaces/${namespace.id}/secrets`, {
+      name: "installed-git-model",
+      value: process.env.OPENAI_API_KEY,
+    });
+    const registeredModel = await request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        name: "installed-git-model",
+        type: "openai",
+        config: { authorized_base_url: "https://api.openai.com/v1" },
+        secrets: { api_key: secret.ref },
+      },
     );
-    assert.equal(current.ownerCapability, "credential_gateway");
-    assert.equal(current.egress, undefined);
-    assert.notEqual(current.status?.state, "failed", "model source registration failed");
-    return current.state === "ready" && current.status?.state === "ready" ? current : undefined;
-  });
+    modelSource = await eventually("Gateway-owned model source", async () => {
+      const current = await request(
+        "GET",
+        `/namespaces/${namespace.id}/credential-sources/${registeredModel.id}`,
+      );
+      assert.equal(current.ownerCapability, "credential_gateway");
+      assert.equal(current.egress, undefined);
+      assert.notEqual(current.status?.state, "failed", "model source registration failed");
+      return current.state === "ready" && current.status?.state === "ready" ? current : undefined;
+    });
+  }
 
+  setupCheckpoint("origin-network");
   const network = JSON.parse(
     await command("docker", ["network", "inspect", `k3d-${state.cluster}`]),
   );
@@ -508,15 +859,32 @@ async function installOpenShellGit(t, witnessIssuedGit) {
   assert.match(bridge, /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)[\d.]+$/);
   const originHost = `git-fixture.${platform}.svc.cluster.local`;
   const authorityHost = `openclaw-enterprise-openshell-git.${platform}.svc.cluster.local`;
-  const tls = await certificates(command, directory, originHost, authorityHost);
-  const origin = await startSkipperPrivateGitOrigin({
-    host: bridge,
-    advertisedHost: originHost,
-    witnessIssuedGit,
-    tls: { ...tls.origin, ca: tls.ca },
-  });
-  cleanup.push(() => origin.close());
+  const modelHost = `model-fixture.${platform}.svc.cluster.local`;
+  const modelAuthorityHost = `openclaw-enterprise-egress-authority.${platform}.svc.cluster.local`;
+  setupCheckpoint("origin-start");
+  const tls = await certificates(
+    command,
+    directory,
+    originHost,
+    authorityHost,
+    mixedGrant ? modelHost : undefined,
+    mixedGrant ? modelAuthorityHost : undefined,
+  );
+  const mixed = mixedGrant ? await mixedGrantOrigins({ host: bridge, tls, cleanup }) : undefined;
+  const origin =
+    mixed?.origin ??
+    (await startSkipperPrivateGitOrigin({
+      host: bridge,
+      advertisedHost: originHost,
+      witnessIssuedGit,
+      tls: { ...tls.origin, ca: tls.ca },
+    }));
+  if (!mixed) {
+    cleanup.push(() => origin.close());
+  }
+  const modelPort = mixed ? Number(new URL(mixed.modelOrigin.origin).port) : undefined;
   const originPort = Number(new URL(origin.origin).port);
+  setupCheckpoint("origin-routing");
   const metadata = (name) => ({ name, namespace: platform });
   await apply([
     {
@@ -537,14 +905,35 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       ],
     },
   ]);
+  if (mixed) {
+    await apply([
+      {
+        apiVersion: "v1",
+        kind: "Service",
+        metadata: metadata("model-fixture"),
+        spec: { ports: [{ name: "https", port: 443, targetPort: modelPort }] },
+      },
+      {
+        apiVersion: "v1",
+        kind: "Endpoints",
+        metadata: metadata("model-fixture"),
+        subsets: [
+          {
+            addresses: [{ ip: bridge }],
+            ports: [{ name: "https", port: modelPort, protocol: "TCP" }],
+          },
+        ],
+      },
+    ]);
+  }
   const service = JSON.parse(
     await kube(["get", "service", "git-fixture", "-n", platform, "-o", "json"]),
   );
   const dns = JSON.parse(
     await kube(["get", "configmap", "coredns", "-n", "kube-system", "-o", "json"]),
   );
-  // Only GitHub's two exact names are redirected. Real model traffic continues
-  // through the ordinary authenticated provider and public DNS.
+  // Redirect only GitHub's exact names. The finite case keeps public model DNS;
+  // the mixed case addresses its separately owned model Service directly.
   dns.data.Corefile += `\ngithub.com:53 api.github.com:53 {\n  errors\n  hosts {\n    ${service.spec.clusterIP} github.com api.github.com\n    fallthrough\n  }\n}\n`;
   await apply([dns]);
   await kube(["rollout", "restart", "deployment/coredns", "-n", "kube-system"]);
@@ -552,6 +941,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     timeout: 130_000,
   });
 
+  setupCheckpoint("authority-configuration");
   const gatewayValues = JSON.parse(
     await command("helm", ["get", "values", "openshell-gateway", ...helmContext, "-o", "json"]),
   );
@@ -597,7 +987,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
           {
             namespaceId: namespace.id,
             profiles: ["github-repository"],
-            permissions: { metadata: "read", contents: "write" },
+            permissions: mixed?.gitScope.permissions ?? { metadata: "read", contents: "write" },
           },
         ],
       },
@@ -622,7 +1012,10 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     configMap("git-fixture-ca", { "ca.crt": tls.ca }),
     configMap("git-gateway-public-key", { "gateway-public.pem": publicKey }),
     privateSecret("git-fixture-app", {
-      "private-key.pem": origin.privateKey.export({ type: "pkcs8", format: "pem" }),
+      "private-key.pem": (mixed?.privateKey ?? origin.privateKey).export({
+        type: "pkcs8",
+        format: "pem",
+      }),
     }),
     {
       apiVersion: "v1",
@@ -636,6 +1029,17 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       "tls.key": tls.authority.key,
     }),
   ]);
+  if (mixed) {
+    // The model authority and Git authority require separate TLS Secrets and keys.
+    assert.ok(tls.modelAuthority);
+    await apply([
+      privateSecret("model-authority-tls", {
+        "tls.crt": tls.modelAuthority.cert,
+        "tls.key": tls.modelAuthority.key,
+      }),
+      configMap("git-gateway-jwks", { "bundle.json": gatewayGrantBundle(publicKey, keyId) }),
+    ]);
+  }
   const gatewayLabels = {
     "app.kubernetes.io/name": "openshell",
     "app.kubernetes.io/instance": "openshell-gateway",
@@ -652,7 +1056,23 @@ async function installOpenShellGit(t, witnessIssuedGit) {
   });
   const supervisorPolicy = policy("allow-installed-git-fixture", supervisorLabels, [
     authorityRule,
-    { to: [{ ipBlock: { cidr: `${bridge}/32` } }], ports: [{ protocol: "TCP", port: originPort }] },
+    ...(mixed
+      ? [
+          {
+            to: [
+              peer(platform, {
+                "app.kubernetes.io/name": "openclaw-enterprise",
+                "app.kubernetes.io/instance": "openclaw-enterprise",
+              }),
+            ],
+            ports: [9444, 9445, 9446].map((port) => ({ protocol: "TCP", port })),
+          },
+        ]
+      : []),
+    {
+      to: [{ ipBlock: { cidr: `${bridge}/32` } }],
+      ports: [originPort, ...(mixed ? [modelPort] : [])].map((port) => ({ protocol: "TCP", port })),
+    },
   ]);
   await apply([
     {
@@ -711,6 +1131,38 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       issuerCaPath: "/etc/openclaw/prepared-repository-ca/ca.crt",
     },
   };
+  const issuer = installation.repository.openShell.authority.issuer;
+  const modelEndpoint = `https://${modelAuthorityHost}:9445/token`;
+  const gitEndpoint = `https://${authorityHost}:9446/token`;
+  if (mixed) {
+    installation.drivers.credential_proxy.configuration = {
+      middlewareName: "oce-model-grant",
+      authority: {
+        host: "0.0.0.0",
+        port: 9444,
+        certificatePath: "/etc/openclaw/egress/tls/tls.crt",
+        privateKeyPath: "/etc/openclaw/egress/tls/tls.key",
+        issuerPublicKeyPath: "/etc/openclaw/egress/issuer/issuer.pub",
+        issuer,
+        audience: "oce-model-grant",
+        keyId,
+      },
+      tokenGrant: {
+        endpoint: modelEndpoint,
+        port: 9445,
+        bundlePath: "/etc/openclaw/egress/token-grant/bundle.json",
+        assertionSource: "openshell_gateway",
+        issuer,
+      },
+    };
+    installation.repository.openShell.grantRedemption = {
+      endpoint: gitEndpoint,
+      port: 9446,
+      bundlePath: "/etc/openclaw/openshell-git/token-grant/bundle.json",
+      assertionSource: "openshell_gateway",
+      issuer,
+    };
+  }
   const installationJSON = JSON.stringify(installation);
   await apply([
     privateSecret("occ-installation-startup", { "installation.yaml": installationJSON }),
@@ -739,6 +1191,24 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     issuerPublicKeyConfigMapName: "git-gateway-public-key",
     clients: [peer(platform, gatewayLabels), peer(sandboxNamespace, supervisorLabels)],
   };
+  if (mixed) {
+    values.worker = { ...values.worker, replicaCount: 1 };
+    values.egressAuthority = {
+      enabled: true,
+      port: 9444,
+      tlsSecretName: "model-authority-tls",
+      issuerSecretName: jwtSecret,
+      clients: [peer(platform, gatewayLabels), peer(sandboxNamespace, supervisorLabels)],
+      tokenGrant: { enabled: true, port: 9445, bundleConfigMapName: "git-gateway-jwks" },
+    };
+    values.openshellGit.tokenGrant = {
+      enabled: true,
+      port: 9446,
+      bundleConfigMapName: "git-gateway-jwks",
+      clients: [peer(sandboxNamespace, supervisorLabels)],
+    };
+  }
+  setupCheckpoint("controller-configuration");
   const valuesFile = join(directory, "oce-values.json");
   await writeFile(valuesFile, JSON.stringify(values), { mode: 0o600 });
   await command(
@@ -757,6 +1227,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     { timeout: 190_000 },
   );
 
+  setupCheckpoint("supervisor-trust");
   const supervisor = await trustedSupervisor({
     command,
     cleanup,
@@ -764,6 +1235,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     cluster: state.cluster,
     ca: tls.ca,
     checkpoint,
+    supplier,
   });
   gatewayValues.supervisor.image = supervisor.image;
   gatewayValues.gatewayConfig["openshell.supervisor.middleware"] = [
@@ -778,6 +1250,18 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       timeout: "5s",
     },
   ];
+  if (mixed) {
+    gatewayValues.gatewayConfig["openshell.supervisor.middleware"].push({
+      name: "oce-model-grant",
+      grpc_endpoint: `https://${modelAuthorityHost}:9444`,
+      tls_ca_cert_path: "/etc/openshell-git-ca/ca.crt",
+      audience: "oce-model-grant",
+      binding_policy: "allowlist",
+      bindings: ["http_request_pre_credentials"],
+      max_payload_bytes: 4194304,
+      timeout: "5s",
+    });
+  }
   gatewayValues.server.extraVolumes = [
     ...(gatewayValues.server.extraVolumes ?? []),
     { name: "git-authority-ca", configMap: { name: "git-fixture-ca" } },
@@ -786,18 +1270,25 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     ...(gatewayValues.server.extraVolumeMounts ?? []),
     { name: "git-authority-ca", mountPath: "/etc/openshell-git-ca", readOnly: true },
   ];
+  setupCheckpoint("gateway-configuration");
   const gatewayFile = join(directory, "gateway-values.json");
   await writeFile(gatewayFile, JSON.stringify(gatewayValues), { mode: 0o600 });
-  const charts = (await readdir(join(stack.directory, "openshell/chart"))).filter((name) =>
-    /^helm-chart-0\.1\.6\.tgz$/.test(name),
-  );
-  assert.equal(charts.length, 1);
+  const charts = supplier
+    ? []
+    : (await readdir(join(stack.directory, "openshell/chart"))).filter((name) =>
+        /^helm-chart-0\.1\.6\.tgz$/.test(name),
+      );
+  if (!supplier) {
+    assert.equal(charts.length, 1);
+  }
+  const gatewayChart =
+    supplier?.gatewayChart ?? join(stack.directory, "openshell/chart", charts[0]);
   await command(
     "helm",
     [
       "upgrade",
       "openshell-gateway",
-      join(stack.directory, "openshell/chart", charts[0]),
+      gatewayChart,
       ...helmContext,
       "-f",
       gatewayFile,
@@ -808,25 +1299,53 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     { timeout: 190_000 },
   );
 
+  setupCheckpoint("model-source-registration");
+  if (mixed) {
+    const secret = await request("POST", `/namespaces/${namespace.id}/secrets`, {
+      name: "mixed-grant-model",
+      value: mixed.modelBearer,
+    });
+    const registered = await request("POST", `/namespaces/${namespace.id}/credential-sources`, {
+      name: "mixed-grant-model",
+      type: "openai",
+      authorization: "online-request",
+      config: { authorized_base_url: `https://${modelHost}/v1` },
+      secrets: { api_key: secret.ref },
+    });
+    modelSource = await eventually("request-authorized model source", async () => {
+      const current = await request(
+        "GET",
+        `/namespaces/${namespace.id}/credential-sources/${registered.id}`,
+      );
+      assert.notEqual(current.status?.state, "failed", "model source registration failed");
+      assert.equal(current.egress?.adoption, "live");
+      return current.state === "ready" && current.status?.state === "ready" ? current : undefined;
+    });
+  }
+  setupCheckpoint("gateway-connect");
   const port = await availablePort();
-  const forward = spawn(
-    "kubectl",
-    [
-      ...kubectl,
-      "-n",
-      platform,
-      "port-forward",
-      "--address=127.0.0.1",
-      "service/openshell-gateway",
-      `${port}:8080`,
-    ],
-    { env: environment, stdio: "ignore" },
-  );
-  let forwardFailed = false;
-  forward.on("error", () => {
-    forwardFailed = true;
-  });
-  cleanup.push(() => stopProcess(forward));
+  const startForward = () => {
+    const child = spawn(
+      "kubectl",
+      [
+        ...kubectl,
+        "-n",
+        platform,
+        "port-forward",
+        "--address=127.0.0.1",
+        "service/openshell-gateway",
+        `${port}:8080`,
+      ],
+      { env: environment, stdio: "ignore" },
+    );
+    cleanup.push(() => stopProcess(child));
+    const current = { child, failed: false };
+    child.on("error", () => {
+      current.failed = true;
+    });
+    return current;
+  };
+  let forward = startForward();
   const gatewayBackend = await localOpenShellGatewayOptions(
     { after: (operation) => cleanup.push(operation) },
     kubectl,
@@ -836,45 +1355,46 @@ async function installOpenShellGit(t, witnessIssuedGit) {
   );
   const gatewayClient = new GrpcOpenShellGatewayClient(gatewayBackend);
   cleanup.push(() => gatewayClient.close());
-  await eventually("authenticated OpenShell workspace", async () => {
-    assert.equal(forwardFailed, false, "Gateway port-forward could not start");
-    assert.equal(forward.exitCode, null, "Gateway port-forward exited");
-    const deadline = AbortSignal.timeout(5000);
-    try {
-      return await gatewayClient.getWorkspace(
-        sandboxNamespace,
-        AbortSignal.any([t.signal, deadline]),
-      );
-    } catch (error) {
-      t.signal.throwIfAborted();
-      // GetWorkspace already maps NOT_FOUND to absence. Only a temporarily
-      // unavailable transport or request deadline can become ready on a later poll.
-      if ((deadline.aborted && error === deadline.reason) || [4, 14].includes(error?.grpcStatus)) {
-        return undefined;
+  const waitForGateway = (current) =>
+    eventually("authenticated OpenShell workspace", async () => {
+      assert.equal(current.failed, false, "Gateway port-forward could not start");
+      assert.equal(current.child.exitCode, null, "Gateway port-forward exited");
+      assert.equal(current.child.signalCode, null, "Gateway port-forward was terminated");
+      const deadline = AbortSignal.timeout(5000);
+      try {
+        return await gatewayClient.getWorkspace(
+          sandboxNamespace,
+          AbortSignal.any([t.signal, deadline]),
+        );
+      } catch (error) {
+        t.signal.throwIfAborted();
+        // GetWorkspace already maps NOT_FOUND to absence. Only a temporarily
+        // unavailable transport or request deadline can become ready on a later poll.
+        if (
+          (deadline.aborted && error === deadline.reason) ||
+          [4, 14].includes(error?.grpcStatus)
+        ) {
+          return undefined;
+        }
+        throw error;
       }
-      throw error;
-    }
-  });
-  const verifySupervisorImage = async ({ sandboxName, sandboxId }) => {
+    });
+  await waitForGateway(forward);
+  const verifySupervisorImage = async ({ sandboxName, sandboxId }, signal = t.signal) => {
     const selected = await gatewayClient.getSandbox(
       { workspace: sandboxNamespace, name: sandboxName },
-      t.signal,
+      signal,
     );
     assert.equal(selected?.id, sandboxId, "the selected Sandbox must retain its identity");
     const resource = JSON.parse(
-      await kube([
-        "get",
-        "sandboxes.agents.x-k8s.io",
-        sandboxName,
-        "-n",
-        sandboxNamespace,
-        "-o",
-        "json",
-      ]),
+      await kube(
+        ["get", "sandboxes.agents.x-k8s.io", sandboxName, "-n", sandboxNamespace, "-o", "json"],
+        { signal },
+      ),
     );
     assert.equal(resource.metadata.labels?.["openshell.ai/sandbox-id"], sandboxId);
     const pods = JSON.parse(
-      await kube(["get", "pods", "-n", sandboxNamespace, "-o", "json"]),
+      await kube(["get", "pods", "-n", sandboxNamespace, "-o", "json"], { signal }),
     ).items;
     const workloads = pods.filter(
       (pod) =>
@@ -917,11 +1437,13 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       supervisor.reference,
       "the supervisor must select the imported trust-only image",
     );
-    // CRI implementations report either the manifest or image-config digest.
-    // Both were observed from this build, never inferred from the requested tag.
+    // CRI can report the imported root, selected platform manifest, or config.
+    // Each identity was verified along the same imported content chain.
     const runningDigest = status.imageID.match(/sha256:[a-f0-9]{64}$/)?.[0];
     assert.ok(
-      [supervisor.image.digest, supervisor.configDigest].includes(runningDigest),
+      [supervisor.image.digest, supervisor.manifestDigest, supervisor.configDigest].includes(
+        runningDigest,
+      ),
       "the running supervisor image must match the imported trust-only build",
     );
     return {
@@ -1355,7 +1877,7 @@ async function installOpenShellGit(t, witnessIssuedGit) {
       throw error;
     }
   };
-  return {
+  const fixture = {
     request,
     namespace,
     modelSource,
@@ -1372,4 +1894,267 @@ async function installOpenShellGit(t, witnessIssuedGit) {
     restartWorker,
     checkpoint,
   };
+  if (mixed) {
+    const upgradeGateway = async (next) => {
+      await writeFile(gatewayFile, JSON.stringify(next), { mode: 0o600 });
+      await command(
+        "helm",
+        [
+          "upgrade",
+          "openshell-gateway",
+          gatewayChart,
+          ...helmContext,
+          "-f",
+          gatewayFile,
+          "--wait",
+          "--timeout",
+          "180s",
+        ],
+        { timeout: 190_000 },
+      );
+      const observed = JSON.parse(
+        await command("helm", ["get", "values", "openshell-gateway", ...helmContext, "-o", "json"]),
+      );
+      assert.deepEqual(
+        observed.gatewayConfig["openshell.gateway.provider_assertions"],
+        next.gatewayConfig["openshell.gateway.provider_assertions"],
+      );
+      // This config rollout replaces the Pod behind the existing port-forward.
+      // Keep the shared client object, but reconnect its channel through the new Pod.
+      await stopProcess(forward.child);
+      gatewayClient.close();
+      forward = startForward();
+      await waitForGateway(forward);
+    };
+    return Object.assign(fixture, {
+      gitScope: mixed.gitScope,
+      modelOrigin: mixed.modelOrigin,
+      readModelGrantApprovals: async ({ agentId, revisionId }) => {
+        const rows = JSON.parse(
+          await kube([
+            "exec",
+            "-n",
+            platform,
+            "deployment/openclaw-enterprise-api",
+            "--",
+            "node",
+            "--input-type=module",
+            "-e",
+            readModelApprovals,
+            namespace.id,
+            agentId,
+            revisionId,
+          ]),
+        );
+        assert.ok(Array.isArray(rows), "expected installed model approval records");
+        return rows;
+      },
+      deployMixedGrantAgent: async () => {
+        const since = new Date().toISOString();
+        const readControllerPods = async (timeout) =>
+          JSON.parse(
+            await kube([
+              "get",
+              "pods",
+              "-n",
+              platform,
+              "-l",
+              selector(workerLabels),
+              "-o",
+              "json",
+              timeout,
+            ]),
+          ).items;
+        // Pin the pre-deployment Worker; diagnostics must not follow a replacement.
+        const controllerPods = await readControllerPods("--request-timeout=8s").catch(() => []);
+        let target;
+        let modelAdmission;
+        let modelActorId;
+        let selectedProviders;
+        setupCheckpoint("agent-admission", "deployment");
+        fixture.mixedGrantFailureObservation = {
+          get target() {
+            return target;
+          },
+          collect: () =>
+            collectInstalledWorkerEvents({
+              controllerNamespace: platform,
+              controllerImage: values.images.controller,
+              controllerPods,
+              readControllerPods,
+              kubectl: (...args) => kube(args),
+              since,
+              target,
+            }),
+          collectModelOrigin: () => {
+            const events = mixed.modelOrigin.snapshot();
+            return {
+              state: "observed",
+              truncated: events.length > 8,
+              events: events.slice(-8).map(({ kind, status, count, harness, auth }) => ({
+                kind,
+                status,
+                count,
+                harness,
+                auth,
+              })),
+            };
+          },
+          collectModelDenials: async (endedAt) => {
+            if (!target || !modelAdmission || !selectedProviders) {
+              return undefined;
+            }
+            const { sandboxId, sandboxName } = selectedProviders;
+            const route = modelAdmission.route;
+            assert.equal(route.method, "POST");
+            assert.ok(typeof route.origin === "string" && typeof route.path === "string");
+            return collectOpenShellModelDenials({
+              gatewayClient,
+              workspace: sandboxNamespace,
+              sandbox: sandboxName,
+              sandboxId,
+              modelEndpoint: new URL(route.path, route.origin).href,
+              startedAt: Date.parse(since),
+              endedAt,
+              readSupervisor: (signal) => verifySupervisorImage({ sandboxName, sandboxId }, signal),
+              signal: t.signal,
+            });
+          },
+          collectModelAuditDenials: async (endedAt) => {
+            if (!target || !modelAdmission || !modelActorId) {
+              return undefined;
+            }
+            // Use the admitted source and API-created Agent principal, never
+            // an identity inferred from the audit rows being investigated.
+            assert.equal(modelAdmission.namespaceId, target.namespaceId);
+            assert.equal(modelAdmission.agentId, target.agentId);
+            assert.equal(modelAdmission.revisionId, target.id);
+            assert.equal(modelAdmission.route.sourceId, modelSource.id);
+            assert.equal(modelAdmission.route.grantKind, "inference");
+            assert.equal(typeof modelActorId, "string");
+            return JSON.parse(
+              await kube(
+                [
+                  "exec",
+                  "-n",
+                  platform,
+                  "deployment/openclaw-enterprise-api",
+                  "--",
+                  "node",
+                  "--input-type=module",
+                  "-e",
+                  readModelAuditDenials,
+                  target.namespaceId,
+                  modelSource.id,
+                  target.id,
+                  modelActorId,
+                  since,
+                  new Date(endedAt).toISOString(),
+                ],
+                { timeout: 20_000 },
+              ),
+            );
+          },
+          collectModelApprovals: async () => {
+            if (!target || !modelAdmission || !selectedProviders) {
+              return undefined;
+            }
+            const bindingId = modelAdmission.route.bindingId;
+            const provider = selectedProviders.modelProvider;
+            // Admission and registration are established independently of the
+            // approval rows; never infer the expected scope from the rows read.
+            assert.equal(modelAdmission.namespaceId, target.namespaceId);
+            assert.equal(modelAdmission.agentId, target.agentId);
+            assert.equal(modelAdmission.revisionId, target.id);
+            assert.equal(modelAdmission.route.sourceId, modelSource.id);
+            assert.equal(modelAdmission.route.grantKind, "inference");
+            assert.ok(typeof bindingId === "string" && bindingId.length > 0);
+            assert.ok(
+              typeof selectedProviders.sandboxId === "string" &&
+                selectedProviders.sandboxId.length > 0,
+            );
+            const credentials = provider.profile.definition?.credentials;
+            assert.ok(Array.isArray(credentials) && credentials.length === 1);
+            assert.equal(credentials[0]?.name, "access_token");
+            assert.equal(credentials[0]?.token_grant?.audience, bindingId);
+            return JSON.parse(
+              await kube(
+                [
+                  "exec",
+                  "-n",
+                  platform,
+                  "deployment/openclaw-enterprise-api",
+                  "--",
+                  "node",
+                  "--input-type=module",
+                  "-e",
+                  readModelApprovalSummary,
+                  target.namespaceId,
+                  target.agentId,
+                  target.id,
+                  selectedProviders.sandboxId,
+                  bindingId,
+                  openShellGrantCredentialIdentity(provider.id, "access_token"),
+                ],
+                { timeout: 20_000 },
+              ),
+            );
+          },
+          checkpoint,
+        };
+        return await deployMixedGrantAgent(t, {
+          ...fixture,
+          model: mixed.model,
+          modelTurns: mixed.modelTurns,
+          modelOrigin: mixed.modelOrigin,
+          readModelAdmission: async ({ agentId, revisionId }) => {
+            setupCheckpoint("committed-admission", "deployment");
+            const rows = JSON.parse(
+              await kube([
+                "exec",
+                "-n",
+                platform,
+                "deployment/openclaw-enterprise-api",
+                "--",
+                "node",
+                "--input-type=module",
+                "-e",
+                readModelAdmission,
+                namespace.id,
+                agentId,
+                revisionId,
+              ]),
+            );
+            assert.ok(Array.isArray(rows), "expected committed model admission records");
+            assert.equal(rows.length, 1, "expected exactly one selected committed admission");
+            modelAdmission = rows[0];
+            return modelAdmission;
+          },
+          stateDirectory: stack.directory,
+          after: (operation) => cleanup.push(operation),
+          registerProviders: async (revision, agent) => {
+            target = { id: revision.id, agentId: agent.id, namespaceId: namespace.id };
+            modelActorId = agent.servicePrincipalId;
+            setupCheckpoint("provider-registration", "deployment");
+            selectedProviders = await registerMixedGrantProviders({
+              request,
+              namespace,
+              agent,
+              revision,
+              workspace: sandboxNamespace,
+              gatewayClient,
+              kube,
+              gatewayValues,
+              modelEndpoint,
+              gitEndpoint,
+              upgradeGateway,
+              signal: t.signal,
+            });
+            return selectedProviders;
+          },
+        });
+      },
+    });
+  }
+  return fixture;
 }

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-09
-last_updated_session: 01a1becb-641e-7b63-9791-01de09b1cda6
+updated: 2026-11-11
+last_updated_session: authoring-run/7a24e31c-fa23-45b8-ba7e-dc5ca840a90c
 ---
 
 # Controller Worker Flow
@@ -289,6 +289,7 @@ same metrics contract.
 
 ### 7. Defer, retry, or stop and hand off the next iteration
 
+`apps/controller/src/worker.ts:ControllerWorker.finalizeRevision`,
 `apps/controller/src/worker.ts:ControllerWorker.finalizeActiveRevision`,
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.defer`,
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.retry`
@@ -354,13 +355,13 @@ exhausting attempts close the item and schedule another while the version stays
 selected and running within its credential deadline; outages never retire it. Each
 claim reauthorizes its actor. Successor keys use strictly later time buckets despite clock skew.
 
-`worker.completed` reports the target, outcome, and code. On `namespace.ensure`,
-it can also report a [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)
-from the current pass. The hint stays out of the Driver observation.
-A Namespace pass that observes the same pending state this worker last audited,
-such as a terminating namespace, writes no new lifecycle audit or `reconcile` row;
-a changed pending state or the terminal pass does.
-Lease loss reports `worker.error` `CLAIM_LOST` instead of stale lifecycle state.
+`ControllerWorker.finalizeRevision` logs the normalized `check` of a held runtime failure when
+`worker.completed` still reports that failure's code.
+For `namespace.ensure`, a [Kubernetes access hint](../reference/drivers/kubernetes-compute.md#failure-conditions)
+describes the current pass without changing the Driver observation.
+Repeating this worker's last audited pending Namespace state writes no
+lifecycle audit or `reconcile` row; changed or terminal state does.
+Lease loss reports `worker.error` `CLAIM_LOST`.
 On `SIGTERM` or `SIGINT`, shutdown aborts in-flight work, waits for the loop,
 removes readiness, closes the other parts and then PostgreSQL, and emits `worker.stopped`.
 
@@ -420,6 +421,8 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 11:50: Record held failure checks. (authoring-run/7a24e31c-fa23-45b8-ba7e-dc5ca840a90c - d038aecc1886450691938d938f00fc95a27085a9)
 
 - 2026-11-09 05:35: Stop before claiming. (01a1becb-641e-7b63-9791-01de09b1cda6 - 3b898fdc4a27c5cfcc6cbeb7196d96b02368da8b)
 
