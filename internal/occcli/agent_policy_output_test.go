@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"go.yaml.in/yaml/v3"
@@ -33,9 +34,9 @@ func TestAgentPolicyCommandsDefaultToStructuredOutput(t *testing.T) {
 		name, method, suffix, response string
 		args                           []string
 	}{
-		{"get", "GET", "", `{"editingEnabled":true,"policy":{"id":"spl_1","namespaceId":"` + namespace + `","agentId":"` + agent + `","version":1,"additions":[]},"defaults":{},"ceiling":[]}`, nil},
-		{"update", "PUT", "", `{"id":"spl_1","namespaceId":"` + namespace + `","agentId":"` + agent + `","version":2,"additions":[]}`, []string{"--file", file}},
-		{"apply", "POST", "/apply", `{"id":"spl_1","namespaceId":"` + namespace + `","agentId":"` + agent + `","version":1,"additions":[],"application":{"id":"app_1","revisionId":"` + revision + `","policyVersion":1,"state":"pending","requestedBy":"admin","requestedAt":"2026-10-21T00:00:00Z"}}`, []string{"--revision", revision, "--expected-version", "1"}},
+		{"get", "GET", "", `{"editingEnabled":true,"policy":{"id":"sbp_22222222-2222-4222-8222-222222222222","namespaceId":"` + namespace + `","agentId":"` + agent + `","version":1,"additions":[]},"defaults":{},"ceiling":[]}`, nil},
+		{"update", "PUT", "", `{"id":"sbp_22222222-2222-4222-8222-222222222222","namespaceId":"` + namespace + `","agentId":"` + agent + `","version":2,"additions":[]}`, []string{"--file", file}},
+		{"apply", "POST", "/apply", `{"id":"sbp_22222222-2222-4222-8222-222222222222","namespaceId":"` + namespace + `","agentId":"` + agent + `","version":1,"additions":[],"application":{"id":"55555555-5555-4555-8555-555555555555","revisionId":"` + revision + `","policyVersion":1,"state":"pending","requestedBy":"admin","requestedAt":"2026-10-21T00:00:00Z"}}`, []string{"--revision", revision, "--expected-version", "1"}},
 		{"editing", "PATCH", "/editing", `{"id":"` + agent + `","namespaceId":"` + namespace + `","name":"Synthetic Agent","configurationId":"cfg_00000000-0000-4000-8000-000000000001","backendId":null,"servicePrincipalId":"spn_1","executionMode":"embedded","status":"active","desiredRuntimeState":"running","sandboxPolicyEditing":true,"createdAt":"2026-10-21T00:00:00Z"}`, []string{"--enabled=true"}},
 		{"recommendations", "GET", "/recommendations", `{"recommendations":[],"truncated":false}`, []string{"--revision", revision}},
 	} {
@@ -59,9 +60,17 @@ func TestAgentPolicyCommandsDefaultToStructuredOutput(t *testing.T) {
 					}
 					w.Header().Set("content-type", "application/json")
 					if operation.name == "apply" {
+						body, err := io.ReadAll(r.Body)
+						var fields map[string]any
+						if err == nil {
+							err = json.Unmarshal(body, &fields)
+						}
+						if err != nil || len(fields) != 2 || fields["revisionId"] != revision || fields["expectedVersion"] != float64(1) {
+							t.Errorf("flag-mode apply body = %q, want only revisionId and expectedVersion (error: %v)", body, err)
+						}
 						w.WriteHeader(http.StatusAccepted)
 					}
-					fmt.Fprintf(w, `{"data":%s,"meta":{"requestId":"synthetic"}}`, operation.response)
+					fmt.Fprintf(w, `{"data":%s,"meta":{"requestId":"req_44444444-4444-4444-8444-444444444444"}}`, operation.response)
 				}))
 				defer server.Close()
 				args := []string{"--url", server.URL, "--service-key-file", key, "--namespace", namespace, "agent", "policy", operation.name, agent}
@@ -139,6 +148,136 @@ func TestAgentPolicyUpdateRejectsInvalidJSONBeforeRequest(t *testing.T) {
 			message := err.Error() + diagnostic.String()
 			if strings.Contains(message, sentinelKey) || strings.Contains(message, sentinelValue) {
 				t.Error("diagnostic exposed policy input")
+			}
+		})
+	}
+}
+
+func TestAgentPolicyApplyFile(t *testing.T) {
+	const namespace = "ns_11111111-1111-4111-8111-111111111111"
+	const agent = "agt_22222222-2222-4222-8222-222222222222"
+	const revision = "rev_33333333-3333-4333-8333-333333333333"
+	const fields = `"revisionId":"` + revision + `","expectedVersion":2`
+	const grant = `[{"id":"example-https","binary":"/usr/bin/curl","host":"example.com","ports":[{"from":443,"to":443}]}]`
+	const meta = `"meta":{"requestId":"req_44444444-4444-4444-8444-444444444444"}`
+	const path = "/namespaces/" + namespace + "/agents/" + agent + "/sandbox-policy/networking/apply"
+	key := writeKeyFile(t, `{"data":{"key":"synthetic-policy-key"}}`)
+
+	for _, tc := range []struct {
+		name, fields, additions string
+		version                 int
+	}{
+		{name: "replace", fields: fields + `,"additions":` + grant, additions: grant, version: 3},
+		{name: "clear", fields: fields + `,"additions":[]`, additions: "[]", version: 3},
+		{name: "apply saved", fields: fields, additions: grant, version: 2},
+		{name: "OCC refuses unknown field", fields: fields + `,"unrecognized":9007199254740993`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "apply.json")
+			if err := os.WriteFile(file, []byte("{\n"+tc.fields+"\n}"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.Method != http.MethodPost || r.URL.Path != path || r.Header.Get("Content-Type") != "application/json" {
+					t.Errorf("request = %s %s (%s)", r.Method, r.URL.Path, r.Header.Get("Content-Type"))
+				}
+				body, err := io.ReadAll(r.Body)
+				if want := "{" + strings.TrimSpace(tc.fields) + "}"; err != nil || string(body) != want {
+					t.Errorf("apply body = %q, want %q (read error: %v)", body, want, err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if tc.version == 0 {
+					w.WriteHeader(http.StatusBadRequest)
+					fmt.Fprint(w, `{"error":{"code":"INVALID_REQUEST","message":"The request does not match the operation contract: body /unrecognized is not an accepted field.","details":[{"path":"/unrecognized","code":"UNKNOWN_FIELD"}]},`+meta+`}`)
+					return
+				}
+				w.WriteHeader(http.StatusAccepted)
+				fmt.Fprintf(w, `{"data":{"id":"sbp_22222222-2222-4222-8222-222222222222","namespaceId":%q,"agentId":%q,"version":%d,"additions":%s,"application":{"id":"55555555-5555-4555-8555-555555555555","revisionId":%q,"policyVersion":%d,"state":"pending","requestedBy":"principal-administrator","requestedAt":"2026-10-21T00:00:00Z"}},%s}`,
+					namespace, agent, tc.version, tc.additions, revision, tc.version, meta)
+			}))
+			defer server.Close()
+
+			var out strings.Builder
+			command := New(&out, io.Discard)
+			command.SetArgs([]string{"--url", server.URL, "--service-key-file", key, "--namespace", namespace, "agent", "policy", "apply", agent, "--file", file})
+			err := command.Execute()
+			if calls.Load() != 1 {
+				t.Fatalf("requests = %d; want one (error: %v)", calls.Load(), err)
+			}
+			if tc.version == 0 {
+				if err == nil || !strings.Contains(err.Error(), "INVALID_REQUEST") || !strings.Contains(err.Error(), "UNKNOWN_FIELD") || out.Len() != 0 {
+					t.Fatalf("error = %v, output = %q; want OCC's field refusal", err, out.String())
+				}
+				return
+			}
+			var result struct {
+				Version     int `json:"version"`
+				Application struct {
+					RevisionID    string `json:"revisionId"`
+					PolicyVersion int    `json:"policyVersion"`
+					State         string `json:"state"`
+				} `json:"application"`
+			}
+			if err != nil {
+				t.Fatalf("apply command: %v", err)
+			}
+			if err := json.Unmarshal([]byte(out.String()), &result); err != nil || result.Version != tc.version ||
+				result.Application.RevisionID != revision || result.Application.PolicyVersion != tc.version || result.Application.State != "pending" {
+				t.Fatalf("output = %q; want pending version %d for %s (decode error: %v)", out.String(), tc.version, revision, err)
+			}
+		})
+	}
+}
+
+func TestAgentPolicyApplyRejectsInvalidFileOrFlagsBeforeRequest(t *testing.T) {
+	const namespace = "ns_11111111-1111-4111-8111-111111111111"
+	const agent = "agt_22222222-2222-4222-8222-222222222222"
+	const revision = "rev_33333333-3333-4333-8333-333333333333"
+	const revisionField = `"revisionId":"` + revision + `"`
+	const document = `{` + revisionField + `,"expectedVersion":2}`
+	key := writeKeyFile(t, `{"data":{"key":"synthetic-policy-key"}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("invalid apply input reached the server")
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	for _, tc := range []struct {
+		name, input, diagnostic string
+		flags                   []string
+	}{
+		{name: "revision missing", input: `{"expectedVersion":2}`, diagnostic: "revisionId"},
+		{name: "revision is a name", input: `{"revisionId":"fixture-name","expectedVersion":2}`, diagnostic: "revisionId"},
+		{name: "version missing", input: `{` + revisionField + `}`, diagnostic: "expectedVersion"},
+		{name: "version coerced from string", input: `{` + revisionField + `,"expectedVersion":"2"}`, diagnostic: "expectedVersion"},
+		{name: "nonpositive version", input: `{` + revisionField + `,"expectedVersion":0}`, diagnostic: "expectedVersion"},
+		{name: "version exceeds limit", input: `{` + revisionField + `,"expectedVersion":2147483648}`, diagnostic: "expectedVersion"},
+		{name: "version is fractional", input: `{` + revisionField + `,"expectedVersion":1.5}`, diagnostic: "expectedVersion"},
+		{name: "duplicate controls", input: `{` + revisionField + `,"expectedVersion":1,"expectedVersion":2}`, diagnostic: "duplicate object key"},
+		{name: "trailing document", input: document + " {}", diagnostic: "invalid JSON file"},
+		{name: "not an object", input: "null", diagnostic: "request object"},
+		{name: "both input modes", input: document, flags: []string{"--revision", revision, "--expected-version", "2"}, diagnostic: "none of the others can be"},
+		{name: "mixed with revision only", input: document, flags: []string{"--revision", revision}, diagnostic: "missing [expected-version]"},
+		{name: "mixed with version only", input: document, flags: []string{"--expected-version", "2"}, diagnostic: "missing [revision]"},
+		{name: "unknown flag", input: document, flags: []string{"--additions", "[]"}, diagnostic: "unknown flag: --additions"},
+		{name: "incomplete flag mode", flags: []string{"--expected-version", "2"}, diagnostic: "missing [revision]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := []string{"--url", server.URL, "--service-key-file", key, "--namespace", namespace, "agent", "policy", "apply", agent}
+			if tc.input != "" {
+				file := filepath.Join(t.TempDir(), "apply.json")
+				if err := os.WriteFile(file, []byte(tc.input), 0600); err != nil {
+					t.Fatal(err)
+				}
+				args = append(args, "--file", file)
+			}
+			var out strings.Builder
+			command := New(&out, io.Discard)
+			command.SetArgs(append(args, tc.flags...))
+			if err := command.Execute(); err == nil || !strings.Contains(err.Error(), tc.diagnostic) || out.Len() != 0 {
+				t.Fatalf("error = %v, output = %q; want %q and no output", err, out.String(), tc.diagnostic)
 			}
 		})
 	}

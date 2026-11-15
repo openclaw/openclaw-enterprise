@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-13"
-last_updated_session: "authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c"
+updated: "2026-11-15"
+last_updated_session: "authoring-run/51b1eb3a-3be1-45ce-909b-675f5633419d"
 ---
 
 # Agent sandbox policy flow
@@ -34,6 +34,10 @@ graph TD
   A --> P["PostgreSQL<br/>desired policy version"]
   P --> D["Explicit deployment<br/>immutable snapshot"]
   P --> W["Live application work<br/>exact running revision"]
+  CLI["CLI apply flags or JSON file"] --> Apply["OCC apply admission<br/>POST apply"]
+  Apply -->|additions supplied| Replace["Save complete replacement<br/>and enqueue in one transaction"]
+  Apply -->|additions omitted| W
+  Replace --> W
   W --> C["Persist provider CAS<br/>before mutation"]
   C --> S["Sandbox Driver<br/>apply canonical policy"]
   S --> V["Confirm matching<br/>loaded version"]
@@ -130,11 +134,18 @@ cleans its exact IAM access.
 into `AgentRevision.sandboxPolicy`. The OpenShell Driver provisions from this
 snapshot rather than re-reading changed defaults.
 
+`internal/occcli/agent_policy.go:agentPolicyCommand` accepts either the revision
+and saved-version flags or a JSON request file. It checks file syntax and the
+targeting fields before using `internal/occclient/client.go:ApplyAgentSandboxPolicy`
+to make one POST. The request preserves the complete additions array, including
+an explicit empty array, and OCC checks policy fields and admits the grants.
+
 `applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
 `update` and `read` before any refusal that names saved additions, then requires
 the exact active revision and supporting Driver. When the caller supplies reviewed additions, the same transaction saves the new
 policy version, records its pending application and enqueues Agent-target work.
-Omitting additions retains the saved policy version. Neither saving nor enqueueing establishes enforcement.
+Omitting additions retains the saved policy version. HTTP 202 reports that OCC
+queued the application. Enforcement requires provider confirmation.
 
 ### 3. Reconcile provider effects
 
@@ -263,6 +274,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-15 05:43: Trace the CLI JSON file input to live policy application. (authoring-run/51b1eb3a-3be1-45ce-909b-675f5633419d - 287ea04a6b15caed9b9fce6de6e9459bf6d2dae8)
 
 - 2026-11-13 22:21: Reject policy saves that remove a pending application. (authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c - cf0370780b4e885e35ee463033b6926e5d3109ef)
 
