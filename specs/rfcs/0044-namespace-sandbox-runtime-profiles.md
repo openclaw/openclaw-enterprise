@@ -9,7 +9,7 @@ author: eranco74
 - **ID:** RFC-0044
 - **Created:** 2026-11-15
 - **Last updated:** 2026-11-15
-- **RFC PR:** Not opened
+- **RFC PR:** [#6177](https://github.com/openclaw/openclaw-enterprise/pull/6177)
 - **Implementation plan:** Not started
 - **Related:** [RFC-0011](0011-coordinated-image-upgrade.md),
   [RFC-0030](0030-agent-harness-overrides.md),
