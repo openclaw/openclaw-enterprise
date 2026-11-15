@@ -122,6 +122,35 @@ For **Change unconfirmed** or **Pending confirmation**, refresh and open
 If no receipt confirms that operation, ask an operator to reconcile it before
 making another change. See [protected download approvals and status](../../reference/sandbox-policies.md#downloads-on-a-running-protected-agent).
 
+## Automate protected download changes
+
+Give a Namespace service principal `read` and `manage_policy` on the Agent and
+`read` and `update` on its SandboxPolicy. Authenticate with its `x-api-key` header.
+[Issue a service key](../../reference/authentication/service-api-keys.md#issue-a-service-key).
+
+1. Read `GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking`.
+   Check that `data.editingEnabled` is true, `data.protectedDownloads.state` is
+   `verified`, and no application is pending. Copy `data.policy.version` and
+   `data.protectedDownloads.revisionId`.
+2. POST to the same URL with `/apply` appended. Use the version as `expectedVersion`,
+   the revision as `revisionId`, and one `downloadChange` with an exact destination.
+   Use `enable` for an Agent-approved or Installation-delegated destination.
+   Use `disable` to turn off an existing rule. Disabling preserves the approval.
+   If `data.protectedDownloads.canApprove` is false, ask an Installation
+   administrator with the policy permissions to approve a new destination or
+   withdraw its approval. [Request example](../../reference/sandbox-policies.md#downloads-on-a-running-protected-agent).
+3. Keep `data.application.id` from HTTP 202. Poll the GET while that application
+   is pending. If it fails, inspect its reason. On success, match the
+   `operationId` and `revisionId` in `data.policy.applied` to your request.
+   Check the receipt's `confirmedDownloadDestinations`, then try a fresh
+   connection from the Agent.
+
+If the POST response was lost, compare `data.policy.application` to the intended
+revision, next policy version (`expectedVersion + 1`), action, destination and
+requester. If another request could also match or a later request replaced it, use the
+[`openclaw.agents.sandbox_policy.apply` audit event](audit-log.md#access-and-limitations)
+to identify the original operation before writing again.
+
 ## Retire a protected download edit before upgrade
 
 Run the [candidate preflight](../deploy/production-upgrade.md#rehearse-before-the-maintenance-window)

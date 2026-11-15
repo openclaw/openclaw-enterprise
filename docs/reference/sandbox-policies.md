@@ -132,9 +132,9 @@ approvals. When the new revision passes verification and has no receipt,
 the card shows **No live edit confirmed**. Choose **Enable** to enable the
 entry, or **Remove from desired** to remove it from the Agent’s saved list.
 
-API clients use the existing networking `apply` endpoint. For example, an
-administrator who just read policy version 3 can submit the following body,
-using the active revision ID returned by the service.
+[Automate protected download changes](../guides/topics/agent-sandbox-policy.md#automate-protected-download-changes)
+through the networking `apply` endpoint. An administrator can approve this
+destination after reading policy version 3 and the active revision ID.
 
 ```json
 {
