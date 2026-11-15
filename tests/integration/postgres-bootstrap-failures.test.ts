@@ -134,7 +134,7 @@ function isConfigurationDocument(value: unknown): value is OpenClawConfiguration
 
 const failureDatabaseUrl = process.env.OCC_BOOTSTRAP_FAILURE_DATABASE_URL;
 const commitAcknowledgementFaultFixture = fileURLToPath(
-  new URL("../fixtures/postgres-commit-ack-fault.mjs", import.meta.url),
+  new URL("../fixtures/postgres-commit-ack-fault.ts", import.meta.url),
 );
 const requiresFailurePostgres = {
   skip: failureDatabaseUrl

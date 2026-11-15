@@ -179,6 +179,7 @@
     "fixtures/docker-compute-wire.ts",
     "fixtures/oidc-ca-consumer.ts",
     "fixtures/oidc-ca-postgres-consumer.ts",
+    "fixtures/postgres-commit-ack-fault.ts",
     "fixtures/kubernetes/*.mts",
     "fixtures/ci-runner-finite-conversation.ts",
     "fixtures/ci-runner-repository-setup-diagnostics.ts",
