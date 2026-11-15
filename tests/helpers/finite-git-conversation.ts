@@ -7,7 +7,10 @@ import {
   verifyFirstAgentModel,
 } from "../../scripts/first-agent-model.ts";
 import { FixtureCommandTimeoutError } from "../fixtures/repository-credentials/process.mjs";
-import { ConversationReplyError, createNativePluginAssertions } from "./plugin-driver-real.mjs";
+import {
+  ConversationReplyError,
+  createGatewaySessionEvidence,
+} from "./plugin-gateway-session-evidence.ts";
 
 const conversationStages = [
   "execution identity",
@@ -322,14 +325,9 @@ export function createFiniteGitConversation({
     await guard(target);
     return output;
   }
-  const reader = createNativePluginAssertions({
+  const reader = createGatewaySessionEvidence({
     proofMode: "codex",
-    gatewayUrl: undefined,
-    execCodex: undefined,
-    waitFor: undefined,
-    readRuntimeLogs: undefined,
-    recordRuntimeLogs: undefined,
-    execGateway: async (requested: Agent, argv: string[]) => {
+    execGateway: async (requested, argv) => {
       if (!isDeepStrictEqual(requested, selected) || !pinned) {
         return fail();
       }
