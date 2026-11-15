@@ -153,7 +153,8 @@ export function createControlAdmission(
       // status again: the journal accepts an identical disposal once and refuses
       // any other, so the disposal is recorded exactly once.
       record.publication ??= status;
-      await journal.dispose(
+      await journal.writeStatus(
+        "dispose",
         id,
         record.input as RepositoryCredentialBoundSessionInput,
         record.publication,
@@ -375,7 +376,7 @@ export function createControlAdmission(
     );
     if (isBoundInput(admittedInput)) {
       const sessionId = opened.session.sessionId;
-      record.ready = journal!.bind(id, admittedInput, opened.session);
+      record.ready = journal!.writeStatus("bind", id, admittedInput, opened.session);
       try {
         await record.ready;
       } catch (error) {
