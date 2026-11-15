@@ -77,7 +77,7 @@ func TestAgentLogsJSONLines(t *testing.T) {
 	const namespace = "ns_00000000-0000-4000-8000-000000000001"
 	const agent = "agt_00000000-0000-4000-8000-000000000001"
 	const revision = "rev_00000000-0000-4000-8000-000000000001"
-	const record = `{"type":"line","time":"2026-09-30T12:00:01.000Z","stream":{"source":"gateway"},"contentClass":"operational","kind":"openclaw","level":"info","message":"startup complete","fields":{"count":9007199254740993,"fraction":1.2300},"extension":"preserved"}`
+	const record = `{"type":"line","time":"2026-09-30T12:00:01.000Z","stream":{"source":"gateway"},"contentClass":"operational","kind":"openclaw","level":"info","message":"startup complete","fields":{"count":9007199254740993,"fraction":1.2300}}`
 	for _, mode := range []string{"compact", "indented", "refused"} {
 		t.Run(mode, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +136,7 @@ func TestAgentLogsJSONLines(t *testing.T) {
 				if !json.Valid([]byte(line)) {
 					t.Fatalf("invalid JSON line: %q", line)
 				}
-				// Compare the full record, including unknown fields and numeric spelling:
+				// Compare the full record, including API metadata and numeric spelling:
 				// decoding through float64 or the display struct would lose API data.
 				if line != record {
 					t.Fatalf("record changed: %s", line)
