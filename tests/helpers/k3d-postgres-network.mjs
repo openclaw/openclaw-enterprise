@@ -63,7 +63,7 @@ async function breakStaleLock(lockPath, deadHolder) {
 
 // One lock per lane state directory: concurrent test files in a lane are separate
 // processes on one runner. A lock left by a dead process is taken over.
-async function withAttachmentLock(lockPath, step) {
+async function withAttachmentLock(lockPath, registryPath, step) {
   const deadline = Date.now() + 120_000;
   for (;;) {
     try {
@@ -81,33 +81,91 @@ async function withAttachmentLock(lockPath, step) {
       await delay(100);
     }
   }
+  let result;
+  let failure;
   try {
-    return await step();
-  } finally {
-    await rm(lockPath, { force: true });
+    result = await step();
+  } catch (error) {
+    failure = { error };
   }
+  try {
+    await rm(lockPath, { force: true });
+  } catch (error) {
+    const unlockFailure = Object.assign(
+      new Error(
+        `Could not remove attachment lock ${lockPath} (${error.code ?? error.name}). ` +
+          "Stop this lane's participants and fix filesystem access. Confirm the lock holder " +
+          `cannot resume before clearing the lock. Reconcile ${registryPath} before retrying any attachment operation.`,
+        { cause: error },
+      ),
+      { code: error.code },
+    );
+    if (!failure) {
+      throw unlockFailure;
+    }
+    const primaryFailure = failure.error;
+    throw Object.assign(
+      new AggregateError(
+        [primaryFailure, unlockFailure],
+        `${primaryFailure?.message ?? String(primaryFailure)}. ${unlockFailure.message}`,
+        { cause: primaryFailure },
+      ),
+      { code: primaryFailure?.code },
+    );
+  }
+  if (failure) {
+    throw failure.error;
+  }
+  return result;
 }
 
-// A missing registry means no harness file holds the attachment. An unreadable one is
-// treated as harness-owned with no live holders, so the last release still disconnects.
 async function readHolders(registryPath) {
-  let registry;
+  let contents;
   try {
-    registry = JSON.parse(await readFile(registryPath, "utf8"));
+    contents = await readFile(registryPath, "utf8");
   } catch (error) {
     if (error.code === "ENOENT") {
       return { connectedByHarness: false, holders: {} };
     }
-    return { connectedByHarness: true, holders: {} };
+    throw error;
   }
-  if (registry === null || typeof registry !== "object" || Array.isArray(registry)) {
-    return { connectedByHarness: true, holders: {} };
+  let registry;
+  try {
+    registry = JSON.parse(contents);
+  } catch (error) {
+    throw new Error(`invalid attachment registry JSON in ${registryPath}`, { cause: error });
   }
-  return {
-    connectedByHarness: registry.connectedByHarness === true,
-    holders:
-      registry.holders !== null && typeof registry.holders === "object" ? registry.holders : {},
-  };
+  assert.ok(
+    typeof registry?.connectedByHarness === "boolean" &&
+      registry.holders &&
+      typeof registry.holders === "object" &&
+      !Array.isArray(registry.holders) &&
+      Object.values(registry.holders).every((pid) => Number.isSafeInteger(pid) && pid > 0),
+    `invalid attachment holders in ${registryPath}`,
+  );
+  const { attachment, pendingConnect, pendingRelease, connectRollback } = registry;
+  if (attachment !== undefined) {
+    assert.ok(
+      isFullId(attachment?.networkId) && isFullId(attachment?.containerId),
+      `invalid attachment IDs in ${registryPath}`,
+    );
+  }
+  if (
+    pendingConnect !== undefined ||
+    pendingRelease !== undefined ||
+    connectRollback !== undefined
+  ) {
+    assert.ok(
+      ((pendingConnect === true && pendingRelease === undefined) ||
+        (pendingRelease === true && pendingConnect === undefined)) &&
+        (connectRollback === undefined || (connectRollback === true && pendingRelease === true)) &&
+        attachment &&
+        registry.connectedByHarness &&
+        Object.keys(registry.holders).length === 0,
+      `invalid pending attachment in ${registryPath}`,
+    );
+  }
+  return registry;
 }
 
 async function writeHolders(registryPath, registry) {
@@ -116,7 +174,7 @@ async function writeHolders(registryPath, registry) {
     await writeFile(temporary, JSON.stringify(registry), { mode: 0o600 });
     await rename(temporary, registryPath);
   } catch (error) {
-    await rm(temporary, { force: true });
+    await rm(temporary, { force: true }).catch(() => undefined);
     throw error;
   }
 }
@@ -150,12 +208,14 @@ export async function attachPostgresToK3d(registerCleanup) {
     `label=com.docker.compose.project=${postgres.name}`,
     "--filter",
     "label=com.docker.compose.service=postgres",
+    "--no-trunc",
     "--format",
-    "{{.Names}}",
+    "{{.ID}}",
   ]);
   const containers = containerOutput.trim().split(/\r?\n/).filter(Boolean);
   assert.equal(containers.length, 1, "prepared PostgreSQL must have exactly one container");
   const postgresContainer = containers[0];
+  assert.ok(isFullId(postgresContainer), "prepared PostgreSQL must have a full container ID");
   return attachContainerToK3d(registerCleanup, {
     statePath,
     containerBin,
@@ -199,66 +259,429 @@ export async function attachKeycloakToK3d(
   });
 }
 
+function isFullId(id) {
+  return typeof id === "string" && /^[a-f0-9]{64}$/.test(id);
+}
+
+function sameAttachment(left, right) {
+  return left?.networkId === right.networkId && left?.containerId === right.containerId;
+}
+
+async function inspectNetwork(containerBin, reference) {
+  const { stdout } = await executeFile(containerBin, ["network", "inspect", reference]);
+  const networks = JSON.parse(stdout);
+  assert.ok(Array.isArray(networks) && networks.length === 1, "expected one k3d network");
+  const id = networks[0]?.Id ?? networks[0]?.id;
+  const name = networks[0]?.Name ?? networks[0]?.name;
+  assert.ok(isFullId(id) && typeof name === "string" && name, "invalid k3d network identity");
+  const { Containers, containers } = networks[0];
+  return { id, name, containers: Containers === undefined ? containers : Containers };
+}
+
+async function inspectContainerId(containerBin, reference) {
+  const { stdout } = await executeFile(containerBin, ["inspect", "--format", "{{.Id}}", reference]);
+  const id = stdout.trim();
+  assert.ok(isFullId(id), "container must have a full ID");
+  return id;
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+async function containerNetworks(containerBin, reference) {
+  const { stdout } = await executeFile(containerBin, [
+    "inspect",
+    "--format",
+    "{{json .NetworkSettings.Networks}}",
+    reference,
+  ]);
+  const networks = JSON.parse(stdout);
+  assert.ok(isRecord(networks), "container network membership could not be verified");
+  return networks;
+}
+
+async function inspectBoundNetwork(inspect, network) {
+  const inspected = await inspect(network.id);
+  assert.equal(inspected.id, network.id, "container network membership ID changed");
+  assert.equal(inspected.name, network.name, "container network membership name changed");
+  return inspected;
+}
+
+function observeMembership(containerBin) {
+  const membership = new Map();
+  const invalidListings = new Set();
+  const key = (networkId, containerId) => `${networkId}:${containerId}`;
+  const conflict = (networkId, containerId) =>
+    membership.get(key(networkId, containerId)) ??
+    (invalidListings.has(networkId) ? "invalid network member listing" : undefined);
+
+  return {
+    async inspect(reference) {
+      const inspected = await inspectNetwork(containerBin, reference);
+      const { id, containers } = inspected;
+      if (isRecord(containers)) {
+        for (const [containerId, member] of Object.entries(containers)) {
+          if (isFullId(containerId)) {
+            membership.set(
+              key(id, containerId),
+              isRecord(member)
+                ? `network ${id} lists container ${containerId} but its own network inventory omits the network`
+                : `invalid member entry for container ${containerId} on network ${id}`,
+            );
+          }
+        }
+      } else if (containers !== undefined) {
+        invalidListings.add(id);
+      }
+      return inspected;
+    },
+    recordEndpoints(containerId, networkIds) {
+      for (const networkId of networkIds) {
+        const pair = key(networkId, containerId);
+        if (!membership.has(pair)) {
+          membership.set(
+            pair,
+            `container ${containerId} reported membership on network ${networkId}`,
+          );
+        }
+      }
+    },
+    conflict,
+    assertAbsent(...attachments) {
+      for (const { networkId, containerId } of attachments) {
+        const reason = conflict(networkId, containerId);
+        assert.ok(reason === undefined, reason);
+      }
+    },
+  };
+}
+
+async function corroborateMembership(containerBin, containerId, network, allowFilter) {
+  if (network.containers !== undefined || !allowFilter) {
+    return (
+      isRecord(network.containers) &&
+      Object.hasOwn(network.containers, containerId) &&
+      isRecord(network.containers[containerId])
+    );
+  }
+
+  // Older engines omit the member listing. The filter can suppress lookup
+  // errors, so only a positive, full container ID can corroborate membership.
+  const { stdout } = await executeFile(containerBin, [
+    "ps",
+    "--filter",
+    `network=${network.id}`,
+    "--filter",
+    `id=${containerId}`,
+    "--no-trunc",
+    "--format",
+    "{{.ID}}",
+  ]);
+  return stdout.trim() === containerId;
+}
+
+async function hasExactMembership(
+  containerBin,
+  containerId,
+  networks,
+  network,
+  { inspect, recordEndpoints, conflict },
+  { server = false } = {},
+) {
+  const seen = new Set();
+  for (const [name, endpoint] of Object.entries(networks)) {
+    assert.ok(
+      name && name !== network.id && isRecord(endpoint),
+      "container network membership has an invalid endpoint identity",
+    );
+    let id = endpoint.NetworkID;
+    if (id === name || !isFullId(id)) {
+      const missing = id === undefined || id === "";
+      assert.ok(
+        id === name || (missing && server && name === network.name),
+        "container network membership has an invalid endpoint identity",
+      );
+      const resolved = name === network.name ? network : await inspect(name);
+      assert.equal(resolved.name, name, "container network membership name changed");
+      assert.equal(
+        name === network.name,
+        resolved.id === network.id,
+        "container network membership name and ID disagree",
+      );
+      const inspected = await inspectBoundNetwork(inspect, resolved);
+      assert.ok(
+        await corroborateMembership(containerBin, containerId, inspected, !missing),
+        `${server ? "k3d server" : "container network"} membership could not be verified by full ID`,
+      );
+      id = resolved.id;
+    }
+    assert.notEqual(name, id, "container network membership has an ambiguous endpoint identity");
+    assert.equal(
+      name === network.name,
+      id === network.id,
+      "container network membership name and ID disagree",
+    );
+    assert.ok(!seen.has(id), "container network membership contains a duplicate network ID");
+    seen.add(id);
+  }
+  recordEndpoints(containerId, seen);
+  if (seen.has(network.id)) {
+    return true;
+  }
+
+  // Read back the bound network unless a read already contradicts the
+  // complete container inventory. The caller checks contradictions at the
+  // decision boundary before using the absence.
+  if (!conflict(network.id, containerId)) {
+    await inspectBoundNetwork(inspect, network);
+  }
+  return false;
+}
+
 async function attachContainerToK3d(
   registerCleanup,
   { statePath, containerBin, cluster, container, attachmentName },
 ) {
-  const serverContainer = `k3d-${cluster.name}-server-0`;
-  const { stdout: serverNetworksOutput } = await executeFile(containerBin, [
-    "inspect",
-    "--format",
-    "{{json .NetworkSettings.Networks}}",
-    serverContainer,
-  ]);
-  const serverNetworks = JSON.parse(serverNetworksOutput);
-  const network = Object.keys(serverNetworks).find((name) =>
-    name.startsWith(`k3d-${cluster.name}`),
-  );
-  assert.ok(network, "owned k3d server network must be inspectable");
-  const attached = async () => {
-    const { stdout } = await executeFile(containerBin, [
-      "inspect",
-      "--format",
-      "{{json .NetworkSettings.Networks}}",
-      container,
-    ]);
-    return Object.hasOwn(JSON.parse(stdout), network);
-  };
-
   const base = join(dirname(statePath), `${attachmentName}-k3d-${cluster.name}`);
   const lockPath = `${base}.lock`;
   const registryPath = `${base}.json`;
   const holder = randomUUID();
-  const disconnect = () =>
-    executeFile(containerBin, ["network", "disconnect", "--force", network, container]);
-  await withAttachmentLock(lockPath, async () => {
+
+  const pendingError = ({ attachment, pendingConnect, connectRollback }, outcome, cause) => {
+    let operation = pendingConnect ? "connect" : "disconnect";
+    if (connectRollback) {
+      operation = "disconnect to roll back a successful connect after a holder write failure";
+    }
+    const { networkId, containerId } = attachment;
+    const error = new Error(
+      `Pending k3d ${operation} in ${registryPath} for network ${networkId} and container ${containerId}. ` +
+        `${outcome}. Stop this lane's participants and fence ${lockPath}. Using ${containerBin} with the lane's original engine context, ` +
+        "verify membership or original object absence by full ID. Retire only the unchanged empty " +
+        "pending record after confirming original endpoint absence. If the pair remains attached, " +
+        "have the lane owner resolve ownership and choose the exact corrective operation. " +
+        "Keep the record if the outcome remains unclear.",
+      { cause },
+    );
+    return Object.assign(error, { code: cause?.code });
+  };
+
+  const observePending = async (registry, observation, phase, operationFailure) => {
+    const { networkId, containerId } = registry.attachment;
+    try {
+      const [network, inspectedContainerId] = await Promise.all([
+        observation.inspect(networkId),
+        inspectContainerId(containerBin, containerId),
+      ]);
+      // A successful lookup can resolve a replacement. That does not establish
+      // the original endpoint's absence.
+      assert.equal(network.id, networkId, "original network identity could not be verified");
+      assert.equal(
+        inspectedContainerId,
+        containerId,
+        "original container identity could not be verified",
+      );
+      const attached = await hasExactMembership(
+        containerBin,
+        containerId,
+        await containerNetworks(containerBin, containerId),
+        network,
+        observation,
+      );
+      if (!attached) {
+        observation.assertAbsent(registry.attachment);
+      }
+      return attached;
+    } catch (error) {
+      const detail = error instanceof assert.AssertionError ? `. ${error.message}` : "";
+      const outcome = `${phase}. Exact membership inspection failed (${error.code ?? error.name})${detail}`;
+      const cause = operationFailure
+        ? Object.assign(
+            new AggregateError([operationFailure, error], outcome, {
+              cause: operationFailure,
+            }),
+            { code: operationFailure.code },
+          )
+        : error;
+      throw pendingError(registry, outcome, cause);
+    }
+  };
+
+  const retirePending = async (registry) => {
+    try {
+      await rm(registryPath, { force: true });
+    } catch (error) {
+      throw pendingError(
+        registry,
+        `Original membership absent. Pending record removal failed (${error.code ?? error.name})`,
+        error,
+      );
+    }
+  };
+
+  const releasePending = async (registry, operation) => {
+    if (await observePending(registry, observeMembership(containerBin), `${operation} preflight`)) {
+      let failure;
+      try {
+        await executeFile(containerBin, [
+          "network",
+          "disconnect",
+          "--force",
+          registry.attachment.networkId,
+          registry.attachment.containerId,
+        ]);
+      } catch (error) {
+        failure = error;
+      }
+      const phase = failure
+        ? `${operation} reported ${failure.code ?? failure.name}`
+        : `${operation} exited 0`;
+      // Start a new observation after submitting the disconnect.
+      if (await observePending(registry, observeMembership(containerBin), phase, failure)) {
+        throw pendingError(registry, `${phase}. Original membership remains`, failure);
+      }
+    }
+    await retirePending(registry);
+  };
+
+  const { attachment, networkName } = await withAttachmentLock(lockPath, registryPath, async () => {
+    const observation = observeMembership(containerBin);
     const registry = await readHolders(registryPath);
+    const hasPending = registry.pendingConnect || registry.pendingRelease;
+    if (hasPending && (await observePending(registry, observation, "Acquisition readback"))) {
+      throw pendingError(
+        registry,
+        "Acquisition readback found the original membership still attached",
+      );
+    }
+
+    const serverId = await inspectContainerId(containerBin, `k3d-${cluster.name}-server-0`);
+    const serverNetworks = await containerNetworks(containerBin, serverId);
+    const matchingNetworks = Object.keys(serverNetworks).filter((name) =>
+      name.startsWith(`k3d-${cluster.name}`),
+    );
+    assert.equal(matchingNetworks.length, 1, "expected one owned k3d server network");
+    const [networkName] = matchingNetworks;
+    const [network, containerId] = await Promise.all([
+      observation.inspect(networkName),
+      inspectContainerId(containerBin, container),
+    ]);
+    assert.equal(network.name, networkName, "k3d network name must match its inspection");
+    assert.ok(
+      await hasExactMembership(containerBin, serverId, serverNetworks, network, observation, {
+        server: true,
+      }),
+      "owned k3d server network must be inspectable",
+    );
+    if (isFullId(container)) {
+      assert.equal(containerId, container, "prepared container ID must match its inspection");
+    }
+    const attachment = { networkId: network.id, containerId };
     const holders = liveHolders(registry);
-    // An attachment no harness file made (connectedByHarness false) stays with its owner.
-    let connectedByHarness = registry.connectedByHarness;
-    let connectedNow = false;
-    if (!(await attached())) {
-      await executeFile(containerBin, ["network", "connect", network, container]);
-      connectedByHarness = true;
-      connectedNow = true;
+    const shared = Object.keys(holders).length > 0;
+    assert.ok(
+      !shared || sameAttachment(registry.attachment, attachment),
+      `live attachment holders in ${registryPath} have a different or unverified engine binding`,
+    );
+    const attached = await hasExactMembership(
+      containerBin,
+      containerId,
+      await containerNetworks(containerBin, containerId),
+      network,
+      observation,
+    );
+    assert.ok(
+      !shared || attached,
+      `live attachment holders in ${registryPath} lost their membership`,
+    );
+    // Recheck every absence this write relies on, including the original
+    // pending pair when the replacement is already attached.
+    const requiredAbsences = hasPending ? [registry.attachment] : [];
+    if (!attached) {
+      requiredAbsences.push(attachment);
     }
     try {
-      await writeHolders(registryPath, {
-        connectedByHarness,
-        holders: { ...holders, [holder]: process.pid },
-      });
+      observation.assertAbsent(...requiredAbsences);
     } catch (error) {
-      // Without a recorded holder nothing would ever release this connection.
-      if (connectedNow) {
-        await disconnect().catch(() => undefined);
+      if (hasPending) {
+        throw pendingError(
+          registry,
+          `Acquisition membership reports disagree. ${error.message}`,
+          error,
+        );
       }
       throw error;
     }
+
+    let pending;
+    if (!attached) {
+      pending = { attachment, connectedByHarness: true, holders: {}, pendingConnect: true };
+      // Persist intent first. A failed engine call or holder write must leave
+      // the same pair fenced for reconciliation.
+      await writeHolders(registryPath, pending);
+      try {
+        await executeFile(containerBin, ["network", "connect", network.id, containerId]);
+      } catch (error) {
+        throw pendingError(pending, `Connect reported ${error.code ?? error.name}`, error);
+      }
+    }
+    try {
+      await writeHolders(registryPath, {
+        attachment,
+        connectedByHarness: !attached || (shared && registry.connectedByHarness),
+        holders: { ...holders, [holder]: process.pid },
+      });
+    } catch (error) {
+      if (!pending) {
+        throw error;
+      }
+
+      // Record the rollback before attempting a disconnect. A later caller
+      // needs to know which operation requires reconciliation.
+      const rollback = {
+        attachment,
+        connectedByHarness: true,
+        holders: {},
+        pendingRelease: true,
+        connectRollback: true,
+      };
+      const registrationFailure = `Connect exited 0. Holder write failed (${error.code ?? error.name})`;
+      let rollbackRecorded = false;
+      try {
+        await writeHolders(registryPath, rollback);
+        rollbackRecorded = true;
+        await releasePending(rollback, "Connect rollback");
+      } catch (failure) {
+        const diagnostic = rollbackRecorded
+          ? failure
+          : pendingError(
+              pending,
+              `Rollback record write failed (${failure.code ?? failure.name}). Disconnect was not attempted`,
+              failure,
+            );
+        throw Object.assign(
+          new AggregateError([error, failure], `${registrationFailure}. ${diagnostic.message}`, {
+            cause: failure,
+          }),
+          { code: error.code },
+        );
+      }
+      throw error;
+    }
+    return { attachment, networkName };
   });
+
   registerCleanup(async () => {
     try {
-      await withAttachmentLock(lockPath, async () => {
+      await withAttachmentLock(lockPath, registryPath, async () => {
         const registry = await readHolders(registryPath);
+        if (!Object.hasOwn(registry.holders, holder)) {
+          return;
+        }
+        assert.ok(
+          sameAttachment(registry.attachment, attachment),
+          `attachment binding changed in ${registryPath}`,
+        );
         const remaining = liveHolders(registry);
         delete remaining[holder];
         if (Object.keys(remaining).length > 0) {
@@ -266,7 +689,10 @@ async function attachContainerToK3d(
           return;
         }
         if (registry.connectedByHarness) {
-          await disconnect().catch(() => undefined);
+          const pending = { ...registry, holders: {}, pendingRelease: true };
+          await writeHolders(registryPath, pending);
+          await releasePending(pending, "Disconnect");
+          return;
         }
         await rm(registryPath, { force: true });
       });
@@ -278,8 +704,8 @@ async function attachContainerToK3d(
   const { stdout: attachedOutput } = await executeFile(containerBin, [
     "inspect",
     "--format",
-    `{{(index .NetworkSettings.Networks ${JSON.stringify(network)}).IPAddress}}`,
-    container,
+    `{{(index .NetworkSettings.Networks ${JSON.stringify(networkName)}).IPAddress}}`,
+    attachment.containerId,
   ]);
   const address = attachedOutput.trim();
   assert.equal(isIP(address), 4, `${attachmentName} must have an IPv4 address on the k3d network`);
