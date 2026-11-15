@@ -24,9 +24,14 @@ import {
   recordSkipperCheckpoint,
   recordSkipperTestFailure,
 } from "../../scripts/ci/skipper-failure-receipt.ts";
-import reporter from "../../scripts/ci/reporter.mjs";
+import reporter from "../../scripts/ci/reporter.ts";
 import { createSkipperPreparedComputeEvents } from "../fixtures/skipper-prepared-compute-model.mjs";
-import { inGateway, sendSkipperChat } from "../helpers/skipper-prepared-compute.mjs";
+import { assertConnectedResponse } from "../helpers/egress-connected-inputs.mjs";
+import {
+  configureSkipperTransport,
+  inGateway,
+  sendSkipperChat,
+} from "../helpers/skipper-prepared-compute.mjs";
 
 const lane = "skipper-prepared-git-installed";
 const sourceSha = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
@@ -101,7 +106,7 @@ test("aggregate qualifies only the independently selected Skipper image set with
   function produce(file: string, overrides: NodeJS.ProcessEnv = {}) {
     const result = spawnSync(
       process.execPath,
-      ["scripts/ci/first-agent-smoke.mjs", "release-selection", file],
+      ["scripts/ci/first-agent-smoke.ts", "release-selection", file],
       {
         encoding: "utf8",
         timeout: 30_000,
@@ -137,7 +142,7 @@ test("aggregate qualifies only the independently selected Skipper image set with
   assert.deepEqual(JSON.parse(await readFile(control, "utf8")), selection);
   await assert.rejects(readFile(summary), { code: "ENOENT" });
   await assert.rejects(readFile(exported), { code: "ENOENT" });
-  const args = ["scripts/ci/run-tests.mjs", "aggregate", lane, "--results-dir", directory];
+  const args = ["scripts/ci/run-tests.ts", "aggregate", lane, "--results-dir", directory];
   async function aggregate(evidence: unknown, expected: unknown = selection, mode = "qualify") {
     await writeFile(join(directory, lane + ".json"), JSON.stringify(evidence));
     if (mode !== "produced") {
@@ -242,6 +247,41 @@ test("aggregate qualifies only the independently selected Skipper image set with
     "later-turn-reauthorized-and-advanced-same-draft",
   );
   assert.equal((await aggregate(team)).status, "passed");
+});
+
+test("prepared Skipper writes runtime credentials only for explicit false", async (t) => {
+  const namespacePath = "/namespaces/ns_11111111-1111-4111-8111-111111111111";
+  const agentPath = namespacePath + "/agents/agt_22222222-2222-4222-8222-222222222222";
+  for (const [name, data, expected] of [
+    ["null data", null, "reject"],
+    ["missing flag", {}, "reject"],
+    ["non-boolean flag", { transportConfigured: "false" }, "reject"],
+    ["unconfigured", { transportConfigured: false }, "write"],
+    ["configured", { transportConfigured: true }, "skip"],
+  ] as const) {
+    await t.test(name, async () => {
+      const methods: string[] = [];
+      const result = configureSkipperTransport(async (method, path, body) => {
+        methods.push(method);
+        assert.equal(path, agentPath + "/runtime-credentials");
+        if (method === "GET") {
+          return assertConnectedResponse(
+            { status: 200, body: { data, meta: { requestId: "status" } } },
+            200,
+          );
+        }
+        assert.equal(method, "POST");
+        assert.deepEqual(body, {});
+        return {};
+      }, agentPath);
+      if (expected === "reject") {
+        await assert.rejects(result, /expected boolean transportConfigured/);
+      } else {
+        await result;
+      }
+      assert.deepEqual(methods, expected === "write" ? ["GET", "POST"] : ["GET"]);
+    });
+  }
 });
 
 test("installed Skipper receiver reports failures without exposing response content", async (t) => {
@@ -694,7 +734,8 @@ test("installed Skipper failure retention preserves known checkpoints and withho
     "failed chat carries only its own receiver observations through the workflow",
     async (t) => {
       const canary = "private-canary";
-      const marker = "skipper-" + canary;
+      const requestMarker = "skipper-" + canary;
+      let marker = requestMarker;
       const prior = "skipper-earlier";
       const commandFile = join(directory, "skipper-command.json");
       const model = createSkipperPreparedComputeEvents(commandFile);
@@ -714,11 +755,33 @@ test("installed Skipper failure retention preserves known checkpoints and withho
         assert.equal(req.method, "POST");
         assert.equal(req.url, "/v1/chat/completions");
         requests++;
-        if (mode === "success" || mode === "observed" || mode === "other-request") {
+        if (["success", "observed", "other-request", "terminal"].includes(mode)) {
           const input = mode === "other-request" ? [{ role: "user", content: prior }] : messages;
           assert.ok(
             model({ model: "synthetic", request: JSON.stringify({ input }), emit, answerEvents }),
           );
+        }
+        if (mode === "terminal") {
+          const answer = "SKIPPER_COMPUTE_DONE_" + marker;
+          const input = [
+            {
+              type: "function_call_output",
+              call_id: marker,
+              output: "Wall time: 0.1 seconds\nProcess exited with code 0\nOutput:\n" + answer,
+            },
+          ];
+          // Supply inert tool output and check the answer the fixture actually selected.
+          let selected: string | undefined;
+          model({
+            model: "synthetic",
+            request: JSON.stringify({ input }),
+            emit,
+            answerEvents: (_model: string, text: string) => {
+              selected = text;
+              return [];
+            },
+          });
+          assert.equal(selected, answer);
         }
         if (mode === "prewarm-only") {
           emit({ event: "prewarm", transport: "websocket" });
@@ -780,9 +843,11 @@ test("installed Skipper failure retention preserves known checkpoints and withho
         ["truncated", "unavailable"],
         ["observed", "observed"],
         ["stale-marker", "unavailable"],
+        ["terminal", "observed"],
       ] as const) {
         await t.test(scenario, async () => {
           mode = scenario;
+          marker = scenario === "terminal" ? requestMarker + "-terminal" : requestMarker;
           await prepare(scenario === "other-request" ? prior : marker);
           completedBeforeFailure = requests;
           await writeFile(stageOutput, "");
@@ -841,6 +906,7 @@ test("installed Skipper failure retention preserves known checkpoints and withho
             gatewayTransportCause: "socket-closed",
             runtimeSignal: "thread-start",
             modelRequestObservation: expected,
+            ...(scenario === "terminal" ? { modelFixtureSelectedTerminalSuccess: true } : {}),
             lastTestCheckpoint: refused,
             installedCleanup: "passed",
           });
@@ -861,7 +927,57 @@ test("installed Skipper failure retention preserves known checkpoints and withho
   assert.ok(selectedBlock.includes('assert.fail("selected test runner failed")'));
   await t.test("gateway exec diagnostics survive the selected failure receipt", async (t) => {
     const exec = promisify(execFile);
+    let requests = 0;
+    const gateway = createServer((req, res) => {
+      assert.equal(req.method, "POST");
+      assert.equal(req.url, "/v1/chat/completions");
+      req.resume();
+      requests++;
+      res.end(JSON.stringify({ choices: [{ message: { content: "reply" } }] }));
+    });
+    gateway.listen(0, "127.0.0.1");
+    await once(gateway, "listening");
+    t.after(() => new Promise<void>((done) => gateway.close(() => done())));
+    const address = gateway.address();
+    assert.ok(address && typeof address !== "string");
+    const env = {
+      OPENCLAW_GATEWAY_PORT: String(address.port),
+      OPENCLAW_GATEWAY_PASSWORD: "private-canary",
+    };
+    const options = {
+      gatewayChatPhase: "native-git",
+      marker: "private-canary",
+      sessionKey: "private-canary",
+      modelEvents: async () => [],
+      runtimeLogs: async () => [],
+      checkpoint: async () => {},
+    };
+    // Keep the successful call's stderr only to replay it as foreign evidence.
+    let priorStderr = "";
+    assert.equal(
+      await sendSkipperChat({
+        ...options,
+        enter: async (_node: string, ...args: string[]) => {
+          const result = await exec(process.execPath, args, { env, timeout: 10_000 });
+          priorStderr = result.stderr;
+          assert.deepEqual(JSON.parse(result.stdout), { status: 200, content: "reply" });
+          return result.stdout;
+        },
+      }),
+      "reply",
+    );
+    assert.equal(requests, 1);
     for (const [name, script, expected] of [
+      [
+        "entered",
+        'process.stderr.write("private-canary\\n"); process.exitCode = 1;',
+        {
+          exitCode: 1,
+          helperEntered: true,
+        },
+      ],
+      ["before-entry", "process.exitCode = 1;", { exitCode: 1 }],
+      ["foreign-entry", "process.exitCode = 1;", { exitCode: 1 }],
       ["exit", 'process.stderr.write("private-canary"); process.exit(23)', { exitCode: 23 }],
       ["signal", 'process.kill(process.pid, "SIGTERM")', { signal: "SIGTERM" }],
       [
@@ -871,28 +987,54 @@ test("installed Skipper failure retention preserves known checkpoints and withho
       ],
     ] as const) {
       await t.test(name, async (t) => {
+        if (name === "foreign-entry") {
+          assert.match(priorStderr, /^\nskipper-gateway-entry:[\da-f-]{36}\n$/);
+        }
+        const before = requests;
+        let original: unknown;
         let failure: Error | undefined;
         await assert.rejects(
           sendSkipperChat({
-            gatewayChatPhase: "native-git",
-            marker: "private-canary",
-            sessionKey: "private-canary",
-            enter: async () =>
-              (
-                await exec(process.execPath, ["-e", script], {
-                  maxBuffer: name === "code" ? 1 : 1024,
-                })
-              ).stdout,
-            modelEvents: async () => [],
-            runtimeLogs: async () => [],
-            checkpoint: async () => {},
+            ...options,
+            enter: async (_node: string, flag: string, program: string, ...args: string[]) => {
+              // The local execFile replaces kubectl. For the positive case the
+              // generated receiver still runs, and the child reports exit 1.
+              let source = script;
+              if (name === "entered") {
+                source += "\n" + program;
+              }
+              if (name === "before-entry") {
+                // Echoing the invocation argument cannot supply the helper's frame.
+                source += `process.stderr.write(${JSON.stringify("\n" + args.at(-1) + "\n")});`;
+              } else if (name === "foreign-entry") {
+                source += `process.stderr.write(${JSON.stringify(priorStderr)});`;
+              }
+              const localArgs = name === "entered" ? [flag, source, ...args] : [flag, source];
+              try {
+                return (
+                  await exec(process.execPath, localArgs, {
+                    env,
+                    timeout: 10_000,
+                    maxBuffer: name === "code" ? 1 : 1024,
+                  })
+                ).stdout;
+              } catch (error) {
+                original = error;
+                throw error;
+              }
+            },
           }),
           (error: Error) => {
             failure = error;
-            return true;
+            return error === original;
           },
         );
+        assert.equal(requests, before + Number(name === "entered"));
         assert.ok(failure);
+        if (name === "entered") {
+          assert.ok("stdout" in failure && typeof failure.stdout === "string");
+          assert.deepEqual(JSON.parse(failure.stdout), { status: 200, content: "reply" });
+        }
         const { value } = await reporter([
           { type: "test:fail", data: { name, details: { error: { cause: failure } } } },
         ]).next();
@@ -943,7 +1085,10 @@ test("installed Skipper failure retention preserves known checkpoints and withho
         );
         assert.equal(JSON.parse(published).lastTestCheckpoint, released);
         assert.equal(JSON.parse(published).gatewayChatPhase, undefined);
-        assert.doesNotMatch(published + (await readFile(stageOutput, "utf8")), /private-canary/);
+        assert.doesNotMatch(
+          published + (await readFile(stageOutput, "utf8")),
+          /private-canary|skipper-gateway-entry:|chat\/completions/,
+        );
       });
     }
 
@@ -956,8 +1101,13 @@ test("installed Skipper failure retention preserves known checkpoints and withho
             kind: "skipper-operation",
             operation,
             ...(operation === "gateway-exec"
-              ? { exitCode: "23", signal: "SIGTERM\nprivate-canary", code: "private-canary" }
-              : { exitCode: 23, signal: "SIGTERM", code: "ENOENT" }),
+              ? {
+                  exitCode: "23",
+                  signal: "SIGTERM\nprivate-canary",
+                  code: "private-canary",
+                  helperEntered: "true",
+                }
+              : { exitCode: 23, signal: "SIGTERM", code: "ENOENT", helperEntered: true }),
           },
         }),
         ledgerPath,
@@ -996,6 +1146,7 @@ test("installed Skipper failure retention preserves known checkpoints and withho
           SKIPPER_GATEWAY_EXEC_EXIT_CODE: entry.exitCode,
           SKIPPER_GATEWAY_EXEC_SIGNAL: entry.signal,
           SKIPPER_GATEWAY_EXEC_CODE: entry.code,
+          SKIPPER_GATEWAY_EXEC_HELPER_ENTERED: "true\nprivate-canary",
         }).status,
         0,
       );
@@ -1020,6 +1171,7 @@ test("installed Skipper failure retention preserves known checkpoints and withho
           SKIPPER_GATEWAY_EXEC_EXIT_CODE: "23",
           SKIPPER_GATEWAY_EXEC_SIGNAL: "SIGTERM",
           SKIPPER_GATEWAY_EXEC_CODE: "ENOENT",
+          SKIPPER_GATEWAY_EXEC_HELPER_ENTERED: "true",
         }).status,
         0,
       );
@@ -1323,6 +1475,35 @@ test("installed Skipper failure retention preserves known checkpoints and withho
   assert.equal(filtered.gatewayTransportCause, undefined);
   assert.equal(filtered.installedCleanup, "failed");
 
+  // Exercise one changed input at a time against an otherwise eligible workflow receipt.
+  for (const [key, value] of [
+    ["SKIPPER_STAGE", "finish-fixture"],
+    ["SKIPPER_TEST_OPERATION", "command-cleanup"],
+    ["SKIPPER_GATEWAY_CHAT_PHASE", "before-private-git"],
+    ["SKIPPER_GATEWAY_CATEGORY", "client-deadline"],
+    ["SKIPPER_HTTP_STATUS", "503"],
+    ["SKIPPER_MODEL_REQUEST_OBSERVATION", "unavailable"],
+    ["SKIPPER_MODEL_FIXTURE_SELECTED_TERMINAL_SUCCESS", "1"],
+  ] as const) {
+    const path = join(directory, key + ".json");
+    assert.equal(
+      outcome(path, "failure", "selected-test", "passed", {
+        SKIPPER_TEST_OPERATION: "gateway-chat",
+        SKIPPER_GATEWAY_CHAT_PHASE: "native-git",
+        SKIPPER_GATEWAY_CATEGORY: "transport",
+        SKIPPER_HTTP_STATUS: "0",
+        SKIPPER_MODEL_REQUEST_OBSERVATION: "observed",
+        SKIPPER_MODEL_FIXTURE_SELECTED_TERMINAL_SUCCESS: "true",
+        [key]: value,
+      }).status,
+      0,
+    );
+    assert.equal(
+      JSON.parse(await readFile(path, "utf8")).modelFixtureSelectedTerminalSuccess,
+      undefined,
+    );
+  }
+
   // The writer independently validates the values received through the workflow environment.
   const injected = [
     ...[undefined, "", "0200", "2e2", " 200", "200.5", "-0", "99", "600", "200\n"].map(
@@ -1491,6 +1672,42 @@ test("installed Skipper retains only attributed evidence on rejected gateway req
           ...(observed ? { modelRequestObservation: "observed" } : {}),
         },
       });
+    });
+  }
+  const result = {
+    event: "skipper-native-result",
+    id: marker,
+    modelFixtureSelectedTerminalSuccess: true,
+  };
+  for (const [name, first, second, observation] of [
+    ["prior result", [listening, result], [listening, result, matched, result], "observed"],
+    ["ambiguous request", before, [...after, matched, result], "observed"],
+    ["foreign result", before, [...after, { ...result, id: marker + "-other" }], "observed"],
+    ["replaced prefix", before, [matched, result], "unavailable"],
+    ["restart with result", before, [listening, listening, matched, result], "unavailable"],
+    ["result before request", before, [listening, result, matched], "observed"],
+    [
+      "wrong decision type",
+      before,
+      [...after, { ...result, modelFixtureSelectedTerminalSuccess: "true" }],
+      "observed",
+    ],
+  ] as const) {
+    await t.test(name, async () => {
+      const snapshots = [first, second];
+      await assert.rejects(
+        sendSkipperChat({
+          ...options,
+          enter: async () => JSON.stringify({ status: 0, category: "transport" }),
+          modelEvents: async () => snapshots.shift(),
+        }),
+        (error: Error & { openclawCiDiagnostic: Record<string, unknown> }) => {
+          assert.equal(error.openclawCiDiagnostic.modelRequestObservation, observation);
+          assert.equal(error.openclawCiDiagnostic.modelFixtureSelectedTerminalSuccess, undefined);
+          return error.message === "Gateway chat failed";
+        },
+      );
+      assert.equal(snapshots.length, 0);
     });
   }
   for (const [name, error, cause] of [

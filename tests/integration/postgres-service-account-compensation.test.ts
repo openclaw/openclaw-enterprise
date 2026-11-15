@@ -136,6 +136,7 @@ async function closeServer(server: Server): Promise<void> {
 const live = {
   directory: "",
   key: "",
+  keyId: "",
   namespaceId: "",
   workspaceId: randomUUID(),
   adminKey: randomUUID(),
@@ -827,16 +828,15 @@ async function prepare(): Promise<void> {
       inProcess: true,
     },
   );
-  live.key = textField(
+  const bootstrapKey = safeObject(
     safeObject(
-      safeObject(
-        JSON.parse(
-          await readFile(boot.environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE, "utf8"),
-        ) as unknown,
-      ).data,
-    ),
-    "key",
+      JSON.parse(
+        await readFile(boot.environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE, "utf8"),
+      ) as unknown,
+    ).data,
   );
+  live.key = textField(bootstrapKey, "key");
+  live.keyId = textField(bootstrapKey, "id");
   live.runtime = await loadInstallationConfiguration({
     mode: "development",
     environment: { OCC_CONFIG_PATH: configPath },
@@ -1663,28 +1663,32 @@ test(
     assert.equal(await binding(a), undefined);
     const b = await account("no-driver-force");
     expect(await issue(b), 201);
+    const credential = credentialFor(b);
+    assert.equal((await binding(b))?.external_credential_id, credential.id);
     const noDriverUrl = await startApp(databaseUrl!, false, "sa-comp-no-driver-" + randomUUID());
+    const accountPath = `/namespaces/${live.namespaceId}/service-accounts/${b.id}`;
     const start = live.events.length;
     expect(
-      await request(
-        "DELETE",
-        "/namespaces/" + live.namespaceId + "/service-accounts/" + b.id,
-        undefined,
-        live.key,
-        noDriverUrl,
-      ),
+      await request("DELETE", accountPath, undefined, live.key, noDriverUrl),
       409,
       "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
     );
     const forced = await request(
       "DELETE",
-      "/namespaces/" + live.namespaceId + "/service-accounts/" + b.id + "?force=true",
+      `${accountPath}?force=true`,
       undefined,
       live.key,
       noDriverUrl,
     );
     expect(forced, 200);
-    assert.equal(data(forced).revocation, "skipped");
+    // The public receipt identifies the Backend and leaves provider binding details in audit.
+    assert.deepEqual(data(forced), {
+      id: b.id,
+      namespaceId: live.namespaceId,
+      revocation: "skipped",
+      backendId: "recovery-chatgpt",
+    });
+    expect(await request("GET", accountPath, undefined, live.key, noDriverUrl), 404);
     assert.equal(await binding(b), undefined);
     assert.equal(secret(b.id), undefined);
     assert.equal(
@@ -1695,10 +1699,26 @@ test(
       0,
     );
     const audit = await live.pool!.query<{ details: Json }>(
-      "SELECT details FROM occ.audit_events WHERE resource_id=$1 AND action='openclaw.service_accounts.delete' ORDER BY occurred_at DESC",
-      [b.id],
+      `SELECT details - '__occAuditMetadata' AS details
+       FROM occ.audit_events
+       WHERE namespace_id=$1 AND resource_kind='service_account' AND resource_id=$2
+         AND kind='mutation' AND action='openclaw.service_accounts.delete' AND outcome='success'`,
+      [live.namespaceId, b.id],
     );
-    assert.ok(audit.rows.some((x) => JSON.stringify(x.details).includes("skipped")));
+    // An operator needs the exact binding identifiers to revoke the orphaned credential.
+    assert.deepEqual(audit.rows, [
+      {
+        details: {
+          actorServiceKeyId: live.keyId,
+          force: true,
+          revocation: "skipped",
+          backendId: "recovery-chatgpt",
+          workspaceId: live.workspaceId,
+          externalAccountId: b.externalId,
+          credentialId: credential.id,
+        },
+      },
+    ]);
     for (const mismatch of ["backend", "workspace"] as const) {
       const c = await account("foreign-" + mismatch);
       const other = await startApp(databaseUrl!, true, "sa-comp-foreign-" + randomUUID(), mismatch);

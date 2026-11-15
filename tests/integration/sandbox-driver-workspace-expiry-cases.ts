@@ -10,32 +10,27 @@ import type {
   HarnessWorkloadRequirements,
   SandboxNamespaceContext,
 } from "../../packages/contracts/src/index.ts";
+import type { WorkspaceNodeSetupEnvelope } from "../../packages/utils/src/index.ts";
 import {
   completeWorkspaceRevision,
   type SandboxFixtureRevision,
 } from "./sandbox-driver-revision-fixture.ts";
+import { registerSandboxDriverWorkspaceExpiryRefusalCases } from "./sandbox-driver-workspace-expiry-refusal-cases.ts";
 import {
+  workspaceNodeSetupSecretData,
   overrideWorkspaceSetupSecretRead,
   type KubernetesReader,
-} from "./sandbox-driver-workspace-expiry-fixture.ts";
-import { registerSandboxDriverWorkspaceExpiryRefusalCases } from "./sandbox-driver-workspace-expiry-refusal-cases.ts";
+} from "./sandbox-driver-workspace-node-setup-fixture.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
-type Gateway = Omit<ReturnType<typeof workspaceGatewayClient>, "createSandbox" | "getService"> & {
-  createSandbox: (request: OpenShellSandboxCreateRequest) => Promise<OpenShellSandboxResponse>;
-  getService: (
-    workspace: string,
-    sandbox: string,
-    name: string,
-  ) => Promise<OpenShellServiceResponse | undefined>;
-};
+type Gateway = ReturnType<typeof workspaceGatewayClient>;
 type RuntimeFixture = {
   context: SandboxNamespaceContext & {
     kubernetes: KubernetesReader;
   };
   revision: SandboxFixtureRevision;
   requirements: HarnessWorkloadRequirements;
-  nodeSetup: { url: string; bootstrapToken: string; expiresAtMs: number; tlsFingerprint: string };
+  nodeSetup: WorkspaceNodeSetupEnvelope;
 };
 export type Fixtures = {
   openShellDriver: (gateway: Gateway) => OpenShellSandboxDriver;
@@ -89,9 +84,8 @@ export function registerSandboxDriverWorkspaceExpiryCases({
       });
       const revision = completeWorkspaceRevision(fixtureRevision, requirements);
       const expiredSetup = { ...nodeSetup, expiresAtMs: Date.now() - 1 };
-      const setupCode = Buffer.from(JSON.stringify(expiredSetup)).toString("base64url");
       overrideWorkspaceSetupSecretRead(context.kubernetes, {
-        setupCode: Buffer.from(setupCode).toString("base64"),
+        ...workspaceNodeSetupSecretData(expiredSetup),
         deviceId: Buffer.from("recorded-node:1").toString("base64"),
       });
 

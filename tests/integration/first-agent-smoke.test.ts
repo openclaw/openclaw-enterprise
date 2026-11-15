@@ -20,7 +20,7 @@ import {
   stoppedGatewaySummary,
   waitFor,
   watchCluster,
-} from "../../scripts/ci/first-agent-smoke.mjs";
+} from "../../scripts/ci/first-agent-smoke.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandPath } from "../helpers/fake-commands.ts";
 import { listen } from "../helpers/listen.ts";
@@ -121,15 +121,17 @@ test("smoke timing retains failure and omits pending branches and free-form data
 test("the Actions smoke command reports no retirement waits when image setup is missing", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "first-agent-retirement-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const script = fileURLToPath(new URL("../../scripts/ci/first-agent-smoke.mjs", import.meta.url));
+  const script = fileURLToPath(new URL("../../scripts/ci/first-agent-smoke.ts", import.meta.url));
   const output = join(directory, "output");
   const env = {
     GITHUB_ACTIONS: "true",
     RUNNER_TEMP: directory,
     OCC_FIRST_AGENT_SMOKE_DIRECTORY: directory,
   };
-  // The empty work directory fails the real command before the retirement phase.
+  // The empty work directory fails before retirement. An unwritable Actions output
+  // must preserve the original diagnostic and exit code as well as the v1 timing report.
   for (const sink of [output, directory]) {
+    await rm(join(directory, "first-agent-smoke-timing.json"), { force: true });
     const command = spawnSync(process.execPath, [script, "run"], {
       encoding: "utf8",
       env: { ...env, GITHUB_OUTPUT: sink },

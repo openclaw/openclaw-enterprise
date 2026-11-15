@@ -241,7 +241,7 @@ to the same session, Agent, and window.
 - `tests/integration/postgres-agent-audit-read.test.ts` exercises the Agent
   route with real PostgreSQL, grant revocation, a refused disclosure insert,
   and a lost commit acknowledgement.
-- `tests/integration/postgres-repository-transactions.test.mjs` contains
+- `tests/integration/postgres-repository-transactions.test.ts` contains
   PostgreSQL append, metadata decoding, rejection, and rollback cases. Those
   cases require the [PostgreSQL test setup](../testing/postgresql.md); their
   presence and this source trace do not prove a test or deployed system passed.

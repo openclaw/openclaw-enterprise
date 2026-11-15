@@ -9,7 +9,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { Check } from "typebox/value";
 import { NamespaceId } from "../../packages/contracts/src/index.ts";
-import { createRealKubernetesFixture, kubectlArguments } from "../helpers/kubernetes-real.mjs";
+import { createRealKubernetesFixture, kubectlArguments } from "../helpers/kubernetes-real.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.ts";
 import {

@@ -8,30 +8,31 @@ import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { openShellExchangeCapabilities as capabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
-import { safeConnectedFailure } from "../helpers/egress-connected-failure.mjs";
+import { record } from "../helpers/egress-observation-values.ts";
+import { safeConnectedFailure } from "../helpers/egress-connected-failure.ts";
 import {
   observeControllerUpgrade,
   prepareControllerUpgrade,
-} from "../helpers/egress-controller-upgrade.mjs";
+} from "../helpers/egress-controller-upgrade.ts";
 import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
+import { requireSupervisorReconnect } from "../helpers/egress-supervisor-reconnect.ts";
 import {
   acceptedSupervisorSessions,
-  requireSupervisorReconnect,
   supervisorSessionLifecycle,
-} from "../helpers/egress-supervisor-reconnect.mjs";
+  type ObservedSession,
+} from "../helpers/egress-supervisor-sessions.ts";
 import { listen } from "../helpers/listen.mjs";
 
-type ObservedSession = { sessionId: string; epoch: string; at: string };
-
-type ControllerProcess = {
-  name: string;
-  uid: string;
-  containerID: string;
-  imageID: string;
-  startedAt: string;
-  configurationSha256: string;
-  installationSha256: string;
-};
+const controllerFields = [
+  "name",
+  "uid",
+  "containerID",
+  "imageID",
+  "startedAt",
+  "configurationSha256",
+  "installationSha256",
+] as const;
+type ControllerProcess = Record<(typeof controllerFields)[number], string>;
 
 type PrivateCheckpoint =
   | {
@@ -86,11 +87,76 @@ function requirePhase<Phase extends PrivateCheckpoint["phase"]>(
   phases: LedgerCheckpoint[],
   name: Phase,
 ): Extract<PrivateCheckpoint, { phase: Phase }> {
-  const phase = phases.find(
-    (entry): entry is Extract<PrivateCheckpoint, { phase: Phase }> => entry.phase === name,
-  );
+  const phase = phases.find((entry) => entry.phase === name);
   assert.ok(phase, `missing private checkpoint ${name}`);
+  assertPrivatePhase(phase);
+  assert.ok(hasPhase(phase, name));
   return phase;
+}
+
+function fields(value: unknown, ...keys: string[]): boolean {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    keys.every((key) => {
+      const field: unknown = Object.getOwnPropertyDescriptor(value, key)?.value;
+      return typeof field === "string";
+    })
+  );
+}
+
+function session(value: unknown): boolean {
+  return fields(value, "sessionId", "epoch", "at");
+}
+
+function all(value: unknown, check: (item: unknown) => boolean): boolean {
+  return Array.isArray(value) && value.every(check);
+}
+
+function hasPhase<Phase extends PrivateCheckpoint["phase"]>(
+  entry: PrivateCheckpoint,
+  phase: Phase,
+): entry is Extract<PrivateCheckpoint, { phase: Phase }> {
+  return entry.phase === phase;
+}
+
+function assertPrivatePhase(phase: LedgerCheckpoint): asserts phase is PrivateCheckpoint {
+  switch (phase.phase) {
+    case "reconnect-wait-start":
+      assert.ok(fields(phase.supervisor, "containerId"));
+      assert.ok(fields(phase.harness, "image"));
+      assert.ok(all(phase.supplierProcesses, (value) => fields(value, "podUid")));
+      assert.ok(typeof phase.sandboxId === "string");
+      return;
+    case "reconnect-before-policy":
+      assert.ok(typeof phase.instanceId === "string");
+      return;
+    case "reconnect-baseline":
+      assert.ok(all(phase.sessions, session) && typeof phase.baselineAt === "string");
+      return;
+    case "reconnect-accepted":
+      assert.ok(session(phase.reconnect) && typeof phase.logThrough === "string");
+      return;
+    case "reconnect-after-policy":
+      assert.ok(phase.loaded === undefined || phase.loaded === false);
+      return;
+    case "reconnect-before-turn":
+      assert.ok(
+        typeof phase.deploymentId === "string" && typeof phase.deploymentReady === "boolean",
+      );
+      return;
+    case "controller-upgrade-ready":
+      assert.ok(
+        fields(phase, "fromCommit", "toCommit", "fromImage", "toImage", "retainedStateSha256"),
+      );
+      assert.ok(all(phase.controllers, (value) => fields(value, ...controllerFields)));
+      return;
+    case "controller-upgrade-observed":
+      assert.ok(all(phase.controllers, (value) => fields(value, ...controllerFields)));
+      return;
+    default:
+      assert.fail("unknown private checkpoint");
+  }
 }
 
 // These log-shape controls test the observer, not supplier authentication or a
@@ -105,7 +171,7 @@ test("reconnect observer counts accepted sessions once and preserves uint64 epoc
   const accepted = line(first, "9007199254740992");
   const ansi = accepted.replace("INFO", "\u001b[32mINFO\u001b[0m");
   const next = line(second, "9007199254740993");
-  const sessions: ObservedSession[] = acceptedSupervisorSessions(
+  const sessions = acceptedSupervisorSessions(
     [
       accepted,
       ansi,
@@ -121,18 +187,16 @@ test("reconnect observer counts accepted sessions once and preserves uint64 epoc
     { sessionId: first, epoch: "9007199254740992", at: "2026-01-01T00:00:00.000Z" },
     { sessionId: second, epoch: "9007199254740993", at: "2026-01-01T00:00:00.000Z" },
   ]);
-  assert.throws(
-    () =>
-      acceptedSupervisorSessions(
-        accepted.replace(
-          "connection_epoch=9007199254740992",
-          "connection_epoch=18446744073709551616",
-        ),
-        sandboxId,
-        instanceId,
-      ),
-    { name: "AssertionError" },
+  const maxEpoch = "18446744073709551615";
+  assert.equal(
+    acceptedSupervisorSessions(line(first, maxEpoch), sandboxId, instanceId)[0]?.epoch,
+    maxEpoch,
   );
+  for (const invalid of ["0", "01", "18446744073709551616"]) {
+    assert.throws(() => acceptedSupervisorSessions(line(first, invalid), sandboxId, instanceId), {
+      code: "ERR_ASSERTION",
+    });
+  }
   assert.throws(
     () =>
       acceptedSupervisorSessions(
@@ -159,7 +223,7 @@ test("reconnect observer counts accepted sessions once and preserves uint64 epoc
     },
   );
   const safe = await safeConnectedFailure(failure, "reconnect-before-policy");
-  assert.match(safe.message, /egress-supervisor-reconnect\.mjs:\d+:\d+/);
+  assert.match(safe.message, /\(egress-supervisor-sessions\.ts:\d+:\d+\)/);
   assert.equal(safe.message.includes(privateField), false);
   assert.throws(
     () =>
@@ -171,13 +235,14 @@ test("reconnect observer counts accepted sessions once and preserves uint64 epoc
     { name: "AssertionError", message: /conflicting accepted session event/ },
   );
   const closed = `2026-01-01T00:00:01.000Z 2026-01-01T00:00:01Z  INFO openshell_server::supervisor_session: supervisor session: stream closed by supervisor sandbox_id=${sandboxId} session_id=${first}`;
-  const lifecycle = supervisorSessionLifecycle(
-    [accepted, closed].join("\n"),
-    sandboxId,
-    instanceId,
+  const ended = closed.replace("stream closed by supervisor", "ended");
+  const gatewayClosed = closed.replace(
+    "stream closed by supervisor",
+    "superseded or closed by the gateway, shutting down",
   );
-  assert.deepEqual(lifecycle, {
-    total: 2,
+  const lifecycleLines = [accepted, closed, ansi, gatewayClosed, next, ended];
+  assert.deepEqual(supervisorSessionLifecycle(lifecycleLines.join("\n"), sandboxId, instanceId), {
+    total: 6,
     truncated: false,
     events: [
       {
@@ -187,6 +252,20 @@ test("reconnect observer counts accepted sessions once and preserves uint64 epoc
         event: "accepted",
       },
       { sessionId: first, at: "2026-01-01T00:00:01.000Z", event: "inbound_eof" },
+      {
+        sessionId: first,
+        epoch: "9007199254740992",
+        at: "2026-01-01T00:00:00.000Z",
+        event: "accepted",
+      },
+      { sessionId: first, at: "2026-01-01T00:00:01.000Z", event: "gateway_closed" },
+      {
+        sessionId: second,
+        epoch: "9007199254740993",
+        at: "2026-01-01T00:00:00.000Z",
+        event: "accepted",
+      },
+      { sessionId: first, at: "2026-01-01T00:00:01.000Z", event: "ended" },
     ],
   });
   assert.deepEqual(
@@ -202,14 +281,22 @@ test("reconnect observer counts accepted sessions once and preserves uint64 epoc
       supervisorSessionLifecycle(closed.replace(first, "unchecked-secret"), sandboxId, instanceId),
     { code: "ERR_ASSERTION" },
   );
+  // A distinct head record exposes an incorrect first-nine slice. Repeated
+  // endings must still contribute to the full count.
+  const endings = Array.from({ length: 8 }, () => ended);
   const bounded = supervisorSessionLifecycle(
-    Array(12).fill(closed).join("\n"),
+    [accepted, closed, ...endings, gatewayClosed].join("\n"),
     sandboxId,
     instanceId,
   );
-  assert.equal(bounded.total, 12);
-  assert.equal(bounded.truncated, true);
-  assert.equal(bounded.events.length, 9);
+  assert.deepEqual(bounded, {
+    total: 11,
+    truncated: true,
+    events: [
+      ...endings.map(() => ({ sessionId: first, at: "2026-01-01T00:00:01.000Z", event: "ended" })),
+      { sessionId: first, at: "2026-01-01T00:00:01.000Z", event: "gateway_closed" },
+    ],
+  });
 });
 test(
   "reconnect checkpoints keep correlation in the private ledger on success and failure",
@@ -223,6 +310,7 @@ test(
           const instanceId = "20000000-0000-4000-8000-000000000001";
           const first = "30000000-0000-4000-8000-000000000001";
           const second = "30000000-0000-4000-8000-000000000002";
+          const reusedEpoch = "30000000-0000-4000-8000-000000000003";
           const agent = { id: "private-agent-id", servicePrincipalId: "private-principal-id" };
           const revision = { id: "private-revision-id" };
           const namespace = { id: "private-namespace-id" };
@@ -305,7 +393,7 @@ test(
           };
           let logReads = 0;
           let policyReads = 0;
-          let reconnectAt;
+          let reconnectAt: string | undefined;
           const line = (session: string, epoch: string, at: string) =>
             `${at} ${at}  INFO openshell_server::supervisor_session: supervisor session: accepted sandbox_id=${sandboxId} session_id=${session} instance_id=${instanceId} connection_epoch=${epoch}`;
           const f = {
@@ -321,7 +409,9 @@ test(
                 return baseline;
               }
               reconnectAt ??= new Date().toISOString();
-              return `${baseline}\n${line(second, "9007199254740993", reconnectAt)}`;
+              // A fresh session ID with the old epoch must not satisfy enrollment.
+              const reused = line(reusedEpoch, "9007199254740992", reconnectAt);
+              return [baseline, reused, line(second, "9007199254740993", reconnectAt)].join("\n");
             },
             waitFor: async <T>(_label: string, read: () => Promise<T | undefined>) => {
               // Scripted observations exercise pending enrollment as well as the loaded branch.
@@ -341,7 +431,14 @@ test(
             f,
           };
           const stack = {
-            pool: {},
+            pool: {
+              async connect() {
+                assert.fail("the scripted state read must own observation");
+              },
+              async end() {
+                assert.fail("the observer must not close the caller’s pool");
+              },
+            },
             placement,
             namespace,
             namespacePath: "/private-namespace",
@@ -401,6 +498,7 @@ test(
             if (failFinalReadiness) {
               assert.ok(failure instanceof assert.AssertionError);
               assert.equal(failure.code, "ERR_ASSERTION");
+              assert.ok(progress.stage);
               const terminal = await safeConnectedFailure(
                 failure,
                 progress.stage,
@@ -476,7 +574,7 @@ test(
               }));
             assert.equal(
               report.find((entry) => entry.phase === "reconnect-accepted")?.details.sessionCount,
-              2,
+              3,
             );
             const equalities = report.find((entry) => entry.phase === "reconnect-before-policy")
               ?.details.equalities;
@@ -520,11 +618,10 @@ test(
   },
 );
 
-type UpgradeLedger = {
-  resources: { kind: string; id: string }[];
-  pendingCreate?: { kind: string; name: string };
-  pendingDeploy?: { agentId: string; path: string };
-};
+type UpgradeLedger = Pick<
+  Awaited<ReturnType<typeof createRunEvidence>>["ledger"],
+  "resources" | "pendingCreate" | "pendingDeploy"
+>;
 
 type ProviderTraffic = "tcp" | "http";
 type UpgradeWindow = "ready" | "replacement" | 0 | 1 | 2 | 3;
@@ -541,6 +638,13 @@ type UpgradeFault = RetirementFault & {
   };
   traffic?: ProviderTraffic;
   window?: UpgradeWindow;
+  changedInstallation?: boolean;
+  replacement?: { id?: string; ref?: unknown };
+  createdSource?: { id?: string };
+  adoptedSource?: { id?: string };
+  boundNamespaceId?: string;
+  creates?: string[];
+  retirementRequests?: string[];
 };
 
 // These protocol peers exercise the real upgrade helper's ownership decisions;
@@ -549,6 +653,12 @@ async function controllerUpgradePeers(t: TestContext, fault: UpgradeFault = {}) 
   const namespaceId = "ns_11111111-1111-4111-8111-111111111111";
   const existingId = "cs_11111111-1111-4111-8111-111111111111";
   const createdId = "cs_22222222-2222-4222-8222-222222222222";
+  const secretRef = {
+    kind: "secret",
+    namespaceId,
+    id: "sec_11111111-1111-4111-8111-111111111111",
+  } as const;
+  const replacementRef = { ...secretRef, id: "sec_22222222-2222-4222-8222-222222222222" };
   const runId = fault.recording?.runId ?? randomUUID();
   const observations: object[] = [];
   const provider = { observations, tcpConnections: 0 };
@@ -564,7 +674,7 @@ async function controllerUpgradePeers(t: TestContext, fault: UpgradeFault = {}) 
       return;
     }
     // Wait for acceptance by the origin, not merely the client's connect event.
-    const accepted = once(origin, "connection");
+    const accepted: Promise<unknown[]> = once(origin, "connection");
     const socket = connect({ host: "127.0.0.1", port });
     const [serverSocket]: unknown[] = await accepted;
     socket.destroy();
@@ -628,9 +738,12 @@ async function controllerUpgradePeers(t: TestContext, fault: UpgradeFault = {}) 
     },
     controller: { providerOrigin: "https://provider.example" },
     f: {
+      async resource(kind: string) {
+        assert.fail(`unexpected retained resource read: ${kind}`);
+      },
       async kubectl(...args: string[]) {
         if (args[0] === "exec") {
-          return "a".repeat(64);
+          return (upgraded && fault.changedInstallation ? "b" : "a").repeat(64);
         }
         if (args.includes("pod")) {
           return "";
@@ -652,6 +765,7 @@ async function controllerUpgradePeers(t: TestContext, fault: UpgradeFault = {}) 
   };
   const state = {
     sources: [{ id: existingId }],
+    secretRefs: null,
     revisions: [{ id: "revision" }],
     installations: [{}],
     work: [
@@ -667,7 +781,8 @@ async function controllerUpgradePeers(t: TestContext, fault: UpgradeFault = {}) 
   };
   const stack = {
     namespace: { id: namespaceId },
-    namespacePath: `/namespaces/${namespaceId}`,
+    namespacePath: `/namespaces/${fault.boundNamespaceId ?? namespaceId}`,
+    placement: "fixture-placement",
     installation: { id: "installation" },
     supplierPods: [],
     pool: {
@@ -678,7 +793,7 @@ async function controllerUpgradePeers(t: TestContext, fault: UpgradeFault = {}) 
   };
   const ledger: UpgradeLedger = fault.recording?.ledger ?? { resources: [] };
   const sourceReads: string[] = [];
-  let requests = 0;
+  const retirementRequests = fault.retirementRequests ?? [];
   const evidence = {
     runId,
     credentials: { initial: "synthetic" },
@@ -692,7 +807,12 @@ async function controllerUpgradePeers(t: TestContext, fault: UpgradeFault = {}) 
     },
     async api(method: string, path: string) {
       if (method === "PATCH") {
-        return { id: existingId, state: "ready", egress: { adoption: "live", retention: "none" } };
+        assert.equal(path, `${stack.namespacePath}/credential-sources/${existingId}`);
+        return {
+          ...(fault.adoptedSource ?? { id: existingId }),
+          state: "ready",
+          egress: { adoption: "live", retention: "none" },
+        };
       }
       if (path === "/installation") {
         return stack.installation;
@@ -706,8 +826,19 @@ async function controllerUpgradePeers(t: TestContext, fault: UpgradeFault = {}) 
       }
       return { id: createdId, namespaceId, name: `egress-refused-${runId}`, ...fault.readback };
     },
-    async request() {
-      const index = requests++;
+    async request(method: string, path: string, body?: unknown) {
+      const index = retirementRequests.length;
+      retirementRequests.push(path);
+      if (index === 1 || index === 2) {
+        assert.equal(method, "PATCH");
+        assert.equal(path, `${stack.namespacePath}/credential-sources/${existingId}`);
+      }
+      // Both retirement probes send the API's structured reference to the selected Secret.
+      if (index === 0 || index === 2) {
+        assert.deepEqual(record(body).secrets, {
+          api_key: index === 0 ? secretRef : replacementRef,
+        });
+      }
       if (fault.window === index) {
         await reachOrigin();
       }
@@ -730,19 +861,27 @@ async function controllerUpgradePeers(t: TestContext, fault: UpgradeFault = {}) 
   const owned = {
     provider,
     async create(kind: string) {
-      return kind === "secrets" ? { ref: "replacement-secret" } : { id: existingId };
+      fault.creates?.push(kind);
+      if (kind === "secrets") {
+        return fault.replacement ?? { id: replacementRef.id, ref: replacementRef };
+      }
+      return fault.createdSource ?? { id: existingId };
     },
   };
   const deployment = {
     agent: { id: "agent" },
     revision: { id: "revision" },
-    secret: { ref: "secret" },
+    secret: { ref: secretRef },
   };
   const retained = await prepareControllerUpgrade(setup, stack, evidence, owned, deployment, {
     gatewayPods: [],
   });
   upgraded = true;
   return {
+    retained,
+    get requestCount() {
+      return retirementRequests.length;
+    },
     ledger,
     provider,
     sourceReads,
@@ -811,6 +950,98 @@ test("upgrade and retirement quiet windows reject TCP arrivals without HTTP", as
   }
 });
 
+test("upgrade readiness requires both retirement resource identities", async (t) => {
+  const ref = {
+    kind: "secret",
+    id: "sec_22222222-2222-4222-8222-222222222222",
+    namespaceId: "ns_11111111-1111-4111-8111-111111111111",
+  };
+  const cases: { name: string; fault: UpgradeFault; error: RegExp }[] = [
+    {
+      name: "returned Namespace differs from bound path",
+      fault: { boundNamespaceId: "ns_22222222-2222-4222-8222-222222222222" },
+      error: /upgrade Namespace must match the bound path/,
+    },
+    {
+      name: "missing reference",
+      fault: { replacement: {} },
+      error: /expected the OCC Secret reference/,
+    },
+    {
+      name: "reference to another Secret",
+      fault: { replacement: { id: "sec_33333333-3333-4333-8333-333333333333", ref } },
+      error: /identify the created Secret/,
+    },
+    {
+      name: "reference to another Namespace",
+      fault: {
+        replacement: {
+          id: ref.id,
+          ref: { ...ref, namespaceId: "ns_22222222-2222-4222-8222-222222222222" },
+        },
+      },
+      error: /select this Namespace/,
+    },
+    {
+      name: "invalid created source",
+      fault: { createdSource: { id: "" } },
+      error: /valid created source ID/,
+    },
+    {
+      name: "missing adopted source",
+      fault: { adoptedSource: {} },
+      error: /identify the created source/,
+    },
+    {
+      name: "different adopted source",
+      fault: { adoptedSource: { id: "cs_22222222-2222-4222-8222-222222222222" } },
+      error: /identify the created source/,
+    },
+  ];
+  for (const { name, fault, error } of cases) {
+    await t.test(name, async (t) => {
+      const diagnostics: string[] = [];
+      const recording = await createRunEvidence(
+        { signal: t.signal, diagnostic: (line: string) => diagnostics.push(line) },
+        { input: { images: {} }, controller: {} },
+        {},
+      );
+      t.after(() => rm(recording.directory, { recursive: true, force: true }));
+      // The operator can replace the controller as soon as this diagnostic is visible.
+      const creates: string[] = [];
+      const retirementRequests: string[] = [];
+      await assert.rejects(async () => {
+        const peer = await controllerUpgradePeers(t, {
+          ...fault,
+          recording,
+          creates,
+          retirementRequests,
+        });
+        await peer.run();
+      }, error);
+      if (fault.boundNamespaceId) {
+        assert.deepEqual(creates, []);
+      }
+      assert.deepEqual(retirementRequests, []);
+      assert.ok(
+        !diagnostics.some((line) => line.startsWith("egress-connected controller-upgrade-ready ")),
+      );
+    });
+  }
+});
+
+test("controller replacement rejects a changed mounted Installation before retirement probes", async (t) => {
+  const peer = await controllerUpgradePeers(t, { changedInstallation: true });
+  const [api, worker] = peer.retained.controllers;
+  assert.equal(api.installationSha256, "a".repeat(64));
+  assert.equal(worker.installationSha256, "a".repeat(64));
+  await assert.rejects(peer.run(), /keep the actual mounted Installation contents unchanged/);
+  assert.equal(peer.requestCount, 0);
+  assert.deepEqual(peer.sourceReads, []);
+  assert.equal(peer.ledger.pendingCreate, undefined);
+  assert.equal(peer.ledger.pendingDeploy, undefined);
+});
+
 test("controller upgrade checkpoints keep process identity in the private ledger", async (t) => {
   const diagnostics: string[] = [];
   const recording = await createRunEvidence(
@@ -841,15 +1072,7 @@ test("controller upgrade checkpoints keep process identity in the private ledger
     assert.equal(retained.controllers.length, 2);
     for (const process of retained.controllers) {
       assert.ok(process.name.endsWith(generation));
-      for (const field of [
-        "name",
-        "uid",
-        "containerID",
-        "imageID",
-        "startedAt",
-        "configurationSha256",
-        "installationSha256",
-      ] as const) {
+      for (const field of controllerFields) {
         assert.equal(typeof process[field], "string", `retained ${field}`);
         assert.equal(line.includes(process[field]), false, `${field} must stay private`);
       }

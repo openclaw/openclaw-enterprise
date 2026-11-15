@@ -6,11 +6,14 @@ import test from "node:test";
 import pg from "pg";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
+import { reconcileSandboxPolicy } from "../../apps/controller/src/worker/sandbox-policy.ts";
 import {
+  DriverConfigurationRegistry,
   InstalledDriver,
   OpenClawController,
   PostgresWorkQueue,
   ResourceStateConflictError,
+  ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
@@ -943,7 +946,8 @@ test(
   "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it",
   requiresPostgres,
   async (t) => {
-    const { pool, state, inject, deployAgent, grant } = await createPolicyApp(t, true);
+    const { pool, state, controller, computeDriver, sandboxDriver, inject, deployAgent, grant } =
+      await createPolicyApp(t, true);
     const { namespace, agent, revision } = await deployAgent("Interrupted policy recovery");
     await state.transact(async (unit) => {
       await unit.namespaces.lockNamespace(namespace.id);
@@ -965,6 +969,65 @@ test(
       revisionId: revision.id,
     });
     assert.equal(admitted.statusCode, 202, admitted.body);
+    const applicationRole = await pool.query("SELECT current_user AS role");
+    assert.equal(applicationRole.rows[0].role, "occ_app");
+    const readCustody = async (applicationId) => {
+      const policy = await pool.query(
+        "SELECT * FROM occ.sandbox_policies WHERE namespace_id=$1 AND agent_id=$2",
+        [namespace.id, agent.id],
+      );
+      const work = await pool.query("SELECT * FROM occ.controller_work WHERE idempotency_key=$1", [
+        `agent:${agent.id}:reconcile:sandbox_policy:${applicationId}`,
+      ]);
+      const audit = await pool.query(
+        "SELECT count(*) AS count FROM occ.audit_events WHERE namespace_id=$1",
+        [namespace.id],
+      );
+      assert.equal(policy.rowCount, 1);
+      assert.equal(work.rowCount, 1);
+      return { policy: policy.rows[0], work: work.rows[0], auditCount: audit.rows[0].count };
+    };
+    const rejectRemoval = async (label, policy) => {
+      const before = await readCustody(policy.application.id);
+      assert.equal(before.policy.document.application.state, "pending");
+      const { application: _application, ...withoutApplication } = policy;
+      const rollback = new Error("Rollback unexpected pending application removal");
+      await t.test(`${label}: repository preserves pending application custody`, async () => {
+        try {
+          await assert.rejects(
+            state.transact(async (unit) => {
+              await unit.sandboxPolicies.save(withoutApplication, policy.version);
+              // Keep the baseline probe reversible if the guard is missing.
+              throw rollback;
+            }),
+            ScopeViolationError,
+          );
+        } finally {
+          assert.deepEqual(await readCustody(policy.application.id), before);
+        }
+      });
+      await t.test(
+        `${label}: application-role SQL preserves pending application custody`,
+        async () => {
+          const client = await pool.connect();
+          try {
+            await client.query("BEGIN");
+            await assert.rejects(
+              client.query(
+                "UPDATE occ.sandbox_policies SET document=document-'application' WHERE namespace_id=$1 AND agent_id=$2 AND version=$3",
+                [namespace.id, agent.id, policy.version],
+              ),
+              { code: "23514" },
+            );
+          } finally {
+            await client.query("ROLLBACK");
+            client.release();
+            assert.deepEqual(await readCustody(policy.application.id), before);
+          }
+        },
+      );
+    };
+    await rejectRemoval("admitted", admitted.json().data);
     // The pending application applies its snapshot of version 2: neither a save nor a second
     // application may replace that policy until it finishes.
     for (const [method, url, body, message] of [
@@ -1044,6 +1107,79 @@ test(
       assert.equal(audit.rows[0].actor_id, claim.actorId);
       const next = await inject("PUT", path, { expectedVersion: 2, additions: [] });
       assert.equal(next.statusCode, 200, next.body);
+      const applying = await inject("POST", `${path}/apply`, {
+        expectedVersion: 3,
+        revisionId: revision.id,
+      });
+      assert.equal(applying.statusCode, 202, applying.body);
+      const application = (await readCustody(applying.json().data.application.id)).policy.document
+        .application;
+      const configurations = new DriverConfigurationRegistry();
+      configurations.register({
+        capability: "sandbox",
+        driverId: sandboxDriver.id,
+        implementation: sandboxDriver.implementation,
+        definition: OpenShellSandboxDriver,
+      });
+      let providerApplied = false;
+      // Only provider observation and mutation are simulated. The owning worker,
+      // state transactions, queue, IAM checks and audit writes remain real.
+      sandboxDriver.observeNetworkPolicy = async () => ({
+        resourceVersion: "provider-cas-1",
+        policyVersion: providerApplied ? "provider-policy-2" : "provider-policy-1",
+        state: "applied",
+        matches: providerApplied,
+      });
+      sandboxDriver.applyNetworkPolicy = async (_context, request) => {
+        assert.equal(request.operationId, application.id);
+        assert.equal(request.expectedProviderVersion, "provider-cas-1");
+        assert.deepEqual(request.snapshot, application.snapshot);
+        const persisted = await readCustody(application.id);
+        assert.equal(
+          persisted.policy.document.application.expectedProviderVersion,
+          "provider-cas-1",
+        );
+        providerApplied = true;
+      };
+      const workOptions = {
+        configurations,
+        state,
+        queueOptions: {},
+        driver: sandboxDriver,
+        compute: computeDriver,
+        iam: controller.selectedDriver("iam"),
+        installationId: controller.installation.id,
+        ceiling: [grant],
+        signal: new AbortController().signal,
+        maxAttempts: 5,
+        deadlineMs: 60_000,
+        leaseDurationMs: 5_000,
+      };
+      const policyQueue = new PostgresWorkQueue(pool);
+      const first = await policyQueue.claim();
+      assert.equal(
+        first.idempotencyKey,
+        `agent:${agent.id}:reconcile:sandbox_policy:${application.id}`,
+      );
+      assert.equal(await reconcileSandboxPolicy(workOptions, first), "pending");
+      const withProviderCas = (await readCustody(application.id)).policy.document;
+      assert.equal(withProviderCas.application.expectedProviderVersion, "provider-cas-1");
+      assert.equal(providerApplied, false, "the first pass only persists the provider CAS");
+      await rejectRemoval("provider CAS persisted", withProviderCas);
+      const second = await waitFor("deferred policy application is claimable", () =>
+        policyQueue.claim(),
+      );
+      assert.equal(second.idempotencyKey, first.idempotencyKey);
+      assert.equal(await reconcileSandboxPolicy(workOptions, second), "success");
+      const completed = await readCustody(application.id);
+      assert.equal(completed.policy.document.application.id, application.id);
+      assert.equal(completed.policy.document.application.state, "applied");
+      assert.equal(completed.policy.document.applied.providerVersion, "provider-policy-2");
+      assert.equal(completed.work.state, "succeeded");
+      const afterApplied = await inject("PUT", path, { expectedVersion: 3, additions: [grant] });
+      assert.equal(afterApplied.statusCode, 200, afterApplied.body);
+      assert.equal(afterApplied.json().data.version, 4);
+      assert.equal(afterApplied.json().data.application, undefined);
     } finally {
       await blocker.query("ROLLBACK");
       blocker.release();

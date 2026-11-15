@@ -65,10 +65,10 @@ Replace the sample IDs and Secret reference. Execution authority admits every pr
 The `201` response includes the `cs_` source ID, binding `ref` and status. Bind the Agent to the source ID. The source retains the `sec_` reference.
 
 - `name` is unique within the Namespace.
-- Select an offered `type`. With a Proxy selected, fresh ordinary Gateway
-  registration requires the validated Git-only profile and a static Harness model
-  type. Refresh, device authorization and ChatGPT OAuth are ineligible.
-  Protected admission uses the Proxy. Explicit live adoption preserves the source’s recorded owner.
+- Select an offered `type`. With a Proxy selected, fresh Gateway registration requires
+  a static Harness model type and the bundled Proxy handling only Git. Refresh, device
+  authorization and ChatGPT OAuth are ineligible. Other registrations require protected
+  admission. Explicit live adoption preserves ownership.
 - `config` contains nonsecret catalog fields. OpenShell's `openai` type accepts
   `authorized_base_url` as immutable destination authorization. Omission authorizes
   only `https://api.openai.com/v1`. Custom authorization must match the
@@ -156,8 +156,9 @@ keep their source referenced before the Agent exists.
 The Console reads the Gateway catalog from Installation or [Namespace Agent capabilities](authorization/default-users.md#create-agents-in-the-console).
 Both Dedicated Harnesses share provider and Secret controls. API-key provisioning registers the Secret first. See [Console creation](console/create-and-deploy.md).
 
-For Git-only model delivery without repositories, bind one ready static Harness
-source from the selected Gateway. Kubernetes [rechecks its lifecycle before release](../flows/credential-source-lifecycle.md#6-resolve-the-source-at-dispatch).
+For an Agent without repositories on the bundled Git-only Proxy, bind the matching
+ready static Harness model source from the selected Gateway as the Agent’s only
+credential source. Kubernetes [rechecks its lifecycle before release](../flows/credential-source-lifecycle.md#6-resolve-the-source-at-dispatch).
 
 ## Update a source
 

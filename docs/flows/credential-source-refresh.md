@@ -292,7 +292,7 @@ clears publication buffers on success/failure. Callers own detached reads; clear
   Its serializable in-memory fixture reconnects owners to shared committed state;
   it is not production durability, process-crash, live-provider, installed-runtime,
   cluster or regular Agent workflow proof.
-  `postgres-prepared-github-lifecycle.test.mjs` exercises the durable lifecycle,
+  `postgres-prepared-github-lifecycle.test.ts` exercises the durable lifecycle,
   signed protected exchange, issuer rotation, withdrawal, Agent deletion and quarantine over loopback.
 
 - Read the source: `status.refresh.state`, `lastRefreshAt`, `failureCode`, and
@@ -303,7 +303,7 @@ clears publication buffers on success/failure. Callers own detached reads; clear
   `PATCH`; for device-authorized sources, sign in again and rebind the Agent.
 - `tests/helpers/openshell-sandbox-workflows.mjs` proves minting,
   background re-minting, forced rotation, reauthorization, a failed update, and deletion against
-  a real Keycloak. `tests/conformance/credential-source-occ.test.mjs` covers OCC
+  a real Keycloak. `tests/conformance/credential-source-occ.test.ts` covers OCC
   ordering and cleanup.
 
 ## Related docs

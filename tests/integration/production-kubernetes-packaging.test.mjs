@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isIP } from "node:net";
 import { checkServerIdentity } from "node:tls";
@@ -37,6 +37,11 @@ import {
   tooling,
 } from "../helpers/production-chart-network-fixture.ts";
 import { findResource } from "../helpers/production-chart-resource.ts";
+import {
+  initialUpgradeChart,
+  inspectWorkerProbe,
+  stageSigninChart,
+} from "../helpers/production-worker-chart.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 import { createEnvoyWorkspaceGatewayPlan } from "../helpers/envoy-workspace-gateway.mjs";
@@ -154,6 +159,14 @@ function findResourceByComponent(objects, kind, component) {
   );
 }
 
+function controlPlaneWorkloads(objects) {
+  return {
+    initialization: findResourceByComponent(objects, "Job", "initialization"),
+    api: findResourceByComponent(objects, "Deployment", "api"),
+    worker: findResourceByComponent(objects, "Deployment", "worker"),
+  };
+}
+
 test(
   "console theme settings reject YAML booleans and invalid ConfigMap names",
   tooling,
@@ -224,6 +237,12 @@ const stringNameDatabaseCa = {
   "database.caKey": "ca.pem",
   "database.caMountPath": "/etc/openclaw/database-ca",
 };
+const executionClusterValues = {
+  "executionCluster.enabled": "true",
+  "executionCluster.apiKubeconfigSecretName": "execution-api",
+  "executionCluster.workerKubeconfigSecretName": "execution-worker",
+  "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+};
 const stringNameCaValues = {
   database: stringNameDatabaseCa,
   oidc: {
@@ -240,12 +259,7 @@ const stringNameCaValues = {
     "auth.oidc.caSecretName": "oidc-ca",
     "auth.oidc.caSecretKey": "ca.crt",
   },
-  execution: {
-    "executionCluster.enabled": "true",
-    "executionCluster.apiKubeconfigSecretName": "execution-api",
-    "executionCluster.workerKubeconfigSecretName": "execution-worker",
-    "executionCluster.apiCidrs[0]": "10.44.0.2/32",
-  },
+  execution: executionClusterValues,
 };
 
 test(
@@ -639,20 +653,17 @@ test(
   "two-cluster packaging separates remote API identities without optional services",
   tooling,
   async () => {
-    const execution = {
-      "executionCluster.enabled": "true",
-      "executionCluster.apiKubeconfigSecretName": "execution-api",
-      "executionCluster.workerKubeconfigSecretName": "execution-worker",
-      "executionCluster.apiCidrs[0]": "10.44.0.2/32",
-    };
     // This guard must apply even when the unrelated repository service is disabled.
     await assert.rejects(render({ "executionCluster.enabled": "true" }), /separate API and worker/);
     await assert.rejects(
-      render({ ...execution, "executionCluster.workerKubeconfigSecretName": "execution-api" }),
+      render({
+        ...executionClusterValues,
+        "executionCluster.workerKubeconfigSecretName": "execution-api",
+      }),
       /separate API and worker/,
     );
     await assert.rejects(
-      render({ ...execution, "executionCluster.apiKubeconfigSecretName": "occ-auth" }),
+      render({ ...executionClusterValues, "executionCluster.apiKubeconfigSecretName": "occ-auth" }),
       /executionCluster\.apiKubeconfigSecretName must name a dedicated Secret; occ-auth is also auth\.secretName/,
     );
     for (const cidr of [
@@ -663,13 +674,13 @@ test(
       "::ffff:999.1.2.3/64",
     ]) {
       await assert.rejects(
-        render({ ...execution, "executionCluster.apiCidrs[0]": cidr }),
+        render({ ...executionClusterValues, "executionCluster.apiCidrs[0]": cidr }),
         /executionCluster\.apiCidrs/,
         cidr,
       );
     }
-    await render({ ...execution, "executionCluster.apiCidrs[0]": "10.1.1.0/28" });
-    await render({ ...execution, "executionCluster.apiCidrs[0]": "2001:db8::/64" });
+    await render({ ...executionClusterValues, "executionCluster.apiCidrs[0]": "10.1.1.0/28" });
+    await render({ ...executionClusterValues, "executionCluster.apiCidrs[0]": "2001:db8::/64" });
     // Optional credential Secrets count once enabled (findings 1046, 1048): the ChatGPT admin,
     // sign-in, database CA and sandbox TLS Secrets, and the Gateway Secrets cert-manager writes.
     const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
@@ -683,7 +694,7 @@ test(
     ]) {
       for (const key of ["apiKubeconfigSecretName", "workerKubeconfigSecretName"]) {
         await assert.rejects(
-          render({ ...execution, ...values, [`executionCluster.${key}`]: secret }),
+          render({ ...executionClusterValues, ...values, [`executionCluster.${key}`]: secret }),
           ({ code, stderr }) =>
             code !== 0 &&
             stderr.includes(
@@ -693,10 +704,13 @@ test(
         );
       }
       // Until that feature is enabled, its Secret name is free.
-      await render({ ...execution, "executionCluster.apiKubeconfigSecretName": secret });
-      await render({ ...execution, ...values });
+      await render({
+        ...executionClusterValues,
+        "executionCluster.apiKubeconfigSecretName": secret,
+      });
+      await render({ ...executionClusterValues, ...values });
     }
-    const objects = await renderObjects(execution);
+    const objects = await renderObjects(executionClusterValues);
     for (const component of ["api", "worker"]) {
       const pod = findResource(objects, "Deployment", `openclaw-enterprise-${component}`).spec
         .template.spec;
@@ -718,15 +732,9 @@ test(
         /cluster\.port must be an integer TCP port/,
       );
     }
-    const executionValues = {
-      "executionCluster.enabled": "true",
-      "executionCluster.apiKubeconfigSecretName": "execution-api",
-      "executionCluster.workerKubeconfigSecretName": "execution-worker",
-      "executionCluster.apiCidrs[0]": "10.44.0.2/32",
-    };
     for (const port of ["0", "010", "65536", "9.5"]) {
       await assert.rejects(
-        render({ ...executionValues, "executionCluster.apiPort": port }),
+        render({ ...executionClusterValues, "executionCluster.apiPort": port }),
         /executionCluster\.apiPort must be an integer TCP port/,
       );
     }
@@ -736,12 +744,15 @@ test(
     );
     await assert.rejects(
       render(
-        { ...executionValues },
+        { ...executionClusterValues },
         { strings: { "executionCluster.apiPort": "99999999999999999999" } },
       ),
       /executionCluster\.apiPort must be an integer TCP port/,
     );
-    const objects = await renderObjects({ ...executionValues, "executionCluster.apiPort": "6443" });
+    const objects = await renderObjects({
+      ...executionClusterValues,
+      "executionCluster.apiPort": "6443",
+    });
     const policy = findResource(
       objects,
       "NetworkPolicy",
@@ -1134,33 +1145,19 @@ test(
 test("production Helm values example renders the backendless default chart", tooling, async () => {
   const { stdout } = await renderProductionValuesExample([], { maxBuffer: 2_000_000 });
   const objects = await resources(stdout);
-  assert.ok(
-    objects.some(
-      ({ kind, metadata }) =>
-        kind === "Job" && metadata.labels?.["app.kubernetes.io/component"] === "initialization",
-    ),
-  );
-  const initialization = findResourceByComponent(objects, "Job", "initialization");
-  assert.deepEqual(initialization.spec.template.spec.nodeSelector, { "oce-role": "control" });
-  for (const component of ["api", "worker"]) {
-    assert.deepEqual(
-      findResourceByComponent(objects, "Deployment", component).spec.template.spec.nodeSelector,
-      {
-        "oce-role": "control",
-      },
-    );
+  const { initialization, api, worker } = controlPlaneWorkloads(objects);
+  assert.ok(initialization);
+  for (const workload of [initialization, api, worker]) {
+    assert.deepEqual(workload.spec.template.spec.nodeSelector, { "oce-role": "control" });
   }
-  assert.deepEqual(findResourceByComponent(objects, "Deployment", "worker").spec.strategy, {
+  assert.deepEqual(worker.spec.strategy, {
     type: "RollingUpdate",
     rollingUpdate: { maxSurge: "25%", maxUnavailable: "25%" },
   });
   // Session admission and sign-in limits are process-local: never overlap two API Pods.
-  assert.deepEqual(findResourceByComponent(objects, "Deployment", "api").spec.strategy, {
-    type: "Recreate",
-  });
-  for (const component of ["api", "worker"]) {
-    const env = findResourceByComponent(objects, "Deployment", component).spec.template.spec
-      .containers[0].env;
+  assert.deepEqual(api.spec.strategy, { type: "Recreate" });
+  for (const workload of [api, worker]) {
+    const env = workload.spec.template.spec.containers[0].env;
     assert.ok(!env.some(({ name }) => /^OCC_AUTH_(GITHUB|GOOGLE)_/.test(name)));
   }
   assert.ok(
@@ -1344,16 +1341,9 @@ test(
 );
 
 test("control-plane node selectors are optional unless configured", tooling, async () => {
-  const objects = await renderObjects();
-  assert.equal(
-    findResourceByComponent(objects, "Job", "initialization").spec.template.spec.nodeSelector,
-    undefined,
-  );
-  for (const component of ["api", "worker"]) {
-    assert.equal(
-      findResourceByComponent(objects, "Deployment", component).spec.template.spec.nodeSelector,
-      undefined,
-    );
+  const { initialization, api, worker } = controlPlaneWorkloads(await renderObjects());
+  for (const workload of [initialization, api, worker]) {
+    assert.equal(workload.spec.template.spec.nodeSelector, undefined);
   }
 });
 
@@ -2074,7 +2064,7 @@ esac
 `,
       // This test proves chart endpoint preservation, not image compatibility.
       node: `#!/usr/bin/env bash
-if [[ "$1" == scripts/upgrade-repository-image-probe.mjs ]]; then
+if [[ "$1" == scripts/upgrade-repository-image-probe.ts ]]; then
   [[ $# == 4 ]] || exit 92
   printf '%s|%s|%s\\n' "$2" "$3" "$4" >> "$TEST_PROBE_CALLS"
   printf '{"fixture":true}\\n'
@@ -2480,6 +2470,130 @@ test("the chart refuses installation names the bootstrap Job refuses", tooling, 
 });
 
 test(
+  "the staged sign-in chart preserves the historical worker probes for both Helm operations",
+  tooling,
+  async (t) => {
+    const directory = await temporaryDirectory(t, "occ-signin-chart-");
+    const reviewed = { reviewedSource: "7e1ac6d88e3893c3d4e6444fb3b9b9776519a3fb" };
+    const chartDirectory = await stageSigninChart({
+      harnessRoot: repository,
+      directory,
+      plan: { fixture: "v3-to-v3", previous: reviewed, candidate: reviewed },
+    });
+    const liveness = ["node", "scripts/production-healthcheck.mjs", "worker"];
+    const readiness = [...liveness, "ready"];
+
+    // The OIDC upgrade re-renders the chart before the first controller image cut.
+    for (const isUpgrade of [false, true]) {
+      const current = await renderProductionChart({}, { isUpgrade });
+      const staged = await renderProductionChart({}, { chartDirectory, isUpgrade });
+      const expected = await resources(
+        current.stdout.replaceAll(
+          "scripts/production-healthcheck.ts",
+          "scripts/production-healthcheck.mjs",
+        ),
+      );
+      const rendered = await resources(staged.stdout);
+      assert.deepEqual(rendered, expected);
+      const worker = findResourceByComponent(
+        rendered,
+        "Deployment",
+        "worker",
+      ).spec.template.spec.containers.find(({ name }) => name === "worker");
+      assert.deepEqual(worker.readinessProbe.exec.command, readiness);
+      assert.deepEqual(worker.livenessProbe.exec.command, liveness);
+      assert.deepEqual(worker.startupProbe.exec.command, liveness);
+    }
+  },
+);
+
+test(
+  "the production image executes the chart worker probes as the worker user",
+  {
+    skip: tooling.skip || !process.env.OCC_TEST_PRODUCTION_IMAGE,
+  },
+  async (t) => {
+    const image = process.env.OCC_TEST_PRODUCTION_IMAGE;
+    const docker = process.env.OCC_DOCKER_BIN ?? "docker";
+    const directory = await temporaryDirectory(t, "occ-image-health-");
+    const [inspectionCommand, ...inspectionArgs] = inspectWorkerProbe;
+    const { stdout } = await execute(docker, [
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--read-only",
+      "--user",
+      "1000:1000",
+      "--entrypoint",
+      inspectionCommand,
+      image,
+      ...inspectionArgs,
+    ]);
+    // The image built from this checkout must serve the unmodified release chart.
+    assert.equal(stdout.trim(), "ts");
+    const chartDirectory = await initialUpgradeChart(repository, directory, stdout.trim());
+    const objects = await resources((await renderProductionChart({}, { chartDirectory })).stdout);
+    const worker = findResourceByComponent(
+      objects,
+      "Deployment",
+      "worker",
+    ).spec.template.spec.containers.find(({ name }) => name === "worker");
+    const marker = (key) => worker.env.find(({ name }) => name === key).value;
+    const readiness = marker("OCC_WORKER_READINESS_PATH");
+    const liveness = marker("OCC_WORKER_LIVENESS_PATH");
+    const mountPath = worker.volumeMounts.find(({ name }) => name === "worker-readiness").mountPath;
+    const ready = join(directory, "ready");
+    const alive = join(directory, "alive");
+    await chmod(directory, 0o755);
+    await writeFile(ready, "ready\n");
+    await writeFile(alive, "alive\n");
+    const probe = ([entrypoint, ...args]) =>
+      execute(docker, [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--user",
+        "1000:1000",
+        "--mount",
+        `type=bind,src=${directory},dst=${mountPath},readonly`,
+        "-e",
+        `OCC_WORKER_READINESS_PATH=${readiness}`,
+        "-e",
+        `OCC_WORKER_LIVENESS_PATH=${liveness}`,
+        "--entrypoint",
+        entrypoint,
+        image,
+        ...args,
+      ]);
+    const readyCommand = worker.readinessProbe.exec.command;
+    const liveCommand = worker.livenessProbe.exec.command;
+    const startupCommand = worker.startupProbe.exec.command;
+    for (const command of [readyCommand, liveCommand, startupCommand]) {
+      assert.deepEqual(await probe(command), { stdout: "", stderr: "" });
+    }
+
+    // A database outage leaves loop progress fresh while readiness expires.
+    const stale = new Date(Date.now() - 60_000);
+    await utimes(ready, stale, stale);
+    await assert.rejects(probe(readyCommand), {
+      code: 1,
+      stdout: "",
+      stderr: "The worker has not reported a recent healthy database observation.\n",
+    });
+    await rm(ready);
+    await assert.rejects(probe(readyCommand), {
+      code: 1,
+      stdout: "",
+      stderr: `ENOENT: no such file or directory, stat '${readiness}'\n`,
+    });
+    assert.deepEqual(await probe(liveCommand), { stdout: "", stderr: "" });
+  },
+);
+
+test(
   "the production Helm chart supports explicit routing opt-out with ordered bootstrap",
   tooling,
   async () => {
@@ -2740,13 +2854,13 @@ test(
         );
         assert.deepEqual(container.readinessProbe.exec.command, [
           "node",
-          "scripts/production-healthcheck.mjs",
+          "scripts/production-healthcheck.ts",
           "worker",
           "ready",
         ]);
         assert.deepEqual(container.livenessProbe.exec.command, [
           "node",
-          "scripts/production-healthcheck.mjs",
+          "scripts/production-healthcheck.ts",
           "worker",
         ]);
         // Each probe starts Node inside the worker's CPU limit: a 1 s timeout restarted
@@ -3178,10 +3292,7 @@ test("database CA mounts stay distinct from active production volume mounts", to
     ...repositoryCredentialValues,
     ...gatewayRoutingValues,
     ...chatgptValues,
-    "executionCluster.enabled": "true",
-    "executionCluster.apiKubeconfigSecretName": "execution-api",
-    "executionCluster.workerKubeconfigSecretName": "execution-worker",
-    "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+    ...executionClusterValues,
   };
   for (const features of [
     {},
@@ -3284,39 +3395,26 @@ test(
   "optional database CA Secret mounts into every production database client",
   tooling,
   async () => {
-    const objects = await renderObjects(databaseCaValues);
-    const initializationPod = findResourceByComponent(objects, "Job", "initialization").spec
-      .template.spec;
-    assert.deepEqual(initializationPod.volumes.find(({ name }) => name === "database-ca")?.secret, {
-      secretName: "occ-rds-ca",
-      items: [{ key: "ca.pem", path: "ca.pem" }],
-    });
-    assert.deepEqual(
-      initializationPod.initContainers
-        .find(({ name }) => name === "migration")
-        .volumeMounts.find(({ name }) => name === "database-ca"),
-      { name: "database-ca", mountPath: "/etc/openclaw/database-ca", readOnly: true },
+    const { initialization, api, worker } = controlPlaneWorkloads(
+      await renderObjects(databaseCaValues),
     );
-    assert.deepEqual(
-      initializationPod.containers[0].volumeMounts.find(({ name }) => name === "database-ca"),
-      { name: "database-ca", mountPath: "/etc/openclaw/database-ca", readOnly: true },
-    );
-
-    for (const component of ["api", "worker"]) {
-      const pod = findResourceByComponent(objects, "Deployment", component).spec.template.spec;
+    const assertDatabaseCaMount = (container) => {
+      assert.deepEqual(
+        container.volumeMounts.find(({ name }) => name === "database-ca"),
+        { name: "database-ca", mountPath: "/etc/openclaw/database-ca", readOnly: true },
+      );
+    };
+    const initializationPod = initialization.spec.template.spec;
+    for (const pod of [initializationPod, api.spec.template.spec, worker.spec.template.spec]) {
       assert.deepEqual(pod.volumes.find(({ name }) => name === "database-ca")?.secret, {
         secretName: "occ-rds-ca",
         items: [{ key: "ca.pem", path: "ca.pem" }],
       });
-      assert.deepEqual(
-        pod.containers[0].volumeMounts.find(({ name }) => name === "database-ca"),
-        {
-          name: "database-ca",
-          mountPath: "/etc/openclaw/database-ca",
-          readOnly: true,
-        },
-      );
+      assertDatabaseCaMount(pod.containers[0]);
     }
+    assertDatabaseCaMount(
+      initializationPod.initContainers.find(({ name }) => name === "migration"),
+    );
   },
 );
 
@@ -3854,12 +3952,6 @@ const oidcLoginValues = {
   "auth.oidc.authorizationUrl": "https://tenant.idp.example.test/authorize",
   "auth.oidc.tokenUrl": "https://tenant.idp.example.test/oauth/token",
   "auth.oidc.jwksUrl": "https://tenant.idp.example.test/.well-known/jwks.json",
-};
-const executionClusterValues = {
-  "executionCluster.enabled": "true",
-  "executionCluster.apiKubeconfigSecretName": "execution-api",
-  "executionCluster.workerKubeconfigSecretName": "execution-worker",
-  "executionCluster.apiCidrs[0]": "10.44.0.2/32",
 };
 for (const [field, enable = {}] of [
   ["installation.secretName"],
@@ -5530,12 +5622,7 @@ test("OpenShell Envoy cleanup reports rejected deletes and continues remaining c
               if (args[0] === "get") {
                 return JSON.stringify({ items: [{ spec: { podCIDR: "10.42.0.0/24" } }] });
               }
-              assert.equal(args[0], "delete");
-              assert.ok(args.includes("--ignore-not-found=true"));
-              if (args[1] === "gatewayclass") {
-                assert.ok(args.includes("--wait=false"));
-              }
-              attempted.push(args[1]);
+              attempted.push(args);
               if (args[1] === refused) {
                 throw new Error("fixture delete rejected");
               }
@@ -5550,10 +5637,27 @@ test("OpenShell Envoy cleanup reports rejected deletes and continues remaining c
             await hook();
           }
         }, /fixture delete rejected/);
-        assert.equal(attempted[0], "fixture aggregate");
-        assert.equal(attempted[1], "relay cleanup");
-        assert.ok(attempted.includes("gatewayclass"));
-        assert.ok(attempted.includes("networkpolicy"));
+        // The raw aggregate runs first. The shared group then runs in reverse registration order,
+        // deleting the external policy while the release Namespace owns its own policy.
+        assert.deepEqual(attempted, [
+          "fixture aggregate",
+          "relay cleanup",
+          [
+            "delete",
+            "networkpolicy",
+            "oce-workspace-files-e276c4f1bbb5-envoy-dataplane",
+            "--namespace",
+            process.env.OCC_TEST_ENVOY_GATEWAY_NAMESPACE ?? "envoy-gateway-system",
+            "--ignore-not-found=true",
+          ],
+          [
+            "delete",
+            "gatewayclass",
+            "oce-workspace-files-e8b6103c0fcb",
+            "--ignore-not-found=true",
+            "--wait=false",
+          ],
+        ]);
       }
     },
   );

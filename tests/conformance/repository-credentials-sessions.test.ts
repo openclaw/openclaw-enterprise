@@ -13,12 +13,8 @@ import type {
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import {
-  type AlternateFixtureOptions,
-  createAlternateFixtureFactory,
-  fixtureEvents,
-  requireFixtureDriver,
-} from "../fixtures/repository-credentials/alternate-shape.ts";
+import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.ts";
+import type { AlternateDriverObservation } from "../fixtures/repository-credentials/alternate/driver.ts";
 import {
   requestHead,
   serviceConfigurationData,
@@ -70,15 +66,6 @@ const send: ExchangeSender = async (_request, context) =>
     () => ({ kind: "completed", status: 200 }),
   );
 
-function isObservation(value: unknown): value is { kind: string; attemptId?: string } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "kind" in value &&
-    typeof value.kind === "string" &&
-    (!("attemptId" in value) || typeof value.attemptId === "string")
-  );
-}
 function requireStatus(service: CredentialServiceOwner, sessionId: string) {
   const result = service.status(sessionId);
   assert.ok(result);
@@ -107,10 +94,13 @@ const unexpected = () => {
 };
 
 function setup(
-  options: Pick<AlternateFixtureOptions, "operationMs" | "lifetimeMs" | "controls"> = {},
+  options: Pick<
+    Parameters<typeof createAlternateDriverFactory>[0],
+    "operationMs" | "lifetimeMs" | "controls"
+  > = {},
 ) {
   const clock = createControlledClock(1700000000000);
-  const factory = createAlternateFixtureFactory({
+  const factory = createAlternateDriverFactory({
     origin: "https://upstream.example.test",
     gatewayOrigin: "https://gateway.example.test",
     clock,
@@ -132,7 +122,7 @@ function setup(
 
 function constructionFailure(kind: "factory throw" | "invalid binding" | "binding mismatch") {
   const clock = createControlledClock(1700000000000);
-  const factory = createAlternateFixtureFactory({
+  const factory = createAlternateDriverFactory({
     origin: "https://upstream.example.test",
     gatewayOrigin: "https://gateway.example.test",
     clock,
@@ -335,7 +325,7 @@ test("unchanged bearer replaces expired access after hour 13 while retaining ren
   assert.equal((await service.execute(exchange(), send)).kind, "completed");
   await clock.advance(13 * 3600000);
   assert.equal((await service.execute(exchange(), send)).kind, "completed");
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 2);
+  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 2);
   for (let index = 0; index < 5; index++) {
     await clock.advance(100000);
     assert.equal((await service.execute(exchange(), send)).kind, "completed");
@@ -343,7 +333,7 @@ test("unchanged bearer replaces expired access after hour 13 while retaining ren
   await clock.advance(100000);
   service.close(opened.session.sessionId);
   await tick();
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "finalize").length, 1);
+  assert.equal(factory.events.filter((event) => event.kind === "finalize").length, 1);
   assert.equal(requireStatus(service, opened.session.sessionId).state, "DISPOSED");
 });
 
@@ -355,7 +345,7 @@ test("concurrent misses coalesce and cancellation of one waiter preserves anothe
   abort.abort();
   assert.equal((await first).kind, "not-dispatched");
   assert.equal((await second).kind, "completed");
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 1);
+  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 1);
   service.close(opened.session.sessionId);
   await tick();
 });
@@ -364,7 +354,8 @@ test("last-waiter cancellation refuses later requests until original acquisition
   const { service, factory, opened, configuration, exchange } = setup();
   const settlement = Promise.withResolvers<void>();
   const acquired = Promise.withResolvers<void>();
-  const driver = requireFixtureDriver(factory.drivers[0]);
+  const driver = factory.drivers[0];
+  assert.ok(driver);
   const settle = driver.settle.bind(driver);
   // Delay only settlement of the fixture's real captured outcome. The service
   // still owns the original attempt, custody reservation and cleanup.
@@ -403,8 +394,8 @@ test("last-waiter cancellation refuses later requests until original acquisition
       "an aborted acquisition must refuse new waiters before settlement",
     );
   }
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 1);
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "authentication").length, 0);
+  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 1);
+  assert.equal(factory.events.filter((event) => event.kind === "authentication").length, 0);
 
   // Local closure cannot release the captured credential or finalize its
   // session while the original acquisition owner remains unsettled.
@@ -414,13 +405,13 @@ test("last-waiter cancellation refuses later requests until original acquisition
   assert.equal(pending.state, "CLOSED");
   assert.equal(pending.cleanup.pending, 1);
   assert.equal(pending.cleanup.auxiliaryPending, true);
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "retire").length, 0);
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "finalize").length, 0);
+  assert.equal(factory.events.filter((event) => event.kind === "retire").length, 0);
+  assert.equal(factory.events.filter((event) => event.kind === "finalize").length, 0);
   settlement.resolve();
   await tick();
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 1);
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "retire").length, 1);
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "finalize").length, 1);
+  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 1);
+  assert.equal(factory.events.filter((event) => event.kind === "retire").length, 1);
+  assert.equal(factory.events.filter((event) => event.kind === "finalize").length, 1);
   assert.equal(requireStatus(service, opened.session.sessionId).state, "DISPOSED");
 });
 
@@ -429,7 +420,7 @@ test("a backward wall clock does not extend access or task authority", async () 
   assert.equal((await service.execute(exchange(), send)).kind, "completed");
   await clock.advance(100000, -3600000);
   assert.equal((await service.execute(exchange(), send)).kind, "completed");
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 2);
+  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 2);
   await clock.advance(86400000, -86400000);
   assert.equal(requireStatus(service, opened.session.sessionId).state, "DISPOSED");
   assert.equal(
@@ -482,16 +473,13 @@ test("final dispatch rejects closure after asynchronous authentication and joins
 
 test("acquisition timeout retains late capture and original settlement until cleanup after close", async (t) => {
   const { promise: lateCapture, resolve: release } = Promise.withResolvers<void>();
-  const observations: { kind: string; attemptId?: string }[] = [];
+  const observations: AlternateDriverObservation[] = [];
   const { clock, service, opened, factory, exchange, configuration } = setup({
     operationMs: 60000,
     controls: {
       lateCapture,
       waitForAcquisitionAbort: true,
-      observe: (event: unknown) => {
-        assert.ok(isObservation(event));
-        observations.push(event);
-      },
+      observe: (event) => observations.push(event),
     },
   });
   t.after(async () => {
@@ -510,7 +498,7 @@ test("acquisition timeout retains late capture and original settlement until cle
     return outcome;
   });
   await tick();
-  const acquisition = fixtureEvents(factory).find((event) => event.kind === "rotate");
+  const acquisition = factory.events.find((event) => event.kind === "rotate");
   assert.ok(acquisition);
   // The provider remains outstanding until the production action timer fires;
   // the exchange budget is longer, so its own deadline cannot cause this refusal.
@@ -535,7 +523,7 @@ test("acquisition timeout retains late capture and original settlement until cle
     false,
   );
   assert.equal((await service.execute(exchange(), send)).kind, "not-dispatched");
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 1);
+  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 1);
   service.close(opened.session.sessionId);
   assert.equal(requireStatus(service, opened.session.sessionId).state, "CLOSED");
   release();
@@ -550,8 +538,8 @@ test("acquisition timeout retains late capture and original settlement until cle
     ),
   );
   assert.equal(sends, 0, "late material is cleanup-only and never reaches the sender");
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 1);
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "retire").length, 1);
+  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 1);
+  assert.equal(factory.events.filter((event) => event.kind === "retire").length, 1);
   assert.equal(requireStatus(service, opened.session.sessionId).state, "DISPOSED");
 });
 
@@ -559,7 +547,7 @@ test("scope refusal cleans the independently captured credential", async () => {
   const { service, opened, factory, exchange } = setup({ controls: { rejectScope: true } });
   assert.equal((await service.execute(exchange(), send)).kind, "not-dispatched");
   await tick();
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "retire").length, 1);
+  assert.equal(factory.events.filter((event) => event.kind === "retire").length, 1);
   service.close(opened.session.sessionId);
   await tick();
   assert.equal(requireStatus(service, opened.session.sessionId).state, "DISPOSED");
@@ -583,11 +571,11 @@ test("drain-before replacement waits for an active exchange before rotating", as
   await clock.advance(400);
   const next = service.execute(exchange(), send);
   await tick();
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 1);
+  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 1);
   release();
   await first;
   assert.equal((await next).kind, "completed");
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 2);
+  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 2);
   service.close(opened.session.sessionId);
   await tick();
 });
@@ -602,8 +590,8 @@ test("insufficient full exchange validity refuses once and retires the captured 
   assert.equal(result.kind, "not-dispatched");
   assert.equal(sends, 0);
   await tick();
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "rotate").length, 1);
-  assert.equal(fixtureEvents(factory).filter((event) => event.kind === "retire").length, 1);
+  assert.equal(factory.events.filter((event) => event.kind === "rotate").length, 1);
+  assert.equal(factory.events.filter((event) => event.kind === "retire").length, 1);
   service.close(opened.session.sessionId);
   await tick();
 });
@@ -666,7 +654,7 @@ for (const scenario of [
 ]) {
   test(`saturated cleanup queue drains every session and renewal after ${scenario.name}`, async (t) => {
     const clock = createControlledClock(1700000000000);
-    const factory = createAlternateFixtureFactory({
+    const factory = createAlternateDriverFactory({
       origin: "https://upstream.example.test",
       gatewayOrigin: "https://gateway.example.test",
       clock,
@@ -692,7 +680,8 @@ for (const scenario of [
       settlement.resolve();
       await tick();
     });
-    const firstDriver = requireFixtureDriver(factory.drivers[0]);
+    const firstDriver = factory.drivers[0];
+    assert.ok(firstDriver);
     const settle = firstDriver.settle.bind(firstDriver);
     firstDriver.settle = async (original) => {
       await settle(original);
@@ -706,10 +695,7 @@ for (const scenario of [
     await tick();
     await clock.advance(1);
     await tick();
-    assert.equal(
-      fixtureEvents(factory).filter((event) => event.kind === scenario.queuedAction).length,
-      1,
-    );
+    assert.equal(factory.events.filter((event) => event.kind === scenario.queuedAction).length, 1);
     for (const session of sessions) {
       const status = requireStatus(service, session.session.sessionId);
       assert.equal(status.state, "CLOSED");
@@ -726,8 +712,7 @@ for (const scenario of [
       assert.equal(status.cleanup.uncertain, 0);
       for (const kind of scenario.expectedCleanup) {
         assert.equal(
-          fixtureEvents(factory).filter((event) => event.kind === kind && event.sessionId === id)
-            .length,
+          factory.events.filter((event) => event.kind === kind && event.sessionId === id).length,
           1,
         );
       }

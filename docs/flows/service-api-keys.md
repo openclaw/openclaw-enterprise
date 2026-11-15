@@ -225,7 +225,7 @@ schedule rotation.
   the prepared `postgres-auth` lane. It checks a closed authentication pool, a
   failed key-use update, and isolation from a concurrent successful verification.
   Invalid, expired, and revoked keys retain `401`; State and IAM remain healthy.
-- [IAM conformance](../../tests/conformance/iam.test.mjs) verifies identity lookup.
+- [IAM conformance](../../tests/conformance/iam.test.ts) verifies identity lookup.
   Run `pnpm openapi:check` to check that the OpenAPI contract, HTTP API reference,
   and API cheat sheet remain current with the controller routes.
 - Investigate `401` as credential rejection and `403` as identity, scope, or

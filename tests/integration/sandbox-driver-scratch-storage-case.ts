@@ -4,32 +4,16 @@ import type {
   OpenShellGatewayClient,
   OpenShellSandboxCreateRequest,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import type {
-  OpenShellSandboxDriver,
-  OpenShellSandboxDriverOptions,
-} from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { openShellDriver } from "./sandbox-driver-openshell-fixture.ts";
+import { completeSandboxRevision } from "./sandbox-driver-revision-fixture.ts";
+import { runtimeSandboxFixture } from "./sandbox-driver-startup-orchestration.ts";
 import { storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
 import { buildSandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
-type HarnessContext = Parameters<OpenShellSandboxDriver["provisionHarness"]>[0];
 type GatewayFixture = Omit<ReturnType<typeof workspaceGatewayClient>, "createSandbox"> &
   Pick<OpenShellGatewayClient, "createSandbox">;
-type ScratchStorageFixtures = {
-  openShellDriver: (
-    gateway: GatewayFixture,
-    configuration: OpenShellSandboxDriverOptions,
-  ) => OpenShellSandboxDriver;
-  runtimeSandboxFixture: (driver: OpenShellSandboxDriver) => {
-    context: Omit<HarnessContext, "revision" | "requirements">;
-    revision: HarnessContext["revision"];
-    requirements: HarnessContext["requirements"] & {
-      workspaceMounts: Array<HarnessContext["requirements"]["workspaceMounts"][number]>;
-    };
-  };
-};
-
 function recordAt(value: unknown, ...path: string[]): Record<string, unknown> {
   let record = asRecord(value);
   assert.ok(record, "expected a wire record");
@@ -46,10 +30,7 @@ function wireString(value: unknown, key: string): string {
   return field;
 }
 
-export function registerSandboxDriverScratchStorageCase({
-  openShellDriver,
-  runtimeSandboxFixture,
-}: ScratchStorageFixtures): void {
+export function registerSandboxDriverScratchStorageCase(): void {
   test("OpenShell keeps scratch separate from its durable data mount", async () => {
     const scratch = {
       claimName: "operator-scratch",
@@ -75,8 +56,15 @@ export function registerSandboxDriverScratchStorageCase({
       Object.assign(options.kubernetes.sandboxDataMount, dataMount);
       const driver = openShellDriver(gateway, options);
       const { context, revision, requirements } = runtimeSandboxFixture(driver);
-      requirements.workspaceMounts.push(scratch);
-      const provision = () => driver.provisionHarness({ ...context, revision, requirements });
+      const provision = () =>
+        driver.provisionHarness({
+          ...context,
+          revision: completeSandboxRevision(revision),
+          requirements: {
+            ...requirements,
+            workspaceMounts: [...requirements.workspaceMounts, scratch],
+          },
+        });
       if (Object.keys(dataMount).length > 0) {
         await assert.rejects(
           provision(),
