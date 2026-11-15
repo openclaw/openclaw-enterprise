@@ -316,8 +316,8 @@ export function createAgentDetailPolicyScenarios({
                 description:
                   "Revision 7 passed its readiness checks after replacing revision 6. The Agent retains its approved and desired destinations, with a receipt for revision 6.",
                 steps: [
-                  "In Protected downloads, confirm both destinations show Off on this revision. Open Receipt details and check that the receipt is from another revision.",
-                  "Choose Enable on the host row and wait for Confirmed. Check that the host shows Allowed and the archive shows Covered by host. Receipt details now shows the confirmation for revision 7.",
+                  "In Protected downloads, confirm both destinations show Off on this revision. Open Receipt details. Check the revision 6 operation IDs, versions, request state, and timestamps. Change and Reason are absent.",
+                  "Choose Enable on the host row and wait for Confirmed. Check that the host shows Allowed and the archive shows Covered by host. Receipt details names revision 7 and shows the enable action and host destination under Change.",
                 ],
                 gap: "Simulated revision replacement and policy responses. Use the live workflow to verify download enforcement.",
               }

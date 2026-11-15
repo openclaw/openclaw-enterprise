@@ -109,9 +109,9 @@ Proxy pair, try a fresh connection from the same shell to verify the outcome.
 An existing transfer may finish.
 
 For **Pending confirmation**, **Unconfirmed**, or **Confirmation failed**, choose
-**Refresh**, then open **Receipt details**. Match the latest request and its receipt
-to the change and revision you submitted. If you cannot match them, the outcome of
-your change is still unknown. See [protected download approvals and status](../../reference/sandbox-policies.md#downloads-on-a-running-protected-agent).
+**Refresh**, then open **Receipt details**. Match the operation IDs and revision
+to your request. If you cannot match the request and receipt to your change,
+the outcome is still unknown. See [protected download approvals and status](../../reference/sandbox-policies.md#downloads-on-a-running-protected-agent).
 
 ## Retire a protected download edit before upgrade
 

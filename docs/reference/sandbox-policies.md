@@ -118,13 +118,14 @@ the covering rule and wait for confirmation. Choose **Withdraw approval** under
 **More actions** to remove the Agent approval and any access that depends on it.
 Existing transfers can finish.
 
-When confirmation is pending, unavailable, or failed, the outcome may still be
-unknown. **Last confirmed** describes the most recent receipt for the revision.
-After a conflict or lost response, refresh the policy. In **Receipt details**,
-match the request and receipt to your change and revision before submitting
-another edit. If a later request has replaced yours, the displayed receipt cannot
-confirm your earlier change. Test new connections from the
-running Agent to verify enforcement by the Sandbox and Credential Proxy.
+Pending, unavailable, or failed confirmation can leave the outcome unknown.
+**Last confirmed** describes the revision's latest receipt. After a conflict or
+lost response, refresh and [match the request and receipt](../guides/topics/agent-sandbox-policy.md#check-access-after-disabling-a-protected-download)
+before editing again. **Receipt details** shows operation IDs, policy versions,
+and timestamps across revisions.
+Only the request's revision shows **Change** and **Reason** in **Receipt details**
+and the reason in **Policy details**. A later receipt cannot confirm your request.
+Test new Agent connections to verify Sandbox and Credential Proxy enforcement.
 
 After a revision replacement, the Agent keeps its saved destinations and
 approvals. When the new revision passes verification and has no receipt,

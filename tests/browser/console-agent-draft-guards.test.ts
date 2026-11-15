@@ -1032,6 +1032,10 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   const filter = panel.getByRole("combobox", { name: "Filter destinations" });
   const refresh = panel.getByRole("button", { name: "Refresh download status", exact: true });
   const confirmation = panel.getByRole("status").filter({ hasText: /^Confirmed$/ });
+  const receiptSummary = panel.getByText("Receipt details", { exact: true });
+  const receiptDetails = panel.locator("details").filter({ hasText: "Receipt details" });
+  const policyDetails = page.locator("details").filter({ hasText: "Policy details" });
+  const policySummary = policyDetails.getByText("Policy details", { exact: true });
   const add = panel.getByRole("button", { name: "Add destination", exact: true });
   const submit = panel.getByRole("button", { name: "Allow download", exact: true });
   const hostname = panel.getByLabel("Hostname", { exact: true });
@@ -1169,8 +1173,19 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   await panel.getByRole("alert").filter({ hasText: "Confirmation failed" }).waitFor();
   assert.equal(await hasFocus(showHostRules), true);
   await search.fill("");
-  await panel.getByText("Receipt details", { exact: true }).press("Enter");
-  await panel.getByText("PROTECTED_DOWNLOAD_UNCONFIRMED", { exact: true }).waitFor();
+  await receiptSummary.press("Enter");
+  await receiptDetails.getByText("PROTECTED_DOWNLOAD_UNCONFIRMED", { exact: true }).waitFor();
+  await policySummary.press("Enter");
+  await policyDetails
+    .getByText(`Application: failed · Revision ${revisionId} · PROTECTED_DOWNLOAD_UNCONFIRMED`, {
+      exact: true,
+    })
+    .waitFor();
+  await receiptDetails
+    .getByText(`approve-and-enable · https://${next.host}:${next.port}${next.path}`, {
+      exact: true,
+    })
+    .waitFor();
   await nextRow
     .getByRole("cell")
     .filter({ hasText: "Agent-approved" })
@@ -1330,13 +1345,40 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   assert.equal(await destinations.count(), 1);
   await page.unroute(fixture.origin + base + "/apply");
 
-  // A replacement revision must start without the previous operation's private archive row.
+  // A failed request targeting the old revision remains identifiable after replacement.
   const replacement = await fixture.seedActiveAgentRevision(namespace.id, agent.id, revisionId);
   const replacementRevisionId = text(record(replacement.revision).id);
+  const historical = {
+    ...pending,
+    id: crypto.randomUUID(),
+    policyVersion: 5,
+    destination: { ...archive, host: "previous.example.org", path: "/releases/previous.tar.gz" },
+    state: "failed",
+    requestedAt: "2026-01-02T12:05:00Z",
+    reason: "SANDBOX_POLICY_REVISION_CHANGED",
+  };
+  Object.assign(policy, { version: historical.policyVersion, application: historical });
   view.protectedDownloads = { state: "unavailable", reason: "installation-unconfirmed" };
   await page.goto(detailUrl(fixture, namespace.id, agent.id, replacementRevisionId, "policy").href);
   await priorRow.getByText("Unconfirmed", { exact: true }).waitFor();
   assert.equal(await archiveRow.count(), 0);
+  await receiptSummary.press("Enter");
+  await receiptDetails.getByText("Receipt from another revision", { exact: true }).waitFor();
+  await receiptDetails.getByText("Request on another revision", { exact: true }).waitFor();
+  await receiptDetails
+    .getByText(`failed · v${historical.policyVersion} · ${revisionId}`, { exact: true })
+    .waitFor();
+  await receiptDetails.getByText(historical.requestedAt, { exact: true }).waitFor();
+  await receiptDetails.getByText(historical.id, { exact: true }).waitFor();
+  const replacementReceipt = await receiptDetails.innerText();
+  assert.ok(!replacementReceipt.includes(historical.destination.host), "omits the old hostname");
+  assert.ok(!replacementReceipt.includes(historical.destination.path), "omits the old path");
+  assert.ok(!replacementReceipt.includes(historical.reason), "omits the old failure reason");
+  await policySummary.press("Enter");
+  const applicationStatus = `Application: failed · Revision ${revisionId}`;
+  const applicationLine = policyDetails.getByText(applicationStatus);
+  assert.equal(await applicationLine.innerText(), applicationStatus);
+  assert.equal(await page.locator(".sandbox-application-feedback").count(), 0);
   view.protectedDownloads = {
     state: "verified",
     revisionId: replacementRevisionId,
@@ -1349,7 +1391,7 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   await priorRow.getByRole("button", { name: `Enable ${priorUrl}`, exact: true }).click();
   await page.getByRole("alert").filter({ hasText: "RESOURCE_CONFLICT" }).waitFor();
   assert.deepEqual(pathRequests(requests, "POST", base + "/apply").at(-1)?.body, {
-    expectedVersion: 4,
+    expectedVersion: historical.policyVersion,
     revisionId: replacementRevisionId,
     downloadChange: { action: "enable", destination: prior },
   });
@@ -1367,7 +1409,7 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
     .filter({ hasText: text(refusal.code) })
     .waitFor();
   assert.deepEqual(pathRequests(requests, "POST", base + "/apply").at(-1)?.body, {
-    expectedVersion: 4,
+    expectedVersion: historical.policyVersion,
     revisionId: replacementRevisionId,
     downloadChange: { action: "enable", destination: prior },
   });
@@ -1783,6 +1825,7 @@ for (const c of [
       .click();
     await page.getByRole("button", { name: "Done", exact: true }).click();
     await page.getByText(/Application to the current revision is pending/).waitFor();
+    const priorRevisionId = "rev_00000000-0000-4000-8000-000000000006";
     await page.route(`${fixture.origin}${base}`, async (route) => {
       if (route.request().method() !== "GET") {
         await route.fallback();
@@ -1794,6 +1837,7 @@ for (const c of [
       assert.equal(application.state, "pending");
       record(record(body.data).policy).application = {
         ...application,
+        revisionId: priorRevisionId,
         state: "failed",
         reason: c.reason,
       };
@@ -1803,9 +1847,11 @@ for (const c of [
     const notice = page.locator(".sandbox-application-feedback").getByText(c.text, { exact: true });
     await notice.waitFor();
     assert.equal(await notice.textContent(), c.text);
-    // The explanation stays prominent; the full reason code is available in Policy details.
+    // Ordinary network failures keep their explanation and reason after replacement.
     await page.getByText("Policy details", { exact: true }).click();
-    await page.getByText(new RegExp(`Application: failed .*${c.reason}`)).waitFor();
+    await page
+      .getByText(`Application: failed · Revision ${priorRevisionId} · ${c.reason}`, { exact: true })
+      .waitFor();
   });
 }
 

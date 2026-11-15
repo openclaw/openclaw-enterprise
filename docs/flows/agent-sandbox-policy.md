@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-14"
-last_updated_session: "authoring-run/f6460323-c8a2-416b-b521-debdfee5a4dd"
+updated: "2026-11-15"
+last_updated_session: "authoring-run/1554d27d-c4bd-4d3b-ab94-4fad1d5e400a"
 ---
 
 # Agent sandbox policy flow
@@ -93,14 +93,14 @@ and a qualified Sandbox and Credential Proxy pair. Stock OpenShell lacks the pai
 OCC checks Agent `manage_policy`, SandboxPolicy `read` and `update`, and
 Installation `administer` for approval changes.
 
-OCC saves the edit and queues one operation. **Disable** removes the exact entry.
+OCC saves the edit and queues it. **Disable** removes the exact entry.
 The Console shows [covering host rules](../guides/topics/agent-sandbox-policy.md#check-access-after-disabling-a-protected-download).
-Pre-write refusal restores approvals and desired entries. Late confirmation reads
-the original write. The worker verifies both Drivers, authority and loaded
-signed-model enforcement, then commits the installation, policy receipt and
-audit together. Fresh credential checks read that installation. Git and
-credential reduction retain their own protocols. Superseded work verifies the
-original Sandbox's published installation. **Refresh** reads current policy.
+Pre-write refusal restores approvals and entries. Late confirmation reads the
+original write. After verifying both Drivers, authority, and loaded signed-model
+enforcement, the worker commits installation, receipt, and audit together.
+Credential checks read that installation. Git and credential reduction use
+separate protocols. Superseded work verifies the original Sandbox's installation.
+The Console shows protected **Change** and **Reason** on the request's revision.
 
 For 0079–0080, migration 0081 checks serving confirmations, unresolved follow-ons
 even after retirement, and retained work. A first dispatch needs the original
@@ -276,6 +276,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-15 02:20: Trace download receipt visibility. (authoring-run/1554d27d-c4bd-4d3b-ab94-4fad1d5e400a - fc7738830cd07402313d8fdec15dbc341150cc29)
 
 - 2026-11-14 17:15: Trace the upgrade check for a first dispatched download edit. (authoring-run/f6460323-c8a2-416b-b521-debdfee5a4dd - 74bcbb41a5b38213399e246ddc8b470ddf63f9be)
 

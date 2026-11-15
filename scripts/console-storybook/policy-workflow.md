@@ -104,10 +104,12 @@ and receipt, filter for `tool.tar.gz`, and choose **Refresh** in **Protected dow
 The archive stays visible and the Protected downloads section offers no changes.
 
 In **Protected Downloads after revision replacement**, both destinations show
-**Off on this revision**. Open **Receipt details** to find the receipt from
-revision 6. Enable the host on revision 7 and wait for **Confirmed**. The host
-shows **Allowed**, the archive shows **Covered by host**, and the new receipt names
-revision 7.
+**Off on this revision**. Open **Receipt details**. Check that the revision 6
+request and receipt show their operation IDs, versions, request state, and
+timestamps. The request's **Change** and **Reason** are absent. Enable the host on
+revision 7 and wait for **Confirmed**. The host shows **Allowed** and the archive
+shows **Covered by host**. **Receipt details** names revision 7 and shows the
+request's **Change** with the enable action and host destination.
 
 These scenarios simulate policy responses. Use the live workflow to verify
 download enforcement.

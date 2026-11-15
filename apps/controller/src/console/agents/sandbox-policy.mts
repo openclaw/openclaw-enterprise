@@ -1346,11 +1346,13 @@ export function renderAgentSandboxPolicy(
         op ? "Latest request" : "Request on another revision",
         `${latestOp.state} · v${latestOp.policyVersion} · ${latestOp.revisionId}`,
       );
-      detail("Change", `${latestOp.action} · ${format(latestOp.destination)}`);
+      if (op) {
+        detail("Change", `${op.action} · ${format(op.destination)}`);
+      }
       detail("Requested at", latestOp.requestedAt);
       detail("Request operation", latestOp.id);
-      if (latestOp.reason) {
-        detail("Reason", latestOp.reason);
+      if (op?.reason) {
+        detail("Reason", op.reason);
       }
     }
     if (protectedDownloads?.state === "verified") {
@@ -2823,6 +2825,11 @@ export function renderAgentSandboxPolicy(
     }
     if (view) {
       const { policy } = view;
+      const { application } = policy;
+      const applicationReason =
+        application && (!("kind" in application) || application.revisionId === revisionId)
+          ? application.reason
+          : undefined;
       const applied = policy.applied?.revisionId === revisionId ? policy.applied : undefined;
       function policyStatus() {
         if (policy.application?.state === "pending") {
@@ -2909,11 +2916,11 @@ export function renderAgentSandboxPolicy(
                 JSON.stringify(view.defaults, null, 2),
               ),
             ),
-            policy.application
+            application
               ? element(
                   "p",
                   { className: "hint" },
-                  `Application: ${policy.application.state} · Revision ${policy.application.revisionId}${policy.application.reason ? ` · ${policy.application.reason}` : ""}`,
+                  `Application: ${application.state} · Revision ${application.revisionId}${applicationReason ? ` · ${applicationReason}` : ""}`,
                 )
               : null,
 
