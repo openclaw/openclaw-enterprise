@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { parseStrictJsonLines } from "./json-lines-file.ts";
+
+export { readJsonLines, readJsonLinesSync } from "./json-lines-file.ts";
 
 // The first JSON line (as `jsonLines` parses them with `options`) whose `event` is `event`.
 // Fails with the whole text when there is none.
@@ -19,11 +20,7 @@ export function jsonEvent(text, event, options) {
 export function jsonLines(text, { lenient = false, strict = false } = {}) {
   assert.ok(!(lenient && strict), "jsonLines takes lenient or strict, not both");
   if (strict) {
-    return text
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line));
+    return parseStrictJsonLines(text, true);
   }
   const records = [];
   for (const line of text.split(/\r?\n/)) {
@@ -41,42 +38,6 @@ export function jsonLines(text, { lenient = false, strict = false } = {}) {
     }
   }
   return records;
-}
-
-// Reads a JSON-lines file, such as the call or command log a stand-in appends to: one JSON value
-// per line of the trimmed text. Every line must parse, so an empty file or a blank line fails,
-// unless `skipBlank` is set. A missing file fails unless `missingOk` is set, which reads it as
-// no records. `readJsonLinesSync` is the same for synchronous tests.
-export async function readJsonLines(path, { missingOk = false, skipBlank = false } = {}) {
-  try {
-    return parseJsonLinesFile(await readFile(path, "utf8"), skipBlank);
-  } catch (error) {
-    if (missingOk && error.code === "ENOENT") {
-      return [];
-    }
-    throw error;
-  }
-}
-
-export function readJsonLinesSync(path, { missingOk = false, skipBlank = false } = {}) {
-  try {
-    return parseJsonLinesFile(readFileSync(path, "utf8"), skipBlank);
-  } catch (error) {
-    if (missingOk && error.code === "ENOENT") {
-      return [];
-    }
-    throw error;
-  }
-}
-
-function parseJsonLinesFile(text, skipBlank) {
-  if (skipBlank) {
-    return jsonLines(text, { strict: true });
-  }
-  return text
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
 }
 
 // A `createOccLogger` destination that parses every line the logger writes into `records`.
