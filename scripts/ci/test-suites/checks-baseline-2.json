@@ -34,7 +34,7 @@
     "tests/integration/console-theme.test.ts",
     "tests/integration/console-storybook-workflow.test.ts",
     "tests/integration/workspace-setup-api.test.mjs",
-    "tests/integration/agent-create-validate-api.test.mjs",
+    "tests/integration/agent-create-validate-api.test.ts",
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
     "tests/integration/ci-runner.test.mjs",
@@ -542,7 +542,7 @@
       "path": "tests/integration/workspace-setup-api.test.mjs"
     },
     {
-      "path": "tests/integration/agent-create-validate-api.test.mjs"
+      "path": "tests/integration/agent-create-validate-api.test.ts"
     },
     {
       "path": "tests/integration/model-provider.test.ts"
