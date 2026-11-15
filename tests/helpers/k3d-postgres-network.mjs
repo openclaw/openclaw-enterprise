@@ -146,7 +146,9 @@ async function readHolders(registryPath) {
   const { attachment, pendingConnect, pendingRelease, connectRollback } = registry;
   if (attachment !== undefined) {
     assert.ok(
-      isFullId(attachment?.networkId) && isFullId(attachment?.containerId),
+      isFullId(attachment?.networkId) &&
+        isFullId(attachment?.containerId) &&
+        (attachment.endpointId === undefined || isFullId(attachment.endpointId)),
       `invalid attachment IDs in ${registryPath}`,
     );
   }
@@ -381,13 +383,13 @@ async function corroborateMembership(containerBin, containerId, network, allowFi
   return stdout.trim() === containerId;
 }
 
-async function hasExactMembership(
+async function inspectMembership(
   containerBin,
   containerId,
   networks,
   network,
   { inspect, recordEndpoints, conflict },
-  { server = false } = {},
+  { server = false, networkInspectedById = false } = {},
 ) {
   const seen = new Set();
   for (const [name, endpoint] of Object.entries(networks)) {
@@ -409,7 +411,10 @@ async function hasExactMembership(
         resolved.id === network.id,
         "container network membership name and ID disagree",
       );
-      const inspected = await inspectBoundNetwork(inspect, resolved);
+      const inspected =
+        name === network.name && networkInspectedById
+          ? network
+          : await inspectBoundNetwork(inspect, resolved);
       assert.ok(
         await corroborateMembership(containerBin, containerId, inspected, !missing),
         `${server ? "k3d server" : "container network"} membership could not be verified by full ID`,
@@ -427,7 +432,7 @@ async function hasExactMembership(
   }
   recordEndpoints(containerId, seen);
   if (seen.has(network.id)) {
-    return true;
+    return networks[network.name];
   }
 
   // Read back the bound network unless a read already contradicts the
@@ -436,7 +441,29 @@ async function hasExactMembership(
   if (!conflict(network.id, containerId)) {
     await inspectBoundNetwork(inspect, network);
   }
-  return false;
+  return undefined;
+}
+
+function corroboratedEndpointId(network, containerId, endpoint) {
+  const { containers } = network;
+  if (containers !== undefined) {
+    assert.ok(isRecord(containers), "invalid network member listing");
+    assert.ok(Object.hasOwn(containers, containerId), "network member listing omits the container");
+    assert.ok(isRecord(containers[containerId]), "invalid network member entry for the container");
+  }
+  const endpointId = endpoint.EndpointID;
+  const memberId = containers?.[containerId]?.EndpointID;
+  assert.ok(
+    [endpointId, memberId].every((id) => id === undefined || id === "" || isFullId(id)),
+    "invalid attachment endpoint identity",
+  );
+  // Empty or omitted IDs are the legacy representation. A full ID must
+  // appear on both sides before granting ownership of that endpoint.
+  assert.ok(
+    (endpointId || undefined) === (memberId || undefined),
+    "attachment endpoint identities disagree",
+  );
+  return endpointId || undefined;
 }
 
 async function attachContainerToK3d(
@@ -453,9 +480,10 @@ async function attachContainerToK3d(
     if (connectRollback) {
       operation = "disconnect to roll back a successful connect after a holder write failure";
     }
-    const { networkId, containerId } = attachment;
+    const { networkId, containerId, endpointId } = attachment;
     const error = new Error(
-      `Pending k3d ${operation} in ${registryPath} for network ${networkId} and container ${containerId}. ` +
+      `Pending k3d ${operation} in ${registryPath} for network ${networkId} and container ${containerId}` +
+        `${endpointId ? ` (recorded endpoint ${endpointId})` : ""}. ` +
         `${outcome}. Stop this lane's participants and fence ${lockPath}. Using ${containerBin} with the lane's original engine context, ` +
         "verify membership or original object absence by full ID. Retire only the unchanged empty " +
         "pending record after confirming original endpoint absence. If the pair remains attached, " +
@@ -466,7 +494,22 @@ async function attachContainerToK3d(
     return Object.assign(error, { code: cause?.code });
   };
 
-  const observePending = async (registry, observation, phase, operationFailure) => {
+  const ownershipError = ({ networkId, containerId, endpointId }, outcome, cause) =>
+    new Error(
+      `Cannot verify k3d attachment ownership in ${registryPath} for network ${networkId} and container ${containerId}` +
+        `${endpointId ? ` (recorded endpoint ${endpointId})` : ""}. ${outcome}. ` +
+        `Stop this lane's participants and fence ${lockPath}. Using ${containerBin} with the lane's original engine context, ` +
+        "inspect the exact pair and its endpoint. Retire the unchanged record only after confirming the original attachment is gone " +
+        "or the lane owner has resolved ownership. Keep the record if ownership remains unclear.",
+      { cause },
+    );
+
+  const observeAttachment = async (
+    registry,
+    observation,
+    phase,
+    { operationFailure, verifyEndpoint = false } = {},
+  ) => {
     const { networkId, containerId } = registry.attachment;
     try {
       const [network, inspectedContainerId] = await Promise.all([
@@ -481,17 +524,24 @@ async function attachContainerToK3d(
         containerId,
         "original container identity could not be verified",
       );
-      const attached = await hasExactMembership(
+      const endpoint = await inspectMembership(
         containerBin,
         containerId,
         await containerNetworks(containerBin, containerId),
         network,
         observation,
+        { networkInspectedById: true },
       );
-      if (!attached) {
+      if (!endpoint) {
         observation.assertAbsent(registry.attachment);
       }
-      return attached;
+      return {
+        attached: Boolean(endpoint),
+        endpointId:
+          verifyEndpoint && endpoint
+            ? corroboratedEndpointId(network, containerId, endpoint)
+            : undefined,
+      };
     } catch (error) {
       const detail = error instanceof assert.AssertionError ? `. ${error.message}` : "";
       const outcome = `${phase}. Exact membership inspection failed (${error.code ?? error.name})${detail}`;
@@ -503,7 +553,10 @@ async function attachContainerToK3d(
             { code: operationFailure.code },
           )
         : error;
-      throw pendingError(registry, outcome, cause);
+      if (registry.pendingConnect || registry.pendingRelease) {
+        throw pendingError(registry, outcome, cause);
+      }
+      throw ownershipError(registry.attachment, outcome, cause);
     }
   };
 
@@ -520,7 +573,20 @@ async function attachContainerToK3d(
   };
 
   const releasePending = async (registry, operation) => {
-    if (await observePending(registry, observeMembership(containerBin), `${operation} preflight`)) {
+    const expectedEndpoint = registry.attachment.endpointId;
+    const current = await observeAttachment(
+      registry,
+      observeMembership(containerBin),
+      `${operation} preflight`,
+      { verifyEndpoint: expectedEndpoint !== undefined },
+    );
+    if (current.attached) {
+      if (expectedEndpoint && current.endpointId !== expectedEndpoint) {
+        throw pendingError(
+          registry,
+          `${operation} preflight. Attachment endpoint identity changed or could not be corroborated`,
+        );
+      }
       let failure;
       try {
         await executeFile(containerBin, [
@@ -537,7 +603,10 @@ async function attachContainerToK3d(
         ? `${operation} reported ${failure.code ?? failure.name}`
         : `${operation} exited 0`;
       // Start a new observation after submitting the disconnect.
-      if (await observePending(registry, observeMembership(containerBin), phase, failure)) {
+      const readback = await observeAttachment(registry, observeMembership(containerBin), phase, {
+        operationFailure: failure,
+      });
+      if (readback.attached) {
         throw pendingError(registry, `${phase}. Original membership remains`, failure);
       }
     }
@@ -548,7 +617,10 @@ async function attachContainerToK3d(
     const observation = observeMembership(containerBin);
     const registry = await readHolders(registryPath);
     const hasPending = registry.pendingConnect || registry.pendingRelease;
-    if (hasPending && (await observePending(registry, observation, "Acquisition readback"))) {
+    if (
+      hasPending &&
+      (await observeAttachment(registry, observation, "Acquisition readback")).attached
+    ) {
       throw pendingError(
         registry,
         "Acquisition readback found the original membership still attached",
@@ -568,7 +640,7 @@ async function attachContainerToK3d(
     ]);
     assert.equal(network.name, networkName, "k3d network name must match its inspection");
     assert.ok(
-      await hasExactMembership(containerBin, serverId, serverNetworks, network, observation, {
+      await inspectMembership(containerBin, serverId, serverNetworks, network, observation, {
         server: true,
       }),
       "owned k3d server network must be inspectable",
@@ -583,13 +655,70 @@ async function attachContainerToK3d(
       !shared || sameAttachment(registry.attachment, attachment),
       `live attachment holders in ${registryPath} have a different or unverified engine binding`,
     );
-    const attached = await hasExactMembership(
-      containerBin,
-      containerId,
-      await containerNetworks(containerBin, containerId),
-      network,
-      observation,
+    // An empty record has no committed holder history. A dead holder in a
+    // committed record is still evidence, but it cannot establish continuity.
+    const committed = registry.connectedByHarness && Object.keys(registry.holders).length > 0;
+    if (committed && !shared && !registry.attachment) {
+      throw new Error(
+        `Cannot verify k3d attachment ownership in ${registryPath}. The record has no network or container ID for the original attachment. ` +
+          `The currently selected network ${attachment.networkId} and container ${attachment.containerId} do not identify the original pair. ` +
+          `Stop this lane's participants and fence ${lockPath}. Using the lane's original engine context, ` +
+          "recover the original pair from lane logs or engine records and inspect its membership by full IDs. " +
+          "Retire the unchanged record only after confirming the original attachment is gone or the lane owner has resolved ownership. " +
+          "Keep the record if ownership remains unclear.",
+      );
+    }
+    const attached = Boolean(
+      await inspectMembership(
+        containerBin,
+        containerId,
+        await containerNetworks(containerBin, containerId),
+        network,
+        observation,
+      ),
     );
+    const samePair = sameAttachment(registry.attachment, attachment);
+    const recordedEndpoint = registry.attachment?.endpointId;
+    let keepOwnership = shared && registry.connectedByHarness;
+    if (committed && !shared && registry.attachment && !samePair) {
+      const original = await observeAttachment(
+        registry,
+        observation,
+        "Previous attachment readback",
+      );
+      if (original.attached) {
+        throw ownershipError(registry.attachment, "The previously owned pair is still attached");
+      }
+    }
+    if (committed && attached && samePair) {
+      if (recordedEndpoint) {
+        const phase = "Attachment continuity readback";
+        const current = await observeAttachment(registry, observation, phase, {
+          verifyEndpoint: true,
+        });
+        if (!current.endpointId) {
+          throw ownershipError(
+            registry.attachment,
+            "The recorded endpoint could not be corroborated",
+          );
+        }
+        if (shared && current.endpointId !== recordedEndpoint) {
+          throw ownershipError(
+            registry.attachment,
+            "The recorded endpoint changed with live holders",
+          );
+        }
+        keepOwnership = current.endpointId === recordedEndpoint;
+        if (keepOwnership) {
+          attachment.endpointId = recordedEndpoint;
+        }
+      } else if (!shared) {
+        throw ownershipError(
+          attachment,
+          "The previous holders exited without a recorded endpoint identity",
+        );
+      }
+    }
     assert.ok(
       !shared || attached,
       `live attachment holders in ${registryPath} lost their membership`,
@@ -597,6 +726,9 @@ async function attachContainerToK3d(
     // Recheck every absence this write relies on, including the original
     // pending pair when the replacement is already attached.
     const requiredAbsences = hasPending ? [registry.attachment] : [];
+    if (committed && !samePair && registry.attachment) {
+      requiredAbsences.push(registry.attachment);
+    }
     if (!attached) {
       requiredAbsences.push(attachment);
     }
@@ -606,6 +738,13 @@ async function attachContainerToK3d(
       if (hasPending) {
         throw pendingError(
           registry,
+          `Acquisition membership reports disagree. ${error.message}`,
+          error,
+        );
+      }
+      if (committed && registry.attachment && !samePair) {
+        throw ownershipError(
+          registry.attachment,
           `Acquisition membership reports disagree. ${error.message}`,
           error,
         );
@@ -624,11 +763,23 @@ async function attachContainerToK3d(
       } catch (error) {
         throw pendingError(pending, `Connect reported ${error.code ?? error.name}`, error);
       }
+      const readback = await observeAttachment(
+        pending,
+        observeMembership(containerBin),
+        "Connect exited 0. Endpoint readback",
+        { verifyEndpoint: true },
+      );
+      if (!readback.attached) {
+        throw pendingError(pending, "Connect exited 0. Original membership is absent");
+      }
+      if (readback.endpointId) {
+        attachment.endpointId = readback.endpointId;
+      }
     }
     try {
       await writeHolders(registryPath, {
         attachment,
-        connectedByHarness: !attached || (shared && registry.connectedByHarness),
+        connectedByHarness: !attached || keepOwnership,
         holders: { ...holders, [holder]: process.pid },
       });
     } catch (error) {

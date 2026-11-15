@@ -217,21 +217,31 @@ async function recordingAttachment(t: TestContext, fixture: "postgres" | "keyclo
   const engineState = join(root, "engine.json");
   const nextObservation = join(root, "next-membership.json");
   const mutationsPath = join(root, "mutations.jsonl");
+  const connectIntent = join(root, "connect-intent.json");
   const engine = join(root, "engine.mjs");
   const registry = join(root, `${fixture}-k3d-fixture.json`);
   const lock = registry.replace(/\.json$/, ".lock");
   const attachment = { networkId, containerId };
   const updateEngine = (input: {
     attached?: boolean;
+    endpointId?: string;
+    networkEndpointId?: string;
     replacement?: boolean;
     keepOriginalNetwork?: boolean;
     replaceContainer?: boolean;
+    originalContainerAttached?: boolean;
     unavailable?: boolean;
     serverWithoutNetworkId?: "bound" | "unbound" | "podman" | "empty-id";
     legacy?: "all" | "target" | "unrelated" | "hex-unrelated";
     memberListing?: "present" | "empty";
     peerListing?:
-      "name-only" | "id-only" | "first-id-only" | "omitted" | "malformed" | "after-disconnect";
+      | "name-only"
+      | "id-only"
+      | "first-id-only"
+      | "omitted"
+      | "malformed"
+      | "malformed-map"
+      | "after-disconnect";
     filter?: "empty" | "short" | "wrong" | "fails" | "disconnect-fails";
     nameLookup?: "wrong-name" | "wrong-id";
     fullIdLookup?: "wrong-name" | "wrong-id" | "unavailable";
@@ -329,8 +339,13 @@ if (command === "ps" && args.includes("--no-trunc") && args.includes("{{.ID}}"))
       unlinkSync(nextObservation);
     }
   } else {
-    let membership = reference === selected && state.attached
-      ? { [name]: { NetworkID: ["all", "target"].includes(state.legacy) ? name : current } }
+    const attached = (reference === selected && state.attached) ||
+      (reference === container && state.originalContainerAttached);
+    let membership = attached
+      ? { [name]: {
+          NetworkID: ["all", "target"].includes(state.legacy) ? name : current,
+          EndpointID: state.endpointId,
+        } }
       : {};
     if (reference === server || reference === serverId) {
       let endpoint = { NetworkID: state.legacy === "all" ? name : current };
@@ -366,15 +381,20 @@ if (command === "ps" && args.includes("--no-trunc") && args.includes("{{.ID}}"))
       state.peerListing === "name-only" ? field === name :
       ["id-only", "first-id-only"].includes(state.peerListing) ? field === current : state.peerListing !== "omitted";
     if (reportPeer) {
-      containers[selected] = state.peerListing === "malformed" ? null : { Name: "postgres" };
+      containers[selected] = state.peerListing === "malformed" ? null : {
+        Name: "postgres",
+        EndpointID: state.networkEndpointId ?? state.endpointId,
+      };
       if (state.peerListing === "first-id-only") {
         state.peerListing = "omitted";
         saveState();
       }
     }
   }
+  if (!isCompose && state.originalContainerAttached) containers[container] = { Name: "postgres-old" };
   if (state.serverWithoutNetworkId === "unbound" || state.memberListing === "empty") containers = {};
   if (state.legacy && !state.memberListing) containers = undefined;
+  if (!isCompose && state.attached && state.peerListing === "malformed-map") containers = null;
   const lowerCase = state.legacy || state.serverWithoutNetworkId === "podman";
   console.log(JSON.stringify([lowerCase
     ? { name: networkName, id, containers }
@@ -382,6 +402,10 @@ if (command === "ps" && args.includes("--no-trunc") && args.includes("{{.ID}}"))
 } else if (command === "network" && ["connect", "disconnect"].includes(subcommand)) {
   appendFileSync(${JSON.stringify(mutationsPath)}, JSON.stringify(args) + "\\n");
   if (subcommand === "connect") {
+    const registry = ${JSON.stringify(registry)};
+    if (existsSync(registry)) {
+      writeFileSync(${JSON.stringify(connectIntent)}, readFileSync(registry));
+    }
     if (state.connectExit === "before") process.exit(7);
     state.attached = true;
   } else {
@@ -422,15 +446,19 @@ if (command === "ps" && args.includes("--no-trunc") && args.includes("{{.ID}}"))
     assert.equal(releases.length, 0);
     assert.deepEqual(await mutations(), []);
   };
-  const pending = async (operation: "pendingConnect" | "pendingRelease", connectRollback = false) =>
+  const pending = async (
+    operation: "pendingConnect" | "pendingRelease",
+    connectRollback = false,
+    endpointId?: string,
+  ) =>
     assert.deepEqual(await readRegistry(), {
       ...(connectRollback ? { connectRollback: true } : {}),
-      attachment,
+      attachment: { ...attachment, ...(endpointId ? { endpointId } : {}) },
       connectedByHarness: true,
       holders: {},
       [operation]: true,
     });
-  const refused = async (message: RegExp) => {
+  const refused = async (message: RegExp | ((error: unknown) => boolean)) => {
     const bytes = await readFile(registry);
     const before = await mutations();
     const count = releases.length;
@@ -483,10 +511,32 @@ if (command === "ps" && args.includes("--no-trunc") && args.includes("{{.ID}}"))
   };
   return {
     acquire,
+    acquireWithoutCleanup: () => {
+      execFileSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          `import { attachPostgresToK3d } from ${JSON.stringify(
+            new URL("../helpers/k3d-postgres-network.mjs", import.meta.url).href,
+          )};
+        await attachPostgresToK3d(() => {});`,
+        ],
+        { timeout: 15_000, stdio: "pipe" },
+      );
+    },
     attachment,
     replacementContainerId,
+    inspectNetworks: (id: string): object =>
+      JSON.parse(
+        execFileSync(engine, ["inspect", "--format", "{{json .NetworkSettings.Networks}}", id], {
+          encoding: "utf8",
+          timeout: 5_000,
+        }),
+      ),
     isAttached: async () => JSON.parse(await readFile(engineState, "utf8")).attached === true,
     connect,
+    readConnectIntent: () => readFile(connectIntent),
     disconnect,
     releases,
     gone,
@@ -560,6 +610,102 @@ test("k3d fixture attachments preserve exact engine ownership", async (t) => {
     });
   }
 
+  for (const scenario of [
+    "same endpoint",
+    "replacement endpoint",
+    "missing endpoint",
+    "conflicting endpoint",
+    "bound legacy holder",
+    "engine does not supply endpoint IDs",
+    "unbound legacy holder",
+    "empty registry",
+  ] as const) {
+    await t.test(`recovers after holder exit with ${scenario}`, async (t) => {
+      const f = await recordingAttachment(t);
+      const originalEndpoint = "1".repeat(64);
+      const replacementEndpoint = "2".repeat(64);
+      const initialEndpoint =
+        scenario === "engine does not supply endpoint IDs" ? "" : originalEndpoint;
+      await f.updateEngine({ endpointId: initialEndpoint });
+      f.acquireWithoutCleanup();
+      const initial = await f.readRegistry();
+      const { holders } = initial;
+      const [pid] = Object.values<number>(holders);
+      assert.ok(pid);
+      assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+      assert.deepEqual(await f.mutations(), [f.connect]);
+      if (["bound legacy holder", "unbound legacy holder", "empty registry"].includes(scenario)) {
+        await writeFile(
+          f.registry,
+          JSON.stringify({
+            connectedByHarness: true,
+            holders: scenario === "empty registry" ? {} : holders,
+            ...(scenario === "unbound legacy holder" ? {} : { attachment: f.attachment }),
+          }),
+        );
+      }
+      await f.updateEngine({
+        attached: true,
+        endpointId: scenario === "missing endpoint" ? "" : initialEndpoint,
+        ...(scenario === "replacement endpoint" ? { endpointId: replacementEndpoint } : {}),
+        ...(scenario === "conflicting endpoint" ? { networkEndpointId: replacementEndpoint } : {}),
+      });
+
+      if (
+        [
+          "missing endpoint",
+          "conflicting endpoint",
+          "bound legacy holder",
+          "unbound legacy holder",
+          "engine does not supply endpoint IDs",
+        ].includes(scenario)
+      ) {
+        await f.refused(
+          new RegExp(
+            `Cannot verify k3d attachment ownership.*${f.attachment.networkId}.*${f.attachment.containerId}.*Stop this lane`,
+          ),
+        );
+        assert.deepEqual(initial.attachment, {
+          ...f.attachment,
+          ...(initialEndpoint ? { endpointId: initialEndpoint } : {}),
+        });
+        assert.deepEqual(await f.mutations(), [f.connect]);
+        assert.equal(await f.isAttached(), true);
+        return;
+      }
+
+      const owned = scenario === "same endpoint";
+      assert.equal(await f.acquire(), "192.0.2.4");
+      const record = await f.readRegistry();
+      assert.equal(record.connectedByHarness, owned);
+      assert.deepEqual(Object.values(record.holders), [process.pid]);
+      if (owned) {
+        assert.equal(record.attachment.endpointId, originalEndpoint);
+      }
+      await f.releases[0]!();
+      await f.gone();
+      assert.deepEqual(await f.mutations(), owned ? [f.connect, f.disconnect] : [f.connect]);
+      assert.equal(await f.isAttached(), !owned);
+      assert.equal(initial.attachment.endpointId, originalEndpoint);
+    });
+  }
+
+  await t.test("a live holder cannot detach a replacement endpoint", async (t) => {
+    const f = await recordingAttachment(t);
+    const endpointId = "1".repeat(64);
+    await f.updateEngine({ endpointId });
+    await f.acquire();
+    await f.updateEngine({ attached: true, endpointId: "2".repeat(64) });
+    await f.refused(/Cannot verify k3d attachment ownership.*endpoint/);
+    await f.releases[0]!();
+    await f.pending("pendingRelease", false, endpointId);
+    await f.refused(/Pending k3d disconnect.*still attached/);
+    assert.equal(await f.isAttached(), true);
+    assert.equal(f.consoleError.mock.callCount(), 1);
+    assert.match(String(f.consoleError.mock.calls[0]?.arguments[0]), /endpoint identity changed/);
+    assert.deepEqual(await f.mutations(), [f.connect]);
+  });
+
   await t.test("replacement with live holders", async (t) => {
     const f = await recordingAttachment(t);
     await f.acquire();
@@ -608,6 +754,82 @@ test("k3d fixture attachments preserve exact engine ownership", async (t) => {
         await f.gone();
         assert.deepEqual(await f.mutations(), [f.connect, f.connect, f.disconnect]);
       }
+    });
+  }
+
+  const fullEndpoint = "1".repeat(64);
+  for (const [label, input, diagnostic] of [
+    [
+      "missing network member",
+      { peerListing: "omitted", endpointId: fullEndpoint },
+      /listing omits the container/,
+    ],
+    [
+      "malformed network member",
+      { peerListing: "malformed", endpointId: fullEndpoint },
+      /invalid network member entry/,
+    ],
+    [
+      "malformed member map",
+      { peerListing: "malformed-map", endpointId: fullEndpoint },
+      /invalid network member listing/,
+    ],
+    [
+      "container-only endpoint ID",
+      { endpointId: fullEndpoint, networkEndpointId: "" },
+      /endpoint identities disagree/,
+    ],
+    [
+      "network-only endpoint ID",
+      { networkEndpointId: fullEndpoint },
+      /endpoint identities disagree/,
+    ],
+    [
+      "omitted member map with a container endpoint ID",
+      { legacy: "all", endpointId: fullEndpoint },
+      /endpoint identities disagree/,
+    ],
+    [
+      "different full endpoint IDs",
+      { endpointId: fullEndpoint, networkEndpointId: "2".repeat(64) },
+      /endpoint identities disagree/,
+    ],
+    [
+      "malformed endpoint ID",
+      { endpointId: fullEndpoint, networkEndpointId: "short" },
+      /invalid attachment endpoint identity/,
+    ],
+  ] as const) {
+    await t.test(`fences a successful connect with ${label}`, async (t) => {
+      const f = await recordingAttachment(t);
+      // The contradictory report appears only after the recorder's connect exits zero.
+      await f.updateEngine(input);
+      await assert.rejects(f.acquire, (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /Pending k3d connect.*Connect exited 0.*Endpoint readback/);
+        assert.match(error.message, diagnostic);
+        f.recovery(error.message);
+        return true;
+      });
+      assert.equal(await f.isAttached(), true);
+      await f.pending("pendingConnect");
+      assert.deepEqual(await readFile(f.registry), await f.readConnectIntent());
+      assert.equal(f.releases.length, 0);
+      assert.deepEqual(await f.mutations(), [f.connect]);
+
+      // Converging reports still cannot settle who owns a possibly replaced endpoint.
+      await f.updateEngine({ attached: true, endpointId: "3".repeat(64) });
+      await f.refused(/Pending k3d connect.*still attached/);
+      assert.equal(f.releases.length, 0);
+
+      // Confirmed absence permits a new connection and gives only that holder cleanup rights.
+      await f.updateEngine({ endpointId: fullEndpoint });
+      assert.equal(await f.acquire(), "192.0.2.4");
+      assert.equal(f.releases.length, 1);
+      await f.releases[0]!();
+      await f.gone();
+      assert.equal(await f.isAttached(), false);
+      assert.deepEqual(await f.mutations(), [f.connect, f.connect, f.disconnect]);
     });
   }
 
@@ -1148,6 +1370,45 @@ test("k3d fixture attachments preserve exact engine ownership", async (t) => {
     await f.gone();
     assert.deepEqual(await f.mutations(), [f.connect, f.connect, f.disconnect]);
   });
+});
+
+test("retains an owned PID-only record when the selected container changes", async (t) => {
+  const f = await recordingAttachment(t);
+  f.acquireWithoutCleanup();
+  const { holders } = await f.readRegistry();
+  const [pid] = Object.values<number>(holders);
+  assert.ok(pid);
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  assert.deepEqual(await f.mutations(), [f.connect]);
+  // The old writer recorded only the ownership flag and holder PIDs.
+  await writeFile(f.registry, JSON.stringify({ connectedByHarness: true, holders }));
+
+  // Both containers still exist. The lane now selects the unattached replacement.
+  await f.updateEngine({ replaceContainer: true, originalContainerAttached: true });
+  const original = { "k3d-fixture": { NetworkID: f.attachment.networkId } };
+  assert.deepEqual(f.inspectNetworks(f.attachment.containerId), original);
+  assert.deepEqual(f.inspectNetworks(f.replacementContainerId), {});
+  await f.refused((error: unknown) => {
+    assert.ok(error instanceof Error);
+    for (const expected of [f.registry, f.lock, f.attachment.networkId, f.replacementContainerId]) {
+      assert.ok(error.message.includes(expected), error.message);
+    }
+    assert.match(
+      error.message,
+      /record has no network or container ID for the original attachment/,
+    );
+    assert.match(error.message, /currently selected network.*do not identify the original pair/);
+    assert.match(error.message, /Stop this lane's participants.*fence/);
+    assert.match(error.message, /recover the original pair from lane logs or engine records/);
+    assert.match(
+      error.message,
+      /Retire the unchanged record only after confirming the original attachment is gone/,
+    );
+    assert.match(error.message, /Keep the record if ownership remains unclear/);
+    return true;
+  });
+  assert.deepEqual(f.inspectNetworks(f.attachment.containerId), original);
+  assert.deepEqual(f.inspectNetworks(f.replacementContainerId), {});
 });
 
 test("keeps the pending record when an earlier report lists the replacement", async (t) => {
