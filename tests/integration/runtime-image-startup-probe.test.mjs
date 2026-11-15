@@ -6,11 +6,15 @@
 // runtime-image-native-worker.test.mjs.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, test } from "node:test";
+import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.ts";
 import {
+  execute,
   imageTestOptions,
   runDocker,
   failureTail,
@@ -406,3 +410,125 @@ test(
     }
   },
 );
+
+// Drive the registered protected cases through their actual test hooks. Only the
+// Docker CLI is substituted. Its followers stay alive until stopped, while rm
+// fails for the wrapper and the absence check still sees that wrapper.
+test("protected startup cleanup joins live followers after a removal failure", async (t) => {
+  const directory = await temporaryDirectory(t, "oce-protected-cleanup-");
+  const trace = join(directory, "trace");
+  const docker = await writeCommand(
+    directory,
+    "docker.cts",
+    `const { appendFileSync, existsSync, writeFileSync } = require("node:fs");
+const [op, flag, ...rest] = process.argv.slice(2);
+const name = process.argv.at(-1);
+const record = (action: string, target: string) => appendFileSync(process.env.TRACE, action + " " + target + "\\n");
+if (op === "run") {
+  process.exit(0);
+} else if (op === "inspect") {
+  console.log("2026-01-01T00:00:00Z");
+} else if (op === "logs" && flag !== "--follow") {
+  console.log('{"event":"listening","publicKey":"fixture"}');
+} else if (op === "logs" || op === "wait") {
+  const id = op + ":" + name;
+  record("start", id);
+  process.once("SIGTERM", () => setTimeout(() => {
+    record("closed", id);
+    process.exit(0);
+  }, 50));
+  // A regressed helper must eventually return a failing result to the outer test.
+  setTimeout(() => {
+    record("expired", id);
+    process.exit(1);
+  }, 10_000);
+  if (op === "logs" && name.includes("-endpoint-")) {
+    console.log('{"event":"listening"}');
+    console.log('{"event":"transport","at":1767225600100,"authenticatedUpgrade":101,"unauthenticatedUpgrade":401,"failure":{"check":"model-probe","code":"AUTHENTICATION_FAILED"}}');
+  } else if (op === "wait") {
+    writeFileSync(process.env.TRACE + name, "");
+  } else {
+    // Publish the wrapper observations only after its wait process can handle SIGTERM.
+    const ready = setInterval(() => {
+      if (!existsSync(process.env.TRACE + name)) {
+        return;
+      }
+      clearInterval(ready);
+      console.log('{"event":"runtime.startup_phase","phase":"native-spawn"}');
+      console.log('{"event":"runtime.startup_phase","phase":"model-probe","outcome":"failed"}');
+    }, 10);
+  }
+} else if (op === "rm") {
+  record("remove", name);
+  process.exit(name.includes("-codex-") ? 1 : 0);
+} else if (op === "ps") {
+  const owned = rest[rest.indexOf("--filter") + 1].slice(6, -1);
+  record("inspect-absence", owned);
+  if (owned.includes("-codex-")) {
+    console.log(owned);
+  }
+} else {
+  process.exit(2);
+}
+`,
+    { interpreter: process.execPath },
+  );
+
+  const result = await execute(
+    process.execPath,
+    [
+      "--test",
+      "--test-reporter=tap",
+      "--test-name-pattern=^runtime image protected Codex",
+      import.meta.filename,
+    ],
+    {
+      env: {
+        PATH: process.env.PATH,
+        TMPDIR: directory,
+        OCC_DOCKER_BIN: docker,
+        OCC_TEST_RUNTIME_IMAGE: "controlled-cleanup",
+        TRACE: trace,
+      },
+      timeout: 60_000,
+    },
+  ).then(
+    () => assert.fail("the injected failures must fail the protected cases"),
+    (error) => error,
+  );
+  assert.equal(result.code, 1);
+  const lines = await commandCalls(trace);
+  const targets = (operation) =>
+    lines
+      .filter((line) => line.startsWith(operation + " "))
+      .map((line) => line.slice(operation.length + 1))
+      .sort();
+  const removed = targets("remove");
+  const wrappers = removed.filter((name) => /^oce-runtime-probe-codex-[a-f0-9]{12}$/.test(name));
+  assert.equal(new Set(wrappers).size, 2);
+  const endpoints = wrappers.map((name) => name.replace("-codex-", "-endpoint-"));
+  assert.deepEqual(removed, [...wrappers, ...endpoints].sort());
+  assert.deepEqual(targets("inspect-absence"), removed);
+
+  // Each case starts a readiness log follower, two steady log followers and docker wait.
+  const followers = [
+    ...wrappers.map((name) => "wait:" + name),
+    ...[...removed, ...endpoints].map((name) => "logs:" + name),
+  ].sort();
+  assert.deepEqual(targets("start"), followers);
+  assert.deepEqual(targets("closed"), followers);
+  assert.deepEqual(targets("expired"), []);
+
+  // The missing release event fails each body. Its protected assertion diagnostic
+  // and the two cleanup diagnostics must all reach Node's reporter.
+  assert.equal(result.stdout.match(/error: 'Protected startup assertion failed:/g)?.length, 2);
+  for (const name of wrappers) {
+    const suffix = name.split("-").at(-1);
+    const lastClose = lines.findLastIndex(
+      (line) => line.startsWith("closed ") && line.endsWith(suffix),
+    );
+    assert.ok(lastClose < lines.indexOf("remove " + name), "join live followers before removal");
+    assert.ok(result.stdout.includes(name + ": removal failed"));
+    assert.ok(result.stdout.includes(name + ": still present"));
+  }
+});

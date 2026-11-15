@@ -13,6 +13,7 @@ import {
   embeddedGatewayRecoveryPreamble,
 } from "../../apps/controller/src/drivers/compute/embedded-gateway-owner.ts";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
+import { withBoundedTeardown } from "./bounded-teardown.ts";
 import { changeSignal, followContainer } from "./docker-follow.ts";
 import {
   COMPUTE_AGENT_RUNTIME_ENTRYPOINT as AGENT_RUNTIME_ENTRYPOINT,
@@ -442,7 +443,10 @@ export async function runStartupProbeScenario(t, options) {
   }
   const progress = { stage: "setup" };
   try {
-    return await runStartupProbeScenarioInternal(t, options, progress);
+    // Join the followers before removing their containers. The removal hook can
+    // run four Docker commands, each with a scaled 60-second timeout.
+    const context = withBoundedTeardown(t, { stepLimitMs: 300_000 * imageSmokeTimeoutMultiplier });
+    return await runStartupProbeScenarioInternal(context, options, progress);
   } catch {
     // Setup errors can contain Docker argv, credentials, or arbitrary log tails.
     throw protectedFailure(progress, "failed");
@@ -514,6 +518,8 @@ async function runStartupProbeScenarioInternal(
       }
       // A separate teardown failure leaves the primary test outcome intact.
       if (failures.length > 0) {
+        // Node reports the body error first when the assertion and teardown both fail.
+        t.diagnostic(`Protected startup cleanup failed: ${failures.join("; ")}`);
         throw new AggregateError(
           failures.map((message) => new Error(message)),
           "Protected startup cleanup failed",
