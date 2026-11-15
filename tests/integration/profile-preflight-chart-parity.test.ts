@@ -875,6 +875,8 @@ test(
       for (const mountPath of [
         "/etc/openclaw/repository-registry",
         "/etc/openclaw/repository-ca",
+        "/etc/openclaw/prepared-repository",
+        "etc/openclaw/prepared-repository/",
         "/var/run/secrets/kubernetes.io/serviceaccount",
         "/run/secrets/kubernetes.io/serviceaccount",
         "/run/openclaw/repository-control",
