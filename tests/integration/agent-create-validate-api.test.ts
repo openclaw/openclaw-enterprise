@@ -25,10 +25,11 @@ import {
   type SecretReference,
   type ValidateAgentCreateBody,
 } from "../../packages/contracts/src/index.ts";
-import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { consoleFixtureClient } from "../helpers/console-fixture-client.ts";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { assertWriteAuthorizationDenial } from "../helpers/partial-write-authorization.mjs";
 import { createDenied } from "../helpers/refusal-text.mjs";
@@ -67,16 +68,18 @@ async function setup(
   options: { configurationDriver?: FilesystemConfigurationDriver } = {},
 ) {
   let platformState: PlatformStateStore | undefined;
-  const fixture = await createConsoleAppFixture(t, {
-    ...options,
-    wrapState(state: PlatformStateStore) {
-      platformState = state;
-      return state;
-    },
-  });
+  const fixture = consoleFixtureClient(
+    await createConsoleAppFixture(t, {
+      ...options,
+      wrapState(state: PlatformStateStore) {
+        platformState = state;
+        return state;
+      },
+    }),
+  );
   await fixture.bootstrap();
-  const controller: unknown = fixture.controller;
-  assert.ok(controller instanceof OpenClawController, "expected the bootstrapped Controller");
+  const { controller } = fixture;
+  assert.ok(controller, "expected the bootstrapped Controller");
   const driver = new OCCPluginDriver();
   controller.registerDriver(driver);
   controller.selectDriver("plugin", driver.id);
@@ -131,21 +134,8 @@ async function setup(
     ).data;
   const mutationCount = () =>
     fixture.auditSink.events.filter((event) => event.kind === "mutation").length;
-  const { app, auditSink, createAccountWithPolicy, createConfiguration, createSecret, fetch } =
-    fixture;
-  const { fixtureResponse, origin, policy, request, signIn } = fixture;
   return {
-    app,
-    auditSink,
-    createAccountWithPolicy,
-    createConfiguration,
-    createSecret,
-    fetch,
-    fixtureResponse,
-    origin,
-    policy,
-    request,
-    signIn,
+    ...fixture,
     namespace,
     agents,
     validate,
@@ -484,12 +474,14 @@ test("ordinary creators enable browser access atomically on an unshared Configur
   assert.equal(domain.length, 211);
   const canonicalDomain = `aaa${domain}`;
   assert.equal(canonicalDomain.length, 214);
-  const f = await createConsoleAppFixture(t, {
-    publicOrigin: true,
-    nativeAdmin: { enabled: true, domain: `  ${canonicalDomain.toUpperCase()}.  ` },
-    nativeAdminGatewayApiKey: "synthetic-browser-create-service-key",
-    filesystemConfiguration: true,
-  });
+  const f = consoleFixtureClient(
+    await createConsoleAppFixture(t, {
+      publicOrigin: true,
+      nativeAdmin: { enabled: true, domain: `  ${canonicalDomain.toUpperCase()}.  ` },
+      nativeAdminGatewayApiKey: "synthetic-browser-create-service-key",
+      filesystemConfiguration: true,
+    }),
+  );
   const bootstrapped = await f.request("POST", "/installation/bootstrap", {
     body: { name: "Browser creation integration" },
   });
