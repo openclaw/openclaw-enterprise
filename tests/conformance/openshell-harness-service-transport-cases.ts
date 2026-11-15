@@ -88,7 +88,7 @@ export function loadWebSocketPeer(): WebSocketModule {
 }
 
 export async function listen(server: Server, host = "127.0.0.1"): Promise<number> {
-  await new Promise<void>((resolve, reject) => {
+  await new Promise<void>((resolve, reject: (error: Error) => void) => {
     server.once("error", reject);
     server.listen(0, host, () => {
       server.off("error", reject);
