@@ -304,7 +304,6 @@ export function registerOpenShellCodexReadinessCases(token: string, serviceUrl: 
     assert.deepEqual(await driver.harnessStatus(context), { state: "starting" });
     const apiKeyContext: SandboxHarnessStatusContext = {
       ...context,
-      requirements: { ...context.requirements, loginMode: "api_key" },
       revision: {
         ...context.revision,
         harnessAuth: {
