@@ -610,21 +610,49 @@ test(
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
-    t.after(() => child.kill("SIGTERM"));
     let stdout = "";
     let stderr = "";
-    const timer = setTimeout(() => child.kill("SIGTERM"), 5_000);
-    child.stdout.on("data", (data) => {
-      stdout += data;
-      if (stdout.includes("memory-sampler")) {
-        child.kill("SIGTERM");
+    let sawFirstSummary = false;
+    let stopTimer;
+    const stop = () => {
+      child.kill("SIGTERM");
+      stopTimer = setTimeout(() => {
+        child.kill("SIGKILL");
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }, 5_000);
+    };
+    // The sampler appends the first sample before printing its summary. Give
+    // startup time to finish, then let Bash's trap dispose of the pending sleep.
+    const startupTimer = setTimeout(stop, 30_000);
+    child.stdout.setEncoding("utf8").on("data", (chunk) => {
+      stdout += chunk;
+      if (stopTimer === undefined && /^memory-sampler .+\n/m.test(stdout)) {
+        sawFirstSummary = true;
+        clearTimeout(startupTimer);
+        stop();
       }
     });
-    child.stderr.on("data", (data) => (stderr += data));
-    await new Promise((resolvePromise, reject) => {
-      child.on("error", reject);
-      child.on("close", resolvePromise);
-    }).finally(() => clearTimeout(timer));
+    child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+    let childError;
+    child.on("error", (error) => {
+      childError = error;
+    });
+    // Await pipe closure and the actual exit before fixture cleanup can run.
+    const { code, signal } = await new Promise((resolvePromise) => {
+      child.once("close", (code, signal) => resolvePromise({ code, signal }));
+    }).finally(() => {
+      clearTimeout(startupTimer);
+      clearTimeout(stopTimer);
+    });
+    if (childError) {
+      throw childError;
+    }
+    assert.ok(
+      sawFirstSummary,
+      `Expected the first memory summary (exit ${code}, signal ${signal})`,
+    );
+    assert.deepEqual({ code, signal }, { code: 0, signal: null });
     const samples = await readFile(output, "utf8");
     const executable = basename(await realpath(process.execPath));
     assert.ok(
