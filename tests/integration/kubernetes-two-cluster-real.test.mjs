@@ -7,7 +7,7 @@ import test from "node:test";
 import {
   createKubernetesClient,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 
 const execute = promisify(execFile);
 const configurationFile = process.env.OCC_TEST_TWO_CLUSTER_CONFIG;

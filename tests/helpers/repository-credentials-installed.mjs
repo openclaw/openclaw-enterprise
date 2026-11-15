@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { nativeTaskFailureSummary } from "./normal-agent-tools.mjs";
+import { nativeTaskFailureSummary } from "./normal-agent-native-diagnostics.ts";
 import { isAbsolute } from "node:path";
 
 export function createRepositoryObserver({ run, repository, binary = "gh" }) {

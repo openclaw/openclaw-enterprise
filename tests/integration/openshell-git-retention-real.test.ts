@@ -10,7 +10,7 @@ import type {
   OpenShellStoredProviderProfile,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
+import { verifyFirstAgentModel } from "../../scripts/first-agent-model.ts";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
 import {
   deployFiniteAgent,
@@ -136,11 +136,13 @@ test(
       workspace,
       checkpoint: evidence,
     } = fixture;
-    const modelKubectl = async (...args: (string | { input?: string; timeout?: number })[]) => {
+    const modelKubectl = async (...args: unknown[]): Promise<string> => {
       const options = args.pop();
       assert.ok(options && typeof options === "object");
       assert.ok(args.every((argument) => typeof argument === "string"));
-      return fixture.kube(args, options);
+      const output: unknown = await fixture.kube(args, options);
+      assert.ok(typeof output === "string");
+      return output;
     };
     // The same Git-enabled Installation must also start a model-only Agent. This uses the
     // ordinary API, real worker, Gateway attachment and a genuine model turn before Git starts.

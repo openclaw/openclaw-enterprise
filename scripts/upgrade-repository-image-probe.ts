@@ -18,6 +18,8 @@ const origin = "https://credentials.example.test";
 const backend = "compatibility-probe";
 const brokerCommand = "/app/dist/composition/repository-credentials/projected-inputs.js";
 const controllerProbePaths = [
+  "/app/apps/controller/src/drivers/repo/github/access/admission-probe.ts",
+  // Released controller images can contain only one of these earlier paths.
   "/app/apps/controller/src/drivers/repo/github/access/admission-probe.mjs",
   "/app/apps/controller/src/drivers/repo/github/credentials/admission-probe.mjs",
 ];

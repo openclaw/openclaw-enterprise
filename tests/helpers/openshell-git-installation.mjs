@@ -1,4 +1,3 @@
-import { extractImageFile as extractOpenShellImageFile } from "../../scripts/lib/image-file.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -18,6 +17,7 @@ import {
   projectOpenShellGitRetention,
   selectOpenShellGitWithdrawalDenials,
 } from "../../scripts/ci/openshell-git-retention.mjs";
+import { extractImageFile } from "../../scripts/lib/image-file.ts";
 import { createTlsMaterial, run } from "../fixtures/repository-credentials/process.mjs";
 import { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
 import { availablePort } from "./available-port.mjs";
@@ -25,8 +25,6 @@ import { listen } from "./listen.mjs";
 import { localFirstAgentStack, ownFirstAgentWork } from "./local-first-agent-stack.mjs";
 import { localOpenShellGatewayOptions } from "./local-openshell-gateway.mjs";
 import { stopProcess } from "./stop-process.mjs";
-
-export { extractOpenShellImageFile };
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { loadYaml } = await import(require.resolve("@kubernetes/client-node"));
@@ -199,19 +197,25 @@ async function certificates(command, directory, originHost, authorityHost) {
   };
 }
 
+/**
+ * @param {{
+ *   command: (executable: "docker" | "k3d", args: string[], options?: import("../../scripts/lib/image-file.ts").ImageFileTextOptions) => Promise<string>,
+ *   cleanup: Array<() => Promise<unknown>>,
+ *   directory: string, cluster: string, ca: string,
+ *   checkpoint: (event: string, data: Record<string, string>) => Promise<void>
+ * }} options
+ */
 async function trustedSupervisor({ command, cleanup, directory, cluster, ca, checkpoint }) {
   // Read the same stock pin used by Local Setup rather than maintaining another
   // independent image version. Candidate supplier builds are rejected at entry.
   const source = await readFile(join(root, "internal/occdev/openshell.go"), "utf8");
-  const parent = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1];
-  assert.match(
-    parent ?? "",
-    /^ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.8@sha256:[a-f0-9]{64}$/,
-  );
+  const parent = source.match(/openShellSupervisorImage\s*=\s*"([^"]+)"/)?.[1] ?? "";
+  assert.match(parent, /^ghcr\.io\/nvidia\/openshell\/supervisor:0\.1\.8@sha256:[a-f0-9]{64}$/);
   const context = join(directory, "supervisor-trust");
   await mkdir(context, { mode: 0o700 });
+  /** @type {(image: string, filename: string, destination: string) => Promise<void>} */
   const extract = (image, filename, destination) =>
-    extractOpenShellImageFile({ command, cleanup, image, filename, destination });
+    extractImageFile({ command, cleanup, image, filename, destination });
   const stockCertificates = join(directory, "stock-ca-certificates.crt");
   await extract(parent, "/etc/ssl/certs/ca-certificates.crt", stockCertificates);
   await extract(parent, "/openshell-supervisor", join(directory, "stock-supervisor"));

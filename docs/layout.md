@@ -79,6 +79,10 @@ such as `drivers/compute/index.ts` or `drivers/iam/index.ts`, containing that
 Driver's interface, request, context, and result types. The root `index.ts` retains
 shared resource definitions and the public package exports.
 
+The container release command starts at `scripts/ci/container-release.ts`.
+Its modules under `scripts/ci/container-release/` own release admission,
+receipt validation, OCI verification, native smoke, and registry publication.
+
 Within controller composition, `installation-presets.ts` owns Preset file loading
 and bundled-version assembly; `installation-config.ts` owns Driver composition.
 
@@ -143,8 +147,13 @@ checksum, and fixed build timestamp used by that runtime recipe and its callers.
 `deploy/runtime/node/` owns the runtime's pinned Node source, termination patch,
 native build and verification. Its patch inventory is separate from OpenClaw's.
 
-Chart-owned startup scripts live under `deploy/helm/openclaw-enterprise/files/`
-and are embedded in rendered container commands; they ship with the chart.
+Helm embeds the startup programs from `deploy/helm/openclaw-enterprise/files/`
+in rendered container commands. Edit the TypeScript sources for the API CA
+programs in `deploy/helm/src/`. Install the workspace dependencies, then run
+`node deploy/helm/src/generate-api-ca.ts` from the repository root with the
+repository's pinned Node version. Commit the generated chart updates with their
+sources. The OIDC CA integration suite checks that the chart archive contains the
+generated programs.
 
 Select checks using the [testing guide](testing/README.md). Follow AGENTS.md's
 integration requirements for runtime changes. For documentation-only changes,

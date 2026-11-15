@@ -101,7 +101,10 @@ function asAdministrator(fixture: BaseFixture) {
     fixture.app.fetch(
       new Request(url, {
         ...init,
-        headers: authenticatedHeaders(fixture.app.defaultSession, init.headers),
+        headers: authenticatedHeaders(
+          fixture.app.defaultSession,
+          Object.fromEntries(new Headers(init.headers)),
+        ),
       }),
     );
 }

@@ -292,6 +292,14 @@ async function request(
   };
 }
 
+async function createSavedConfiguration(context, values) {
+  const created = await request(context.app, "POST", context.collection, {
+    body: { kind: "agent", values },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  return { created, item: `${context.collection}/${created.body.data.id}` };
+}
+
 function createOpenClawConfiguration() {
   return {
     models: {
@@ -607,11 +615,7 @@ registerConfigurationCrudCases(configurationHttpLifecycleFixtures);
 
 test("Configuration HTTP names a model provider baseUrl or api the runtime cannot use", async (t) => {
   const context = await saveFixture(t);
-  const created = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values: createOpenClawConfiguration() },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const item = `${context.collection}/${created.body.data.id}`;
+  const { created, item } = await createSavedConfiguration(context, createOpenClawConfiguration());
   const field = (path) => `/models/providers/openai/${path}`;
   // These values used to save and then fail deployment as an unexplained model probe
   // failure; every save now answers a 400 naming the field and stores nothing.
@@ -718,11 +722,7 @@ test("Configuration HTTP refuses a model provider models setting that is not a l
   // carried a literal credential header past them into storage, and OpenClaw refused the
   // document only when the Gateway started. Every provider is checked, selected or not.
   const context = await saveFixture(t);
-  const created = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values: createOpenClawConfiguration() },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const item = `${context.collection}/${created.body.data.id}`;
+  const { created, item } = await createSavedConfiguration(context, createOpenClawConfiguration());
   const sentinel = "synthetic-model-credential-not-for-configuration";
   for (const [providers, key] of [
     [
@@ -765,12 +765,7 @@ const withModel = (model) => withAgents({ defaults: { ...runtimeDefaults, model 
 // and update in either case.
 test("Configuration save checks the shared content rules before a Compute Driver is selected", async () => {
   const context = await fixture();
-  const { collection } = context;
-  const created = await request(context.app, "POST", collection, {
-    body: { kind: "agent", values: createOpenClawConfiguration() },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const item = `${collection}/${created.body.data.id}`;
+  const { created, item } = await createSavedConfiguration(context, createOpenClawConfiguration());
   const provider = "/models/providers/gateway";
   for (const [values, message] of [
     [at(provider, { baseUrl: "ftp://models.example/v1" }), absoluteUrl(`${provider}/baseUrl`)],
@@ -1696,7 +1691,7 @@ test("Configuration save and deployment refuse OpenClaw's $include directive", a
   // change. Configuration rules and Compute read the document as written, so an include would add
   // settings no rule checked, such as a gateway.auth.mode Kubernetes Compute refuses, from a file
   // in the Gateway's config directory. Every save path, Agent save and deployment refuse it at any
-  // depth; configuration-occ.test.mjs proves the paths the refusal names.
+  // depth; configuration-occ.test.ts proves the paths the refusal names.
   const context = await kubernetesRuleFixture("compute-include-integration", ...configurationRules);
   const agent = await storedRowAgent(context, runtimeSelected, {
     name: "Config include consumer",
@@ -1809,7 +1804,7 @@ test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE
   // not have: a Configuration that turned the sandbox on saved and deployed, then failed every
   // turn. Finding 2773: exec host "sandbox" sends shell commands to that sandbox, so each one
   // failed. Every save path, Agent save and deployment run the rule, for the defaults and for one
-  // Agent's entry, which overrides them; configuration-occ.test.mjs proves each refused and
+  // Agent's entry, which overrides them; configuration-occ.test.ts proves each refused and
   // accepted value.
   const context = await kubernetesRuleFixture("compute-sandbox-integration", ...configurationRules);
   const { configurationDriver } = context;
@@ -4120,11 +4115,7 @@ test("Configuration and Preset saves refuse an OpenRouter compatibility selector
     models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
   };
   const codexModel = (model) => ({ agents: { defaults: { ...codex, model } } });
-  const created = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values: codexModel(codex.model) },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const item = `${context.collection}/${created.body.data.id}`;
+  const { created, item } = await createSavedConfiguration(context, codexModel(codex.model));
   for (const [values, path] of [
     [codexModel({ primary: codex.model, fallbacks: ["openrouter:auto"] }), "agents.defaults"],
     [codexModel({ primary: codex.model, fallbacks: [" OpenRouter:Free "] }), "agents.defaults"],
@@ -4327,11 +4318,7 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
   // rules, header names no HTTP client sends were stored, and plausible credential header
   // names (version, dot and new words) took literals.
   const context = await saveFixture(t);
-  const created = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values: {} },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const item = `${context.collection}/${created.body.data.id}`;
+  const { created, item } = await createSavedConfiguration(context, {});
   const sentinel = `synthetic-model-rule-credential-${randomUUID()}`;
   // gateway/m is selected, so a catalog row for it is not refused first (finding 3019).
   const gateway = (settings) => ({
@@ -4643,14 +4630,9 @@ test("Configuration and Preset saves refuse a user name or password in proxy, ch
   const sentinel = `synthetic-url-userinfo-${randomUUID()}`;
   const proxy = `http://u:${sentinel}@proxy.example:3128`;
   // A Configuration to update: a refused edit leaves it as it was.
-  const original = await request(context.app, "POST", context.collection, {
-    body: {
-      kind: "agent",
-      values: { env: { vars: { HTTPS_PROXY: "http://proxy.example:3128" } } },
-    },
+  const { created: original, item } = await createSavedConfiguration(context, {
+    env: { vars: { HTTPS_PROXY: "http://proxy.example:3128" } },
   });
-  assert.equal(original.status, 201, JSON.stringify(original.body));
-  const item = `${context.collection}/${original.body.data.id}`;
   // An MCP server that runs a command passes its environment to it.
   const stdio = (env) => ({ command: "docs-mcp", env });
   for (const [field, value = proxy, values = at(field, value)] of [
@@ -4783,11 +4765,7 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
   // or install policy check starts its process with its own `env`, and pip, npm, git and Go send
   // the userinfo in `PIP_INDEX_URL`, `npm_config_registry` or `GOPROXY` as Basic auth.
   const context = await saveFixture(t);
-  const created = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values: {} },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const item = `${context.collection}/${created.body.data.id}`;
+  const { created, item } = await createSavedConfiguration(context, {});
   const sentinel = `synthetic-env-url-userinfo-${randomUUID()}`;
   const index = `https://u:${sentinel}@pypi.example.test/simple`;
   const skill = (name, variable, value) => [`/skills/entries/${name}/env/${variable}`, value];
@@ -5271,11 +5249,7 @@ test("Configuration and Preset saves read a git config value as a proxy when its
   // names, and git and curl send a proxy's userinfo, scheme or not, as Proxy-Authorization. The
   // scheme-less proxy read keyed on the variable name only, so `u:pw@proxy:3128` saved.
   const context = await saveFixture(t);
-  const created = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values: {} },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const item = `${context.collection}/${created.body.data.id}`;
+  const { created, item } = await createSavedConfiguration(context, {});
   const sentinel = `synthetic-git-proxy-userinfo-${randomUUID()}`;
   const proxy = `u:${sentinel}@proxy.example.test:3128`;
   const pair = (key, index = 0) => ({
@@ -5481,11 +5455,7 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
   // segment the URL parser reads as the host. Finding 1257: a number or boolean variable that is
   // the whole baseUrl or api saved, and failed every launch.
   const context = await saveFixture(t);
-  const created = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values: {} },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const item = `${context.collection}/${created.body.data.id}`;
+  const { created, item } = await createSavedConfiguration(context, {});
   // gateway/m is selected, so a catalog row for it is not refused first (finding 3019).
   const gateway = (settings) => ({
     agents: { defaults: { model: "gateway/m" } },

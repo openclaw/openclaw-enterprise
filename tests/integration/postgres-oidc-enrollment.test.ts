@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import pg from "pg";
-import { startupFailureFields } from "../../apps/controller/src/api-startup.mjs";
+import { startupFailureFields } from "../../apps/controller/src/api-startup.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import {
   accountPrincipalId,

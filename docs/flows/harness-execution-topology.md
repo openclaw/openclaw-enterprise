@@ -325,7 +325,7 @@ removal. See the [storage contract](../reference/drivers/kubernetes-compute/stor
   values or payloads; stderr suppression and deadlines remain.
 
 - Check placement, immutable policy, and conflicts:
-  `node --test tests/conformance/configuration-occ.test.mjs`.
+  `node --test tests/conformance/configuration-occ.test.ts`.
 - Check guarded activation and recovery:
   `node --test tests/integration/postgres-worker-agent-revision.test.mjs` with an application-role PostgreSQL database.
 - Check dedicated Gateway repair after an unready predecessor:

@@ -152,7 +152,7 @@ function emitPeerDiagnostics(t: TestContext, fixtureOutput: string, containerOut
 // The dedicated Gateway's Harness peer scenarios on the real runtime image: an
 // in-place OpenClaw respawn for a changed peer, and an exit when OpenClaw crashes
 // during a peer status outage or a replacement peer changes. Split from
-// runtime-image-startup.test.mjs by measured case durations.
+// runtime-image-startup.test.ts by measured case durations.
 
 // No Gateway cron. Cron work in flight at the peer change (drain counts rootRequests=1
 // cronRuns=1, no agent run) kept the old process draining past the fixture's 240 s, short of

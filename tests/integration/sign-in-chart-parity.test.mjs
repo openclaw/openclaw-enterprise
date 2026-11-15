@@ -5,7 +5,7 @@ import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { startApi, startupFailureFields } from "../../apps/controller/src/api-startup.mjs";
+import { startApi, startupFailureFields } from "../../apps/controller/src/api-startup.ts";
 import {
   refuseRewrittenIpv4Host,
   refuseWrittenUserinfo,
@@ -1494,7 +1494,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
       // The API startup's own code for a value it cannot parse, and its own refusals of a
       // rewritten IPv4 host and an empty user info: apiAccepts copies refuseRewrittenIpv4Host
       // and refuseWrittenUserinfo, and the cases above start the API only for values the chart
-      // renders, so deleting a call in api-startup.mjs leaves the rest of this test green.
+      // renders, so deleting a call in api-startup.ts leaves the rest of this test green.
       const ownRefusals = [
         "console.oce.example.internal",
         "https://192.168.010.001",

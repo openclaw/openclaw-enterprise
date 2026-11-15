@@ -10,7 +10,7 @@ import { parsers } from "prettier/plugins/typescript";
 // the test runner's environment instead of the one they pass, so an edit ported
 // from server.mjs or scripts/bootstrap-installation.mjs must read `env`.
 const parameterizedSources = [
-  "apps/controller/src/api-startup.mjs",
+  "apps/controller/src/api-startup.ts",
   "scripts/lib/bootstrap-configuration.ts",
 ];
 
@@ -217,7 +217,7 @@ async function compositionCalls(
 
 test("API startup composes without code-only dependencies such as a password hasher", async () => {
   const source = await readFile(
-    new URL("../../apps/controller/src/api-startup.mjs", import.meta.url),
+    new URL("../../apps/controller/src/api-startup.ts", import.meta.url),
     "utf8",
   );
   const calls = await compositionCalls(source);

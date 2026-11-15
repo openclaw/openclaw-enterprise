@@ -44,28 +44,14 @@ export class RepositoryReceiptClient {
     throw new Error("RECEIPT_UNAVAILABLE");
   }
 
-  async bind(
+  async writeStatus(
+    kind: "bind" | "dispose",
     id: string,
     input: RepositoryCredentialBoundSessionInput,
     status: SessionStatus,
   ): Promise<void> {
     const result = await this.call({
-      kind: "bind",
-      admissionId: id,
-      generation: this.generation,
-      input,
-      status,
-    });
-    requireAcknowledged(result);
-  }
-
-  async dispose(
-    id: string,
-    input: RepositoryCredentialBoundSessionInput,
-    status: SessionStatus,
-  ): Promise<void> {
-    const result = await this.call({
-      kind: "dispose",
+      kind,
       admissionId: id,
       generation: this.generation,
       input,

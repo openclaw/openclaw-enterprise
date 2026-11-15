@@ -5,6 +5,7 @@ import { isClientSessionId, readClientConfiguration, type ClientFiles } from "./
 import {
   hasControlCharacter,
   normalizePushRefAllowlist,
+  repositoryCredentialClientStringKeys,
 } from "../../../access/client-contracts.ts";
 import {
   assertPrivateDirectory,
@@ -71,12 +72,7 @@ function readPublicClient(value: unknown): ClientFiles["client"] {
   const hasPolicy =
     value !== null && typeof value === "object" && Object.hasOwn(value, "pushRefAllowlist");
   const client = record(value, [
-    "gatewayOrigin",
-    "gitRemote",
-    "gitUsername",
-    "canonicalApiHost",
-    "apiHost",
-    "repository",
+    ...repositoryCredentialClientStringKeys,
     ...(hasPolicy ? ["pushRefAllowlist"] : []),
   ]);
   if (
@@ -94,12 +90,7 @@ function readPublicClient(value: unknown): ClientFiles["client"] {
 
 function clientsAgree(first: ClientFiles["client"], second: ClientFiles["client"]): boolean {
   return (
-    first.gatewayOrigin === second.gatewayOrigin &&
-    first.gitRemote === second.gitRemote &&
-    first.gitUsername === second.gitUsername &&
-    first.canonicalApiHost === second.canonicalApiHost &&
-    first.apiHost === second.apiHost &&
-    first.repository === second.repository &&
+    repositoryCredentialClientStringKeys.every((key) => first[key] === second[key]) &&
     JSON.stringify(first.pushRefAllowlist) === JSON.stringify(second.pushRefAllowlist)
   );
 }
