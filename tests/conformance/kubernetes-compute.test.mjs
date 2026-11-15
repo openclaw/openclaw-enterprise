@@ -87,6 +87,7 @@ import {
   nativeHarnessResource,
   nativeSandboxIdentity,
   readyNativeHarnessPod,
+  recordingNativeSandbox,
 } from "./kubernetes-dedicated-deploy-fixture.ts";
 import { checkGatewayRetirement } from "./kubernetes-gateway-retirement-case.ts";
 import { createEmbeddedReplacementKubernetesFixture } from "./kubernetes-embedded-replacement-fixture.ts";
@@ -1336,19 +1337,7 @@ test("provider-owned Harness preparation waits to renew expired setup until its 
 test("native OpenClaw preparation and activation use only outbound Sandbox enrollment", async () => {
   const provisions = [];
   const sandboxDriver = {
-    ...nativeSandboxIdentity(),
-    async workspaceNodePeerLabels({ revision: target }) {
-      return provisions.some(({ revision: { id } }) => id === target.id)
-        ? supervisorPeerLabels(target.id)
-        : undefined;
-    },
-    async provisionHarness(context) {
-      provisions.push(context);
-      return nativeHarnessResource(context);
-    },
-    async harnessEndpoint() {
-      assert.fail("native OpenClaw has no inbound Harness endpoint");
-    },
+    ...recordingNativeSandbox(provisions),
     async withdrawHarnessExposure(context) {
       withdrawals.push(context);
       if (withdrawalFailure !== undefined) {
@@ -1716,19 +1705,7 @@ test("Kubernetes native Sandbox provisioning fails a revision on the worker's he
   let answer = { state: "starting" };
   let withdrawalFailure;
   const sandboxDriver = {
-    ...nativeSandboxIdentity(),
-    async workspaceNodePeerLabels({ revision: target }) {
-      return provisions.some(({ revision: { id } }) => id === target.id)
-        ? supervisorPeerLabels(target.id)
-        : undefined;
-    },
-    async provisionHarness(context) {
-      provisions.push(context);
-      return nativeHarnessResource(context);
-    },
-    async harnessEndpoint() {
-      assert.fail("native OpenClaw has no inbound Harness endpoint");
-    },
+    ...recordingNativeSandbox(provisions),
     async harnessStatus(context) {
       observations.push(context);
       if (answer instanceof Error) {
@@ -1951,19 +1928,7 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
   const withdrawals = [];
   let answer = { state: "starting" };
   const sandboxDriver = {
-    ...nativeSandboxIdentity(),
-    async workspaceNodePeerLabels({ revision: target }) {
-      return provisions.some(({ revision: { id } }) => id === target.id)
-        ? supervisorPeerLabels(target.id)
-        : undefined;
-    },
-    async provisionHarness(context) {
-      provisions.push(context);
-      return nativeHarnessResource(context);
-    },
-    async harnessEndpoint() {
-      assert.fail("native OpenClaw has no inbound Harness endpoint");
-    },
+    ...recordingNativeSandbox(provisions),
     async harnessStatus(context) {
       observations.push(context);
       return answer;
@@ -2014,6 +1979,20 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
   markReady(gatewayName);
   assert.equal((await prepare()).ready, false);
   assert.equal(provisions.length, 2);
+  // Provisioning this revision must not admit a sibling in the same Agent's Namespace.
+  const [provisioned] = provisions;
+  assert.deepEqual(
+    await sandboxDriver.workspaceNodePeerLabels(provisioned),
+    supervisorPeerLabels(provisioned.revision.id),
+  );
+  assert.equal(
+    await sandboxDriver.workspaceNodePeerLabels({
+      ...provisioned,
+      revision: { ...provisioned.revision, id: "rev_unprovisioned_sibling" },
+    }),
+    undefined,
+    "the unprovisioned sibling has no supervisor peer labels",
+  );
   // The predecessor's enrollment is not this revision's: the provider is told so, so the
   // Sandbox carries the exposure Compute's read needs, and nothing is withdrawn yet.
   assert.ok(provisions.every(({ workspaceNodeEnrolled }) => workspaceNodeEnrolled === false));
