@@ -4107,11 +4107,49 @@ async function assertDedicatedNativeChildRelay(topology) {
   assert.ok(parentThreadId, "the Gateway transcript must identify the native parent thread");
 
   // A parent can repeat the marker without spawning. Read the native child, not just its summary.
-  const evidence = JSON.parse(
-    await execNode(
-      topology.gatewayPlacement,
-      topology.gatewayPod.metadata.name,
-      `
+  const evidence = await readDedicatedNativeChildEvidence(
+    topology.gatewayPlacement,
+    topology.gatewayPod.metadata.name,
+    parentThreadId,
+    marker,
+    childTask,
+  );
+  assert.equal(evidence.parentThreadId, parentThreadId);
+  assert.notEqual(evidence.childThreadId, parentThreadId);
+  process.stderr.write(`k3d native child observation: ${JSON.stringify(evidence.observation)}\n`);
+  const completedHistory = await assertConversation(topology, sessionKey, marker);
+  assert.equal(
+    assistantMessageContaining(completedHistory, marker).idempotencyKey?.match(
+      /^codex-app-server:([^:]+):/,
+    )?.[1],
+    parentThreadId,
+    "the exact child answer must return through the same Gateway parent thread",
+  );
+}
+
+const nativeChildEvidenceStages = [
+  "connect",
+  "initialize",
+  "parent-read",
+  "child-read",
+  "child-completion",
+  "complete",
+];
+
+export async function readDedicatedNativeChildEvidence(
+  namespace,
+  pod,
+  parentThreadId,
+  marker,
+  childTask,
+  run = execNode,
+) {
+  // Derive the stdout receipt in both processes so its value stays out of the exec command.
+  const receipt = createHash("sha256").update(marker).digest("hex");
+  const output = await run(
+    namespace,
+    pod,
+    `
       const assert = require("node:assert/strict");
       const WebSocket = require("ws");
       const socket = new WebSocket(process.env.APP_SERVER_URL, {
@@ -4146,6 +4184,7 @@ async function assertDedicatedNativeChildRelay(topology) {
       });
       const expiresAt = Date.now() + 20_000;
       const deadline = setTimeout(() => socket.terminate(), 20_000);
+      const marker = ${JSON.stringify(marker)};
       (async () => {
         try {
           await new Promise((resolve, reject) => {
@@ -4195,16 +4234,16 @@ async function assertDedicatedNativeChildRelay(topology) {
                 item.type === "collabAgentToolCall" && item.tool === "spawnAgent" &&
                 item.receiverThreadIds.includes(childId) && typeof item.prompt === "string");
               observation.spawnPromptCount = spawnPrompts.length;
-              observation.spawnPromptNonceSeen = spawnPrompts.some((item) => item.prompt.includes(${JSON.stringify(marker)}));
+              observation.spawnPromptNonceSeen = spawnPrompts.some((item) => item.prompt.includes(marker));
               observation.spawnPromptMatchesTask = spawnPrompts.some((item) => item.prompt === ${JSON.stringify(childTask)});
               const userTexts = child.turns.flatMap((turn) => turn.items).filter((item) => item.type === "userMessage")
                 .flatMap((item) => item.content.filter((block) => block.type === "text").map((block) => block.text));
               observation.childUserTextCount = userTexts.length;
-              observation.childUserNonceSeen = userTexts.some((text) => text.includes(${JSON.stringify(marker)}));
+              observation.childUserNonceSeen = userTexts.some((text) => text.includes(marker));
               observation.childUserTaskSeen = userTexts.some((text) => text === ${JSON.stringify(childTask)});
               const messages = child.turns.flatMap((turn) => turn.items).filter((item) => item.type === "agentMessage");
               observation.agentMessageCount = messages.length;
-              observation.exactNonceMessages = messages.filter((item) => item.text.trim() === ${JSON.stringify(marker)}).length;
+              observation.exactNonceMessages = messages.filter((item) => item.text.trim() === marker).length;
               observation.messageShapes = messages.slice(-10).map((item) => {
                 const text = item.text.trim();
                 const lines = text.split(/\\r?\\n/);
@@ -4218,15 +4257,15 @@ async function assertDedicatedNativeChildRelay(topology) {
                   phase,
                   textBytes: Buffer.byteLength(item.text),
                   lineCount: lines.length,
-                  containsNonce: text.includes(${JSON.stringify(marker)}),
-                  jsonQuotedNonce: text === JSON.stringify(${JSON.stringify(marker)}),
-                  backtickQuotedNonce: text === "\u0060" + ${JSON.stringify(marker)} + "\u0060",
+                  containsNonce: text.includes(marker),
+                  jsonQuotedNonce: text === JSON.stringify(marker),
+                  backtickQuotedNonce: text === "\u0060" + marker + "\u0060",
                   fencedNonce: lines.length === 3 && /^\u0060\u0060\u0060(?:text|plaintext)?$/.test(lines[0]) &&
-                    lines[1] === ${JSON.stringify(marker)} && lines[2] === "\u0060\u0060\u0060",
+                    lines[1] === marker && lines[2] === "\u0060\u0060\u0060",
                 };
               });
               const completed = child.turns.find((turn) => turn.status === "completed" && turn.items.some(
-                (item) => item.type === "agentMessage" && item.text.trim() === ${JSON.stringify(marker)},
+                (item) => item.type === "agentMessage" && item.text.trim() === marker,
               ));
               observation.completedNonceTurn = Boolean(completed);
               if (completed) {
@@ -4248,22 +4287,28 @@ async function assertDedicatedNativeChildRelay(topology) {
       })().catch((error) => {
         const failure = error.code === "ERR_ASSERTION" ? "assertion" : "transport-or-protocol";
         console.error("Native child evidence " + failure + "; observation: " + JSON.stringify(observation));
+        const receipt = require("node:crypto").createHash("sha256").update(marker).digest("hex");
+        process.stdout.write(JSON.stringify({ receipt, stage: observation.stage }));
         process.exitCode = 1;
       });
     `,
-    ),
-  );
-  assert.equal(evidence.parentThreadId, parentThreadId);
-  assert.notEqual(evidence.childThreadId, parentThreadId);
-  process.stderr.write(`k3d native child observation: ${JSON.stringify(evidence.observation)}\n`);
-  const completedHistory = await assertConversation(topology, sessionKey, marker);
-  assert.equal(
-    assistantMessageContaining(completedHistory, marker).idempotencyKey?.match(
-      /^codex-app-server:([^:]+):/,
-    )?.[1],
-    parentThreadId,
-    "the exact child answer must return through the same Gateway parent thread",
-  );
+  ).catch((error) => {
+    // A rejected execFile retains stdout. Match only its complete, invocation-bound receipt.
+    if (error?.code === 1) {
+      const stage = nativeChildEvidenceStages.find(
+        (stage) => error.stdout === JSON.stringify({ receipt, stage }),
+      );
+      if (stage !== undefined) {
+        try {
+          error.openclawCiDiagnostic = { kind: "topology-native-child", stage };
+        } catch {
+          // Some executors may reject with a read-only error. Keep the exec failure.
+        }
+      }
+    }
+    throw error;
+  });
+  return JSON.parse(output);
 }
 
 async function requestFreshDedicatedHarnessTurn(topology) {
