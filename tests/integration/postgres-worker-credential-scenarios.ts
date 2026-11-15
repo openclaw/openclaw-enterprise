@@ -1,7 +1,6 @@
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { Type } from "typebox";
-import { asRecord } from "../../packages/utils/src/index.ts";
 import test, { type TestContext, type TestOptions } from "node:test";
 import type { ControllerWorkerOptions } from "../../apps/controller/src/worker.ts";
 import type {
@@ -32,7 +31,6 @@ import {
   workAttempt,
   workDelay,
   workStateAndReason,
-  type WithdrawalField,
 } from "./postgres-worker-credential-observations.ts";
 
 export type RuntimeDrivers = NonNullable<ControllerWorkerOptions["drivers"]>;
@@ -204,17 +202,22 @@ export async function runScheduledRetryNow(fixture: RevisionFixture, series: Wor
   assert.equal(updated.rowCount, 1);
 }
 
+const withdrawalAuditRow = Type.Pick(Type.Object(withdrawalFields), [
+  "kind",
+  "actor_id",
+  "outcome",
+  "reason_code",
+  "sources",
+]);
+
 // The withdrawal audit events in order; with `fields`, only those columns, in that key order.
-export async function withdrawalAudit(fixture: RevisionFixture, ...fields: WithdrawalField[]) {
+export async function withdrawalAudit(
+  fixture: RevisionFixture,
+  ...fields: (keyof typeof withdrawalAuditRow.properties)[]
+) {
   const rows = await readRows(
     fixture.observerPool,
-    Type.Pick(Type.Object(withdrawalFields), [
-      "kind",
-      "actor_id",
-      "outcome",
-      "reason_code",
-      "sources",
-    ]),
+    withdrawalAuditRow,
     `SELECT kind, actor_id, outcome, details->>'reasonCode' AS reason_code,
             details->'credentialSourceIds' AS sources
      FROM occ.audit_events
@@ -224,14 +227,7 @@ export async function withdrawalAudit(fixture: RevisionFixture, ...fields: Withd
   );
   return fields.length === 0
     ? rows
-    : rows.map((row) =>
-        Object.fromEntries(
-          fields.map((field) => {
-            assert.ok(Object.hasOwn(row, field), `Unselected withdrawal audit field ${field}`);
-            return [field, asRecord(row)?.[field]];
-          }),
-        ),
-      );
+    : rows.map((row) => Object.fromEntries(fields.map((field) => [field, row[field]] as const)));
 }
 
 // A Compute double for a gateway outage: each withdrawal fails as unreachable while

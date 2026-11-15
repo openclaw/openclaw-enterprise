@@ -80,7 +80,6 @@ export const withdrawalFields = {
   resource_id: nullableText,
   sources: Type.Union([sourceIds, Type.Null()]),
 };
-export type WithdrawalField = keyof typeof withdrawalFields;
 
 export function required<Value>(value: Value | undefined, description: string): Value {
   assert.ok(value !== undefined, description);
