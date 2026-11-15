@@ -2,20 +2,223 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
+import { Type, type Static, type TSchema } from "typebox";
+import { Check } from "typebox/value";
+import {
+  protectedJSON,
+  type FixtureRun,
+  type LocalRehearsalCluster,
+  type RehearsalCustody,
+} from "../production-rehearsal-custody.ts";
 import { rehearsalPlane } from "../staging-upgrade-return.ts";
-import { signinAdmission } from "./admission.mjs";
+import { signinAdmission } from "./admission.ts";
 import { fixtureClock } from "./clock.mjs";
-import { controllerCut } from "./controller-cut.mjs";
-import { fixtureFetch, retainedCatalog } from "./custody-probes.mjs";
+import { controllerCut } from "./controller-cut.ts";
+import { fixtureFetch, retainedCatalog } from "./custody-probes.ts";
 import { tcpControlCommand, tcpProbeCommand } from "./network-probe.ts";
 import { runtimeProof } from "./runtime.mjs";
-import { trafficGate } from "./traffic-gate.mjs";
-import { runTransition } from "./transition.ts";
-import { writerFence } from "./writer-fence.mjs";
+import type { providerDns } from "./dns.ts";
+import type { operatorExecutor } from "./operator.ts";
+import type { readStagedSignin } from "./staged.ts";
+import { trafficGate } from "./traffic-gate.ts";
+import { runTransition, type TransitionFixture } from "./transition.ts";
+import { writerFence } from "./writer-fence.ts";
 
 const origin = "https://console.signin-rehearsal.test";
 const startupSecret = "occ-installation-startup";
-const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const digest = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
+
+type StagedSignin = Awaited<ReturnType<typeof readStagedSignin>>;
+type Plane = ReturnType<typeof rehearsalPlane>;
+type ControllerPod = Awaited<ReturnType<Plane["controlPlane"]>>[number];
+type Fixture = TransitionFixture<StagedSignin["candidate"], ControllerPod>;
+type Target = Parameters<Fixture["openTarget"]>[0];
+
+const labels = Type.Record(Type.String(), Type.String());
+const uid = Type.Object({ metadata: Type.Object({ uid: Type.String() }) });
+const id = Type.Object({ id: Type.String() });
+const selector = Type.Object({
+  matchLabels: Type.Optional(labels),
+  matchExpressions: Type.Optional(
+    Type.Array(
+      Type.Object({
+        key: Type.String(),
+        operator: Type.String(),
+        values: Type.Optional(Type.Array(Type.String())),
+      }),
+    ),
+  ),
+});
+const policies = Type.Object({
+  items: Type.Array(
+    Type.Object({
+      metadata: Type.Object({
+        name: Type.String(),
+        uid: Type.String(),
+        resourceVersion: Type.String(),
+      }),
+      spec: Type.Object({
+        policyTypes: Type.Optional(Type.Array(Type.String())),
+        ingress: Type.Optional(Type.Array(Type.Unknown())),
+        podSelector: selector,
+      }),
+    }),
+  ),
+});
+const service = Type.Object({
+  metadata: Type.Object({ name: Type.String(), uid: Type.String() }),
+  spec: Type.Object({
+    type: Type.String(),
+    clusterIP: Type.String(),
+    externalIPs: Type.Optional(Type.Array(Type.String())),
+  }),
+});
+const services = Type.Object({ items: Type.Array(service) });
+const operators = Type.Object({
+  items: Type.Array(
+    Type.Object({
+      metadata: Type.Object({ uid: Type.String(), labels }),
+    }),
+  ),
+});
+const apiDeployment = Type.Object({
+  metadata: Type.Object({ labels }),
+  spec: Type.Object({ template: Type.Object({ metadata: Type.Object({ labels }) }) }),
+});
+const apiContainers = Type.Object({
+  containers: Type.Array(
+    Type.Object({
+      name: Type.String(),
+      env: Type.Optional(Type.Array(Type.Object({ name: Type.String() }))),
+    }),
+  ),
+});
+const operatorPod = Type.Object({
+  metadata: Type.Object({ uid: Type.String() }),
+  status: Type.Object({ podIP: Type.String() }),
+  spec: Type.Object({
+    securityContext: Type.Optional(Type.Object({})),
+    containers: Type.Array(
+      Type.Object({
+        name: Type.String(),
+        image: Type.String(),
+        securityContext: Type.Optional(Type.Object({})),
+        resources: Type.Optional(Type.Object({})),
+      }),
+    ),
+  }),
+});
+const protectedEndpoints = Type.Object({
+  items: Type.Array(
+    Type.Object({
+      metadata: Type.Object({ uid: Type.String(), labels: Type.Optional(labels) }),
+      ports: Type.Optional(Type.Array(Type.Unknown())),
+      endpoints: Type.Array(
+        Type.Object({
+          conditions: Type.Optional(Type.Object({ ready: Type.Optional(Type.Boolean()) })),
+        }),
+      ),
+    }),
+  ),
+});
+const probePod = Type.Object({
+  metadata: Type.Object({ uid: Type.String() }),
+  status: Type.Object({
+    phase: Type.String(),
+    podIP: Type.Optional(Type.String()),
+    containerStatuses: Type.Optional(Type.Array(Type.Object({ ready: Type.Boolean() }))),
+  }),
+});
+const acknowledgedController = Type.Object({
+  metadata: Type.Object({ uid: Type.String(), labels }),
+  spec: Type.Object({
+    nodeName: Type.String(),
+    initContainers: Type.Optional(
+      Type.Array(Type.Object({ name: Type.String(), image: Type.String() })),
+    ),
+  }),
+  status: Type.Object({
+    initContainerStatuses: Type.Optional(
+      Type.Array(
+        Type.Object({
+          name: Type.String(),
+          imageID: Type.String(),
+          containerID: Type.Optional(Type.String()),
+          state: Type.Object({
+            terminated: Type.Optional(Type.Object({ exitCode: Type.Integer() })),
+          }),
+        }),
+      ),
+    ),
+  }),
+});
+const retainedSecret = Type.Object({
+  metadata: Type.Object({
+    uid: Type.String(),
+    resourceVersion: Type.String(),
+    annotations: Type.Optional(labels),
+  }),
+  data: Type.Record(Type.String(), Type.String()),
+});
+const databaseCA = Type.Object({
+  ...uid.properties,
+  data: Type.Object({ "ca.pem": Type.String() }),
+});
+const providerDnsMapping = Type.Object({ hostname: Type.String(), clusterIP: Type.String() });
+const providerConfig = Type.Object({
+  issuer: Type.String(),
+  clientId: Type.String(),
+  clientSecret: Type.String(),
+});
+const helmRelease = Type.Object({
+  info: Type.Object({ status: Type.String() }),
+  name: Type.String(),
+  namespace: Type.String(),
+  version: Type.Integer(),
+});
+const oidcReceipt = Type.Object({
+  revision: Type.Integer(),
+  release: Type.String(),
+  namespace: Type.String(),
+  controllerReference: Type.String(),
+});
+const addresses = Type.Array(Type.String());
+const exitReceipt = Type.Object({ exitCode: Type.Integer() });
+const items = Type.Object({ items: Type.Array(Type.Unknown()) });
+
+type ProbePodSpec = {
+  restartPolicy: "Never";
+  automountServiceAccountToken: false;
+  securityContext: object | undefined;
+  activeDeadlineSeconds?: number;
+  containers: [
+    {
+      name: string;
+      image: string;
+      imagePullPolicy: "Never";
+      securityContext: object | undefined;
+      resources: object | undefined;
+      command: string[];
+      readinessProbe?: { tcpSocket: { port: number }; periodSeconds: number };
+    },
+  ];
+};
+
+type Materialization = {
+  dnsMapping: unknown;
+  providerDirectory: Fixture["providerDirectory"];
+  providerHashes: Fixture["providerHashes"];
+  providerFetch: Fixture["providerFetch"];
+  assertDatabaseImage: () => Promise<void>;
+  assertRunningProvider: Fixture["assertRunningProvider"];
+  configureOidc: (userId: string) => Promise<unknown>;
+};
+
+function observed<S extends TSchema>(schema: S, value: unknown, observation: string): Static<S> {
+  // Do not include protected command output, TLS material or Secret values in failures.
+  assert.ok(Check(schema, value), "invalid " + observation);
+  return value;
+}
 
 export async function rehearseSignin({
   rehearsal,
@@ -34,15 +237,43 @@ export async function rehearseSignin({
   materialization,
   signinSetup,
   dns,
+}: {
+  rehearsal: StagedSignin;
+  system: string;
+  release: string;
+  directory: string;
+  custody: RehearsalCustody;
+  kubectl: (...args: string[]) => Promise<string>;
+  kubeArgs: readonly string[];
+  localCluster: LocalRehearsalCluster;
+  waitFor: <T>(description: string, observe: () => Promise<T | false | undefined>) => Promise<T>;
+  run: FixtureRun;
+  record: (row: string, details: object) => Promise<void>;
+  api: (method: "GET", path: string) => Promise<unknown>;
+  namespace: { id: string };
+  tenant: string;
+  materialization: Materialization;
+  signinSetup: {
+    port: number;
+    ca: string | Buffer;
+    adminEmail: string;
+    installationId: string;
+    operator: Awaited<ReturnType<typeof operatorExecutor>>;
+  };
+  dns: Pick<ReturnType<typeof providerDns>, "assertBound">;
 }) {
   const { port, ca, adminEmail, installationId } = signinSetup;
   const images = { P: rehearsal.previous, A: rehearsal.candidate };
   const { signinPlan, canAdmit } = rehearsal;
   const usesV2 = signinPlan.previous.version === 2;
-  const kube = (...args) => kubectl("-n", system, ...args);
+  const kube = (...args: string[]) => kubectl("-n", system, ...args);
   const protectedArgs = [...kubeArgs, "--namespace", system, "--request-timeout=30s"];
-  const read = (...args) => run("kubectl", [...protectedArgs, ...args], { protectedInput: true });
-  const get = async (resource) => JSON.parse(await read("get", resource, "-o", "json"));
+  const read = (...args: string[]) =>
+    run("kubectl", [...protectedArgs, ...args], { protectedInput: true });
+  const get = async (resource: string) =>
+    protectedJSON<unknown>(await read("get", resource, "-o", "json"));
+  const getObserved = async <S extends TSchema>(resource: string, schema: S) =>
+    observed(schema, await get(resource), resource);
   const consoleFetch = fixtureFetch(origin, "127.0.0.1", port, ca);
   const operator = signinSetup.operator;
   await operator("mv", "/operator/signin-gate.bootstrap", "/operator/signin-gate.retained");
@@ -57,7 +288,10 @@ export async function rehearseSignin({
     kubeconfig: localCluster.selection.kubeconfigPath,
     context: localCluster.selection.kubernetesContext,
   });
-  const runtime = runtimeProof({
+  const runtime: {
+    assertNodeContainersStopped: (previous: readonly ControllerPod[]) => Promise<void>;
+    completedHistory: (image: Fixture["images"][Target]) => Promise<void>;
+  } = runtimeProof({
     localCluster,
     custody,
     namespace: system,
@@ -69,16 +303,20 @@ export async function rehearseSignin({
     verifyPodImage: plane.verifyPodImage,
   });
 
-  const matches = (sel, labels) => {
+  const matches = (sel: Static<typeof selector>, labels: Readonly<Record<string, string>>) => {
     if (!Object.entries(sel.matchLabels ?? {}).every(([k, v]) => labels[k] === v)) {
       return false;
     }
     return (sel.matchExpressions ?? []).every((e) => {
       if (e.operator === "In") {
-        return e.values.includes(labels[e.key]);
+        assert(e.values, "selector In requires values");
+        const value = labels[e.key];
+        return value !== undefined && e.values.includes(value);
       }
       if (e.operator === "NotIn") {
-        return !e.values.includes(labels[e.key]);
+        assert(e.values, "selector NotIn requires values");
+        const value = labels[e.key];
+        return value === undefined || !e.values.includes(value);
       }
       if (e.operator === "Exists") {
         return Object.hasOwn(labels, e.key);
@@ -90,24 +328,30 @@ export async function rehearseSignin({
     });
   };
 
-  async function checkTopology(acknowledgedApiLabels = []) {
+  async function checkTopology(acknowledgedApiLabels: Readonly<Record<string, string>>[] = []) {
     await localCluster.assertCluster();
     await custody.assertPostgres();
     await materialization.assertDatabaseImage();
     await custody.assertRelease();
-    const [policies, services, ingress, operators, deployment, currentPods] = await Promise.all([
-      get("networkpolicies"),
-      get("services"),
-      get("ingresses"),
-      read("get", "pods", "-l", "app=production-tui-proxy", "-o", "json").then(JSON.parse),
-      get("deployment/openclaw-enterprise-api"),
-      plane.pods(),
-    ]);
-    assert.equal(operators.items.length, 1);
-    custody.assertUID("pod/operator", operators.items[0].metadata.uid);
-    assert(services.items.every((s) => s.spec.type === "ClusterIP" && !s.spec.externalIPs?.length));
+    const [policyList, serviceList, ingress, operatorList, deployment, currentPods] =
+      await Promise.all([
+        getObserved("networkpolicies", policies),
+        getObserved("services", services),
+        getObserved("ingresses", items),
+        read("get", "pods", "-l", "app=production-tui-proxy", "-o", "json").then((output) =>
+          observed(operators, protectedJSON<unknown>(output), "operator Pod list"),
+        ),
+        getObserved("deployment/openclaw-enterprise-api", apiDeployment),
+        plane.pods(),
+      ]);
+    const [operator] = operatorList.items;
+    assert(operatorList.items.length === 1 && operator);
+    custody.assertUID("pod/operator", operator.metadata.uid);
+    assert(
+      serviceList.items.every((s) => s.spec.type === "ClusterIP" && !s.spec.externalIPs?.length),
+    );
     assert.equal(ingress.items.length, 0);
-    const relevant = policies.items.filter(
+    const relevant = policyList.items.filter(
       (p) => p.spec.policyTypes?.includes("Ingress") && p.spec.ingress?.length,
     );
     assert.equal(deployment.metadata.labels["app.kubernetes.io/instance"], release);
@@ -122,8 +366,9 @@ export async function rehearseSignin({
     ];
     for (const label of labels) {
       const apiRules = relevant.filter((p) => matches(p.spec.podSelector, label));
-      assert.equal(apiRules.length, 1, "API ingress must allow only the owned proxy");
-      assert.deepEqual(apiRules[0].spec.ingress, [
+      const [apiRule] = apiRules;
+      assert(apiRules.length === 1 && apiRule, "API ingress must allow only the owned proxy");
+      assert.deepEqual(apiRule.spec.ingress, [
         {
           from: [
             {
@@ -135,18 +380,16 @@ export async function rehearseSignin({
         },
       ]);
     }
-    assert(!relevant.some((p) => matches(p.spec.podSelector, operators.items[0].metadata.labels)));
-    const deny = policies.items.find((p) => p.metadata.name === "signin-operator-private");
+    assert(!relevant.some((p) => matches(p.spec.podSelector, operator.metadata.labels)));
+    const deny = policyList.items.find((p) => p.metadata.name === "signin-operator-private");
+    assert(deny);
     custody.assertUID("networkpolicy/signin-operator-private", deny.metadata.uid);
-    assert(
-      !deny.spec.ingress?.length &&
-        matches(deny.spec.podSelector, operators.items[0].metadata.labels),
-    );
+    assert(!deny.spec.ingress?.length && matches(deny.spec.podSelector, operator.metadata.labels));
   }
   await gate.closeAndProbeRoutes();
   await checkTopology();
   assert.match(adminEmail, /^admin-[a-f0-9]{20}@example\.invalid$/);
-  const sql = (query) =>
+  const sql = (query: string) =>
     custody
       .postgres(
         "psql",
@@ -165,29 +408,35 @@ export async function rehearseSignin({
   // The fresh bootstrap chart has no configured OIDC endpoints. No OIDC route
   // has been opened on the single private proxy since its first generation.
   for (const pod of await plane.pods()) {
-    const c = pod.spec.containers.find((c) => c.name === "api");
+    const c = observed(apiContainers, pod.spec, "bootstrap Pod containers").containers.find(
+      (c) => c.name === "api",
+    );
     if (c) {
-      assert(!c.env.some((e) => e.name.startsWith("OCC_AUTH_OIDC_")));
+      assert(c.env && !c.env.some((e) => e.name.startsWith("OCC_AUTH_OIDC_")));
     }
   }
   const helmStatus = async () =>
-    JSON.parse(
-      await run(
-        "helm",
-        [
-          "status",
-          release,
-          "-n",
-          system,
-          "--kubeconfig",
-          localCluster.selection.kubeconfigPath,
-          "--kube-context",
-          localCluster.selection.kubernetesContext,
-          "-o",
-          "json",
-        ],
-        { protectedInput: true },
+    observed(
+      helmRelease,
+      protectedJSON<unknown>(
+        await run(
+          "helm",
+          [
+            "status",
+            release,
+            "-n",
+            system,
+            "--kubeconfig",
+            localCluster.selection.kubeconfigPath,
+            "--kube-context",
+            localCluster.selection.kubernetesContext,
+            "-o",
+            "json",
+          ],
+          { protectedInput: true },
+        ),
       ),
+      "Helm release status",
     );
   const before = await helmStatus();
   assert(
@@ -197,7 +446,8 @@ export async function rehearseSignin({
   const bootstrapApi = (await plane.pods()).find(
     (p) => p.metadata.labels["app.kubernetes.io/component"] === "api",
   );
-  const mapping = materialization.dnsMapping;
+  assert(bootstrapApi);
+  const mapping = observed(providerDnsMapping, materialization.dnsMapping, "provider DNS mapping");
   await waitFor("private provider DNS projection", async () => {
     const answer = await read(
       "exec",
@@ -210,14 +460,18 @@ export async function rehearseSignin({
       "require('node:dns').lookup(process.argv[1],{all:true},(e,a)=>console.log(JSON.stringify(e?[]:a.map(x=>x.address))))",
       mapping.hostname,
     );
-    const ips = JSON.parse(answer);
+    const ips = observed(addresses, protectedJSON<unknown>(answer), "provider DNS addresses");
     if (!ips.length) {
       return false;
     }
     assert.deepEqual(ips, [mapping.clusterIP]);
     return true;
   });
-  const receipt = await materialization.configureOidc(userId);
+  const receipt = observed(
+    oidcReceipt,
+    await materialization.configureOidc(userId),
+    "OIDC Helm upgrade receipt",
+  );
   const current = await helmStatus();
   assert(
     current.info.status === "deployed" && current.name === release && current.namespace === system,
@@ -232,7 +486,11 @@ export async function rehearseSignin({
   await custody.bindRelease(current.version);
   await dns.assertBound();
   await gate.assertClosedRoutes();
-  let target = "P";
+  let target: Target | undefined = "P";
+  function selectedImage() {
+    assert(target, "no selected controller target");
+    return images[target];
+  }
   const { pods, controlPlane, claimIdentity } = plane;
   const cut = controllerCut({
     controls: images,
@@ -248,16 +506,21 @@ export async function rehearseSignin({
     assertNodeContainersStopped: runtime.assertNodeContainersStopped,
     startupSecret,
   });
-  async function checkProvider(hashes) {
+  async function checkProvider(hashes: Fixture["providerHashes"]) {
     await materialization.assertRunningProvider(hashes);
-    const config = JSON.parse(
-      await readFile(new URL("config.json", materialization.providerDirectory)),
+    const config = observed(
+      providerConfig,
+      protectedJSON<unknown>(
+        await readFile(new URL("config.json", materialization.providerDirectory), "utf8"),
+      ),
+      "provider configuration",
     );
-    const ca = await get("secret/signin-rehearsal-database-ca");
+    const ca = await getObserved("secret/signin-rehearsal-database-ca", databaseCA);
     custody.assertUID("secret/signin-rehearsal-database-ca", ca.metadata.uid);
     const apiPod = (await plane.pods()).find(
       (p) => p.metadata.labels["app.kubernetes.io/component"] === "api",
     );
+    assert(apiPod);
     const script = `const fs=require("node:fs"),c=require("node:crypto"),dns=require("node:dns").promises;
       const fingerprint=p=>new c.X509Certificate(fs.readFileSync(p)).fingerprint256;
       const hash=v=>c.createHash("sha256").update(v).digest("hex");
@@ -287,7 +550,7 @@ export async function rehearseSignin({
       new X509Certificate(await readFile(new URL("ca.pem", materialization.providerDirectory)))
         .fingerprint256,
     ];
-    const actual = JSON.parse(
+    const actual = protectedJSON<unknown>(
       await read("exec", apiPod.metadata.name, "-c", "api", "--", "node", "-e", script),
     );
     assert(
@@ -300,21 +563,22 @@ export async function rehearseSignin({
   const controlName = "signin-egress-control";
   const controlLabels = { app: controlName };
   async function ingressTargets() {
-    const service = await get("service/openclaw-enterprise-api");
-    const operatorPod = await get("pod/operator");
-    custody.assertUID("pod/operator", operatorPod.metadata.uid);
-    const slices = (await get("endpointslices.discovery.k8s.io")).items
+    const apiService = await getObserved("service/openclaw-enterprise-api", service);
+    const operator = await getObserved("pod/operator", operatorPod);
+    custody.assertUID("pod/operator", operator.metadata.uid);
+    const slices = (await getObserved("endpointslices.discovery.k8s.io", protectedEndpoints)).items
       .filter(
-        (slice) => slice.metadata.labels?.["kubernetes.io/service-name"] === service.metadata.name,
+        (slice) =>
+          slice.metadata.labels?.["kubernetes.io/service-name"] === apiService.metadata.name,
       )
       .sort((a, b) => a.metadata.uid.localeCompare(b.metadata.uid));
     assert(
       slices.length &&
-        slices.some((slice) => slice.endpoints.some((endpoint) => endpoint.conditions.ready)),
+        slices.some((slice) => slice.endpoints.some((endpoint) => endpoint.conditions?.ready)),
     );
     return {
-      service: { uid: service.metadata.uid, address: service.spec.clusterIP },
-      operator: { uid: operatorPod.metadata.uid, address: operatorPod.status.podIP },
+      service: { uid: apiService.metadata.uid, address: apiService.spec.clusterIP },
+      operator: { uid: operator.metadata.uid, address: operator.status.podIP },
       endpoints: slices.map((slice) => ({
         uid: slice.metadata.uid,
         ports: slice.ports,
@@ -323,9 +587,9 @@ export async function rehearseSignin({
     };
   }
   async function assertProbeEgress() {
-    const policies = (await get("networkpolicies")).items;
+    const policyList = (await getObserved("networkpolicies", policies)).items;
     assert(
-      !policies.some(
+      !policyList.some(
         (policy) =>
           policy.spec.policyTypes?.includes("Egress") &&
           matches(policy.spec.podSelector, probeLabels),
@@ -338,16 +602,26 @@ export async function rehearseSignin({
     { label: "api", host: identity.service.address, port: 8080 },
     { label: "operator", host: identity.operator.address, port: 8443 },
   ];
-  const operatorPod = await get("pod/operator");
-  const container = operatorPod.spec.containers.find((c) => c.name === "operator");
-  const pod = (name, labels, command) => ({
+  const operatorSpec = (await getObserved("pod/operator", operatorPod)).spec;
+  const container = operatorSpec.containers.find((c) => c.name === "operator");
+  assert(container);
+  const pod = (
+    name: string,
+    labels: Record<string, string>,
+    command: string[],
+  ): {
+    apiVersion: string;
+    kind: string;
+    metadata: ReturnType<RehearsalCustody["metadata"]>;
+    spec: ProbePodSpec;
+  } => ({
     apiVersion: "v1",
     kind: "Pod",
     metadata: custody.metadata(name, labels),
     spec: {
       restartPolicy: "Never",
       automountServiceAccountToken: false,
-      securityContext: operatorPod.spec.securityContext,
+      securityContext: operatorSpec.securityContext,
       containers: [
         {
           name: "probe",
@@ -361,7 +635,7 @@ export async function rehearseSignin({
     },
   });
   // This ingress-only control cannot manufacture denial of either protected target.
-  await custody.create({
+  const controlPolicy = {
     apiVersion: "networking.k8s.io/v1",
     kind: "NetworkPolicy",
     metadata: custody.metadata(controlName),
@@ -375,18 +649,20 @@ export async function rehearseSignin({
         },
       ],
     },
-  });
+  };
+  await custody.create(controlPolicy);
   const control = pod(controlName, controlLabels, tcpControlCommand(8081));
   control.spec.containers[0].readinessProbe = { tcpSocket: { port: 8081 }, periodSeconds: 1 };
   const controlUID = await custody.create(control);
   const controlPod = await waitFor("ordinary probe egress control listener", async () => {
-    const current = await get("pod/" + controlName);
+    const current = await getObserved("pod/" + controlName, probePod);
     assert.equal(current.metadata.uid, controlUID);
     assert.notEqual(current.status.phase, "Failed");
     return current.status.containerStatuses?.some((status) => status.ready) ? current : undefined;
   });
+  assert(controlPod.status.podIP);
   const controlTarget = { host: controlPod.status.podIP, port: 8081, expect: "connected" };
-  async function assertListeners(phase) {
+  async function assertListeners(phase: "before" | "after") {
     await checkTopology();
     await assertProbeEgress();
     assert.deepEqual(await ingressTargets(), identity, "protected listener identities changed");
@@ -399,9 +675,13 @@ export async function rehearseSignin({
       "tcp-listener-check",
       ...tcpProbeCommand(targets.map((target) => ({ ...target, expect: "connected" }))),
     );
-    const reports = output.trim().split("\n").map(JSON.parse);
+    const reports = output
+      .trim()
+      .split("\n")
+      .map((line) => protectedJSON<unknown>(line));
     const result = reports.pop();
-    assert.equal(result.exitCode, 0, JSON.stringify({ reports, result, identity }));
+    const exit = observed(exitReceipt, result, "listener exit receipt");
+    assert.equal(exit.exitCode, 0, JSON.stringify({ reports, result, identity }));
     await record("Private ingress live-listener control " + phase, {
       reports,
       result,
@@ -426,7 +706,7 @@ export async function rehearseSignin({
   probe.spec.activeDeadlineSeconds = 30;
   const probeUID = await custody.create(probe);
   await waitFor("unauthorized client denied by private ingress", async () => {
-    const current = await get("pod/" + probeName);
+    const current = await getObserved("pod/" + probeName, probePod);
     assert.equal(current.metadata.uid, probeUID);
     if (current.status.phase === "Failed") {
       const failure = new Error(
@@ -456,7 +736,7 @@ export async function rehearseSignin({
     return current.status.phase === "Succeeded";
   });
   await assertListeners("after");
-  const currentControl = await get("pod/" + controlName);
+  const currentControl = await getObserved("pod/" + controlName, probePod);
   assert.equal(currentControl.metadata.uid, controlUID);
   assert.equal(currentControl.status.podIP, controlTarget.host);
   const outcomes = await read(
@@ -468,34 +748,51 @@ export async function rehearseSignin({
     "--limit-bytes=65536",
   );
   await record("Private ingress transport outcomes with live-listener and egress controls", {
-    reports: outcomes.trim().split("\n").map(JSON.parse),
+    reports: outcomes
+      .trim()
+      .split("\n")
+      .map((line) => protectedJSON<unknown>(line)),
     identity,
     probe: { uid: probeUID, labels: probeLabels },
     control: { uid: controlUID, address: controlTarget.host, port: controlTarget.port },
   });
   const policySnapshot = async () =>
-    (await get("networkpolicies")).items
-      .map((p) => [p.metadata.uid, p.metadata.resourceVersion])
+    (await getObserved("networkpolicies", policies)).items
+      .map((p) => [p.metadata.uid, p.metadata.resourceVersion] as const)
       .sort(([a], [b]) => a.localeCompare(b));
   const initialPolicies = await policySnapshot();
-  const clock = await fixtureClock({ kube, pods, custody, localCluster });
+  const clock: Pick<Fixture, "readerUpperMs" | "waitUntilReaderPast"> & {
+    verifiedSkewMs: () => Promise<unknown>;
+    lastObservation: () => unknown;
+    close: () => Promise<void>;
+  } = await fixtureClock({ kube, pods, custody, localCluster });
+  const verifiedSkewMs: Fixture["verifiedSkewMs"] = async () => {
+    const skew: unknown = await clock.verifiedSkewMs();
+    assert(typeof skew === "number", "invalid fixture clock skew");
+    return skew;
+  };
+  const { readerUpperMs, waitUntilReaderPast } = clock;
   const catalog = retainedCatalog(
     custody,
     userId,
     installationId,
-    () => runtime.completedHistory(images[target]),
+    () => runtime.completedHistory(selectedImage()),
     signinPlan.catalogManifest,
   );
-  let expected;
+  let expected: Awaited<ReturnType<typeof identities>> | undefined;
   async function identities() {
     const secrets = await Promise.all(
       [startupSecret, "occ-auth", "occ-database"].map(async (name) => {
-        const s = await get("secret/" + name);
+        const s = await getObserved("secret/" + name, retainedSecret);
         custody.assertUID("secret/" + name, s.metadata.uid);
         if (name === startupSecret) {
-          assert.equal(s.metadata.annotations["openclaw.dev/installation-id"], installationId);
+          assert.equal(s.metadata.annotations?.["openclaw.dev/installation-id"], installationId);
         }
-        return [s.metadata.uid, s.metadata.resourceVersion, digest(JSON.stringify(s.data))];
+        return [
+          s.metadata.uid,
+          s.metadata.resourceVersion,
+          digest(JSON.stringify(s.data)),
+        ] as const;
       }),
     );
     return { secrets, claims: await claimIdentity(), database: await custody.assertPostgres() };
@@ -505,9 +802,18 @@ export async function rehearseSignin({
     await dns.assertBound();
     assert.deepEqual(await policySnapshot(), initialPolicies);
     assert(isDeepStrictEqual(expected, await identities()), "retained storage or Secret changed");
-    assert.equal((await api("GET", "/installation")).id, installationId);
-    assert.equal((await api("GET", "/namespaces/" + namespace.id)).id, namespace.id);
-    custody.assertUID("namespace/" + tenant, (await get("namespace/" + tenant)).metadata.uid);
+    assert.equal(
+      observed(id, await api("GET", "/installation"), "Installation response").id,
+      installationId,
+    );
+    assert.equal(
+      observed(id, await api("GET", "/namespaces/" + namespace.id), "Namespace response").id,
+      namespace.id,
+    );
+    custody.assertUID(
+      "namespace/" + tenant,
+      (await getObserved("namespace/" + tenant, uid)).metadata.uid,
+    );
   };
   const fence = writerFence({
     system,
@@ -516,7 +822,7 @@ export async function rehearseSignin({
     get,
     read,
     custody,
-    clock,
+    clock: { verifiedSkewMs, readerUpperMs, waitUntilReaderPast },
     checkTopology,
     usesV2,
   });
@@ -524,12 +830,15 @@ export async function rehearseSignin({
     canAdmit,
     gate,
     images,
-    attest: clock.verifiedSkewMs,
+    attest: verifiedSkewMs,
     selectedTarget: async () => {
-      const live = await controlPlane(images[target], "openclaw_enterprise", startupSecret);
-      const acknowledgedApiLabels = [];
+      const selected = target;
+      assert(selected, "no selected controller target");
+      const image = images[selected];
+      const live = await controlPlane(image, "openclaw_enterprise", startupSecret);
+      const acknowledgedApiLabels: Record<string, string>[] = [];
       for (const p of live) {
-        const pod = await get("pod/" + p.pod);
+        const pod = await getObserved("pod/" + p.pod, acknowledgedController);
         assert.equal(pod.metadata.uid, p.uid);
         if (p.component === "api") {
           acknowledgedApiLabels.push(pod.metadata.labels);
@@ -538,10 +847,11 @@ export async function rehearseSignin({
           if (!Object.values(images).some((i) => i.reference === init.image)) {
             continue;
           }
-          assert.equal(init.image, images[target].reference);
-          const status = pod.status.initContainerStatuses.find((c) => c.name === init.name);
+          assert.equal(init.image, image.reference);
+          const status = pod.status.initContainerStatuses?.find((c) => c.name === init.name);
+          assert(status?.containerID && status.state.terminated);
           assert.equal(status.state.terminated.exitCode, 0);
-          await plane.verifyPodImage(images[target], pod, status);
+          await plane.verifyPodImage(image, pod, status);
         }
       }
       await checkTopology(acknowledgedApiLabels);
@@ -554,23 +864,25 @@ export async function rehearseSignin({
 
       await fence.admit(
         live.map((p) => p.uid),
-        images[target],
+        image,
       );
-      return target;
+      return selected;
     },
     assertCustody: verifyCustody,
   });
   let failed = false;
-  let primary;
+  let primary: unknown;
   try {
     expected = await identities();
-    await runTransition({
+    const transition: Fixture = {
       signinPlan,
       canAdmit,
       ...gate,
       ...catalog,
       ...cut,
-      ...clock,
+      verifiedSkewMs,
+      readerUpperMs,
+      waitUntilReaderPast,
       origin,
       authorizationUrl: "https://idp.signin-rehearsal.test/authorize",
       userId,
@@ -590,9 +902,10 @@ export async function rehearseSignin({
         const old = await cut.stopAndDrain(from);
         await fence.drained(from);
         target = undefined;
+        const clockObservation: unknown = clock.lastObservation();
         await record("Sign-in controller drain", {
           from,
-          clock: clock.lastObservation(),
+          clock: clockObservation,
           pods: old.map(({ uid, imageDigest }) => ({ uid, imageDigest })),
         });
         return old;
@@ -620,7 +933,8 @@ export async function rehearseSignin({
           }
         }
       },
-    });
+    };
+    await runTransition(transition);
   } catch (error) {
     failed = true;
     primary = error;
