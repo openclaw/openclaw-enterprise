@@ -8,6 +8,7 @@
     "tests/integration/dev-up-compose-startup.test.ts",
     "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
+    "tests/integration/occ-api-namespace-iam-policy.test.ts",
     "tests/integration/occ-api-joint-plugin-deployment.test.ts",
     "tests/integration/occ-service-account-lifecycle.test.ts",
     "tests/integration/stored-document-serialization.test.ts",
@@ -479,6 +480,22 @@
     },
     {
       "path": "tests/integration/occ-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/occ-api-namespace-iam-policy.test.ts",
+      "expectedTests": [
+        "Namespace IAM routes manage exact Role and AccessBinding policy through the selected Driver",
+        "Namespace IAM routes bind existing humans to the exact Namespace and Agent",
+        "Namespace IAM refuses bindings whose Role cannot apply to the target",
+        "Namespace IAM routes bind humans enrolled after bootstrap through the live resolver",
+        "access removed by deleting its target or Namespace is audited and leaves no policy behind",
+        "Namespace IAM reports invalid policy input as 400 with the field and refuses inert Permissions",
+        "Namespace IAM Roles cannot grant Namespace lifecycle actions to a Namespace binding",
+        "OCC rejects Namespace lifecycle Role Permissions before any IAM Driver or State write",
+        "Console share grants confer only the shared Agent and Namespace discovery",
+        "Namespace IAM read routes serialize broad native policy without widening mutations",
+        "Namespace IAM routes fail closed without policy management and roll back audit failures"
+      ]
     },
     {
       "path": "tests/integration/occ-api-joint-plugin-deployment.test.ts"
