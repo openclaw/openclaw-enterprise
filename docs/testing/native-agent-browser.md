@@ -21,9 +21,9 @@ From the repository root:
 ```sh
 state="$PWD/.ci-state/oidc-agent-chat.json"
 file="tests/integration/oidc-agent-chat-k3d-real.test.ts"
-node scripts/ci/run-tests.mjs check-selection gateway-routing --file "$file"
+node scripts/ci/run-tests.ts check-selection gateway-routing --file "$file"
 node scripts/ci/prepare.mjs --lane gateway-routing --selected-file "$file" --state "$state"
-node scripts/ci/run-tests.mjs run gateway-routing --file "$file" --state "$state" \
+node scripts/ci/run-tests.ts run gateway-routing --file "$file" --state "$state" \
   --results "$PWD/.ci-state/oidc-agent-chat-results.json"
 node scripts/ci/cleanup.ts --state "$state"
 ```

@@ -78,7 +78,11 @@ func (app *application) printRuntimeLogPage(page *occclient.RuntimeLogPage, noti
 			noticeErr = noticef(notices, "notice: %s %d lines withheld (%s)", at, record.Count, record.Reason)
 		}
 		if app.output == "json" {
-			// NDJSON: one record per line, exactly as OCC returned it.
+			// NDJSON: remove response indentation while preserving every field
+			// and the original string and number representations.
+			if err := raw.Compact(); err != nil {
+				return fmt.Errorf("OCC returned an invalid runtime log record")
+			}
 			if _, err := fmt.Fprintln(app.out, string(raw)); err != nil {
 				return err
 			}

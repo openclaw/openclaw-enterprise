@@ -5,10 +5,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
-import {
-  keycloakRealmFile,
-  prepareKeycloak as prepareKeycloakJs,
-} from "../../scripts/ci/keycloak.mjs";
+import { keycloakRealmFile, prepareKeycloak } from "../../scripts/ci/keycloak.ts";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -69,22 +66,6 @@ function parseRealm(text: string): Realm {
 }
 
 type KeycloakResource = { name: string; directory: string };
-type PrepareKeycloakOptions = {
-  stateDirectory: string;
-  name: string;
-  realmFile?: string;
-  execFile: (command: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
-  ensureImage: () => Promise<void>;
-  portAccepts: () => Promise<boolean>;
-  reservePort: () => Promise<number>;
-  registerResource: (resource: KeycloakResource) => Promise<KeycloakResource>;
-  saveState: () => Promise<void>;
-  lookupAll?: () => Promise<{ address: string }[]>;
-  log?: () => void;
-};
-const prepareKeycloak = prepareKeycloakJs as typeof prepareKeycloakJs &
-  ((options: PrepareKeycloakOptions) => ReturnType<typeof prepareKeycloakJs>);
-
 function fixture(t: TestContext) {
   return temporaryDirectory(t, "ci-keycloak-test-");
 }
@@ -131,7 +112,7 @@ test("Keycloak preparation refuses an unset realm placeholder before starting a 
       ensureImage: async () => {},
       portAccepts: async () => false,
       reservePort: async () => 40443,
-      registerResource: async (details: KeycloakResource) => {
+      registerResource: async (details) => {
         resources.push(details);
         return details;
       },
@@ -202,7 +183,7 @@ test("Keycloak preparation accepts dual loopback DNS but rejects remote and IPv6
           ensureImage: async () => {},
           portAccepts: async () => false,
           reservePort: async () => 40443,
-          registerResource: async (details: KeycloakResource) => details,
+          registerResource: async (details) => details,
           saveState: async () => {},
           lookupAll: async () => addresses.map((address) => ({ address })),
           log: () => {},

@@ -12,6 +12,11 @@ export async function settled(promises) {
   return results.map((result) => result.value);
 }
 
+/**
+ * @template T
+ * @param {readonly T[]} items
+ * @param {(item: T, index: number) => unknown} each
+ */
 export const eachSettled = (items, each) => settled(items.map(each));
 
 // Runs at most `size` tasks at once (by default about one per CPU); a finished task hands

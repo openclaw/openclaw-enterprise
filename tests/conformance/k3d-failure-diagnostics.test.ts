@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { failureSecrets } from "../../scripts/ci/failure-redaction.mjs";
+import { failureSecrets } from "../../scripts/ci/failure-redaction.ts";
 import {
   codexTurnTrace,
   observeSandboxProbe,

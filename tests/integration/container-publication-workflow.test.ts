@@ -101,7 +101,7 @@ test("publication workflow requires explicit chart opt-in and a successful image
   assert.equal(record(downloaded.with).pattern, undefined);
   const verified = record(smokeSteps.find((step) => step.id === "verified"));
   const smoke = record(
-    smokeSteps.find((step) => optionalText(step.run)?.includes("container-release.mjs smoke")),
+    smokeSteps.find((step) => optionalText(step.run)?.includes("container-release.ts smoke")),
   );
   const qualified = record(
     smokeSteps.find((step) =>

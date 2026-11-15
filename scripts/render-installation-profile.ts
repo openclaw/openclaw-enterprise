@@ -24,7 +24,7 @@ import { imageReferenceProblem } from "../packages/occ/src/image-reference.ts";
 import {
   preparedRepositoryBackend,
   preparedRepositoryInstallation,
-} from "./lib/prepared-repository-installation.mjs";
+} from "./lib/prepared-repository-installation.ts";
 
 interface SignInValues {
   enabled: boolean;
@@ -755,6 +755,7 @@ function validateDatabaseCaMount(values: SecretValues, diagnostics: Errors) {
       "/etc/openclaw/repository-ca",
       "/var/run/secrets/kubernetes.io/serviceaccount",
       "/run/openclaw/repository-control",
+      "/etc/openclaw/prepared-repository",
     ]) {
       reserved.add(path);
     }
@@ -2293,7 +2294,7 @@ function buildRendered(
         "repository.authority must explicitly select prepared-git. The GitHub App signing gateway is retired; stop admissions and drain accepted work on its original owner before switching to worker Token Service custody. Do not transfer keys or replay uncertain work.",
       );
     }
-    values.repositoryCredentials = {
+    const credentials = {
       enabled: true,
       authority: "prepared-git",
       preparedCustodySecretName: asString(
@@ -2351,10 +2352,9 @@ function buildRendered(
         validate: isIpv4Cidr,
         description: "an IPv4 CIDR",
       }),
-    };
-    installation.backend.push(
-      preparedRepositoryBackend({ backendId: values.repositoryCredentials.backendId }),
-    );
+    } satisfies RepositoryValues;
+    values.repositoryCredentials = credentials;
+    installation.backend.push(preparedRepositoryBackend({ backendId: credentials.backendId }));
     installation.repository = preparedRepositoryInstallation({ sessionDurationSeconds: 86_400 });
     installation.drivers.compute.configuration.network.repositoryCredentials = {
       namespace,

@@ -14,7 +14,6 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -25,6 +24,7 @@ import {
   redactQaError,
 } from "../helpers/qa-secrets.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { registerQaCodexPolicyThreadCase } from "./qa-codex-policy-thread-case.ts";
 import { registerQaAgentLifecycleDiagnosticsCases } from "./qa-agent-lifecycle-diagnostics-cases.ts";
 
 test("QA Agent reads the selected Preset in its Namespace", async (t) => {
@@ -581,7 +581,8 @@ test("QA command diagnostics retain the error while hiding generated and environ
   await t.test(
     "native failure metadata keeps fixed classes without echoing response or log values",
     async () => {
-      const { nativeTaskFailureSummary } = await import("../helpers/normal-agent-tools.mjs");
+      const { nativeTaskFailureSummary } =
+        await import("../helpers/normal-agent-native-diagnostics.ts");
       const summary = nativeTaskFailureSummary(
         "thread/start: Codex did not grant the requested permission profile. Authorization: Bearer native-private-value",
       );
@@ -593,6 +594,13 @@ test("QA command diagnostics retain the error while hiding generated and environ
         JSON.stringify(summary),
         /native-private-value|Authorization|Codex did not/,
       );
+      assert.deepEqual(
+        nativeTaskFailureSummary(" ".repeat(65_536) + "turn/start invalid api key"),
+        {
+          classes: ["unclassified"],
+          nativeMethod: "unknown",
+        },
+      );
       assert.deepEqual(nativeTaskFailureSummary("unrecognized private-native-message"), {
         classes: ["unclassified"],
         nativeMethod: "unknown",
@@ -602,8 +610,27 @@ test("QA command diagnostics retain the error while hiding generated and environ
   await t.test(
     "native requirements distinguish missing experimental fields from an explicit allowlist",
     async () => {
-      const { nativePolicyRequirementsSummary } = await import("../helpers/normal-agent-tools.mjs");
+      const { nativePolicyRequirementsSummary } =
+        await import("../helpers/normal-agent-native-diagnostics.ts");
       assert.deepEqual(nativePolicyRequirementsSummary({}), { available: false });
+      assert.deepEqual(nativePolicyRequirementsSummary({ requirements: null }), {
+        available: true,
+        requirementsPresent: false,
+      });
+      const malformed = nativePolicyRequirementsSummary({
+        requirements: {
+          allowedPermissionProfiles: { ":workspace": "true" },
+          defaultPermissions: "native-private-value",
+        },
+      });
+      assert.equal(malformed.profileAllowlistPresent, "unknown");
+      assert.equal(malformed.defaultProfileKind, "other-named");
+      assert.doesNotMatch(JSON.stringify(malformed), /native-private-value/);
+      assert.equal(
+        nativePolicyRequirementsSummary({ requirements: { allowedPermissionProfiles: null } })
+          .profileAllowlistPresent,
+        false,
+      );
       assert.equal(
         nativePolicyRequirementsSummary({ requirements: {} }).profileAllowlistPresent,
         "unknown",
@@ -1490,7 +1517,7 @@ test("QA log tails drop the body of an unregistered key that starts above the ta
 });
 
 test("failed native Gateway turns capture private bounded logs for the original revision", async (t) => {
-  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const { createNativePluginAssertions } = await import("../helpers/native-plugin-assertions.ts");
   for (const mode of ["capture", "read-unavailable", "write-unavailable", "success"]) {
     await t.test(mode, async () => {
       const credential = `private-runtime-fixture-${randomUUID()}`;
@@ -1642,7 +1669,7 @@ test("failed native Gateway turns capture private bounded logs for the original 
 });
 
 test("native cron positive control requires its own successful completed run", async (t) => {
-  const { assertNativeCronRunSucceeded } = await import("../helpers/plugin-driver-real.mjs");
+  const { assertNativeCronRunSucceeded } = await import("../helpers/native-cron-evidence.ts");
   const accepted = { ok: true, enqueued: true, runId: "control-run" };
   const finished = {
     jobId: "control-job",
@@ -1699,7 +1726,7 @@ test("native cron positive control requires its own successful completed run", a
 test("native tool evidence reads compressed rows, prompt snapshots and command exit status", async (t) => {
   const { DatabaseSync } = await import("node:sqlite");
   const { zstdCompressSync } = await import("node:zlib");
-  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const { createNativePluginAssertions } = await import("../helpers/native-plugin-assertions.ts");
   const directory = await temporaryDirectory(t, "oce-tool-evidence-");
   const databasePath = join(directory, "transcript.sqlite");
   const db = new DatabaseSync(databasePath);
@@ -2621,293 +2648,7 @@ test("native tool evidence reads compressed rows, prompt snapshots and command e
   });
 });
 
-test("Gateway policy evidence identifies a fresh native Codex child and its own completed work", async (t) => {
-  const { assertCodexPolicyChild, parseCodexPolicyMetadata, readCodexPolicyRolloutHead } =
-    await import("../helpers/plugin-driver-real.mjs");
-  const metadata = (id, dynamic_tools = [], parent_thread_id) =>
-    JSON.stringify({
-      type: "session_meta",
-      payload: { id, dynamic_tools, parent_thread_id },
-    });
-  const parentLine = metadata("parent", [
-    {
-      type: "namespace",
-      name: "openclaw",
-      tools: [
-        {
-          type: "function",
-          name: "agents_list",
-          description: "private description",
-          inputSchema: {},
-        },
-      ],
-    },
-  ]);
-  const childLine = metadata("child", [], "parent");
-  const fixture = (version = "v1") => ({
-    childMarker: "child-done",
-    childResult: "command-result",
-    parent: {
-      id: "parent",
-      turns: [
-        {
-          id: "parent-turn",
-          status: "completed",
-          error: null,
-          items:
-            version === "v2"
-              ? [
-                  {
-                    type: "userMessage",
-                    content: [{ type: "text", text: "run native work and reply child-done" }],
-                  },
-                  {
-                    type: "subAgentActivity",
-                    id: "spawn-call",
-                    kind: "started",
-                    agentThreadId: "child",
-                    agentPath: "/root/policy_child",
-                  },
-                ]
-              : [
-                  {
-                    type: "collabAgentToolCall",
-                    tool: "spawnAgent",
-                    status: "completed",
-                    senderThreadId: "parent",
-                    receiverThreadIds: ["child"],
-                    prompt: "run native work and reply child-done",
-                  },
-                ],
-        },
-      ],
-    },
-    child: {
-      id: "child",
-      parentThreadId: "parent",
-      forkedFromId: null,
-      turns: [
-        {
-          id: "child-turn",
-          status: "completed",
-          error: null,
-          items: [
-            {
-              type: "commandExecution",
-              status: "completed",
-              exitCode: 0,
-              aggregatedOutput: "42 command-result\n",
-            },
-            { type: "agentMessage", text: "child-done" },
-          ],
-        },
-      ],
-    },
-    parentMetadata: parseCodexPolicyMetadata(parentLine, "parent"),
-    childMetadata: parseCodexPolicyMetadata(childLine, "child"),
-  });
-  for (const version of ["v1", "v2"]) {
-    const result = assertCodexPolicyChild(fixture(version));
-    assert.equal(result.childTurnId, "child-turn");
-    assert.equal(result.nativeCommandSucceeded, true);
-    assert.deepEqual(result.childGatewayTools, []);
-    assert.deepEqual(result.parentGatewayTools, [{ namespace: "openclaw", name: "agents_list" }]);
-    assert.equal(JSON.stringify(result).includes("private description"), false);
-  }
-
-  for (const [label, mutate] of [
-    [
-      "activity in another turn",
-      (value) => {
-        const activity = value.parent.turns[0].items.pop();
-        value.parent.turns.push({
-          id: "other-turn",
-          status: "completed",
-          error: null,
-          items: [activity],
-        });
-      },
-    ],
-    [
-      "activity that did not start a child",
-      (value) => {
-        value.parent.turns[0].items[1].kind = "completed";
-      },
-    ],
-    [
-      "incomplete parent turn",
-      (value) => {
-        value.parent.turns[0].status = "inProgress";
-      },
-    ],
-    [
-      "activity identifying another child",
-      (value) => {
-        value.parent.turns[0].items[1].agentThreadId = "other-child";
-      },
-    ],
-  ]) {
-    await t.test(`rejects V2 ${label}`, () => {
-      const value = fixture("v2");
-      mutate(value);
-      assert.throws(() => assertCodexPolicyChild(value), assert.AssertionError);
-    });
-  }
-
-  await t.test("reports bounded spawn predicates without private native content", () => {
-    const value = fixture();
-    const spawn = value.parent.turns[0].items[0];
-    // Separate each rejected predicate so a real zero-match result identifies its cause.
-    value.parent.turns = [
-      ...Array.from({ length: 10 }, () => ({ status: "inProgress", error: null, items: [] })),
-      {
-        status: "completed",
-        error: null,
-        items: [
-          { ...spawn, status: "inProgress" },
-          { ...spawn, senderThreadId: "private-thread" },
-          { ...spawn, prompt: "private-prompt private-secret" },
-          {
-            type: "commandExecution",
-            command: "private-command",
-            aggregatedOutput: "private-result",
-          },
-        ],
-      },
-      { status: "completed", items: [spawn] },
-      { status: "inProgress", error: null, items: [spawn] },
-      { status: "failed", error: { message: "private-error" }, items: [spawn] },
-      { status: "private-status", error: "private-error", items: [] },
-    ];
-    assert.throws(
-      () => assertCodexPolicyChild(value),
-      (error) => {
-        assert.ok(error instanceof assert.AssertionError);
-        const prefix = "one completed native spawn must match the child task: ";
-        assert.ok(error.message.startsWith(prefix));
-        const diagnostic = JSON.parse(error.message.split("\n")[0].slice(prefix.length));
-        assert.deepEqual(diagnostic.counts, {
-          turns: 15,
-          completedErrorNullTurns: 1,
-          collabSpawns: 3,
-          completedSpawns: 2,
-          senderBoundSpawns: 1,
-          markerBoundSpawns: 0,
-          subAgentActivities: 0,
-          startedSubAgents: 0,
-          taskBoundSubAgents: 0,
-        });
-        assert.equal(diagnostic.recentTurns.length, 10);
-        assert.deepEqual(diagnostic.recentTurns.slice(-5), [
-          { status: "completed", hasError: false, errorIsNull: true },
-          { status: "completed", hasError: false, errorIsNull: false },
-          { status: "inProgress", hasError: false, errorIsNull: true },
-          { status: "failed", hasError: true, errorIsNull: false },
-          { status: "unknown", hasError: true, errorIsNull: false },
-        ]);
-        for (const privateText of [
-          "private-thread",
-          "private-prompt",
-          "private-secret",
-          "private-command",
-          "private-result",
-          "private-error",
-          "private-status",
-        ]) {
-          assert.equal(error.message.includes(privateText), false);
-        }
-        return true;
-      },
-    );
-  });
-
-  for (const [label, mutate] of [
-    [
-      "unrelated child",
-      (value) => {
-        value.child.id = "other";
-      },
-    ],
-    [
-      "wrong lineage",
-      (value) => {
-        value.child.parentThreadId = "other";
-      },
-    ],
-    [
-      "forked history",
-      (value) => {
-        value.child.forkedFromId = "parent";
-      },
-    ],
-    [
-      "wrong metadata identity",
-      (value) => {
-        value.childMetadata.threadId = "other";
-      },
-    ],
-    [
-      "missing parent catalog control",
-      (value) => {
-        value.parentMetadata.tools = [];
-      },
-    ],
-    [
-      "inherited Gateway tools",
-      (value) => {
-        value.childMetadata.tools = value.parentMetadata.tools;
-      },
-    ],
-    [
-      "unfinished child",
-      (value) => {
-        value.child.turns[0].status = "inProgress";
-      },
-    ],
-    [
-      "failed command",
-      (value) => {
-        value.child.turns[0].items[0].exitCode = 1;
-      },
-    ],
-    [
-      "reply without native work",
-      (value) => {
-        value.child.turns[0].items.shift();
-      },
-    ],
-  ]) {
-    await t.test(`rejects ${label}`, () => {
-      const value = fixture();
-      mutate(value);
-      assert.throws(() => assertCodexPolicyChild(value), assert.AssertionError);
-    });
-  }
-  await t.test("reads only the exact plain or compressed SessionMeta head", async () => {
-    const { zstdCompressSync } = await import("node:zlib");
-    const directory = await mkdtemp(join(tmpdir(), "codex-policy-metadata-"));
-    try {
-      const path = join(directory, "rollout.jsonl");
-      await writeFile(path, `${parentLine}\nnot-a-json-record\n`);
-      await writeFile(`${path}.zst`, zstdCompressSync(`${childLine}\n`));
-      assert.equal(await readCodexPolicyRolloutHead(`${path}.zst`), parentLine);
-      await rm(path);
-      assert.equal(await readCodexPolicyRolloutHead(path), childLine);
-      assert.throws(
-        () => parseCodexPolicyMetadata(childLine, "unrelated-thread"),
-        /SessionMeta must identify the requested thread/,
-      );
-      assert.throws(
-        () => parseCodexPolicyMetadata('{"type":"response_item"}', "child"),
-        /rollout head must be native SessionMeta/,
-      );
-      await writeFile(path, "x".repeat(4 * 1024 * 1024 + 1));
-      await assert.rejects(readCodexPolicyRolloutHead(path), /fixture read limit/);
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
-});
+registerQaCodexPolicyThreadCase();
 
 // The shapes the pinned Codex reviewer records on a tool result (finding 1980): a
 // judgement carries risk and authorization; a failed-closed review carries neither.
@@ -2932,7 +2673,7 @@ const timedOut = {
 
 test("approval review evidence tells a reviewer error from a deny judgement", async () => {
   const { approvalReviewKind, automaticReviewerErrored, describeApprovalReviews } =
-    await import("../helpers/plugin-driver-real.mjs");
+    await import("../helpers/plugin-transcript-assertions.ts");
   assert.equal(approvalReviewKind(judgedDeny), "judged-deny");
   assert.equal(approvalReviewKind(failedClosed), "reviewer-error");
   assert.equal(approvalReviewKind(timedOut), "reviewer-error");
@@ -3032,7 +2773,7 @@ function calendarEvidence(reviews) {
 }
 
 test("a failed reviewed read names the review outcome before the evidence", async () => {
-  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const { createNativePluginAssertions } = await import("../helpers/native-plugin-assertions.ts");
   for (const [reviews, errored, reason] of [
     [[failedClosed], true, `reviewer-error: ${failedClosed.rationale}`],
     [[judgedDeny], false, "judged-deny (risk: high, authorization: low)"],
@@ -3069,7 +2810,7 @@ test("a failed reviewed read names the review outcome before the evidence", asyn
 });
 
 test("QA model failure evidence preserves the failure and its admitted revision", async () => {
-  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const { createNativePluginAssertions } = await import("../helpers/native-plugin-assertions.ts");
   const secret = `qa-log-secret-${randomUUID()}`;
   registerQaSecret(secret);
   const agent = { namespaceId: "namespace", id: "agent", revision: { id: "original" } };

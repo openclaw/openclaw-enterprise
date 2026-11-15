@@ -1,12 +1,12 @@
 // Shared by the runtime image startup smoke tests, which CI runs in three lanes
-// (runtime-image-startup.test.mjs, runtime-image-startup-probe.test.mjs,
+// (runtime-image-startup.test.ts, runtime-image-startup-probe.test.mjs,
 // runtime-image-startup-termination.test.ts,
 // runtime-image-gateway-unclean-restart.test.ts,
 // runtime-image-gateway-retained-state.test.ts,
-// runtime-image-gateway-peer.test.ts, runtime-image-native-worker.test.mjs,
-// runtime-image-state-migration.test.mjs,
+// runtime-image-gateway-peer.test.ts, runtime-image-native-worker.test.ts,
+// runtime-image-state-migration.test.ts,
 // runtime-image-managed-files.test.ts,
-// runtime-image-native-listener.test.mjs and
+// runtime-image-native-listener.test.ts and
 // runtime-image-gateway-workspace.test.ts).
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
@@ -132,6 +132,12 @@ export const imageTestOptions =
       }
     : {};
 
+/**
+ * @param {{after(cleanup: () => unknown): void}} t
+ * @param {string} harnessId
+ * @param {unknown} [configuration]
+ * @returns {Promise<string>}
+ */
 export async function temporaryGatewayConfiguration(
   t,
   harnessId,
@@ -174,6 +180,10 @@ export function createRuntimeImageConfiguration(harnessId, providerModel, option
   return configuration;
 }
 
+/**
+ * @param {string} harnessId
+ * @param {{enableSlack?: boolean}} [options]
+ */
 export function createAdmittedRuntimeImageConfiguration(harnessId, options = {}) {
   return admitLoggingConfiguration(
     createRuntimeImageConfiguration(harnessId, runtimeImageModel, options),
@@ -184,6 +194,11 @@ export function createAdmittedRuntimeImageConfiguration(harnessId, options = {})
 // A new volume owned by the Gateway user, for mounting at `mountPath` (the
 // Gateway home or its ~/.openclaw) as its PersistentVolume is. `seed`, a shell
 // command run first as root with `seedVolumes` also mounted, can fill it.
+/**
+ * @param {{after(cleanup: () => unknown): void}} t
+ * @param {string} mountPath
+ * @param {{seed?: string, seedVolumes?: string[]}} [options]
+ */
 export async function gatewayStateVolume(t, mountPath, { seed, seedVolumes = [] } = {}) {
   const volume = `oce-runtime-image-state-${randomBytes(6).toString("hex")}`;
   await runDocker(["volume", "create", volume]);
@@ -221,6 +236,15 @@ export async function gatewayStateVolume(t, mountPath, { seed, seedVolumes = [] 
   return volume;
 }
 
+/**
+ * @param {{after(cleanup: () => unknown): void}} t
+ * @param {string} harnessId
+ * @param {{collectPlugins?: boolean, configuration?: unknown, configurationPath?: string,
+ *   entrypoint?: string | undefined, extraEnvironment?: string[], readinessAttempts?: number | undefined,
+ *   tmpfs?: string[], volumes?: string[], network?: string, until?: "ready" | "spawned",
+ *   waitUntilReady?: boolean, withAppServer?: boolean}} [options]
+ * @returns {Promise<{containerName: string, logs?: string, pluginList?: unknown}>}
+ */
 export async function runGatewaySmoke(t, harnessId, options = {}) {
   const {
     collectPlugins = false,

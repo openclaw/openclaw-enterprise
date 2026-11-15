@@ -17,7 +17,7 @@ import {
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
 
-const runnerPath = fileURLToPath(new URL("../../scripts/ci/run-tests.mjs", import.meta.url));
+const runnerPath = fileURLToPath(new URL("../../scripts/ci/run-tests.ts", import.meta.url));
 const progressUrl = new URL("../../scripts/ci/openshell-progress.mjs", import.meta.url);
 
 interface RunSummary {
@@ -26,9 +26,20 @@ interface RunSummary {
   counts: { passed: number; failed: number; skipped: number; todo: number; total: number };
   issues: { code: string }[];
   files: {
+    path: string;
     status: string;
     nodeExitCode: number;
     measurements?: unknown[];
+    installationPhases?: {
+      truncated: boolean;
+      phases: {
+        invocation: number;
+        stage: string;
+        outcome: string;
+        enteredMs: number;
+        elapsedMs?: number;
+      }[];
+    };
     cleanup: { status: string };
     fileFailure?: unknown;
     tests: { name: string; status: string; error?: { message?: string } }[];
@@ -56,6 +67,95 @@ async function writeCleanupFixture(root: string) {
       "",
     ].join("\n"),
   );
+}
+
+async function checkUpstreamInstallationPhases(root: string) {
+  const file = "tests/integration/openshell-upstream-real.test.ts";
+  const title = "OpenShell model and tool upstream outages fail closed";
+  const repositoryUrl = new URL("../../", import.meta.url);
+  const sibling = "tests/integration/local-first-agent-openshell-real.test.mjs";
+  const installationModule = new URL("tests/helpers/openshell-installation.ts", repositoryUrl).href;
+  const stageModule = new URL("tests/helpers/openshell-stage.mjs", repositoryUrl).href;
+  const privateValue = "/fixture/installation-phase-value";
+  const failure = "synthetic gateway Helm failure";
+  const child = `import assert from "node:assert/strict";
+import test from "node:test";
+import { runGatewayInstallation } from ${JSON.stringify(installationModule)};
+import { runOpenShellStage } from ${JSON.stringify(stageModule)};
+test(${JSON.stringify(title)}, async (t) => {
+  const failure = new Error(${JSON.stringify(failure)});
+  await runOpenShellStage(t, "installation", async () => {
+    try {
+      await runGatewayInstallation(
+        async () => {},
+        async () => ${JSON.stringify(privateValue)},
+        async (value) => {
+          assert.equal(value, ${JSON.stringify(privateValue)});
+          throw failure;
+        },
+        async () => assert.fail("readiness must not run after failed Helm"),
+      );
+    } catch (error) {
+      assert.equal(error, failure);
+      throw error;
+    }
+  });
+});`;
+
+  await writeCleanupFixture(root);
+  // Run the real phase producer in the same test runner with harmless installation operations.
+  for (const [lane, files, recordedFile] of [
+    ["openshell", [sibling], sibling],
+    ["openshell-policy", [sibling], sibling],
+    ["progress", [file], undefined],
+    ["openshell-installers", [sibling, file], file],
+  ] as const) {
+    const state = `state/${lane}-installation.jsonl`;
+    const results = join(root, `results/${lane}-installation.json`);
+    for (const path of files) {
+      await writeFile(join(root, path), child);
+    }
+    await writeRunnerManifest(root, {
+      lanes: { [lane]: { files: files.map((path) => ({ path, expectedTests: [title] })) } },
+    });
+    const result = await runRunnerAsync(laneArgs(root, lane, state, results));
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(result.signal, null);
+    const cleaned = await readFile(join(root, state), "utf8");
+    assert.deepEqual(cleaned.trimEnd().split("\n").sort(), [...files].sort());
+    const artifact = await readFile(results, "utf8");
+    const summary = JSON.parse(artifact) as RunSummary;
+    assert.equal(summary.exitCode, result.status);
+    assert.deepEqual(summary.files.map(({ path }) => path).sort(), [...files].sort());
+    for (const text of [artifact, result.stdout, result.stderr]) {
+      assert.equal(text.includes(privateValue), false);
+    }
+    for (const entry of summary.files) {
+      assert.equal(entry.nodeExitCode, 1);
+      assert.deepEqual(entry.cleanup, { status: "passed" });
+      assert.deepEqual(
+        entry.tests.map(({ name, status, error }) => [name, status, error?.message]),
+        [[title, "failed", failure]],
+      );
+      if (entry.path !== recordedFile) {
+        assert.equal(Object.hasOwn(entry, "installationPhases"), false, `${lane}: ${entry.path}`);
+        continue;
+      }
+      const progress = entry.installationPhases;
+      assert.ok(progress, `${lane}: ${entry.path} omitted installationPhases`);
+      assert.equal(progress.truncated, false);
+      const phases = progress.phases.map(({ enteredMs, elapsedMs, ...phase }) => {
+        assert.ok(Number.isSafeInteger(enteredMs) && enteredMs >= 0);
+        assert.ok(elapsedMs !== undefined && Number.isSafeInteger(elapsedMs) && elapsedMs >= 0);
+        return phase;
+      });
+      assert.deepEqual(phases, [
+        { invocation: 1, stage: "workspace-helm", outcome: "passed" },
+        { invocation: 1, stage: "gateway-helm", outcome: "failed" },
+      ]);
+    }
+  }
 }
 
 test("run preserves nonzero child Node exits and rejects zero-case files", async (t) => {
@@ -88,6 +188,8 @@ test("run preserves nonzero child Node exits and rejects zero-case files", async
     emptySummary.issues.map((entry) => entry.code),
     ["selected-zero"],
   );
+
+  await checkUpstreamInstallationPhases(root);
 });
 
 test(

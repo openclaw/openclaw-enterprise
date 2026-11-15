@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-11-13"
-last_updated_session: "authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c"
+updated: "2026-11-14"
+last_updated_session: "authoring-run/6b781d32-d772-4aed-beb9-1598b28632b4"
 ---
 
 # Production Startup Flow
@@ -209,22 +209,22 @@ the Job. Helm failure does not imply database-hook rollback.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.preflight`
 
-With [OIDC CA settings](../reference/settings/oidc.md), the API init container
-`deploy/helm/openclaw-enterprise/files/assemble-api-ca.mjs` validates and combines
-IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`;
-`deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs` preloads to refuse
-database TLS not pinned to that CA.
+With [OIDC CA settings](../reference/settings/oidc.md), generated
+[`assemble-api-ca.mjs`](../layout.md#deployment-tooling-and-checks) combines
+validated IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`.
+The `check-api-database-ca.mjs` preload requires the selected CA and DNS hostname
+verification for PostgreSQL.
 
 `apps/controller/src/auth/configuration.ts:validateAuthSecret` rejects short
 secrets before Driver construction or PostgreSQL access. `composeProduction` and
 the auth factory repeat it. Endpoints include `/healthz` and `/readyz`.
 `apps/controller/src/composition/postgres-readiness.ts:createPostgresReadinessCheck`
 shares one application-pool `SELECT 1` per instance across overlapping `GET` and
-implicit `HEAD` probes until PostgreSQL settles. Disconnects cannot release it;
-later probes query afresh.
-The startup probe allows 120 one-second failures; readiness has a one-second
-timeout. Worker exec probes run Node under its CPU limit; 24 five-second startup failures
-allow two minutes.
+implicit `HEAD` probes. The query stays active when probes disconnect. Subsequent
+probes query again once PostgreSQL returns.
+API startup allows 120 one-second failures. API readiness times out after one
+second. [Worker startup](../../scripts/production-healthcheck.ts) allows 24
+five-second failures.
 
 `apps/controller/src/index.ts:createFastifyApp`
 
@@ -248,16 +248,15 @@ fails, then stops its loop and database. A listener left open would keep the Pod
 running until its grace ends. Any failure logs `worker.error` `SHUTDOWN_FAILED`
 (exit 1). See `apps/controller/src/worker/shutdown.ts:closeWorkerComposition`.
 
-Nonempty `controlPlane.nodeSelector` places API, worker, migration and bootstrap
-on reviewed control-plane nodes; empty defaults omit it.
-`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` also applies it
-to `EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`, keeping the private
-proxy on that pool. Tenant gateway and Agent placement remain Compute-owned.
+When set, `controlPlane.nodeSelector` places the API, worker, migration,
+bootstrap, and private proxy on reviewed control-plane nodes. The
+`deploy/helm/openclaw-enterprise/templates/gateway-routing.yaml` template sets
+`EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`. Compute owns tenant
+Gateway and Agent placement.
 
-With `database.caSecretName`, `_helpers.tpl` rejects CA destinations aliasing active
-client mounts, including relative paths, dot segments and trailing slashes. Linux
-otherwise masks startup files. Emitted paths stay unchanged; noncolliding paths
-remain available.
+With `database.caSecretName`, `_helpers.tpl` rejects CA paths that would mask
+active client mounts. It normalizes relative paths, dot segments, and trailing
+slashes for comparison and emits accepted paths as supplied.
 
 The [shared egress policy](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
 selects only `api`, `worker`, and `initialization` Pods with the release identity.
@@ -352,8 +351,7 @@ until tenant deployment/TUI procedures run.
   inspected; initialization never repairs its ledger.
 - The API emits `listening`; the worker emits `worker.started`, then `worker.health`.
   `listening` reports `startupMs` (since process start) and per-phase `phasesMs`.
-- `compute.preflight-warning` code `KUBERNETES_VERSION_BELOW_MINIMUM`: upgrade
-  Kubernetes to 1.35 or later for support.
+- For `KUBERNETES_VERSION_BELOW_MINIMUM`, upgrade Kubernetes to 1.35 or later.
 - `startup-error` or `worker.startup-error` with code
   `KUBERNETES_API_UNAVAILABLE`: Compute cannot reach Kubernetes at the logged
   `host` and `port`. Check `cluster.cidrs` and `cluster.port`; restarted
@@ -392,6 +390,10 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 17:11: Identify the generated API CA programs and link their TypeScript source layout. (authoring-run/6b781d32-d772-4aed-beb9-1598b28632b4 - 4ecdd59c5a64f217f0b7fafdf7a034e74b890ffc)
+
+- 2026-11-14 12:25: Document the TypeScript worker probe. (authoring-run/1be06605-515e-4261-8b21-d0d796809916 - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
 
 - 2026-11-13 19:24: Validate auth. (authoring-run/e8f36db7-807b-453f-8274-f89ca52fcb7c - 795a920ef266c1246d7774ceb0188a0ee206fe17)
 

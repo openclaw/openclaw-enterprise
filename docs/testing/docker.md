@@ -49,9 +49,9 @@ resources and verifies that `occ dev down` preserves the database volume unless
 ## Driver regressions
 
 ```sh
-node --test tests/conformance/docker-compute.test.mjs
+node --test tests/conformance/docker-compute.test.ts
 OCC_TEST_DOCKER_TOKEN_RETRY=1 NODE_BASE_IMAGE=node:24-bookworm \
-  node --test tests/integration/docker-compute-token-retry.test.mjs
+  node --test tests/integration/docker-compute-token-retry.test.ts
 ```
 
 The first uses a local HTTP fault fixture. The second requires Docker at
@@ -143,7 +143,7 @@ docker pull "$CONTROLLER_IMAGE"
 docker pull "$RUNTIME_IMAGE"
 OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_IMAGE" \
   node --test --test-concurrency=1 tests/integration/production-image-startup.test.mjs \
-    tests/integration/runtime-image-startup.test.mjs \
+    tests/integration/runtime-image-startup.test.ts \
     tests/integration/runtime-image-gateway-workspace.test.ts \
     tests/integration/runtime-image-public-github-read.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \
@@ -152,10 +152,10 @@ OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_I
     tests/integration/runtime-image-gateway-unclean-restart.test.ts \
     tests/integration/runtime-image-gateway-retained-state.test.ts \
     tests/integration/runtime-image-gateway-peer.test.ts \
-    tests/integration/runtime-image-native-worker.test.mjs \
-    tests/integration/runtime-image-state-migration.test.mjs \
+    tests/integration/runtime-image-native-worker.test.ts \
+    tests/integration/runtime-image-state-migration.test.ts \
     tests/integration/runtime-image-managed-files.test.ts \
-    tests/integration/runtime-image-native-listener.test.mjs \
+    tests/integration/runtime-image-native-listener.test.ts \
     tests/integration/repository-runtime-volume.test.ts
 ```
 
@@ -222,7 +222,7 @@ probe and an old broker without durable-admission capability. Then run:
 ```sh
 umask 077
 pair_state_dir=$(mktemp -d)
-node scripts/ci/run-tests.mjs run image-pair-qualification \
+node scripts/ci/run-tests.ts run image-pair-qualification \
   --state "$pair_state_dir/state.json" --results "$pair_state_dir/results.json"
 ```
 

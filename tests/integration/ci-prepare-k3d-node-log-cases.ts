@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { nodeLogExcerpt } from "../../scripts/ci/k3d-diagnostics.mjs";
+import { nodeLogExcerpt } from "../../scripts/ci/k3d-diagnostics.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 export function registerBoundedNodeLogCases() {
@@ -152,7 +152,7 @@ export function registerNodeLogChronologyCases() {
   });
 
   test("node log chronology and retry retention do not depend on the process locale", () => {
-    const moduleUrl = new URL("../../scripts/ci/k3d-diagnostics.mjs", import.meta.url).href;
+    const moduleUrl = new URL("../../scripts/ci/k3d-diagnostics.ts", import.meta.url).href;
     const script = `
       import { nodeLogExcerpt } from ${JSON.stringify(moduleUrl)};
       const early = "2026-10-21T00:00:00.020000000Z early stderr";

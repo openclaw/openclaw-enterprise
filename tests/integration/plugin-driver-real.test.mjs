@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import {
-  assertNoSecretMaterial,
   createPluginDriverRealFixture,
-  pluginProofSkipReason,
   readCodexServiceAccountCredential,
 } from "../helpers/plugin-driver-real.mjs";
+import { assertNoSecretMaterial } from "../helpers/native-plugin-assertions.ts";
+import { pluginProofSkipReason } from "../helpers/plugin-driver-proof-inputs.ts";
 
 test(
   "a real official OpenClaw plugin installs, runs in a normal Agent turn, and stays scoped to one Agent",

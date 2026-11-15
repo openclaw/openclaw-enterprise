@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { temporaryDirectory } from "./temporary-directory.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
-const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.ts");
 
 // Fixtures live under tmpdir(), which may itself sit inside an unrelated Git
 // checkout. Stop Git's repository search at tmpdir() so the runner never reads
@@ -182,8 +182,8 @@ export async function writeFirstAgentCliFixture(root: string, cliBody: string) {
   );
   await mkdir(join(root, "scripts/ci"), { recursive: true });
   await writeFile(
-    join(root, "scripts/ci/failure-redaction.mjs"),
-    await readFile(new URL("../../scripts/ci/failure-redaction.mjs", import.meta.url)),
+    join(root, "scripts/ci/failure-redaction.ts"),
+    await readFile(new URL("../../scripts/ci/failure-redaction.ts", import.meta.url)),
   );
   await writeFile(join(root, "bin/occ"), `#!${process.execPath}\n${cliBody}`, { mode: 0o700 });
 }

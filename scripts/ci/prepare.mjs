@@ -22,8 +22,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
-import { loadTestSuites } from "./test-suites.mjs";
+import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.ts";
+import { loadTestSuites } from "./test-suites.ts";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
 import { openShellHarnessError, openShellRequiredEnv } from "./openshell-model-inputs.mjs";
 import {
@@ -48,7 +48,7 @@ import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
 import { ownedName, randomSuffix, slug } from "./resource-names.ts";
 import { registryImage } from "./fixture-support-images.mjs";
 import { pullImage } from "./image-pull.ts";
-import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
+import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.ts";
 import { imageInventory, laneImagesResourceKind } from "./lane-images.ts";
 import { imageConfigDigest } from "./image-config-digest.ts";
 import { verifyPreloadedAgentSandbox } from "./agent-sandbox.ts";
@@ -61,7 +61,7 @@ import { metricsMonitoringImages } from "./metrics-monitoring-images.ts";
 import {
   prepareRepositoryCredentials,
   prepareRepositoryCredentialsFile,
-} from "./repository-credentials.mjs";
+} from "./repository-credentials.ts";
 import { prepareCodexSeccompProfile } from "../lib/codex-seccomp-k3d.ts";
 import {
   prepareOpenShell,
@@ -426,7 +426,7 @@ async function prepareTogether(operations, concurrency = operations.length) {
 
 // The Actions runner refuses NODE_OPTIONS in $GITHUB_ENV, compared without case, and logs an
 // ##[error] for it. A lane's own env, such as the checks lanes' heap limit, needs no export:
-// run-tests.mjs sets it on each test process.
+// run-tests.ts sets it on each test process.
 const GITHUB_ENV_REFUSED = new Set(["NODE_OPTIONS"]);
 
 async function appendGithubEnv(path, env) {
@@ -460,6 +460,25 @@ async function markResourceReady(statePath, state, resource) {
   resource.status = "ready";
   resource.readyAt = new Date().toISOString();
   await writeState(statePath, state);
+}
+
+/**
+ * @param {string} statePath
+ * @param {ReturnType<typeof baseState>} state
+ * @returns {import("./repository-credentials.ts").RepositoryCredentialsImageJournal}
+ */
+function repositoryCredentialsImageJournal(statePath, state) {
+  return {
+    imagePrefix: `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}`,
+    registerImage: async (tag) => {
+      const resource = addResource(state, "image-tag", { name: tag });
+      await writeState(statePath, state);
+      return async (imageId) => {
+        resource.imageId = imageId;
+        await markResourceReady(statePath, state, resource);
+      };
+    },
+  };
 }
 
 // A timed-out command gets SIGTERM, SIGKILL after this grace, and after the same
@@ -884,7 +903,7 @@ const ciPostgresSettings = Object.freeze([
 ]);
 
 // Administrative SQL on the lane's server, over its published port (postgres-admin.ts). A
-// failed database step carries the closed diagnostic contract run-tests.mjs reports.
+// failed database step carries the closed diagnostic contract run-tests.ts reports.
 async function postgresAdmin(server, { database, statements, stage }) {
   try {
     await runPostgresAdmin({ port: server.port, database, statements });
@@ -3303,18 +3322,9 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
         env,
         await prepareRepositoryCredentials({
           repositoryRoot,
-          imagePrefix: `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}`,
+          ...repositoryCredentialsImageJournal(resolvedStatePath, state),
           receiptPath: join(dirname(resolvedStatePath), "repository-credentials-images.json"),
           execFile,
-          registerImage: async (tag) => {
-            const resource = addResource(state, "image-tag", { name: tag });
-            await writeState(resolvedStatePath, state);
-            return resource;
-          },
-          markImageReady: async (resource, imageId) => {
-            resource.imageId = imageId;
-            await markResourceReady(resolvedStatePath, state, resource);
-          },
         }),
       );
       break;
@@ -3424,18 +3434,9 @@ async function prepareLane({ lane, statePath, file, cleanupOwner }) {
             () =>
               prepareRepositoryCredentials({
                 repositoryRoot,
-                imagePrefix: `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}`,
+                ...repositoryCredentialsImageJournal(resolvedStatePath, state),
                 execFile,
                 serviceOnly: true,
-                registerImage: async (tag) => {
-                  const resource = addResource(state, "image-tag", { name: tag });
-                  await writeState(resolvedStatePath, state);
-                  return resource;
-                },
-                markImageReady: async (resource, imageId) => {
-                  resource.imageId = imageId;
-                  await markResourceReady(resolvedStatePath, state, resource);
-                },
               }),
           ]),
       );

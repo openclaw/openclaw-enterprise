@@ -14,7 +14,7 @@ import {
   redactLogLine,
   redactOutputLine,
   redactFailureDetail,
-} from "../../scripts/ci/failure-redaction.mjs";
+} from "../../scripts/ci/failure-redaction.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { prependPath } from "../helpers/fake-commands.ts";
 import {
@@ -22,6 +22,7 @@ import {
   openShellStaleRelay,
   openShellSettingsChange,
   observeSandboxProbe,
+  observedTurn,
   summarizeWorkerEvents,
   createOpenShellWorkerLogEmitter,
   workerDiagnosticLines,
@@ -778,41 +779,6 @@ const gatewayProbe = {
   prompt: undefined,
 };
 
-type ProbeRequest = Parameters<typeof observeSandboxProbe>[0]["requestTurn"];
-type TurnMessage = Awaited<ReturnType<ProbeRequest>>["items"][number];
-
-function isTurnMessage(value: unknown): value is TurnMessage {
-  const message = asRecord(value);
-  if (!message || (message.method !== undefined && typeof message.method !== "string")) {
-    return false;
-  }
-  if (message.error !== undefined && asRecord(message.error) === undefined) {
-    return false;
-  }
-  if (message.params === undefined) {
-    return true;
-  }
-  const params = asRecord(message.params);
-  if (!params) {
-    return false;
-  }
-  const turn = asRecord(params.turn);
-  return (
-    (params.item == null || asRecord(params.item) !== undefined) &&
-    (params.error === undefined || asRecord(params.error) !== undefined) &&
-    (params.turn === undefined ||
-      (turn !== undefined && (turn.error === undefined || asRecord(turn.error) !== undefined)))
-  );
-}
-
-function observedTurn(value: unknown) {
-  const result = asRecord(value);
-  assert.ok(result);
-  const { items } = result;
-  assert.ok(Array.isArray(items) && items.every(isTurnMessage), "expected recorded turn messages");
-  return Object.assign(result, { items });
-}
-
 function nativeExecutionSummary(text: string) {
   // pendingCommands is the summary's last field, so the object ends at the first "]}".
   const frame = /Native execution summary: (\{.*?\]\})/s.exec(text)?.[1];
@@ -944,7 +910,7 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
         }
         send({
           method: "turn/completed",
-          params: { threadId, turn: { ...turn, status: "completed" } },
+          params: { threadId, turn: { ...turn, status: "completed", error: null } },
         });
         stream.uncork();
         const setupSucceeded = unexpected && !unboundScope;

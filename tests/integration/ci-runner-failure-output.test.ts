@@ -7,8 +7,8 @@ import {
   failureSecrets,
   redactFailureDetail,
   redactOutputLine,
-} from "../../scripts/ci/failure-redaction.mjs";
-import reporter from "../../scripts/ci/reporter.mjs";
+} from "../../scripts/ci/failure-redaction.ts";
+import reporter from "../../scripts/ci/reporter.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   createRunnerFixture,

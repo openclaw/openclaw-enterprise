@@ -8,9 +8,9 @@
   "parallelFiles": [
     "tests/integration/postgres-password-sign-in-limit.test.ts",
     "tests/integration/postgres-bootstrap-failures.test.ts",
-    "tests/integration/postgres-agent-provisioning.test.mjs",
+    "tests/integration/postgres-agent-provisioning.test.ts",
     "tests/integration/postgres-plugin-discovery.test.ts",
-    "tests/integration/postgres-platform-state.test.mjs",
+    "tests/integration/postgres-platform-state.test.ts",
     "tests/integration/postgres-oidc-recovery-replacement.test.ts",
     "tests/integration/postgres-production-wireup.test.ts",
     "tests/integration/compute-singleton-worker-postgres.test.ts",
@@ -30,7 +30,7 @@
     "tests/integration/postgres-connection-templates.test.ts",
     "tests/integration/workspace-setup-worker.test.ts",
     "tests/integration/postgres-repository-sessions.test.ts",
-    "tests/integration/postgres-secret-state.test.mjs",
+    "tests/integration/postgres-secret-state.test.ts",
     "tests/integration/postgres-service-account-deletion.test.ts",
     "tests/integration/postgres-service-account-issuance-recovery.test.ts",
     "tests/integration/postgres-service-account-compensation.test.ts",
@@ -45,7 +45,7 @@
     "tests/integration/postgres-static-egress.test.mjs",
     "tests/integration/postgres-static-retired-admission.test.ts",
     "tests/integration/postgres-prepared-token-service.test.ts",
-    "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
+    "tests/integration/postgres-prepared-github-lifecycle.test.ts",
     "tests/integration/postgres-prepared-repository-git-broker.test.mjs",
     "tests/integration/postgres-prepared-receipt-restart.test.ts",
     "tests/integration/postgres-prepared-standing-expiry.test.ts",
@@ -120,7 +120,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-platform-state.test.mjs",
+      "path": "tests/integration/postgres-platform-state.test.ts",
       "expectedTests": [
         "PostgreSQL rejects platform writes until the singleton Installation is bootstrapped",
         "real OCC Namespace lifecycle persists provisioning, readiness, deletion, and its tombstone",
@@ -222,9 +222,10 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-secret-state.test.mjs",
+      "path": "tests/integration/postgres-secret-state.test.ts",
       "expectedTests": [
         "in-memory state persists Secret metadata and binding references without values",
+        "PostgreSQL PAT Secret bindings enforce exact ownership and reject retired auth methods",
         "PostgreSQL state persists Secret metadata and enforces binding dependencies"
       ]
     },
@@ -266,7 +267,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-agent-provisioning.test.mjs",
+      "path": "tests/integration/postgres-agent-provisioning.test.ts",
       "expectedTests": [
         "provisioning API queues one job with existing Secret references and replays only the exact same request",
         "provisioning status judges claim liveness by the database clock, not the controller clock",
@@ -420,7 +421,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
+      "path": "tests/integration/postgres-prepared-github-lifecycle.test.ts",
       "expectedTests": [
         "authorized GitHub proxy requests mint the registered grant and share one replacement",
         "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",

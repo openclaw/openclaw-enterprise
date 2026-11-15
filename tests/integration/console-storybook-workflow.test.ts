@@ -232,7 +232,6 @@ test("shared preview inputs select the Storybook build only on pushes to main", 
   for (const path of [
     "apps/controller/src/console-theme.ts",
     "apps/controller/src/composition/console-theme.ts",
-    "packages/contracts/src/workspace-defaults.mjs",
     "packages/contracts/src/workspace-defaults.ts",
     "packages/occ/src/environment-references.ts",
     "packages/occ/src/gateway-security-defaults.ts",
