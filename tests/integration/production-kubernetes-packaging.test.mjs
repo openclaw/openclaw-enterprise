@@ -1129,10 +1129,20 @@ test(
         envoyNamespace,
       );
     }
-    for (const gatewayName of ["gateways.example", "a".repeat(63)]) {
+    // Unlike the Gateway, its generated Envoy Service cannot have dots in its name.
+    await assert.rejects(
+      template("gatewayName", "gateways.example"),
+      /routing\.gatewayName must not contain dots because it also names the Envoy Service/,
+    );
+    for (const gatewayName of ["oce-harnesses", "a".repeat(63)]) {
       const gateways = await resources((await template("gatewayName", gatewayName)).stdout);
       assert.equal(
         gateways.find((object) => object.kind === "Gateway")?.metadata.name,
+        gatewayName,
+      );
+      assert.equal(
+        gateways.find((object) => object.kind === "EnvoyProxy")?.spec.provider.kubernetes
+          .envoyService.name,
         gatewayName,
       );
     }

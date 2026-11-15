@@ -531,6 +531,12 @@ helm upgrade <execution-release> deploy/helm/openclaw-execution \
   -f <execution-values.yaml>
 ```
 
+The execution chart uses `routing.gatewayName` for both the Gateway and its
+Envoy Service. Use a name without dots, such as `oce-harnesses`; a dotted name
+cannot name a Kubernetes Service and Helm refuses it before installation.
+Keep the control-plane Installation's `executionCluster.harnessRouting.gatewayName`
+equal to this value.
+
 Pass the installation values; do not use `--reuse-values`. Keep
 `agentRuntimeLogs.enabled` equal to the CP chart value. The control-plane
 [upgrade preflight](../guides/deploy/production-upgrade.md) checks tenant grants

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-11
-last_updated_session: authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792
+updated: 2026-11-15
+last_updated_session: authoring-run/d20d75ce-b474-4edf-99bd-1930f0284a3f
 ---
 
 # Harness Execution Topology Flow
@@ -139,7 +139,9 @@ owns qualified DNS and exact NetworkPolicy/Service selectors. Harness selectors
 include version and network profile; Gateway selectors omit version for stability.
 `deploy/helm/openclaw-execution/templates/routing.yaml` validates DNS and Envoy peer maps
 before rendering NetworkPolicies. Values must be strings or native null; type
-errors identify the setting.
+errors identify the setting. The chart also refuses dots in `routing.gatewayName`,
+because it uses that name for the generated Envoy Service, which requires a DNS
+label. Compute still accepts dotted Gateway names for externally managed routing.
 `runtime.gatewayNodeSelector` places Gateways and private-state initializers.
 `runtime-entrypoints.ts:agentRuntimeReady` and the Docker healthcheck require
 Codex initialization for Compute-owned launches; provider commands remain
@@ -358,6 +360,8 @@ removal.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-15 10:05: Trace execution chart refusal of dotted Envoy Service names. (authoring-run/d20d75ce-b474-4edf-99bd-1930f0284a3f - c1ece768d5d104dfd26b66ed2afeae0b059adaf8)
 
 - 2026-11-11 06:50: Trace configured Gateway claim capacity and mismatch refusal. (authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792 - 036845b2f70f4c5d13b7f180e3642865ca891a8a)
 
