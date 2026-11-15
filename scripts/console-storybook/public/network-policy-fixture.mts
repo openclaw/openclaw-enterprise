@@ -206,6 +206,7 @@ export function createNetworkPolicyFixture(
   },
 ) {
   const downloadViewer = scenario.policyState === "protectedDownloadViewer";
+  const downloadEmpty = scenario.policyState === "protectedDownloadEmpty";
   const previousDownloadRevision = scenario.policyState === "protectedDownloadPreviousRevision";
   const downloadDeniedBeforeDispatch =
     scenario.policyState === "protectedDownloadDeniedBeforeDispatch";
@@ -214,6 +215,7 @@ export function createNetworkPolicyFixture(
   const downloadScenario =
     scenario.policyState === "protectedDownloadCoverage" ||
     downloadViewer ||
+    downloadEmpty ||
     previousDownloadRevision ||
     downloadDeniedBeforeDispatch ||
     downloadDeniedAfterDispatch;
@@ -265,7 +267,7 @@ export function createNetworkPolicyFixture(
       appliedAt: createdAt,
     };
   }
-  if (downloadScenario) {
+  if (downloadScenario && !downloadEmpty) {
     const operationId = "00000000-0000-4000-8000-000000000009";
     // Only the replacement story keeps a receipt from the previous revision.
     const receiptRevisionId = previousDownloadRevision

@@ -87,26 +87,29 @@ request; do not assume the provider rejected the change.
 ## Find the host rule for an unlisted archive
 
 On the running Agent’s **Network policy** tab, paste the full archive URL into
-**Search destinations** under **Protected downloads**. Choose **All access
-states** if the filter hides the host rule. If the message says there is no
-exact rule and the host has an all-paths rule, choose **Show host rules**. The
-search changes to the URL’s scheme, hostname, and port and keeps the selected
-access filter. Read **Confirmed access** on the **All paths** row for this
-revision’s download policy status.
+**Search destinations** under **Protected downloads**. Choose **All live rule
+states** if the filter hides the host rule. If the message points to an
+all-paths host rule, choose **Show host rules**. The search changes to the URL’s
+scheme, hostname, and port and keeps the selected filter. Read **Live rule status**
+on the **All paths** row to see what the live receipt confirms.
 
 ## Check access after disabling a protected download
 
 On the running Agent’s **Network policy** tab, search for the hostname or archive
 path under **Protected downloads**, then choose **Disable** on the exact rule.
-Wait for **Confirmed**. **Requested** now shows **Off** for that rule. If
-**Confirmed access** shows **Covered by host**, the current revision’s receipt
+Wait for **Live rules confirmed**. **Requested** now shows **Off** for that rule.
+If **Live rule status** shows **Covered by host**, the current revision’s receipt
 still includes a rule for all paths on the named host. Withdrawing the archive’s
 approval also leaves that broader rule in effect.
 
-To stop access, review the other downloads that depend on the host rule before
-disabling it. Wait for confirmation. On a supporting Sandbox and Credential
-Proxy pair, try a fresh connection from the same shell to verify the outcome.
-An existing transfer may finish.
+To remove the live host rule, review the downloads that depend on it before
+disabling it. Wait for confirmation. Launch policy can still allow downloads.
+Ask an Installation administrator with Sandbox read access to check the
+running revision’s create-time policy. For OpenShell, read `sandbox.spec.policy` in the
+`GetSandbox` response for that revision’s Sandbox. **Read-only Installation
+defaults** shows defaults and may differ from the launch policy. On a supporting
+Sandbox and Credential Proxy pair, try a fresh connection from the same shell
+to verify the outcome. An existing transfer may finish.
 
 **Change not applied** means the controller restored the previous approved and
 requested destinations. Receipt details retains the failed request.

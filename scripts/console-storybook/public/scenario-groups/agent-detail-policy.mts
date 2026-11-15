@@ -39,6 +39,7 @@ type PolicyState =
   | "protected"
   | "protectedDownloadCoverage"
   | "protectedDownloadViewer"
+  | "protectedDownloadEmpty"
   | "protectedDownloadPreviousRevision"
   | "protectedDownloadDeniedBeforeDispatch"
   | "protectedDownloadDeniedAfterDispatch"
@@ -154,6 +155,11 @@ export function createAgentDetailPolicyScenarios({
       "protectedDownloadViewer",
       "protectedDownloadViewer",
       "Protected Downloads are read-only for a viewer",
+    ],
+    [
+      "protectedDownloadEmpty",
+      "protectedDownloadEmpty",
+      "Protected Downloads with no live destinations",
     ],
     [
       "protectedDownloadPreviousRevision",
@@ -282,12 +288,12 @@ export function createAgentDetailPolicyScenarios({
                 description:
                   "An Installation administrator can manage downloads. A confirmed host rule still covers an archive after the administrator disables its exact rule.",
                 steps: [
-                  "In Protected downloads, search for no-match and check that No destinations match your search appears. Clear the search to see the host and /releases/tool.tar.gz again. Both are Allowed under Confirmed access.",
-                  "Under Filter destinations, choose Off. The approved mirror appears with Enable. Choose All access states to return to the full list.",
-                  "Choose Allowed under Filter destinations and paste https://downloads.example.org/releases/unlisted-tool.tar.gz into Search destinations. The message says there is no exact rule and the host has an all-paths rule. Choose Show host rules. Check that the search changes to https://downloads.example.org:443, the filter stays on Allowed, and the All paths row shows Allowed under Confirmed access. Clear the search and choose All access states.",
-                  "Choose Disable on the archive row. Wait for Confirmed. The archive still has Agent approval and shows Covered by host with https://downloads.example.org:443. The host stays Allowed.",
-                  "Choose Add destination. Enter artifacts.example.net, keep HTTPS, leave Exact archive path empty, and choose Allow download. Wait for Confirmed and open Receipt details to see the change.",
-                  "For artifacts.example.net, open the More actions menu (⋯) and choose Withdraw approval. Wait for Confirmed. Check that the added destination disappears and downloads.example.org stays Allowed. Reset story to repeat.",
+                  "In Protected downloads, search for no-match and check that No listed destinations match your search appears. Clear the search. The host and /releases/tool.tar.gz both show Enabled under Live rule status.",
+                  "Under Filter destinations, choose No confirmed live rule. The approved mirror appears with Enable. Choose All live rule states to return to the full list.",
+                  "Choose Enabled or covered under Filter destinations, then paste https://downloads.example.org/releases/unlisted-tool.tar.gz into Search destinations. Choose Show host rules. The search changes to https://downloads.example.org:443 and the All paths row shows Enabled. Clear the search and choose All live rule states.",
+                  "Choose Disable on the archive row. Wait for Live rules confirmed. The archive still has Agent approval and shows Covered by host with https://downloads.example.org:443. The host stays Enabled.",
+                  "Choose Add destination. Enter artifacts.example.net, keep HTTPS, leave Exact archive path empty, and choose Allow download. Wait for Live rules confirmed and open Receipt details to see the change.",
+                  "For artifacts.example.net, open the More actions menu (⋯) and choose Withdraw approval. Wait for Live rules confirmed. Check that the added destination disappears and downloads.example.org stays Enabled. Reset story to repeat.",
                 ],
                 gap: "Simulated Console and policy responses. Use the live workflow to verify download enforcement.",
               }
@@ -323,13 +329,22 @@ export function createAgentDetailPolicyScenarios({
                 gap: "Simulated Console permission responses. The API authorizes changes in a live Installation.",
               }
             : {}),
+          ...(state === "protectedDownloadEmpty"
+            ? {
+                description: "This revision is verified and the Agent has no saved destinations.",
+                steps: [
+                  "In Protected downloads, check No live edit confirmed and No destinations listed for live editing. Read the guidance for checking the running Sandbox’s create-time policy.",
+                ],
+                gap: "Simulated Console and policy responses.",
+              }
+            : {}),
           ...(state === "protectedDownloadPreviousRevision"
             ? {
                 description:
                   "Revision 7 passed its readiness checks after replacing revision 6. The Agent retains its approved and desired destinations, with a receipt for revision 6.",
                 steps: [
-                  "In Protected downloads, confirm both destinations show Off on this revision. Open Receipt details. Check the revision 6 operation IDs, versions, request state, and timestamps. Change and Reason are absent.",
-                  "Choose Enable on the host row and wait for Confirmed. Check that the host shows Allowed and the archive shows Covered by host. Receipt details names revision 7 and shows the enable action and host destination under Change.",
+                  "In Protected downloads, check No live edit confirmed and No live rule confirmed on both rows. Read the guidance for checking the running Sandbox’s create-time policy. Open Receipt details. Check the revision 6 operation IDs, versions, request state, and timestamps. Change and Reason are absent.",
+                  "Choose Enable on the host row and wait for Live rules confirmed. Check that the host shows Enabled and the archive shows Covered by host. Receipt details names revision 7 and shows the enable action and host destination under Change.",
                 ],
                 gap: "Simulated revision replacement and policy responses. Use the live workflow to verify download enforcement.",
               }

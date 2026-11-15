@@ -746,10 +746,10 @@ export function renderAgentSandboxPolicy(
   const accessFilter = element(
     "select",
     { className: "network-admin__filter", "aria-label": "Filter destinations" },
-    element("option", { value: "all" }, "All access states"),
-    element("option", { value: "allowed" }, "Allowed"),
-    element("option", { value: "off" }, "Off"),
-    element("option", { value: "unconfirmed" }, "Unconfirmed"),
+    element("option", { value: "all" }, "All live rule states"),
+    element("option", { value: "allowed" }, "Enabled or covered"),
+    element("option", { value: "off" }, "No confirmed live rule"),
+    element("option", { value: "unconfirmed" }, "Unconfirmed live state"),
   );
   let descendingDestinations = false;
   let addingDownload = false;
@@ -899,7 +899,8 @@ export function renderAgentSandboxPolicy(
       receipt &&
       receipt.policyVersion === policy.version &&
       (!op || (op.state === "applied" && op.id === receipt.operationId));
-    const baselineOff = verified && !unknownOutcome && !receipt && (!op || op.state === "applied");
+    const noLiveReceipt =
+      verified && !unknownOutcome && !receipt && (!op || op.state === "applied");
     const writable = canChangeDownloads();
     const origin = (d: ProtectedDownloadDestination) => `${d.scheme}://${d.host}:${d.port}`;
     const format = (d: ProtectedDownloadDestination) => origin(d) + (d.path ?? "");
@@ -934,15 +935,15 @@ export function renderAgentSandboxPolicy(
         return ["Pending confirmation", "warning"];
       }
       if (currentReceipt) {
-        return ["Confirmed", "success"];
+        return ["Live rules confirmed", "success"];
       }
-      if (baselineOff) {
-        return ["Off on this revision", "neutral"];
+      if (noLiveReceipt) {
+        return ["No live edit confirmed", "neutral"];
       }
       if (receipt) {
-        return ["Previous confirmation", "warning"];
+        return ["Previous live confirmation", "warning"];
       }
-      return ["Unconfirmed", "warning"];
+      return ["Live rules unconfirmed", "warning"];
     }
     const [label, tone] = receiptStatus();
     const panel = element("section", { "aria-label": "Downloads", className: "network-admin" });
@@ -972,6 +973,17 @@ export function renderAgentSandboxPolicy(
           ),
         ),
         refresh,
+      ),
+    );
+    panel.append(
+      element(
+        "p",
+        { className: "hint" },
+        "Launch policy can also allow downloads. Ask an Installation administrator to check the running Sandbox’s create-time policy (OpenShell ",
+        element("code", {}, "GetSandbox"),
+        " → ",
+        element("code", {}, "sandbox.spec.policy"),
+        ").",
       ),
     );
     if (op?.state === "failed") {
@@ -1094,7 +1106,7 @@ export function renderAgentSandboxPolicy(
           "tr",
           {},
           hostHeading,
-          ...["Requested", "Confirmed access", "Actions"].map((name) =>
+          ...["Requested", "Live rule status", "Actions"].map((name) =>
             element("th", { scope: "col" }, name),
           ),
         ),
@@ -1139,23 +1151,17 @@ export function renderAgentSandboxPolicy(
     for (const [url, d] of scopes) {
       const exact = confirmedUrls.has(url);
       const covered = d.path !== undefined && confirmedUrls.has(origin(d));
-      let access = baselineOff ? "Off on this revision" : "Unconfirmed";
-      let accessTone = baselineOff ? "neutral" : "warning";
+      let access = noLiveReceipt ? "No live rule confirmed" : "Live rule unconfirmed";
+      let accessTone = noLiveReceipt ? "neutral" : "warning";
       if (receipt) {
-        const last = exact
-          ? currentReceipt
-            ? "Allowed"
-            : "On"
-          : covered
-            ? "Covered by host"
-            : "Off";
-        access = currentReceipt ? last : `Last confirmed ${last.toLowerCase()}`;
+        const last = exact ? "Enabled" : covered ? "Covered by host" : "No live rule";
+        access = currentReceipt ? last : `${last} at last confirmation`;
         accessTone = currentReceipt ? (exact || covered ? "success" : "neutral") : "warning";
       }
       const state =
         currentReceipt && (exact || covered)
           ? "allowed"
-          : currentReceipt || baselineOff
+          : currentReceipt || noLiveReceipt
             ? "off"
             : "unconfirmed";
       const actions = element("div", { className: "network-admin__actions" });
@@ -1193,7 +1199,7 @@ export function renderAgentSandboxPolicy(
             "p",
             {},
             d.path
-              ? "Disabling this rule keeps its approval. An enabled host rule can still allow this path."
+              ? "Disabling this rule keeps its approval. An enabled live host rule can still cover this path."
               : "Disabling this rule keeps its approval.",
           ),
         );
@@ -1277,13 +1283,13 @@ export function renderAgentSandboxPolicy(
         ),
         element(
           "td",
-          { "data-label": "Confirmed access" },
+          { "data-label": "Live rule status" },
           element("span", { className: "network-admin__access", "data-tone": accessTone }, access),
           covered && (!exact || currentReceipt)
             ? element(
                 "span",
                 { className: "network-admin__secondary" },
-                exact ? `Also allowed by host · ${origin(d)}` : origin(d),
+                exact ? `Also covered by host · ${origin(d)}` : origin(d),
               )
             : null,
         ),
@@ -1352,12 +1358,12 @@ export function renderAgentSandboxPolicy(
       }
       reset.hidden = scopes.size === 0;
       emptyMessage.textContent = !showHostRules.hidden
-        ? "No exact rule for this archive. This host has an all-paths rule."
+        ? "No exact rule listed for this archive. Check the all-paths host rule."
         : scopes.size
           ? accessFilter.value === "all"
-            ? "No destinations match your search."
-            : "No destinations match these filters."
-          : "No download destinations.";
+            ? "No listed destinations match your search."
+            : "No listed destinations match these filters."
+          : "No destinations listed for live editing.";
     }
     downloadSearch.oninput = filterDestinations;
     accessFilter.onchange = filterDestinations;
@@ -1379,7 +1385,7 @@ export function renderAgentSandboxPolicy(
       detail("Provider version", latestReceipt.providerVersion);
       detail("Receipt operation", latestReceipt.operationId);
     } else {
-      detail("Receipt", "No confirmed download policy for this revision.");
+      detail("Receipt", "No live download receipt for this revision.");
     }
     if (latestOp) {
       detail(

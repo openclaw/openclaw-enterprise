@@ -302,6 +302,7 @@ export const PolicyDenialsNoCredential = story("policyDenialsNoCredential");
 export const PolicyDenialsProtected = story("policyDenialsProtected");
 export const ProtectedDownloadCoverage = story("protectedDownloadCoverage");
 export const ProtectedDownloadViewer = story("protectedDownloadViewer");
+export const ProtectedDownloadEmpty = story("protectedDownloadEmpty");
 export const ProtectedDownloadPreviousRevision = story("protectedDownloadPreviousRevision");
 export const ProtectedDownloadDeniedBeforeDispatch = story("protectedDownloadDeniedBeforeDispatch");
 export const ProtectedDownloadDeniedAfterDispatch = story("protectedDownloadDeniedAfterDispatch");

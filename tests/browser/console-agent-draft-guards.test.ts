@@ -1031,7 +1031,7 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   const search = panel.getByRole("searchbox", { name: "Search destinations" });
   const filter = panel.getByRole("combobox", { name: "Filter destinations" });
   const refresh = panel.getByRole("button", { name: "Refresh download status", exact: true });
-  const confirmation = panel.getByRole("status").filter({ hasText: /^Confirmed$/ });
+  const confirmation = panel.getByRole("status").filter({ hasText: /^Live rules confirmed$/ });
   const receiptSummary = panel.getByText("Receipt details", { exact: true });
   const receiptDetails = panel.locator("details").filter({ hasText: "Receipt details" });
   const policyDetails = page.locator("details").filter({ hasText: "Policy details" });
@@ -1045,6 +1045,13 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
     .filter({ has: page.getByText("HTTP · 80 · All paths", { exact: true }) });
   const archiveRow = panel.getByRole("row").filter({ hasText: archive.path });
   const nextRow = panel.getByRole("row").filter({ hasText: next.path });
+  await panel
+    .getByText(
+      "Launch policy can also allow downloads. Ask an Installation administrator to check the running Sandbox’s create-time policy (OpenShell GetSandbox → sandbox.spec.policy).",
+      { exact: true },
+    )
+    .waitFor({ timeout: 5000 });
+  await panel.getByRole("columnheader", { name: "Live rule status", exact: true }).waitFor();
   await archiveRow.waitFor();
   const disableArchive = panel.getByRole("button", { name: `Disable ${archiveUrl}`, exact: true });
   await disableArchive.waitFor();
@@ -1075,11 +1082,11 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   await search.fill("https://PACKAGES.example.org" + archive.path);
   assert.equal(await archiveRow.count(), 1);
   assert.equal(await destinations.count(), 1);
-  const alsoAllowed = `Also allowed by host · ${hostUrl}`;
-  const allowedCell = archiveRow
+  const alsoCovered = `Also covered by host · ${hostUrl}`;
+  const enabledCell = archiveRow
     .getByRole("cell")
-    .filter({ has: page.getByText("Allowed", { exact: true }) });
-  assert.ok(await allowedCell.getByText(alsoAllowed, { exact: true }).isVisible());
+    .filter({ has: page.getByText("Enabled", { exact: true }) });
+  assert.ok(await enabledCell.getByText(alsoCovered, { exact: true }).isVisible());
   const showHostRules = panel.getByRole("button", { name: "Show host rules", exact: true });
   assert.equal(await showHostRules.count(), 0);
   await search.fill(hostUrl + "/releases/aaaa");
@@ -1121,8 +1128,8 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   }
   await search.fill("missing.example");
   assert.equal(await archiveRow.count(), 0);
-  await panel.getByText("No destinations match your search.", { exact: true }).waitFor();
-  await filter.selectOption({ label: "Allowed" });
+  await panel.getByText("No listed destinations match your search.", { exact: true }).waitFor();
+  await filter.selectOption({ label: "Enabled or covered" });
   await panel.getByText("0 of 3 destinations", { exact: true }).waitFor();
   await panel.getByRole("button", { name: "Clear filters" }).press("Enter");
   await priorRow.waitFor();
@@ -1148,12 +1155,12 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
     .filter({ hasText: "Agent-approved" })
     .getByText("On", { exact: true })
     .waitFor();
-  await nextRow.getByText("Last confirmed off", { exact: true }).waitFor();
-  await filter.selectOption({ label: "Allowed" });
+  await nextRow.getByText("No live rule at last confirmation", { exact: true }).waitFor();
+  await filter.selectOption({ label: "Enabled or covered" });
   await panel.getByText("0 of 4 destinations", { exact: true }).waitFor();
-  await filter.selectOption({ label: "Unconfirmed" });
+  await filter.selectOption({ label: "Unconfirmed live state" });
   await nextRow.waitFor();
-  await filter.selectOption({ label: "All access states" });
+  await filter.selectOption({ label: "All live rule states" });
   assert.equal(await submit.count(), 0);
   assert.deepEqual(
     pathRequests(requests, "POST", base + "/apply").map((r) => r.body),
@@ -1232,7 +1239,7 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
     .filter({ hasText: "Agent-approved" })
     .getByText("On", { exact: true })
     .waitFor();
-  await nextRow.getByText("Last confirmed off", { exact: true }).waitFor();
+  await nextRow.getByText("No live rule at last confirmation", { exact: true }).waitFor();
   assert.equal(pathRequests(requests, "POST", base + "/apply").length, 1);
   assert.equal(await panel.getByRole("button", { name: "Withdraw approval" }).count(), 0);
   // Restore the qualified view for a delegated editor. The actual stock fixture still has no
@@ -1247,12 +1254,12 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   view.protectedDownloads = { state: "verified", revisionId, canApprove: false };
   await refresh.click();
   await confirmation.waitFor();
-  await nextRow.getByText("Allowed", { exact: true }).waitFor();
-  assert.equal(await nextRow.getByText(/^Also allowed by host/).count(), 0);
+  await nextRow.getByText("Enabled", { exact: true }).waitFor();
+  assert.equal(await nextRow.getByText(/^Also covered by host/).count(), 0);
   // A transient verification failure can outlast the operation that already settled.
   view.protectedDownloads = { state: "unavailable", reason: "installation-unconfirmed" };
   await page.reload();
-  await panel.getByText("Previous confirmation", { exact: true }).waitFor();
+  await panel.getByText("Previous live confirmation", { exact: true }).waitFor();
   assert.equal(await refresh.count(), 1);
   assert.equal(await panel.getByRole("button", { name: "Allow download" }).count(), 0);
   view.protectedDownloads = { state: "verified", revisionId, canApprove: false };
@@ -1312,8 +1319,8 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
     revisionId,
     downloadChange: { action: "disable", destination: archive },
   });
-  await archiveRow.getByText("Last confirmed on", { exact: true }).waitFor();
-  assert.equal(await archiveRow.getByText(alsoAllowed, { exact: true }).count(), 0);
+  await archiveRow.getByText("Enabled at last confirmation", { exact: true }).waitFor();
+  assert.equal(await archiveRow.getByText(alsoCovered, { exact: true }).count(), 0);
   await archiveRow
     .getByRole("cell")
     .filter({ hasText: "Agent-approved" })
@@ -1334,10 +1341,10 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   });
   await enableArchive.waitFor();
   assert.equal(await disableArchive.count(), 0);
-  await filter.selectOption({ label: "Allowed" });
+  await filter.selectOption({ label: "Enabled or covered" });
   const coverage = archiveRow.getByRole("cell").filter({ hasText: /Covered by host/i });
   await coverage.getByText(hostUrl, { exact: true }).waitFor();
-  await filter.selectOption({ label: "All access states" });
+  await filter.selectOption({ label: "All live rule states" });
   await page.unroute(fixture.origin + base + "/apply");
 
   const withdrawn = {
@@ -1359,7 +1366,7 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
     .getByRole("button", { name: `Withdraw approval for ${archiveUrl}`, exact: true })
     .click();
   await panel.getByText("Pending confirmation", { exact: true }).waitFor();
-  await archiveRow.getByText("Last confirmed covered by host", { exact: true }).waitFor();
+  await archiveRow.getByText("Covered by host at last confirmation", { exact: true }).waitFor();
   assert.equal(pathRequests(requests, "POST", base + "/apply").length, writesBeforeDisable + 2);
   assert.deepEqual(pathRequests(requests, "POST", base + "/apply").at(-1)?.body, {
     expectedVersion: 3,
@@ -1403,7 +1410,7 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   Object.assign(policy, { version: historical.policyVersion, application: historical });
   view.protectedDownloads = { state: "unavailable", reason: "installation-unconfirmed" };
   await page.goto(detailUrl(fixture, namespace.id, agent.id, replacementRevisionId, "policy").href);
-  await priorRow.getByText("Unconfirmed", { exact: true }).waitFor();
+  await priorRow.getByText("Live rule unconfirmed", { exact: true }).waitFor();
   assert.equal(await archiveRow.count(), 0);
   await receiptSummary.press("Enter");
   await receiptDetails.getByText("Receipt from another revision", { exact: true }).waitFor();
@@ -1432,8 +1439,9 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
     canApprove: false,
   };
   await refresh.click();
-  await filter.selectOption({ label: "Off" });
-  await priorRow.getByText("Off on this revision", { exact: true }).waitFor();
+  await panel.getByText("No live edit confirmed", { exact: true }).waitFor();
+  await filter.selectOption({ label: "No confirmed live rule" });
+  await priorRow.getByText("No live rule confirmed", { exact: true }).waitFor();
   assert.equal(await archiveRow.count(), 0);
   await priorRow.getByRole("button", { name: `Enable ${priorUrl}`, exact: true }).click();
   await page.getByRole("alert").filter({ hasText: "RESOURCE_CONFLICT" }).waitFor();
@@ -1477,7 +1485,7 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   // A viewer can inspect a saved host rule even when this revision has no confirmed access.
   await search.fill(priorUrl + "/mirror/unlisted.gz");
   await showHostRules.press("Enter");
-  await priorRow.getByText("Off on this revision", { exact: true }).waitFor();
+  await priorRow.getByText("No live rule confirmed", { exact: true }).waitFor();
   await search.fill(prior.host);
   const reread = responseTo(page, "GET", fixture.origin + base);
   await refresh.press("Enter");
@@ -1516,11 +1524,21 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   await panel
     .getByRole("row")
     .filter({ hasText: "HTTP · 80 · All paths" })
-    .getByText("Allowed", { exact: true })
+    .getByText("Enabled", { exact: true })
     .waitFor();
   await search.fill("http://packages.example.org/mirror/index.gz");
   assert.equal(await destinations.count(), 1);
   await destinations.getByText(httpArchive.path, { exact: true }).waitFor();
+  // A verified revision and empty live receipt say nothing about the launch policy.
+  Object.assign(policy, {
+    approvedDownloadDestinations: [],
+    downloadDestinations: [],
+    applied: { ...record(policy.applied), confirmedDownloadDestinations: [] },
+  });
+  await search.fill("");
+  await refresh.click();
+  await panel.getByText("No destinations listed for live editing.", { exact: true }).waitFor();
+  await confirmation.waitFor();
   assert.equal(pathRequests(requests, "POST", base + "/apply").length, writesBeforeRefresh);
 });
 

@@ -102,22 +102,23 @@ Enable policy editing under **Network policy**. In **Protected downloads**, choo
 HTTPS defaults to 443. Shared hosts require an exact archive path.
 HTTP/80 requires a listed mirror. Verify package signatures and checksums.
 
-Search by hostname or archive path, or filter by access. **Requested** shows the
-saved setting and Agent approval. **Confirmed access** reflects this revision’s
-last receipt. Installation administrators can approve eligible HTTPS hosts per
-Agent without changing Installation configuration. Delegated editors can enable or disable approved destinations.
+Search or filter by live rule state. **Requested** shows the saved rule and
+Agent approval. **Live rule status** describes the revision’s receipt.
+[Check the launch policy](../guides/topics/agent-sandbox-policy.md#check-access-after-disabling-a-protected-download)
+for other download access. Installation administrators can approve eligible
+HTTPS hosts per Agent. Delegated editors can enable or disable approved destinations.
 
 Disabling an exact path removes its desired rule and keeps its Agent approval.
 If the Sandbox confirms the removal and a whole-host rule remains for the same
 scheme, hostname, and port, that rule still covers the path. The approved entry
-shows **Covered by host** and the broader URL. To stop new connections, disable
-the covering rule and wait for confirmation. Choose **Withdraw approval** under
+shows **Covered by host** and the broader URL. To remove this live coverage,
+disable the covering rule and wait for confirmation. Choose **Withdraw approval** under
 **More actions** to remove the Agent approval and any access that depends on it.
 Existing transfers can finish.
 
 For failed changes, `application.writeState: prepared` means the change did
 not apply. A dispatched or missing phase leaves the outcome unconfirmed.
-**Last confirmed** describes the revision's latest receipt. After a conflict or
+Rows that say **at last confirmation** describe this revision’s latest receipt. After a conflict or
 lost response, refresh and [match the request and receipt](../guides/topics/agent-sandbox-policy.md#check-access-after-disabling-a-protected-download)
 before editing again. **Receipt details** shows operation IDs, policy versions,
 and timestamps across revisions.
@@ -127,7 +128,7 @@ Test new Agent connections to verify Sandbox and Credential Proxy enforcement.
 
 After a revision replacement, the Agent keeps its saved destinations and
 approvals. When the new revision passes verification and has no receipt,
-the card shows **Off on this revision**. Choose **Enable** to enable the
+the card shows **No live edit confirmed**. Choose **Enable** to enable the
 entry, or **Remove from desired** to remove it from the Agent’s saved list.
 
 API clients use the existing networking `apply` endpoint. For example, an

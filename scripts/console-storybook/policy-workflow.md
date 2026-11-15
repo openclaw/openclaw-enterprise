@@ -72,44 +72,48 @@ binaries and endpoints. On a phone, the long path wraps inside the code block.
 Open **Pages/Agent detail → Protected Downloads stay covered by a host rule**.
 
 1. In **Protected downloads**, search for `no-match` and check that
-   **No destinations match your search** appears. Clear **Search destinations**
-   to see the host and `/releases/tool.tar.gz` again. Both show **Allowed** under
-   **Confirmed access**. Under **Filter destinations**, choose **Off** to see
-   the approved mirror. Choose **All access states** to return to the full list.
-2. Under **Filter destinations**, choose **Allowed**. Paste
+   **No listed destinations match your search** appears. Clear **Search destinations**
+   to see the host and `/releases/tool.tar.gz` again. Both show **Enabled** under
+   **Live rule status**. Under **Filter destinations**, choose **No confirmed live rule**
+   to see the approved mirror. Choose **All live rule states** to return to the full list.
+2. Under **Filter destinations**, choose **Enabled or covered**. Paste
    `https://downloads.example.org/releases/unlisted-tool.tar.gz` into **Search
-   destinations**. Check that the message says there is no exact rule and the
-   host has an all-paths rule. Choose **Show host rules**. The search changes to
-   `https://downloads.example.org:443` and the filter stays on **Allowed**.
-   Check that the **All paths** row shows **Allowed** under **Confirmed access**.
-   Clear the search and choose **All access states**.
+   destinations**. The message points to the all-paths host rule. Choose **Show host rules**. The search changes to
+   `https://downloads.example.org:443` and the filter stays on **Enabled or covered**.
+   Check that the **All paths** row shows **Enabled** under **Live rule status**.
+   Clear the search and choose **All live rule states**.
 3. Paste `https://downloads.example.org/releases/tool.tar.gz` into **Search
-   destinations**. Only the exact archive appears. Under **Allowed**, check for
-   **Also allowed by host · https://downloads.example.org:443**. Choose
-   **Disable** on that row and wait for **Confirmed**. The archive keeps its
+   destinations**. Only the exact archive appears. In **Live rule status**, check for
+   **Also covered by host · https://downloads.example.org:443**. Choose
+   **Disable** on that row and wait for **Live rules confirmed**. The archive keeps its
    Agent approval and shows **Covered by host** with `https://downloads.example.org:443`.
 4. Open **More actions** (⋯) on the same archive and choose **Withdraw approval**.
-   Wait for **Confirmed**, then choose **Refresh**. The archive shows **Off**,
+   Wait for **Live rules confirmed**, then choose **Refresh**. The archive shows **Off**,
    **No Agent approval**, and **Covered by host**. Clear the search to see
-   **Allowed** on the host rule that still permits the archive.
+   **Enabled** on the host rule that still permits the archive.
 5. Choose **Add destination**. Enter `artifacts.example.net` in **Hostname**,
    keep HTTPS, leave **Exact archive path** empty, and choose **Allow download**.
-   Wait for **Confirmed**. Open **Receipt details** to see the change.
+   Wait for **Live rules confirmed**. Open **Receipt details** to see the change.
 6. On the new destination, open **More actions** (⋯) and choose **Withdraw approval**.
-   Wait for **Confirmed**. The added destination disappears and
-   `downloads.example.org` stays **Allowed**. Choose **Reset story** to repeat.
+   Wait for **Live rules confirmed**. The added destination disappears and
+   `downloads.example.org` stays **Enabled**. Choose **Reset story** to repeat.
 
 In **Protected Downloads are read-only for a viewer**, inspect the destinations
 and receipt, filter for `tool.tar.gz`, and choose **Refresh** in **Protected downloads**.
 The archive stays visible and the Protected downloads section offers no changes.
 
 In **Protected Downloads after revision replacement**, both destinations show
-**Off on this revision**. Open **Receipt details**. Check that the revision 6
+**No live rule confirmed**. The section shows **No live edit confirmed** and
+explains where to check launch policy. Open **Receipt details**. Check that the revision 6
 request and receipt show their operation IDs, versions, request state, and
 timestamps. The request's **Change** and **Reason** are absent. Enable the host on
-revision 7 and wait for **Confirmed**. The host shows **Allowed** and the archive
+revision 7 and wait for **Live rules confirmed**. The host shows **Enabled** and the archive
 shows **Covered by host**. **Receipt details** names revision 7 and shows the
 request's **Change** with the enable action and host destination.
+
+In **Protected Downloads with no live destinations**, check that the empty list
+says **No destinations listed for live editing** and the guidance for checking
+launch policy stays visible.
 
 In **Protected Downloads authorization fails before dispatch**, add
 `artifacts.example.net` and choose **Allow download**. **Change not applied**
