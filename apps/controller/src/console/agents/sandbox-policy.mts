@@ -979,7 +979,7 @@ export function renderAgentSandboxPolicy(
       element(
         "p",
         { className: "hint" },
-        "Launch policy can also allow downloads. Ask an Installation administrator to check the running Sandbox’s create-time policy (OpenShell ",
+        "Launch policy can also allow downloads. An operator with OpenShell Sandbox read access can check the running Sandbox’s create-time policy (OpenShell ",
         element("code", {}, "GetSandbox"),
         " → ",
         element("code", {}, "sandbox.spec.policy"),

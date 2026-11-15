@@ -1047,7 +1047,7 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   const nextRow = panel.getByRole("row").filter({ hasText: next.path });
   await panel
     .getByText(
-      "Launch policy can also allow downloads. Ask an Installation administrator to check the running Sandbox’s create-time policy (OpenShell GetSandbox → sandbox.spec.policy).",
+      "Launch policy can also allow downloads. An operator with OpenShell Sandbox read access can check the running Sandbox’s create-time policy (OpenShell GetSandbox → sandbox.spec.policy).",
       { exact: true },
     )
     .waitFor({ timeout: 5000 });

@@ -6705,13 +6705,15 @@ html:has(#create-agent-form) {
     align-content: center;
   }
 }
-@container (max-width: 300px) {
+@container (max-width: 400px) {
   .network-admin__tools {
     grid-template-columns: minmax(0, 1fr);
   }
   .network-admin__tools > button {
     justify-self: stretch;
   }
+}
+@container (max-width: 300px) {
   .network-admin__table td:first-child,
   .network-admin__table td:last-child {
     grid-column: 1 / -1;

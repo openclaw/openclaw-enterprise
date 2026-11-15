@@ -104,9 +104,9 @@ approval also leaves that broader rule in effect.
 
 To remove the live host rule, review the downloads that depend on it before
 disabling it. Wait for confirmation. Launch policy can still allow downloads.
-Ask an Installation administrator with Sandbox read access to check the
-running revision’s create-time policy. For OpenShell, read `sandbox.spec.policy` in the
-`GetSandbox` response for that revision’s Sandbox. **Read-only Installation
+Ask an operator with OpenShell `sandbox:read` and Workspace role `user` to
+check the running revision’s create-time policy. Read `sandbox.spec.policy`
+in the raw OpenShell `GetSandbox` RPC response for that revision’s Sandbox. **Read-only Installation
 defaults** shows defaults and may differ from the launch policy. On a supporting
 Sandbox and Credential Proxy pair, try a fresh connection from the same shell
 to verify the outcome. An existing transfer may finish.

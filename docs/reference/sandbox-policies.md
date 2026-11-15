@@ -94,8 +94,9 @@ revision. Stock OpenShell 0.1.8 lacks this Driver pair.
 
 Live edits require a Credential Proxy that verifies the signed-model installation.
 Protected Git and credential-reduction revisions refuse edits before writing.
-On a supporting pair, test a fresh download and post-withdrawal denial from the
-same protected shell. Verify a signed model request after each change.
+Choose a destination no other live or launch rule permits. From the same
+protected shell, verify a fresh download after approval and denial after
+withdrawal. Verify a signed model request after each change.
 
 Enable policy editing under **Network policy**. In **Protected downloads**, choose
 **Add destination**, enter the hostname, then choose **Allow download**.
