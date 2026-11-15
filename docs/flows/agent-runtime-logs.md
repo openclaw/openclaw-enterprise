@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-11-12
-last_updated_session: authoring-run/424005d3-ef73-4fd2-82c5-0237e640ba5a
+updated: 2026-11-15
+last_updated_session: authoring-run/9146809c-6569-4bd2-9252-4aaed7391146
 ---
 
 # Agent runtime logs flow
@@ -209,6 +209,11 @@ Follow preserves rows and unchanged statuses. Its first line replaces an empty-t
 A same-selection refresh validates required fields and prepares all rows before replacing output. An unreadable page shows the read error and preserves rows and cursor for the next valid page. Follow appends nothing and retains its cursor when preparation fails. A selection change or lost log access clears output.
 Pod cards show state and exit. Gateway links Harness output or Deployment activity.
 
+`internal/occcli/agent_runtime_output.go:printRuntimeLogPage` compacts each API
+record before writing NDJSON. Each record occupies one line even when the HTTP
+response is indented; fields, string escapes and number representations remain
+unchanged.
+
 See the [CLI reference](../reference/cli.md#runtime-status-and-logs) for flags,
 polling and `Retry-After` (`internal/occclient/transport.go:apiError`).
 A cursor poll keeps the initial `tailLines`; timing stays cursor-owned, so the
@@ -247,6 +252,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-15 10:05: Keep CLI NDJSON records on one line in the accompanying serialization fix. (authoring-run/9146809c-6569-4bd2-9252-4aaed7391146 - c1ece768d5d104dfd26b66ed2afeae0b059adaf8)
 
 - 2026-11-12 23:26: Honor disconnects. (authoring-run/424005d3-ef73-4fd2-82c5-0237e640ba5a - 0dc9387e2521098fa1648d47f6350f1fd52fb46f)
 
