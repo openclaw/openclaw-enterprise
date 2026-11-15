@@ -59,7 +59,7 @@ interface WebSocketSender {
 }
 
 interface WebSocketModule {
-  WebSocket: abstract new (...args: never[]) => WebSocketPeer;
+  WebSocket: abstract new (address: string | URL) => WebSocketPeer;
   WebSocketServer: new (options: { noServer: true }) => UpgradePeerServer;
   Receiver: new (options: { isServer: true }) => WebSocketReceiver;
   Sender: new (socket: Socket) => WebSocketSender;
