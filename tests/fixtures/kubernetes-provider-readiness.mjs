@@ -210,6 +210,7 @@ export function providerReadinessFixture({
     core,
     // The Sandbox Driver Compute holds, so a test can add an optional method later.
     sandbox: driver.sandboxDriver,
+    /** @param {string} name */
     pod(name, ready = "True") {
       return {
         apiVersion: "v1",
