@@ -6,7 +6,10 @@ import {
   googleLoginConfiguration,
   googleNonce,
   verifyGoogleIdToken,
+  type GoogleIdTokenExpectation,
+  type GoogleLoginConfiguration,
 } from "../../apps/controller/src/auth/google.ts";
+import type { ProviderFailure } from "../../apps/controller/src/auth/provider-transport.ts";
 import { idTokenSigner, rsaSigningKey } from "../helpers/id-token.mjs";
 
 // verifyGoogleIdToken delegates every generic ID-token check to verifyIdToken, which
@@ -22,7 +25,15 @@ const other = rsaSigningKey("other-kid");
 const jwks = { keys: [other.jwk, current.jwk] };
 const sign = idTokenSigner(current);
 
-function claims(overrides = {}) {
+function claims(
+  overrides: Partial<{
+    iss: string | undefined;
+    hd: string | undefined;
+    email_verified: boolean | string;
+    iat: number;
+    exp: number;
+  }> = {},
+) {
   return {
     iss: "https://accounts.google.com",
     aud: clientId,
@@ -38,11 +49,11 @@ function claims(overrides = {}) {
   };
 }
 
-function token(payload = claims(), options) {
-  return sign(payload, options);
+function token(payload: unknown = claims()) {
+  return sign(payload);
 }
 
-function verified(value, expected = {}) {
+function verified(value: string, expected: Partial<GoogleIdTokenExpectation> = {}) {
   return verifyGoogleIdToken(value, {
     clientId,
     nonce,
@@ -101,14 +112,13 @@ test("Google configuration is both-or-neither with validated domains", () => {
     }),
     { clientId, clientSecret: "s", allowedDomains: [] },
   );
-  assert.deepEqual(
-    googleLoginConfiguration({
-      OCC_AUTH_GOOGLE_CLIENT_ID: clientId,
-      OCC_AUTH_GOOGLE_CLIENT_SECRET: "s",
-      OCC_AUTH_GOOGLE_ALLOWED_DOMAINS: " Example.TEST , corp.example.org",
-    }).allowedDomains,
-    ["example.test", "corp.example.org"],
-  );
+  const configured = googleLoginConfiguration({
+    OCC_AUTH_GOOGLE_CLIENT_ID: clientId,
+    OCC_AUTH_GOOGLE_CLIENT_SECRET: "s",
+    OCC_AUTH_GOOGLE_ALLOWED_DOMAINS: " Example.TEST , corp.example.org",
+  });
+  assert.ok(configured);
+  assert.deepEqual(configured.allowedDomains, ["example.test", "corp.example.org"]);
   for (const environment of [
     { OCC_AUTH_GOOGLE_CLIENT_ID: clientId },
     { OCC_AUTH_GOOGLE_CLIENT_SECRET: "s" },
@@ -139,25 +149,38 @@ test("Google configuration is both-or-neither with validated domains", () => {
 });
 
 test("code exchange posts to the fixed token endpoint and verifies against fixed certs", async (t) => {
-  const config = { clientId, clientSecret: "fixture-secret", allowedDomains: [] };
+  const config: GoogleLoginConfiguration = {
+    clientId,
+    clientSecret: "fixture-secret",
+    allowedDomains: [],
+  };
   const redirectURI = "https://console.example.test/api/auth/providers/google/callback";
   const live = claims({
     iat: Math.floor(Date.now() / 1000) - 5,
     exp: Math.floor(Date.now() / 1000) + 600,
   });
-  let respond;
-  const requests = [];
-  t.mock.method(globalThis, "fetch", async (input, init) => {
-    const url = String(input);
-    requests.push({ url, method: init.method ?? "GET", redirect: init.redirect, body: init.body });
-    return respond(url);
-  });
-  const json = (value, status = 200) => Response.json(value, { status });
-
-  respond = (url) =>
+  const json = (value: unknown, status = 200) => Response.json(value, { status });
+  let respond: (url: string) => Response | Promise<Response> = (url) =>
     url === "https://oauth2.googleapis.com/token"
       ? json({ access_token: "ya29.fixture", id_token: token(live), token_type: "Bearer" })
       : json(jwks);
+  const requests: {
+    url: string;
+    method: string;
+    redirect: RequestInit["redirect"];
+    body: RequestInit["body"];
+  }[] = [];
+  const fetchProvider: typeof fetch = async (input, init) => {
+    const url = String(input);
+    requests.push({
+      url,
+      method: init?.method ?? "GET",
+      redirect: init?.redirect,
+      body: init?.body,
+    });
+    return respond(url);
+  };
+  t.mock.method(globalThis, "fetch", fetchProvider);
   assert.deepEqual(
     await exchangeGoogleSubject(config, "code-1", "v".repeat(43), redirectURI, nonce),
     { subject: live.sub },
@@ -169,7 +192,9 @@ test("code exchange posts to the fixed token endpoint and verifies against fixed
       ["https://www.googleapis.com/oauth2/v3/certs", "GET", "error"],
     ],
   );
-  const exchange = new URLSearchParams(String(requests[0].body));
+  const [posted] = requests;
+  assert.ok(posted);
+  const exchange = new URLSearchParams(String(posted.body));
   assert.equal(exchange.get("code"), "code-1");
   assert.equal(exchange.get("code_verifier"), "v".repeat(43));
   assert.equal(exchange.get("redirect_uri"), redirectURI);
@@ -177,7 +202,7 @@ test("code exchange posts to the fixed token endpoint and verifies against fixed
 
   const rejectedIdentity = { denial: "EXTERNAL_IDENTITY_REJECTED" };
   // The bounded failure is what the callback logs for operators.
-  const unavailable = (failure) => ({ denial: "PROVIDER_UNAVAILABLE", failure });
+  const unavailable = (failure: ProviderFailure) => ({ denial: "PROVIDER_UNAVAILABLE", failure });
   assert.deepEqual(
     await exchangeGoogleSubject(config, "code-1", "v".repeat(43), redirectURI, "other"),
     rejectedIdentity,
