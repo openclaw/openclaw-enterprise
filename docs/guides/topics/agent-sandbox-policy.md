@@ -108,10 +108,16 @@ disabling it. Wait for confirmation. On a supporting Sandbox and Credential
 Proxy pair, try a fresh connection from the same shell to verify the outcome.
 An existing transfer may finish.
 
-For **Pending confirmation**, **Unconfirmed**, or **Confirmation failed**, choose
-**Refresh**, then open **Receipt details**. Match the operation IDs and revision
-to your request. If you cannot match the request and receipt to your change,
-the outcome is still unknown. See [protected download approvals and status](../../reference/sandbox-policies.md#downloads-on-a-running-protected-agent).
+**Change not applied** means the controller restored the previous approved and
+requested destinations. Receipt details retains the failed request.
+When authorization failed, check the requester’s Agent `manage_policy` and
+SandboxPolicy `read` and `update` grants. Approval and withdrawal also need
+Installation `administer`. After restoring access, submit the change again.
+
+For **Change unconfirmed** or **Pending confirmation**, refresh and open
+**Receipt details**. Match the revision and **Request operation** to the receipt.
+If no receipt confirms that operation, ask an operator to reconcile it before
+making another change. See [protected download approvals and status](../../reference/sandbox-policies.md#downloads-on-a-running-protected-agent).
 
 ## Retire a protected download edit before upgrade
 

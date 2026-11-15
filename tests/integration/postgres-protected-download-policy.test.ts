@@ -537,8 +537,9 @@ test(
           SandboxPolicyResponse,
           "apply download edit",
         ).data.application;
-        assert.ok(application);
+        assert.ok(application && "kind" in application);
         assert.equal(application.state, "pending");
+        assert.equal(application.writeState, "prepared");
         assert.notEqual(application.id, previousId);
         const key: string = `agent:${f.agent.id}:reconcile:sandbox_policy:${application.id}`;
         if (!previousId) {
@@ -558,12 +559,13 @@ test(
           );
           view = await getView();
           assert.ok(view.protectedDownloads?.state === "verified");
-          assert.ok(view.policy.application);
+          assert.ok(view.policy.application && "kind" in view.policy.application);
           assert.equal(revokeBeforeApply, undefined, "worker must reach the revocation callback");
           assert.equal(view.protectedDownloads.canApprove, false);
           assert.equal(view.policy.application.id, application.id);
           assert.equal(view.policy.application.state, "failed");
           assert.equal(view.policy.application.reason, "AUTHORIZATION_DENIED");
+          assert.equal(view.policy.application.writeState, "prepared");
           assert.deepEqual(view.policy.downloadDestinations, expected);
           assert.deepEqual(view.policy.approvedDownloadDestinations, expected);
           assert.deepEqual(view.policy.applied, previousReceipt);
@@ -838,6 +840,14 @@ test(
       view = await getView();
       assert.ok(view.protectedDownloads?.state === "unavailable");
       assert.equal(view.protectedDownloads.reason, "installation-unconfirmed");
+      const failedApplication = view.policy.application;
+      assert.ok(failedApplication && "kind" in failedApplication);
+      assert.equal(failedApplication.id, oldId);
+      assert.equal(failedApplication.state, "failed");
+      assert.equal(failedApplication.reason, "AUTHORIZATION_DENIED");
+      assert.equal(failedApplication.writeState, "dispatched");
+      assert.ok(!Object.hasOwn(failedApplication, "expected"));
+      assert.ok(!Object.hasOwn(failedApplication, "acknowledgedWrite"));
       assert.equal((await apply("approve-and-enable", earlierDestination)).status, 409);
       assert.deepEqual((await policy()).applied, priorWitness);
       Object.assign(f.observed, replacementRuntime);
@@ -885,6 +895,7 @@ test(
       proxyPolicy.prepare = savedProxyPrepare;
       view = await getView();
       assert.equal(view.protectedDownloads?.state, "verified");
+      assert.deepEqual(view.policy.application, failedApplication);
       assert.deepEqual(view.policy.approvedDownloadDestinations, [earlierDestination, destination]);
       assert.deepEqual(view.policy.downloadDestinations, [earlierDestination, destination]);
       assert.deepEqual(enabled, []);

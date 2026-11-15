@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-15"
-last_updated_session: "authoring-run/1554d27d-c4bd-4d3b-ab94-4fad1d5e400a"
+last_updated_session: "authoring-run/5c68cfec-149e-42ac-bcf3-cb6465be0d01"
 ---
 
 # Agent sandbox policy flow
@@ -93,20 +93,21 @@ and a qualified Sandbox and Credential Proxy pair. Stock OpenShell lacks the pai
 OCC checks Agent `manage_policy`, SandboxPolicy `read` and `update`, and
 Installation `administer` for approval changes.
 
-OCC saves the edit and queues it. **Disable** removes the exact entry.
-The Console shows [covering host rules](../guides/topics/agent-sandbox-policy.md#check-access-after-disabling-a-protected-download).
-Pre-write refusal restores approvals and entries. Late confirmation reads the
-original write. After verifying both Drivers, authority, and loaded signed-model
-enforcement, the worker commits installation, receipt, and audit together.
-Credential checks read that installation. Git and credential reduction use
-separate protocols. Superseded work verifies the original Sandbox's installation.
-The Console shows protected **Change** and **Reason** on the request's revision.
+OCC queues saved edits. **Disable** removes the entry and shows
+[covering rules](../guides/topics/agent-sandbox-policy.md#check-access-after-disabling-a-protected-download).
+Prepared failures restore approvals and entries. The Console explains required
+grants and how to reconcile uncertain writes.
+The worker verifies both Drivers, authority and loaded signed-model enforcement
+before committing installation, receipt and audit together. Credential checks
+read that installation. Git and credential reduction use separate protocols.
+Superseded work verifies the original Sandbox installation. **Change** and
+**Reason** appear only on the request’s revision.
 
 For 0079–0080, migration 0081 checks serving confirmations, unresolved follow-ons
-even after retirement, and retained work. A first dispatch needs the original
-work item and matching launch on the current model-only revision without
-credential reduction. `migrateWithHistory` runs the same check before migration;
-0081 repeats it under lock. [Settle the edit before retirement](../guides/topics/agent-sandbox-policy.md#retire-a-protected-download-edit-before-upgrade).
+including retired revisions, and retained work. First dispatch requires original
+work and matching launch on the current model-only revision without credential
+reduction. `migrateWithHistory` checks before migration. 0081 rechecks under lock.
+[Settle the edit before retirement](../guides/topics/agent-sandbox-policy.md#retire-a-protected-download-edit-before-upgrade).
 
 Protected Codex repository preparation compiles the revision's qualified artifact
 snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
@@ -276,6 +277,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-15 04:34: Explain failed downloads. (authoring-run/5c68cfec-149e-42ac-bcf3-cb6465be0d01 - cb6e55d1500f1e71504efb6cc0af0c08793fe044)
 
 - 2026-11-15 02:20: Trace download receipt visibility. (authoring-run/1554d27d-c4bd-4d3b-ab94-4fad1d5e400a - fc7738830cd07402313d8fdec15dbc341150cc29)
 

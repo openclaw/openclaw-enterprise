@@ -124,6 +124,40 @@ const APPLICATION_FAILURES: Readonly<Record<string, string>> = {
 const APPLICATION_UNCONFIRMED =
   "Application was not confirmed. The provider may have accepted part of the request; refresh and retry explicitly. No redeployment was started.";
 
+function downloadFailureGuidance(
+  operation: Extract<NonNullable<Policy["application"]>, { kind: "protected_downloads" }>,
+) {
+  const reconcile =
+    "Ask an operator to reconcile the original operation before making another change. Its ID is under Request operation in Receipt details.";
+  if (operation.reason === "AUTHORIZATION_DENIED") {
+    const approval =
+      operation.action === "approve-and-enable" || operation.action === "withdraw-approval";
+    const grants = approval
+      ? "Installation administer, Agent manage_policy, and SandboxPolicy read and update"
+      : "Agent manage_policy and SandboxPolicy read and update";
+    const next =
+      operation.writeState === "prepared"
+        ? "Once access is restored, submit the change again."
+        : reconcile;
+    return `OCC could not authorize this change. Ask an administrator to check whether the requester has ${grants}. ${next}`;
+  }
+  if (operation.writeState !== "prepared") {
+    return `The provider may have received the change. ${reconcile}`;
+  }
+  switch (operation.reason) {
+    case "SANDBOX_POLICY_REVISION_CHANGED":
+      return "Open the running revision and review its download rules before requesting another change.";
+    case "SANDBOX_POLICY_CEILING_CHANGED":
+      return "Check the destination against the Installation’s current download limits before requesting another change.";
+    case "SANDBOX_POLICY_VALIDATION_FAILED":
+      return "Check that Policy editing is on, then review the destination, port, and archive path against the Installation’s download rules.";
+    case "SANDBOX_POLICY_UNSUPPORTED":
+      return "Ask an operator to verify that the running revision’s Sandbox and Credential Proxy support live download changes.";
+    default:
+      return "Ask an operator to check the failed operation before submitting another change. Its ID is under Request operation in Receipt details.";
+  }
+}
+
 function readablePort(value: unknown): value is SandboxNetworkGrant["ports"][number] {
   const { from, to } = responseFields(value);
   return Number.isSafeInteger(from) && Number.isSafeInteger(to);
@@ -891,7 +925,10 @@ export function renderAgentSandboxPolicy(
     }
     function receiptStatus() {
       if (op?.state === "failed") {
-        return ["Confirmation failed", "danger"];
+        return [
+          op.writeState === "prepared" ? "Change not applied" : "Change unconfirmed",
+          "danger",
+        ];
       }
       if (op?.state === "pending") {
         return ["Pending confirmation", "warning"];
@@ -937,6 +974,9 @@ export function renderAgentSandboxPolicy(
         refresh,
       ),
     );
+    if (op?.state === "failed") {
+      panel.append(element("p", { className: "hint" }, downloadFailureGuidance(op)));
+    }
 
     const tools = element(
       "div",

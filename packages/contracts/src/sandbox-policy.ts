@@ -281,6 +281,13 @@ const fence = Type.Object(
   },
   closed,
 );
+export const ProtectedDownloadWriteStateSchema = Type.Union(
+  [Type.Literal("prepared"), Type.Literal("dispatched")],
+  {
+    description:
+      "For a failed operation, prepared means the change did not take effect and dispatched means the outcome is unconfirmed.",
+  },
+);
 const protectedApplication = Type.Object(
   {
     kind: Type.Literal("protected_downloads"),
@@ -305,7 +312,7 @@ const protectedApplication = Type.Object(
     previousDownloadDestinations: ProtectedDownloadDestinationsSchema,
     desiredDownloadDestinations: ProtectedDownloadDestinationsSchema,
     expected: fence,
-    writeState: Type.Union([Type.Literal("prepared"), Type.Literal("dispatched")]),
+    writeState: ProtectedDownloadWriteStateSchema,
     acknowledgedWrite: Type.Optional(
       Type.Object(
         {
@@ -358,7 +365,7 @@ export type SandboxPolicyApplication = ApplicationIdentity &
         readonly previousDownloadDestinations: readonly ProtectedDownloadDestination[];
         readonly desiredDownloadDestinations: readonly ProtectedDownloadDestination[];
         readonly expected: Fence;
-        readonly writeState: "prepared" | "dispatched";
+        readonly writeState: Type.Static<typeof ProtectedDownloadWriteStateSchema>;
         readonly acknowledgedWrite?: Write;
       }
   );

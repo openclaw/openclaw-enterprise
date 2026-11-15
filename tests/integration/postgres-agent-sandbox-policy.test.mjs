@@ -927,6 +927,10 @@ test(
         assert.equal(returned.application.revisionId, revision.id);
         assert.equal(returned.application.policyVersion, version);
         assert.equal(returned.application.requestedBy, principal.id);
+        assert.ok(!Object.hasOwn(returned.application, "writeState"));
+        const reread = await inject("GET", path);
+        assert.equal(reread.statusCode, 200, reread.body);
+        assert.deepEqual(reread.json().data.policy.application, returned.application);
         const stored = await readPolicy();
         assert.equal(stored.application.id, returned.application.id);
         assert.equal(stored.version, version);

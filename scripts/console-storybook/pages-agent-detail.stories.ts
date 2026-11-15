@@ -303,6 +303,8 @@ export const PolicyDenialsProtected = story("policyDenialsProtected");
 export const ProtectedDownloadCoverage = story("protectedDownloadCoverage");
 export const ProtectedDownloadViewer = story("protectedDownloadViewer");
 export const ProtectedDownloadPreviousRevision = story("protectedDownloadPreviousRevision");
+export const ProtectedDownloadDeniedBeforeDispatch = story("protectedDownloadDeniedBeforeDispatch");
+export const ProtectedDownloadDeniedAfterDispatch = story("protectedDownloadDeniedAfterDispatch");
 export const PolicyDenialsWithheldOne = story("policyDenialsWithheldOne");
 export const PolicyDenialsWithheldMany = story("policyDenialsWithheldMany");
 

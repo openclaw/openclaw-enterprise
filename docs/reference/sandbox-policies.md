@@ -92,23 +92,20 @@ Enable [Installation download settings](configuration.md#protected-downloads).
 The Sandbox and Credential Proxy must confirm effective rules on the running
 revision. Stock OpenShell 0.1.8 lacks this Driver pair.
 
-Live edits require a Credential Proxy that verifies the installation used for
-signed model requests. Revisions with protected repository Git or a credential
-policy reducer refuse edits before writing. On a supporting pair, test a fresh
-download and a fresh denial after withdrawal from the same protected shell.
-Verify a signed model request succeeds after each change.
+Live edits require a Credential Proxy that verifies the signed-model installation.
+Protected Git and credential-reduction revisions refuse edits before writing.
+On a supporting pair, test a fresh download and post-withdrawal denial from the
+same protected shell. Verify a signed model request after each change.
 
-Under **Network policy**, enable policy editing. In **Protected downloads**,
-choose **Add destination**, enter the hostname and choose **Allow download**.
-HTTPS defaults to port 443. For shared archive hosts specify the exact object path.
-HTTP on port 80 requires an operator-listed mirror. Keep package signature and
-checksum verification enabled.
+Enable policy editing under **Network policy**. In **Protected downloads**, choose
+**Add destination**, enter the hostname, then choose **Allow download**.
+HTTPS defaults to 443. Shared hosts require an exact archive path.
+HTTP/80 requires a listed mirror. Verify package signatures and checksums.
 
-Search by hostname or archive path, or filter by access state. **Requested** shows
-the saved setting and Agent approval. **Confirmed access** reflects this revision’s
-last receipt. Installation administrators can approve an eligible HTTPS hostname
-for one Agent without changing Installation configuration. Delegated editors can
-enable or disable approved destinations.
+Search by hostname or archive path, or filter by access. **Requested** shows the
+saved setting and Agent approval. **Confirmed access** reflects this revision’s
+last receipt. Installation administrators can approve eligible HTTPS hosts per
+Agent without changing Installation configuration. Delegated editors can enable or disable approved destinations.
 
 Disabling an exact path removes its desired rule and keeps its Agent approval.
 If the Sandbox confirms the removal and a whole-host rule remains for the same
@@ -118,7 +115,8 @@ the covering rule and wait for confirmation. Choose **Withdraw approval** under
 **More actions** to remove the Agent approval and any access that depends on it.
 Existing transfers can finish.
 
-Pending, unavailable, or failed confirmation can leave the outcome unknown.
+For failed changes, `application.writeState: prepared` means the change did
+not apply. A dispatched or missing phase leaves the outcome unconfirmed.
 **Last confirmed** describes the revision's latest receipt. After a conflict or
 lost response, refresh and [match the request and receipt](../guides/topics/agent-sandbox-policy.md#check-access-after-disabling-a-protected-download)
 before editing again. **Receipt details** shows operation IDs, policy versions,

@@ -4,6 +4,7 @@ import { AgentId, NamespaceId, RevisionId, Meta } from "./common.ts";
 import {
   ProtectedDownloadDestinationSchema,
   ProtectedDownloadDestinationsSchema,
+  ProtectedDownloadWriteStateSchema,
   SandboxNetworkGrantSchema,
   SandboxNetworkGrantsSchema,
 } from "../sandbox-policy.ts";
@@ -57,6 +58,7 @@ export const SandboxPolicyApplicationSchema = Type.Union([
       ...ordinaryApplication.properties,
       kind: Type.Literal("protected_downloads"),
       ...DownloadChange.properties,
+      writeState: Type.Optional(ProtectedDownloadWriteStateSchema),
     },
     { additionalProperties: false },
   ),

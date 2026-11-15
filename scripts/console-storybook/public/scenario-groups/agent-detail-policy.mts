@@ -40,6 +40,8 @@ type PolicyState =
   | "protectedDownloadCoverage"
   | "protectedDownloadViewer"
   | "protectedDownloadPreviousRevision"
+  | "protectedDownloadDeniedBeforeDispatch"
+  | "protectedDownloadDeniedAfterDispatch"
   | "withheldOne"
   | "withheldMany";
 
@@ -157,6 +159,16 @@ export function createAgentDetailPolicyScenarios({
       "protectedDownloadPreviousRevision",
       "protectedDownloadPreviousRevision",
       "Protected Downloads after revision replacement",
+    ],
+    [
+      "protectedDownloadDeniedBeforeDispatch",
+      "protectedDownloadDeniedBeforeDispatch",
+      "Protected Downloads authorization fails before dispatch",
+    ],
+    [
+      "protectedDownloadDeniedAfterDispatch",
+      "protectedDownloadDeniedAfterDispatch",
+      "Protected Downloads authorization fails after dispatch",
     ],
     [
       "policyDenialsWithheldOne",
@@ -320,6 +332,23 @@ export function createAgentDetailPolicyScenarios({
                   "Choose Enable on the host row and wait for Confirmed. Check that the host shows Allowed and the archive shows Covered by host. Receipt details names revision 7 and shows the enable action and host destination under Change.",
                 ],
                 gap: "Simulated revision replacement and policy responses. Use the live workflow to verify download enforcement.",
+              }
+            : {}),
+          ...(state === "protectedDownloadDeniedBeforeDispatch" ||
+          state === "protectedDownloadDeniedAfterDispatch"
+            ? {
+                description:
+                  state === "protectedDownloadDeniedBeforeDispatch"
+                    ? "The requester loses permission before the controller sends a download change to the provider."
+                    : "The requester loses permission after the controller records dispatch. The outcome remains uncertain.",
+                steps: [
+                  "Choose Add destination. Enter artifacts.example.net, keep HTTPS, and choose Allow download.",
+                  state === "protectedDownloadDeniedBeforeDispatch"
+                    ? "When Change not applied appears, read which grants an administrator must check before the requester submits again."
+                    : "When Change unconfirmed appears, check that the guidance directs the operator to the original operation before another change.",
+                  "Open Receipt details to find the request ID and AUTHORIZATION_DENIED reason. Choose Reset story to repeat.",
+                ],
+                gap: "Simulated policy responses for both stages of an authorization failure.",
               }
             : {}),
           ...(state === "ceilingDenied"

@@ -1165,19 +1165,38 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
       },
     ],
   );
-  policy.application = { ...pending, state: "failed", reason: "PROTECTED_DOWNLOAD_UNCONFIRMED" };
-  view.protectedDownloads = { state: "unavailable", reason: "installation-unconfirmed" };
+  const deniedApplication = { ...pending, state: "failed", reason: "AUTHORIZATION_DENIED" };
+  // Before dispatch, the worker restores the saved destinations. The operator can
+  // submit a new request after the requester regains the required permissions.
+  Object.assign(policy, {
+    approvedDownloadDestinations: [prior, host, archive],
+    downloadDestinations: [prior, host, archive],
+    application: { ...deniedApplication, writeState: "prepared" },
+  });
+  view.protectedDownloads = { state: "verified", revisionId, canApprove: false };
   await search.fill(hostUrl + "/releases/unlisted-tool.tar.gz");
   await showHostRules.focus();
   await page.clock.fastForward(3000);
-  await panel.getByRole("alert").filter({ hasText: "Confirmation failed" }).waitFor();
+  const prepared = panel.getByText("Change not applied", { exact: true });
+  await prepared.waitFor();
+  await panel
+    .getByText(/Installation administer.*Agent manage_policy.*SandboxPolicy read and update/)
+    .waitFor();
+  await panel.getByText(/submit the change again/i).waitFor();
+  assert.equal(
+    await panel
+      .getByRole("button", { name: /^Withdraw approval for /, includeHidden: true })
+      .count(),
+    0,
+  );
   assert.equal(await hasFocus(showHostRules), true);
   await search.fill("");
+  assert.equal(await nextRow.count(), 0);
   await receiptSummary.press("Enter");
-  await receiptDetails.getByText("PROTECTED_DOWNLOAD_UNCONFIRMED", { exact: true }).waitFor();
+  await receiptDetails.getByText(deniedApplication.reason, { exact: true }).waitFor();
   await policySummary.press("Enter");
   await policyDetails
-    .getByText(`Application: failed · Revision ${revisionId} · PROTECTED_DOWNLOAD_UNCONFIRMED`, {
+    .getByText(`Application: failed · Revision ${revisionId} · ${deniedApplication.reason}`, {
       exact: true,
     })
     .waitFor();
@@ -1186,12 +1205,35 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
       exact: true,
     })
     .waitFor();
+  // A dispatched operation without confirmation retains desired state. An older
+  // response without writeState must also leave the outcome uncertain.
+  Object.assign(policy, {
+    approvedDownloadDestinations: [prior, host, archive, next],
+    downloadDestinations: [prior, host, archive, next],
+  });
+  view.protectedDownloads = { state: "unavailable", reason: "installation-unconfirmed" };
+  const uncertain = panel.getByText("Change unconfirmed", { exact: true });
+  const reconcile = panel.getByText(/reconcile the original operation/i);
+  for (const application of [
+    { ...deniedApplication, writeState: "dispatched" },
+    { ...deniedApplication, reason: "SANDBOX_POLICY_UNCONFIRMED" },
+  ]) {
+    policy.application = application;
+    const reread = responseTo(page, "GET", fixture.origin + base);
+    await refresh.click();
+    assert.equal((await reread).status(), 200);
+    await receiptDetails.getByText(application.reason, { exact: true }).waitFor();
+    await uncertain.waitFor();
+    await reconcile.waitFor();
+    assert.equal(await panel.getByText(/submit the change again/i).count(), 0);
+  }
   await nextRow
     .getByRole("cell")
     .filter({ hasText: "Agent-approved" })
     .getByText("On", { exact: true })
     .waitFor();
   await nextRow.getByText("Last confirmed off", { exact: true }).waitFor();
+  assert.equal(pathRequests(requests, "POST", base + "/apply").length, 1);
   assert.equal(await panel.getByRole("button", { name: "Withdraw approval" }).count(), 0);
   // Restore the qualified view for a delegated editor. The actual stock fixture still has no
   // protected pair: exercise the authenticated HTTP refusal and check the form survives it.
@@ -1355,7 +1397,8 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
     destination: { ...archive, host: "previous.example.org", path: "/releases/previous.tar.gz" },
     state: "failed",
     requestedAt: "2026-01-02T12:05:00Z",
-    reason: "SANDBOX_POLICY_REVISION_CHANGED",
+    reason: deniedApplication.reason,
+    writeState: "prepared",
   };
   Object.assign(policy, { version: historical.policyVersion, application: historical });
   view.protectedDownloads = { state: "unavailable", reason: "installation-unconfirmed" };
@@ -1379,6 +1422,10 @@ test("Protected Downloads submits one scoped change and keeps desired and confir
   const applicationLine = policyDetails.getByText(applicationStatus);
   assert.equal(await applicationLine.innerText(), applicationStatus);
   assert.equal(await page.locator(".sandbox-application-feedback").count(), 0);
+  assert.equal(await prepared.count(), 0);
+  assert.equal(await uncertain.count(), 0);
+  assert.equal(await reconcile.count(), 0);
+  assert.equal(await panel.getByText(/submit the change again/i).count(), 0);
   view.protectedDownloads = {
     state: "verified",
     revisionId: replacementRevisionId,

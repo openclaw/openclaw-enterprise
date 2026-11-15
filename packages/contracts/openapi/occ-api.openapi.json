@@ -31045,6 +31045,13 @@
                                         { "const": "applied", "type": "string" },
                                         { "const": "failed", "type": "string" }
                                       ]
+                                    },
+                                    "writeState": {
+                                      "anyOf": [
+                                        { "const": "prepared", "type": "string" },
+                                        { "const": "dispatched", "type": "string" }
+                                      ],
+                                      "description": "For a failed operation, prepared means the change did not take effect and dispatched means the outcome is unconfirmed."
                                     }
                                   },
                                   "required": [
@@ -31759,6 +31766,13 @@
                                     { "const": "applied", "type": "string" },
                                     { "const": "failed", "type": "string" }
                                   ]
+                                },
+                                "writeState": {
+                                  "anyOf": [
+                                    { "const": "prepared", "type": "string" },
+                                    { "const": "dispatched", "type": "string" }
+                                  ],
+                                  "description": "For a failed operation, prepared means the change did not take effect and dispatched means the outcome is unconfirmed."
                                 }
                               },
                               "required": [
@@ -32540,6 +32554,13 @@
                                     { "const": "applied", "type": "string" },
                                     { "const": "failed", "type": "string" }
                                   ]
+                                },
+                                "writeState": {
+                                  "anyOf": [
+                                    { "const": "prepared", "type": "string" },
+                                    { "const": "dispatched", "type": "string" }
+                                  ],
+                                  "description": "For a failed operation, prepared means the change did not take effect and dispatched means the outcome is unconfirmed."
                                 }
                               },
                               "required": [

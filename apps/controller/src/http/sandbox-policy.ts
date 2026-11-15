@@ -40,6 +40,7 @@ function policyBody(policy: Readonly<SandboxPolicy>, includeProtectedScope = tru
               kind: application.kind,
               action: application.action,
               destination: application.destination,
+              writeState: application.writeState,
             }),
             id: application.id,
             revisionId: application.revisionId,

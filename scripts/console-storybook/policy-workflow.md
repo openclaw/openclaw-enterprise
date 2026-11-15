@@ -111,6 +111,13 @@ revision 7 and wait for **Confirmed**. The host shows **Allowed** and the archiv
 shows **Covered by host**. **Receipt details** names revision 7 and shows the
 request's **Change** with the enable action and host destination.
 
+In **Protected Downloads authorization fails before dispatch**, add
+`artifacts.example.net` and choose **Allow download**. **Change not applied**
+lists the grants an administrator must check before the requester submits again.
+Repeat the same request in **Protected Downloads authorization fails after
+dispatch**. **Change unconfirmed** directs the operator to the original request
+in **Receipt details** before making another change.
+
 These scenarios simulate policy responses. Use the live workflow to verify
 download enforcement.
 

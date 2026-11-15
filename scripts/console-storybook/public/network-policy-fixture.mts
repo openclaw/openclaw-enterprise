@@ -207,10 +207,16 @@ export function createNetworkPolicyFixture(
 ) {
   const downloadViewer = scenario.policyState === "protectedDownloadViewer";
   const previousDownloadRevision = scenario.policyState === "protectedDownloadPreviousRevision";
+  const downloadDeniedBeforeDispatch =
+    scenario.policyState === "protectedDownloadDeniedBeforeDispatch";
+  const downloadDeniedAfterDispatch =
+    scenario.policyState === "protectedDownloadDeniedAfterDispatch";
   const downloadScenario =
     scenario.policyState === "protectedDownloadCoverage" ||
     downloadViewer ||
-    previousDownloadRevision;
+    previousDownloadRevision ||
+    downloadDeniedBeforeDispatch ||
+    downloadDeniedAfterDispatch;
   const protectedExecution = scenario.policyState === "protected" || downloadScenario;
   const downloadHost = {
     scheme: "https",
@@ -234,6 +240,8 @@ export function createNetworkPolicyFixture(
   let policyPolls = 0;
   let policyReads = 0;
   let pendingDownloadTargets: ProtectedDownloadDestination[] | undefined;
+  let downloadRollback:
+    Pick<FixturePolicy, "approvedDownloadDestinations" | "downloadDestinations"> | undefined;
   const initialAdditions =
     scenario.policyState === "protected"
       ? [policyGrant]
@@ -259,7 +267,7 @@ export function createNetworkPolicyFixture(
   }
   if (downloadScenario) {
     const operationId = "00000000-0000-4000-8000-000000000009";
-    // Version 7 is active in all three stories. Only the replacement story retains a v6 receipt.
+    // Only the replacement story keeps a receipt from the previous revision.
     const receiptRevisionId = previousDownloadRevision
       ? "rev_00000000-0000-4000-8000-000000000006"
       : candidateRevisionId;
@@ -412,6 +420,9 @@ export function createNetworkPolicyFixture(
     ) {
       return error(409, "SANDBOX_POLICY_DOWNLOAD_UNCHANGED");
     }
+    if (downloadDeniedBeforeDispatch) {
+      downloadRollback = { approvedDownloadDestinations: approved, downloadDestinations: desired };
+    }
     const version = sandboxPolicy.version + 1;
     sandboxPolicy = {
       ...sandboxPolicy,
@@ -443,6 +454,10 @@ export function createNetworkPolicyFixture(
     url: URL,
   ): Response | Promise<Response> | undefined {
     const application = sandboxPolicy.application;
+    const downloadApplication =
+      application && "kind" in application && application.kind === "protected_downloads"
+        ? application
+        : undefined;
     if (
       suffix === "/sandbox-policy/networking" &&
       method === "GET" &&
@@ -450,27 +465,37 @@ export function createNetworkPolicyFixture(
       !scenario.policyKeepPending &&
       ++policyPolls > 1
     ) {
-      const providerVersion = "kind" in application ? String(application.policyVersion + 3) : "5";
-      application.state = "applied";
-      application.providerVersion = providerVersion;
-      const confirmation = {
-        revisionId: application.revisionId,
-        policyVersion: application.policyVersion,
-        providerVersion,
-        appliedAt:
-          "kind" in application
-            ? new Date(Date.parse(application.requestedAt) + 1_000).toISOString()
-            : createdAt,
-      };
-      sandboxPolicy.applied =
-        "kind" in application && pendingDownloadTargets
-          ? {
-              ...confirmation,
-              kind: "protected_downloads",
-              operationId: application.id,
-              confirmedDownloadDestinations: pendingDownloadTargets,
-            }
-          : confirmation;
+      if (downloadApplication && (downloadDeniedBeforeDispatch || downloadDeniedAfterDispatch)) {
+        downloadApplication.state = "failed";
+        downloadApplication.reason = "AUTHORIZATION_DENIED";
+        downloadApplication.writeState = downloadDeniedBeforeDispatch ? "prepared" : "dispatched";
+        if (downloadRollback) {
+          Object.assign(sandboxPolicy, downloadRollback);
+        }
+        downloadRollback = undefined;
+      } else {
+        const providerVersion = "kind" in application ? String(application.policyVersion + 3) : "5";
+        application.state = "applied";
+        application.providerVersion = providerVersion;
+        const confirmation = {
+          revisionId: application.revisionId,
+          policyVersion: application.policyVersion,
+          providerVersion,
+          appliedAt:
+            "kind" in application
+              ? new Date(Date.parse(application.requestedAt) + 1_000).toISOString()
+              : createdAt,
+        };
+        sandboxPolicy.applied =
+          "kind" in application && pendingDownloadTargets
+            ? {
+                ...confirmation,
+                kind: "protected_downloads",
+                operationId: application.id,
+                confirmedDownloadDestinations: pendingDownloadTargets,
+              }
+            : confirmation;
+      }
       pendingDownloadTargets = undefined;
     }
     const policyPath = `/namespaces/${namespaceId}/agents/${id}/sandbox-policy/networking`;
@@ -588,11 +613,15 @@ export function createNetworkPolicyFixture(
         editingEnabled: policyEditing,
         protectedExecution,
         ...(downloadScenario && {
-          protectedDownloads: {
-            state: "verified",
-            revisionId: candidateRevisionId,
-            canApprove: canSave,
-          },
+          protectedDownloads:
+            downloadDeniedAfterDispatch && application?.state === "failed"
+              ? { state: "unavailable", reason: "installation-unconfirmed" }
+              : {
+                  state: "verified",
+                  revisionId: candidateRevisionId,
+                  canApprove:
+                    canSave && !(downloadDeniedBeforeDispatch && application?.state === "failed"),
+                },
         }),
         ceiling: policyCeiling,
         defaults:
