@@ -195,6 +195,9 @@ export async function drainApiOnSigterm(context: TestContext) {
         probe.once("error", (error: NodeJS.ErrnoException) => {
           if (error.code === "ECONNREFUSED") {
             resolve(true);
+          } else if (error.code === "ECONNRESET" && error.syscall === "connect") {
+            // Closing a listener can reset a queued connection. Wait for a fresh refusal.
+            resolve(false);
           } else {
             reject(error);
           }
