@@ -49,7 +49,7 @@ Neither supplies an A2A deployment contract. The issue and PR searches on
 - Deploy A2A through the supported Configuration, Secret binding, Agent creation,
   revision, and deployment workflow, with errors before a serving Agent stops.
 - Support a peer sending a text task and polling its result, and an Agent sending
-  a task to an explicitly configured peer.
+  a task to an explicitly configured peer and receiving its submission receipt.
 - Keep channel credentials in the dedicated Gateway and model credentials in the
   dedicated Harness, consistent with existing channel isolation.
 - Preserve exact-Agent ownership, revision routing, default-deny networking, and
@@ -83,6 +83,15 @@ inherit the native plugin's expose-all default. Outbound-only configurations do
 not create a discovery or task ingress route. They must still define the native
 plugin's required peer authentication inputs.
 
+`exposeAgents` alone does not constrain dispatch. At pinned OpenClaw
+`513c12703`, the plugin uses it only to build the Agent Card; inbound dispatch
+resolves the peer or context binding independently and runs the selected agent.
+With an enabled A2A channel, every A2A task must therefore resolve to the owning
+`main` entry: the native agent roster is omitted or contains only `main`, and no
+binding that matches the A2A channel selects another entry. Admission refuses
+any other roster or binding. Relaxing this rule requires the native runtime to
+enforce the allowlist at dispatch, qualified by the same denial case.
+
 ### Inbound routing
 
 An operator must explicitly enable inbound exposure. The selected Compute and
@@ -115,18 +124,50 @@ operator explicitly admits a specific private peer through supported network
 policy. An implementation that cannot enforce the selected destination refuses
 the configuration rather than weakening default-deny policy.
 
+The runtime transport must match the selected enforcement path. Compute projects
+`HTTPS_PROXY` into the Gateway, and the channel NetworkPolicy grants egress to
+the proxy only. At pinned OpenClaw `513c12703`, the A2A adapter calls the strict
+fetch guard without a proxy opt-in; unless managed proxy mode is active
+(`OPENCLAW_PROXY_ACTIVE=1`), the guard uses a direct dispatcher that the
+NetworkPolicy blocks. An implementation must use one of these paths:
+
+- A qualified proxy-aware path: the runtime sends admitted peer requests through
+  the reviewed proxy, and the proxy enforces the peer destination and port.
+- A direct path with a NetworkPolicy grant for exactly each admitted peer
+  destination and port, and no broader direct egress.
+
+Refuse a configuration whose runtime transport cannot reach the selected path.
+
 Configuration edits do not mutate a serving revision. Deploy validates tokens,
 plugin availability, topology, route support, and networking before cutover.
 Rotation uses the existing Secret and revision lifecycle and documents when the
-old token stops working. Stop removes inbound access and execution; retained
-workspace and credentials follow the existing Compute contract. A task ID that
-was held only in runtime memory may be unavailable after replacement: report the
+old token stops working.
+
+A peer name identifies one external party. At pinned OpenClaw `513c12703`, the
+runtime derives a task's owner from the peer name, not the token, and restores
+finished tasks under that owner; Enterprise retains Gateway state across
+replacement. Same-party credential rotation therefore keeps the peer name and
+replaces only its token. A different party requires a fresh peer name. Reusing
+a name for a different party is permitted only when the reassignment makes the
+earlier party's retained tasks unreachable to the new token; otherwise it is
+unsupported, and the operator guide must say so.
+
+Stop removes inbound access and execution; retained workspace and credentials
+follow the existing Compute contract. A task ID that was held only in runtime
+memory may be unavailable after replacement: report the
 runtime's result and require caller reconciliation. Do not automatically resend
 an uncertain task that could repeat a tool action.
 
 The first delivery follows the selected plugin's documented text-task behavior.
 Do not advertise unsupported cancellation, streaming, task continuation, or
 durable cross-restart task recovery as enterprise guarantees.
+
+Outbound delivery is submission only in the first delivery. At pinned OpenClaw
+`513c12703`, the adapter sends `SendMessage` with `returnImmediately` and returns
+the peer's task ID as a delivery receipt; it has no path that polls for or
+returns the terminal artifact. The initiating Agent receives that receipt, not
+the peer's result. Do not describe outbound A2A as returning a remote result
+until the native runtime owns terminal-result retrieval; see open decisions.
 
 ## Acceptance Criteria
 
@@ -138,23 +179,33 @@ and a real external A2A peer. Exercise the normal OCC API or CLI workflow.
   A2A Configuration, creates a dedicated Agent, and deploys a ready revision.
   Embedded mode, literal or inaccessible tokens, missing bindings, unsupported
   routes, and unlisted exposed agent IDs fail before serving-revision cutover.
+  A synthetic two-entry native roster with a binding that routes A2A to the
+  non-`main` entry also fails before cutover.
 - **AC-2 — Incoming task:** An enabled HTTPS route returns a Card advertising
   only the allowed agent. A peer submits `SendMessage`, receives a task, and
   polls `GetTask` to a model-generated result. Missing or incorrect tokens cannot
   invoke the Agent. A valid peer cannot read another peer's task.
 - **AC-3 — Outgoing task:** A genuine model turn invokes the native channel to
-  send a task to the admitted peer. The peer records the authenticated request
-  and the Agent receives its result. Unconfigured destinations fail, and an
-  outbound-only Agent has no inbound route.
+  send a task to the admitted peer. The peer records the authenticated request,
+  and the Agent receives the submission receipt carrying the peer's task ID.
+  Record evidence of which transport path carried the allowed request, such as
+  the proxy access log or the direct-path flow. Unconfigured destinations fail,
+  and an outbound-only Agent has no inbound route.
 - **AC-4 — Isolation:** Inspect actual Pod projections and perform network
   probes. Among runtime Pods, peer tokens exist only in the owning Gateway and
   model credentials only in the Harness; another Agent/Namespace cannot read
-  either. A peer cannot select an unlisted agent, bypass an approval, reach OCC
-  administration, or use the Gateway to contact a denied destination.
-- **AC-5 — Lifecycle:** Rotate a token and deploy through normal revision
-  cutover; verify old/new authentication and route ownership. Stop the Agent and
-  verify invocation is unavailable. Replace the runtime during a task and verify
-  an explicit unavailable/unknown outcome without an automatic duplicate send.
+  either. A peer cannot select an unlisted agent (see the AC-1 roster and
+  binding denial), bypass an approval, reach OCC administration, or use the
+  Gateway to contact a denied destination. Probe the denied destination through
+  both the proxy and a direct connection, and confirm both stay blocked.
+- **AC-5 — Lifecycle:** Rotate a token under the same peer name and deploy
+  through normal revision cutover; verify the old token stops working, the new
+  token can poll that peer's retained tasks, and route ownership holds. Introduce
+  a different party under a fresh peer name and verify its token cannot read the
+  first peer's retained tasks; if name reassignment is supported, verify the same
+  denial after reassignment. Stop the Agent and verify invocation is unavailable.
+  Replace the runtime during a task and verify an explicit unavailable/unknown
+  outcome without an automatic duplicate send.
 
 ## Delivery and verification
 
@@ -179,3 +230,10 @@ peer destinations. Resolve those contracts before implementation; do not add
 vendor-specific routing branches to platform core. Runtime maintainers must pin
 the qualified plugin version and document its task-state limits. Release
 maintainers determine whether this channel belongs in an approved milestone.
+
+Returning the peer's terminal result to the initiating Agent is a native-runtime
+dependency owned by runtime maintainers, outside this first delivery. Adopting it
+requires defined completion, failure, and timeout behavior: a timed-out task
+reports an unknown outcome with its task ID and is not resent. It must be
+qualified against a peer that completes after its initial response before AC-3
+requires result delivery.

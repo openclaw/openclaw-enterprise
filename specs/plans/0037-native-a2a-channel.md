@@ -26,19 +26,27 @@ and network-policy primitives; do not create a parallel invocation service.
    and the [Kubernetes implementation](../../apps/controller/src/drivers/compute/kubernetes/index.ts).
    Admit the native A2A shape for dedicated execution, validate explicit peer and
    agent scopes, and authorize token bindings through the existing Secret path.
-   Refuse unsupported configurations during save and deployment preflight.
+   Refuse a native roster other than an omitted roster or `main` alone, and any
+   binding that routes A2A to another entry, until the runtime enforces the
+   allowlist at dispatch. Refuse unsupported configurations during save and
+   deployment preflight.
    Preserve existing channel behavior. The supported caller is Configuration
    save followed by Agent creation and deployment through OCC.
 2. **Routing and channel networking (AC-2 through AC-4).** Extend the owning
    Driver contracts through the reviewed design. Add per-Agent HTTPS A2A routes,
    separate explicit inbound exposure from outbound-only configuration, and
    enforce admitted peer destinations. Preserve Authorization for native peer
-   authentication. Keep runtime-specific behavior inside Drivers. Missing route
-   support or destination enforcement must refuse admission.
+   authentication. Select a runtime transport that reaches the enforcement path:
+   a qualified proxy-aware path through the reviewed proxy, or a direct path with
+   an exact destination-and-port grant. Keep runtime-specific behavior inside
+   Drivers. Missing route support, destination enforcement, or a compatible
+   transport must refuse admission.
 3. **Revision lifecycle (AC-5).** Integrate route creation, cutover, token
-   rotation, and stop with the existing revision workflow. Check that an invalid
-   candidate leaves the serving revision available. Surface native task loss
-   after replacement without retrying an uncertain tool-bearing task.
+   rotation, and stop with the existing revision workflow. Keep the peer name for
+   same-party rotation and require a fresh name for a different party, unless
+   reassignment makes the earlier party's retained tasks unreachable. Check that
+   an invalid candidate leaves the serving revision available. Surface native
+   task loss after replacement without retrying an uncertain tool-bearing task.
 4. **Connected proof and documentation (AC-1 through AC-5).** Extend the real
    Agent workflow in
    [`qa-matrix-real.test.mjs`](../../tests/integration/qa-matrix-real.test.mjs),
@@ -73,3 +81,7 @@ protocol fixture do not qualify AC-2 through AC-5.
 
 - 2026-11-11: Initial plan from source inspection at upstream `9ff173b40`.
   Delivery remains Planned; no runtime acceptance criterion has run.
+- 2026-11-14: Review-driven contract changes from source inspection at pinned
+  OpenClaw `513c12703`: A2A dispatch resolves only to `main`, outbound delivery
+  is submission only, runtime transport must reach the enforcement path, and
+  peer names identify one party across rotation. Delivery remains Planned.
