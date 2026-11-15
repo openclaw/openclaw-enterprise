@@ -8,6 +8,7 @@
     "tests/integration/staging-upgrade-return.test.ts",
     "tests/integration/controlled-tls-origin.test.ts",
     "tests/integration/ci-prepare-k3d.test.ts",
+    "tests/integration/ci-prepare-image-cache.test.ts",
     "tests/integration/ci-prepare.test.mjs",
     "tests/conformance/repository-credentials-source-boundary.test.ts",
     "tests/conformance/startup-environment-boundary.test.ts",
@@ -388,6 +389,9 @@
     },
     {
       "path": "tests/integration/ci-image-reconciliation.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-prepare-image-cache.test.ts"
     },
     {
       "path": "tests/integration/ci-prepare.test.mjs"
