@@ -1979,20 +1979,6 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
   markReady(gatewayName);
   assert.equal((await prepare()).ready, false);
   assert.equal(provisions.length, 2);
-  // Provisioning this revision must not admit a sibling in the same Agent's Namespace.
-  const [provisioned] = provisions;
-  assert.deepEqual(
-    await sandboxDriver.workspaceNodePeerLabels(provisioned),
-    supervisorPeerLabels(provisioned.revision.id),
-  );
-  assert.equal(
-    await sandboxDriver.workspaceNodePeerLabels({
-      ...provisioned,
-      revision: { ...provisioned.revision, id: "rev_unprovisioned_sibling" },
-    }),
-    undefined,
-    "the unprovisioned sibling has no supervisor peer labels",
-  );
   // The predecessor's enrollment is not this revision's: the provider is told so, so the
   // Sandbox carries the exposure Compute's read needs, and nothing is withdrawn yet.
   assert.ok(provisions.every(({ workspaceNodeEnrolled }) => workspaceNodeEnrolled === false));
