@@ -36,16 +36,30 @@ export function installPostgresCommitAcknowledgementFault(): () => void {
           return value;
         });
       }
-      if (text?.toUpperCase() === "COMMIT" && armedClients.has(client)) {
-        return result.then((value) => {
-          // Consume the fault only after the server succeeds, even with queued COMMITs.
-          if (armedClients.delete(client)) {
-            throw Object.assign(new Error("connection lost after PostgreSQL COMMIT completed"), {
-              code: "08006",
-            });
-          }
-          return value;
-        });
+      const statement = text?.toUpperCase();
+      if (statement === "COMMIT" || statement === "ROLLBACK") {
+        return result.then(
+          (value) => {
+            const armed = armedClients.delete(client);
+            // An aborted transaction answers COMMIT with a ROLLBACK command tag.
+            if (
+              armed &&
+              typeof value === "object" &&
+              value !== null &&
+              "command" in value &&
+              value.command === "COMMIT"
+            ) {
+              throw Object.assign(new Error("connection lost after PostgreSQL COMMIT completed"), {
+                code: "08006",
+              });
+            }
+            return value;
+          },
+          (error: unknown) => {
+            armedClients.delete(client);
+            throw error;
+          },
+        );
       }
       return result;
     },
