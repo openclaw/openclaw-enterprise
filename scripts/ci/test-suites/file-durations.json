@@ -295,7 +295,7 @@
     "tests/integration/postgres-repository-sessions.test.ts": 1000,
     "tests/integration/postgres-repository-transactions.test.ts": 500,
     "tests/integration/postgres-restart-recovery.test.ts": 4100,
-    "tests/integration/postgres-secret-state.test.mjs": 600,
+    "tests/integration/postgres-secret-state.test.ts": 600,
     "tests/integration/postgres-service-account-compensation.test.ts": 8760,
     "tests/integration/postgres-service-account-deletion.test.ts": 800,
     "tests/integration/postgres-service-account-issuance-recovery.test.ts": 700,
