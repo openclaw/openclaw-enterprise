@@ -555,6 +555,13 @@ export function registerChildJournalCases(): void {
       OPENCLAW_ENTERPRISE_CI_STATE: parentPath,
     };
     delete env.NODE_TEST_CONTEXT;
+    // Only the preparation case consumes these managed journal inputs.
+    const args = [
+      "--test",
+      "--test-name-pattern",
+      "/^PostgreSQL preparation uses distinct Docker-assigned loopback ports and cleans its projects$/",
+      "tests/integration/ci-prepare-postgres-real.test.ts",
+    ];
     // The actual test refuses preexisting registered children before adopting them,
     // and rejects foreign/duplicate environment paths before attempting preparation.
     const [firstState] = states;
@@ -564,16 +571,12 @@ export function registerChildJournalCases(): void {
       [firstState, firstState],
       [...states, { path: join(root, "extra.json"), owner: "other" }],
     ]) {
-      const result = spawnSync(
-        process.execPath,
-        ["--test", "tests/integration/ci-prepare-postgres-real.test.ts"],
-        {
-          cwd: repositoryRoot,
-          env: { ...env, OCC_TEST_CI_POSTGRES_STATES: JSON.stringify(selected) },
-          encoding: "utf8",
-          timeout: 30_000,
-        },
-      );
+      const result = spawnSync(process.execPath, args, {
+        cwd: repositoryRoot,
+        env: { ...env, OCC_TEST_CI_POSTGRES_STATES: JSON.stringify(selected) },
+        encoding: "utf8",
+        timeout: 30_000,
+      });
       assert.equal(result.status, 1, result.stdout + result.stderr);
       assert.match(
         result.stdout + result.stderr,
@@ -588,11 +591,12 @@ export function registerChildJournalCases(): void {
       OCC_TEST_CI_POSTGRES_STATES: JSON.stringify(states),
     };
     delete missingParent.OPENCLAW_ENTERPRISE_CI_STATE;
-    const refused = spawnSync(
-      process.execPath,
-      ["--test", "tests/integration/ci-prepare-postgres-real.test.ts"],
-      { cwd: repositoryRoot, env: missingParent, encoding: "utf8", timeout: 30_000 },
-    );
+    const refused = spawnSync(process.execPath, args, {
+      cwd: repositoryRoot,
+      env: missingParent,
+      encoding: "utf8",
+      timeout: 30_000,
+    });
     assert.equal(refused.status, 1, refused.stdout + refused.stderr);
     assert.match(refused.stdout + refused.stderr, /require their parent journal/);
     for (const state of states) {
