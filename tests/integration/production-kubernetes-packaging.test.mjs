@@ -1129,22 +1129,69 @@ test(
         envoyNamespace,
       );
     }
-    // Unlike the Gateway, its generated Envoy Service cannot have dots in its name.
-    await assert.rejects(
-      template("gatewayName", "gateways.example"),
-      /routing\.gatewayName must not contain dots because it also names the Envoy Service/,
-    );
-    for (const gatewayName of ["oce-harnesses", "a".repeat(63)]) {
-      const gateways = await resources((await template("gatewayName", gatewayName)).stdout);
-      assert.equal(
-        gateways.find((object) => object.kind === "Gateway")?.metadata.name,
-        gatewayName,
+    // Gateway DNS subdomains can contain dots; the generated Service must be a label.
+    const names = [
+      "oce-harnesses",
+      "gateways.example",
+      // A literal Gateway with the dotted name's generated Service name must not alias it.
+      `occ-harness-${routeNamespaceLabel("default", "gateways.example")}`,
+      "gateways-example",
+      "gateways.example-test",
+      "gateways-example.test",
+      "a".repeat(63),
+      `${"a".repeat(31)}.${"b".repeat(31)}`,
+      `${"a".repeat(31)}.${"b".repeat(30)}c`,
+    ];
+    for (const isUpgrade of [false, true]) {
+      const args = isUpgrade ? ["--is-upgrade"] : [];
+      const serviceNames = new Set();
+      for (const gatewayName of names) {
+        const gateways = await resources(
+          (
+            await renderExecutionChart(
+              ...args,
+              "--set-string",
+              `routing.gatewayName=${gatewayName}`,
+            )
+          ).stdout,
+        );
+        const gateway = gateways.find((object) => object.kind === "Gateway");
+        const proxy = gateways.find((object) => object.kind === "EnvoyProxy");
+        const serviceName = proxy.spec.provider.kubernetes.envoyService.name;
+        assert.equal(gateway.metadata.name, gatewayName);
+        assert.equal(proxy.metadata.name, gatewayName);
+        assert.equal(gateway.spec.infrastructure.parametersRef.name, gatewayName);
+        assert.equal(gateway.spec.listeners[0].hostname, "agents.example.invalid");
+        assert.match(serviceName, /^[a-z]([-a-z0-9]*[a-z0-9])?$/);
+        assert.ok(serviceName.length <= 63);
+        assert.ok(!serviceNames.has(serviceName), `${gatewayName} aliases another Service`);
+        serviceNames.add(serviceName);
+        if (["oce-harnesses", "gateways-example", "a".repeat(63)].includes(gatewayName)) {
+          assert.equal(serviceName, gatewayName);
+        }
+        const policy = gateways.find((object) => object.kind === "NetworkPolicy");
+        assert.equal(
+          policy.spec.podSelector.matchLabels["gateway.envoyproxy.io/owning-gateway-name"],
+          gatewayName,
+        );
+      }
+      // The same Gateway name in another namespace selects a different proxy Service.
+      const other = await resources(
+        (
+          await renderExecutionChart(
+            ...args,
+            "--namespace",
+            "other-execution",
+            "--set-string",
+            "routing.gatewayName=gateways.example",
+          )
+        ).stdout,
       );
-      assert.equal(
-        gateways.find((object) => object.kind === "EnvoyProxy")?.spec.provider.kubernetes
-          .envoyService.name,
-        gatewayName,
-      );
+      const otherName = other.find((object) => object.kind === "EnvoyProxy").spec.provider
+        .kubernetes.envoyService.name;
+      assert.match(otherName, /^[a-z]([-a-z0-9]*[a-z0-9])?$/);
+      assert.ok(otherName.length <= 63);
+      assert.ok(!serviceNames.has(otherName));
     }
     const envoyNamespace = "a".repeat(63);
     const envoy = await resources((await template("envoyNamespace", envoyNamespace)).stdout);

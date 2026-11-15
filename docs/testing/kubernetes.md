@@ -531,11 +531,19 @@ helm upgrade <execution-release> deploy/helm/openclaw-execution \
   -f <execution-values.yaml>
 ```
 
-The execution chart uses `routing.gatewayName` for both the Gateway and its
-Envoy Service. Use a name without dots, such as `oce-harnesses`; a dotted name
-cannot name a Kubernetes Service and Helm refuses it before installation.
-Keep the control-plane Installation's `executionCluster.harnessRouting.gatewayName`
-equal to this value.
+The execution chart preserves `routing.gatewayName` for the Gateway and its
+selectors. For a dotted Gateway name or one matching `occ-harness-<12 lowercase
+hex characters>`, the Envoy Service is
+`occ-harness-<first 12 hex characters of SHA-256(namespace/gatewayName)>`.
+The second case prevents a literal name from aliasing a generated Service name.
+Other names, including the default `oce-harnesses`, keep their existing Service
+name. On upgrade, an existing Gateway whose name matches that hash shape changes
+its Service name; update any external DNS or load-balancer target that uses it.
+If an external DNS record
+or load balancer targets the Service by name, use the rendered EnvoyProxy's
+`spec.provider.kubernetes.envoyService.name`. Keep the Installation's
+`executionCluster.harnessRouting.gatewayName` equal to the original Gateway
+name and its explicit `hostname` equal to `routing.hostname`.
 
 Pass the installation values; do not use `--reuse-values`. Keep
 `agentRuntimeLogs.enabled` equal to the CP chart value. The control-plane

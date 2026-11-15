@@ -36,10 +36,6 @@
 {{- if or (gt (len (toString $r.gatewayName)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$" (toString $r.gatewayName))) }}
 {{- fail "routing.gatewayName must be a DNS-safe Kubernetes resource name of at most 63 characters" }}
 {{- end }}
-{{- /* Unlike the Gateway resource, the generated Envoy Service requires a DNS label. */ -}}
-{{- if contains "." $r.gatewayName }}
-{{- fail "routing.gatewayName must not contain dots because it also names the Envoy Service" }}
-{{- end }}
 {{- /* Compute isKubernetesNamespaceName refuses the same harness Envoy namespace at startup. */ -}}
 {{- if or (gt (len (toString $r.envoyNamespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString $r.envoyNamespace))) }}
 {{- fail "routing.envoyNamespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" }}
@@ -56,6 +52,12 @@
 {{- fail "routing.serviceType must be ClusterIP or LoadBalancer" }}
 {{- end }}
 {{- $membership := printf "%s/%s" .Release.Namespace $r.gatewayName | sha256sum | trunc 12 }}
+{{- /* A Gateway may contain dots, unlike its Service. Hash its namespace-qualified identity.
+     Hash names in that output shape too, so a literal name cannot alias a generated one. */ -}}
+{{- $serviceName := $r.gatewayName }}
+{{- if or (contains "." $r.gatewayName) (regexMatch "^occ-harness-[a-f0-9]{12}$" $r.gatewayName) }}
+{{- $serviceName = printf "occ-harness-%s" $membership }}
+{{- end }}
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
 metadata:
@@ -65,7 +67,7 @@ spec:
     type: Kubernetes
     kubernetes:
       envoyService:
-        name: {{ $r.gatewayName | quote }}
+        name: {{ $serviceName | quote }}
         type: {{ $r.serviceType }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
