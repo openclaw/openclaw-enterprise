@@ -42,6 +42,10 @@ import {
   inspectWorkerProbe,
   stageSigninChart,
 } from "../helpers/production-worker-chart.ts";
+import {
+  productionChartPath,
+  productionValuesTemplateArgs,
+} from "../helpers/production-values-template.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 import { createEnvoyWorkspaceGatewayPlan } from "../helpers/envoy-workspace-gateway.mjs";
@@ -1071,20 +1075,11 @@ test(
 );
 
 function renderProductionValuesExample(extraArgs, options = {}) {
-  return execute(
-    helm,
-    [
-      "template",
-      "oce",
-      "deploy/helm/openclaw-enterprise",
-      "--namespace",
-      "openclaw-system",
-      "--values",
-      "deploy/examples/production/values.yaml",
-      ...extraArgs,
-    ],
-    { cwd: repository, env: goToolEnvironment(), ...options },
-  );
+  return execute(helm, productionValuesTemplateArgs(productionChartPath, extraArgs), {
+    cwd: repository,
+    env: goToolEnvironment(),
+    ...options,
+  });
 }
 
 test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
@@ -1299,14 +1294,10 @@ test(
         await readFile(new URL("../../package.json", import.meta.url), "utf8"),
       );
       const archive = join(directory, `openclaw-enterprise-${release.version}.tgz`);
-      await execute(
-        helm,
-        ["package", "deploy/helm/openclaw-enterprise", "--destination", directory],
-        {
-          cwd: repository,
-          env: goToolEnvironment(),
-        },
-      );
+      await execute(helm, ["package", productionChartPath, "--destination", directory], {
+        cwd: repository,
+        env: goToolEnvironment(),
+      });
       const { stdout: metadata } = await execute(helm, ["show", "chart", archive], {
         cwd: repository,
         env: goToolEnvironment(),
@@ -1317,18 +1308,12 @@ test(
       assert.equal(chart.appVersion, release.version);
 
       // A registry consumer receives the archive, so it must render the same resources as source.
-      const args = [
-        "--namespace",
-        "openclaw-system",
-        "--values",
-        "deploy/examples/production/values.yaml",
-      ];
-      const source = await execute(
-        helm,
-        ["template", "oce", "deploy/helm/openclaw-enterprise", ...args],
-        { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
-      );
-      const packaged = await execute(helm, ["template", "oce", archive, ...args], {
+      const source = await execute(helm, productionValuesTemplateArgs(productionChartPath), {
+        cwd: repository,
+        env: goToolEnvironment(),
+        maxBuffer: 2_000_000,
+      });
+      const packaged = await execute(helm, productionValuesTemplateArgs(archive), {
         cwd: repository,
         env: goToolEnvironment(),
         maxBuffer: 2_000_000,

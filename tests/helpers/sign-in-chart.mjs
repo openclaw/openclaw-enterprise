@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parseProductionChart } from "./production-chart.mjs";
+import { productionChartPath, productionValuesTemplateArgs } from "./production-values-template.ts";
 
 const execute = promisify(execFile);
 export const repository = fileURLToPath(new URL("../../", import.meta.url));
@@ -12,25 +13,17 @@ const helm = process.env.OCC_HELM_BIN ?? "helm";
 
 export { chartTooling } from "./production-chart.mjs";
 
-function templateArguments(overrides) {
-  const args = [
-    "template",
-    "oce",
-    "deploy/helm/openclaw-enterprise",
-    "--namespace",
-    "openclaw-system",
-    "--values",
-    "deploy/examples/production/values.yaml",
-  ];
+function templateArguments(chart, overrides) {
+  const overridesArgs = [];
   for (const [key, value] of Object.entries(overrides)) {
-    args.push("--set", `${key}=${value}`);
+    overridesArgs.push("--set", `${key}=${value}`);
   }
-  return args;
+  return productionValuesTemplateArgs(chart, overridesArgs);
 }
 
 /** Renders the example install with `--set` overrides and returns the parsed objects. */
 export async function renderChart(overrides = {}) {
-  const { stdout } = await execute(helm, templateArguments(overrides), {
+  const { stdout } = await execute(helm, templateArguments(productionChartPath, overrides), {
     cwd: repository,
     maxBuffer: 2_000_000,
   });
@@ -47,7 +40,7 @@ export function trustedProxyNoticeRenderer(directory) {
   let copied;
   const chart = join(directory, "openclaw-enterprise");
   const copy = async () => {
-    await cp(join(repository, "deploy/helm/openclaw-enterprise"), chart, { recursive: true });
+    await cp(join(repository, productionChartPath), chart, { recursive: true });
     assert.match(
       await readFile(join(chart, "templates/NOTES.txt"), "utf8"),
       /include "openclaw\.trustedProxy\.notice"/,
@@ -60,8 +53,7 @@ export function trustedProxyNoticeRenderer(directory) {
   return async (overrides = {}) => {
     copied ??= copy();
     await copied;
-    const args = templateArguments(overrides);
-    args[2] = chart;
+    const args = templateArguments(chart, overrides);
     args.push("--show-only", "templates/notice-probe.yaml");
     const { stdout } = await execute(helm, args, { cwd: repository, maxBuffer: 2_000_000 });
     const match = /notice: (".*")/.exec(stdout);
@@ -73,7 +65,10 @@ export function trustedProxyNoticeRenderer(directory) {
 /** The chart's refusal message for values it must not render. */
 export async function chartRefusal(overrides) {
   try {
-    await execute(helm, templateArguments(overrides), { cwd: repository, maxBuffer: 2_000_000 });
+    await execute(helm, templateArguments(productionChartPath, overrides), {
+      cwd: repository,
+      maxBuffer: 2_000_000,
+    });
   } catch (error) {
     return String(error.stderr);
   }
