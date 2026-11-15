@@ -13,7 +13,7 @@
     "tests/integration/postgres-worker-agent-revision-stop.test.ts",
     "tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.ts",
     "tests/integration/postgres-worker-agent-revision-refused-stop.test.ts",
-    "tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-credential-sources.test.ts",
     "tests/integration/postgres-worker-agent-revision-health.test.mjs",
     "tests/integration/postgres-native-iam-policy-barrier.test.ts",
     "tests/integration/postgres-worker-agent-revision-teardown.test.ts",
@@ -87,7 +87,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs",
+      "path": "tests/integration/postgres-worker-agent-revision-credential-sources.test.ts",
       "expectedTests": [
         "credential withdrawal work revokes from the active revision without redeploying it",
         "a withdrawal that outlasts its attempts in a gateway outage is retried later and revoked without a replay",

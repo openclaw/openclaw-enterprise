@@ -308,7 +308,7 @@
     "tests/integration/postgres-static-egress.test.mjs": 2700,
     "tests/integration/postgres-transaction-commit.test.mjs": 500,
     "tests/integration/postgres-worker-agent-revision-cleanup-failure.test.ts": 10900,
-    "tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs": 61700,
+    "tests/integration/postgres-worker-agent-revision-credential-sources.test.ts": 61700,
     "tests/integration/postgres-worker-agent-revision-health.test.mjs": 57800,
     "tests/integration/postgres-worker-agent-revision-refused-stop.test.ts": 70000,
     "tests/integration/postgres-worker-agent-revision-refused-wait.test.ts": 35400,
