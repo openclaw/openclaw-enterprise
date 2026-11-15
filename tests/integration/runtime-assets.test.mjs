@@ -1,11 +1,97 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, readdir, readFile, readlink, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  readdir,
+  readFile,
+  readlink,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  parseRuntimeDownloadClientSelection,
+  readRuntimeDownloadClients,
+} from "../../scripts/lib/runtime-download-clients.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+
+test("final image inventory measures selected native download clients and rejects invalid executables", async (t) => {
+  const directory = await temporaryDirectory(t, "runtime-clients-");
+  const root = join(directory, "image");
+
+  const added = "/opt/tools/bin/downloader";
+  const selection = parseRuntimeDownloadClientSelection(JSON.stringify([added]));
+  for (const invalid of [
+    [added, added],
+    ["/usr/bin/curl"],
+    ["/opt/tools/../bin/downloader"],
+    ["opt/tools/bin/downloader"],
+  ]) {
+    assert.throws(
+      () => parseRuntimeDownloadClientSelection(JSON.stringify(invalid)),
+      /Invalid or duplicate/,
+    );
+  }
+
+  const curl = join(root, "usr/bin/curl");
+  const http = join(root, "usr/lib/apt/methods/http");
+  const https = join(root, "usr/lib/apt/methods/https");
+  const node = join(root, "usr/local/bin/node");
+  const additional = join(root, added);
+  await assert.rejects(readRuntimeDownloadClients(selection, root), { code: "ENOENT" });
+  // The fixture header lets the test distinguish native and foreign binaries without running either.
+  const native = Buffer.alloc(64);
+  native.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]);
+  native.writeUInt16LE(3, 16);
+  const machine = process.arch === "arm64" ? 183 : 62;
+  native.writeUInt16LE(machine, 18);
+  for (const path of [curl, http, node, additional]) {
+    await mkdir(join(path, ".."), { recursive: true });
+    await writeFile(path, native, { mode: 0o755 });
+  }
+  await symlink("http", https);
+
+  const digest = createHash("sha256").update(native).digest("hex");
+  assert.deepEqual(await readRuntimeDownloadClients(selection, root), {
+    "/usr/bin/curl": { resolvedBinary: "/usr/bin/curl", binarySha256: digest },
+    "/usr/lib/apt/methods/http": {
+      resolvedBinary: "/usr/lib/apt/methods/http",
+      binarySha256: digest,
+    },
+    "/usr/lib/apt/methods/https": {
+      resolvedBinary: "/usr/lib/apt/methods/http",
+      binarySha256: digest,
+    },
+    "/usr/local/bin/node": { resolvedBinary: "/usr/local/bin/node", binarySha256: digest },
+    [added]: { resolvedBinary: added, binarySha256: digest },
+  });
+
+  await chmod(additional, 0o644);
+  await assert.rejects(readRuntimeDownloadClients(selection, root), /must be an executable file/);
+  await chmod(additional, 0o755);
+  await writeFile(additional, "#!/bin/sh\n");
+  await assert.rejects(readRuntimeDownloadClients(selection, root), /Expected a native .* ELF/);
+  native.writeUInt16LE(machine === 183 ? 62 : 183, 18);
+  await writeFile(additional, native);
+  await assert.rejects(readRuntimeDownloadClients(selection, root), /Expected a native .* ELF/);
+
+  await rm(additional);
+  await symlink(curl, additional);
+  await assert.rejects(
+    readRuntimeDownloadClients(selection, root),
+    /resolves to an unexpected path/,
+  );
+  await rm(additional);
+  const outside = join(directory, "outside");
+  await writeFile(outside, native, { mode: 0o755 });
+  await symlink(outside, additional);
+  await assert.rejects(readRuntimeDownloadClients(selection, root), /resolves outside the image/);
+});
 
 test("Google packaging refuses substituted ClawHub skill bytes before installing the CLI", async (t) => {
   const directory = await temporaryDirectory(t, "runtime-google-");
@@ -195,6 +281,27 @@ packages:
     createHash("sha256").update(contents).digest("hex"),
   );
   assert.equal(provenance.codex.version, "0.158.0");
+  assert.equal(Object.hasOwn(provenance, "downloadClients"), false);
+  const nodeProvenance = join(directory, "node-provenance.json");
+  await writeFile(
+    nodeProvenance,
+    JSON.stringify({
+      architecture: process.arch,
+      platform: process.platform,
+      version: process.versions.node,
+      sha256: createHash("sha256")
+        .update(await readFile(process.execPath))
+        .digest("hex"),
+    }),
+  );
+  const unselected = spawnSync(
+    process.execPath,
+    ["scripts/build-runtime-assets.ts", "inventory", sourceAlias, output, nodeProvenance],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(unselected.status, 0);
+  assert.match(unselected.stderr, /Runtime inventory requires the download client selection path/);
+  assert.deepEqual(JSON.parse(await readFile(join(output, "provenance.json"), "utf8")), provenance);
   assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
   assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
   // Provenance must name every patch the image build applies, in order, so images with and

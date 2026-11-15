@@ -13,9 +13,9 @@ type IssueDetails = {
   [key: string]: unknown;
 };
 
-type RunnerIssue = IssueDetails & { code: string; message: string };
+export type RunnerIssue = IssueDetails & { code: string; message: string };
 
-type RunnerFile = {
+export type RunnerFile = {
   path: string;
   expectedTests: string[];
   env: Record<string, string>;
@@ -23,7 +23,7 @@ type RunnerFile = {
   optionalEnv: string[];
 };
 
-type RunnerLane = {
+export type RunnerLane = {
   name: string;
   env: Record<string, string>;
   requiredEnv: string[];
@@ -34,7 +34,7 @@ type RunnerLane = {
   files: RunnerFile[];
 };
 
-type RunnerManifest = {
+export type RunnerManifest = {
   lanes: Map<string, RunnerLane>;
   groups: Map<string, string[]>;
   durations: Map<string, number>;
@@ -47,13 +47,13 @@ const testRoots = ["tests/conformance", "tests/integration", "tests/browser", "t
 export function usage() {
   return [
     "Usage:",
-    "  node scripts/ci/run-tests.mjs audit [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path> [--test-name <literal>]] [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --lifecycle complete --attempt <fresh-directory> [--file <manifest-path> [--test-name <literal>]] [--manifest scripts/ci/test-suites.json] [--root <dir>]",
+    "  node scripts/ci/run-tests.ts audit [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.ts check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.ts run <lane> --state <file> --results <file> [--file <manifest-path> [--test-name <literal>]] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.ts run <lane> --lifecycle complete --attempt <fresh-directory> [--file <manifest-path> [--test-name <literal>]] [--manifest scripts/ci/test-suites.json] [--root <dir>]",
     "    Use --test-name=<literal> for names beginning with --.",
     "    Complete mode requires the canonical manifest under --root; normalized relative or absolute paths are accepted, symlink aliases are not.",
-    "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--release-selection <file>] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.ts aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--release-selection <file>] [--manifest <file>] [--root <dir>]",
   ].join("\n");
 }
 
@@ -571,7 +571,10 @@ function baseChildEnv(inheritedEnv: readonly string[]) {
   return env;
 }
 
-export function fileInputEnv(lane: RunnerLane, file: RunnerFile) {
+export function fileInputEnv(
+  lane: Pick<RunnerLane, "env" | "requiredEnv" | "optionalEnv">,
+  file: Pick<RunnerFile, "requiredEnv" | "optionalEnv">,
+) {
   return mergeEnv(
     baseChildEnv([
       ...lane.requiredEnv,
@@ -615,11 +618,11 @@ export function fileConcurrency(lane: RunnerLane, issues: RunnerIssue[]) {
 
 export function selectLane(
   manifest: RunnerManifest,
-  laneName: string,
-  selectedFile?: string,
-  testName?: string,
+  laneName: unknown,
+  selectedFile?: unknown,
+  testName?: unknown,
 ) {
-  let lane = manifest.lanes.get(laneName);
+  let lane = typeof laneName === "string" ? manifest.lanes.get(laneName) : undefined;
   const issues = [...manifest.issues];
 
   if (lane && selectedFile !== undefined) {
@@ -639,7 +642,7 @@ export function selectLane(
           issue(
             "invalid-test-selection",
             "--test-name must exactly match one required manifest case",
-            { file: selectedFile },
+            { file: selected.path },
           ),
         );
       }
@@ -658,7 +661,7 @@ export function selectLane(
         optionalEnv: [...lane.optionalEnv, ...lane.focusedEnv],
         parallelFiles: lane.parallelFiles.filter((path) => path === selected.path),
       };
-      const error = openShellHarnessError(laneName, selected.path, fileInputEnv(lane, selected));
+      const error = openShellHarnessError(lane.name, selected.path, fileInputEnv(lane, selected));
       if (error) {
         issues.push(
           issue("invalid-file-selection", error, { lane: laneName, file: selected.path }),
@@ -711,4 +714,26 @@ export function selectedLaneNames(
     return null;
   }
   return groupLanes.filter((lane) => lanes.includes(lane));
+}
+
+// One job-log line per entry: a newline in a message or name cannot start a new
+// line (or a workflow command) of its own.
+export function oneLine(text: unknown) {
+  const line = text ?? "";
+  if (typeof line !== "string") {
+    throw new TypeError('(text ?? "").trim is not a function');
+  }
+  return line.trim().replace(/\s*\n\s*/gu, " | ");
+}
+
+// A lane can fail on runner issues alone, with every test passing: an expected
+// test that did not run, a file that hit the runner timeout, an unexpected skip.
+// Name those in the job log too. Issue messages are built by the runner from
+// manifest entries, paths and test names, never from test output.
+export function logIssues(issues: readonly RunnerIssue[]) {
+  for (const { code, message, file } of issues) {
+    process.stderr.write(
+      `run-tests: issue ${code}${file ? ` ${file}` : ""}: ${oneLine(message)}\n`,
+    );
+  }
 }

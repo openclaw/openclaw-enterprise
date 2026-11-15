@@ -201,8 +201,40 @@ export function registerNativeWorkerProofCases(): void {
         /private-host|private-value|FIRST_AGENT_NATIVE/,
       );
     }
-    // Code Mode can succeed without producing the requested shell proof. Source
-    // mentions and nested exit codes remain observations, never proof predicates.
+    const completed = { status: "completed", aggregated: output, exitCode: 0 };
+    for (const [name, envelope, expected] of [
+      ["completed shell", { status: "completed", value: completed }, true],
+      [
+        "interrupted after output",
+        { status: "completed", value: { ...completed, status: "failed", exitCode: null } },
+        false,
+      ],
+      ["outer failure", { status: "failed", value: completed }, false],
+      ["still running", { status: "waiting", value: completed }, false],
+      ["missing outer status", { value: completed }, false],
+      [
+        "missing shell status",
+        { status: "completed", value: { aggregated: output, exitCode: 0 } },
+        false,
+      ],
+      [
+        "missing shell exit",
+        { status: "completed", value: { status: "completed", aggregated: output } },
+        false,
+      ],
+      ["nonzero shell exit", { status: "completed", value: { ...completed, exitCode: 1 } }, false],
+      ["legacy zero exit", { value: { aggregated: output, exitCode: 0 } }, true],
+      ["legacy failed exit", { value: { aggregated: output, exitCode: 1 } }, false],
+      ["legacy interrupted exit", { value: { aggregated: output, exitCode: null } }, false],
+    ] as const) {
+      const evidence = nativeWorkerHistoryEvidence({
+        ...history,
+        messages: [{ ...tool, content: JSON.stringify(envelope) }, final],
+      });
+      assert.equal(Boolean(evidence.tool), expected, name);
+      assert.equal(Boolean(evidence.final), true, name);
+    }
+    // Source mentions and an exit code alone cannot supply the requested output.
     for (const [exitCode, aggregated] of [
       ...[0, 2, undefined, null, "0", 0.5].map((code) => [code, "private-output"] as const),
       [0, undefined],

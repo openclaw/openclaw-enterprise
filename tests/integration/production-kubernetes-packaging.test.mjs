@@ -159,6 +159,14 @@ function findResourceByComponent(objects, kind, component) {
   );
 }
 
+function controlPlaneWorkloads(objects) {
+  return {
+    initialization: findResourceByComponent(objects, "Job", "initialization"),
+    api: findResourceByComponent(objects, "Deployment", "api"),
+    worker: findResourceByComponent(objects, "Deployment", "worker"),
+  };
+}
+
 test(
   "console theme settings reject YAML booleans and invalid ConfigMap names",
   tooling,
@@ -1137,33 +1145,19 @@ test(
 test("production Helm values example renders the backendless default chart", tooling, async () => {
   const { stdout } = await renderProductionValuesExample([], { maxBuffer: 2_000_000 });
   const objects = await resources(stdout);
-  assert.ok(
-    objects.some(
-      ({ kind, metadata }) =>
-        kind === "Job" && metadata.labels?.["app.kubernetes.io/component"] === "initialization",
-    ),
-  );
-  const initialization = findResourceByComponent(objects, "Job", "initialization");
-  assert.deepEqual(initialization.spec.template.spec.nodeSelector, { "oce-role": "control" });
-  for (const component of ["api", "worker"]) {
-    assert.deepEqual(
-      findResourceByComponent(objects, "Deployment", component).spec.template.spec.nodeSelector,
-      {
-        "oce-role": "control",
-      },
-    );
+  const { initialization, api, worker } = controlPlaneWorkloads(objects);
+  assert.ok(initialization);
+  for (const workload of [initialization, api, worker]) {
+    assert.deepEqual(workload.spec.template.spec.nodeSelector, { "oce-role": "control" });
   }
-  assert.deepEqual(findResourceByComponent(objects, "Deployment", "worker").spec.strategy, {
+  assert.deepEqual(worker.spec.strategy, {
     type: "RollingUpdate",
     rollingUpdate: { maxSurge: "25%", maxUnavailable: "25%" },
   });
   // Session admission and sign-in limits are process-local: never overlap two API Pods.
-  assert.deepEqual(findResourceByComponent(objects, "Deployment", "api").spec.strategy, {
-    type: "Recreate",
-  });
-  for (const component of ["api", "worker"]) {
-    const env = findResourceByComponent(objects, "Deployment", component).spec.template.spec
-      .containers[0].env;
+  assert.deepEqual(api.spec.strategy, { type: "Recreate" });
+  for (const workload of [api, worker]) {
+    const env = workload.spec.template.spec.containers[0].env;
     assert.ok(!env.some(({ name }) => /^OCC_AUTH_(GITHUB|GOOGLE)_/.test(name)));
   }
   assert.ok(
@@ -1347,16 +1341,9 @@ test(
 );
 
 test("control-plane node selectors are optional unless configured", tooling, async () => {
-  const objects = await renderObjects();
-  assert.equal(
-    findResourceByComponent(objects, "Job", "initialization").spec.template.spec.nodeSelector,
-    undefined,
-  );
-  for (const component of ["api", "worker"]) {
-    assert.equal(
-      findResourceByComponent(objects, "Deployment", component).spec.template.spec.nodeSelector,
-      undefined,
-    );
+  const { initialization, api, worker } = controlPlaneWorkloads(await renderObjects());
+  for (const workload of [initialization, api, worker]) {
+    assert.equal(workload.spec.template.spec.nodeSelector, undefined);
   }
 });
 
@@ -3408,39 +3395,26 @@ test(
   "optional database CA Secret mounts into every production database client",
   tooling,
   async () => {
-    const objects = await renderObjects(databaseCaValues);
-    const initializationPod = findResourceByComponent(objects, "Job", "initialization").spec
-      .template.spec;
-    assert.deepEqual(initializationPod.volumes.find(({ name }) => name === "database-ca")?.secret, {
-      secretName: "occ-rds-ca",
-      items: [{ key: "ca.pem", path: "ca.pem" }],
-    });
-    assert.deepEqual(
-      initializationPod.initContainers
-        .find(({ name }) => name === "migration")
-        .volumeMounts.find(({ name }) => name === "database-ca"),
-      { name: "database-ca", mountPath: "/etc/openclaw/database-ca", readOnly: true },
+    const { initialization, api, worker } = controlPlaneWorkloads(
+      await renderObjects(databaseCaValues),
     );
-    assert.deepEqual(
-      initializationPod.containers[0].volumeMounts.find(({ name }) => name === "database-ca"),
-      { name: "database-ca", mountPath: "/etc/openclaw/database-ca", readOnly: true },
-    );
-
-    for (const component of ["api", "worker"]) {
-      const pod = findResourceByComponent(objects, "Deployment", component).spec.template.spec;
+    const assertDatabaseCaMount = (container) => {
+      assert.deepEqual(
+        container.volumeMounts.find(({ name }) => name === "database-ca"),
+        { name: "database-ca", mountPath: "/etc/openclaw/database-ca", readOnly: true },
+      );
+    };
+    const initializationPod = initialization.spec.template.spec;
+    for (const pod of [initializationPod, api.spec.template.spec, worker.spec.template.spec]) {
       assert.deepEqual(pod.volumes.find(({ name }) => name === "database-ca")?.secret, {
         secretName: "occ-rds-ca",
         items: [{ key: "ca.pem", path: "ca.pem" }],
       });
-      assert.deepEqual(
-        pod.containers[0].volumeMounts.find(({ name }) => name === "database-ca"),
-        {
-          name: "database-ca",
-          mountPath: "/etc/openclaw/database-ca",
-          readOnly: true,
-        },
-      );
+      assertDatabaseCaMount(pod.containers[0]);
     }
+    assertDatabaseCaMount(
+      initializationPod.initContainers.find(({ name }) => name === "migration"),
+    );
   },
 );
 

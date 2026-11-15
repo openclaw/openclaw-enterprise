@@ -426,7 +426,7 @@ async function prepareTogether(operations, concurrency = operations.length) {
 
 // The Actions runner refuses NODE_OPTIONS in $GITHUB_ENV, compared without case, and logs an
 // ##[error] for it. A lane's own env, such as the checks lanes' heap limit, needs no export:
-// run-tests.mjs sets it on each test process.
+// run-tests.ts sets it on each test process.
 const GITHUB_ENV_REFUSED = new Set(["NODE_OPTIONS"]);
 
 async function appendGithubEnv(path, env) {
@@ -884,7 +884,7 @@ const ciPostgresSettings = Object.freeze([
 ]);
 
 // Administrative SQL on the lane's server, over its published port (postgres-admin.ts). A
-// failed database step carries the closed diagnostic contract run-tests.mjs reports.
+// failed database step carries the closed diagnostic contract run-tests.ts reports.
 async function postgresAdmin(server, { database, statements, stage }) {
   try {
     await runPostgresAdmin({ port: server.port, database, statements });

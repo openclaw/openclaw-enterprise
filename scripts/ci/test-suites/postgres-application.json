@@ -7,7 +7,7 @@
   "parallelFiles": [
     "tests/integration/postgres-worker-agent-revision.test.mjs",
     "tests/integration/postgres-worker-repository-roles.test.ts",
-    "tests/integration/postgres-worker-agent-revision-replacement.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-replacement.test.ts",
     "tests/integration/postgres-worker-agent-revision-refused-wait.test.ts",
     "tests/integration/postgres-worker-agent-revision-cleanup-failure.test.ts",
     "tests/integration/postgres-worker-agent-revision-stop.test.ts",
@@ -71,6 +71,10 @@
     {
       "path": "tests/integration/postgres-worker-repository-roles.test.ts",
       "expectedTests": [
+        "retained protocol 1 consumes committed disposal with lost session ID and no sender",
+        "retained protocol 1 consumes committed disposal with saved session ID and no sender",
+        "retained protocol 3 consumes committed disposal with lost session ID and no sender",
+        "retained protocol 3 consumes committed disposal with saved session ID and no sender",
         "worker refuses repository credentials when repositoryPolicy is present with the wrong id",
         "worker refuses repository credentials when repositoryPolicy is present with the wrong implementation",
         "worker refuses repository credentials when repositoryPolicy is absent",
@@ -125,7 +129,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-worker-agent-revision-replacement.test.mjs",
+      "path": "tests/integration/postgres-worker-agent-revision-replacement.test.ts",
       "expectedTests": [
         "exclusive replacement blocks overlap, supersedes old maintenance and recovers through a new revision"
       ]

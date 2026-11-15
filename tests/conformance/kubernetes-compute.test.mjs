@@ -151,6 +151,7 @@ import {
   checkSandboxRoutingDomainLimits,
   checkTrustedProxyIdentities,
   checkTrustedProxyProvisioningAdmission,
+  trustedProxyRefusalConfiguration,
   twoClusterOptions,
 } from "./kubernetes-gateway-routing-cases.ts";
 import {
@@ -2963,22 +2964,30 @@ test("activation waits for the Gateway to report the node preparation handed it"
   assert.equal(podPatches.filter(({ name }) => name === "gateway-pod").length, 1);
 });
 
+async function prepareAndMarkWorkloadsReady({ prepare, markWorkloadsReady }) {
+  assert.equal((await prepare()).ready, false);
+  markWorkloadsReady();
+}
+
+async function workspaceNodeAwaitingAckFixture() {
+  const clock = { now: 0 };
+  const fixture = dedicatedFirstDeployFixture({ clock });
+  const { state, driver, revision, prepare } = fixture;
+  driver.delay = async (ms) => {
+    clock.now += ms;
+  };
+  await prepareAndMarkWorkloadsReady(fixture);
+  state.connected = true;
+  state.gatewayAppliesBinding = false;
+  assert.equal((await prepare()).ready, true);
+  return { clock, state, driver, revision };
+}
+
 // Activation that fails for want of the Gateway's ack is retried, and the worker
 // is serial: a Gateway that never acks gets one bounded wait per binding across
 // attempts, then a single read per attempt, like the pairing budget (D221).
 test("an unacknowledged workspace node binding costs at most one bounded wait across activations", async () => {
-  const clock = { now: 0 };
-  const { state, driver, revision, prepare, markWorkloadsReady } = dedicatedFirstDeployFixture({
-    clock,
-  });
-  driver.delay = async (ms) => {
-    clock.now += ms;
-  };
-  assert.equal((await prepare()).ready, false);
-  markWorkloadsReady();
-  state.connected = true;
-  state.gatewayAppliesBinding = false;
-  assert.equal((await prepare()).ready, true);
+  const { clock, state, driver, revision } = await workspaceNodeAwaitingAckFixture();
   const attemptTimes = [];
   for (let attempt = 0; attempt < 4; attempt++) {
     const started = clock.now;
@@ -3737,10 +3746,10 @@ test("the Pod quota check reads only the revision's own workload Deployments", a
 // per setup, across all passes, then a single read per pass, as before #816 (D88).
 test("an unpaired workspace node costs at most one bounded wait across passes", async () => {
   const clock = { now: 0 };
-  const { state, driver, prepare, markWorkloadsReady } = dedicatedFirstDeployFixture({ clock });
+  const fixture = dedicatedFirstDeployFixture({ clock });
+  const { state, driver, prepare } = fixture;
   assert.equal(driver.workspaceNodePairingWaitMs, 8_000);
-  assert.equal((await prepare()).ready, false);
-  markWorkloadsReady();
+  await prepareAndMarkWorkloadsReady(fixture);
   const passTimes = [];
   for (let pass = 0; pass < 6; pass++) {
     const started = clock.now;
@@ -3759,11 +3768,9 @@ test("an unpaired workspace node costs at most one bounded wait across passes", 
 // first ready pass's wait, which ends at the pairing, so no pass ends pending.
 test("a node that pairs within its wait completes the pass that delivered its setup", async () => {
   const clock = { now: 0 };
-  const { state, prepare, markWorkloadsReady } = dedicatedFirstDeployFixture({
-    clock,
-  });
-  assert.equal((await prepare()).ready, false);
-  markWorkloadsReady();
+  const fixture = dedicatedFirstDeployFixture({ clock });
+  const { state, prepare } = fixture;
+  await prepareAndMarkWorkloadsReady(fixture);
   state.pairAtMs = 3_000;
   assert.equal((await prepare()).ready, true);
   assert.deepEqual(state.observeWaits, [8_000]);
@@ -3775,11 +3782,9 @@ test("a node that pairs within its wait completes the pass that delivered its se
 // mid-wait) leaves the next pass only the rest of it.
 test("a workspace node pairing budget carries over between passes", async () => {
   const clock = { now: 0 };
-  const { state, prepare, markWorkloadsReady } = dedicatedFirstDeployFixture({
-    clock,
-  });
-  assert.equal((await prepare()).ready, false);
-  markWorkloadsReady();
+  const fixture = dedicatedFirstDeployFixture({ clock });
+  const { state, prepare } = fixture;
+  await prepareAndMarkWorkloadsReady(fixture);
   state.failAtMs = 5_000;
   await assert.rejects(prepare(), /Gateway connection closed/);
   state.failAtMs = undefined;
@@ -3794,8 +3799,7 @@ test("a second Agent's deploy pass is not held up by another Agent's unpaired no
   const stuck = dedicatedFirstDeployFixture({ clock });
   const fresh = dedicatedFirstDeployFixture({ clock });
   for (const agent of [stuck, fresh]) {
-    assert.equal((await agent.prepare()).ready, false);
-    agent.markWorkloadsReady();
+    await prepareAndMarkWorkloadsReady(agent);
   }
   // The stuck Agent's first ready pass spends its one wait.
   assert.equal((await stuck.prepare()).ready, false);
@@ -3831,8 +3835,7 @@ test("another Agent's due Work ends a first deploy's pairing wait at once", asyn
   const second = dedicatedFirstDeployFixture({ clock });
   for (const agent of [first, second]) {
     agent.state.stepObservations = true;
-    assert.equal((await agent.prepare()).ready, false);
-    agent.markWorkloadsReady();
+    await prepareAndMarkWorkloadsReady(agent);
   }
   first.state.pairAtMs = 6_000;
   second.state.pairAtMs = 1_500;
@@ -3869,18 +3872,7 @@ test("another Agent's due Work ends a first deploy's pairing wait at once", asyn
 // never relaxes the ack check: a present ack is accepted on the first read and
 // an invalid status is still refused (D221).
 test("another Agent's due Work ends an activation's ack wait at once", async () => {
-  const clock = { now: 0 };
-  const { state, driver, revision, prepare, markWorkloadsReady } = dedicatedFirstDeployFixture({
-    clock,
-  });
-  driver.delay = async (ms) => {
-    clock.now += ms;
-  };
-  assert.equal((await prepare()).ready, false);
-  markWorkloadsReady();
-  state.connected = true;
-  state.gatewayAppliesBinding = false;
-  assert.equal((await prepare()).ready, true);
+  const { clock, state, driver, revision } = await workspaceNodeAwaitingAckFixture();
   const clients = await driver.apiClients;
   const proxy = clients.core.connectGetNamespacedPodProxyWithPath;
   let ackAtMs;
@@ -5534,144 +5526,16 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       /trusted-proxy/i,
     ],
     [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            unsupportedField: true,
-            trustedProxy: {
-              userHeader: "x-occ-identity",
-              allowUsers: ["occ-workspace-files"],
-            },
-            identityScopes: { "occ-workspace-files": ["operator.admin"] },
-          },
-          allowRealIpFallback: true,
-          trustedProxies: ["10.42.0.0/16"],
-        },
-      },
+      trustedProxyRefusalConfiguration({ unsupportedField: true }),
       /gateway\.auth\.unsupportedField is not a supported/i,
     ],
-    [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            trustedProxy: {
-              userHeader: "x-openclaw-operator",
-              allowUsers: ["occ-workspace-files"],
-            },
-            identityScopes: { "occ-workspace-files": ["operator.admin"] },
-          },
-          allowRealIpFallback: true,
-          trustedProxies: ["10.42.0.0/16"],
-        },
-      },
-      /userHeader/i,
-    ],
-    [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            trustedProxy: {
-              userHeader: "x-occ-identity",
-              allowUsers: ["another-user"],
-            },
-            identityScopes: { "occ-workspace-files": ["operator.admin"] },
-          },
-          allowRealIpFallback: true,
-          trustedProxies: ["10.42.0.0/16"],
-        },
-      },
-      /allowUsers/i,
-    ],
-    [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            trustedProxy: {
-              userHeader: "x-occ-identity",
-              allowUsers: ["occ-workspace-files"],
-              allowLoopback: true,
-            },
-            identityScopes: { "occ-workspace-files": ["operator.admin"] },
-          },
-          allowRealIpFallback: true,
-          trustedProxies: ["10.42.0.0/16"],
-        },
-      },
-      /allowLoopback/i,
-    ],
-    [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            trustedProxy: {
-              userHeader: "x-occ-identity",
-              allowUsers: ["occ-workspace-files"],
-              allowLoopback: "false",
-            },
-            identityScopes: { "occ-workspace-files": ["operator.admin"] },
-          },
-          allowRealIpFallback: true,
-          trustedProxies: ["10.42.0.0/16"],
-        },
-      },
-      /allowLoopback/i,
-    ],
-    [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            trustedProxy: {
-              userHeader: "x-occ-identity",
-              allowUsers: ["occ-workspace-files"],
-            },
-            identityScopes: { "occ-workspace-files": ["operator.read"] },
-          },
-          allowRealIpFallback: true,
-          trustedProxies: ["10.42.0.0/16"],
-        },
-      },
-      /identityScopes/i,
-    ],
-    [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            trustedProxy: {
-              userHeader: "x-occ-identity",
-              allowUsers: ["occ-workspace-files"],
-            },
-            identityScopes: { "occ-workspace-files": ["operator.admin"] },
-          },
-          allowRealIpFallback: false,
-          trustedProxies: ["10.42.0.0/16"],
-        },
-      },
-      /allowRealIpFallback/i,
-    ],
-    [
-      {
-        gateway: {
-          auth: {
-            mode: "trusted-proxy",
-            trustedProxy: {
-              userHeader: "x-occ-identity",
-              allowUsers: ["occ-workspace-files"],
-            },
-            identityScopes: { "occ-workspace-files": ["operator.admin"] },
-          },
-          allowRealIpFallback: true,
-          trustedProxies: [],
-        },
-      },
-      /trustedProxies/i,
-    ],
+    [trustedProxyRefusalConfiguration({ userHeader: "x-openclaw-operator" }), /userHeader/i],
+    [trustedProxyRefusalConfiguration({ allowUsers: ["another-user"] }), /allowUsers/i],
+    [trustedProxyRefusalConfiguration({ allowLoopback: true }), /allowLoopback/i],
+    [trustedProxyRefusalConfiguration({ allowLoopback: "false" }), /allowLoopback/i],
+    [trustedProxyRefusalConfiguration({ identityScopes: ["operator.read"] }), /identityScopes/i],
+    [trustedProxyRefusalConfiguration({ allowRealIpFallback: false }), /allowRealIpFallback/i],
+    [trustedProxyRefusalConfiguration({ trustedProxies: [] }), /trustedProxies/i],
   ]) {
     // Routed native access must come from the driver-rendered immutable native configuration.
     await assert.rejects(
@@ -6581,7 +6445,7 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   // f3096: every Dedicated Codex Gateway runs the codex plugin, and its entrypoint exits at every
   // start on a plugin policy that turns it off. Agent save, provisioning, deployment and the save
   // of a Configuration whose model policy selects Codex refuse it, after the workspace node's
-  // rule (above). The entrypoint parity test is in plugin-runtime-policy.test.mjs.
+  // rule (above). The entrypoint parity test is in plugin-runtime-policy.test.ts.
   const codexSelected = {
     agents: {
       defaults: {

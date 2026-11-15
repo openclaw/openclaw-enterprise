@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 
 export const images = ["controller", "runtime"] as const;
 export type Image = (typeof images)[number];
@@ -87,8 +88,6 @@ export function identity(env: NodeJS.ProcessEnv, image: string | undefined) {
 
 export async function fileDigest(path: string) {
   const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) {
-    hash.update(chunk);
-  }
+  await pipeline(createReadStream(path), hash);
   return hash.digest("hex");
 }

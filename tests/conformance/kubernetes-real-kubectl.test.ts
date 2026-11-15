@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { AssertionError } from "node:assert";
-import { execFile, type ExecFileException } from "node:child_process";
+import { ChildProcess, execFile, type ExecFileException } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { once } from "node:events";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { type TestContext } from "node:test";
@@ -19,6 +21,7 @@ import {
 import {
   assertProbeDenied,
   createKubernetesClient,
+  createRealKubernetesFixture,
   deleteNamespaceExplained,
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
@@ -33,7 +36,7 @@ import {
 } from "../helpers/kubernetes-real.ts";
 import { refusingPort } from "../helpers/available-port.ts";
 import { listen } from "../helpers/listen.ts";
-import { withEnvironment } from "../helpers/environment.ts";
+import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
 import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import {
@@ -157,6 +160,120 @@ function recordingOptions() {
       log: (message: string) => logs.push(message),
     },
   };
+}
+
+for (const { name, chunks, exitCode } of [
+  {
+    name: "intact readiness after a banner",
+    chunks: ["starting port-forward\nForwarding from 127.0.0.1:34567 -> 8080\n"],
+  },
+  {
+    name: "split readiness prefix",
+    chunks: ["Forwar", "ding from 127.0.0.1:34567 -> 8080\n"],
+  },
+  {
+    name: "split readiness port",
+    chunks: ["Forwarding from 127.0.0.1:34", "567 -> 8080\n"],
+  },
+  {
+    name: "split overlong banner before readiness",
+    chunks: [
+      "starting port-forward ".repeat(8),
+      "Forwarding from 127.0.0.1:12345 -> 8080\nForwarding from 127.0.0.1:34567 -> 8080\r\n",
+    ],
+  },
+  {
+    name: "unterminated readiness before exit",
+    chunks: ["Forwarding from 127.0.0.1:34567 -> 8080"],
+    exitCode: 7,
+  },
+]) {
+  test(`kubectl port-forward handles ${name}`, { timeout: 5_000 }, async (t) => {
+    const directory = mkdtempSync(join(tmpdir(), "occ-port-forward-"));
+    // Restore PATH before the child and directory cleanup hooks can fail.
+    setEnvironment(t, { PATH: directory });
+    const ack = join(directory, "stdout-ack");
+    const kubeconfigPath = join(directory, "unused-kubeconfig");
+    let cleaningUp = false;
+    let stopChild: (() => Promise<void>) | undefined;
+    const commandReady = writeCommand(
+      directory,
+      "kubectl",
+      `
+const { existsSync } = process.getBuiltinModule("node:fs");
+const { setTimeout } = process.getBuiltinModule("node:timers/promises");
+const chunks = ${JSON.stringify(chunks)};
+for (const [index, chunk] of chunks.entries()) {
+  process.stdout.write(chunk);
+  while (!existsSync(${JSON.stringify(ack)} + index)) await setTimeout(5);
+}
+${exitCode === undefined ? "setInterval(() => {}, 1000);" : `process.exit(${exitCode});`}
+`,
+      { interpreter: process.execPath },
+    );
+    t.after(async () => {
+      cleaningUp = true;
+      await stopChild?.();
+      // Finish any in-progress file operation before removing its directory.
+      await commandReady.catch(() => {});
+      await rm(directory, { recursive: true, force: true });
+    });
+    await commandReady;
+    t.signal.throwIfAborted();
+
+    // Observe the actual pipe reads and release each write only after its bytes
+    // were read. The test exercises the same spawn and readiness path as kubectl.
+    const emit = ChildProcess.prototype.emit;
+    t.mock.method(
+      ChildProcess.prototype,
+      "emit",
+      function (this: ChildProcess, ...args: Parameters<typeof emit>) {
+        if (
+          args[0] === "spawn" &&
+          this.spawnfile === "kubectl" &&
+          this.spawnargs.includes(kubeconfigPath)
+        ) {
+          const { stdout } = this;
+          const closed = new Promise<void>((resolve) => this.once("close", () => resolve()));
+          let remaining = "";
+          let index = 0;
+          const acknowledge = (buffer: Buffer) => {
+            if (cleaningUp || t.signal.aborted) {
+              return;
+            }
+            remaining += buffer.toString();
+            if (remaining === chunks[index]) {
+              writeFileSync(`${ack}${index}`, "");
+              index++;
+              remaining = "";
+            }
+          };
+          stdout?.on("data", acknowledge);
+          stopChild = async () => {
+            stdout?.off("data", acknowledge);
+            if (this.exitCode === null && this.signalCode === null) {
+              this.kill("SIGKILL");
+            }
+            await closed;
+          };
+        }
+        return emit.apply(this, args);
+      },
+    );
+
+    const fixture = createRealKubernetesFixture({ kubeconfigPath, kubernetesContext: "fixture" });
+    const started = fixture.startPortForwardTarget("fixture", "service/gateway", "0:8080");
+    if (exitCode !== undefined) {
+      await assert.rejects(started, /port-forward exited \(7\)/);
+      return;
+    }
+    const forward = await started;
+    try {
+      assert.equal(forward.url, "http://127.0.0.1:34567");
+    } finally {
+      await forward.stop();
+    }
+  });
 }
 
 test("a kubectl read retries a dropped exec stream and returns the next attempt's output", async () => {
@@ -1901,7 +2018,7 @@ test(
     // Tests per file: each must reach arrangeProductionTopology, so a new test bumps its count.
     const files = {
       "harness-topology-k3d-real.test.mjs": 7,
-      "harness-topology-k3d-otel-real.test.mjs": 2,
+      "harness-topology-k3d-otel-real.test.ts": 2,
       "harness-topology-k3d-slack-real.test.mjs": 1,
     };
     // Settle every file before asserting, so no child still writes once the directory is removed.

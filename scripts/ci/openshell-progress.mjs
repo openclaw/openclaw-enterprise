@@ -2,11 +2,14 @@ import { types } from "node:util";
 import { installationPhase } from "./openshell-installation-phase.ts";
 
 export const openShellProgressPrefix = "openclaw-ci-progress ";
-export const openShellReplacementCheckpoints = Object.freeze([
-  "redeploy-request",
-  "activation",
-  "reconciliation",
-]);
+export const upstreamOutageCase = Object.freeze({
+  entry: "tests/integration/openshell-upstream-real.test.ts",
+  declaration: "tests/helpers/openshell-sandbox-workflows.mjs",
+  name: "OpenShell model and tool upstream outages fail closed",
+});
+export const openShellReplacementCheckpoints = Object.freeze(
+  /** @type {const} */ (["redeploy-request", "activation", "reconciliation"]),
+);
 
 const failureCategories = new Set([
   "AssertionError",
@@ -53,8 +56,8 @@ const openShellStages = new Set([
   "native-policy",
 ]);
 
-// A live log carries only fixed categories. Reject extra fields rather than
-// accidentally turning this channel into an arbitrary diagnostic transport.
+// Progress records carry only fixed categories. Reject extra fields to keep
+// arbitrary diagnostic data out of this channel.
 export function openShellProgress(value) {
   if (value?.kind === "openshell-installation") {
     return installationPhase(value);
@@ -139,9 +142,11 @@ export function emitOpenShellStageFailure(stage, error) {
 
 // Keep at most one small partial record, even when a child never sends a newline.
 // Oversized lines are ignored through their terminator; a following record can resume.
+/** @param {(line: string) => void} onLine */
 export function boundedProgressLines(onLine) {
   let partial = "";
   let dropping = false;
+  /** @param {string} text */
   return (text) => {
     let start = 0;
     while (start < text.length) {

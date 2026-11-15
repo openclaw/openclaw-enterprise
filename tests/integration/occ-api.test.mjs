@@ -490,17 +490,6 @@ function stateWithDeploymentWork(state, deploymentWorks) {
   };
 }
 
-async function createInjectedConfiguration(fixture, namespaceId, values = {}) {
-  const result = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespaceId}/configurations`,
-    { body: { kind: "agent", values } },
-  );
-  assert.equal(result.status, 201);
-  return result.data;
-}
-
 async function firstDeploymentFixture({ ready = true, slackFetch } = {}) {
   let providerCalls = 0;
   const channelDriver = new SlackChannelDriver(async (...args) => {
@@ -542,6 +531,14 @@ async function firstDeploymentFixture({ ready = true, slackFetch } = {}) {
       `${path}/deploy-first/${body.key}/${body.expectedConfigurationId}/${body.expectedGeneration}`,
       options,
     );
+  const listRevisions = () =>
+    controller.fixture.platformState.read((state) =>
+      state.revisions.listRevisions(namespace.id, agent.id),
+    );
+  const listRevisionMetadata = () =>
+    controller.fixture.platformState.read((state) =>
+      state.revisions.listRevisionMetadata(namespace.id, agent.id),
+    );
   const work = () =>
     controller.fixture.platformState
       .pendingOperations()
@@ -553,6 +550,8 @@ async function firstDeploymentFixture({ ready = true, slackFetch } = {}) {
     path,
     intent,
     recover,
+    listRevisions,
+    listRevisionMetadata,
     work,
     secretDriver,
     channelDriver,
@@ -584,8 +583,9 @@ test("guarded first deployment returns 409 and audits an unready Namespace witho
 });
 
 test("guarded first deployment with the bundled Slack selection recovers without writes", async () => {
+  const deployment = await firstDeploymentFixture();
   const { controller, namespace, agent, path, intent, recover, work, secretDriver, providerCalls } =
-    await firstDeploymentFixture();
+    deployment;
   const schemaApp = controller.fixture.createApp(undefined, createFastifyApp);
   let operations;
   try {
@@ -626,9 +626,7 @@ test("guarded first deployment with the bundled Slack selection recovers without
   assert.equal(controller.fixture.auditSink.events.length, before);
   // Discard the reply; the observer reads the owning state, just as in the stock control.
   await controller.request("POST", `${path}/deploy-first`, { body: intent });
-  const [stored] = await controller.fixture.platformState.read((state) =>
-    state.revisions.listRevisions(namespace.id, agent.id),
-  );
+  const [stored] = await deployment.listRevisions();
   assert.ok(stored);
   const calls = secretDriver.calls.length;
   const events = controller.fixture.auditSink.events.length;
@@ -685,9 +683,7 @@ test("guarded first deployment with the bundled Slack selection recovers without
     409,
   );
 
-  for (const revision of await controller.fixture.platformState.read((state) =>
-    state.revisions.listRevisions(namespace.id, agent.id),
-  )) {
+  for (const revision of await deployment.listRevisions()) {
     for (const field of ["key", "actorId", "firstDeploymentDigest", "first_deployment_digest"]) {
       assert.equal(Object.hasOwn(revision, field), false);
       assert.equal(Object.hasOwn(ordinary.data, field), false);
@@ -873,7 +869,7 @@ test("guarded first deployment rejects stale binding and generation before crede
 });
 
 test("direct first-deployment intent boundary rejects malformed values before I/O", async (t) => {
-  const { controller, namespace, agent, intent, work, secretDriver, providerCalls } =
+  const { controller, namespace, agent, intent, listRevisions, work, secretDriver, providerCalls } =
     await firstDeploymentFixture();
   const { fixture } = controller;
   const input = { namespaceId: namespace.id, agentId: agent.id };
@@ -954,10 +950,7 @@ test("direct first-deployment intent boundary rejects malformed values before I/
   }
   // No revision or queued work can be written without crossing the guarded state
   // boundaries. Inspect the real store too, after the per-call spies are restored.
-  assert.deepEqual(
-    await state.read((view) => view.revisions.listRevisions(namespace.id, agent.id)),
-    [],
-  );
+  assert.deepEqual(await listRevisions(), []);
   assert.equal(work().length, 0);
 
   await t.test("valid string admits revision one and recovers with real grants", async () => {
@@ -967,9 +960,7 @@ test("direct first-deployment intent boundary rejects malformed values before I/
       intent,
       resolveApprovedDevelopmentHarness,
     );
-    const revisions = await state.read((view) =>
-      view.revisions.listRevisions(namespace.id, agent.id),
-    );
+    const revisions = await listRevisions();
     assert.equal(revisions.length, 1);
     assert.equal(revisions[0].id, admitted.revisionId);
     assert.equal(work().length, 1);
@@ -1117,7 +1108,8 @@ test("direct first-deployment captures intent for exact current receipt authorit
 test("direct first-deployment captures scalars once for fresh admission and recovery", async (t) => {
   for (const change of ["stateful key", "immediate target and generation mutation"]) {
     await t.test(change, async (caseContext) => {
-      const { controller, namespace, agent, path, intent, work } = await firstDeploymentFixture();
+      const { controller, namespace, agent, path, intent, listRevisions, work } =
+        await firstDeploymentFixture();
       const { fixture } = controller;
       const actorId = fixture.principal.id;
       const deploy = fixture.controller.deployAgentFirst.bind(fixture.controller);
@@ -1148,9 +1140,7 @@ test("direct first-deployment captures scalars once for fresh admission and reco
       if (change === "stateful key") {
         assert.equal(keyReads, 1);
       }
-      const revisions = await fixture.platformState.read((view) =>
-        view.revisions.listRevisions(namespace.id, agent.id),
-      );
+      const revisions = await listRevisions();
       assert.equal(revisions.length, 1);
       const [revision] = revisions;
       assert.equal(revision.revision, 1);
@@ -1203,12 +1193,7 @@ test("direct first-deployment captures scalars once for fresh admission and reco
         );
         assert.equal(recoveryKeyReads, 1);
       }
-      assert.deepEqual(
-        await fixture.platformState.read((view) =>
-          view.revisions.listRevisions(namespace.id, agent.id),
-        ),
-        revisions,
-      );
+      assert.deepEqual(await listRevisions(), revisions);
       assert.equal(work().length, 1);
       assert.deepEqual(fixture.auditSink.events.slice(beforeAudit), events);
     });
@@ -1335,8 +1320,8 @@ test("guarded first deployment admits enabled Slack over real HTTP and recovers 
     [false, "deploy-first"],
     [true, "deploy"],
   ]) {
-    const { controller, namespace, agent, path, intent, secretDriver, work, providerCalls } =
-      await slackFirstDeploymentFixture(enabled);
+    const deployment = await slackFirstDeploymentFixture(enabled);
+    const { controller, namespace, path, intent, secretDriver, work, providerCalls } = deployment;
     const app = controller.fixture.createApp(undefined, createFastifyApp);
     try {
       const url = await app.listen({ host: "127.0.0.1", port: 0 });
@@ -1349,9 +1334,7 @@ test("guarded first deployment admits enabled Slack over real HTTP and recovers 
       const result = await send("POST", route, route === "deploy-first" ? { body: intent } : {});
       assert.equal(result.status, 202, JSON.stringify(result.body));
       assert.equal(work().length, 1);
-      const revisions = await controller.fixture.platformState.read((state) =>
-        state.revisions.listRevisionMetadata(namespace.id, agent.id),
-      );
+      const revisions = await deployment.listRevisionMetadata();
       assert.equal(revisions.length, 1);
       assert.equal(controller.fixture.auditSink.events.length - before, 1);
       assert.equal(providerCalls(), enabled ? 1 : 0);
@@ -1428,12 +1411,7 @@ test("guarded first deployment admits enabled Slack over real HTTP and recovers 
         assert.deepEqual(secretDriver.calls, calls);
         assert.equal(providerCalls(), enabled ? 1 : 0);
         assert.equal(work().length, 1);
-        assert.deepEqual(
-          await controller.fixture.platformState.read((state) =>
-            state.revisions.listRevisionMetadata(namespace.id, agent.id),
-          ),
-          revisions,
-        );
+        assert.deepEqual(await deployment.listRevisionMetadata(), revisions);
         restrictions.pop();
         const restored = await send(
           "GET",
@@ -1490,8 +1468,9 @@ test("first-deployment CLI recovers a lost committed response with the original 
   await execute("go", ["build", "-trimpath", "-o", cli, "./cmd/occ"]);
   for (const reply of ["dropped", "malformed"]) {
     await t.test(`${reply} committed reply`, async (t) => {
+      const deployment = await firstDeploymentFixture();
       const { controller, namespace, agent, path, intent, work, secretDriver, providerCalls } =
-        await firstDeploymentFixture();
+        deployment;
       const fixture = controller.fixture;
       // Provision an automation identity in the actual native IAM fixture. The HTTP auth
       // service issues its key; the CLI never impersonates the administrator's session.
@@ -1606,9 +1585,7 @@ test("first-deployment CLI recovers a lost committed response with the original 
           [{ method: "POST", path: `${path}/deploy-first` }],
           "the CLI must not automatically replay an uncertain mutation",
         );
-        const revisions = await fixture.platformState.read((unit) =>
-          unit.revisions.listRevisionMetadata(namespace.id, agent.id),
-        );
+        const revisions = await deployment.listRevisionMetadata();
         assert.equal(revisions.length, 1);
         assert.equal(revisions[0].id, committed.revisionId);
         assert.equal(work().length, 1);
@@ -1667,12 +1644,7 @@ test("first-deployment CLI recovers a lost committed response with the original 
           },
         ]);
         assert.equal(work().length, 1);
-        assert.deepEqual(
-          await fixture.platformState.read((unit) =>
-            unit.revisions.listRevisionMetadata(namespace.id, agent.id),
-          ),
-          revisions,
-        );
+        assert.deepEqual(await deployment.listRevisionMetadata(), revisions);
         assert.deepEqual(secretDriver.calls, calls);
         assert.equal(providerCalls(), 0);
         assert.deepEqual(fixture.auditSink.events, audit);
@@ -2016,8 +1988,9 @@ test("guarded first deployment rechecks Agent and Configuration authority before
 test("guarded first deployment refuses deleting Agents before validation", async (t) => {
   for (const stage of ["before-valid-token", "before-wrong-role-token", "after-validation-error"]) {
     await t.test(stage, async (t) => {
-      const { controller, namespace, agent, bot, path, intent, work, secretDriver, providerCalls } =
-        await slackFirstDeploymentFixture();
+      const deployment = await slackFirstDeploymentFixture();
+      const { controller, namespace, bot, path, intent, work, secretDriver, providerCalls } =
+        deployment;
       const fixture = controller.fixture;
       const app = fixture.createApp(undefined, createFastifyApp);
       try {
@@ -2060,9 +2033,7 @@ test("guarded first deployment refuses deleting Agents before validation", async
           session: app.defaultSession,
           body: intent,
         });
-        const revisions = await fixture.platformState.read((unit) =>
-          unit.revisions.listRevisionMetadata(namespace.id, agent.id),
-        );
+        const revisions = await deployment.listRevisionMetadata();
         const reads = secretDriver.calls.filter((call) => call.operation === "withValue").length;
         t.diagnostic(
           JSON.stringify({
@@ -6976,16 +6947,10 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
 });
 
 test("Configuration and Agent writes reject invalid Secret bindings as invalid requests", async () => {
-  const fixture = await createInjectedFixture();
-  const installation = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
-    body: { name: "Binding validation installation" },
-  });
-  assert.equal(installation.status, 201);
-  const namespace = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "binding-validation" },
-  });
-  assert.equal(namespace.status, 201);
-  const namespaceId = namespace.data.id;
+  const controller = await configuredController();
+  const { fixture } = controller;
+  await bootstrap(controller, "Binding validation installation");
+  const { id: namespaceId } = await createNamespace(controller, "binding-validation");
   await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespaceId, "ready");
   const secret = await injectedRequest(fixture.app, "POST", `/namespaces/${namespaceId}/secrets`, {
     body: { name: "tool-api-key", value: `tool-key-${randomUUID()}` },
@@ -7181,7 +7146,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   const computeDriver = createProvisioningCapableComputeDriver();
   const configurationDriver = createProvisioningCapableConfigurationDriver();
   const logLines = [];
-  const fixture = await createInjectedFixture({
+  const controller = await configuredController({
     computeDriver,
     configurationDriver,
     logger: createOccLogger({
@@ -7190,44 +7155,30 @@ test("Agent provisioning API validates inline configuration with existing Secret
       destination: jsonLineDestination(logLines),
     }),
   });
-  const installation = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
-    body: { name: "Provisioning validation installation" },
-  });
-  assert.equal(installation.status, 201);
-  const namespace = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "provisioning-validation" },
-  });
-  assert.equal(namespace.status, 201);
+  const { fixture } = controller;
+  await bootstrap(controller, "Provisioning validation installation");
+  const namespace = await createNamespace(controller, "provisioning-validation");
 
   const provision = (options) =>
-    injectedRequest(
-      fixture.app,
-      "POST",
-      `/namespaces/${namespace.data.id}/agents/provision`,
-      options,
-    );
+    injectedRequest(fixture.app, "POST", `/namespaces/${namespace.id}/agents/provision`, options);
 
-  await fixture.controller.handleNamespaceLifecycle(
-    fixture.principal.id,
-    namespace.data.id,
-    "ready",
-  );
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
   const modelApiKey = await injectedRequest(
     fixture.app,
     "POST",
-    `/namespaces/${namespace.data.id}/secrets`,
+    `/namespaces/${namespace.id}/secrets`,
     { body: { name: "model-api-key", value: `model-key-${randomUUID()}` } },
   );
   assert.equal(modelApiKey.status, 201, JSON.stringify(modelApiKey.body));
   const toolApiKey = await injectedRequest(
     fixture.app,
     "POST",
-    `/namespaces/${namespace.data.id}/secrets`,
+    `/namespaces/${namespace.id}/secrets`,
     { body: { name: "tool-api-key", value: `tool-key-${randomUUID()}` } },
   );
   assert.equal(toolApiKey.status, 201, JSON.stringify(toolApiKey.body));
   const secrets = { modelApiKey: modelApiKey.data, toolApiKey: toolApiKey.data };
-  const requestBody = (overrides) => provisioningRequestBody(namespace.data.id, secrets, overrides);
+  const requestBody = (overrides) => provisioningRequestBody(namespace.id, secrets, overrides);
 
   const foreignNamespaceId = `ns_${randomUUID()}`;
   const foreignSecretId = `sec_${randomUUID()}`;
@@ -7274,7 +7225,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
         harnessAuth: {
           method: "api_key",
           source: {
-            ...exactSecretRef(namespace.data.id, secrets.modelApiKey.id),
+            ...exactSecretRef(namespace.id, secrets.modelApiKey.id),
             kind: "provisioning-secret",
           },
         },
@@ -7423,25 +7374,20 @@ test("Agent provisioning API validates inline configuration with existing Secret
   // Kubernetes Compute, as on every other Compute; the filled name is checked at provisioning.
   configurationDriver.validateValues = async () => {};
   const placeholder = "{{ vars.header }}";
-  const preset = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/presets`,
-    {
-      body: {
-        name: "Header variable",
-        template: {
-          variables: { header: { type: "string" } },
-          configuration: {
-            values: {
-              ...model,
-              models: {
-                providers: {
-                  openai: {
-                    headers: { [placeholder]: "v" },
-                    request: { headers: { [placeholder]: "v" } },
-                    models: [{ id: "m", headers: { [placeholder]: "v" } }],
-                  },
+  const preset = await injectedRequest(fixture.app, "POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Header variable",
+      template: {
+        variables: { header: { type: "string" } },
+        configuration: {
+          values: {
+            ...model,
+            models: {
+              providers: {
+                openai: {
+                  headers: { [placeholder]: "v" },
+                  request: { headers: { [placeholder]: "v" } },
+                  models: [{ id: "m", headers: { [placeholder]: "v" } }],
                 },
               },
             },
@@ -7449,12 +7395,11 @@ test("Agent provisioning API validates inline configuration with existing Secret
         },
       },
     },
-  );
+  });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   delete configurationDriver.validateValues;
-  const agentsBefore = (
-    await fixture.controller.listAgents(fixture.principal.id, namespace.data.id)
-  ).length;
+  const agentsBefore = (await fixture.controller.listAgents(fixture.principal.id, namespace.id))
+    .length;
   for (const [values, message] of [
     [
       { ...model, channels: { discord: { enabled: true } } },
@@ -7518,7 +7463,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     assert.equal(JSON.stringify(filled.body).includes(sentinel), false);
   }
   assert.equal(
-    (await fixture.controller.listAgents(fixture.principal.id, namespace.data.id)).length,
+    (await fixture.controller.listAgents(fixture.principal.id, namespace.id)).length,
     agentsBefore,
   );
   delete computeDriver.validateConfiguration;
@@ -7557,9 +7502,9 @@ test("Agent provisioning API validates inline configuration with existing Secret
   // about the Installation's Compute settings.
   fixture.state.restrictions.push({
     id: "deny-provisioning-agent-create",
-    namespaceId: namespace.data.id,
+    namespaceId: namespace.id,
     resourceKind: "agent",
-    resourceId: namespace.data.id,
+    resourceId: namespace.id,
     action: "create",
     effect: "deny",
   });
@@ -7683,7 +7628,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     "Configuration field /models/providers/codex/baseUrl must be an absolute http or https URL.",
   );
   assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
+    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
     [],
   );
 
@@ -7705,7 +7650,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     "This Plugin Driver does not support tools[id].reviewer. Use toolDefaults.reviewer when supported, or omit the reviewer.",
   );
   assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
+    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
     [],
   );
   // The Codex Plugin Driver's automatic reviewer rule (finding 988) also refuses a
@@ -7724,7 +7669,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     'An automatic plugin reviewer requires Configuration setting plugins.entries.codex.config.appServer.approvalPolicy "on-request"; change it or choose the human reviewer.',
   );
   assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
+    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
     [],
   );
   // The OpenClaw Plugin Driver refuses a selection whose every tool the inline Configuration
@@ -7746,7 +7691,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     `Configuration setting tools.deny blocks every tool of plugin ${diffsPluginId}; remove the matching deny entry or deselect the plugin.`,
   );
   assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
+    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
     [],
   );
   // Its plugins run only in an OpenClaw Harness, and this request provisions dedicated Codex
@@ -7767,7 +7712,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     },
   );
   assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
+    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
     [],
   );
   fixture.controller.selectDriver("plugin", pluginDriver.id);
@@ -7778,7 +7723,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   assert.equal(durableOnly.status, 503, JSON.stringify(durableOnly.body));
   assert.equal(durableOnly.body.error.code, "DEPENDENCY_UNAVAILABLE");
   assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
+    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
     [],
     "in-memory admission must stop before creating an Agent",
   );
@@ -7789,11 +7734,11 @@ test("Agent provisioning API validates inline configuration with existing Secret
   const account = await fixture.platformState.transact((unit) =>
     unit.serviceAccounts.createServiceAccount({
       id: `sa_${randomUUID()}`,
-      namespaceId: namespace.data.id,
+      namespaceId: namespace.id,
       name: `provisioning-account-${randomUUID().slice(0, 8)}`,
     }),
   );
-  const managedSource = { kind: "service_account", namespaceId: namespace.data.id, id: account.id };
+  const managedSource = { kind: "service_account", namespaceId: namespace.id, id: account.id };
   const provisionWithAccount = (source) =>
     provision({
       body: requestBody({
@@ -7802,7 +7747,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     });
   fixture.state.restrictions.push({
     id: "deny-provisioning-account-read",
-    namespaceId: namespace.data.id,
+    namespaceId: namespace.id,
     resourceKind: "service_account",
     resourceId: account.id,
     action: "read",
@@ -7858,8 +7803,10 @@ test("OCC development subprocess requires PostgreSQL-backed startup", async (t) 
 
 test("bodyless OCC routes reject request payloads before IAM or domain side effects", () =>
   runBodylessRoutes({
-    createInjectedFixture,
-    createInjectedConfiguration,
+    configuredController,
+    bootstrap,
+    createNamespace,
+    createAgent,
     missingRevisionId,
   }));
 
@@ -7913,44 +7860,32 @@ test("OCC isolates Namespace ownership and filters collections by exact IAM gran
     bootstrap,
     createNamespace,
     createAgent,
-    createInjectedFixture,
-    createInjectedConfiguration,
     missingRevisionId,
   }));
 
 test("two Namespaces become independently ready and deletion tombstones only its exact target", async () => {
-  const fixture = await createInjectedFixture();
-  await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
-    body: { name: "Lifecycle installation" },
-  });
-  const namespaceA = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "lifecycle-a" },
-  });
-  const namespaceB = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "lifecycle-b" },
-  });
-  assert.equal(namespaceA.data.status, "provisioning");
-  assert.equal(namespaceB.data.status, "provisioning");
+  const controller = await configuredController();
+  const { fixture } = controller;
+  await bootstrap(controller, "Lifecycle installation");
+  const namespaceA = await createNamespace(controller, "lifecycle-a");
+  const namespaceB = await createNamespace(controller, "lifecycle-b");
 
-  const originalConfiguration = await createInjectedConfiguration(fixture, namespaceA.data.id, {
+  const originalConfiguration = await createConfiguration(controller, namespaceA.id, {
     model: "original",
   });
-  const agentA = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespaceA.data.id}/agents`,
-    { body: { name: "lifecycle-agent-a", configurationId: originalConfiguration.id } },
-  );
+  const agentA = await injectedRequest(fixture.app, "POST", `/namespaces/${namespaceA.id}/agents`, {
+    body: { name: "lifecycle-agent-a", configurationId: originalConfiguration.id },
+  });
   assert.equal(agentA.status, 201);
   assert.equal(agentA.data.configurationId, originalConfiguration.id);
-  const firstConfiguration = await createInjectedConfiguration(fixture, namespaceA.data.id, {
+  const firstConfiguration = await createConfiguration(controller, namespaceA.id, {
     model: "first",
     temperature: "0",
   });
   const replacedReference = await injectedRequest(
     fixture.app,
     "PATCH",
-    `/namespaces/${namespaceA.data.id}/agents/${agentA.data.id}`,
+    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}`,
     { body: { configurationId: firstConfiguration.id } },
   );
   assert.equal(replacedReference.status, 200);
@@ -7959,30 +7894,22 @@ test("two Namespaces become independently ready and deletion tombstones only its
   const unavailable = await injectedRequest(
     fixture.app,
     "POST",
-    `/namespaces/${namespaceA.data.id}/agents/${agentA.data.id}/deploy`,
+    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}/deploy`,
   );
   assertApiError(unavailable, 409, "NAMESPACE_NOT_READY");
 
-  await fixture.controller.handleNamespaceLifecycle(
-    fixture.principal.id,
-    namespaceA.data.id,
-    "ready",
-  );
-  await fixture.controller.handleNamespaceLifecycle(
-    fixture.principal.id,
-    namespaceB.data.id,
-    "ready",
-  );
-  assert.deepEqual(fixture.computeCalls.ensureNamespace, [namespaceA.data.id, namespaceB.data.id]);
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespaceA.id, "ready");
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespaceB.id, "ready");
+  assert.deepEqual(fixture.computeCalls.ensureNamespace, [namespaceA.id, namespaceB.id]);
 
-  await bindHarnessKey(fixture, namespaceA.data.id, {
+  await bindHarnessKey(fixture, namespaceA.id, {
     ...agentA.data,
     configurationId: firstConfiguration.id,
   });
   const readyDeployment = await injectedRequest(
     fixture.app,
     "POST",
-    `/namespaces/${namespaceA.data.id}/agents/${agentA.data.id}/deploy`,
+    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}/deploy`,
   );
   assert.equal(readyDeployment.status, 202);
   assert.match(readyDeployment.data.id, identifier("rev"));
@@ -8023,21 +7950,21 @@ test("two Namespaces become independently ready and deletion tombstones only its
   assert.equal(readyDeployment.data.revision, 1);
   assert.equal(Object.hasOwn(readyDeployment.data, "servicePrincipalId"), false);
 
-  const secondConfiguration = await createInjectedConfiguration(fixture, namespaceA.data.id, {
+  const secondConfiguration = await createConfiguration(controller, namespaceA.id, {
     model: "second",
     temperature: "1",
   });
   const nextReference = await injectedRequest(
     fixture.app,
     "PATCH",
-    `/namespaces/${namespaceA.data.id}/agents/${agentA.data.id}`,
+    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}`,
     { body: { configurationId: secondConfiguration.id } },
   );
   assert.equal(nextReference.status, 200);
   const historical = await injectedRequest(
     fixture.app,
     "GET",
-    `/namespaces/${namespaceA.data.id}/agents/${agentA.data.id}/revisions/${readyDeployment.data.id}`,
+    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}/revisions/${readyDeployment.data.id}`,
   );
   assert.equal(historical.status, 200);
   assert.deepEqual(historical.data, readyDeployment.data);
@@ -8045,7 +7972,7 @@ test("two Namespaces become independently ready and deletion tombstones only its
   const nextDeployment = await injectedRequest(
     fixture.app,
     "POST",
-    `/namespaces/${namespaceA.data.id}/agents/${agentA.data.id}/deploy`,
+    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}/deploy`,
   );
   assert.equal(nextDeployment.status, 202);
   assert.equal(nextDeployment.data.revision, 2);
@@ -8059,7 +7986,7 @@ test("two Namespaces become independently ready and deletion tombstones only its
   const admittedRevisions = await injectedRequest(
     fixture.app,
     "GET",
-    `/namespaces/${namespaceA.data.id}/agents/${agentA.data.id}/revisions`,
+    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}/revisions`,
   );
   // The list returns summaries, newest first, on one page.
   const summary = (revision) => ({
@@ -8081,37 +8008,29 @@ test("two Namespaces become independently ready and deletion tombstones only its
     summary(readyDeployment.data),
   ]);
   assert.equal(admittedRevisions.body.meta.nextCursor, null);
-  assert.deepEqual(fixture.computeCalls.ensureNamespace, [namespaceA.data.id, namespaceB.data.id]);
+  assert.deepEqual(fixture.computeCalls.ensureNamespace, [namespaceA.id, namespaceB.id]);
 
-  const deleting = await injectedRequest(
-    fixture.app,
-    "DELETE",
-    `/namespaces/${namespaceB.data.id}`,
-  );
+  const deleting = await injectedRequest(fixture.app, "DELETE", `/namespaces/${namespaceB.id}`);
   assert.equal(deleting.status, 202);
   assert.equal(deleting.data.status, "deleting");
   const rejectedChild = await injectedRequest(
     fixture.app,
     "POST",
-    `/namespaces/${namespaceB.data.id}/agents`,
+    `/namespaces/${namespaceB.id}/agents`,
     { body: { name: "too-late", configurationId: firstConfiguration.id } },
   );
   assert.equal(rejectedChild.status, 409);
 
-  await fixture.controller.handleNamespaceLifecycle(
-    fixture.principal.id,
-    namespaceB.data.id,
-    "deleted",
-  );
-  assert.deepEqual(fixture.computeCalls.deleteNamespace, [namespaceB.data.id]);
-  const absent = await injectedRequest(fixture.app, "GET", `/namespaces/${namespaceB.data.id}`);
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespaceB.id, "deleted");
+  assert.deepEqual(fixture.computeCalls.deleteNamespace, [namespaceB.id]);
+  const absent = await injectedRequest(fixture.app, "GET", `/namespaces/${namespaceB.id}`);
   assert.equal(absent.status, 404);
   const listed = await injectedRequest(fixture.app, "GET", "/namespaces");
   assert.deepEqual(
     listed.data.map(({ name }) => name),
     [BOOTSTRAP_DEFAULT_NAMESPACE_NAME, "lifecycle-a"],
   );
-  const stillReady = await injectedRequest(fixture.app, "GET", `/namespaces/${namespaceA.data.id}`);
+  const stillReady = await injectedRequest(fixture.app, "GET", `/namespaces/${namespaceA.id}`);
   assert.equal(stillReady.data.status, "ready");
   // The tombstone keeps its name: a new Namespace cannot reuse it, and the 409 says the name
   // belongs to a deleted Namespace rather than one the caller could find in the list.
@@ -8126,26 +8045,12 @@ test("two Namespaces become independently ready and deletion tombstones only its
 });
 
 test("bootstrap, mutations, and denials emit attributable private audit events", async () => {
-  const fixture = await createInjectedFixture();
+  const controller = await configuredController();
+  const { fixture } = controller;
   const originalIAMDriverId = fixture.iamDriver.id;
-  const installation = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
-    body: { name: "Audited installation" },
-  });
-  assert.equal(installation.status, 201);
-
-  const namespace = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "audited-namespace" },
-  });
-  assert.equal(namespace.status, 201);
-
-  const configuration = await createInjectedConfiguration(fixture, namespace.data.id);
-  const agent = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents`,
-    { body: { name: "audited-agent", configurationId: configuration.id } },
-  );
-  assert.equal(agent.status, 201);
+  await bootstrap(controller, "Audited installation");
+  const namespace = await createNamespace(controller, "audited-namespace");
+  const agent = await createAgent(controller, namespace.id, "audited-agent");
 
   // Beginning deletion is an audited mutation in its own right: it is the
   // record that attributes the teardown to the principal who requested it,
@@ -8153,7 +8058,7 @@ test("bootstrap, mutations, and denials emit attributable private audit events",
   const deletion = await injectedRequest(
     fixture.app,
     "DELETE",
-    `/namespaces/${namespace.data.id}/agents/${agent.data.id}`,
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
   );
   assert.equal(deletion.status, 202);
   assert.equal(deletion.data.status, "deleting");
@@ -8186,7 +8091,7 @@ test("bootstrap, mutations, and denials emit attributable private audit events",
   const deletionDenied = await injectedRequest(
     denialApp,
     "DELETE",
-    `/namespaces/${namespace.data.id}/agents/${agent.data.id}`,
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
   );
   assert.equal(deletionDenied.status, 403);
 
@@ -8240,8 +8145,8 @@ test("bootstrap, mutations, and denials emit attributable private audit events",
         action: "create",
         resource: {
           kind: "configuration",
-          id: namespace.data.id,
-          namespaceId: namespace.data.id,
+          id: namespace.id,
+          namespaceId: namespace.id,
         },
       },
       {
@@ -8249,8 +8154,8 @@ test("bootstrap, mutations, and denials emit attributable private audit events",
         action: "create",
         resource: {
           kind: "agent",
-          id: namespace.data.id,
-          namespaceId: namespace.data.id,
+          id: namespace.id,
+          namespaceId: namespace.id,
         },
       },
       {
@@ -8258,8 +8163,8 @@ test("bootstrap, mutations, and denials emit attributable private audit events",
         action: "delete",
         resource: {
           kind: "agent",
-          id: agent.data.id,
-          namespaceId: namespace.data.id,
+          id: agent.id,
+          namespaceId: namespace.id,
         },
       },
     ],
@@ -8287,7 +8192,7 @@ test("bootstrap, mutations, and denials emit attributable private audit events",
       ["delete", "agent"],
     ],
   );
-  assert.equal(authorizationDenials[1].authorization.resource.id, agent.data.id);
+  assert.equal(authorizationDenials[1].authorization.resource.id, agent.id);
 
   const recorded = JSON.stringify(fixture.auditSink.events);
   assert.equal(recorded.includes(fixture.session.cookie), false);
@@ -10016,13 +9921,13 @@ test("ordinary deployment admits only the Configuration and Drivers whose channe
       const { promise: reached, resolve: reach } = Promise.withResolvers();
       const { promise: released, resolve: release } = Promise.withResolvers();
       let held = false;
-      const { controller, namespace, agent, path, work, channelDriver, providerCalls } =
-        await slackFirstDeploymentFixture(true, async () => {
-          if (held) {
-            reach();
-            await released;
-          }
-        });
+      const deployment = await slackFirstDeploymentFixture(true, async () => {
+        if (held) {
+          reach();
+          await released;
+        }
+      });
+      const { controller, namespace, agent, path, work, channelDriver, providerCalls } = deployment;
       const fixture = controller.fixture;
       const replacement = await createConfiguration(controller, namespace.id);
       const app = fixture.createApp(undefined, createFastifyApp);
@@ -10082,9 +9987,7 @@ test("ordinary deployment admits only the Configuration and Drivers whose channe
         assert.equal(providerCalls(), 2, "one provider request per attempted deployment");
         assert.equal(work().length - beforeWork, change === "unchanged" ? 1 : 0);
         assert.equal(successes() - beforeAudit, change === "unchanged" ? 1 : 0);
-        const revisions = await fixture.platformState.read((state) =>
-          state.revisions.listRevisionMetadata(namespace.id, agent.id),
-        );
+        const revisions = await deployment.listRevisionMetadata();
         assert.equal(revisions.length, change === "unchanged" ? 2 : 1);
         if (change === "unchanged") {
           assert.equal(result.data.revision, 2);

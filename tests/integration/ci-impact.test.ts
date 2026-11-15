@@ -37,7 +37,7 @@ const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const selector = join(repositoryRoot, "scripts/ci/impact.ts");
 const pnpmImpact = join(repositoryRoot, "scripts/ci/pnpm-impact.ts");
 const gate = join(repositoryRoot, "scripts/ci/impact-gate.ts");
-const runner = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+const runner = join(repositoryRoot, "scripts/ci/run-tests.ts");
 const read = (path: string) => readFileSync(join(repositoryRoot, path), "utf8");
 const policy = readFileSync(selector, "utf8");
 const ciWorkflow = read(".github/workflows/ci.yml");
@@ -1948,7 +1948,7 @@ test("documentation workflow selects documentation checks and omits product test
   // Keep the documentation route free of product-test and lane invocations.
   assert.doesNotMatch(
     docs,
-    /run-ci-lane|run-tests\.mjs\s+(?:run|aggregate)|\b(?:pnpm|npm)\s+(?:run\s+)?test(?::|\b)|\bnode\s+--test\b|\bgo\s+test\b/,
+    /run-ci-lane|run-tests\.ts\s+(?:run|aggregate)|\b(?:pnpm|npm)\s+(?:run\s+)?test(?::|\b)|\bnode\s+--test\b|\bgo\s+test\b/,
   );
   for (const name of ["pr-safe", "runtime-image-fixture"]) {
     assert.match(job(name), /needs\.impact\.outputs\.mode == 'full'/, name);
@@ -2092,7 +2092,7 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
   const commands = [
     "bash scripts/ci/setup-tools.sh workflows",
     "actionlint .github/workflows/*.yml",
-    "node scripts/ci/run-tests.mjs audit",
+    "node scripts/ci/run-tests.ts audit",
     ...skipped.flatMap(({ run }) =>
       run === "pnpm lint" ? ["pnpm lint --concurrency 2"] : present(run).split(" && "),
     ),
@@ -3325,7 +3325,7 @@ test("mixed test and code, tooling, workflow or package changes select full", as
     [
       "src/app.ts",
       "scripts/ci/prepare.mjs",
-      "scripts/ci/run-tests.mjs",
+      "scripts/ci/run-tests.ts",
       "scripts/ci/impact-gate.ts",
       ".github/workflows/ci.yml",
       "package.json",
@@ -3656,7 +3656,7 @@ test("workflow runs selected lanes in tests mode and gates them by the verified 
   const required = job("ci-required");
   assert.match(required, /EXPECTED_LANES: \$\{\{ needs\.impact\.outputs\.lanes \}\}/);
   assert.match(required, /impact-gate\.ts [^\n]*--mode tests [^\n]*--lanes "\$EXPECTED_LANES"/);
-  assert.match(required, /run-tests\.mjs aggregate ci [^\n]*--lanes "\$EXPECTED_LANES"/);
+  assert.match(required, /run-tests\.ts aggregate ci [^\n]*--lanes "\$EXPECTED_LANES"/);
   const impact = job("impact");
   for (const [output, step] of [
     ["mode", "select"],

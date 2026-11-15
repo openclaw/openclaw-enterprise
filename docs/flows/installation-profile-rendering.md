@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-11-14
-last_updated_session: authoring-run/b17203e9-337c-40cf-9a41-0139532525fe
+updated: 2026-11-15
+last_updated_session: authoring-run/75fd678f-12c9-4f7c-adde-d32a16f8c0cf
 ---
 
 # Installation Profile Rendering Flow
@@ -164,6 +164,8 @@ keys fail preflight before Helm. Omission uses `ca.pem`.
 mounts: Installation, worker runtime, bootstrap, gateway key and private gateway CA.
 Relative, dot-segment and trailing-slash aliases collide too. Repository and
 ChatGPT paths are reserved only when enabled; execution-cluster paths remain free.
+Prepared Git also reserves `/etc/openclaw/prepared-repository`, including relative,
+dot-segment and trailing-slash aliases, when repository credentials are enabled.
 Without CA configuration no restriction applies; omission keeps
 `/etc/openclaw/database-ca`. A collision adds a field-specific error and withholds
 both deployment files. Noncolliding paths retain their supplied spelling.
@@ -280,7 +282,7 @@ activation, and repository registry creation need separate evidence.
 
 ## Debugging and Verification
 
-- Run `node --test tests/integration/profile-renderer.test.mjs` to exercise the
+- Run `node --test tests/integration/profile-renderer.test.ts` to exercise the
   CLI and inspect generated profile output.
 - `tests/integration/profile-preflight-chart-parity.test.ts` runs trusted proxy
   CIDRs and client address headers, namespaces, node selectors, sign-in Secret
@@ -315,6 +317,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-15 10:07: Align database CA mount preflight with prepared Git mounts. (authoring-run/75fd678f-12c9-4f7c-adde-d32a16f8c0cf - c1ece768d5d104dfd26b66ed2afeae0b059adaf8)
 
 - 2026-11-14 12:18: Run the installation profile command directly from its TypeScript source in the accompanying change. (authoring-run/b17203e9-337c-40cf-9a41-0139532525fe - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
 

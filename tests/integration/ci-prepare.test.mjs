@@ -30,6 +30,7 @@ import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes
 import { listen } from "../helpers/listen.ts";
 import {
   assertStderrMatch,
+  composePostgres,
   fixture,
   fixtureCommandServer,
   fixtureImageCommands,
@@ -40,9 +41,10 @@ import {
   nodeBaseImage,
   spawnResult,
   writeFixtureCommand,
+  writePostgresState,
 } from "../helpers/ci-prepare-fixture.ts";
 import { waitUntil } from "../helpers/wait-for.mjs";
-import { startFakePostgres } from "../helpers/fake-postgres-server.mjs";
+import { startFakePostgres } from "../helpers/fake-postgres-server.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const preparePath = join(repositoryRoot, "scripts/ci/prepare.mjs");
@@ -129,7 +131,7 @@ test("focused first-Agent preparation leaves installation to Local Setup and ref
     const result = await spawnResult(
       process.execPath,
       [
-        join(repositoryRoot, "scripts/ci/run-tests.mjs"),
+        join(repositoryRoot, "scripts/ci/run-tests.ts"),
         "run",
         "openshell",
         "--root",
@@ -173,33 +175,7 @@ test("focused first-Agent preparation leaves installation to Local Setup and ref
   );
 });
 
-// A ready Compose PostgreSQL server, owned by its own preparation prefix, published on port
-// (a fake server's, when the case runs SQL).
-function composePostgres(name, port = 45431) {
-  return {
-    id: `compose-postgres-${name}`,
-    kind: "compose-postgres",
-    owner: `openclaw-ci-${name}`,
-    status: "ready",
-    name: `openclaw_ci_pg_${name}`,
-    composeFile: join(repositoryRoot, "compose.postgres.yaml"),
-    port,
-  };
-}
-
-// A postgres-application lane state holding the server and any other resources.
-async function writePostgresState(statePath, server, ...resources) {
-  await writeState(statePath, {
-    version: 1,
-    repositoryRoot,
-    lane: "postgres-application",
-    prefix: server.owner,
-    statePath,
-    resources: [server, ...resources],
-  });
-}
-
-// A fake lane PostgreSQL server for one case (fake-postgres-server.mjs), stopped after it.
+// A fake lane PostgreSQL server for one case (fake-postgres-server.ts), stopped after it.
 // Each query is also appended to logPath as "postgres\t<database>\t<query>", beside the
 // fake commands' lines.
 async function laneFakePostgres(t, { logPath, onQuery = () => undefined } = {}) {
@@ -2404,7 +2380,7 @@ assert.equal(commands, 0);
   });
 
   // GitHub refuses NODE_OPTIONS in $GITHUB_ENV with an ##[error] annotation that reads like the
-  // lane's failure. run-tests.mjs applies the lane's env to each test process itself.
+  // lane's failure. run-tests.ts applies the lane's env to each test process itself.
   test("lane preparation does not export the lane's NODE_OPTIONS to GITHUB_ENV", async (t) => {
     const root = await fixture(t);
     const statePath = join(root, "state.json");
@@ -3555,7 +3531,7 @@ process.exit(2);
     // The Git broker case is a known caller; this keeps the scan from passing
     // vacuously if the helper is renamed.
     assert.ok(
-      callers.includes("images-runtime-startup:tests/integration/runtime-image-startup.test.mjs"),
+      callers.includes("images-runtime-startup:tests/integration/runtime-image-startup.test.ts"),
       callers.join(", "),
     );
     // Preparing the profile needs k3d, which only the full and k3d tool profiles install.
@@ -4543,91 +4519,4 @@ if (args[0] === "pull") {
       await assert.rejects(() => stat(statePath), { code: "ENOENT" });
     }
   });
-
-  for (const scenario of [
-    { stage: "database-create", failure: "query" },
-    { stage: "database-create", failure: "connect" },
-    { stage: "database-schema", failure: "query" },
-    { stage: "database-migrate", failure: "exit", exitCode: 44, signal: null },
-    { stage: "database-migrate", failure: "spawn" },
-    { stage: "database-migrate", failure: "signal", exitCode: null, signal: "SIGTERM" },
-  ]) {
-    test(`PostgreSQL preparation identifies ${scenario.stage} ${scenario.failure}`, async (t) => {
-      const root = await fixture(t);
-      const statePath = join(root, "state.json");
-      const commandsPath = join(root, "commands.jsonl");
-      const corepackPath = join(root, "corepack.mjs");
-      const stageOf = (query) =>
-        query.startsWith("CREATE DATABASE") ? "database-create" : "database-schema";
-      const postgres = await laneFakePostgres(t, {
-        onQuery: async (query) => {
-          const stage = stageOf(query);
-          await appendFile(commandsPath, JSON.stringify(stage) + "\n");
-          if (stage === scenario.stage) {
-            return { error: "secret-canary-server-message" };
-          }
-        },
-      });
-      // A connect failure: nothing listens on the published port any more.
-      if (scenario.failure === "connect") {
-        await postgres.close();
-      }
-      await writePostgresState(statePath, composePostgres("diagnostics", postgres.port));
-      const commandSource = `#!${process.execPath}
-import { appendFileSync } from "node:fs";
-appendFileSync(process.env.CI_DIAGNOSTIC_COMMANDS, JSON.stringify("database-migrate") + "\\n");
-process.stdout.write("secret-canary-stdout");
-process.stderr.write("secret-canary-stderr");
-${scenario.failure === "signal" ? 'process.kill(process.pid, "SIGTERM");' : `process.exit(${scenario.exitCode ?? 45});`}
-`;
-      if (scenario.failure !== "spawn") {
-        await writeFile(corepackPath, commandSource, { mode: 0o700 });
-      }
-      const expectProcess =
-        scenario.stage === "database-migrate"
-          ? `assert.equal(error.exitCode, ${JSON.stringify(scenario.exitCode)}); assert.equal(error.signal, ${JSON.stringify(scenario.signal)});`
-          : "assert.equal(error.exitCode, undefined); assert.equal(error.signal, undefined);";
-      const program = `
-import assert from "node:assert/strict";
-const { prepareFile } = await import(process.argv[1]);
-await assert.rejects(() => prepareFile({ lane: "postgres-application",
-  file: "tests/integration/postgres-platform-state.test.ts", statePath: process.argv[2] }),
-  error => {
-    assert.equal(error.code, "CI_PREPARATION_COMMAND_FAILED");
-    assert.equal(error.stage, ${JSON.stringify(scenario.stage)});
-    assert.equal(error.failure, ${JSON.stringify(scenario.failure)});
-    ${scenario.failure === "spawn" ? "" : `${expectProcess} assert.equal(error.timedOut, false);`}
-    return true;
-  });
-`;
-      const result = await runProgram(
-        program,
-        statePath,
-        {
-          PATH: root,
-          OCC_DOCKER_BIN: join(root, "must-not-run"),
-          OPENCLAW_CI_COREPACK_BIN: corepackPath,
-          CI_DIAGNOSTIC_COMMANDS: commandsPath,
-        },
-        10_000,
-      );
-      assert.equal(result.status, 0, result.stderr);
-      const commands = scenario.failure === "connect" ? [] : await readJsonLines(commandsPath);
-      const expected = ["database-create", "database-schema", "database-migrate"];
-      assert.deepEqual(
-        commands,
-        scenario.failure === "connect"
-          ? []
-          : expected.slice(
-              0,
-              scenario.failure === "spawn" ? 2 : expected.indexOf(scenario.stage) + 1,
-            ),
-      );
-      const state = JSON.parse(await readFile(statePath, "utf8"));
-      assert.notEqual(
-        state.resources.find(({ kind }) => kind === "postgres-database").status,
-        "ready",
-      );
-    });
-  }
 });

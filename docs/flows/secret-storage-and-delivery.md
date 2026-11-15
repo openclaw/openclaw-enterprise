@@ -154,16 +154,14 @@ execution topology.
 `internal/occdev/kubernetes.go:openShellInstallationConfiguration`;
 `scripts/first-agent-database.ts:grantFirstAgentSecret`
 
-The [tool](../../scripts/first-agent.ts) uses the persistent `./bin/occ dev up`
-installation. Before Kubernetes or OCC calls, it requires same-checkout v3
-Kubernetes development state and marker. Both Sandbox Drivers require the
-recorded canonical HTTPS Console origin, browser port, and cluster Agent domain.
-API requests use the recorded loopback HTTP endpoint. With `sandboxDriver: "none"`,
-the helper defaults to embedded OpenClaw. Use `--harness codex` for dedicated Codex.
+The [tool](../../scripts/first-agent.ts) reads the same checkout's persistent
+`./bin/occ dev up` v3 Kubernetes state and marker before Kubernetes or OCC calls.
+Both Sandbox Drivers require the recorded canonical HTTPS Console origin,
+browser port, and cluster Agent domain. The API uses recorded loopback HTTP.
+The default with `sandboxDriver: "none"` is embedded OpenClaw.
 OpenShell requires `--harness codex`, and `--control-ui` requires OpenShell.
-`scripts/first-agent.ts:loadLocalInstallation` selects the recorded Unix socket
-and removes inherited Docker TLS settings. Compose queries the recorded
-controller port and PostgreSQL service without another daemon's certificates.
+`loadLocalInstallation` uses the recorded Unix socket and clears inherited Docker
+TLS settings before Compose queries the controller port and PostgreSQL service.
 With the [bootstrap service key](../../packages/iam/src/index.ts), it creates a
 Secret, Configuration, and named Agent through the OCC HTTP API. A new Agent uses
 `openai/gpt-6-astra` unless `OPENCLAW_FIRST_AGENT_MODEL` selects another authorized
@@ -200,11 +198,13 @@ with the `occ agent deploy` command. Local OpenShell requires the Driver-owned
 and `approvalsReviewer: "user"` for API-key and PAT sources. Prior PAT revisions
 with `workspace-write` are recognized; new deployments use current policy.
 Other workspace or Configuration differences fail drift checks.
-After OCC selects the version, [`findGateway`](../../scripts/first-agent-model.mjs)
+After OCC selects the version, [`findGateway`](../../scripts/first-agent-model.ts)
 resolves `openclaw.dev/namespace`. In this single-cluster setup, embedded and
 dedicated Gateways share the provider-owned Harness namespace. It requires exact Agent
 labels, the revision ConfigMap mount, and a Running, Ready Gateway Pod before
-sending the prompt. Embedded OpenClaw requires the key in the Gateway container;
+sending the prompt. [The verifier](../../scripts/first-agent-model.ts) passes its
+type-stripped JavaScript probe to `kubectl exec`. The nonce and optional prompt
+travel on standard input. Embedded OpenClaw requires the key in the Gateway container;
 dedicated Codex keeps it in its Pod or Sandbox. Experimental two-cluster placement
 belongs to Kubernetes Compute; this helper never infers placement from execution mode.
 `scripts/first-agent.ts:main` distinguishes credential rejection from policy refusal

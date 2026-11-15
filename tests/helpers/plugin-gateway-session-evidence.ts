@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { SQLOutputValue } from "node:sqlite";
-import { isGatewayCompletionId } from "../../scripts/first-agent-model.mjs";
+import { isGatewayCompletionId } from "../../scripts/first-agent-model.ts";
 import { redactedQaTail } from "./qa-secrets.mjs";
 
 type TranscriptFailure = "integrity" | "prompt_missing" | "answer_missing" | "source" | "run";

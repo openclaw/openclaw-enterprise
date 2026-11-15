@@ -22,7 +22,7 @@ import {
 } from "../helpers/ci-runner-k3d-fixture.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
-const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.ts");
 
 function parseJson(text: string): unknown {
   return JSON.parse(text);

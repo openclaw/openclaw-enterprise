@@ -1,9 +1,11 @@
+import { join } from "node:path";
 import type { TestEvent } from "node:test/reporters";
 import { projectFailureDiagnostic, isRecord } from "./reporter-diagnostics.ts";
 import {
   boundedProgressLines,
   openShellProgress,
   openShellProgressPrefix,
+  upstreamOutageCase,
 } from "./openshell-progress.mjs";
 import { failureInputLimit } from "./failure-redaction.ts";
 import { recordsCoverage } from "./full-integration-coverage.ts";
@@ -25,6 +27,7 @@ type ReporterEventData = Partial<
 > & {
   details?: { duration_ms?: number; type?: string; error?: unknown };
   counts?: ReportedCounts;
+  entryFile?: string;
   message?: string;
   type?: string;
 };
@@ -597,13 +600,20 @@ function location(data: ReporterEventData = {}, recordCoverage = false) {
   };
 }
 
-// Only for scripts/ci/run-tests.mjs: failure text here is unredacted, so never
+// Only for scripts/ci/run-tests.ts: failure text here is unredacted, so never
 // point a step whose stdout reaches a log or artifact at this reporter directly.
 export default async function* jsonLinesReporter(
   source: AsyncIterable<ReporterEvent> | Iterable<ReporterEvent>,
 ): AsyncGenerator<string> {
   const recordCoverage = recordsCoverage(process.env.GITHUB_WORKFLOW);
   const output = outputTail();
+  const upstreamEntry = join(process.cwd(), upstreamOutageCase.entry);
+  const upstreamDeclaration = join(process.cwd(), upstreamOutageCase.declaration);
+  // Node forwards child stdout before a dequeue can arrive. Admit progress
+  // after the native file envelope only if the whole lifecycle has one case.
+  let upstreamPhase:
+    "unseen" | "envelope" | "active" | "complete" | "failed" | "closed" | "ineligible" = "unseen";
+  let upstreamCase: ReporterEventData | undefined;
   const progress: Record<string, unknown>[] = [];
   const readProgress: (text: string) => void = boundedProgressLines((line: string) => {
     if (!line.startsWith(openShellProgressPrefix)) {
@@ -613,6 +623,13 @@ export default async function* jsonLinesReporter(
       const raw: unknown = JSON.parse(line.slice(openShellProgressPrefix.length));
       const value: unknown = openShellProgress(raw);
       if (isRecord(value)) {
+        if (
+          (value.kind === "openshell-stage" || value.kind === "openshell-replacement-checkpoint") &&
+          upstreamPhase !== "envelope" &&
+          upstreamPhase !== "active"
+        ) {
+          upstreamPhase = "ineligible";
+        }
         progress.push(value);
       }
     } catch {
@@ -627,6 +644,60 @@ export default async function* jsonLinesReporter(
   const runningKey = (data: ReporterEventData) =>
     `${data.nesting}:${data.line}:${data.column}:${data.name}`;
   for await (const event of source) {
+    if (
+      upstreamPhase !== "ineligible" &&
+      (event.type === "test:dequeue" ||
+        event.type === "test:complete" ||
+        event.type === "test:pass" ||
+        event.type === "test:fail")
+    ) {
+      const data: ReporterEventData | undefined = event.data;
+      // The native envelope is outside the subprocess. Node stamps its
+      // selected entry file onto the subprocess events, even a same-name case.
+      const envelope =
+        data?.file === upstreamEntry &&
+        data.name === upstreamEntry &&
+        data.entryFile === undefined &&
+        data.nesting === 0 &&
+        data.line === 1 &&
+        data.column === 1;
+      const helper =
+        data?.file === upstreamDeclaration &&
+        data.entryFile === upstreamEntry &&
+        data.name === upstreamOutageCase.name &&
+        data.nesting === 0;
+      const sameCase =
+        helper && data.line === upstreamCase?.line && data.column === upstreamCase?.column;
+      if (event.type === "test:dequeue" && upstreamPhase === "unseen" && envelope) {
+        upstreamPhase = "envelope";
+      } else if (
+        event.type === "test:dequeue" &&
+        upstreamPhase === "envelope" &&
+        helper &&
+        typeof data.line === "number" &&
+        Number.isSafeInteger(data.line) &&
+        data.line > 0 &&
+        typeof data.column === "number" &&
+        Number.isSafeInteger(data.column) &&
+        data.column > 0
+      ) {
+        upstreamCase = data;
+        upstreamPhase = "active";
+      } else if (event.type === "test:complete" && upstreamPhase === "active" && sameCase) {
+        upstreamPhase = "complete";
+      } else if (
+        event.type === "test:fail" &&
+        upstreamPhase === "complete" &&
+        sameCase &&
+        data.details?.type === "test"
+      ) {
+        upstreamPhase = "failed";
+      } else if (event.type === "test:complete" && upstreamPhase === "failed" && envelope) {
+        upstreamPhase = "closed";
+      } else {
+        upstreamPhase = "ineligible";
+      }
+    }
     if (event.type === "test:dequeue" && typeof event.data?.name === "string") {
       const key = runningKey(event.data);
       running.set(key, { data: event.data, count: (running.get(key)?.count ?? 0) + 1 });
@@ -653,8 +724,10 @@ export default async function* jsonLinesReporter(
             line: data.line,
             nesting: data.nesting,
           })),
+          ...(upstreamPhase === "active" ? { singleUpstreamOutageCase: true } : {}),
         },
       })}\n`;
+      upstreamPhase = "ineligible";
       if (!outputSent) {
         outputSent = true;
         yield* interruptedOutput(output.finish());
@@ -718,6 +791,9 @@ export default async function* jsonLinesReporter(
       type: event.type,
       data: location(event.data, recordCoverage),
     })}\n`;
+  }
+  if (upstreamPhase === "closed") {
+    yield '{"type":"test:upstream-outage-attribution"}\n';
   }
   // Passing files send nothing extra.
   if (failed && !outputSent) {

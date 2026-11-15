@@ -186,7 +186,8 @@ export async function verifyPlatform(
   checkPlatform(await readBlob(configBlob.path));
   const layers = field(manifest, "layers");
   assert.ok(Array.isArray(layers), "Expected OCI image layers.");
-  for (const layer of layers) {
+  const layerDescriptors: readonly unknown[] = layers;
+  for (const layer of layerDescriptors) {
     await verifyBlob(layer);
   }
   assert.ok(typeof rootDigest === "string");
@@ -209,7 +210,7 @@ export async function assemble(directory: string, env: NodeJS.ProcessEnv) {
   await mkdir(combined);
   await mkdir(join(combined, "blobs/sha256"), { recursive: true });
   const retained = new Set<string>();
-  const manifests = [];
+  const manifests: Awaited<ReturnType<typeof verifyPlatform>>["manifest"][] = [];
   for (const arch of ["amd64", "arm64"]) {
     const { manifest, blobs } = await verifyPlatform(join(directory, arch), env, `linux/${arch}`);
     for (const [digest, path] of blobs) {

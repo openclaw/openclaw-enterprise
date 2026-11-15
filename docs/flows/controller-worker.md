@@ -390,7 +390,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 - [Version](../../tests/integration/postgres-worker-agent-revision.test.mjs),
   [credential-sources](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs),
   [health](../../tests/integration/postgres-worker-agent-revision-health.test.mjs),
-  [replacement](../../tests/integration/postgres-worker-agent-revision-replacement.test.mjs),
+  [replacement](../../tests/integration/postgres-worker-agent-revision-replacement.test.ts),
   [refused-stop](../../tests/integration/postgres-worker-agent-revision-refused-stop.test.ts),
   [refused-wait](../../tests/integration/postgres-worker-agent-revision-refused-wait.test.ts),
   [yielded-redeploy](../../tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.ts),

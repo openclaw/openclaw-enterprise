@@ -159,7 +159,7 @@ import { RUNTIME_WRAPPER_COMMAND } from "../compute/kubernetes/runtime-entrypoin
 import { harnessWorkspacePreparationScript } from "../compute/kubernetes/harness-workspace-preparation.ts";
 import {
   compareResourceQuantities,
-  isResourceQuantity,
+  isNonNegativeResourceQuantity,
 } from "../compute/kubernetes/resource-quantities.ts";
 import { isKubernetesResourceName } from "../compute/kubernetes/resource-name.ts";
 import { nodeProgramArguments, prependNodeProgramArguments } from "../compute/node-program.ts";
@@ -2023,10 +2023,7 @@ function validateAgentResources(
   for (const section of ["requests", "limits"] as const) {
     if (
       Object.values(agentResources[section]).some(
-        (quantity) =>
-          typeof quantity !== "string" ||
-          !isResourceQuantity(quantity) ||
-          (compareResourceQuantities(quantity, "0") ?? 0) < 0,
+        (quantity) => typeof quantity !== "string" || !isNonNegativeResourceQuantity(quantity),
       )
     ) {
       quantitiesValid[section] = false;
