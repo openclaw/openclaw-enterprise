@@ -214,6 +214,7 @@
     "helpers/credential-source-owner-upgrade.ts",
     "helpers/populated-upgrade-return.ts",
     "helpers/deployed-repository-capability.ts",
+    "helpers/metrics-monitoring-readiness.ts",
     "helpers/production-upgrade-*.ts",
     "helpers/upgrade-doctor-observations.ts",
     "integration/production-upgrade-fleet-admission-cases.ts",

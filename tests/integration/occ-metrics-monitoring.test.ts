@@ -20,7 +20,7 @@ import {
   portClash,
   queryPrometheus,
   waitForMonitoring,
-} from "../helpers/metrics-monitoring-readiness.mjs";
+} from "../helpers/metrics-monitoring-readiness.ts";
 
 const run = promisify(execFile);
 const engine = process.env.OCC_METRICS_TEST_ENGINE ?? "docker";
