@@ -199,7 +199,7 @@ test("checkout build failures retain safe process details through the CI reporte
   const path = "tests/integration/build-failure.test.mjs";
   const statePath = join(root, "state/build.jsonl");
   const resultsPath = join(root, "results/build.json");
-  const provider = pathToFileURL(join(repositoryRoot, "tests/helpers/dev-up-model-provider.mjs"));
+  const provider = pathToFileURL(join(repositoryRoot, "tests/helpers/dev-up-model-provider.ts"));
   // This canary is deliberately not an environment secret. The helper must
   // omit child output before the existing reporter/redaction boundary.
   const privateOutput = "private-checkout-build-output";

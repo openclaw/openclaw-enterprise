@@ -1,5 +1,3 @@
-// @ts-check
-
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -23,39 +21,72 @@ const ownerLabel = "dev.openclaw.model-provider-owner";
 const nodeBaseImage =
   "docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a";
 
-/**
- * @typedef {{
- *   env?: NodeJS.ProcessEnv,
- *   input?: string,
- *   signal?: AbortSignal,
- *   timeout?: number,
- *   killSignal?: NodeJS.Signals,
- * }} CommandOptions
- * @typedef {Pick<CommandOptions, "env" | "input" | "timeout">} LauncherCommandOptions
- * @typedef {{stdout: string, stderr: string}} CommandOutput
- * @typedef {(command: string, args: string[], options: CommandOptions) => Promise<CommandOutput>} RunCommand
- * @typedef {(args: string[], options?: CommandOptions) => Promise<CommandOutput>} DockerCommand
- * @typedef {"container" | "image" | "network"} ResourceKind
- * @typedef {{kind: ResourceKind, name: string, uncertain?: true}} Resource
- * @typedef {{requestAt: number, completedAt: number, transport: "https" | "websocket", status: 200}} CompletedTurn
- * @typedef {{signal: AbortSignal, after: (cleanup: () => Promise<void>) => void}} LauncherScope
- */
+export type CommandOptions = {
+  env?: NodeJS.ProcessEnv;
+  input?: string;
+  signal?: AbortSignal;
+  timeout?: number;
+  killSignal?: NodeJS.Signals;
+};
 
-/**
- * @param {string} command
- * @param {string[]} args
- * @param {CommandOptions} [options]
- * @returns {Promise<CommandOutput>}
- */
+type LauncherCommandOptions = Pick<CommandOptions, "env" | "input" | "timeout">;
+type CommandOutput = { stdout: string; stderr: string };
+
+export type RunCommand = (
+  command: string,
+  args: string[],
+  options: CommandOptions,
+) => Promise<CommandOutput>;
+
+type DockerCommand = (args: string[], options?: CommandOptions) => Promise<CommandOutput>;
+type ResourceKind = "container" | "image" | "network";
+type Resource = { kind: ResourceKind; name: string; uncertain?: true };
+type CompletedTurn = {
+  requestAt: number;
+  completedAt: number;
+  transport: "https" | "websocket";
+  status: 200;
+};
+
+export type LauncherScope = {
+  signal: AbortSignal;
+  after: (cleanup: () => Promise<void>) => void;
+};
+
+type ProviderOptions = {
+  directory: string;
+  cluster: string;
+  environment: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  run?: RunCommand;
+};
+
+type ImageRole = "controller" | "runtime";
+type LauncherCase = {
+  provider: ReturnType<typeof createDevUpModelProvider>;
+  execute: (
+    program: string,
+    args: string[],
+    options?: LauncherCommandOptions,
+  ) => Promise<CommandOutput>;
+  signal: AbortSignal;
+};
+
+type LauncherOptions = {
+  root: string;
+  cluster: string;
+  environment: NodeJS.ProcessEnv;
+  run?: RunCommand;
+};
+
 function execute(
-  command,
-  args,
-  { env, input, signal, timeout = 120_000, killSignal = "SIGKILL" } = {},
-) {
+  command: string,
+  args: string[],
+  { env, input, signal, timeout = 120_000, killSignal = "SIGKILL" }: CommandOptions = {},
+): Promise<CommandOutput> {
   signal?.throwIfAborted();
   return new Promise((resolveRun, reject) => {
-    /** @type {{error: Error | null, stdout: string, stderr: string} | undefined} */
-    let result;
+    let result: (CommandOutput & { error: Error | null }) | undefined;
     const child = execFile(
       command,
       args,
@@ -75,8 +106,7 @@ function execute(
     // including the launcher's graceful cancellation, before releasing its owner.
     const deadline = setTimeout(() => child.kill("SIGKILL"), timeout + 10_000);
     deadline.unref();
-    /** @type {NodeJS.Timeout | undefined} */
-    let force;
+    let force: NodeJS.Timeout | undefined;
     const abort = () => {
       force = setTimeout(() => child.kill("SIGKILL"), 10_000);
       force.unref();
@@ -108,13 +138,12 @@ function execute(
   });
 }
 
-/**
- * @param {string} description
- * @param {() => Promise<{done: boolean}>} operation
- * @param {number} timeout
- * @param {AbortSignal} signal
- */
-async function waitFor(description, operation, timeout, signal) {
+async function waitFor(
+  description: string,
+  operation: () => Promise<{ done: boolean }>,
+  timeout: number,
+  signal: AbortSignal,
+) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
@@ -130,30 +159,19 @@ async function waitFor(description, operation, timeout, signal) {
 // This owner exists before any creation request. The caller registers cleanup
 // before prepare(), and retains this directory if either cluster or fixture
 // teardown fails. The journal also covers creation with a lost engine response.
-/**
- * @param {{directory: string, cluster: string, environment: NodeJS.ProcessEnv,
- *   signal?: AbortSignal, run?: RunCommand}} options
- */
 export function createDevUpModelProvider({
   directory,
   cluster,
   environment,
   signal,
   run = execute,
-}) {
+}: ProviderOptions) {
   const closing = new AbortController();
   const lifetime = signal ? AbortSignal.any([signal, closing.signal]) : closing.signal;
-  /** @type {Set<Promise<unknown>>} */
-  const pending = new Set();
-  /** @type {ReturnType<typeof prepare> | undefined} */
-  let preparation;
-  /** @type {Promise<void> | undefined} */
-  let cleaning;
-  /**
-   * @template T
-   * @param {() => Promise<T>} operation
-   */
-  const admitted = async (operation) => {
+  const pending = new Set<Promise<unknown>>();
+  let preparation: ReturnType<typeof prepare> | undefined;
+  let cleaning: Promise<void> | undefined;
+  const admitted = async <T>(operation: () => Promise<T>) => {
     lifetime.throwIfAborted();
     const work = Promise.resolve().then(() => {
       lifetime.throwIfAborted();
@@ -172,8 +190,7 @@ export function createDevUpModelProvider({
   };
   const owner = randomUUID();
   const prefix = `oce-dev-provider-${owner.slice(0, 8)}`;
-  /** @type {Resource[]} */
-  const resources = [];
+  const resources: Resource[] = [];
   const env = { ...environment };
   const journal = join(directory, "resources.json");
   const modelDirectory = join(directory, "model");
@@ -186,17 +203,14 @@ export function createDevUpModelProvider({
   const subnetBase = `11.${octets[0]}.${octets[1]}`;
   const modelAddress = `${subnetBase}.2`;
   const nodeAddress = `${subnetBase}.3`;
-  /** @param {string} program @param {string[]} args @param {CommandOptions} [options] */
-  const command = (program, args, options = {}) => {
+  const command = (program: string, args: string[], options: CommandOptions = {}) => {
     lifetime.throwIfAborted();
     return run(program, args, { env, ...options, signal: lifetime });
   };
-  /** @type {DockerCommand} */
-  const docker = (args, options) => command("docker", args, options);
+  const docker: DockerCommand = (args, options) => command("docker", args, options);
   // Cleanup has its own bounded commands; the cancelled producer signal must
   // never suppress recovery. Journal writes also serialize the two image builds.
-  /** @type {DockerCommand} */
-  const cleanupDocker = (args) => run("docker", args, { env });
+  const cleanupDocker: DockerCommand = (args) => run("docker", args, { env });
   let recording = Promise.resolve();
   const record = (remaining = resources) => {
     const content = `${JSON.stringify({ owner, cluster, dockerHost: env.DOCKER_HOST, resources: remaining }, null, 2)}\n`;
@@ -211,24 +225,20 @@ export function createDevUpModelProvider({
     return next;
   };
 
-  /**
-   * @param {ResourceKind} kind
-   * @param {string} name
-   * @param {DockerCommand} [invoke]
-   * @returns {Promise<unknown>}
-   */
-  async function inspect(kind, name, invoke = docker) {
+  async function inspect(
+    kind: ResourceKind,
+    name: string,
+    invoke: DockerCommand = docker,
+  ): Promise<unknown> {
     try {
-      /** @type {unknown} */
-      const response = JSON.parse((await invoke([kind, "inspect", name])).stdout);
+      const response: unknown = JSON.parse((await invoke([kind, "inspect", name])).stdout);
       // An unusable response cannot prove absence. Keep an empty result
       // distinct from an explicit null entry, which still blocks reservation.
       if (response === null) {
         throw new Error("Engine inspect returned null");
       }
       if (Array.isArray(response)) {
-        /** @type {readonly unknown[]} */
-        const entries = response;
+        const entries: readonly unknown[] = response;
         return entries[0];
       }
       return typeof response === "string" ? response[0] : asRecord(response)?.[0];
@@ -247,13 +257,12 @@ export function createDevUpModelProvider({
     }
   }
 
-  /**
-   * @param {string} name
-   * @param {string[]} args
-   * @param {CommandOptions} [options]
-   * @param {(error: unknown) => void} [onCommandFailure]
-   */
-  async function create(name, args, options, onCommandFailure) {
+  async function create(
+    name: string,
+    args: string[],
+    options?: CommandOptions,
+    onCommandFailure?: (error: unknown) => void,
+  ) {
     lifetime.throwIfAborted();
     const resource = resources.find((entry) => entry.name === name);
     assert.ok(resource, `Fixture resource not reserved: ${name}`);
@@ -266,7 +275,7 @@ export function createDevUpModelProvider({
       delete resource.uncertain;
       throw error;
     }
-    await Promise.resolve(docker(args, options)).catch((/** @type {unknown} */ error) => {
+    await Promise.resolve(docker(args, options)).catch((error: unknown) => {
       onCommandFailure?.(error);
       throw error;
     });
@@ -274,16 +283,14 @@ export function createDevUpModelProvider({
     await record();
   }
 
-  /** @param {ResourceKind} kind @param {string} name */
-  async function reserve(kind, name) {
+  async function reserve(kind: ResourceKind, name: string) {
     assert.equal(await inspect(kind, name), undefined, `Fixture resource already exists: ${name}`);
     lifetime.throwIfAborted();
     resources.push({ kind, name });
     await record();
   }
 
-  /** @param {Resource} resource @param {unknown} value */
-  function owned(resource, value) {
+  function owned(resource: Resource, value: unknown) {
     const object = asRecord(value);
     assert.ok(object, `Fixture resource missing: ${resource.name}`);
     const labels = resource.kind === "network" ? object.Labels : asRecord(object.Config)?.Labels;
@@ -295,8 +302,7 @@ export function createDevUpModelProvider({
     return object;
   }
 
-  /** @param {string} image */
-  async function imageConfig(image) {
+  async function imageConfig(image: string) {
     const value = asRecord(await inspect("image", image));
     assert.ok(value, `Image missing: ${image}`);
     const config = asRecord(value.Config);
@@ -316,20 +322,11 @@ export function createDevUpModelProvider({
     // mutate the selected Docker context or any process-global environment.
     if (!env.DOCKER_HOST || env.DOCKER_CONTEXT) {
       const context = env.DOCKER_CONTEXT ?? (await docker(["context", "show"])).stdout.trim();
-      /** @type {unknown} */
-      const contexts = JSON.parse((await docker(["context", "inspect", context])).stdout);
-      /** @type {unknown} */
-      let selected;
-      if (Array.isArray(contexts)) {
-        const entries = /** @type {readonly unknown[]} */ (contexts);
-        assert.equal(entries.length, 1);
-        selected = entries[0];
-      } else {
-        const entries = asRecord(contexts);
-        assert.equal(entries?.length, 1);
-        selected = entries?.[0];
-      }
-      const endpoints = asRecord(asRecord(selected)?.Endpoints);
+      const contexts: unknown = JSON.parse((await docker(["context", "inspect", context])).stdout);
+      const entries: { readonly length?: unknown; readonly [index: number]: unknown } | undefined =
+        Array.isArray(contexts) ? contexts : asRecord(contexts);
+      assert.equal(entries?.length, 1);
+      const endpoints = asRecord(asRecord(entries[0])?.Endpoints);
       const host = asRecord(endpoints?.docker)?.Host;
       assert.ok(typeof host === "string", "Docker context has no engine host");
       env.DOCKER_HOST = host;
@@ -376,8 +373,7 @@ export function createDevUpModelProvider({
     for (const tag of [controllerTag, baseTag, runtimeTag]) {
       await reserve("image", tag);
     }
-    /** @param {"controller" | "runtime"} role */
-    const cache = (role) =>
+    const cache = (role: ImageRole) =>
       env.GITHUB_ACTIONS === "true" && env.ACTIONS_RUNTIME_TOKEN && env.ACTIONS_RESULTS_URL
         ? [
             "--cache-from",
@@ -386,24 +382,16 @@ export function createDevUpModelProvider({
         : // Reuse the installer's selected builder without passing hosted cache
           // credentials into the test. Local runs retain the engine builder.
           ["--builder", env.BUILDX_BUILDER || "default"];
-    /**
-     * @param {"controller" | "runtime"} role
-     * @param {string} tag
-     * @param {string[]} args
-     * @param {{timeout: number}} options
-     */
-    const build = async (role, tag, args, { timeout: budgetMs }) => {
+    const build = async (role: ImageRole, tag: string, args: string[], budgetMs: number) => {
       const started = performance.now();
-      /** @type {{code?: unknown, signal?: unknown, killed?: unknown}} */
-      let processFailure = {};
+      let processFailure: Partial<Record<"code" | "signal" | "killed", unknown>> = {};
       try {
         await create(tag, args, { timeout: budgetMs }, (error) => {
           // Read only command-owned data fields, never accessors. Journal and
           // pre-dispatch cancellation errors do not describe a child process.
           try {
-            for (const key of /** @type {const} */ (["code", "signal", "killed"])) {
-              /** @type {unknown} */
-              const value = Object.getOwnPropertyDescriptor(error, key)?.value;
+            for (const key of ["code", "signal", "killed"] as const) {
+              const value: unknown = Object.getOwnPropertyDescriptor(error, key)?.value;
               if (
                 typeof value === "string" ||
                 typeof value === "number" ||
@@ -476,7 +464,7 @@ export function createDevUpModelProvider({
           controllerTag,
           ".",
         ],
-        { timeout: 600_000 },
+        600_000,
       ),
       build(
         "runtime",
@@ -498,24 +486,19 @@ export function createDevUpModelProvider({
           baseTag,
           ".",
         ],
-        { timeout: 600_000 },
+        600_000,
       ),
     ]);
     const failures = builds
       .filter((result) => result.status === "rejected")
       .map((result) => {
-        /** @type {unknown} */
-        const reason = result.reason;
+        const reason: unknown = result.reason;
         assert.ok(reason instanceof Error);
         return reason;
       });
     if (failures.length) {
       throw new AggregateError(
-        failures.map((failure) => {
-          /** @type {unknown} */
-          const cause = failure.cause;
-          return cause;
-        }),
+        failures.map((failure): unknown => failure.cause),
         `Checkout image builds failed: ${failures.map((failure) => failure.message).join("; ")}`,
       );
     }
@@ -538,8 +521,7 @@ export function createDevUpModelProvider({
     for (const key of ["Labels", "User", "Entrypoint", "Cmd", "WorkingDir"]) {
       assert.deepEqual(trusted[key], base[key], `Runtime trust layer changed ${key}`);
     }
-    /** @param {string} tag */
-    const push = async (tag) => {
+    const push = async (tag: string) => {
       await docker(["push", tag], { timeout: 120_000 });
       const image = asRecord(await inspect("image", tag));
       const labels = asRecord(asRecord(image?.Config)?.Labels);
@@ -547,8 +529,7 @@ export function createDevUpModelProvider({
       const refs = image?.RepoDigests;
       assert.ok(Array.isArray(refs), `Image digests missing: ${tag}`);
       const repositoryTag = tag.slice(0, tag.lastIndexOf(":"));
-      /** @type {readonly unknown[]} */
-      const digests = refs;
+      const digests: readonly unknown[] = refs;
       const digest = digests.find((ref) => {
         assert.ok(typeof ref === "string", `Invalid image digest: ${tag}`);
         return ref.startsWith(`${repositoryTag}@`);
@@ -608,9 +589,9 @@ export function createDevUpModelProvider({
     };
   }
 
-  /** @param {string} stateDirectory */
-  async function route(stateDirectory) {
-    const state = asRecord(JSON.parse(await readFile(join(stateDirectory, "state.json"), "utf8")));
+  async function route(stateDirectory: string) {
+    const parsed: unknown = JSON.parse(await readFile(join(stateDirectory, "state.json"), "utf8"));
+    const state = asRecord(parsed);
     assert.ok(state, "Development state is missing");
     assert.equal(state.cluster, cluster);
     assert.equal(state.containerEngine, "docker");
@@ -656,17 +637,16 @@ export function createDevUpModelProvider({
       .split("\n")
       .filter((line) => line.startsWith("{"))
       .map((line) => {
-        const event = asRecord(JSON.parse(line));
+        const parsed: unknown = JSON.parse(line);
+        const event = asRecord(parsed);
         assert.ok(event, "Provider log line is not an object");
         return event;
       });
   }
 
-  /** @returns {Promise<CompletedTurn>} */
-  async function assertAnswered() {
+  async function assertAnswered(): Promise<CompletedTurn> {
     const observed = await events();
-    /** @type {Pick<CompletedTurn, "completedAt" | "transport" | "status"> | undefined} */
-    let answer;
+    let answer: Pick<CompletedTurn, "completedAt" | "transport" | "status"> | undefined;
     for (const { event, status, at, transport } of observed) {
       if (
         event === "turn-answered" &&
@@ -699,8 +679,7 @@ export function createDevUpModelProvider({
 
   async function reconcile() {
     await stop();
-    /** @type {unknown[]} */
-    const failures = [];
+    const failures: unknown[] = [];
     for (const resource of [...resources].reverse()) {
       try {
         const value = await inspect(resource.kind, resource.name, cleanupDocker);
@@ -709,8 +688,7 @@ export function createDevUpModelProvider({
           delete resource.uncertain;
           if (resource.kind === "network") {
             const endpoints = object.Containers ?? {};
-            /** @type {[string, unknown][]} */
-            const members = Object.entries(endpoints);
+            const members: [string, unknown][] = Object.entries(endpoints);
             for (const [id, endpoint] of members) {
               assert.equal(
                 asRecord(endpoint)?.Name,
@@ -761,7 +739,7 @@ export function createDevUpModelProvider({
       lifetime.throwIfAborted();
       return (preparation ??= admitted(prepare));
     },
-    route: (/** @type {string} */ stateDirectory) => admitted(() => route(stateDirectory)),
+    route: (stateDirectory: string) => admitted(() => route(stateDirectory)),
     assertAnswered: () => admitted(assertAnswered),
     stop,
     cleanup: () =>
@@ -771,24 +749,13 @@ export function createDevUpModelProvider({
   };
 }
 
-/**
- * @typedef {{
- *   provider: ReturnType<typeof createDevUpModelProvider>,
- *   execute: (program: string, args: string[], options?: LauncherCommandOptions) => Promise<CommandOutput>,
- *   signal: AbortSignal,
- * }} LauncherCase
- */
-
-/** @typedef {{root: string, cluster: string, environment: NodeJS.ProcessEnv, run?: RunCommand}} LauncherOptions */
-
 // Own the complete real launcher case, because node:test can run after hooks
 // on timeout while the async test body is still producing effects.
-/** @type {<T>(t: LauncherScope, options: LauncherOptions, body: (scope: LauncherCase) => T | PromiseLike<T>) => Promise<T>} */
-export const runDevUpModelProviderCase = async (
-  t,
-  { root, cluster, environment, run = execute },
-  body,
-) => {
+export async function runDevUpModelProviderCase<T>(
+  t: LauncherScope,
+  { root, cluster, environment, run = execute }: LauncherOptions,
+  body: (scope: LauncherCase) => T | PromiseLike<T>,
+): Promise<T> {
   const closing = new AbortController();
   const signal = AbortSignal.any([t.signal, closing.signal]);
   const stateDirectory = environment.OCC_DEVELOPMENT_STATE_DIRECTORY;
@@ -801,12 +768,7 @@ export const runDevUpModelProviderCase = async (
   });
   let forcedTermination = false;
   let commandFailed = false;
-  /**
-   * @param {string} program
-   * @param {string[]} args
-   * @param {LauncherCommandOptions} [options]
-   */
-  const command = async (program, args, options = {}) => {
+  const command: LauncherCase["execute"] = async (program, args, options = {}) => {
     signal.throwIfAborted();
     try {
       return await run(program, args, {
@@ -859,4 +821,4 @@ export const runDevUpModelProviderCase = async (
     await rm(root, { recursive: true, force: true });
   });
   return await work;
-};
+}
