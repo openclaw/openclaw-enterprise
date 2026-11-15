@@ -7142,6 +7142,11 @@ test("Configuration and Agent writes reject invalid Secret bindings as invalid r
   assert.deepEqual(storedAgent.data.harnessAuth, agent.data.harnessAuth);
 });
 
+async function assertNoAgentsInNamespace(fixture, namespaceId, message) {
+  const agents = await fixture.platformState.read((view) => view.agents.listAgents(namespaceId));
+  assert.deepEqual(agents, [], message);
+}
+
 test("Agent provisioning API validates inline configuration with existing Secret references", async () => {
   const computeDriver = createProvisioningCapableComputeDriver();
   const configurationDriver = createProvisioningCapableConfigurationDriver();
@@ -7627,10 +7632,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     refusedBaseUrl.body.error.message,
     "Configuration field /models/providers/codex/baseUrl must be an absolute http or https URL.",
   );
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
-    [],
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
 
   const pluginDriver = new CodexPluginDriver();
   fixture.controller.registerDriver(pluginDriver);
@@ -7649,10 +7651,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     invalidPolicy.body.error.message,
     "This Plugin Driver does not support tools[id].reviewer. Use toolDefaults.reviewer when supported, or omit the reviewer.",
   );
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
-    [],
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
   // The Codex Plugin Driver's automatic reviewer rule (finding 988) also refuses a
   // provisioning request before anything durable is written.
   const automaticReviewer = requestBody({
@@ -7668,10 +7667,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     refusedReviewer.body.error.message,
     'An automatic plugin reviewer requires Configuration setting plugins.entries.codex.config.appServer.approvalPolicy "on-request"; change it or choose the human reviewer.',
   );
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
-    [],
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
   // The OpenClaw Plugin Driver refuses a selection whose every tool the inline Configuration
   // denies (finding 508) before anything durable is written.
   const openClawDriver = new OCCPluginDriver();
@@ -7690,10 +7686,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     refusedDenial.body.error.message,
     `Configuration setting tools.deny blocks every tool of plugin ${diffsPluginId}; remove the matching deny entry or deselect the plugin.`,
   );
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
-    [],
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
   // Its plugins run only in an OpenClaw Harness, and this request provisions dedicated Codex
   // (finding 2348).
   const codexPlugins = await provision({
@@ -7711,10 +7704,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
         "No Plugin Driver is enabled for the codex Harness. Remove the Agent's plugins or enable its catalog.",
     },
   );
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
-    [],
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
 
   const durableOnly = await provision({
@@ -7722,9 +7712,9 @@ test("Agent provisioning API validates inline configuration with existing Secret
   });
   assert.equal(durableOnly.status, 503, JSON.stringify(durableOnly.body));
   assert.equal(durableOnly.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
-    [],
+  await assertNoAgentsInNamespace(
+    fixture,
+    namespace.id,
     "in-memory admission must stop before creating an Agent",
   );
 
@@ -9327,58 +9317,40 @@ test("Agent provisioning and deploy name a refused channel token reference form 
     // Finding 2520: the binding rule answers before the form rule, at save and at deploy.
     ["xoxb-${SLACK_SPARE_TOKEN}", unbound],
   ];
-  for (const [botToken, message] of forms) {
-    const refused = await provision({
-      kind: "agent",
-      values: {
-        agents: { defaults: { model: "codex/gpt-6-astra" } },
-        channels: {
-          slack: {
-            enabled: true,
-            mode: "socket",
-            appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-            botToken,
-          },
+  const configurationWithBotToken = (botToken) => ({
+    kind: "agent",
+    values: {
+      agents: { defaults: { model: "codex/gpt-6-astra" } },
+      channels: {
+        slack: {
+          enabled: true,
+          mode: "socket",
+          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+          botToken,
         },
       },
-      secretBindings: {
-        SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
-        SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
-      },
-    });
+    },
+    secretBindings: {
+      SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+      SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
+    },
+  });
+  for (const [botToken, message] of forms) {
+    const refused = await provision(configurationWithBotToken(botToken));
     assertApiError(refused, 400, "INVALID_REQUEST");
     assert.equal(refused.body.error.message, message, botToken);
     assert.doesNotMatch(JSON.stringify(refused.body), /xoxb-synthetic|SECRET/);
   }
   // Each was refused before Slack was asked, and nothing was created.
   assert.equal(calls, 0);
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
-    [],
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
 
   // Finding 2516: deployment also asked the Slack Channel Driver first. A stored Configuration
   // that predates these rules, written past OCC, now gets the rule's message at deploy, still
   // before Slack is asked.
-  const values = {
-    agents: { defaults: { model: "codex/gpt-6-astra" } },
-    channels: {
-      slack: {
-        enabled: true,
-        mode: "socket",
-        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-        botToken: "${SLACK_BOT_TOKEN}",
-      },
-    },
-  };
-  const config = await saveConfiguration({
-    kind: "agent",
-    values,
-    secretBindings: {
-      SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
-      SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
-    },
-  });
+  const configuration = configurationWithBotToken("${SLACK_BOT_TOKEN}");
+  const { values } = configuration;
+  const config = await saveConfiguration(configuration);
   const agent = await createAgent("slack-forms", config.id);
   await bindHarnessKey(fixture, namespace.id, agent);
   for (const [botToken, message] of forms) {
@@ -9449,10 +9421,7 @@ test("Slack validation rejects swapped credentials and preserves authorization",
   assertApiError(swapped, 400, "CHANNEL_CREDENTIAL_ROLE_MISMATCH");
   assert.equal(swapped.body.error.details[0].path, "/channels/slack/appToken");
   assert.equal(calls, 0);
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
-    [],
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
   configuration.secretBindings.SLACK_APP_TOKEN.source = app.ref;
   const wrongBotRole = await provision(configuration);
   assert.equal(wrongBotRole.body.error.code, "CHANNEL_CREDENTIAL_ROLE_MISMATCH");
@@ -9661,10 +9630,7 @@ test("Slack validation with no Slack proxy names the setting at provision and de
   assert.equal(refused.body.error.message, noRoute);
   assert.doesNotMatch(JSON.stringify(refused.body), /xoxb-synthetic|xapp-synthetic/);
   assert.equal(calls, 1);
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
-    [],
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
   // An answer from Slack proves a route exists, so its failure stays the transient outage.
   answer = () => new Response("upstream unavailable", { status: 503 });
   assertApiError(await provision(configuration), 503, "CHANNEL_CREDENTIAL_UNAVAILABLE");
