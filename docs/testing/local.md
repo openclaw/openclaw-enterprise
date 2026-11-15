@@ -319,7 +319,7 @@ On Linux with Podman, run the real monitoring containers:
 
 ```sh
 OCC_TEST_METRICS_MONITORING=1 OCC_METRICS_TEST_ENGINE=podman \
-  node --test tests/integration/occ-metrics-monitoring.test.mjs
+  node --test tests/integration/occ-metrics-monitoring.test.ts
 ```
 
 Use `docker` for Docker Engine. The test removes its randomly named containers.

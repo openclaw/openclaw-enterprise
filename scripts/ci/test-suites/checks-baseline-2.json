@@ -34,10 +34,11 @@
     "tests/integration/console-theme.test.ts",
     "tests/integration/console-storybook-workflow.test.ts",
     "tests/integration/workspace-setup-api.test.mjs",
-    "tests/integration/agent-create-validate-api.test.mjs",
+    "tests/integration/agent-create-validate-api.test.ts",
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner-process-ownership.test.ts",
     "tests/integration/ci-runner-openshell-progress.test.ts",
     "tests/integration/ci-runner-case-enforcement.test.ts",
     "tests/integration/ci-runner-file-outcomes.test.ts",
@@ -57,11 +58,11 @@
     "tests/integration/google-login-transport.test.ts",
     "tests/conformance/slack-channel-directory.test.ts",
     "tests/conformance/bounded-response-reads.test.ts",
-    "tests/conformance/repository-credentials-github.test.mjs",
+    "tests/conformance/repository-credentials-github.test.ts",
     "tests/integration/repository-credentials-driver.test.ts",
     "tests/integration/repository-credentials-sender-recovery.test.ts",
     "tests/integration/known-device-cookie.test.ts",
-    "tests/conformance/postgres-controller-auth-binding.test.mjs",
+    "tests/conformance/postgres-controller-auth-binding.test.ts",
     "tests/integration/repository-credentials-package.test.ts",
     "tests/integration/package-prepack.test.ts",
     "tests/integration/repository-credentials-restart.test.ts",
@@ -109,11 +110,11 @@
     "tests/integration/oidc-id-token.test.ts",
     "tests/integration/repository-credentials-shutdown.test.mjs",
     "tests/conformance/repository-transactions.test.mjs",
-    "tests/integration/google-id-token.test.mjs",
+    "tests/integration/google-id-token.test.ts",
     "tests/integration/first-agent-startup.test.ts",
     "tests/conformance/repository-sessions-memory.test.ts",
     "tests/conformance/repository-credentials-github-token.test.ts",
-    "tests/conformance/repository-credentials-registry.test.mjs",
+    "tests/conformance/repository-credentials-registry.test.ts",
     "tests/integration/ci-openshell-preparation.test.ts",
     "tests/integration/ci-openshell.test.ts",
     "tests/conformance/repository-credentials-sessions.test.ts",
@@ -129,7 +130,7 @@
     "tests/conformance/slack-proxy-reset.test.mjs",
     "tests/conformance/native-admin-upgrade-reset.test.mjs",
     "tests/conformance/repository-credentials-custody.test.ts",
-    "tests/conformance/repository-credentials-receive-pack.test.mjs",
+    "tests/conformance/repository-credentials-receive-pack.test.ts",
     "tests/integration/runtime-assets.test.mjs",
     "tests/integration/runtime-ai-package-relocation.test.ts",
     "tests/integration/runtime-node-build-jobs.test.ts",
@@ -270,6 +271,19 @@
       ]
     },
     {
+      "path": "tests/integration/ci-runner-process-ownership.test.ts",
+      "expectedTests": [
+        "run records timeout cancellation without leaking child output",
+        "run kills what a passing file left in its process group",
+        "run kills every live test group on SIGTERM and exits by that signal",
+        "run kills every live test group on SIGINT and exits by that signal",
+        "run kills every live test group on SIGHUP and exits by that signal",
+        "run reports a cleanup that fails once a cancelled job's shell is gone as cancelled",
+        "run kills a timed-out file's whole process group after the timeout record",
+        "run records a timed-out file's interrupted test and output tail in the diagnostics report"
+      ]
+    },
+    {
       "path": "tests/integration/ci-runner-openshell-progress.test.ts",
       "expectedTests": [
         "CI streams safe OpenShell failures before cleanup and retains the original error",
@@ -391,7 +405,7 @@
       "path": "tests/integration/skipper-release.test.ts"
     },
     {
-      "path": "tests/integration/repository-credentials-draft-pr-cli.test.mjs"
+      "path": "tests/integration/repository-credentials-draft-pr-cli.test.ts"
     },
     {
       "path": "tests/integration/ci-keycloak.test.ts"
@@ -528,7 +542,7 @@
       "path": "tests/integration/workspace-setup-api.test.mjs"
     },
     {
-      "path": "tests/integration/agent-create-validate-api.test.mjs"
+      "path": "tests/integration/agent-create-validate-api.test.ts"
     },
     {
       "path": "tests/integration/model-provider.test.ts"
@@ -543,13 +557,13 @@
       "path": "tests/conformance/repository-credentials-contracts.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-github.test.mjs"
+      "path": "tests/conformance/repository-credentials-github.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-github-token.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-receive-pack.test.mjs"
+      "path": "tests/conformance/repository-credentials-receive-pack.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-sessions.test.ts"
@@ -634,7 +648,7 @@
       "expectedTests": ["a broker restart cannot accept bound admissions without durable fencing"]
     },
     {
-      "path": "tests/conformance/repository-credentials-registry.test.mjs"
+      "path": "tests/conformance/repository-credentials-registry.test.ts"
     },
     {
       "path": "tests/conformance/repository-material-store.test.ts",
@@ -722,7 +736,7 @@
       ]
     },
     {
-      "path": "tests/integration/google-id-token.test.mjs"
+      "path": "tests/integration/google-id-token.test.ts"
     },
     {
       "path": "tests/integration/google-login-transport.test.ts"
@@ -752,7 +766,7 @@
       "path": "tests/conformance/postgres-auth-binding.test.ts"
     },
     {
-      "path": "tests/conformance/postgres-controller-auth-binding.test.mjs"
+      "path": "tests/conformance/postgres-controller-auth-binding.test.ts"
     },
     {
       "path": "tests/conformance/schema-auth-boundary-v1.test.ts"

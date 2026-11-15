@@ -12,7 +12,10 @@ import {
 // The development token authority enforces its push allowlist at the gateway by
 // reading receive-pack commands before any byte goes upstream. These vectors use
 // Git's wire format: 4-hex-digit pkt-line lengths, a flush-pkt, then the pack.
-const pkt = (line) => {
+type PacketLine = string | Buffer;
+type PacketCase = [name: string, input: Buffer];
+
+const pkt = (line: PacketLine) => {
   const payload = Buffer.isBuffer(line) ? line : Buffer.from(line, "latin1");
   return Buffer.concat([Buffer.from((payload.length + 4).toString(16).padStart(4, "0")), payload]);
 };
@@ -23,7 +26,7 @@ const a = "a".repeat(40);
 const b = "b".repeat(40);
 const caps =
   "\0report-status-v2 side-band-64k quiet object-format=sha1 agent=git/2.39.5.(Apple.Git-154)";
-const body = (...lines) => Buffer.concat([...lines.map(pkt), flush, pack]);
+const body = (...lines: PacketLine[]) => Buffer.concat([...lines.map(pkt), flush, pack]);
 const allows = allowsReceivePackInput(["refs/heads/agent/*", "refs/heads/release"]);
 // Bidi controls, zero-width and invisible characters, and line and paragraph separators.
 const invisibleCharacters = [
@@ -47,7 +50,7 @@ test("receive-pack inspector admits create, update and delete on allowed refs on
       body(`${"c".repeat(64)} ${"d".repeat(64)} refs/heads/agent/x\0object-format=sha256`),
     ],
     ["flush only", Buffer.concat([flush, pack])],
-  ]) {
+  ] satisfies PacketCase[]) {
     assert.equal(allows(input), true, name);
   }
 });
@@ -84,7 +87,7 @@ test("receive-pack inspector refuses every disallowed or malformed command secti
     ["delimiter packet", Buffer.concat([Buffer.from("0001"), flush])],
     ["empty body", Buffer.alloc(0)],
     ["non-ASCII capability", body(`${a} ${b} refs/heads/agent/x${caps} agent=caf\xe9`)],
-  ]) {
+  ] satisfies PacketCase[]) {
     assert.equal(allows(input), false, name);
   }
 });
@@ -92,10 +95,16 @@ test("receive-pack inspector refuses every disallowed or malformed command secti
 // Git's refnames are bytes; it accepts UTF-8 names such as agent/café. The gateway
 // decodes them as strict UTF-8 and compares with the allowlist byte for byte.
 test("receive-pack inspector admits UTF-8 branch names Git accepts and refuses lookalikes", () => {
-  const utf8 = (ref, extra = caps) => pkt(Buffer.from(`${a} ${b} ${ref}${extra}\n`, "utf8"));
-  const raw = (...parts) =>
-    pkt(Buffer.concat([Buffer.from(`${a} ${b} `), ...parts.map((part) => Buffer.from(part))]));
-  const section = (...lines) => Buffer.concat([...lines, flush, pack]);
+  const utf8 = (ref: string, extra = caps) =>
+    pkt(Buffer.from(`${a} ${b} ${ref}${extra}\n`, "utf8"));
+  const raw = (...parts: (string | readonly number[])[]) =>
+    pkt(
+      Buffer.concat([
+        Buffer.from(`${a} ${b} `),
+        ...parts.map((part) => (typeof part === "string" ? Buffer.from(part) : Buffer.from(part))),
+      ]),
+    );
+  const section = (...lines: Buffer[]) => Buffer.concat([...lines, flush, pack]);
   const exact = allowsReceivePackInput(["refs/heads/agent/*", "refs/heads/caf\u00e9"]);
   for (const [name, input] of [
     ["composed name under a prefix", section(utf8("refs/heads/agent/caf\u00e9"))],
@@ -106,7 +115,7 @@ test("receive-pack inspector admits UTF-8 branch names Git accepts and refuses l
       "UTF-8 on a later command",
       section(utf8("refs/heads/agent/x"), utf8("refs/heads/caf\u00e9", "")),
     ],
-  ]) {
+  ] satisfies PacketCase[]) {
     assert.equal(exact(input), true, name);
   }
   for (const [name, input] of [
@@ -129,7 +138,7 @@ test("receive-pack inspector admits UTF-8 branch names Git accepts and refuses l
     ],
     ["UTF-8 name Git refuses", section(utf8("refs/heads/agent/caf\u00e9.lock"))],
     // Git accepts these, but they hide or reorder how the name displays (Trojan Source).
-    ...invisibleCharacters.map((code) => [
+    ...invisibleCharacters.map<PacketCase>((code) => [
       `U+${code.toString(16).toUpperCase().padStart(4, "0")} inside the name`,
       section(utf8(`refs/heads/agent/a${String.fromCodePoint(code)}b`)),
     ]),
@@ -138,13 +147,14 @@ test("receive-pack inspector admits UTF-8 branch names Git accepts and refuses l
       "invisible character on a later command",
       section(utf8("refs/heads/agent/x"), utf8("refs/heads/agent/\u200bx", "")),
     ],
-  ]) {
+  ] satisfies PacketCase[]) {
     assert.equal(exact(input), false, name);
   }
 });
 
 test("a pushed ref is refused with a readable reason that names the character", () => {
-  const read = (ref) => readPushedBranchRef(Buffer.isBuffer(ref) ? ref : Buffer.from(ref, "utf8"));
+  const read = (ref: PacketLine) =>
+    readPushedBranchRef(Buffer.isBuffer(ref) ? ref : Buffer.from(ref, "utf8"));
   assert.deepEqual(read("refs/heads/agent/caf\u00e9"), { ref: "refs/heads/agent/caf\u00e9" });
   assert.deepEqual(read("refs/heads/agent/a\u202eb"), {
     refused: "the ref name contains U+202E, an invisible or direction-changing character",
@@ -191,15 +201,15 @@ test("push allowlist entries must have one exact, visible UTF-8 spelling", () =>
 });
 
 test("receive-pack inspector refuses more than 256 ref updates with its own code", () => {
-  const commands = (count) =>
+  const commands = (count: number) =>
     Array.from({ length: count }, (_, index) => `${a} ${b} refs/heads/agent/${index}`);
-  const push = (count) => {
-    const lines = commands(count);
-    return body(`${lines[0]}${caps}`, ...lines.slice(1));
+  const commandBody = ([first, ...rest]: readonly string[]) => {
+    assert.ok(first);
+    return body(`${first}${caps}`, ...rest);
   };
   assert.equal(maximumPushRefs, 256);
-  assert.equal(allows(push(256)), true);
-  assert.deepEqual(allows(push(257)), {
+  assert.equal(allows(commandBody(commands(256))), true);
+  assert.deepEqual(allows(commandBody(commands(257))), {
     status: 413,
     code: "push-ref-limit-exceeded",
     message: "A push may update at most 256 refs. Push the refs in smaller batches.",
@@ -207,7 +217,7 @@ test("receive-pack inspector refuses more than 256 ref updates with its own code
   // A disallowed ref is still refused as such, whatever the count.
   const mixed = commands(300);
   mixed[10] = `${a} ${b} refs/heads/main`;
-  assert.equal(allows(body(`${mixed[0]}${caps}`, ...mixed.slice(1))), false);
+  assert.equal(allows(commandBody(mixed)), false);
 });
 
 test("an empty allowlist refuses every push command while allowing an empty flush", () => {

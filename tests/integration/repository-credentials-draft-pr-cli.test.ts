@@ -1,55 +1,120 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { createServer as createHttpsServer } from "node:https";
-import test from "node:test";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
+import type { IncomingMessage } from "node:http";
+import { createServer as createHttpsServer, type ServerOptions } from "node:https";
+import { finished } from "node:stream/promises";
+import test, { type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
+import { parseUnambiguousJson } from "../../apps/controller/src/drivers/json-members.ts";
+import type { JsonObject } from "../../apps/controller/src/drivers/repo/access/json-value.ts";
+import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
+import { run } from "../fixtures/repository-credentials/process.mjs";
 import { refusingPort } from "../helpers/available-port.ts";
 import { signedLeaf } from "../helpers/certificates.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.ts";
 
-// `oce-github pr-create` in OpenShell mode: each failure class prints its own line, so an
-// Agent or operator can tell a usage error, a local refusal, a route denial, a GitHub
-// refusal and an unconfirmed outcome apart (finding 2134). A denied request cannot
-// establish the outcome of an earlier attempt.
 const helper = fileURLToPath(
   new URL(
     "../../apps/controller/src/drivers/repo/github/access/client/draft-pr.ts",
     import.meta.url,
   ),
 );
+const nativeChild = fileURLToPath(
+  new URL("../fixtures/repository-credentials/native-draft-child.ts", import.meta.url),
+);
 const marker = "openshell:resolve:env:s" + "a".repeat(64) + "_GITHUB_TOKEN";
 const unconfirmed =
   "Draft not confirmed. Check the pull requests at the repository; do not submit another create.";
 
-// Runs the helper with only PATH and `env`; `secret` (its credential) must never be printed.
-function runHelper(args, env, secret) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, args, {
-      env: { PATH: process.env.PATH, ...env },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => (stdout += chunk));
-    child.stderr.on("data", (chunk) => (stderr += chunk));
-    child.on("error", reject);
-    child.on("close", (code) => {
-      assert.ok(!(stdout + stderr).includes(secret), "the credential is never printed");
-      resolve({ code, stdout, stderr, lines: stderr.trim().split("\n") });
-    });
+type Reply = { status: number; body: JsonObject | string };
+type OpenShellRunOptions = { port?: number; env?: NodeJS.ProcessEnv };
+
+// Check raw and serialized output before any assertion can include it in diagnostics.
+async function runHelper(
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  secret: string,
+  signal: AbortSignal,
+) {
+  const result: unknown = await run(process.execPath, args, {
+    env: { PATH: process.env.PATH, ...env },
+    allowFailure: true,
+    timeout: 60_000,
+    signal,
   });
+  if (
+    result === null ||
+    typeof result !== "object" ||
+    !("stdout" in result) ||
+    typeof result.stdout !== "string" ||
+    !("stderr" in result) ||
+    typeof result.stderr !== "string" ||
+    !("code" in result) ||
+    typeof result.code !== "number" ||
+    !Number.isInteger(result.code)
+  ) {
+    throw new Error("Draft CLI child returned an invalid process result");
+  }
+  if ((result.stdout + result.stderr).includes(secret) || JSON.stringify(result).includes(secret)) {
+    throw new Error("Draft CLI child output contains a fixture credential");
+  }
+  const { code, stdout, stderr } = result;
+  return { code, stdout, stderr, lines: stderr.trim().split("\n") };
 }
 
-// A server leaf for api.github.com signed by the Harness fixture CA, so the helper's
-// configured root trusts it.
-async function githubLeaf(tls) {
+function assertReceipt(stdout: string, expected: JsonObject, secret: string) {
+  let receipt: unknown;
+  try {
+    receipt = parseUnambiguousJson(stdout);
+  } catch {
+    throw new Error("Draft CLI stdout must contain one unambiguous JSON receipt");
+  }
+  // Parsing can reveal a marker that was JSON-escaped in raw stdout.
+  if (JSON.stringify(receipt).includes(secret)) {
+    throw new Error("Draft CLI receipt contains a fixture credential");
+  }
+  assert.deepEqual(receipt, expected);
+}
+
+async function draftEndpoint(
+  t: TestContext,
+  tls: ServerOptions,
+  observe: (request: IncomingMessage) => void,
+) {
+  let reply: Reply | undefined;
+  let requestsWithoutReply = 0;
+  const server = createHttpsServer(tls, async (req, res) => {
+    observe(req);
+    // Reply only after the client finishes sending the request body.
+    await finished(req.resume(), { cleanup: true });
+    if (reply === undefined) {
+      requestsWithoutReply += 1;
+      res.writeHead(500).end();
+      return;
+    }
+    res.writeHead(reply.status, { "content-type": "application/json" });
+    res.end(typeof reply.body === "string" ? reply.body : JSON.stringify(reply.body));
+  });
+  const port = await listen(t, server);
+  t.after(() => {
+    assert.equal(requestsWithoutReply, 0, "the CLI must not send before a reply is configured");
+  });
+  return {
+    port,
+    replyWith(response: Reply) {
+      reply = response;
+    },
+  };
+}
+
+// The fixture CA signs a leaf for api.github.com so the redirected CLI still verifies TLS.
+async function githubLeaf(tls: Awaited<ReturnType<typeof harnessTlsFixture>>) {
   const { key, cert } = await signedLeaf(tls.directory, tls.authority, {
     name: "github",
     commonName: "api.github.com",
     subjectAltName: "DNS:api.github.com",
     days: 1,
+    keyPem: undefined,
   });
   return { cert, key };
 }
@@ -59,24 +124,20 @@ test(
   { timeout: 60_000 },
   async (t) => {
     const tls = await harnessTlsFixture(t);
-    let reply;
     let requests = 0;
-    // Stands in for OpenShell's mediation and GitHub: answers each create with `reply`.
-    const server = createHttpsServer(await githubLeaf(tls), async (req, res) => {
+    // This controlled peer supplies the responses seen through OpenShell mediation.
+    const endpoint = await draftEndpoint(t, await githubLeaf(tls), () => {
       requests += 1;
-      for await (const _ of req) {
-        // Drain the request body.
-      }
-      res.writeHead(reply.status, { "content-type": "application/json" });
-      res.end(typeof reply.body === "string" ? reply.body : JSON.stringify(reply.body));
     });
-    await listen(t, server);
     // A released port could be taken by a parallel listener; this one refuses until released.
     const refusing = await refusingPort();
     t.after(() => refusing.release());
     const closedPort = refusing.port;
 
-    const run = (args, { port = server.address().port, env = {} } = {}) => {
+    const invoke = (
+      args: readonly string[],
+      { port = endpoint.port, env = {} }: OpenShellRunOptions = {},
+    ) => {
       const redirect = `import tls from "node:tls";
 const connect = tls.connect;
 tls.connect = (options, ...rest) => connect({ ...options, host: "127.0.0.1", port: ${port} }, ...rest);`;
@@ -94,10 +155,11 @@ tls.connect = (options, ...rest) => connect({ ...options, host: "127.0.0.1", por
           ...env,
         },
         marker,
+        t.signal,
       );
     };
-    const create = (extra = [], options) =>
-      run(
+    const create = (options?: OpenShellRunOptions) =>
+      invoke(
         [
           "pr-create",
           "--draft",
@@ -109,34 +171,34 @@ tls.connect = (options, ...rest) => connect({ ...options, host: "127.0.0.1", por
           "Review",
           "--body",
           "Body.",
-          ...extra,
         ],
         options,
       );
     const attempt = /^local draft attempt [0-9a-f-]{36}$/;
 
     // Usage errors send nothing and say how to call the helper.
-    const help = await run(["--help"]);
+    const help = await invoke(["--help"]);
     assert.equal(help.code, 0);
     assert.match(help.stdout, /^Usage: oce-github pr-create --draft /);
-    for (const [args, expected] of [
+    const usageCases: [string[], RegExp][] = [
       [
         ["pr-create", "--head", "review/task", "--base", "main", "--title", "x"],
         /^Missing --draft\.$/,
       ],
       [["pr-create", "--draft", "--repo", "dogfood/other"], /^Unknown option '--repo'/],
       [["pr-list"], /^The only command is pr-create\.$/],
-    ]) {
-      const result = await run(args);
+    ];
+    for (const [args, expected] of usageCases) {
+      const result = await invoke(args);
       assert.equal(result.code, 2, result.stderr);
-      assert.match(result.lines[0], expected);
-      assert.match(result.lines[1], /^Usage: oce-github pr-create/);
+      assert.match(result.lines[0] ?? "", expected);
+      assert.match(result.lines[1] ?? "", /^Usage: oce-github pr-create/);
       assert.doesNotMatch(result.stderr, /Draft not confirmed|local draft attempt/);
     }
     assert.equal(requests, 0);
 
     // A branch or base outside the binding is refused locally and names the admitted pair.
-    const branch = await create([], { env: { OCE_OPENSHELL_GIT_BASE: "develop" } });
+    const branch = await create({ env: { OCE_OPENSHELL_GIT_BASE: "develop" } });
     assert.equal(branch.code, 1);
     assert.deepEqual(branch.lines, [
       "Draft not sent: this Sandbox's repository binding allows only --head review/task --base develop.",
@@ -144,25 +206,26 @@ tls.connect = (options, ...rest) => connect({ ...options, host: "127.0.0.1", por
     assert.equal(requests, 0);
 
     // Nothing to connect to: nothing was sent.
-    const refused = await create([], { port: closedPort });
+    const refused = await create({ port: closedPort });
     assert.equal(refused.code, 1);
-    assert.match(refused.lines[0], attempt);
+    assert.match(refused.lines[0] ?? "", attempt);
     assert.equal(
-      refused.lines[1],
+      refused.lines[1] ?? "",
       "Draft not sent: could not connect to api.github.com (ECONNREFUSED).",
     );
+    assert.equal(requests, 0);
 
     // The first attempt has an unknown outcome. A subsequent denial says only that
     // this request was not forwarded; it cannot confirm what happened to the first.
-    reply = { status: 502, body: { message: "Server Error" } };
+    endpoint.replyWith({ status: 502, body: { message: "Server Error" } });
     const beforeUnknown = requests;
     const unknown = await create();
     assert.equal(unknown.code, 1);
-    assert.match(unknown.lines[0], attempt);
+    assert.match(unknown.lines[0] ?? "", attempt);
     assert.deepEqual(unknown.lines.slice(1), [unconfirmed]);
     assert.equal(requests, beforeUnknown + 1, "unknown outcome must not trigger another request");
 
-    reply = {
+    endpoint.replyWith({
       status: 403,
       body: {
         error: "middleware_denied",
@@ -170,19 +233,41 @@ tls.connect = (options, ...rest) => connect({ ...options, host: "127.0.0.1", por
         reason_code: "draft_already_opened",
         layer: "l7",
       },
-    };
+    });
     const beforeDenied = requests;
     const denied = await create();
     assert.equal(denied.code, 1);
-    assert.match(denied.lines[0], attempt);
+    assert.match(denied.lines[0] ?? "", attempt);
     assert.equal(denied.lines.length, 2);
-    assert.match(denied.lines[1], /^Draft not created: .*draft-create allowance .*used/);
-    assert.match(denied.lines[1], /GitHub did not receive this request/);
-    assert.match(denied.lines[1], /whether the earlier attempt created a draft/);
-    assert.match(denied.lines[1], /do not submit another create/);
+    assert.match(denied.lines[1] ?? "", /^Draft not created: .*draft-create allowance .*used/);
+    assert.match(denied.lines[1] ?? "", /GitHub did not receive this request/);
+    assert.match(denied.lines[1] ?? "", /whether the earlier attempt created a draft/);
+    assert.match(denied.lines[1] ?? "", /do not submit another create/);
     assert.equal(requests, beforeDenied + 1, "spent allowance must not trigger another request");
 
-    const cases = [
+    // Finding 2149: each worker refusal says what the Agent can do about it.
+    const routeRefusals: [string, string | undefined][] = [
+      [
+        "request_not_allowed",
+        "This repository binding does not allow this create; do not retry it. Ask an operator if the branch or base should change.",
+      ],
+      [
+        "access_withdrawn",
+        "Repository access for this Agent version has ended; do not retry. Ask an operator to bind the repository and deploy.",
+      ],
+      [
+        "credential_unavailable",
+        "The repository credential is unavailable; ask an operator to check the worker log before retrying.",
+      ],
+      [
+        "route_blocked",
+        "The repository route is closed for this Agent version; ask an operator to deploy a new version.",
+      ],
+      ["route_not_ready", "The repository route is not ready yet; retry in a minute."],
+      // A code the helper does not know, including an inherited property name, adds nothing.
+      ["constructor", undefined],
+    ];
+    const cases: [string, Reply, string][] = [
       [
         "route denial",
         {
@@ -196,28 +281,7 @@ tls.connect = (options, ...rest) => connect({ ...options, host: "127.0.0.1", por
         },
         "Draft not created: the repository route refused it (online_authorization_denied); GitHub did not receive it. Retry once; if it is refused again, ask an operator to check the worker log.",
       ],
-      // Finding 2149: each worker refusal says what the Agent can do about it.
-      ...[
-        [
-          "request_not_allowed",
-          "This repository binding does not allow this create; do not retry it. Ask an operator if the branch or base should change.",
-        ],
-        [
-          "access_withdrawn",
-          "Repository access for this Agent version has ended; do not retry. Ask an operator to bind the repository and deploy.",
-        ],
-        [
-          "credential_unavailable",
-          "The repository credential is unavailable; ask an operator to check the worker log before retrying.",
-        ],
-        [
-          "route_blocked",
-          "The repository route is closed for this Agent version; ask an operator to deploy a new version.",
-        ],
-        ["route_not_ready", "The repository route is not ready yet; retry in a minute."],
-        // A code the helper does not know, including an inherited property name, adds nothing.
-        ["constructor", undefined],
-      ].map(([code, advice]) => [
+      ...routeRefusals.map(([code, advice]): [string, Reply, string] => [
         `route refusal ${code}`,
         {
           status: 403,
@@ -289,43 +353,19 @@ tls.connect = (options, ...rest) => connect({ ...options, host: "127.0.0.1", por
       ["unconfirmed success", { status: 201, body: { number: 7, draft: false } }, unconfirmed],
     ];
     for (const [label, response, expected] of cases) {
-      reply = response;
-      const before = requests;
+      endpoint.replyWith(response);
+      const before: number = requests;
       const result = await create();
       assert.equal(result.code, 1, label);
-      assert.match(result.lines[0], attempt, label);
+      assert.match(result.lines[0] ?? "", attempt, label);
       assert.deepEqual(result.lines.slice(1), [expected], label);
       assert.equal(requests, before + 1, `${label}: exactly one request`);
     }
 
-    reply = {
+    const canonical = (url: string, number: number, headName: string, baseName: string): Reply => ({
       status: 201,
       body: {
-        number: 7,
-        html_url: "https://github.com/example/project/pull/7",
-        state: "open",
-        draft: true,
-        head: { ref: "review/task", repo: { full_name: "example/project" } },
-        base: { ref: "main", repo: { full_name: "example/project" } },
-      },
-    };
-    const created = await create();
-    assert.equal(created.code, 0, created.stderr);
-    assert.deepEqual(JSON.parse(created.stdout), {
-      url: "https://github.com/example/project/pull/7",
-      number: 7,
-      head: "review/task",
-      base: "main",
-      draft: true,
-    });
-
-    // The registry delivers a lowercased name; GitHub answers with the repository's own
-    // spelling (finding 2232). That is the same draft; another repository is not.
-    const own = "Example/Project";
-    const canonical = (url, headName = own, baseName = own) => ({
-      status: 201,
-      body: {
-        number: 8,
+        number,
         html_url: url,
         state: "open",
         draft: true,
@@ -333,27 +373,48 @@ tls.connect = (options, ...rest) => connect({ ...options, host: "127.0.0.1", por
         base: { ref: "main", repo: { full_name: baseName } },
       },
     });
-    reply = canonical("https://github.com/Example/Project/pull/8");
-    const spelled = await create();
-    assert.equal(spelled.code, 0, spelled.stderr);
-    assert.deepEqual(JSON.parse(spelled.stdout), {
-      url: "https://github.com/Example/Project/pull/8",
-      number: 8,
-      head: "review/task",
-      base: "main",
-      draft: true,
-    });
-    for (const [label, response] of [
-      ["url", canonical("https://github.com/Example/Other/pull/8")],
-      ["url number", canonical("https://github.com/Example/Project/pull/9")],
-      ["url host", canonical("https://github.org/Example/Project/pull/8")],
-      ["head", canonical("https://github.com/Example/Project/pull/8", "Example/Other")],
-      ["base", canonical("https://github.com/Example/Project/pull/8", own, "Example/Other")],
-    ]) {
-      reply = response;
+
+    // GitHub may use its own spelling for the registry's lowercased repository name.
+    const own = "Example/Project";
+    const canonicalUrl = "https://github.com/Example/Project/pull/8";
+    const successes: [string, number, string][] = [
+      ["https://github.com/example/project/pull/7", 7, "example/project"],
+      [canonicalUrl, 8, own],
+    ];
+    for (const [url, number, name] of successes) {
+      endpoint.replyWith(canonical(url, number, name, name));
+      const before: number = requests;
+      const created = await create();
+      assert.equal(created.code, 0, created.stderr);
+      assert.equal(requests, before + 1, "accepted receipt: exactly one request");
+      assertReceipt(
+        created.stdout,
+        {
+          url,
+          number,
+          head: "review/task",
+          base: "main",
+          draft: true,
+        },
+        marker,
+      );
+    }
+
+    // A receipt still has to match the host, number, and both repositories.
+    const mismatches: [string, Reply][] = [
+      ["url", canonical("https://github.com/Example/Other/pull/8", 8, own, own)],
+      ["url number", canonical("https://github.com/Example/Project/pull/9", 8, own, own)],
+      ["url host", canonical("https://github.org/Example/Project/pull/8", 8, own, own)],
+      ["head", canonical(canonicalUrl, 8, "Example/Other", own)],
+      ["base", canonical(canonicalUrl, 8, own, "Example/Other")],
+    ];
+    for (const [label, response] of mismatches) {
+      endpoint.replyWith(response);
+      const before: number = requests;
       const other = await create();
-      assert.equal(other.code, 1, `another repository in ${label}`);
-      assert.deepEqual(other.lines.slice(1), [unconfirmed], `another repository in ${label}`);
+      assert.equal(other.code, 1, label);
+      assert.deepEqual(other.lines.slice(1), [unconfirmed], label);
+      assert.equal(requests, before + 1, `${label}: exactly one request`);
     }
   },
 );
@@ -368,22 +429,15 @@ test(
     const tls = await harnessTlsFixture(t);
     const operationId = "6f1c2a4e-8b3d-4c5e-9f70-1a2b3c4d5e6f";
     const bearer = "b".repeat(43);
-    let reply;
-    const received = [];
-    // Stands in for the repository broker: answers each create with `reply`.
-    const server = createHttpsServer({ cert: tls.cert, key: tls.key }, async (req, res) => {
+    const received: { operationId: string | string[] | undefined; bearer: boolean }[] = [];
+    // This controlled peer records the broker-bound credential and operation ID.
+    const endpoint = await draftEndpoint(t, { cert: tls.cert, key: tls.key }, (req) => {
       received.push({
         operationId: req.headers["x-oce-operation-id"],
         bearer: req.headers.authorization === "Bearer " + bearer,
       });
-      for await (const _ of req) {
-        // Drain the request body.
-      }
-      res.writeHead(reply.status, { "content-type": "application/json" });
-      res.end(JSON.stringify(reply.body));
     });
-    await listen(t, server);
-    const origin = "https://localhost:" + server.address().port;
+    const origin = "https://localhost:" + endpoint.port;
     const { root } = await createNativeClientMaterial(
       t,
       [
@@ -391,7 +445,25 @@ test(
           repositoryRef: "source",
           opened: {
             bearer,
-            session: { sessionId: "draft-session", deadlineWallMs: Date.now() + 600_000 },
+            session: {
+              sessionId: "draft-session",
+              deadlineWallMs: Date.now() + 600_000,
+              state: "OPEN",
+              binding: {
+                providerInstanceId: "fixture",
+                repositoryId: "example/project",
+                grantId: "draft-grant",
+              },
+              activeUses: 0,
+              cleanup: {
+                active: 0,
+                pending: 0,
+                revoked: 0,
+                expired: 0,
+                uncertain: 0,
+                auxiliaryPending: false,
+              },
+            },
             client: {
               gatewayOrigin: origin,
               gitRemote: origin + "/example/project.git",
@@ -405,18 +477,11 @@ test(
       ],
       { ca: Buffer.from(tls.caBundle) },
     );
-    // The broker shell's entry: the helper reads this manifest root instead of the Pod's.
-    const entry =
-      "import {createDraftPull,draftPullFailureMessage} from " +
-      JSON.stringify(pathToFileURL(helper).href) +
-      "; await createDraftPull(process.argv.slice(2),process.argv[1]).catch((e)=>" +
-      "{const f=draftPullFailureMessage(e);process.stderr.write(f.message+'\\n');process.exitCode=f.exitCode;});";
+    // Run the real CLI with a test-owned manifest root.
     const create = () =>
       runHelper(
         [
-          "--input-type=module",
-          "-e",
-          entry,
+          nativeChild,
           root,
           "pr-create",
           "--operation-id",
@@ -431,6 +496,7 @@ test(
         ],
         { HOME: tls.directory, TMPDIR: tls.directory },
         bearer,
+        t.signal,
       );
     const attempt = "draft pull operation " + operationId;
     const receipt = {
@@ -442,15 +508,15 @@ test(
       head: { ref: "review/task" },
       base: { ref: "main" },
     };
-    reply = { status: 201, body: receipt };
+    endpoint.replyWith({ status: 201, body: receipt });
     const created = await create();
     assert.equal(created.code, 0, created.stderr);
-    assert.deepEqual(JSON.parse(created.stdout), receipt);
+    assertReceipt(created.stdout, receipt, bearer);
     assert.deepEqual(received, [{ operationId, bearer: true }]);
 
-    const refused = (code, advice) =>
+    const refused = (code: string, advice?: string) =>
       `Draft not created: the repository broker refused it (${code}); GitHub did not receive it.${advice ? ` ${advice}` : ""}`;
-    for (const [label, response, expected] of [
+    const cases: [string, Reply, string[]][] = [
       [
         "not-submitted receipt",
         { status: 409, body: { operationId, error: "not-submitted" } },
@@ -475,7 +541,7 @@ test(
       ],
       [
         "receipt for another operation",
-        { status: 201, body: { ...receipt, operationId: "x" } },
+        { status: 201, body: { ...receipt, operationId: "2a416976-948c-45af-9127-20bf465a370c" } },
         [unconfirmed],
       ],
       [
@@ -503,9 +569,10 @@ test(
         { status: 403, body: { error: { code: "route-denied" } } },
         [refused("route-denied")],
       ],
-    ]) {
-      reply = response;
-      const before = received.length;
+    ];
+    for (const [label, response, expected] of cases) {
+      endpoint.replyWith(response);
+      const before: number = received.length;
       const result = await create();
       assert.equal(result.code, 1, label);
       assert.deepEqual(result.lines, [attempt, ...expected], label);

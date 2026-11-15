@@ -1,14 +1,30 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import type {
+  Agent,
+  AgentRevision,
+  HarnessAuthBinding,
+  Namespace,
+  Secret,
+  SecretBinding,
+  SecretBindings,
+} from "@openclaw-enterprise/contracts";
+import type { Pool } from "pg";
+import type { PlatformStateStore, PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { SECRET_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 
-function identifier(kind) {
+type ConfigurationInput = Parameters<
+  PlatformUnitOfWork["configurations"]["createConfiguration"]
+>[0];
+type AgentInput = Parameters<PlatformUnitOfWork["agents"]["createAgent"]>[0];
+
+function identifier(kind: string) {
   return `${kind}_${randomUUID()}`;
 }
 
-function shortName(prefix) {
+function shortName(prefix: string) {
   return `${prefix}-${randomUUID().slice(0, 8)}`;
 }
 
@@ -17,20 +33,20 @@ function resources() {
   const configurationId = identifier("cfg");
   const agentId = identifier("agt");
   const createdAt = new Date().toISOString();
-  const namespace = {
+  const namespace: Namespace = {
     id: namespaceId,
     name: `Secret state ${randomUUID()}`,
     status: "ready",
     createdAt,
   };
-  const configuration = {
+  const configuration: ConfigurationInput = {
     id: configurationId,
     namespaceId,
     kind: "agent",
     generation: 1,
     createdAt,
   };
-  const agent = {
+  const agent: AgentInput = {
     id: agentId,
     namespaceId,
     name: `Secret owner ${randomUUID()}`,
@@ -38,13 +54,15 @@ function resources() {
     backendId: null,
     harnessAuth: null,
     executionMode: "dedicated",
+    desiredRuntimeState: "stopped",
+    status: "active",
     servicePrincipalId: `service-agent-${randomUUID()}`,
     createdAt,
   };
-  return { namespace, configuration, agent, createdAt };
+  return { namespace, configuration, agent };
 }
 
-function secret(namespaceId, name = `model-key-${randomUUID()}`) {
+function secret(namespaceId: string, name = `model-key-${randomUUID()}`): Secret {
   return {
     id: identifier("sec"),
     namespaceId,
@@ -60,7 +78,7 @@ function secret(namespaceId, name = `model-key-${randomUUID()}`) {
   };
 }
 
-function bindingValue(storedSecret) {
+function bindingValue(storedSecret: Secret): SecretBinding {
   return {
     source: {
       kind: "secret",
@@ -71,41 +89,45 @@ function bindingValue(storedSecret) {
   };
 }
 
-function bindingFor(storedSecret, destination = "SERVICE_TOKEN") {
+function bindingFor(storedSecret: Secret, destination = "SERVICE_TOKEN"): SecretBindings {
   return {
     [destination]: bindingValue(storedSecret),
   };
 }
 
-function bindingsFor(storedSecret, destinations) {
+function bindingsFor(storedSecret: Secret, destinations: readonly string[]): SecretBindings {
   return Object.fromEntries(
     destinations.map((destination) => [destination, bindingValue(storedSecret)]),
   );
 }
 
-function tooManyBindings(storedSecret) {
+function tooManyBindings(storedSecret: Secret) {
   return bindingsFor(
     storedSecret,
     Array.from({ length: 65 }, (_, index) => `MODEL_KEY_${index}`),
   );
 }
 
-function acceptedBindings(storedSecret) {
+function acceptedBindings(storedSecret: Secret) {
   return bindingsFor(storedSecret, ["SERVICE_TOKEN", "EXTERNAL_API_KEY"]);
 }
 
-async function assertStateBindingDestinationGrammar(
-  state,
-  namespaceId,
-  configuration,
-  storedSecret,
-) {
-  for (const bindings of [
+function rejectedDestinationBindings(storedSecret: Secret): readonly SecretBindings[] {
+  return [
     bindingFor(storedSecret, "CODEX_TOKEN"),
     bindingFor(storedSecret, "OPENAI_API_KEY"),
     bindingFor(storedSecret, "PATH"),
     tooManyBindings(storedSecret),
-  ]) {
+  ];
+}
+
+async function assertStateBindingDestinationGrammar(
+  state: PlatformUnitOfWork,
+  namespaceId: string,
+  configuration: ConfigurationInput,
+  storedSecret: Secret,
+) {
+  for (const bindings of rejectedDestinationBindings(storedSecret)) {
     await assert.rejects(
       state.configurations.advanceConfigurationGeneration(
         namespaceId,
@@ -123,19 +145,25 @@ async function assertStateBindingDestinationGrammar(
     configuration.generation,
     acceptedBindings(storedSecret),
   );
+  assert.ok(advanced, "the current Configuration generation must advance");
   assert.deepEqual(advanced.secretBindings, acceptedBindings(storedSecret));
   assert.equal(advanced.generation, configuration.generation + 1);
 }
 
-function insertSqlConfiguration(pool, namespaceId, bindings) {
-  return pool.query(
+async function insertSqlConfiguration(pool: Pool, namespaceId: string, bindings: unknown) {
+  await pool.query<Record<string, unknown>>(
     `INSERT INTO occ.configurations (id, namespace_id, kind, generation, secret_bindings, created_at)
      VALUES ($1, $2, 'agent', 1, $3::jsonb, now())`,
     [identifier("cfg"), namespaceId, JSON.stringify(bindings)],
   );
 }
 
-function revisionFor(agent, configuration, storedSecret, revisionNumber = 1) {
+function revisionFor(
+  agent: Agent,
+  configuration: ConfigurationInput,
+  storedSecret: Secret,
+  revisionNumber: number,
+) {
   return {
     id: identifier("rev"),
     namespaceId: agent.namespaceId,
@@ -164,10 +192,10 @@ function revisionFor(agent, configuration, storedSecret, revisionNumber = 1) {
     servicePrincipalId: agent.servicePrincipalId,
     createdAt: new Date().toISOString(),
     secretDriverId: "kubernetes-secret",
-  };
+  } satisfies AgentRevision;
 }
 
-async function ensureInstallation(store) {
+async function ensureInstallation(store: PlatformStateStore) {
   const existing = await store.read((state) => state.installations.getInstallation());
   if (existing !== undefined) {
     return existing;
@@ -181,7 +209,7 @@ async function ensureInstallation(store) {
   );
 }
 
-async function exerciseRepository(store) {
+async function exerciseRepository(store: PlatformStateStore) {
   await ensureInstallation(store);
   const { namespace, configuration, agent: initialAgent } = resources();
   const storedSecret = secret(namespace.id);
@@ -268,10 +296,11 @@ async function exerciseRepository(store) {
     assert.equal(await state.secrets.lockSecret(namespace.id, foreignSecret.id), undefined);
   });
   // A binding to a foreign Secret is refused, even when it claims this Namespace for it.
-  for (const secretBindings of [
+  const foreignBindings: readonly SecretBindings[] = [
     bindingFor(foreignSecret),
     { MODEL_KEY: { source: { kind: "secret", namespaceId: namespace.id, id: foreignSecret.id } } },
-  ]) {
+  ];
+  for (const secretBindings of foreignBindings) {
     await assert.rejects(
       store.transact((state) =>
         state.configurations.createConfiguration({
@@ -313,6 +342,7 @@ async function exerciseRepository(store) {
       configurationBlocker.generation,
       {},
     );
+    assert.ok(cleared, "the current Configuration generation must advance");
     assert.equal(Object.hasOwn(cleared, "secretBindings"), false);
     assert.equal(
       await state.secrets.hasReferences(namespace.id, configurationBlockerSecret.id),
@@ -327,8 +357,7 @@ async function exerciseRepository(store) {
   // Service account token references must retain sources without ordinary environment bindings.
   const revisionSecret = secret(namespace.id);
   const activeSecret = secret(namespace.id);
-  let activeRevisionId;
-  await store.transact(async (state) => {
+  const activeRevisionId = await store.transact(async (state) => {
     await state.secrets.createSecret(revisionSecret);
     await state.secrets.createSecret(activeSecret);
     await state.agents.updateConfiguration(namespace.id, agent.id, configuration.id, undefined, {
@@ -371,7 +400,6 @@ async function exerciseRepository(store) {
     const activeRevision = await state.revisions.createRevision(
       revisionFor(agent, { ...configuration, generation: 3 }, activeSecret, 2),
     );
-    activeRevisionId = activeRevision.id;
     await state.agents.compareAndSetActiveRevision(
       namespace.id,
       agent.id,
@@ -379,6 +407,7 @@ async function exerciseRepository(store) {
       activeRevision.id,
     );
     assert.equal(await state.secrets.hasReferences(namespace.id, activeSecret.id), true);
+    return activeRevision.id;
   });
 
   await assert.rejects(
@@ -433,7 +462,10 @@ test(
     const source = secret(namespace.id);
     const foreign = resources();
     const foreignSource = secret(foreign.namespace.id);
-    const auth = { method: "codex_pat", source: bindingValue(source).source };
+    const auth = {
+      method: "codex_pat",
+      source: bindingValue(source).source,
+    } satisfies HarnessAuthBinding;
     await store.transact(async (state) => {
       await state.namespaces.createNamespace(namespace);
       await state.namespaces.createNamespace(foreign.namespace);
@@ -442,7 +474,7 @@ test(
       await state.secrets.createSecret(foreignSource);
       await state.agents.createAgent({ ...agent, harnessAuth: auth });
     });
-    const stored = await pool.query(
+    const stored = await pool.query<Record<string, unknown>>(
       "SELECT harness_auth, harness_auth_secret_id FROM occ.agents WHERE namespace_id = $1 AND id = $2",
       [namespace.id, agent.id],
     );
@@ -450,14 +482,15 @@ test(
 
     // Execute writes directly so application validation cannot conceal a missing
     // JSON constraint or the composite Namespace/Secret foreign key.
-    for (const [binding, code] of [
+    const invalidBindings: readonly (readonly [binding: unknown, code: string])[] = [
       [{ ...auth, source: { ...auth.source, id: identifier("sec") } }, "23503"],
       [{ ...auth, source: { ...auth.source, id: foreignSource.id } }, "23503"],
       [{ ...auth, source: bindingValue(foreignSource).source }, "23514"],
       [{ ...auth, method: "oauth" }, "23514"],
       [{ method: "chatgpt_service_account", serviceAccountId: identifier("sa") }, "23514"],
       [{ ...auth, refreshToken: "must-not-be-stored-in-database" }, "23514"],
-    ]) {
+    ];
+    for (const [binding, code] of invalidBindings) {
       await assert.rejects(
         pool.query("UPDATE occ.agents SET harness_auth = $1::jsonb WHERE id = $2", [
           JSON.stringify(binding),
@@ -489,15 +522,19 @@ test(
     const store = new PostgresPlatformState(pool);
 
     const { namespace, agent, configuration, revisionSecret } = await exerciseRepository(store);
-    const storedAuth = await pool.query(
+    const storedAuth = await pool.query<Record<string, unknown>>(
       "SELECT harness_auth, harness_auth_secret_id FROM occ.agents WHERE namespace_id = $1 AND id = $2",
       [namespace.id, agent.id],
     );
-    assert.equal(storedAuth.rows[0].harness_auth.method, "codex_pat");
-    assert.equal(
-      storedAuth.rows[0].harness_auth_secret_id,
-      storedAuth.rows[0].harness_auth.source.id,
-    );
+    const authRow = storedAuth.rows[0];
+    assert.ok(authRow, "the Agent must have a persisted Harness binding");
+    const auth = authRow.harness_auth;
+    assert.ok(auth && typeof auth === "object" && "source" in auth && "method" in auth);
+    assert.equal(auth.method, "codex_pat");
+    const source = auth.source;
+    assert.ok(source && typeof source === "object" && "id" in source);
+    assert.equal(typeof source.id, "string");
+    assert.equal(authRow.harness_auth_secret_id, source.id);
     await assert.rejects(
       pool.query(
         "UPDATE occ.agents SET harness_auth = $3::jsonb WHERE namespace_id = $1 AND id = $2",
@@ -515,32 +552,19 @@ test(
     const sqlSecret = secret(namespace.id, `sql-key-${randomUUID()}`);
 
     await store.transact((state) => state.secrets.createSecret(sqlSecret));
-    for (const bindings of [
-      bindingFor(sqlSecret, "CODEX_TOKEN"),
-      bindingFor(sqlSecret, "OPENAI_API_KEY"),
-      bindingFor(sqlSecret, "PATH"),
-      tooManyBindings(sqlSecret),
-    ]) {
+    for (const bindings of rejectedDestinationBindings(sqlSecret)) {
       await assert.rejects(insertSqlConfiguration(pool, namespace.id, bindings), { code: "23514" });
     }
 
     await insertSqlConfiguration(pool, namespace.id, acceptedBindings(sqlSecret));
 
     await assert.rejects(
-      pool.query(
-        `INSERT INTO occ.configurations (id, namespace_id, kind, generation, secret_bindings, created_at)
-       VALUES ($1, $2, 'agent', 1, $3::jsonb, now())`,
-        [
-          identifier("cfg"),
-          namespace.id,
-          JSON.stringify({
-            INVALID: {
-              source: { kind: "secret", namespaceId: namespace.id, id: sqlSecret.id },
-              unexpected: true,
-            },
-          }),
-        ],
-      ),
+      insertSqlConfiguration(pool, namespace.id, {
+        INVALID: {
+          source: { kind: "secret", namespaceId: namespace.id, id: sqlSecret.id },
+          unexpected: true,
+        },
+      }),
       { code: "23514" },
     );
 
@@ -648,13 +672,17 @@ test(
       assert.equal(await state.secrets.deleteSecret(namespace.id, revisionSecret.id), true);
     });
 
-    const columns = await pool.query(
+    const columns = await pool.query<Record<string, unknown>>(
       `SELECT column_name
      FROM information_schema.columns
      WHERE table_schema = 'occ' AND table_name = 'secrets'
      ORDER BY column_name`,
     );
-    assert.ok(!columns.rows.some(({ column_name }) => column_name === "agent_id"));
-    assert.ok(!columns.rows.some(({ column_name }) => /value|bytes|material/i.test(column_name)));
+    assert.ok(columns.rows.length > 0, "the Secret column inventory must exist");
+    for (const { column_name: columnName } of columns.rows) {
+      assert.ok(typeof columnName === "string", "the Secret column name must be a string");
+      assert.notEqual(columnName, "agent_id");
+      assert.doesNotMatch(columnName, /value|bytes|material/i);
+    }
   },
 );
