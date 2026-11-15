@@ -9,7 +9,7 @@ import {
   prepareQaPluginCatalogs,
 } from "./qa-installation.mjs";
 import { protectedText } from "./qa-secrets.mjs";
-import { assertGatewayModelTurn } from "./kubernetes-real.mjs";
+import { assertGatewayModelTurn } from "./kubernetes-real.ts";
 import { waitFor } from "./qa-utils.mjs";
 
 /** Real installed Agent workflows. No model server, Compute or credential-delivery substitutes. */

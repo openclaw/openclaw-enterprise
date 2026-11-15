@@ -106,10 +106,10 @@ pages use custom replacement blocks around generated GitHub fallback tables:
 
 - `<!-- compute-matrix:start -->` / `<!-- compute-matrix:end -->` reads
   `docs/assets/compute-driver-matrix.json` and is regenerated with
-  `node scripts/generate-compute-matrix.mjs`.
+  `node scripts/generate-compute-matrix.ts`.
 - `<!-- plugin-matrix:start -->` / `<!-- plugin-matrix:end -->` reads
   `docs/assets/plugin-driver-matrix.json` and is regenerated with
-  `node scripts/generate-plugin-matrix.mjs`.
+  `node scripts/generate-plugin-matrix.ts`.
 
 Keep each fallback generated from the same JSON so GitHub Markdown remains
 useful without becoming a second fact owner. No assistant, community widget,

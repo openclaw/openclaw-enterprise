@@ -4,7 +4,7 @@ import {
   UNRECOGNIZED_RUNTIME_VALUE,
   WORKSPACE_SETUP_FAILED,
   WORKSPACE_SETUP_REFUSED,
-} from "../../packages/contracts/src/runtime-failure.mjs";
+} from "../../packages/contracts/src/runtime-failure.ts";
 
 export const openShellGitRetentionKind = "openshell-git-retention";
 

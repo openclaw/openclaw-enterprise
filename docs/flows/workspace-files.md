@@ -155,7 +155,7 @@ live edits after activation do not update it.
 
 ### 4. Composition configures private access
 
-`apps/controller/src/api-startup.mjs:startApi` validates the optional absolute
+`apps/controller/src/api-startup.ts:startApi` validates the optional absolute
 `OCC_GATEWAY_API_KEY_PATH` before opening the database. Production and
 PostgreSQL development composition bind the selected Compute Driver to
 `createWorkspaceFilesAccess`. The worker uses that key for node enrollment.

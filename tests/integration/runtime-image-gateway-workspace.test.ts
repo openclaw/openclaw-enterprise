@@ -3,7 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import { join } from "node:path";
 import { describe, test } from "node:test";
-import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
+import { readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -46,7 +46,7 @@ function lastOutputRecord(stdout: string): Record<string, unknown> {
 }
 
 // Codex Gateway cases on the real runtime image, split from
-// runtime-image-startup.test.mjs by measured case durations so CI runs them
+// runtime-image-startup.test.ts by measured case durations so CI runs them
 // beside it: the Gateway hot-loads its workspace node binding in place,
 // custom-provider subagents keep their native model IDs in the remote workspace,
 // and a write-scoped run's native command approval reaches the reviewer.

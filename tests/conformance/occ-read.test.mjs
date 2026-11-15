@@ -216,8 +216,7 @@ async function createFixture() {
   };
 }
 
-// The HTTP fixture in occ-api-security.test.mjs records no operations, so the
-// controller-level proof that a refused adoption queues nothing stays here.
+// Exercise the controller directly to verify that a refused adoption queues no operations.
 test("a refused existing-namespace adoption leaves Namespaces and pending operations unchanged", async () => {
   const { controller, roles } = await createFixture();
   roles[0].permissions.push({ action: "administer", resourceKind: "installation" });

@@ -106,8 +106,29 @@ export async function verifyWorkspaceWrapperDiagnostics({
   const root = await temporaryDirectory(t, "openshell-workspace-wrapper-");
   const workspace = join(root, "workspace");
   await mkdir(workspace);
-  const wrapped = (payload: object, environment: NodeJS.ProcessEnv = {}, runnerExit?: number) => {
+  const wrapped = (
+    payload: object,
+    environment: NodeJS.ProcessEnv = {},
+    runnerExit?: number,
+    afterLongWait = false,
+  ) => {
     let program = wrapper;
+    if (afterLongWait) {
+      // Advance only elapsed time after the real flock succeeds.
+      program =
+        `{
+        const cp = require("node:child_process");
+        const spawn = cp.spawnSync;
+        const now = performance.now.bind(performance);
+        let elapsed = 0;
+        Object.defineProperty(performance, "now", {value: () => now() + elapsed});
+        cp.spawnSync = (command, ...args) => {
+          const result = spawn(command, ...args);
+          if (command === "/usr/bin/flock" && result.status === 0) elapsed = 30000;
+          return result;
+        };
+      }\n` + program;
+    }
     if (runnerExit !== undefined) {
       // Only the nested initializer's result is synthetic; the wrapper and flock run.
       program =
@@ -136,6 +157,11 @@ export async function verifyWorkspaceWrapperDiagnostics({
   // A completed setup whose workspace has no record refuses on every retry.
   const { files: _files, ...record } = setup;
   assert.equal(wrapped({ ...record, completed: true }).status, 2);
+  // A fresh owner reaches image validation. A late owner without a marker
+  // must defer before starting setup, even if the first owner already exited.
+  const unsupportedImage = { OPENCLAW_EXECUTABLE: process.execPath };
+  assert.equal(wrapped(setup, unsupportedImage).status, 2);
+  assert.equal(wrapped(setup, unsupportedImage, undefined, true).status, 1);
   // A missing runtime may be back on a retry; a workspace path the wrapper rejects exits 1.
   assert.equal(wrapped(setup).status, 1);
   assert.equal(wrapped(setup, { OPENCLAW_WORKSPACE_DIR: "relative" }).status, 1);

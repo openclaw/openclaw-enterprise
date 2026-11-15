@@ -1,21 +1,49 @@
+import assert from "node:assert/strict";
+import { Check } from "typebox/value";
+import { IAMPermissionSchema } from "../../packages/contracts/src/api/resources.ts";
+
+/** @typedef {import("../../packages/contracts/src/index.ts").AccessBinding} AccessBinding */
+/** @typedef {import("../../packages/contracts/src/index.ts").Permission} Permission */
+/** @typedef {{kind: Permission["resourceKind"], id: string}} BindingResource */
+/** @typedef {import("../../packages/contracts/src/index.ts").Role} Role */
+/** @typedef {Partial<Record<Permission["resourceKind"], readonly Permission["action"][]>>} ActionsByKind */
+/** @typedef {Omit<Role, "permissions"> & {permissions: Permission[]}} FixtureRole */
+
+/** @type {(value: readonly Permission[] | ActionsByKind) => value is readonly Permission[]} */
+const isPermissionList = Array.isArray;
+
 /**
  * Role permissions from `{ resourceKind: [action, ...] }`, in the order listed.
  * `permissionsFor({ namespace: ["read"], agent: ["read", "operate"] })`
+ * @param {ActionsByKind} actionsByKind
+ * @returns {Permission[]}
  */
 export function permissionsFor(actionsByKind) {
   return Object.entries(actionsByKind).flatMap(([resourceKind, actions]) =>
-    actions.map((action) => ({ action, resourceKind })),
+    actions.map((action) => {
+      const permission = { action, resourceKind };
+      assert.ok(
+        Check(IAMPermissionSchema, permission),
+        "expected a known IAM action and resource kind",
+      );
+      return permission;
+    }),
   );
 }
 
 /**
  * Binds `roleId` to one identity in a mutable Native IAM policy (fixtures that load it live).
  * `namespaceId` scopes the binding and `resource` ({ kind, id }) narrows it to one resource.
+ * @param {{bindings: AccessBinding[]}} policy
+ * @param {string} subjectId
+ * @param {{id: string, roleId: string, namespaceId?: string | undefined, resource?: BindingResource | undefined}} options
+ * @returns {AccessBinding}
  */
 export function bindRole(policy, subjectId, { id, roleId, namespaceId, resource }) {
   if (typeof roleId !== "string" || roleId.length === 0) {
     throw new TypeError(`binding ${id} needs a roleId`);
   }
+  /** @type {AccessBinding} */
   const binding = {
     id,
     ...(namespaceId === undefined ? {} : { namespaceId }),
@@ -31,6 +59,11 @@ export function bindRole(policy, subjectId, { id, roleId, namespaceId, resource 
 /**
  * Adds Role `id` with `permissions` (a list, or `{ resourceKind: [actions] }`) and binds it to one
  * identity. The Role and its binding share `namespaceId`; the binding id defaults to the Role id.
+ * @param {{roles: Role[], bindings: AccessBinding[]}} policy
+ * @param {string} subjectId
+ * @param {{id: string, bindingId?: string, namespaceId?: string | undefined,
+ *   permissions: readonly Permission[] | ActionsByKind, resource?: BindingResource | undefined}} options
+ * @returns {{role: FixtureRole, binding: AccessBinding}}
  */
 export function grantRole(
   policy,
@@ -40,7 +73,7 @@ export function grantRole(
   const role = {
     id,
     ...(namespaceId === undefined ? {} : { namespaceId }),
-    permissions: Array.isArray(permissions) ? [...permissions] : permissionsFor(permissions),
+    permissions: isPermissionList(permissions) ? [...permissions] : permissionsFor(permissions),
   };
   policy.roles.push(role);
   const binding = bindRole(policy, subjectId, { id: bindingId, roleId: id, namespaceId, resource });

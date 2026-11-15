@@ -11,7 +11,7 @@ import {
   kubectlArguments,
   kubernetesHash,
   validateExplicitK3dLoopbackContext,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
 import { kubectlGetJson } from "./kubernetes-api-read.ts";
 import {
   parseProductionChart,

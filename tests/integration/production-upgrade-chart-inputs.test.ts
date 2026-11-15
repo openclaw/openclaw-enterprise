@@ -42,7 +42,7 @@ test("production upgrades check the stock chart before recording evidence or con
     "scripts/upgrade-image-identity.py",
     "scripts/upgrade-node-platform.py",
     "scripts/upgrade-deployment-identity.py",
-    "scripts/upgrade-startup-preflight.mjs",
+    "scripts/upgrade-startup-preflight.ts",
     "scripts/upgrade-preflight-state.py",
     "scripts/lib/upgrade-preflight-cleanup.sh",
     "scripts/upgrade-evidence.py",

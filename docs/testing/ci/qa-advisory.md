@@ -277,7 +277,7 @@ qa_status="$(git status --porcelain --untracked-files=all)"
 qa_metadata="$(mktemp -d)"
 qa_prefix="localhost/oce-qa-$(date +%s)-$$"
 qa_node_base="$(node -p 'require("./scripts/ci/test-suites/images-packaging.json").prepare.defaultEnv.NODE_BASE_IMAGE')"
-qa_source="$(node scripts/lib/openclaw-source.mjs build-args)"
+qa_source="$(node scripts/lib/openclaw-source.ts build-args)"
 qa_runtime_args=()
 while IFS= read -r argument; do
   qa_runtime_args+=(--build-arg "$argument")

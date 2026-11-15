@@ -24,9 +24,14 @@ import {
   recordSkipperCheckpoint,
   recordSkipperTestFailure,
 } from "../../scripts/ci/skipper-failure-receipt.ts";
-import reporter from "../../scripts/ci/reporter.mjs";
+import reporter from "../../scripts/ci/reporter.ts";
 import { createSkipperPreparedComputeEvents } from "../fixtures/skipper-prepared-compute-model.mjs";
-import { inGateway, sendSkipperChat } from "../helpers/skipper-prepared-compute.mjs";
+import { assertConnectedResponse } from "../helpers/egress-connected-inputs.mjs";
+import {
+  configureSkipperTransport,
+  inGateway,
+  sendSkipperChat,
+} from "../helpers/skipper-prepared-compute.mjs";
 
 const lane = "skipper-prepared-git-installed";
 const sourceSha = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
@@ -101,7 +106,7 @@ test("aggregate qualifies only the independently selected Skipper image set with
   function produce(file: string, overrides: NodeJS.ProcessEnv = {}) {
     const result = spawnSync(
       process.execPath,
-      ["scripts/ci/first-agent-smoke.mjs", "release-selection", file],
+      ["scripts/ci/first-agent-smoke.ts", "release-selection", file],
       {
         encoding: "utf8",
         timeout: 30_000,
@@ -137,7 +142,7 @@ test("aggregate qualifies only the independently selected Skipper image set with
   assert.deepEqual(JSON.parse(await readFile(control, "utf8")), selection);
   await assert.rejects(readFile(summary), { code: "ENOENT" });
   await assert.rejects(readFile(exported), { code: "ENOENT" });
-  const args = ["scripts/ci/run-tests.mjs", "aggregate", lane, "--results-dir", directory];
+  const args = ["scripts/ci/run-tests.ts", "aggregate", lane, "--results-dir", directory];
   async function aggregate(evidence: unknown, expected: unknown = selection, mode = "qualify") {
     await writeFile(join(directory, lane + ".json"), JSON.stringify(evidence));
     if (mode !== "produced") {
@@ -242,6 +247,41 @@ test("aggregate qualifies only the independently selected Skipper image set with
     "later-turn-reauthorized-and-advanced-same-draft",
   );
   assert.equal((await aggregate(team)).status, "passed");
+});
+
+test("prepared Skipper writes runtime credentials only for explicit false", async (t) => {
+  const namespacePath = "/namespaces/ns_11111111-1111-4111-8111-111111111111";
+  const agentPath = namespacePath + "/agents/agt_22222222-2222-4222-8222-222222222222";
+  for (const [name, data, expected] of [
+    ["null data", null, "reject"],
+    ["missing flag", {}, "reject"],
+    ["non-boolean flag", { transportConfigured: "false" }, "reject"],
+    ["unconfigured", { transportConfigured: false }, "write"],
+    ["configured", { transportConfigured: true }, "skip"],
+  ] as const) {
+    await t.test(name, async () => {
+      const methods: string[] = [];
+      const result = configureSkipperTransport(async (method, path, body) => {
+        methods.push(method);
+        assert.equal(path, agentPath + "/runtime-credentials");
+        if (method === "GET") {
+          return assertConnectedResponse(
+            { status: 200, body: { data, meta: { requestId: "status" } } },
+            200,
+          );
+        }
+        assert.equal(method, "POST");
+        assert.deepEqual(body, {});
+        return {};
+      }, agentPath);
+      if (expected === "reject") {
+        await assert.rejects(result, /expected boolean transportConfigured/);
+      } else {
+        await result;
+      }
+      assert.deepEqual(methods, expected === "write" ? ["GET", "POST"] : ["GET"]);
+    });
+  }
 });
 
 test("installed Skipper receiver reports failures without exposing response content", async (t) => {

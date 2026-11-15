@@ -5,38 +5,41 @@
   "fileConcurrency": 8,
   "parallelFiles": [
     "tests/integration/dev-up.test.mjs",
+    "tests/integration/dev-up-compose-startup.test.ts",
     "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
     "tests/integration/occ-api-joint-plugin-deployment.test.ts",
-    "tests/integration/stored-document-serialization.test.mjs",
+    "tests/integration/occ-service-account-lifecycle.test.ts",
+    "tests/integration/stored-document-serialization.test.ts",
     "tests/integration/precompiled-route-compilers.test.ts",
     "tests/integration/route-header-names.test.ts",
     "tests/integration/list-summaries.test.ts",
-    "tests/conformance/plugin-compute.test.mjs",
+    "tests/conformance/plugin-compute.test.ts",
     "tests/conformance/plugin-compute-codex-install.test.ts",
     "tests/conformance/protected-codex-artifact-policy.test.ts",
     "tests/integration/openshell-quickstart-policy.test.ts",
     "tests/conformance/codex-native-startup.test.mjs",
-    "tests/conformance/occ-api-security.test.mjs",
+    "tests/conformance/occ-api-security.test.ts",
+    "tests/conformance/occ-runtime-logs-security.test.ts",
     "tests/integration/configuration-startup.test.mjs",
     "tests/integration/installation-change-preflight.test.mjs",
-    "tests/conformance/kubernetes-secret-driver.test.mjs",
+    "tests/conformance/kubernetes-secret-driver.test.ts",
     "tests/docs/docs-site.test.mjs",
     "tests/conformance/kubernetes-compute.test.mjs",
     "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
-    "tests/conformance/workspace-node-supervisor.test.mjs",
+    "tests/conformance/workspace-node-supervisor.test.ts",
     "tests/integration/presets-controller.test.ts",
-    "tests/integration/plugin-discovery-api.test.mjs",
+    "tests/integration/plugin-discovery-api.test.ts",
     "tests/integration/openshell-plugin-source-reader.test.ts",
     "tests/integration/runtime-credentials-api.test.ts",
-    "tests/integration/secret-api.test.mjs",
+    "tests/integration/secret-api.test.ts",
     "tests/integration/model-discovery-shipped-api.test.ts",
     "tests/integration/console-api.test.ts",
     "tests/integration/caller-denial-api.test.ts",
     "tests/conformance/kubernetes-preflight.test.ts",
-    "tests/conformance/kubernetes-client.test.mjs",
+    "tests/conformance/kubernetes-client.test.ts",
     "tests/conformance/kubernetes-api-read.test.ts",
     "tests/integration/configuration-controller.test.mjs",
     "tests/integration/configuration-body-limits.test.mjs",
@@ -49,7 +52,7 @@
     "tests/integration/openshell-device-authorization-api.test.mjs",
     "tests/integration/dependency-unavailable-log.test.mjs",
     "tests/integration/git-hooks.test.mjs",
-    "tests/integration/profile-renderer.test.mjs",
+    "tests/integration/profile-renderer.test.ts",
     "tests/integration/profile-public-github-read.test.mjs",
     "tests/integration/profile-preflight-chart-parity.test.ts",
     "tests/conformance/runtime-logs-content.test.ts",
@@ -60,7 +63,7 @@
     "tests/integration/service-api-keys.test.ts",
     "tests/integration/driver-plugin-installation.test.ts",
     "tests/conformance/workspace-files-configuration.test.mjs",
-    "tests/integration/common-logging.test.mjs",
+    "tests/integration/common-logging.test.ts",
     "tests/docs/docs-length.test.mjs",
     "tests/integration/production-image-upgrade.test.ts",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
@@ -69,8 +72,8 @@
     "tests/conformance/socket-directory.test.ts",
     "tests/conformance/temporary-directory.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
-    "tests/conformance/kubernetes-runtime-credentials.test.mjs",
-    "tests/conformance/openshell-gateway-wire.test.mjs",
+    "tests/conformance/kubernetes-runtime-credentials.test.ts",
+    "tests/conformance/openshell-gateway-wire.test.ts",
     "tests/conformance/openshell-provider-profile-wire.test.ts",
     "tests/conformance/oauth-connection.test.mjs",
     "tests/conformance/openshell-oauth-wire.test.mjs",
@@ -81,24 +84,24 @@
     "tests/conformance/kubernetes-configuration.test.ts",
     "tests/conformance/occ-read.test.mjs",
     "tests/integration/controller-lifecycle.test.ts",
-    "tests/conformance/configuration-occ.test.mjs",
+    "tests/conformance/configuration-occ.test.ts",
     "tests/conformance/configuration-model-policy.test.ts",
-    "tests/conformance/credential-source-occ.test.mjs",
+    "tests/conformance/credential-source-occ.test.ts",
     "tests/conformance/kubernetes-real-kubectl.test.ts",
     "tests/conformance/k3d-failure-diagnostics.test.ts",
     "tests/conformance/secret-occ.test.ts",
     "tests/conformance/http-errors.test.ts",
     "tests/conformance/http-error-details.test.ts",
-    "tests/conformance/docker-compute.test.mjs",
+    "tests/conformance/docker-compute.test.ts",
     "tests/conformance/secret-gateway-delivery.test.mjs",
     "tests/conformance/runtime-logs-replay.test.ts",
     "tests/conformance/codex-seccomp-profile.test.ts",
     "tests/conformance/kubernetes-ownership.test.ts",
     "tests/conformance/service-account-driver.test.ts",
-    "tests/conformance/iam.test.mjs",
-    "tests/conformance/platform-state-memory.test.mjs",
+    "tests/conformance/iam.test.ts",
+    "tests/conformance/platform-state-memory.test.ts",
     "tests/conformance/sandbox-policy-persistence.test.ts",
-    "tests/conformance/contracts.test.mjs",
+    "tests/conformance/contracts.test.ts",
     "tests/conformance/presets.test.ts",
     "tests/integration/production-healthcheck.test.ts",
     "tests/conformance/pr-status.test.ts",
@@ -108,7 +111,7 @@
     "tests/conformance/console-design-tokens.test.ts",
     "tests/conformance/audit.test.ts",
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
-    "tests/conformance/model-discovery.test.mjs",
+    "tests/conformance/model-discovery.test.ts",
     "tests/conformance/utils.test.ts",
     "tests/conformance/workspace-node-setup.test.ts",
     "tests/conformance/console-api-client.test.ts",
@@ -134,7 +137,7 @@
     "tests/integration/egress-stock-online-git-authority.test.mjs",
     "tests/integration/harness-egress-probe-diagnostics.test.ts",
     "tests/integration/openshell-permission-diagnostic.test.ts",
-    "tests/conformance/openshell-prepared-git-provider.test.mjs",
+    "tests/conformance/openshell-prepared-git-provider.test.ts",
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/conformance/openshell-git-denial.test.ts",
     "tests/integration/openshell-observed-request-hook.test.ts",
@@ -160,13 +163,13 @@
       "path": "tests/conformance/compute-lifecycle-hooks.test.mjs"
     },
     {
-      "path": "tests/conformance/model-discovery.test.mjs"
+      "path": "tests/conformance/model-discovery.test.ts"
     },
     {
       "path": "tests/conformance/codex-seccomp-profile.test.ts"
     },
     {
-      "path": "tests/conformance/configuration-occ.test.mjs"
+      "path": "tests/conformance/configuration-occ.test.ts"
     },
     {
       "path": "tests/conformance/filesystem-configuration.test.ts"
@@ -190,7 +193,7 @@
       "path": "tests/conformance/console-design-tokens.test.ts"
     },
     {
-      "path": "tests/conformance/contracts.test.mjs"
+      "path": "tests/conformance/contracts.test.ts"
     },
     {
       "path": "tests/conformance/update-contributors.test.ts"
@@ -235,16 +238,16 @@
       ]
     },
     {
-      "path": "tests/conformance/credential-source-occ.test.mjs"
+      "path": "tests/conformance/credential-source-occ.test.ts"
     },
     {
-      "path": "tests/conformance/docker-compute.test.mjs"
+      "path": "tests/conformance/docker-compute.test.ts"
     },
     {
       "path": "tests/conformance/grafana-overview-dashboard.test.ts"
     },
     {
-      "path": "tests/conformance/iam.test.mjs"
+      "path": "tests/conformance/iam.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-compute.test.mjs"
@@ -268,7 +271,7 @@
       "path": "tests/conformance/kubernetes-preflight.test.ts"
     },
     {
-      "path": "tests/conformance/kubernetes-client.test.mjs"
+      "path": "tests/conformance/kubernetes-client.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-network-policy.test.mjs"
@@ -283,7 +286,7 @@
       "path": "tests/conformance/k3d-failure-diagnostics.test.ts"
     },
     {
-      "path": "tests/conformance/kubernetes-runtime-credentials.test.mjs"
+      "path": "tests/conformance/kubernetes-runtime-credentials.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-configuration.test.ts"
@@ -296,10 +299,29 @@
       "expectedTests": ["sealed Namespace compares SDK-deserialized ingress exactly"]
     },
     {
-      "path": "tests/conformance/kubernetes-secret-driver.test.mjs"
+      "path": "tests/conformance/kubernetes-secret-driver.test.ts"
     },
     {
-      "path": "tests/conformance/occ-api-security.test.mjs"
+      "path": "tests/conformance/occ-api-security.test.ts"
+    },
+    {
+      "path": "tests/conformance/occ-runtime-logs-security.test.ts",
+      "expectedTests": [
+        "runtime status and log reads enforce their permission tiers before any Driver call",
+        "a delegated read_logs principal reads and downloads logs without administer",
+        "an Agent-level read_logs grant covers every revision, including later deployments",
+        "runtime log cursors bind one principal and view and are re-authorized on every poll",
+        "minLevel filters log lines on the server and a cursor still resumes after hidden lines",
+        "an expired runtime log cursor starts a new audited view with a labelled gap",
+        "a cursor whose Pod is gone starts a new audited view of the Pod that is read",
+        "runtime routes reject the Agent draft and unknown revisions without a Driver call",
+        "log polls describe only the requested source and skip Event lists",
+        "runtime log failures are fixed, content-free and never read after an audit failure",
+        "a version without a Sandbox names the log sources and policy suggestions it lacks",
+        "runtime log reads retain allowance through backward and restored wall clocks",
+        "runtime routes answer 501 when the Driver, its logging owner or the operator switch opts out",
+        "runtime log downloads use the log tier and are audited once per download"
+      ]
     },
     {
       "path": "tests/conformance/runtime-logs-admission.test.ts"
@@ -323,7 +345,7 @@
       "path": "tests/conformance/occ-read.test.mjs"
     },
     {
-      "path": "tests/conformance/openshell-gateway-wire.test.mjs"
+      "path": "tests/conformance/openshell-gateway-wire.test.ts"
     },
     {
       "path": "tests/conformance/openshell-provider-profile-wire.test.ts",
@@ -342,7 +364,7 @@
       "path": "tests/conformance/openshell-harness-status.test.mjs"
     },
     {
-      "path": "tests/conformance/platform-state-memory.test.mjs"
+      "path": "tests/conformance/platform-state-memory.test.ts"
     },
     {
       "path": "tests/conformance/sandbox-policy-persistence.test.ts",
@@ -394,13 +416,13 @@
       "path": "tests/conformance/workspace-files.test.ts"
     },
     {
-      "path": "tests/conformance/workspace-node-supervisor.test.mjs"
+      "path": "tests/conformance/workspace-node-supervisor.test.ts"
     },
     {
       "path": "tests/integration/presets-controller.test.ts"
     },
     {
-      "path": "tests/integration/profile-renderer.test.mjs",
+      "path": "tests/integration/profile-renderer.test.ts",
       "expectedTests": ["preflight rejects noncanonical SHA-256 image digests"]
     },
     {
@@ -468,7 +490,15 @@
       "path": "tests/integration/occ-api-joint-plugin-deployment.test.ts"
     },
     {
-      "path": "tests/integration/stored-document-serialization.test.mjs"
+      "path": "tests/integration/occ-service-account-lifecycle.test.ts",
+      "expectedTests": [
+        "a forced ServiceAccount delete without a ChatGPT Backend removes an account whose token nothing can revoke and audits it",
+        "native ServiceAccounts keep private credential references and cannot admit Harness authentication",
+        "native ServiceAccounts reject invalid references and enforce exact Namespace-scoped access"
+      ]
+    },
+    {
+      "path": "tests/integration/stored-document-serialization.test.ts"
     },
     {
       "path": "tests/integration/precompiled-route-compilers.test.ts"
@@ -492,7 +522,7 @@
       "path": "tests/integration/production-upgrade-chart-inputs.test.ts"
     },
     {
-      "path": "tests/integration/secret-api.test.mjs"
+      "path": "tests/integration/secret-api.test.ts"
     },
     {
       "path": "tests/integration/model-discovery-shipped-api.test.ts"
@@ -504,7 +534,7 @@
       ]
     },
     {
-      "path": "tests/integration/plugin-discovery-api.test.mjs"
+      "path": "tests/integration/plugin-discovery-api.test.ts"
     },
     {
       "path": "tests/integration/openshell-plugin-source-reader.test.ts",
@@ -537,7 +567,7 @@
       "path": "tests/integration/startup-ipv6-loopback.test.ts"
     },
     {
-      "path": "tests/integration/common-logging.test.mjs"
+      "path": "tests/integration/common-logging.test.ts"
     },
     {
       "path": "tests/integration/dev-entry-cdpath.test.ts",
@@ -571,7 +601,10 @@
       ]
     },
     {
-      "path": "tests/integration/dev-up-compose.test.mjs",
+      "path": "tests/integration/dev-up-compose.test.mjs"
+    },
+    {
+      "path": "tests/integration/dev-up-compose-startup.test.ts",
       "expectedTests": [
         "dev-up builds the default runtime only when real Compose leaves runtime images unselected",
         "dev-up preserves a selected custom runtime image and skips the quickstart build",
@@ -592,7 +625,7 @@
       ]
     },
     {
-      "path": "tests/conformance/plugin-compute.test.mjs"
+      "path": "tests/conformance/plugin-compute.test.ts"
     },
     {
       "path": "tests/conformance/plugin-compute-codex-install.test.ts",
@@ -856,7 +889,7 @@
       ]
     },
     {
-      "path": "tests/conformance/openshell-prepared-git-provider.test.mjs",
+      "path": "tests/conformance/openshell-prepared-git-provider.test.ts",
       "expectedTests": [
         "prepared Git static token and rotation use released fields without returning credentials or readiness",
         "prepared Git bootstraps without privilege and distinguishes accepted rotation from exact installed state",
