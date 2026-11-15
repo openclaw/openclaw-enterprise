@@ -6,11 +6,15 @@
 // runtime-image-native-worker.test.mjs.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, test } from "node:test";
+import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.ts";
 import {
+  execute,
   imageTestOptions,
   runDocker,
   failureTail,
@@ -240,4 +244,291 @@ describe("runtime image startup model probes", { concurrency: 2 }, () => {
       assert.equal(result.unpairedExpiredRejected, true);
     },
   );
+});
+
+// This is a controlled Compute release, not Supervisor injection or grant redemption.
+// Both inputs run the full provider-owned wrapper against the same credential-checking origin.
+test(
+  "runtime image protected Codex distinguishes an origin key from an uninjected placeholder",
+  { ...imageTestOptions, timeout: 600_000 },
+  async (t) => {
+    // Exercise the real assertion emission boundary with hostile diagnostic fields.
+    // This is a diagnostic control, not a substitute for either runtime case below.
+    const canary = "synthetic-diagnostic-canary".repeat(1_000);
+    const observationCount = 10_000;
+    let diagnostic;
+    try {
+      await withStartupProbeEvidence(
+        {
+          protected: true,
+          snapshot: {
+            output: canary,
+            phases: [
+              ...Array.from({ length: observationCount }, () => ({
+                phase: canary,
+                outcome: canary,
+              })),
+              { phase: "model-probe", outcome: "failed", sinceStartMs: 123 },
+            ],
+            events: [
+              ...Array.from({ length: observationCount }, () => ({
+                event: canary,
+                message: canary,
+              })),
+              { event: "wire", method: canary, target: canary },
+              { event: "origin", auth: canary, harness: canary, kind: canary },
+              {
+                event: "transport",
+                status: 401,
+                failure: {
+                  check: "model-probe",
+                  code: "AUTHENTICATION_FAILED",
+                  message: canary,
+                },
+              },
+            ],
+          },
+        },
+        async () => {
+          throw new Error(canary);
+        },
+      );
+    } catch (error) {
+      diagnostic = error;
+    }
+    if (
+      !diagnostic ||
+      String(diagnostic.stack).includes("synthetic-diagnostic-canary") ||
+      Buffer.byteLength(diagnostic.message, "utf8") >= 4 * 1024 ||
+      !diagnostic.message.includes("AUTHENTICATION_FAILED") ||
+      !diagnostic.message.includes('"status":401')
+    ) {
+      throw new Error("Protected diagnostic control failed");
+    }
+    const summary = JSON.parse(diagnostic.message.split("assertion failed: ")[1]);
+    assert.equal(summary.stage, "assertion");
+    assert.equal(summary.phaseCount, observationCount + 1);
+    assert.equal(summary.eventCount, observationCount + 3);
+    assert.ok(summary.phases.length <= 4);
+    assert.ok(summary.events.length <= 4);
+    assert.deepEqual(summary.phases.at(-1), {
+      phase: "model-probe",
+      outcome: "failed",
+      sinceStartMs: 123,
+    });
+    assert.equal(summary.events.at(-1).event, "transport");
+    assert.equal(summary.events.at(-1).status, 401);
+    assert.deepEqual(summary.events.at(-1).failure, {
+      check: "model-probe",
+      code: "AUTHENTICATION_FAILED",
+    });
+    t.diagnostic("Protected diagnostic canary suppressed; bounded terminal failure retained.");
+    for (const accepted of [true, false]) {
+      await t.test(accepted ? "origin key" : "uninjected placeholder", async (subtest) => {
+        const run = await runStartupProbeScenario(subtest, {
+          kind: "codex",
+          mode: "answer",
+          protectedCredential: accepted ? startupProbeApiKey : "synthetic-uninjected-placeholder",
+          // Transport and wrapper phases arrive through independent log followers.
+          until: ({ events, phases }) =>
+            accepted
+              ? phaseAt(phases, "native-spawn") !== undefined &&
+                events.some(
+                  (event) =>
+                    event.event === "transport" &&
+                    Number.isInteger(event.authenticatedUpgrade) &&
+                    Number.isInteger(event.unauthenticatedUpgrade),
+                )
+              : phaseAt(phases, "model-probe")?.outcome === "failed" &&
+                events.some(
+                  (event) =>
+                    event.event === "transport" &&
+                    event.failure?.check === "model-probe" &&
+                    event.failure?.code === "AUTHENTICATION_FAILED" &&
+                    event.ms < 120_000 * imageSmokeTimeoutMultiplier,
+                ),
+        });
+        await withStartupProbeEvidence(run, async () => {
+          const { events, phases } = run.snapshot;
+          assert.ok(
+            events.some(
+              (event) =>
+                event.event === "release" &&
+                event.accepted === 200 &&
+                event.unauthorized === 401 &&
+                event.invalidSignature === 409 &&
+                event.requestsBeforeRelease === 0,
+            ),
+          );
+          assert.equal(phaseAt(phases, "egress-enrollment")?.outcome, "ok");
+          assert.equal(
+            phaseAt(phases, "codex-login")?.outcome,
+            "ok",
+            "both synthetic values permit local login",
+          );
+          const origin = events.filter((event) => event.event === "origin");
+          assert.equal(origin.length, 1, "exactly one native model probe reaches the origin");
+          assert.equal(origin[0].status, accepted ? 200 : 401);
+          assert.equal(origin[0].kind, accepted ? "unmarked" : "rejected");
+          assert.equal(origin[0].auth, accepted ? "accepted" : "placeholder");
+          assert.equal(origin[0].harness, accepted ? "codex" : undefined);
+          const transport = events.filter((event) => event.event === "transport").at(-1);
+          const wire = events.filter((event) => event.event === "wire");
+          assert.equal(wire.length, 1);
+          assert.equal(wire[0].method, "POST");
+          assert.equal(wire[0].target, "responses");
+          if (accepted) {
+            assert.equal(phaseAt(phases, "model-probe")?.outcome, "ok");
+            assert.ok(phaseAt(phases, "native-spawn"));
+            assert.equal(transport.failure, null);
+            assert.equal(transport.status, 400);
+            assert.equal(transport.unauthorized, 400);
+            assert.equal(transport.authenticatedUpgrade, 101);
+            assert.equal(transport.unauthenticatedUpgrade, 401);
+          } else {
+            assert.equal(phaseAt(phases, "model-probe")?.outcome, "failed");
+            assert.equal(phaseAt(phases, "native-spawn"), undefined);
+            assert.equal(transport.status, 200);
+            assert.equal(transport.unauthorized, 401);
+            assert.equal(transport.failure.check, "model-probe");
+            assert.equal(transport.failure.code, "AUTHENTICATION_FAILED");
+            assert.ok(transport.ms < 120_000 * imageSmokeTimeoutMultiplier);
+            assert.equal((await run.collect()).running, true, "failure remains held");
+          }
+          subtest.diagnostic(
+            JSON.stringify({
+              container: run.containerName,
+              release: events.find((event) => event.event === "release"),
+              origin,
+              wire,
+              transport,
+              phases,
+            }),
+          );
+        });
+      });
+    }
+  },
+);
+
+// Drive the registered protected cases through their actual test hooks. Only the
+// Docker CLI is substituted. Its followers stay alive until stopped, while rm
+// fails for the wrapper and the absence check still sees that wrapper.
+test("protected startup cleanup joins live followers after a removal failure", async (t) => {
+  const directory = await temporaryDirectory(t, "oce-protected-cleanup-");
+  const trace = join(directory, "trace");
+  const docker = await writeCommand(
+    directory,
+    "docker.cts",
+    `const { appendFileSync, existsSync, writeFileSync } = require("node:fs");
+const [op, flag, ...rest] = process.argv.slice(2);
+const name = process.argv.at(-1);
+const record = (action: string, target: string) => appendFileSync(process.env.TRACE, action + " " + target + "\\n");
+if (op === "run") {
+  process.exit(0);
+} else if (op === "inspect") {
+  console.log("2026-01-01T00:00:00Z");
+} else if (op === "logs" && flag !== "--follow") {
+  console.log('{"event":"listening","publicKey":"fixture"}');
+} else if (op === "logs" || op === "wait") {
+  const id = op + ":" + name;
+  record("start", id);
+  process.once("SIGTERM", () => setTimeout(() => {
+    record("closed", id);
+    process.exit(0);
+  }, 50));
+  // A regressed helper must eventually return a failing result to the outer test.
+  setTimeout(() => {
+    record("expired", id);
+    process.exit(1);
+  }, 10_000);
+  if (op === "logs" && name.includes("-endpoint-")) {
+    console.log('{"event":"listening"}');
+    console.log('{"event":"transport","at":1767225600100,"authenticatedUpgrade":101,"unauthenticatedUpgrade":401,"failure":{"check":"model-probe","code":"AUTHENTICATION_FAILED"}}');
+  } else if (op === "wait") {
+    writeFileSync(process.env.TRACE + name, "");
+  } else {
+    // Publish the wrapper observations only after its wait process can handle SIGTERM.
+    const ready = setInterval(() => {
+      if (!existsSync(process.env.TRACE + name)) {
+        return;
+      }
+      clearInterval(ready);
+      console.log('{"event":"runtime.startup_phase","phase":"native-spawn"}');
+      console.log('{"event":"runtime.startup_phase","phase":"model-probe","outcome":"failed"}');
+    }, 10);
+  }
+} else if (op === "rm") {
+  record("remove", name);
+  process.exit(name.includes("-codex-") ? 1 : 0);
+} else if (op === "ps") {
+  const owned = rest[rest.indexOf("--filter") + 1].slice(6, -1);
+  record("inspect-absence", owned);
+  if (owned.includes("-codex-")) {
+    console.log(owned);
+  }
+} else {
+  process.exit(2);
+}
+`,
+    { interpreter: process.execPath },
+  );
+
+  const result = await execute(
+    process.execPath,
+    [
+      "--test",
+      "--test-reporter=tap",
+      "--test-name-pattern=^runtime image protected Codex",
+      import.meta.filename,
+    ],
+    {
+      env: {
+        PATH: process.env.PATH,
+        TMPDIR: directory,
+        OCC_DOCKER_BIN: docker,
+        OCC_TEST_RUNTIME_IMAGE: "controlled-cleanup",
+        TRACE: trace,
+      },
+      timeout: 60_000,
+    },
+  ).then(
+    () => assert.fail("the injected failures must fail the protected cases"),
+    (error) => error,
+  );
+  assert.equal(result.code, 1);
+  const lines = await commandCalls(trace);
+  const targets = (operation) =>
+    lines
+      .filter((line) => line.startsWith(operation + " "))
+      .map((line) => line.slice(operation.length + 1))
+      .sort();
+  const removed = targets("remove");
+  const wrappers = removed.filter((name) => /^oce-runtime-probe-codex-[a-f0-9]{12}$/.test(name));
+  assert.equal(new Set(wrappers).size, 2);
+  const endpoints = wrappers.map((name) => name.replace("-codex-", "-endpoint-"));
+  assert.deepEqual(removed, [...wrappers, ...endpoints].sort());
+  assert.deepEqual(targets("inspect-absence"), removed);
+
+  // Each case starts a readiness log follower, two steady log followers and docker wait.
+  const followers = [
+    ...wrappers.map((name) => "wait:" + name),
+    ...[...removed, ...endpoints].map((name) => "logs:" + name),
+  ].sort();
+  assert.deepEqual(targets("start"), followers);
+  assert.deepEqual(targets("closed"), followers);
+  assert.deepEqual(targets("expired"), []);
+
+  // The missing release event fails each body. Its protected assertion diagnostic
+  // and the two cleanup diagnostics must all reach Node's reporter.
+  assert.equal(result.stdout.match(/error: 'Protected startup assertion failed:/g)?.length, 2);
+  for (const name of wrappers) {
+    const suffix = name.split("-").at(-1);
+    const lastClose = lines.findLastIndex(
+      (line) => line.startsWith("closed ") && line.endsWith(suffix),
+    );
+    assert.ok(lastClose < lines.indexOf("remove " + name), "join live followers before removal");
+    assert.ok(result.stdout.includes(name + ": removal failed"));
+    assert.ok(result.stdout.includes(name + ": still present"));
+  }
 });
