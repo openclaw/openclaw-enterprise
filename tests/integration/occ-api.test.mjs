@@ -450,6 +450,19 @@ async function configuredController(options = {}) {
   };
 }
 
+async function createReadyNamespace(controller, name) {
+  const namespace = await createNamespace(controller, name);
+  await controller.fixture.markNamespaceReady(namespace.id);
+  return namespace;
+}
+
+async function readyNamespaceFixture(namespaceName, controllerOptions, bootstrapName) {
+  const controller = await configuredController(controllerOptions);
+  await bootstrap(controller, bootstrapName);
+  const namespace = await createReadyNamespace(controller, namespaceName);
+  return { fixture: controller.fixture, controller, namespace };
+}
+
 async function admittedDeploymentFixture(namespaceName, agentName, { recordOperations } = {}) {
   const deploymentWorks = new Map();
   const controller = await configuredController({ deploymentWorks, recordOperations });
@@ -2217,11 +2230,9 @@ test("guarded deployment rejects dot keys and unrecognized intent fields without
 });
 
 test("stock deploy baseline: a lost reply and re-POST admit independent revisions", async () => {
-  const controller = await configuredController({ recordOperations: true });
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "deploy-retry-baseline");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const { controller, fixture, namespace } = await readyNamespaceFixture("deploy-retry-baseline", {
+    recordOperations: true,
+  });
   const agent = await createAgent(controller, namespace.id, "retry-baseline");
   await bindHarnessKey(fixture, namespace.id, agent);
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
@@ -2256,11 +2267,10 @@ test("stock deploy baseline: a lost reply and re-POST admit independent revision
 });
 
 test("ordinary deploy rejects request bodies and admits the current saved generation", async () => {
-  const controller = await configuredController({ recordOperations: true });
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "deploy-generation-baseline");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const { controller, fixture, namespace } = await readyNamespaceFixture(
+    "deploy-generation-baseline",
+    { recordOperations: true },
+  );
   const agent = await createAgent(controller, namespace.id, "generation-baseline");
   await bindHarnessKey(fixture, namespace.id, agent);
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
@@ -2315,12 +2325,7 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
   }));
 
 test("Namespace IAM routes manage exact Role and AccessBinding policy through the selected Driver", async () => {
-  const controller = await configuredController();
-  const { fixture } = controller;
-  await bootstrap(controller);
-
-  const namespace = await createNamespace(controller, "iam-policy");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const { controller, fixture, namespace } = await readyNamespaceFixture("iam-policy");
   const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
     body: { name: "Model API key", value: "iam-policy-secret" },
   });
@@ -2725,8 +2730,7 @@ test("Agent drafts and revisions support up to 64 distinct credential sources an
   });
   const { fixture } = controller;
   await bootstrap(controller);
-  const namespace = await createNamespace(controller, "credential-source-binding");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const namespace = await createReadyNamespace(controller, "credential-source-binding");
   const gateway = {
     id: "credential-gateway-api",
     capability: "credential_gateway",
@@ -2884,8 +2888,7 @@ test("refresh source PATCH and rotate refuse a stale refresh token and audit a f
   });
   const { fixture } = controller;
   await bootstrap(controller);
-  const namespace = await createNamespace(controller, "credential-source-refresh-audit");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const namespace = await createReadyNamespace(controller, "credential-source-refresh-audit");
   const gateway = {
     id: "credential-gateway-refresh-api",
     capability: "credential_gateway",
@@ -3003,11 +3006,7 @@ test("refresh source PATCH and rotate refuse a stale refresh token and audit a f
 });
 
 test("a duplicate Secret name answers 409 naming the taken Secret name", async () => {
-  const controller = await configuredController();
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "secret-duplicate-name");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const { controller, namespace } = await readyNamespaceFixture("secret-duplicate-name");
   const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
     body: { name: "Model API key", value: "first-value" },
   });
@@ -3022,11 +3021,7 @@ test("a duplicate Secret name answers 409 naming the taken Secret name", async (
 });
 
 test("Secret values with an unpaired surrogate are refused as an invalid value", async () => {
-  const controller = await configuredController();
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "secret-value-validation");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const { controller, namespace } = await readyNamespaceFixture("secret-value-validation");
   const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
     body: { name: "Valid value", value: "valid-secret-\u{1F511}" },
   });
@@ -3120,8 +3115,7 @@ test("access removed by deleting its target or Namespace is audited and leaves n
   const member = await fixture.createAuthPrincipal("side-effect-member");
   fixture.state.identities.push(member.principal);
   await bootstrap(controller);
-  const namespace = await createNamespace(controller, "side-effect-access");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const namespace = await createReadyNamespace(controller, "side-effect-access");
   const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
     body: { name: "Side effect key", value: "side-effect-secret" },
   });
@@ -3196,8 +3190,7 @@ test("access removed by deleting its target or Namespace is audited and leaves n
   ]);
 
   // A Namespace tombstone keeps none of its own Roles or AccessBindings.
-  const empty = await createNamespace(controller, "side-effect-empty");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, empty.id, "ready");
+  const empty = await createReadyNamespace(controller, "side-effect-empty");
   const reader = await controller.request("POST", `/namespaces/${empty.id}/iam/roles`, {
     body: { permissions: [{ action: "read", resourceKind: "namespace" }] },
   });
@@ -3255,8 +3248,7 @@ test("a state conflict names what blocks the request, after authorization only",
   const member = await fixture.createAuthPrincipal("state-conflict-member");
   fixture.state.identities.push(member.principal);
   await bootstrap(controller);
-  const namespace = await createNamespace(controller, "state-conflict");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const namespace = await createReadyNamespace(controller, "state-conflict");
   const deletion = await controller.request("DELETE", `/namespaces/${namespace.id}`);
   assert.equal(deletion.status, 202, JSON.stringify(deletion.body));
 
@@ -4915,11 +4907,9 @@ test("Installation deployment inventory fails closed on incomplete authorization
 });
 
 test("Channel directory accepts Slack's null terminal cursor without losing prior matches", async () => {
-  const controller = await configuredController({ secretDriver: createTestSecretDriver() });
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "slack-terminal-cursor");
-  const { fixture } = controller;
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const { controller, fixture, namespace } = await readyNamespaceFixture("slack-terminal-cursor", {
+    secretDriver: createTestSecretDriver(),
+  });
   const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
     body: { name: "directory-bot", value: "xoxb-directory-fixture" },
   });
@@ -6950,8 +6940,7 @@ test("Configuration and Agent writes reject invalid Secret bindings as invalid r
   const controller = await configuredController();
   const { fixture } = controller;
   await bootstrap(controller, "Binding validation installation");
-  const { id: namespaceId } = await createNamespace(controller, "binding-validation");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespaceId, "ready");
+  const { id: namespaceId } = await createReadyNamespace(controller, "binding-validation");
   const secret = await injectedRequest(fixture.app, "POST", `/namespaces/${namespaceId}/secrets`, {
     body: { name: "tool-api-key", value: `tool-key-${randomUUID()}` },
   });
@@ -8245,12 +8234,7 @@ async function plaintextGatewayAdmissionFixture(nativeCompute, bootstrapLabel, n
   const computeDriver = createProvisioningCapableComputeDriver();
   computeDriver.validateGatewaySettings = (configuration) =>
     nativeCompute.validateGatewaySettings?.(configuration);
-  const controller = await configuredController({ computeDriver });
-  const { fixture } = controller;
-  await bootstrap(controller, bootstrapLabel);
-  const namespace = await createNamespace(controller, namespaceSlug);
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  return { fixture, controller, namespace };
+  return readyNamespaceFixture(namespaceSlug, { computeDriver }, bootstrapLabel);
 }
 
 test("deployment refuses a Codex approval policy the Gateway refuses across Compute Drivers", async (t) => {
@@ -8370,11 +8354,11 @@ test("deploy reports Configuration content a Compute Driver names as unsupported
       throw refusal;
     }
   };
-  const controller = await configuredController({ computeDriver });
-  const { fixture } = controller;
-  await bootstrap(controller, "Unsupported Configuration content");
-  const namespace = await createNamespace(controller, "unsupported-configuration");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const { controller, fixture, namespace } = await readyNamespaceFixture(
+    "unsupported-configuration",
+    { computeDriver },
+    "Unsupported Configuration content",
+  );
   const agent = await createAgent(controller, namespace.id, "unsupported-configuration-agent");
   await bindHarnessKey(fixture, namespace.id, agent);
   const deploy = () =>
@@ -8535,8 +8519,7 @@ test("deploy audit preserves its authorization decision and rolls back with appe
     { id: "iam-selected-after-deploy-decision" },
   );
   await bootstrap(controller, "Deploy audit provenance");
-  const namespace = await createNamespace(controller, "deploy-audit-provenance");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const namespace = await createReadyNamespace(controller, "deploy-audit-provenance");
   const agent = await createAgent(controller, namespace.id, "decision-bound-agent");
   await bindHarnessKey(fixture, namespace.id, agent);
   const authorizingDriverId = fixture.iamDriver.id;
@@ -9220,8 +9203,7 @@ test("SSH Compute refuses at Agent save and deploy a roster or workspace whose m
 async function createSlackValidationFixture(controller, namespaceName) {
   const { fixture } = controller;
   await bootstrap(controller);
-  const namespace = await createNamespace(controller, namespaceName);
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const namespace = await createReadyNamespace(controller, namespaceName);
   const base = `/namespaces/${namespace.id}`;
   const makeSecret = async (name, value) => {
     const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
