@@ -157,7 +157,7 @@
     "tests/docs/docs-server.test.mjs": 200,
     "tests/docs/docs-site.test.mjs": 6600,
     "tests/docs/generated-api-reference.test.ts": 2600,
-    "tests/integration/agent-create-validate-api.test.mjs": 1000,
+    "tests/integration/agent-create-validate-api.test.ts": 1000,
     "tests/integration/auth-maintain.test.ts": 4700,
     "tests/integration/bootstrap-output.test.ts": 100,
     "tests/integration/bootstrap-volume.test.ts": 5000,
