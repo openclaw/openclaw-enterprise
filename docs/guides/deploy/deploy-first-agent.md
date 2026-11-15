@@ -6,9 +6,22 @@ Use this OpenShell workflow to evaluate Agent deployment and model execution.
 A successful run does not complete the
 [remaining OpenShell production qualification](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
 
+## Prepare an existing OpenShell Gateway
+
+The Kubernetes network helper defaults to `oce-system`. If you use an existing Gateway in another namespace, complete these steps before you start in the Console or call the API.
+
+1. Confirm that the Installation already references that Gateway. Set `OPENSHELL_NAMESPACE` in the operator shell to the Gateway's namespace. The helper uses it for OpenShell Service discovery and policy placement. OCE stays in `oce-system`, and `save_session` retains the setting.
+2. Confirm that the operator can read the Services used by the helper and manage NetworkPolicies in the affected namespaces.
+3. Before either path uses the Gateway, verify scoped egress from the OCE API and worker Pods to the actual `openshell-gateway` management Service on TCP 8080 and to its selected Pods on the Service target port. The management ingress rules from the helper require this separate egress allow.
+4. Ask the Gateway owner to check ingress for every existing client of the management Pods, including any ingress controller or proxy that connects to them. Verify that each required client has a scoped allow on its destination port before the helper applies its rules. On a cluster that enforces NetworkPolicy, the first ingress policy selecting those Pods can isolate them for ingress.
+
+If repository credentials are already enabled, also [check Gateway egress](#check-gateway-egress-before-adding-git) before deployment.
+
 Create an Agent called `fred` in the Console below, or [start with the API](#1-select-or-register-the-model-credential). Both paths lead to the same onboarding steps. Choose a fresh setup where the name `fred` is available.
 
 ## Create and deploy fred in the Console
+
+For a Gateway in another namespace, [complete the Gateway prerequisites](#prepare-an-existing-openshell-gateway) first.
 
 Run `deployment_preflight` in your operator shell before creating the Agent. Open `$CONSOLE_ORIGIN/console/` and sign in with the administrator account from setup. Keep any required browser port-forward running.
 
@@ -17,13 +30,6 @@ Run `deployment_preflight` in your operator shell before creating the Agent. Ope
 While provisioning runs, open **Agents → fred** in a second tab. Under **Viewing version**, select the first saved version. Copy the Agent ID after `/agents/` and the deployment ID from `revision=` in that tab’s URL.
 
 In the operator shell, enter those IDs to prepare the network rules and wait for that deployment. Record the Agent and its model credential for the Git and Linear walkthroughs.
-
-The Kubernetes network helper assumes OpenShell runs in `oce-system`. For an
-existing OpenShell gateway in another namespace, set the operator shell variable
-`OPENSHELL_NAMESPACE` to that namespace before `wait_deployment`. The helper
-passes it as `--openshell-namespace` to `kubernetes/service-policies.py`, and
-`save_session` retains it. This changes the OpenShell network peers only; OCE
-remains in `oce-system`. The Installation must already reference that gateway.
 
 ```bash
 agent='<Agent ID from the Console URL>'
@@ -38,6 +44,8 @@ modelSource=$(jq -er '.data.harnessAuth | select(.method=="credential_source") |
 Continue to [onboarding in the Control UI](#4-complete-onboarding-in-the-control-ui).
 
 ## 1. Select or register the model credential
+
+For a Gateway in another namespace, [complete the Gateway prerequisites](#prepare-an-existing-openshell-gateway) first.
 
 Choose one credential for the dedicated Codex Agent. Both paths use the [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md#source-type-catalog).
 
@@ -247,4 +255,20 @@ save_session
 
 Run the two commands printed by `save_session` to resume in a fresh Bash shell. The private session saves IDs and paths; the service key stays in its protected file. Keep this Agent running. You can add Git with either credential. To add plugins, use the service account token.
 
+### Check Gateway egress before adding Git
+
+If you use an existing Gateway, ask its owner to verify that the management Pods can still reach required outbound services, such as external PostgreSQL. Use scoped egress rules for those services. The helper adds egress for the repository credential hook, DNS, and the Kubernetes API. On a cluster that enforces NetworkPolicy, the first egress policy selecting those Pods can isolate them for egress. Check these allows before Add Git applies the policy.
+
 On Amazon EKS, [verify workspace routing](eks-openshell-installation.md#verify-workspace-routing). To extend this Agent, continue to [Git](../repository-credentials/openshell-git-push.md) or [Plugins](../integrations/codex-plugins.md).
+
+## Clean up a separately managed Gateway
+
+Follow the [Agent deletion procedure](quickstart-delete-agent.md) first. Keep the separately managed OpenShell release. Skip the `helm uninstall openshell-gateway` step in the installation cleanup.
+
+Resume the saved session for each run directory used by this installation. Review the helper's policy manifests in `$RUN_DIR` and confirm ownership. Check that workloads you are retaining have the rules they need. Then delete the recorded policies.
+
+```bash
+delete_service_peers
+```
+
+The helper deletes by manifest in each recorded namespace. This includes the management policies in the saved `OPENSHELL_NAMESPACE`. Retain the run directory until cleanup is complete.
