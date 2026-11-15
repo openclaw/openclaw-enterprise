@@ -14,6 +14,7 @@ import {
   renderClientGhHosts,
   hasControlCharacter,
   isValidGitClientConnection,
+  matchesRepositorySessionId,
   isValidGitClientUsernameAndHosts,
   normalizePushRefAllowlist,
 } from "../../repo/access/client-contracts.ts";
@@ -38,7 +39,6 @@ export const REPOSITORY_MATERIAL_KEYS = {
 } as const;
 
 const refPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const sessionPattern = /^[A-Za-z0-9_-]{1,128}$/;
 
 interface RepositoryMaterialIdentity {
   readonly repositoryRef: string;
@@ -170,7 +170,7 @@ export function repositorySessionFiles(
   const keys = Object.keys(files);
   if (
     typeof binding.sessionId !== "string" ||
-    !sessionPattern.test(binding.sessionId) ||
+    !matchesRepositorySessionId(binding.sessionId) ||
     !Number.isSafeInteger(binding.deadlineWallMs) ||
     binding.deadlineWallMs <= Date.now() ||
     keys.length < 5 ||
@@ -270,7 +270,7 @@ export function repositoryMaterialSpec(
         !refPattern.test(binding.repositoryRef) ||
         !references.delete(binding.repositoryRef) ||
         typeof binding.sessionId !== "string" ||
-        !sessionPattern.test(binding.sessionId) ||
+        !matchesRepositorySessionId(binding.sessionId) ||
         sessions.has(binding.sessionId) ||
         (binding.kind !== "new" && binding.kind !== "retained") ||
         !Number.isSafeInteger(binding.deadlineWallMs) ||

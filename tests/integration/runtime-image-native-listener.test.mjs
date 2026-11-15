@@ -1,4 +1,4 @@
-// Runtime image cases split from runtime-image-startup.test.mjs, whose cases run
+// Runtime image cases split from runtime-image-startup.test.ts, whose cases run
 // one after another, so CI can run them on another lane: the pinned Gateway
 // proves why Compute admission refuses native listener TLS and binds that
 // cannot serve Pod-IP traffic.

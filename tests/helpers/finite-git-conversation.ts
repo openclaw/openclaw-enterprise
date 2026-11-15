@@ -5,7 +5,7 @@ import {
   FirstAgentModelError,
   gatewayProbeCommand,
   verifyFirstAgentModel,
-} from "../../scripts/first-agent-model.mjs";
+} from "../../scripts/first-agent-model.ts";
 import { FixtureCommandTimeoutError } from "../fixtures/repository-credentials/process.mjs";
 import { ConversationReplyError, createNativePluginAssertions } from "./plugin-driver-real.mjs";
 
@@ -364,7 +364,7 @@ export function createFiniteGitConversation({
       let observed: ReturnType<typeof identity> | undefined;
       stage = "target discovery";
       const proof = await verifyFirstAgentModel(
-        async (...arguments_: (string | Options)[]) => {
+        async (...arguments_: unknown[]) => {
           try {
             const options = arguments_.pop();
             if (!options || typeof options !== "object") {

@@ -15,7 +15,7 @@ import {
   publishPostgresImage,
   smokeBakeDefinition,
   smokeImageEnvironment,
-} from "../../scripts/ci/first-agent-smoke.mjs";
+} from "../../scripts/ci/first-agent-smoke.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 
 export function registerImageCases() {
@@ -311,7 +311,7 @@ if (args[0] === "info") {
 }`,
       { interpreter: process.execPath },
     );
-    const owner = new URL("../../scripts/ci/first-agent-smoke.mjs", import.meta.url).href;
+    const owner = new URL("../../scripts/ci/first-agent-smoke.ts", import.meta.url).href;
     const { stdout, stderr } = await promisify(execFile)(
       process.execPath,
       [

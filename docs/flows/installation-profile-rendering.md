@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-11-14
-last_updated_session: authoring-run/b8058a93-be93-46c4-a823-6c9397935811
+updated: 2026-11-15
+last_updated_session: authoring-run/75fd678f-12c9-4f7c-adde-d32a16f8c0cf
 ---
 
 # Installation Profile Rendering Flow
@@ -9,8 +9,7 @@ last_updated_session: authoring-run/b8058a93-be93-46c4-a823-6c9397935811
 ## Overview
 
 An operator passes a profile, JSON inputs, and output directory to
-`scripts/render-installation-profile.mjs`, the compatibility entry point for
-`scripts/render-installation-profile.ts`. The typed owner validates inputs, resolves omitted
+`scripts/render-installation-profile.ts`. The renderer validates inputs, resolves omitted
 hosted Codex destinations, and writes paired Helm values, Installation YAML, and
 preflight. This flow ends at those files. Operators still prepare the cluster
 and Secrets, apply Helm, and configure hosted/runtime tokens, optional ChatGPT
@@ -18,8 +17,8 @@ service accounts, the repository registry, and Slack consumers.
 
 ## Entry Points
 
-- Trigger: `node scripts/render-installation-profile.mjs --profile openclaw|codex --input <json> --out-dir <dir>`.
-- Source: `scripts/render-installation-profile.ts:parseArgs`,
+- Trigger: `node scripts/render-installation-profile.ts --profile openclaw|codex --input <json> --out-dir <dir>`.
+- Source: `scripts/render-installation-profile.ts:runInstallationProfileCli`,
   `scripts/render-installation-profile.ts:buildRendered`, and
   `scripts/render-installation-profile.ts:resolveHostedDiscoveryCidrs`.
 - Assumptions: The caller runs from the repository root with a trusted bundled
@@ -58,6 +57,9 @@ graph TD
 ### 1. Parse arguments and select the profile
 
 `scripts/render-installation-profile.ts:parseArgs`
+
+Direct Node execution runs the CLI. Importing the module exposes the renderer
+and its refusal type without running the command.
 
 `parseArgs` accepts `--profile`, `--input`, `--out-dir`, and optional `--profile-file`; other flags fail
 before output. Profiles are `openclaw` or `codex`, with no `default`. JSON supplies
@@ -167,6 +169,8 @@ keys fail preflight before Helm. Omission uses `ca.pem`.
 mounts: Installation, worker runtime, bootstrap, gateway key and private gateway CA.
 Relative, dot-segment and trailing-slash aliases collide too. Repository and
 ChatGPT paths are reserved only when enabled; execution-cluster paths remain free.
+Prepared Git also reserves `/etc/openclaw/prepared-repository`, including relative,
+dot-segment and trailing-slash aliases, when repository credentials are enabled.
 Without CA configuration no restriction applies; omission keeps
 `/etc/openclaw/database-ca`. A collision adds a field-specific error and withholds
 both deployment files. Noncolliding paths retain their supplied spelling.
@@ -280,7 +284,7 @@ activation, and repository registry creation need separate evidence.
 
 ## Debugging and Verification
 
-- Run `node --test tests/integration/profile-renderer.test.mjs` to exercise the
+- Run `node --test tests/integration/profile-renderer.test.ts` to exercise the
   CLI and inspect generated profile output.
 - `tests/integration/profile-preflight-chart-parity.test.ts` runs trusted proxy
   CIDRs and client address headers, namespaces, node selectors, sign-in Secret
@@ -316,6 +320,10 @@ activation, and repository registry creation need separate evidence.
 
 ## Changelog
 
+- 2026-11-15 10:07: Align database CA mount preflight with prepared Git mounts. (authoring-run/75fd678f-12c9-4f7c-adde-d32a16f8c0cf - c1ece768d5d104dfd26b66ed2afeae0b059adaf8)
+
+- 2026-11-14 12:18: Run the installation profile command directly from its TypeScript source in the accompanying change. (authoring-run/b17203e9-337c-40cf-9a41-0139532525fe - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
+
 - 2026-11-14 13:26: Keep the public renderer entry point and point to its strict TypeScript owner in the accompanying change. (authoring-run/b8058a93-be93-46c4-a823-6c9397935811 - cc06a6ec22b7071dc7913086a0d891da53d8f8be)
 
 - 2026-11-13: Document how Installation checksum changes affect the Slack proxy during chart upgrades. (authoring-run/6240a4c1-6718-4317-861f-b786ad5020b9, accompanying change)
@@ -348,11 +356,5 @@ activation, and repository registry creation need separate evidence.
 - 2026-10-11: Refuse Gateway StorageClass, repository ConfigMap and Secret, database CA Secret, and ChatGPT admin Secret names that Kubernetes refuses.
 
 - 2026-10-10 02:33: Merge current main while retaining selector owners and Kubernetes DNS-subdomain parity. (authoring-run/c4350829-13f6-40e0-902f-9d96e622a27c - db4ccbdea96a752cd99a66cf4cf02c195f5fe3ba)
-
-- 2026-10-10 01:15: Retain the CA mount and incoming peer-selector changelog entries when merging the latest main at maintainer request. (authoring-run/2a354440-5009-424f-8f64-47a48128bd1c - 0ebf6ef99f547dab45923cf459bf96242723e845)
-
-- 2026-10-10 00:58: Merge current profile preflight rules while retaining database CA mount validation and its independent parity coverage. (authoring-run/3bc71672-b18b-4cc7-9189-6d0d77957cc4 - ba439186dbd131073c038eba4645d255cc8c128b)
-
-- 2026-10-10 00:30: Match Kubernetes DNS-subdomain limits in the accompanying setup validation change. (authoring-run/4a617af9-0745-4870-a679-848dba61de53 - 3e34cc0f4b469d29fc79d2c10a33f87a0921ee47)
 
 [Installation Profile Rendering documentation history](installation-profile-rendering/history.md) preserves the older dated entries.

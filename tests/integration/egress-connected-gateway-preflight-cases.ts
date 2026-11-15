@@ -8,11 +8,11 @@ import {
   deploymentProgressForWork,
   deploymentStatusForWork,
 } from "../../packages/occ/src/state/controller-work.ts";
+import { describeGatewayAppServerDeclaration } from "../helpers/egress-native-exec-observation.ts";
 import {
-  describeGatewayAppServerDeclaration,
   observeConnectedOperation,
   safeConnectedFailure,
-} from "../helpers/egress-connected-failure.mjs";
+} from "../helpers/egress-connected-failure.ts";
 import {
   requestInstalledGatewayTurn,
   waitForInstalledGateway,
@@ -24,6 +24,7 @@ import { withEnvironment } from "../helpers/environment.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
 import { listen } from "../helpers/listen.mjs";
 import { createOpenShellKubernetesFixture } from "../helpers/openshell-kubernetes-real.mjs";
+import { isArray } from "../helpers/egress-observation-values.ts";
 import { waitFor } from "../helpers/qa-utils.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -41,7 +42,7 @@ function record(value: unknown): JsonRecord {
 function readObservations(raw: string): JsonRecord & { phases: JsonRecord[] } {
   const parsed: unknown = JSON.parse(raw);
   const ledger = record(parsed);
-  assert.ok(Array.isArray(ledger.phases));
+  assert.ok(isArray(ledger.phases));
   assert.ok(ledger.phases.every(isRecord));
   return { ...ledger, phases: ledger.phases };
 }
@@ -182,12 +183,17 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
         const evidence = await createRunEvidence(t, { input: { images: {} }, controller: {} }, {});
         t.after(() => rm(evidence.directory, { recursive: true, force: true }));
         const abort = new AbortController();
-        const f = createOpenShellKubernetesFixture({
-          kubeconfigPath: marker,
-          kubernetesContext: "fixture",
-          commandTimeoutMs: item.commandTimeoutMs ?? (item.outcome === "deadline" ? 250 : 5000),
-          signal: abort.signal,
-        } as Parameters<typeof createOpenShellKubernetesFixture>[0]);
+        const fixtureWithTimeout = (commandTimeoutMs: number) =>
+          createOpenShellKubernetesFixture({
+            kubeconfigPath: marker,
+            kubernetesContext: "fixture",
+            commandTimeoutMs,
+            signal: abort.signal,
+          } as Parameters<typeof createOpenShellKubernetesFixture>[0]);
+        const custodyFixture = fixtureWithTimeout(item.commandTimeoutMs ?? 5000);
+        // Only the stalled gateway exec should compete with the short deadline.
+        const gatewayFixture =
+          item.outcome === "deadline" ? fixtureWithTimeout(250) : custodyFixture;
         let reads = 0;
         let logReads = 0;
         const custody = createCustodyTransitions({
@@ -209,6 +215,7 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
                   : [
                       {
                         sandboxId,
+                        time: null,
                         source: "sandbox",
                         level: "INFO",
                         target: "openshell_supervisor_network::l7::rest::credentials",
@@ -227,7 +234,11 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
           sandboxId,
           supervisor,
           readSupervisor: () =>
-            f.resource("pod", ++reads === item.read ? marker : "supervisor", workspace),
+            custodyFixture.resource(
+              "pod",
+              ++reads === item.read ? marker : "supervisor",
+              workspace,
+            ),
         });
         await evidence.checkpoint("turn-start");
         if (item.writeFailure) {
@@ -248,13 +259,13 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
           ...(item.pod && item.exitCode !== 0 && { nativeExec: { status: "absent" } }),
         };
         try {
-          const before: unknown = await custody.snapshot();
-          const turn = f.requestCodexTurnFromGatewayPod({
+          const before = await custody.snapshot();
+          const turn = gatewayFixture.requestCodexTurnFromGatewayPod({
             namespace: workspace,
             gatewayPod: item.pod ?? "ok",
             providerModel: marker,
             prompt: marker,
-          } as Parameters<typeof f.requestCodexTurnFromGatewayPod>[0]);
+          } as Parameters<typeof gatewayFixture.requestCodexTurnFromGatewayPod>[0]);
           if (item.abort) {
             abort.abort(new DOMException(marker, "TimeoutError"));
           }
@@ -601,7 +612,7 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
             }
           | undefined;
         if (scenario === "success") {
-          assert.deepEqual(Object.keys(await turn).sort(), ["assistant", "items"]);
+          assert.deepEqual(Object.keys(record(await turn)).sort(), ["assistant", "items"]);
         } else {
           const operation = "gateway-codex-exec";
           const kubectl = {
@@ -762,9 +773,10 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
               actual: "failed",
               expected: "completed",
             });
-            const safe: unknown = await verify.catch((error: unknown) =>
-              safeConnectedFailure(error, progress.stage, evidence.recordFailure),
-            );
+            const safe: unknown = await verify.catch((error: unknown) => {
+              assert.ok(progress.stage);
+              return safeConnectedFailure(error, progress.stage, evidence.recordFailure);
+            });
             assert.ok(safe instanceof Error);
             assert.ok(safe.message.includes(`nativeTurnResult=${JSON.stringify(summary)};`));
             assert.ok(safe.stack);
@@ -886,14 +898,14 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
       [running, pointer],
       [ready, wrongPointer],
       [ready, pointer],
-    ];
+    ] as const;
     let reads = 0;
     let continued = 0;
     let responses: (typeof polls)[number] | undefined;
-    const active: unknown = await waitForProtectedAgentActivation(
-      async (
+    const active = await waitForProtectedAgentActivation(
+      async <Result>(
         _description: string,
-        observe: () => Promise<typeof pointer | undefined>,
+        observe: () => Promise<Result | undefined>,
         timeout: number,
       ) => {
         assert.equal(timeout, 12 * 60_000);
@@ -992,11 +1004,11 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
       let now = -1;
       await assert.rejects(
         waitForProtectedAgentActivation(
-          (
+          <Result>(
             description: string,
-            observe: () => Promise<typeof pointer | undefined>,
+            observe: () => Promise<Result | undefined>,
             timeout: number,
-          ) =>
+          ): Promise<Result> =>
             waitFor(description, observe, timeout, {
               now: () => ++now * timeout,
             }),
@@ -1046,7 +1058,12 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
     const podNotReady = gatewayPod("not-ready", { podReady: false });
     const containerNotReady = gatewayPod("container-not-ready", { containerReady: false });
     const readError = new Error("private Kubernetes transport error");
-    const scenarios = [
+    const scenarios: {
+      name: string;
+      reads: (ReturnType<typeof gatewayPod>[] | Error)[];
+      uid?: string;
+      last: Record<string, number>;
+    }[] = [
       {
         name: "converges after creation and rollout",
         reads: [
@@ -1085,9 +1102,9 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
         let lists = 0;
         const deadline = new Error("controlled poll deadline");
         const f = {
-          async waitFor(
+          async waitFor<Result>(
             _description: string,
-            read: () => Promise<ReturnType<typeof gatewayPod> | undefined>,
+            read: () => Promise<Result | undefined>,
             timeoutMs: number,
           ) {
             assert.equal(timeoutMs, 120_000);
@@ -1125,7 +1142,8 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
           gatewayImage,
         );
         if (uid) {
-          assert.equal((await select).metadata.uid, uid);
+          const observedUid = (await select).metadata.uid;
+          assert.equal(observedUid, uid);
         } else {
           const failedRead = reads.at(-1) instanceof Error;
           await assert.rejects(select, failedRead ? readError : deadline);
@@ -1185,7 +1203,7 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
             return serving;
           },
           async requestCodexTurnFromGatewayPod(turn: {
-            observeFailure: boolean;
+            observeFailure?: boolean | undefined;
             namespace: string;
             gatewayPod: string;
             container: string;

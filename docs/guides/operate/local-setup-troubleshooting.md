@@ -30,7 +30,7 @@ deploying again. Replacing the model key is not a demonstrated fix for this erro
 For `RUNTIME_AUTHENTICATION_FAILED`, check the model credential and model access;
 when replacing that credential, supply the replacement and rerun your original
 first-Agent helper command for the same Agent, adding `--replace-key`. Run
-`node scripts/first-agent.mjs --help` for supported options. For other codes,
+`node scripts/first-agent.ts --help` for supported options. For other codes,
 inspect the deployment and controller worker logs before choosing a recovery action.
 
 ## First-Agent reports an existing lock
