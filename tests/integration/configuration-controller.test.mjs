@@ -256,6 +256,15 @@ async function fixture({
   };
 }
 
+async function createEnvSecretBinding(context, namespaceId, name) {
+  const secret = await context.controller.createSecret(context.principal.id, {
+    namespaceId,
+    name,
+    value: `synthetic-${name}`,
+  });
+  return { source: secret.ref, delivery: { type: "env" } };
+}
+
 // A ready Namespace on the Filesystem Configuration Driver, for Configuration and Preset saves.
 // The default Compute, like Docker Compute, runs no Configuration rules of its own.
 async function saveFixture(t, computeDriver = createReadyComputeDriver("compute-save-rules")) {
@@ -3161,17 +3170,9 @@ test("Configuration create, update and Agent create's check refuse a channel cre
     name: "Channel bindings consumer",
     secretName: "channel-bindings-key",
   });
-  const binding = async (name) => {
-    const secret = await context.controller.createSecret(context.principal.id, {
-      namespaceId: namespace.id,
-      name,
-      value: `synthetic-${name}`,
-    });
-    return { source: secret.ref, delivery: { type: "env" } };
-  };
   const bothBindings = {
-    SLACK_APP_TOKEN: await binding("slack-app"),
-    SLACK_BOT_TOKEN: await binding("slack-bot"),
+    SLACK_APP_TOKEN: await createEnvSecretBinding(context, namespace.id, "slack-app"),
+    SLACK_BOT_TOKEN: await createEnvSecretBinding(context, namespace.id, "slack-bot"),
   };
   const slackWith = (slack) => ({
     ...valid,
@@ -3331,17 +3332,9 @@ test("Configuration save and Agent create's check refuse a Slack token SecretRef
   await context.controller.transact((state) =>
     state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
   );
-  const binding = async (name) => {
-    const secret = await context.controller.createSecret(context.principal.id, {
-      namespaceId: namespace.id,
-      name,
-      value: `synthetic-${name}`,
-    });
-    return { source: secret.ref, delivery: { type: "env" } };
-  };
   const secretBindings = {
-    SLACK_APP_TOKEN: await binding("slack-app"),
-    SLACK_BOT_TOKEN: await binding("slack-bot"),
+    SLACK_APP_TOKEN: await createEnvSecretBinding(context, namespace.id, "slack-app"),
+    SLACK_BOT_TOKEN: await createEnvSecretBinding(context, namespace.id, "slack-bot"),
   };
   const appToken = { source: "env", provider: "default", id: "SLACK_APP_TOKEN" };
   const fileRef = { source: "file", provider: "default", id: "/run/slack/bot" };
@@ -3460,17 +3453,9 @@ for (const computeImplementation of ["occ/kubernetes", "kubernetes-local"]) {
     await context.controller.transact((state) =>
       state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
     );
-    const binding = async (name) => {
-      const secret = await context.controller.createSecret(context.principal.id, {
-        namespaceId: namespace.id,
-        name,
-        value: `synthetic-${name}`,
-      });
-      return { source: secret.ref, delivery: { type: "env" } };
-    };
     const slackBindings = {
-      SLACK_APP_TOKEN: await binding("slack-app"),
-      SLACK_BOT_TOKEN: await binding("slack-bot"),
+      SLACK_APP_TOKEN: await createEnvSecretBinding(context, namespace.id, "slack-app"),
+      SLACK_BOT_TOKEN: await createEnvSecretBinding(context, namespace.id, "slack-bot"),
     };
     const values = {
       ...runtimeSelected,
@@ -3494,7 +3479,7 @@ for (const computeImplementation of ["occ/kubernetes", "kubernetes-local"]) {
     );
     const allBindings = {
       ...slackBindings,
-      MSTEAMS_APP_PASSWORD: await binding("msteams-password"),
+      MSTEAMS_APP_PASSWORD: await createEnvSecretBinding(context, namespace.id, "msteams-password"),
     };
     const saved = await create(allBindings);
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
