@@ -93,13 +93,13 @@ async function scenario(
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
-  child.stdout.on("data", (value) => {
+  child.stdout.on("data", (value: Buffer) => {
     output += value;
   });
-  child.stderr.on("data", (value) => {
+  child.stderr.on("data", (value: Buffer) => {
     output += value;
   });
-  const exited = once(child, "exit");
+  const exited = once(child, "exit").then(() => {});
   // Handle a spawn failure immediately and surface it from the awaited cleanup.
   void exited.catch(() => {});
   const deadline = Date.now() + startupMs;

@@ -16,7 +16,8 @@ export type ProxyRequest =
       kind: "ws";
       operation?: undefined;
       paired?: boolean | undefined;
-      method?: "config.get" | "sessions.list" | undefined;
+      method?: string | undefined;
+      params?: Record<string, unknown> | undefined;
       password?: string | undefined;
       requestedScopes?: string[] | undefined;
     });
@@ -56,19 +57,31 @@ export function isStringArray(value: unknown): value is string[] {
 }
 
 function proxyRequest(value: unknown): ProxyRequest {
-  const { identity, scopes, kind, operation, paired, method, password, requestedScopes } = record(
-    value,
-    "Expected a proxy request",
-  );
+  const { identity, scopes, kind, operation, paired, method, params, password, requestedScopes } =
+    record(value, "Expected a proxy request");
   assert.ok(typeof identity === "string" && identity.length > 0, "Expected a proxy identity");
   assert.ok(scopes === undefined || typeof scopes === "string", "Invalid scope header");
   if (kind === "ws") {
     assert.equal(operation, undefined);
     assert.ok(paired === undefined || typeof paired === "boolean", "Invalid pairing flag");
-    assert.ok(method === undefined || method === "config.get" || method === "sessions.list");
+    assert.ok(
+      method === undefined || (typeof method === "string" && method.length > 0),
+      "Invalid Gateway method",
+    );
+    const argumentsObject =
+      params === undefined ? undefined : record(params, "Invalid Gateway method parameters");
     assert.ok(password === undefined || typeof password === "string", "Invalid password input");
     assert.ok(requestedScopes === undefined || isStringArray(requestedScopes), "Invalid scopes");
-    return { kind, identity, scopes, paired, method, password, requestedScopes };
+    return {
+      kind,
+      identity,
+      scopes,
+      paired,
+      method,
+      params: argumentsObject,
+      password,
+      requestedScopes,
+    };
   }
   assert.equal(kind, undefined);
   assert.ok(operation === undefined || operation === "sessions_list");
@@ -117,38 +130,42 @@ export function proxyFrame(json: string): Frame | undefined {
   return undefined;
 }
 
+function signedDevice(request: SocketRequest, client: { id: string; mode: string }, nonce: string) {
+  if (!request.device) {
+    return undefined;
+  }
+  const signedAt = Date.now();
+  const publicKey = request.device.publicKey.export({ format: "jwk" }).x;
+  assert.ok(publicKey, "Ed25519 public key has no coordinate");
+  const id = createHash("sha256").update(Buffer.from(publicKey, "base64url")).digest("hex");
+  const payload = [
+    "v3",
+    id,
+    client.id,
+    client.mode,
+    "operator",
+    (request.requestedScopes ?? []).join(","),
+    String(signedAt),
+    request.password ?? "",
+    nonce,
+    "linux",
+    "",
+  ].join("|");
+  return {
+    id,
+    publicKey,
+    signedAt,
+    nonce,
+    signature: sign(null, Buffer.from(payload), request.device.privateKey).toString("base64url"),
+  };
+}
+
 function connect(socket: ProxySocket, request: SocketRequest, nonce: string) {
   const client = request.device
     ? { id: "openclaw-control-ui", version: "1.0.0", platform: "linux", mode: "ui" }
     : { id: "gateway-client", version: "1.0.0", platform: "linux", mode: "backend" };
   const scopes = request.requestedScopes ?? [];
-  let device;
-  if (request.device) {
-    const signedAt = Date.now();
-    const publicKey = request.device.publicKey.export({ format: "jwk" }).x;
-    assert.ok(publicKey, "Ed25519 public key has no coordinate");
-    const id = createHash("sha256").update(Buffer.from(publicKey, "base64url")).digest("hex");
-    const payload = [
-      "v3",
-      id,
-      client.id,
-      client.mode,
-      "operator",
-      scopes.join(","),
-      String(signedAt),
-      request.password ?? "",
-      nonce,
-      "linux",
-      "",
-    ].join("|");
-    device = {
-      id,
-      publicKey,
-      signedAt,
-      nonce,
-      signature: sign(null, Buffer.from(payload), request.device.privateKey).toString("base64url"),
-    };
-  }
+  const device = signedDevice(request, client, nonce);
   socket.send(
     JSON.stringify({
       type: "req",
@@ -185,7 +202,12 @@ function reply(
   }
   if (request.method) {
     socket.send(
-      JSON.stringify({ type: "req", id: "operation", method: request.method, params: {} }),
+      JSON.stringify({
+        type: "req",
+        id: "operation",
+        method: request.method,
+        params: request.params ?? {},
+      }),
     );
     return undefined;
   }
@@ -202,7 +224,7 @@ function ws(address: string, request: SocketRequest): Promise<SocketOutcome> {
     url: string,
     options: { headers: Record<string, string> },
   ) => ProxySocket;
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve, reject: (reason: unknown) => void) => {
     const socket = new WebSocket(`ws://${address}:8080`, {
       headers: {
         ...proxyHeaders(request),
