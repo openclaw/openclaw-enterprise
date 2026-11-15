@@ -4643,6 +4643,11 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
     };
 
+    async function findProvisioningRecord(statement: string, parameters: readonly string[]) {
+      const [record] = rows((await client.query(statement, parameters)).rows);
+      return record === undefined ? undefined : provisioningRecordFromRow(record);
+    }
+
     return {
       installations,
       namespaces,
@@ -4664,16 +4669,10 @@ export class PostgresPlatformState implements PlatformStateStore {
       preparedTokenProof: this.preparedTokenProof(client),
       egressSendReceipts: postgresEgressSendReceipts(client),
       provisioning: {
-        findByWorkId: async (workId) => {
-          const found = rows(
-            (
-              await client.query("SELECT * FROM occ.agent_provisioning_work WHERE work_id = $1", [
-                workId,
-              ])
-            ).rows,
-          );
-          return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
-        },
+        findByWorkId: (workId) =>
+          findProvisioningRecord("SELECT * FROM occ.agent_provisioning_work WHERE work_id = $1", [
+            workId,
+          ]),
         findWithWork: async (workId) => {
           // One statement, one snapshot: separate reads under READ COMMITTED can pair a
           // job with a queue row from a later commit (a failed queue row, a running job).
@@ -4739,42 +4738,24 @@ export class PostgresPlatformState implements PlatformStateStore {
           );
           return (found.rowCount ?? 0) > 0;
         },
-        findByAgent: async (namespaceId, agentId) => {
-          const found = rows(
-            (
-              await client.query(
-                `SELECT * FROM occ.agent_provisioning_work
+        findByAgent: (namespaceId, agentId) =>
+          findProvisioningRecord(
+            `SELECT * FROM occ.agent_provisioning_work
                  WHERE namespace_id = $1 AND agent_id = $2`,
-                [namespaceId, agentId],
-              )
-            ).rows,
-          );
-          return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
-        },
-        findByConfiguration: async (namespaceId, configurationId) => {
-          const found = rows(
-            (
-              await client.query(
-                `SELECT * FROM occ.agent_provisioning_work
+            [namespaceId, agentId],
+          ),
+        findByConfiguration: (namespaceId, configurationId) =>
+          findProvisioningRecord(
+            `SELECT * FROM occ.agent_provisioning_work
                  WHERE namespace_id = $1 AND configuration_id = $2`,
-                [namespaceId, configurationId],
-              )
-            ).rows,
-          );
-          return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
-        },
-        findByRequest: async (namespaceId, actorId, requestId) => {
-          const found = rows(
-            (
-              await client.query(
-                `SELECT * FROM occ.agent_provisioning_work
+            [namespaceId, configurationId],
+          ),
+        findByRequest: (namespaceId, actorId, requestId) =>
+          findProvisioningRecord(
+            `SELECT * FROM occ.agent_provisioning_work
                  WHERE namespace_id = $1 AND actor_id = $2 AND request_id = $3`,
-                [namespaceId, actorId, requestId],
-              )
-            ).rows,
-          );
-          return found[0] === undefined ? undefined : provisioningRecordFromRow(found[0]);
-        },
+            [namespaceId, actorId, requestId],
+          ),
         create: async (input: CreateAgentProvisioningRecord, requestId) => {
           const record = validateProvisioningCreate(input);
           await this.requireInitialized(context);
