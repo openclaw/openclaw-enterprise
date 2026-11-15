@@ -69,8 +69,22 @@ OCC_TEST_OPENSHELL_PLACEHOLDER_WIRE_BINARY=/absolute/path/to/wire-binary \
   node scripts/ci/openshell-grant-wire.ts
 ```
 
-The command rejects a missing or non-executable binary before preparation. It uses
-the maintained CI prepare, run, and cleanup commands for one `postgres-platform`
+The command checks the binary and Docker target before it creates the run
+directory. Docker must select an existing local Unix socket through the active
+context or an explicit Unix-socket `DOCKER_HOST`.
+Use valid UTF-8 for the input paths and environment values this test uses.
+The command refuses the Unicode replacement character (U+FFFD) in inputs such
+as `HOME`, `PATH`, or `DOCKER_HOST`, because Node.js can substitute this
+character for invalid bytes. To select a socket path with a literal U+FFFD,
+use a symlink whose name does not contain that character. The resolved socket
+path must be valid UTF-8. Unset `DOCKER_CONTEXT`, `DOCKER_CONFIG`,
+`DOCKER_TLS`, `DOCKER_TLS_VERIFY`, and `DOCKER_CERT_PATH`.
+The command uses the resolved socket path when it fits in a Linux Unix-socket
+address. For a longer resolved path, it keeps the selected short alias. It
+checks the original socket's device and inode before preparation, tests, and
+cleanup.
+
+The command uses the maintained CI prepare, run, and cleanup commands for one `postgres-platform`
 file. It creates an isolated disposable PostgreSQL server; it does not build the
 binary or create an OpenShell cluster. Success requires the case
 `OpenShell inspected Git fetch redeems the active grant and refuses withdrawal`
@@ -86,19 +100,26 @@ interruption during preparation, or a lost supervisor without a natural terminal
 result, leaves an unknown external outcome: a daemon may finish accepted work
 even after the client group disappears. The command retains state and skips tests
 and automatic cleanup. Unconfirmed group settlement is also reported. Resolve
-both local and daemon operations before manual cleanup with
-`node scripts/ci/cleanup.mjs --state` and the retained `state.json` path.
+both local and daemon operations before you run the printed recovery command
+from the original checkout.
 
 Interruptions skip tests that have not started; running tests and cleanup retain
 their existing deadlines. The command exits with code 130 or 143 for the original
 SIGINT or SIGTERM. Repeated signals do not interrupt teardown. After forced
-termination, confirm remaining operations have stopped before manual cleanup.
+termination, confirm that the local and daemon operations have stopped, then
+run `/usr/bin/env -i /bin/sh /path/to/run-directory/cleanup-command` with the
+retained run directory path.
 
 The command reports the failed stage, names missing wire proof, and prints
 prepare, test, cleanup, and overall elapsed milliseconds. Unstarted stages report
 zero. Successful runs remove their directory; failures and interruptions retain
 private logs and results, plus state from unknown preparation outcomes or failed
-cleanup. A cleanup retry command appears only when cleanup failed and state remains.
+cleanup. When cleanup fails and state remains, run the printed retry command from the
+original checkout. The private `cleanup-command` file uses the original
+checkout, Node.js executable, Docker executable and socket. Keep those tools
+and any retained socket alias in place. Recovery checks the original socket's
+device and inode and retains state if the address has changed. Confirm that
+the daemon that owns the run still serves that socket before retrying.
 Keep failure artifacts private: they can contain database credentials. Existing
 database URLs, CI selectors, and credential environment variables are not forwarded.
 
@@ -107,7 +128,8 @@ database URLs, CI selectors, and credential environment variables are not forwar
 If Compose reports `all predefined address pools have been fully subnetted`,
 Docker could not allocate a subnet for the project network. Stop the run if it
 is still active. If its cleanup did not finish, run the printed command from the
-original checkout:
+original checkout. For a wire test, use the [wire test recovery command](#openshell-stock-git-wire-test),
+which includes the original Docker endpoint. Other PostgreSQL runs use:
 
 ```sh
 node scripts/ci/cleanup.mjs --state /printed/run/directory/state.json

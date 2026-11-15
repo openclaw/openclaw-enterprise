@@ -1,18 +1,21 @@
 #!/usr/bin/env node
-import { fork, spawn } from "node:child_process";
+import { execFile, fork, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { constants, existsSync } from "node:fs";
-import { access, mkdtemp, open, readFile, rm, stat } from "node:fs/promises";
+import { access, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const lane = "postgres-platform";
 const file = "tests/integration/postgres-openshell-online-git-journey.test.ts";
 const wireTest = "OpenShell inspected Git fetch redeems the active grant and refuses withdrawal";
 const binaryVariable = "OCC_TEST_OPENSHELL_PLACEHOLDER_WIRE_BINARY";
+// Linux sockaddr_un.sun_path holds 108 bytes including the terminator.
+const unixSocketPathLimit = 107;
 const started = performance.now();
 const durations = { prepare: 0, test: 0, cleanup: 0 };
 let interruption: NodeJS.Signals | undefined;
@@ -89,41 +92,191 @@ async function settlePreparation(child: ChildProcess, closed: Promise<boolean>) 
   return false;
 }
 
+function checkedInput<T extends string | undefined>(name: string, value: T) {
+  // Node substitutes U+FFFD when it decodes invalid environment/path bytes.
+  if (value?.includes("\uFFFD")) {
+    throw new PublicFailure(`${name} contains a Unicode replacement character.`);
+  }
+  return value;
+}
+
+function fromDirectory(cwd: string, path: string) {
+  // Keep ".." for the OS to resolve after traversing any symlink.
+  return isAbsolute(path) ? path : `${cwd}/${path}`;
+}
+
+async function executable(path: string) {
+  try {
+    await access(path, constants.X_OK);
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+const exec = promisify(execFile);
+const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+function hasControlCharacters(value: string) {
+  return [...value].some(
+    (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+  );
+}
+
+function unixSocketPath(host: string) {
+  if (host.startsWith("unix://") && utf8.decode(Buffer.from(host)) === host) {
+    const path = host.slice("unix://".length);
+    if (
+      isAbsolute(path) &&
+      !/\p{White_Space}$/u.test(path) &&
+      !path.includes("://") &&
+      !hasControlCharacters(path)
+    ) {
+      return path;
+    }
+  }
+}
+
+async function dockerHost(docker: string, cwd: string, env: NodeJS.ProcessEnv, explicit?: string) {
+  try {
+    let host: unknown = explicit;
+    if (!host) {
+      const { stdout } = await exec(
+        docker,
+        ["context", "inspect", "--format", "{{json .Endpoints.docker.Host}}"],
+        { cwd, env, encoding: "buffer", timeout: 5_000, killSignal: "SIGKILL", maxBuffer: 16_384 },
+      );
+      host = JSON.parse(utf8.decode(stdout));
+      if (typeof host === "string") {
+        checkedInput("Docker context endpoint", host);
+      }
+    }
+    const path = typeof host === "string" ? unixSocketPath(host) : undefined;
+    if (path) {
+      const socket = utf8.decode(await realpath(path, { encoding: "buffer" }));
+      if (unixSocketPath(`unix://${socket}`)) {
+        // A short alias can reach an inode whose canonical pathname exceeds sun_path.
+        const address = Buffer.byteLength(socket) <= unixSocketPathLimit ? socket : path;
+        const original = await stat(socket, { bigint: true });
+        if (Buffer.byteLength(address) <= unixSocketPathLimit && original.isSocket()) {
+          const identity = `${original.dev}:${original.ino}`;
+          if (await sameDockerSocket(address, identity)) {
+            return { address, identity };
+          }
+        }
+      }
+    }
+  } catch {
+    // Context diagnostics can include configuration details.
+  }
+  throw new PublicFailure("Docker must select an existing local Unix socket.");
+}
+
+async function sameDockerSocket(address: string, identity: string) {
+  try {
+    const socket = await stat(address, { bigint: true });
+    return socket.isSocket() && `${socket.dev}:${socket.ino}` === identity;
+  } catch {
+    return false;
+  }
+}
+
+async function launchInputs() {
+  // Consume only the allowlist before looking up a tool or touching run state.
+  const cwd = checkedInput("working directory", process.cwd());
+  checkedInput("checkout path", root);
+  const node = checkedInput("Node executable", process.execPath);
+  const temporaryInput = fromDirectory(cwd, checkedInput("temporary directory", tmpdir()));
+  const supplied = checkedInput(binaryVariable, process.env[binaryVariable]);
+  const explicit = checkedInput("DOCKER_HOST", process.env.DOCKER_HOST);
+  const env: NodeJS.ProcessEnv = {};
+  for (const name of ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL"]) {
+    const value = checkedInput(name, process.env[name]);
+    if (value !== undefined) {
+      env[name] = value;
+    }
+  }
+  for (const name of [
+    "DOCKER_CONTEXT",
+    "DOCKER_CONFIG",
+    "DOCKER_TLS",
+    "DOCKER_TLS_VERIFY",
+    "DOCKER_CERT_PATH",
+  ]) {
+    if (process.env[name]) {
+      throw new PublicFailure(`Unset ${name} before running the wire test.`);
+    }
+  }
+  if (!supplied?.trim()) {
+    throw new PublicFailure(`Set ${binaryVariable} to an already-built executable.`);
+  }
+  const binary = fromDirectory(cwd, supplied);
+  if (!(await executable(binary))) {
+    throw new PublicFailure(`${binaryVariable} must name an existing executable file.`);
+  }
+
+  // Match Node's Unix lookup default and anchor relative/empty entries before
+  // the helpers change to the checkout directory.
+  const search = (env.PATH ?? "/usr/bin:/bin").split(":").map((path) => fromDirectory(cwd, path));
+  if (search.some((entry) => entry.includes(":"))) {
+    throw new PublicFailure("Relative PATH entries require a working directory without colons.");
+  }
+  env.PATH = search.join(":");
+  if (env.HOME) {
+    env.HOME = fromDirectory(cwd, env.HOME);
+  }
+  const temporary = utf8.decode(await realpath(temporaryInput, { encoding: "buffer" }));
+  // The retry command prints the run-directory pathname to the terminal.
+  if (hasControlCharacters(temporary)) {
+    throw new PublicFailure("Use a temporary directory without ASCII control characters.");
+  }
+  for (const entry of search) {
+    const docker = `${entry}/docker`;
+    if (await executable(docker)) {
+      checkInterruption();
+      const socket = await dockerHost(docker, root, env, explicit);
+      return {
+        env: {
+          ...env,
+          DOCKER_HOST: `unix://${socket.address}`,
+          OCC_DOCKER_BIN: docker,
+          [binaryVariable]: binary,
+        },
+        socket,
+        temporary,
+        node,
+      };
+    }
+  }
+  throw new PublicFailure("Docker must be an executable on PATH.");
+}
+
+function shellQuote(value: string) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 async function main() {
   if (process.argv.length !== 2) {
     throw new PublicFailure("Usage: node scripts/ci/openshell-grant-wire.ts (no arguments)");
   }
-  const supplied = process.env[binaryVariable];
-  if (!supplied?.trim()) {
-    throw new PublicFailure(`Set ${binaryVariable} to an already-built executable.`);
-  }
-  const binary = resolve(supplied);
-  try {
-    if (!(await stat(binary)).isFile()) {
-      throw new Error();
-    }
-    await access(binary, constants.X_OK);
-  } catch {
-    throw new PublicFailure(`${binaryVariable} must name an existing executable file.`);
-  }
-
+  const { env, socket, temporary, node } = await launchInputs();
   checkInterruption();
+
   process.umask(0o077);
-  const directory = await mkdtemp(join(tmpdir(), "oce-grant-wire-"));
+  const directory = await mkdtemp(join(temporary, "oce-grant-wire-"));
   const state = join(directory, "state.json");
   const results = join(directory, "results.json");
-  // Do not inherit database credentials, CI output files, selectors, or Node hooks.
-  const env: NodeJS.ProcessEnv = {};
-  for (const name of ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL"]) {
-    if (process.env[name] !== undefined) {
-      env[name] = process.env[name];
-    }
-  }
-  Object.assign(env, {
-    TMPDIR: directory,
-    RUNNER_TEMP: directory,
-    [binaryVariable]: binary,
-  });
+  const saved = join(directory, "cleanup-command");
+  Object.assign(env, { TMPDIR: directory, RUNNER_TEMP: directory });
+  const assignments = Object.entries(env).map(([name, value]) => shellQuote(`${name}=${value}`));
+  const cleanup = [node, join(root, "scripts/ci/cleanup.mjs"), "--state", state].map(shellQuote);
+  const recovery = `/usr/bin/env -i /bin/sh ${shellQuote(saved)}`;
+  const socketChanged = "Original Docker socket is missing or has changed.";
+  await writeFile(
+    saved,
+    `cd ${shellQuote(root)} || exit 1\ntest -f ${shellQuote(env.OCC_DOCKER_BIN)} && test -x ${shellQuote(env.OCC_DOCKER_BIN)} || { echo 'Original Docker executable unavailable.' >&2; exit 1; }\n[ "$(LC_ALL=C /usr/bin/stat -Lc '%d:%i:%F' -- ${shellQuote(socket.address)} 2>/dev/null)" = ${shellQuote(`${socket.identity}:socket`)} ] || { echo ${shellQuote(socketChanged)} >&2; exit 1; }\nexec /usr/bin/env -i ${[...assignments, ...cleanup].join(" ")}\n`,
+    { mode: 0o600 },
+  );
   console.log(`Run directory: ${JSON.stringify(directory)}`);
 
   let unresolvedPreparation: { pgid: number | undefined } | undefined;
@@ -134,6 +287,9 @@ async function main() {
     try {
       const log = await open(join(directory, `${stage}.log`), "wx", 0o600);
       try {
+        if (!(await sameDockerSocket(socket.address, socket.identity))) {
+          throw new PublicFailure(socketChanged);
+        }
         if (stage !== "cleanup") {
           checkInterruption();
         }
@@ -143,13 +299,14 @@ async function main() {
         const child =
           stage === "prepare"
             ? fork(new URL("./cleanup-command.mjs", import.meta.url), [], {
+                execPath: node,
                 cwd: root,
                 env,
                 detached: true,
                 execArgv: [],
                 stdio: ["ignore", log.fd, log.fd, "ipc"],
               })
-            : spawn(process.execPath, command, {
+            : spawn(node, command, {
                 cwd: root,
                 env,
                 detached: true,
@@ -178,7 +335,7 @@ async function main() {
               resolve();
             };
           });
-          child.send?.({ command: process.execPath, args: command }, (error) => {
+          child.send?.({ command: node, args: command }, (error) => {
             if (error) {
               commandError = true;
             }
@@ -281,14 +438,18 @@ async function main() {
     }
     if (unknownPreparationOutcome || unresolvedPreparation) {
       console.error(
-        "openshell-grant-wire: unknown external preparation outcome. Cleanup not started; preserve state. A daemon may still complete accepted work; resolve local and daemon operations before manual cleanup with scripts/ci/cleanup.mjs --state and the retained state.json path.",
+        "openshell-grant-wire: unknown external preparation outcome. Cleanup not started; preserve state. A daemon may still complete accepted work; resolve local and daemon operations before manual cleanup.",
       );
+      if (existsSync(state)) {
+        console.error(`After reconciliation, run from the original checkout: ${recovery}`);
+      }
     } else if (existsSync(state)) {
       try {
         await run("cleanup", "cleanup.mjs", ["--state", state]);
-      } catch {
+      } catch (error) {
         cleanupFailed = true;
-        console.error("openshell-grant-wire: cleanup failed; inspect the private cleanup.log.");
+        const message = error instanceof PublicFailure ? error.message : "cleanup failed.";
+        console.error(`openshell-grant-wire: ${message}`);
       }
     } else {
       failed = true;
@@ -298,8 +459,7 @@ async function main() {
   if (failed || cleanupFailed || interruption) {
     console.error(`Private failure artifacts: ${JSON.stringify(directory)}`);
     if (cleanupFailed && existsSync(state)) {
-      const quotedState = `'${state.replaceAll("'", "'\\''")}'`;
-      console.error(`Retry cleanup: node scripts/ci/cleanup.mjs --state ${quotedState}`);
+      console.error(`Retry cleanup: ${recovery}`);
     }
     process.exitCode = 1;
   } else {

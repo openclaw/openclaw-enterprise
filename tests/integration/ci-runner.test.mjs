@@ -4,14 +4,18 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   chmod,
+  cp,
   mkdir,
   readdir,
   readFile,
   realpath,
+  rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -20,6 +24,7 @@ import test, { describe } from "node:test";
 import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.mjs";
 import { skipperFailureSummary } from "../../scripts/ci/skipper-release.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   collectNativeWorkerFailure,
@@ -99,10 +104,32 @@ function run(root, args, env = {}, { timeout } = {}) {
   });
 }
 
+async function listenDockerSocket(t, sockets, name = "docker's socket.sock") {
+  const socket = join(sockets, name);
+  const server = createServer();
+  await new Promise((resolve, reject) => server.once("error", reject).listen(socket, resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return socket;
+}
+
 test(
   "grant wire CLI preserves failures and retains interrupted preparation state",
   { skip: process.platform !== "linux" && "uses Linux process groups and /proc" },
   async (t) => {
+    const sockets = await socketDirectory(t, "wire-socket-");
+    const host = `unix://${await listenDockerSocket(t, sockets)}`;
+    const bin = join(sockets, "bin");
+    await mkdir(bin);
+    await writeFile(
+      join(bin, "docker"),
+      `#!/usr/bin/env node
+      if (process.argv.slice(2).join(" ") !== "context inspect --format {{json .Endpoints.docker.Host}}") {
+        process.exit(2);
+      }
+      console.log(JSON.stringify(${JSON.stringify(host)}));
+    `,
+      { mode: 0o700 },
+    );
     const wireName =
       "OpenShell inspected Git fetch redeems the active grant and refuses withdrawal";
     const file = "tests/integration/postgres-openshell-online-git-journey.test.ts";
@@ -222,6 +249,7 @@ test(
           for (const key of ["GITHUB_ENV", "OCC_TEST_DATABASE_URL", "PRIVATE_TEST_SECRET"]) {
             assert.equal(process.env[key], undefined);
           }
+          assert.equal(process.env.DOCKER_HOST, ${JSON.stringify(host)});
           event("start");
           console.error("private-helper-output");
           if (stage === "prepare" && scenario !== "prepare-no-state") {
@@ -330,8 +358,9 @@ syncBuiltinESMExports();
           encoding: "utf8",
           timeout: 10_000,
           env: {
-            PATH: process.env.PATH,
+            PATH: `${bin}:${process.env.PATH}`,
             TMPDIR: root,
+            DOCKER_HOST: host,
             OCC_TEST_OPENSHELL_PLACEHOLDER_WIRE_BINARY: process.execPath,
             OCC_TEST_DATABASE_URL: "private-env-canary",
             PRIVATE_TEST_SECRET: "private-env-canary",
@@ -433,9 +462,375 @@ syncBuiltinESMExports();
         if (unknownOutcome) {
           assert.match(output, /Cleanup not started; preserve state/);
           assert.match(output, /daemon may still complete accepted work/);
+          assert.ok(
+            result.stderr.includes(
+              "After reconciliation, run from the original checkout: /usr/bin/env -i /bin/sh",
+            ),
+          );
+          assert.doesNotMatch(result.stderr, /DOCKER_HOST=/);
+          assert.match(
+            await readFile(join(root, directories[0], "cleanup-command"), "utf8"),
+            /DOCKER_HOST=unix:/,
+          );
         }
       });
     }
+  },
+);
+
+test(
+  "grant wire retry keeps the original Docker target after context drift",
+  {
+    skip: process.platform !== "linux" && "uses Linux process groups",
+  },
+  async (t) => {
+    const root = await fixture(t);
+    const temporary = join(root, "wire run's temporary files");
+    const bin = join(root, "bin");
+    await mkdir(temporary);
+    await mkdir(bin);
+    for (const path of ["scripts/ci", "scripts/lib", "migrations"]) {
+      await cp(join(repositoryRoot, path), join(root, path), { recursive: true });
+    }
+    await cp(join(repositoryRoot, "compose.postgres.yaml"), join(root, "compose.postgres.yaml"));
+    await symlink(process.execPath, join(bin, "node"));
+    const sockets = await socketDirectory(t, "wire-docker-");
+    const original = join(sockets, "docker-socket-directory".repeat(5));
+    const alias = join(sockets, "a");
+    await mkdir(original);
+    await symlink(original, alias);
+    const socket = await listenDockerSocket(t, alias);
+    const replacement = await listenDockerSocket(t, sockets);
+    assert.ok(Buffer.byteLength(await realpath(socket)) > 107);
+    const hostA = `unix://${socket}`;
+    const hostB = "unix:///synthetic/wrong.sock";
+    const homeA = join(root, "original home's config");
+    const homeB = join(root, "different home");
+    const alternate = join(root, "alternate binaries");
+    const invocations = join(root, "alternate-invocations");
+    await mkdir(homeA);
+    await mkdir(homeB);
+    await mkdir(alternate);
+    const configured = join(homeA, "configured");
+    const commands = join(root, "docker-events");
+    const inspections = join(root, "docker-context-inspections");
+    const projectA = join(root, "project-A");
+    const projectB = join(root, "project-B");
+    const failed = join(root, "first-down-failed");
+    await writeFile(configured, hostA);
+    await writeFile(join(homeB, "configured"), hostB);
+    await writeFile(projectB, "unrelated");
+    await writeFile(
+      join(bin, "docker"),
+      `#!/usr/bin/env node
+    const fs = require("node:fs");
+    const path = require("node:path");
+    if (__filename.startsWith(${JSON.stringify(alternate)} + "/") || __filename.includes("\uFFFD")) {
+      fs.appendFileSync(${JSON.stringify(invocations)}, "docker\\n");
+    }
+    const args = process.argv.slice(2);
+    const host = process.env.DOCKER_CONTEXT || __filename.includes("\uFFFD") ? ${JSON.stringify(hostB)}
+      : process.env.DOCKER_HOST || fs.readFileSync(path.join(process.env.HOME, "configured"), "utf8");
+    if (args[0] === "context" && args[1] === "inspect") {
+      fs.appendFileSync(${JSON.stringify(inspections)}, JSON.stringify(host) + "\\n");
+      console.log(JSON.stringify(host));
+    } else if (args[0] === "version") {
+      console.log("synthetic");
+    } else if (args[0] === "compose") {
+      const project = args[args.indexOf("-p") + 1];
+      const operation = args[5];
+      fs.appendFileSync(${JSON.stringify(commands)}, JSON.stringify({host, operation, project}) + "\\n");
+      if (operation === "up" && host === ${JSON.stringify(hostA)}) {
+        fs.writeFileSync(${JSON.stringify(projectA)}, project);
+        fs.writeFileSync(${JSON.stringify(configured)}, ${JSON.stringify(hostB)});
+        // Exercise the partial-start cleanup path without a database or Docker daemon.
+        process.exit(1);
+      }
+      if (operation !== "down") process.exit(2);
+      if (!fs.existsSync(${JSON.stringify(failed)})) {
+        fs.writeFileSync(${JSON.stringify(failed)}, host);
+        process.exit(1);
+      }
+      if (host === ${JSON.stringify(hostA)} && fs.readFileSync(${JSON.stringify(projectA)}, "utf8") === project) {
+        fs.unlinkSync(${JSON.stringify(projectA)});
+      }
+    } else {
+      process.exit(2);
+    }
+  `,
+      { mode: 0o700 },
+    );
+    await cp(join(bin, "docker"), join(alternate, "docker"));
+    await writeFile(
+      join(alternate, "node"),
+      `#!/bin/sh
+printf '%s\n' node >> '${invocations}'
+exec '${process.execPath}' "$@"
+`,
+      { mode: 0o700 },
+    );
+    const cli = join(root, "scripts/ci/openshell-grant-wire.ts");
+    const cliEnv = {
+      PATH: `${bin}:/usr/bin:/bin`,
+      HOME: homeA,
+      TMPDIR: temporary,
+      OCC_TEST_OPENSHELL_PLACEHOLDER_WIRE_BINARY: process.execPath,
+    };
+    const runWire = (overrides = {}) =>
+      spawnSync(process.execPath, [cli], {
+        cwd: root,
+        env: { ...cliEnv, ...overrides },
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+
+    // Resolution uses the active local context. Drift starts as soon as Compose creates A.
+    const result = runWire();
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 1, result.stderr);
+    const project = await readFile(projectA, "utf8");
+    const [directory] = await readdir(temporary);
+    const state = join(temporary, directory, "state.json");
+    assert.equal(JSON.parse(await readFile(state, "utf8")).resources[0].name, project);
+    const command = result.stderr.match(/^Retry cleanup: (.+)$/m)?.[1];
+    assert.ok(command, result.stderr);
+
+    const beforeRetry = (await readFile(commands, "utf8")).trim().split("\n").map(JSON.parse);
+    const recover = () =>
+      spawnSync("/bin/sh", ["-c", command], {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 10_000,
+        env: {
+          ...cliEnv,
+          HOME: homeB,
+          PATH: `${alternate}:/usr/bin:/bin`,
+          DOCKER_CONTEXT: "wrong",
+          DOCKER_HOST: hostB,
+          DOCKER_CONFIG: join(root, "wrong-config"),
+          DOCKER_TLS: "1",
+          DOCKER_TLS_VERIFY: "1",
+          DOCKER_CERT_PATH: join(root, "wrong-certs"),
+        },
+      });
+    // The same alias can name a different socket by the time an operator retries.
+    const oldAlias = join(sockets, "original-alias");
+    await rename(alias, oldAlias);
+    await mkdir(alias);
+    await symlink(replacement, join(alias, basename(socket)));
+    const refused = recover();
+    assert.equal(refused.error, undefined);
+    assert.equal(refused.status, 1, refused.stderr);
+    assert.match(refused.stderr, /Original Docker socket is missing or has changed/);
+    assert.equal(JSON.parse(await readFile(state, "utf8")).resources[0].name, project);
+    assert.equal(await readFile(projectA, "utf8"), project);
+    assert.deepEqual(
+      (await readFile(commands, "utf8")).trim().split("\n").map(JSON.parse),
+      beforeRetry,
+    );
+
+    await rm(alias, { recursive: true });
+    await rename(oldAlias, alias);
+    const recovery = recover();
+    assert.equal(recovery.error, undefined);
+    assert.equal(recovery.status, 0, recovery.stderr);
+    const observed = (await readFile(commands, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    t.diagnostic(
+      JSON.stringify({
+        endpoints: observed.map(({ host, operation }) => [operation, host === hostA ? "A" : "B"]),
+        stateRemoved: await readFile(state).then(
+          () => false,
+          (error) => error.code === "ENOENT",
+        ),
+        originalProjectRemains: await readFile(projectA).then(
+          () => true,
+          (error) => error.code !== "ENOENT",
+        ),
+      }),
+    );
+    assert.deepEqual(observed, [
+      { host: hostA, operation: "up", project },
+      { host: hostA, operation: "down", project },
+      { host: hostA, operation: "down", project },
+    ]);
+    assert.deepEqual(beforeRetry, [
+      { host: hostA, operation: "up", project },
+      { host: hostA, operation: "down", project },
+    ]);
+    const saved = join(temporary, directory, "cleanup-command");
+    const savedProgram = await readFile(saved, "utf8");
+    assert.equal((await stat(saved)).mode & 0o777, 0o600);
+    assert.doesNotMatch(result.stderr, /DOCKER_HOST=|PATH=|HOME=/);
+    assert.ok(savedProgram.includes("DOCKER_HOST=unix:"));
+    await assert.rejects(readFile(invocations), { code: "ENOENT" });
+    await assert.rejects(readFile(projectA), { code: "ENOENT" });
+    assert.equal(await readFile(projectB, "utf8"), "unrelated");
+    await assert.rejects(readFile(state), { code: "ENOENT" });
+
+    // Refusals happen before any run directory or project can be created.
+    for (const selector of [
+      "DOCKER_CONTEXT",
+      "DOCKER_CONFIG",
+      "DOCKER_TLS",
+      "DOCKER_TLS_VERIFY",
+      "DOCKER_CERT_PATH",
+    ]) {
+      const result = runWire({ [selector]: "unsupported" });
+      assert.equal(result.status, 1, result.stderr);
+      assert.ok(result.stderr.includes(`Unset ${selector}`), result.stderr);
+      assert.deepEqual(await readdir(temporary), [directory]);
+    }
+    for (const host of ["tcp://127.0.0.1:2375", "ssh://synthetic", "unix://relative.sock", hostB]) {
+      const result = runWire({ DOCKER_HOST: host });
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /existing local Unix socket/);
+      assert.deepEqual(await readdir(temporary), [directory]);
+    }
+    for (const [name, suffixA, suffixB] of [
+      ["docker-trim", Buffer.from("\u0085"), ""],
+      ["utf8-decode", Buffer.from([0xff]), "\uFFFD"],
+    ]) {
+      await t.test(name, async (t) => {
+        // Select A through an ordinary alias. A different socket exists at the
+        // pathname that trimming or lossy decoding would select.
+        const endpointA = Buffer.concat([Buffer.from(join(sockets, name)), suffixA]);
+        await rename(await listenDockerSocket(t, sockets, `${name}-bound`), endpointA);
+        const endpointB = await listenDockerSocket(t, sockets, name + suffixB);
+        const alias = join(sockets, `${name}-alias`);
+        await symlink(endpointA, alias);
+        assert.deepEqual(await realpath(alias, { encoding: "buffer" }), endpointA);
+        const socketA = await stat(endpointA);
+        const socketB = await stat(endpointB);
+        assert.ok(socketA.isSocket() && socketB.isSocket());
+        assert.notEqual(socketA.ino, socketB.ino);
+
+        const beforeRuns = await readdir(temporary);
+        const beforeCommands = await readFile(commands, "utf8");
+        const refusal = runWire({ DOCKER_HOST: `unix://${alias}` });
+        assert.equal(refusal.error, undefined);
+        assert.equal(refusal.status, 1, refusal.stderr);
+        const afterRuns = await readdir(temporary);
+        const afterCommands = await readFile(commands, "utf8");
+        t.diagnostic(
+          JSON.stringify({
+            createdRunDirectory: afterRuns.length !== beforeRuns.length,
+            ranPrepare: /^Run directory:/m.test(refusal.stdout) && afterCommands !== beforeCommands,
+          }),
+        );
+        assert.match(refusal.stderr, /existing local Unix socket/);
+        assert.deepEqual(afterRuns, beforeRuns);
+        assert.equal(afterCommands, beforeCommands);
+        assert.equal((await stat(endpointA)).ino, socketA.ino);
+        assert.equal((await stat(endpointB)).ino, socketB.ino);
+      });
+    }
+    assert.equal((await readFile(commands, "utf8")).trim().split("\n").length, observed.length);
+
+    await t.test("refuses byte-valued Docker selectors before inspection", async () => {
+      const rawHome = join(root, "home-");
+      const rawBin = join(root, "bin-");
+      for (const [prefix, file, contents] of [
+        [rawHome, "configured", hostA],
+        [rawBin, "docker", await readFile(join(bin, "docker"))],
+      ]) {
+        await mkdir(Buffer.concat([Buffer.from(prefix), Buffer.from([0xff])]));
+        await mkdir(prefix + "\uFFFD");
+        await writeFile(
+          Buffer.concat([Buffer.from(prefix), Buffer.from([0xff]), Buffer.from("/" + file)]),
+          contents,
+          { mode: 0o700 },
+        );
+        await writeFile(
+          join(prefix + "\uFFFD", file),
+          prefix === rawHome ? hostB : await readFile(join(alternate, "docker")),
+          { mode: 0o700 },
+        );
+      }
+      const rawSocket = join(sockets, "explicit-");
+      await rename(
+        await listenDockerSocket(t, sockets, "explicit-bound"),
+        Buffer.concat([Buffer.from(rawSocket), Buffer.from([0xff])]),
+      );
+      await listenDockerSocket(t, sockets, "explicit-\uFFFD");
+      for (const [name, prefix, suffix] of [
+        ["DOCKER_HOST", "unix://" + rawSocket, ""],
+        ["HOME", rawHome, ""],
+        ["PATH", rawBin, ":/usr/local/bin:/usr/bin:/bin"],
+      ]) {
+        const before = await readdir(temporary);
+        const beforeInspections = await readFile(inspections, "utf8");
+        const beforeCommands = await readFile(commands, "utf8");
+        const refusal = spawnSync(
+          "/bin/sh",
+          [
+            "-c",
+            'export "$1=$(printf "%s\\377%s" "$2" "$3")"; exec "$4" "$5"',
+            "sh",
+            name,
+            prefix,
+            suffix,
+            process.execPath,
+            cli,
+          ],
+          { cwd: root, env: cliEnv, encoding: "utf8", timeout: 10_000 },
+        );
+        assert.equal(refusal.error, undefined);
+        assert.equal(refusal.status, 1, refusal.stderr);
+        t.diagnostic(
+          JSON.stringify({
+            input: name,
+            inspected: (await readFile(inspections, "utf8")) !== beforeInspections,
+            createdRunDirectory: (await readdir(temporary)).length !== before.length,
+          }),
+        );
+        assert.match(
+          refusal.stderr,
+          new RegExp(name + " contains a Unicode replacement character"),
+        );
+        assert.equal(await readFile(inspections, "utf8"), beforeInspections);
+        assert.deepEqual(await readdir(temporary), before);
+        assert.equal(await readFile(commands, "utf8"), beforeCommands);
+      }
+      for (const name of [
+        "USER",
+        "LOGNAME",
+        "TMPDIR",
+        "OCC_TEST_OPENSHELL_PLACEHOLDER_WIRE_BINARY",
+      ]) {
+        const result = runWire({ [name]: "ambiguous\uFFFD" });
+        assert.equal(result.status, 1, result.stderr);
+        assert.match(result.stderr, /contains a Unicode replacement character/);
+        assert.deepEqual(await readdir(temporary), [directory]);
+      }
+    });
+
+    await t.test("preserves ordinary and Unicode explicit Docker hosts", async () => {
+      const unicodeSocket = await listenDockerSocket(t, sockets, "explicit-bom\uFEFF");
+      const trimmedSocket = await listenDockerSocket(t, sockets, "explicit-bom");
+      assert.notEqual((await stat(unicodeSocket)).ino, (await stat(trimmedSocket)).ino);
+      const replacementSocket = await listenDockerSocket(t, sockets, "valid-\uFFFD");
+      const replacementAlias = join(sockets, "valid-alias");
+      await symlink(replacementSocket, replacementAlias);
+      for (const [host, expected] of [
+        [hostA, hostA],
+        ["unix://" + unicodeSocket, "unix://" + unicodeSocket],
+        ["unix://" + replacementAlias, "unix://" + replacementSocket],
+      ]) {
+        const beforeCommands = await readFile(commands, "utf8");
+        const result = runWire({ DOCKER_HOST: host, PRIVATE_IGNORED: "ambiguous\uFFFD" });
+        assert.equal(result.error, undefined);
+        assert.equal(result.status, 1, result.stderr);
+        const firstCommand = (await readFile(commands, "utf8"))
+          .slice(beforeCommands.length)
+          .split("\n")[0];
+        const prepared = JSON.parse(firstCommand);
+        assert.equal(prepared.operation, "up");
+        assert.equal(prepared.host, expected);
+      }
+    });
   },
 );
 
