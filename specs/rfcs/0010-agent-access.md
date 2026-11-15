@@ -79,6 +79,8 @@ The proxy uses shared native identity `occ-workspace-files` with `operator.admin
 
 **Setup:** follow the disabled-by-default [native pilot](../plans/31-agent-native-admin-ui.md#contract) and [deployment guide](../../docs/guides/deploy/native-admin.md): compatible Control UI, private routing, wildcard Agent DNS/TLS, explicit shared-cookie domain, exact Origin, trusted-proxy identity and administrator device auto-approval. Enablement grants nothing. OCC strips browser credentials upstream and keeps transport keys server-side.
 
+At deployment, after resolving presets, Kubernetes Compute must reject the configuration if any entry in `gateway.auth.trustedProxy.requiredHeaders` is an invalid HTTP field name. Operators may omit the list or leave it empty. Kubernetes Compute must preserve the spelling and case of valid entries and apply the existing rules for Compute-added headers and routed Agents. [RFC 9110, section 5.1](https://www.rfc-editor.org/rfc/rfc9110.html#section-5.1)
+
 In the Console, the administrator opens **Share Agent**, enters an existing human `principalId` and acknowledges full administration. Alice receives discovery then personal/shared Agent grants. Bob receives discovery then shared access. Both sign in and choose **Open native admin UI**. Sibling access is denied. Launch is independent of Configuration/revision reads. Native edits may diverge from managed Configuration/AgentRevision. Redeployment restores managed configuration without erasing persistent storage.
 
 ## Delivery checkpoints
