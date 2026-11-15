@@ -312,7 +312,9 @@ function attachedGitExpires(
     function assertRuntimeStillRunning(message?: string) {
       assert.deepEqual(stopped, [], message ?? "Compute must retain the running revision");
     }
-    const revision = { ...startup.revision, idempotencyKey: startup.work.idempotencyKey };
+    const idempotencyKey: unknown = startup.work.idempotencyKey;
+    assert.ok(typeof idempotencyKey === "string", "queued revision work needs a text key");
+    const revision = { ...startup.revision, idempotencyKey };
     const agent = { ...startup.agent, configurationId: startup.configuration.id };
     const namespaceId = f.namespace.id;
     const { client, workspace, sandbox } = startup;
