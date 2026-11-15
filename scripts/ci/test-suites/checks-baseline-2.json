@@ -38,6 +38,7 @@
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner-process-ownership.test.ts",
     "tests/integration/ci-runner-openshell-progress.test.ts",
     "tests/integration/ci-runner-case-enforcement.test.ts",
     "tests/integration/ci-runner-file-outcomes.test.ts",
@@ -267,6 +268,19 @@
         "complete lifecycle restricts manifest selection before effects",
         "complete lifecycle losing an attempt claim cannot run phases or clean its winner",
         "complete lifecycle owns detached test groups after deadline or coordinator loss"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-runner-process-ownership.test.ts",
+      "expectedTests": [
+        "run records timeout cancellation without leaking child output",
+        "run kills what a passing file left in its process group",
+        "run kills every live test group on SIGTERM and exits by that signal",
+        "run kills every live test group on SIGINT and exits by that signal",
+        "run kills every live test group on SIGHUP and exits by that signal",
+        "run reports a cleanup that fails once a cancelled job's shell is gone as cancelled",
+        "run kills a timed-out file's whole process group after the timeout record",
+        "run records a timed-out file's interrupted test and output tail in the diagnostics report"
       ]
     },
     {

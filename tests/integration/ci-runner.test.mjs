@@ -3,11 +3,10 @@ import { readRuntimeProvenance } from "../../scripts/ci/runtime-provenance.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import test, { describe } from "node:test";
+import test from "node:test";
 import { exercisedLaneStatus } from "../../scripts/ci/full-integration-coverage.ts";
 import {
   projectSkipperRunnerReceipt,
@@ -16,19 +15,13 @@ import {
 import {
   createRunnerFixture as fixture,
   currentSha,
-  heldClock,
-  killRecordedProcessGroupMembers,
   laneArgs,
   procStat,
   requireTestResult,
   runnerArtifactPaths,
   runnerEnv,
-  runRunnerAsync,
   runRunnerSync,
-  unkilled,
-  waitFor,
   writeJson,
-  writeRunnerLaneFiles,
   writeRunnerManifest,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
@@ -61,7 +54,6 @@ import {
 } from "../helpers/local-first-agent-native.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
-const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.ts");
 
 test("runtime provenance excludes structured image identities and invalid native metadata", async (t) => {
   const root = await temporaryDirectory(t, "ci-provenance-projection-");
@@ -574,19 +566,6 @@ test("installed Skipper failure summary reads the actual runner result without e
   );
 });
 
-// These tests wait out a real runner timeout, lane deadline or cleanup allowance: seconds
-// each, at almost no CPU. Each duration stays as it is, long enough for a loaded host to
-// reach the state the test needs before it elapses, or the runner's clock waits for that
-// state (see heldClock). Instead they run side by side, after the rest of the file (see
-// the describe at its end), so the file waits about as long as the longest of them rather
-// than their sum. Each has its own fixture root, state and lock files, and starts the
-// runner with runRunnerAsync.
-const waitingTests = [];
-
-function waitingTest(...args) {
-  waitingTests.push(args);
-}
-
 async function writePrepare(root) {
   await writeFile(
     join(root, "scripts/ci/prepare.mjs"),
@@ -631,21 +610,49 @@ test(
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
-    t.after(() => child.kill("SIGTERM"));
     let stdout = "";
     let stderr = "";
-    const timer = setTimeout(() => child.kill("SIGTERM"), 5_000);
-    child.stdout.on("data", (data) => {
-      stdout += data;
-      if (stdout.includes("memory-sampler")) {
-        child.kill("SIGTERM");
+    let sawFirstSummary = false;
+    let stopTimer;
+    const stop = () => {
+      child.kill("SIGTERM");
+      stopTimer = setTimeout(() => {
+        child.kill("SIGKILL");
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }, 5_000);
+    };
+    // The sampler appends the first sample before printing its summary. Give
+    // startup time to finish, then let Bash's trap dispose of the pending sleep.
+    const startupTimer = setTimeout(stop, 30_000);
+    child.stdout.setEncoding("utf8").on("data", (chunk) => {
+      stdout += chunk;
+      if (stopTimer === undefined && /^memory-sampler .+\n/m.test(stdout)) {
+        sawFirstSummary = true;
+        clearTimeout(startupTimer);
+        stop();
       }
     });
-    child.stderr.on("data", (data) => (stderr += data));
-    await new Promise((resolvePromise, reject) => {
-      child.on("error", reject);
-      child.on("close", resolvePromise);
-    }).finally(() => clearTimeout(timer));
+    child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+    let childError;
+    child.on("error", (error) => {
+      childError = error;
+    });
+    // Await pipe closure and the actual exit before fixture cleanup can run.
+    const { code, signal } = await new Promise((resolvePromise) => {
+      child.once("close", (code, signal) => resolvePromise({ code, signal }));
+    }).finally(() => {
+      clearTimeout(startupTimer);
+      clearTimeout(stopTimer);
+    });
+    if (childError) {
+      throw childError;
+    }
+    assert.ok(
+      sawFirstSummary,
+      `Expected the first memory summary (exit ${code}, signal ${signal})`,
+    );
+    assert.deepEqual({ code, signal }, { code: 0, signal: null });
     const samples = await readFile(output, "utf8");
     const executable = basename(await realpath(process.execPath));
     assert.ok(
@@ -1045,269 +1052,6 @@ test("QA inputs", async () => {
     outcome: "inputs received",
   });
 });
-
-test("run records timeout cancellation without leaking child output", async (t) => {
-  const root = await fixture(t);
-  const resultsPath = join(root, "results/timeout.json");
-
-  await writeFile(
-    join(root, "tests/integration/timeout.test.mjs"),
-    [
-      'import test from "node:test";',
-      'test("hangs past the lane timeout", async () => {',
-      '  console.error("secretauthvalue-timeout");',
-      "  await new Promise((resolve) => setTimeout(resolve, 10_000));",
-      "});",
-      "",
-    ].join("\n"),
-  );
-  await writeSingleLaneManifest(root, "timeout", [{ path: "tests/integration/timeout.test.mjs" }], {
-    ci: ["timeout"],
-  });
-
-  const result = run(root, laneArgs(root, "timeout", "state/timeout.jsonl", resultsPath), {
-    CI_RUNNER_TEST_TIMEOUT_MS: "100",
-  });
-
-  assert.equal(result.status, 1);
-  const text = await readFile(resultsPath, "utf8");
-  assert.doesNotMatch(text, /secretauthvalue/);
-  const summary = JSON.parse(text);
-  assert.equal(summary.files[0].nodeExitCode, 1);
-  assert(summary.issues.some((entry) => entry.code === "test-timeout"));
-  // A timeout always leaves a record, even before the test printed anything.
-  const report = await readFile(join(root, "state/timeout.jsonl.diagnostics.json"), "utf8");
-  assert.doesNotMatch(report, /secretauthvalue/);
-  const [record] = JSON.parse(report).failures;
-  assert.equal(record.reason, "timeout");
-  assert.equal(record.timeoutMs, 100);
-});
-
-waitingTest(
-  "run kills a timed-out file's whole process group after the timeout record",
-  { skip: process.platform !== "linux" && "reads /proc" },
-  async (t) => {
-    const root = await fixture(t);
-    const { statePath, resultsPath } = runnerArtifactPaths(root, "orphan");
-    const recordPath = join(root, "state/orphan-pids.json");
-    const waiting = join(root, "state/orphan-waiting");
-    // The isolated test-file child ignores SIGTERM and has a child of its own, so the
-    // Node test runner's own SIGTERM handling cannot end either of them.
-    await writeFile(
-      join(root, "tests/integration/orphan.test.mjs"),
-      [
-        'import { spawn } from "node:child_process";',
-        'import { readFileSync, writeFileSync } from "node:fs";',
-        'import test from "node:test";',
-        'test("outlives its runner", async () => {',
-        '  process.on("SIGTERM", () => {});',
-        '  const grandchild = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });',
-        '  const pgid = (pid) => Number(readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\\) /su, "").split(" ")[2]);',
-        "  writeFileSync(process.env.CI_RUNNER_ORPHAN_RECORD, JSON.stringify({",
-        "    runner: process.ppid, file: process.pid, grandchild: grandchild.pid,",
-        "    pgid: pgid(process.pid), grandchildPgid: pgid(grandchild.pid),",
-        "  }));",
-        '  console.log("waiting with SIGTERM ignored");',
-        `  writeFileSync(${JSON.stringify(waiting)}, "");`,
-        "  await new Promise((resolve) => setTimeout(resolve, 60_000));",
-        "});",
-        "",
-      ].join("\n"),
-    );
-    await writeSingleLaneManifest(root, "orphan", [{ path: "tests/integration/orphan.test.mjs" }], {
-      ci: ["orphan"],
-    });
-    let pids;
-    // Never leave the fixture's processes behind, whatever the outcome: only the exact
-    // pids the fixture recorded, still in the fixture's group, never a group.
-    t.after(() => {
-      killRecordedProcessGroupMembers(pids?.pgid, [pids?.runner, pids?.file, pids?.grandchild]);
-    });
-
-    // The runner's clock stands still from the start until the file has recorded its pids and
-    // printed its line, so its timeout comes five seconds after that however long the host takes
-    // to get there.
-    const started = Date.now();
-    const result = await runRunnerAsync(
-      laneArgs(root, "orphan", statePath, resultsPath),
-      { CI_RUNNER_TEST_TIMEOUT_MS: "5000", CI_RUNNER_ORPHAN_RECORD: recordPath },
-      { timeout: 60_000, execArgv: heldClock(started, [waiting]) },
-    );
-
-    assert.equal(result.error, undefined, `the runner timed the file out: ${result.stderr}`);
-    assert.equal(result.status, 1, result.stderr);
-    pids = JSON.parse(await readFile(recordPath, "utf8"));
-    // The timeout record still comes from the runner's reporter before the group dies.
-    const [record] = JSON.parse(await readFile(`${statePath}.diagnostics.json`, "utf8")).failures;
-    assert.equal(record.reason, "timeout");
-    assert.equal(record.timeoutMs, 5000);
-    assert.deepEqual(record.interruptedTests, [{ name: "outlives its runner", line: 4 }]);
-    assert.deepEqual(record.output.lines, ["stdout: waiting with SIGTERM ignored"]);
-    // The runner sent the group SIGKILL before it exited; finishing the exit is the kernel's.
-    assert.deepEqual(unkilled([pids.file, pids.grandchild], pids.pgid), []);
-    // The Node test runner leads its own process group, apart from this test's.
-    assert(Number.isSafeInteger(pids.runner) && pids.runner > 1, String(pids.runner));
-    assert.equal(pids.pgid, pids.runner);
-    const summary = JSON.parse(await readFile(resultsPath, "utf8"));
-    assert.equal(summary.files[0].processGroupId, pids.pgid);
-    assert.equal(pids.grandchildPgid, pids.runner);
-    assert.notEqual(pids.pgid, procStat(process.pid).pgid);
-  },
-);
-
-test(
-  "run kills what a passing file left in its process group",
-  { skip: process.platform !== "linux" && "reads /proc" },
-  async (t) => {
-    const root = await fixture(t);
-    const { statePath, resultsPath } = runnerArtifactPaths(root, "leftover");
-    const recordPath = join(root, "state/leftover-pids.json");
-    // The file passes and exits; its grandchild, unref'd, would run on for a minute.
-    await writeFile(
-      join(root, "tests/integration/leftover.test.mjs"),
-      [
-        'import { spawn } from "node:child_process";',
-        'import { readFileSync, writeFileSync } from "node:fs";',
-        'import test from "node:test";',
-        'test("passes and leaves a process behind", () => {',
-        '  const grandchild = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });',
-        "  grandchild.unref();",
-        '  const pgid = Number(readFileSync(`/proc/${grandchild.pid}/stat`, "utf8").replace(/^.*\\) /su, "").split(" ")[2]);',
-        "  writeFileSync(process.env.CI_RUNNER_ORPHAN_RECORD, JSON.stringify({ runner: process.ppid, grandchild: grandchild.pid, pgid }));",
-        "});",
-        "",
-      ].join("\n"),
-    );
-    await writeSingleLaneManifest(
-      root,
-      "leftover",
-      [{ path: "tests/integration/leftover.test.mjs" }],
-      { ci: ["leftover"] },
-    );
-    let pids;
-    t.after(() => {
-      killRecordedProcessGroupMembers(pids?.pgid, [pids?.grandchild]);
-    });
-
-    const result = run(root, laneArgs(root, "leftover", statePath, resultsPath), {
-      CI_RUNNER_ORPHAN_RECORD: recordPath,
-    });
-
-    assert.equal(result.status, 0, result.stderr);
-    pids = JSON.parse(await readFile(recordPath, "utf8"));
-    assert.equal(pids.pgid, pids.runner);
-    assert.deepEqual(unkilled([pids.grandchild], pids.pgid), []);
-  },
-);
-
-for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
-  test(
-    `run kills every live test group on ${signal} and exits by that signal`,
-    { skip: process.platform !== "linux" && "reads /proc" },
-    async (t) => {
-      const root = await fixture(t);
-      const { statePath, resultsPath } = runnerArtifactPaths(root, "hang");
-      const recordPath = join(root, "state/hang-pids.json");
-      // The isolated test-file child ignores the signal and has a child of its own, so
-      // only the forwarded SIGKILL to the Node test runner's group can end them.
-      await writeFile(
-        join(root, "tests/integration/hang.test.mjs"),
-        [
-          'import { spawn } from "node:child_process";',
-          'import { readFileSync, renameSync, writeFileSync } from "node:fs";',
-          'import test from "node:test";',
-          'test("hangs with the signal ignored", async () => {',
-          `  process.on(${JSON.stringify(signal)}, () => {});`,
-          '  const grandchild = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: "ignore" });',
-          '  const pgid = (pid) => Number(readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\\) /su, "").split(" ")[2]);',
-          "  const record = process.env.CI_RUNNER_ORPHAN_RECORD;",
-          "  writeFileSync(`${record}.partial`, JSON.stringify({",
-          "    runner: process.ppid, file: process.pid, grandchild: grandchild.pid,",
-          "    pgid: pgid(process.pid), grandchildPgid: pgid(grandchild.pid),",
-          "  }));",
-          "  renameSync(`${record}.partial`, record);",
-          "  await new Promise((resolve) => setTimeout(resolve, 30_000));",
-          "});",
-          "",
-        ].join("\n"),
-      );
-      await writeSingleLaneManifest(root, "hang", [{ path: "tests/integration/hang.test.mjs" }], {
-        ci: ["hang"],
-      });
-
-      // Detached, so the signal reaches only run-tests.ts, never this test's group.
-      const ciRunner = spawn(
-        process.execPath,
-        [runnerPath, ...laneArgs(root, "hang", statePath, resultsPath)],
-        {
-          cwd: repositoryRoot,
-          detached: true,
-          stdio: ["ignore", "ignore", "pipe"],
-          env: runnerEnv({
-            CI_RUNNER_TEST_TIMEOUT_MS: "30000",
-            CI_RUNNER_ORPHAN_RECORD: recordPath,
-          }),
-        },
-      );
-      let stderr = "";
-      ciRunner.stderr.setEncoding("utf8");
-      ciRunner.stderr.on("data", (chunk) => (stderr += chunk));
-      let exit;
-      const exited = new Promise((resolve) =>
-        ciRunner.on("exit", (code, exitSignal) => {
-          exit = { code, signal: exitSignal };
-          resolve(exit);
-        }),
-      );
-      let pids;
-      // Never leave processes behind, whatever the outcome: only the pid this test
-      // spawned, and the exact pids the fixture recorded while still in its group.
-      t.after(async () => {
-        if (exit === undefined) {
-          // Let run-tests.ts end its test groups first: they may not have recorded pids.
-          for (const lastResort of ["SIGTERM", "SIGKILL"]) {
-            try {
-              process.kill(ciRunner.pid, lastResort);
-            } catch {
-              // Already gone.
-            }
-            if (await waitFor(() => exit !== undefined, 2_000)) {
-              break;
-            }
-          }
-        }
-        killRecordedProcessGroupMembers(pids?.pgid, [pids?.runner, pids?.file, pids?.grandchild]);
-      });
-
-      const recorded = await waitFor(() => {
-        try {
-          return JSON.parse(readFileSync(recordPath, "utf8"));
-        } catch {
-          return exit !== undefined ? "exited" : undefined;
-        }
-      }, 30_000);
-      assert.equal(typeof recorded, "object", `no test file started (${recorded}): ${stderr}`);
-      pids = recorded;
-      // The Node test runner leads its own group, apart from run-tests.ts and this test.
-      assert(Number.isSafeInteger(pids.runner) && pids.runner > 1, String(pids.runner));
-      assert.equal(pids.pgid, pids.runner);
-      assert.equal(pids.grandchildPgid, pids.runner);
-      assert.notEqual(pids.pgid, ciRunner.pid);
-      assert.notEqual(pids.pgid, procStat(process.pid).pgid);
-
-      process.kill(ciRunner.pid, signal);
-      let timer;
-      const outcome = await Promise.race([
-        exited,
-        new Promise((resolve) => (timer = setTimeout(resolve, 10_000, "still running"))),
-      ]);
-      clearTimeout(timer);
-      assert.deepEqual(outcome, { code: null, signal }, stderr);
-      // The runner sent the group SIGKILL before it exited; finishing the exit is the kernel's.
-      assert.deepEqual(unkilled([pids.runner, pids.file, pids.grandchild], pids.pgid), []);
-    },
-  );
-}
 
 test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from artifacts", async (t) => {
   const root = await fixture(t);
@@ -2531,98 +2275,6 @@ test("the reporter sends interrupted tests and the output tail, newest first, on
   assert.equal(sent.at(-1).type, "test:fail");
 });
 
-waitingTest(
-  "run records a timed-out file's interrupted test and output tail in the diagnostics report",
-  async (t) => {
-    const root = await fixture(t);
-    const { statePath, resultsPath } = runnerArtifactPaths(root, "hang");
-    // Holds when the file printed its last line.
-    const printed = join(root, "state/hang-printed");
-    await writeFile(
-      join(root, "tests/integration/hang.test.mjs"),
-      [
-        'import { writeFileSync } from "node:fs";',
-        'import test from "node:test";',
-        'test("passes first", () => {});',
-        'test("hangs", async () => {',
-        "  for (let index = 0; index < 500; index += 1) {",
-        '    console.log(`bulk ${index} ${"v".repeat(2_000)}`);',
-        "  }",
-        "  console.log(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
-        '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
-        '  console.log("waiting for a reply that never comes");',
-        `  writeFileSync(${JSON.stringify(printed)}, String(Date.now()));`,
-        "  // Ends by itself in case the runner leaves it behind.",
-        "  await new Promise((resolve) => setTimeout(resolve, 30_000));",
-        "});",
-        "",
-      ].join("\n"),
-    );
-    // Node can exit mid-line after the interruption; the test runner process here
-    // always does, and the runner must skip that cut line.
-    const cutAtExit = join(root, "scripts/ci/cut-at-exit.cjs");
-    await writeFile(
-      cutAtExit,
-      'if (process.execArgv.includes("--test")) process.on("exit", () => process.stdout.write(\'{"type":"test:output","data":{"lines":["cut\'));\n',
-    );
-    await writeJson(join(root, "manifest.json"), {
-      version: 1,
-      lanes: {
-        hang: {
-          env: { NODE_OPTIONS: `--require=${cutAtExit}` },
-          files: [{ path: "tests/integration/hang.test.mjs" }],
-        },
-      },
-      groups: { ci: ["hang"] },
-    });
-
-    // The runner's clock stands still from the start until the file has printed everything, so its
-    // timeout comes five seconds after that however long the host takes to get there.
-    const started = Date.now();
-    const result = await runRunnerAsync(
-      laneArgs(root, "hang", statePath, resultsPath),
-      { CI_RUNNER_TEST_TIMEOUT_MS: "5000" },
-      { timeout: 60_000, execArgv: heldClock(started, [printed]) },
-    );
-
-    assert.equal(result.error, undefined, `the runner timed the file out: ${result.stderr}`);
-    assert.equal(result.status, 1, result.stderr);
-    const summary = JSON.parse(await readFile(resultsPath, "utf8"));
-    assert(summary.issues.some((entry) => entry.code === "test-timeout"));
-    const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
-    assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123/);
-    const [record] = JSON.parse(text).failures;
-    assert.equal(record.file, "tests/integration/hang.test.mjs");
-    assert.equal(record.reason, "timeout");
-    assert.equal(record.timeoutMs, 5000);
-    // The file ran at least its timeout, and the timeout (with its 5 s grace) ended it well before
-    // its own 30 s wait did. The held clock stood still until the last line, and the runner
-    // records real time, so that bound counts from then.
-    const sincePrinted = Number(await readFile(printed, "utf8")) - started;
-    assert(
-      record.elapsedMs >= 5000 && record.elapsedMs < sincePrinted + 15_000,
-      `${record.elapsedMs} ms, last line ${sincePrinted} ms in`,
-    );
-    assert.deepEqual(record.interruptedTests, [{ name: "hangs", line: 4 }]);
-    // Up to the last 400 of 503 lines, newest last, with the usual redaction. Node
-    // exits soon after the interruption, so on a slow host only the newest batches
-    // arrive; the rest are counted.
-    const { lines, omittedLines } = record.output;
-    assert(lines.length >= 10 && lines.length <= 400, String(lines.length));
-    assert.equal(lines.length + omittedLines, 503);
-    assert.deepEqual(lines.slice(-3), [
-      "stdout: credential [env:CI_RUNNER_FIXTURE_CREDENTIAL]",
-      "[redacted credential-bearing line]",
-      "stdout: waiting for a reply that never comes",
-    ]);
-    const bulk = lines.slice(0, -3);
-    assert.deepEqual(
-      bulk.map((line) => line.match(/^stdout: bulk (\d+) v+\.\.\. \[truncated\]$/u)?.[1]),
-      bulk.map((_, index) => String(500 - bulk.length + index)),
-    );
-  },
-);
-
 test("each job attempt uploads its own diagnostics report", async () => {
   // A passing rerun must not replace a failed attempt's report. This reads the
   // composite action; it is not a GitHub Actions execution.
@@ -2699,79 +2351,6 @@ test(
   checkAllowlistedMeasurements,
 );
 
-test("run reports a cleanup that fails once a cancelled job's shell is gone as cancelled", async (t) => {
-  const root = await fixture(t);
-  const { statePath, resultsPath } = runnerArtifactPaths(root, "cancelled");
-  // GitHub cancels a step by signalling and then killing its shell, never this runner, which
-  // finishes as an orphan beside the job's own cleanup step. The second file's cleanup kills
-  // the runner's parent, as the cancellation kills the shell, and then fails, as the racing
-  // cleanup step makes it.
-  await writeFile(
-    join(root, "scripts/ci/prepare.mjs"),
-    `export async function prepareFile({ file }) {
-  if (file.path.endsWith('plain.test.mjs')) {
-    return { cleanup: async () => { throw new Error('secretauthvalue cleanup'); } };
-  }
-  return {
-    cleanup: async () => {
-      const shell = process.ppid;
-      process.kill(shell, 'SIGKILL');
-      const deadline = Date.now() + 10_000;
-      while (process.ppid === shell && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      throw Object.assign(new Error('secretauthvalue cluster already removed'), { code: 'ENOENT' });
-    },
-  };
-}
-`,
-  );
-  await writeRunnerLaneFiles(
-    root,
-    "cancel",
-    ["plain", "cancelled"],
-    'import test from "node:test";\ntest("runs", () => {});\n',
-  );
-
-  // A parent process stands in for the step's shell: it waits for the runner until the second
-  // file's cleanup kills it. No shell parses any of these arguments. The timeout only stops a
-  // hang: a loaded host can take over 30 s to run both files, and the shell must die by the
-  // cleanup's SIGKILL, not this SIGTERM.
-  const result = spawnSync(
-    process.execPath,
-    [
-      "-e",
-      'require("node:child_process").spawnSync(process.argv[1], process.argv.slice(2), { stdio: "inherit" });',
-      process.execPath,
-      runnerPath,
-      ...laneArgs(root, "cancel", statePath, resultsPath),
-    ],
-    { cwd: repositoryRoot, encoding: "utf8", env: runnerEnv(), timeout: 120_000 },
-  );
-
-  assert.equal(result.signal, "SIGKILL", result.stderr);
-  const summary = JSON.parse(await readFile(resultsPath, "utf8"));
-  assert.equal(summary.status, "failed");
-  // A cleanup that fails while the job runs is still a cleanup failure.
-  assert.deepEqual(summary.files[0].cleanup, { status: "failed", error: { name: "Error" } });
-  // The cancelled record keeps the error's name and code, never its message.
-  assert.deepEqual(summary.files[1].cleanup, {
-    status: "cancelled",
-    error: { name: "Error", code: "ENOENT" },
-  });
-  assert.deepEqual(
-    summary.issues.map(({ code, file }) => [code, file]),
-    [
-      ["cleanup-failed", "tests/integration/plain.test.mjs"],
-      ["cleanup-cancelled", "tests/integration/cancelled.test.mjs"],
-    ],
-  );
-  assert.doesNotMatch(
-    `${result.stdout}\n${result.stderr}\n${await readFile(resultsPath, "utf8")}`,
-    /secretauthvalue/,
-  );
-});
-
 test(
   "run publishes a failed wait's followed container log, redacted, beside Agent activity",
   checkFailedWaitContainerLog,
@@ -2781,11 +2360,5 @@ for (const earlyLogExit of [false, true]) {
   test(`run retains controller readiness evidence before its fixture namespace is deleted (early log exit: ${earlyLogExit})`, (t) =>
     checkControllerReadinessEvidence(t, earlyLogExit));
 }
-
-describe("tests that wait out real runner limits, side by side", { concurrency: true }, () => {
-  for (const args of waitingTests) {
-    test(...args);
-  }
-});
 
 registerNativeWorkerProofCases();
