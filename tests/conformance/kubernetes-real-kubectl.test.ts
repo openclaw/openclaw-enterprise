@@ -190,6 +190,8 @@ for (const { name, chunks, exitCode } of [
 ]) {
   test(`kubectl port-forward handles ${name}`, { timeout: 5_000 }, async (t) => {
     const directory = mkdtempSync(join(tmpdir(), "occ-port-forward-"));
+    // Restore PATH before the child and directory cleanup hooks can fail.
+    setEnvironment(t, { PATH: directory });
     const ack = join(directory, "stdout-ack");
     const kubeconfigPath = join(directory, "unused-kubeconfig");
     let cleaningUp = false;
@@ -218,7 +220,6 @@ ${exitCode === undefined ? "setInterval(() => {}, 1000);" : `process.exit(${exit
     });
     await commandReady;
     t.signal.throwIfAborted();
-    setEnvironment(t, { PATH: directory });
 
     // Observe the actual pipe reads and release each write only after its bytes
     // were read. The test exercises the same spawn and readiness path as kubectl.
