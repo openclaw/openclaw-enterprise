@@ -33,7 +33,7 @@ import type {
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
+import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
@@ -1314,7 +1314,7 @@ for (const mode of ["unavailable", "refused"] as const) {
 }
 
 // A revision read Restriction can refuse the first deployment to a caller its provisioning job
-// still answers (tests/integration/postgres-agent-provisioning.test.mjs). That caller would find
+// still answers (tests/integration/postgres-agent-provisioning.test.ts). That caller would find
 // nothing on the Deployment tab, so the form keeps following the job, asks once whether the
 // deployment is readable, and opens the Agent when the job succeeds, as before handoff opened it.
 test("Dedicated Agent creation keeps following the job when the first deployment is unreadable", async (t) => {
@@ -2012,7 +2012,7 @@ for (const width of [1440, 390]) {
       assert.equal(feedback.focused, true);
       assert.ok(
         feedback.messages.includes(
-          'Set plugins.allow to an array of strings, such as ["codex"], or remove the field.',
+          "Set plugins.allow to an array of strings, or remove the field.",
         ),
       );
       assert.deepEqual(errors, []);

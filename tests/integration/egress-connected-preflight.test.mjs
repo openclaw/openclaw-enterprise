@@ -21,12 +21,13 @@ import {
 import {
   rememberCustodyContext,
   safeConnectedFailure,
-} from "../helpers/egress-connected-failure.mjs";
+} from "../helpers/egress-connected-failure.ts";
+import { isRecord } from "../helpers/egress-observation-values.ts";
 import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
 import { deleteInstalledResource } from "../helpers/egress-installed-resource-cleanup.mjs";
-import { createKubernetesClient } from "../helpers/kubernetes-real.mjs";
+import { createKubernetesClient } from "../helpers/kubernetes-real.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   encodeSyntheticEvents,
@@ -35,6 +36,7 @@ import {
 } from "../fixtures/synthetic-egress-provider.mjs";
 import {
   assertConnectedResponse,
+  assertSecretReference,
   assertNoConnectedAssistantOutput,
   connectedReceiptRevision,
   protectedAgentBody,
@@ -935,11 +937,14 @@ test("connected request bytes pass the real Fastify parser and preserve missing-
       },
       payload: wire.body,
     });
-    return assertConnectedResponse(
+    const result = assertConnectedResponse(
       { status: response.statusCode, body: response.json() },
       expectedStatus,
     );
+    assert.ok(isRecord(result), "expected a resource or error response");
+    return result;
   };
+  assertSecretReference(secret);
   const sourceBody = protectedSourceBody("synthetic", secret.ref, "https://provider.test:9443/v1");
   const unknownField = await post("/credential-sources", { ...sourceBody, invented: true }, 400);
   assert.equal(unknownField.code, "INVALID_REQUEST");
@@ -1202,6 +1207,7 @@ test("custody failures retain bounded last observations without supplier payload
   };
   const line = {
     sandboxId,
+    time: null,
     source: "sandbox",
     level: "INFO",
     target: "openshell_supervisor_network::l7::rest::credentials",

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-13
-last_updated_session: authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4
+updated: 2026-11-15
+last_updated_session: authoring-run/804dcfff-1adf-4a8e-96ba-47e3b5e122ff
 ---
 
 # Console Agent creation
@@ -71,9 +71,11 @@ none before any answer.
 `create.mts:updateModelConfiguration` preserves authored `plugins.allow` and
 `plugins.deny` while changing Codex runtime wiring. Missing and empty allowlists
 remain unrestricted. An explicit `plugins.entries.codex.enabled: false` survives
-a round trip; the Dedicated Codex runtime overlay enables that required plugin
-at startup. The form uses the existing server preflight and provisioning admission
-rather than imposing a separate browser policy. A refusal leaves the editable
+a round trip. Dedicated Codex enables the plugin at startup if the draft passes
+admission. Returning to OpenClaw through the Harness selector or model JSON restores
+the original disabled entry when the projected entry is unchanged. Operator edits
+and deletions survive the switch. The form uses the existing server preflight and
+provisioning admission. A refusal leaves the editable
 Configuration unchanged. See [runtime admission](../../reference/harness-execution.md#native-runtime-selection).
 
 `create.mts:MODEL_CHOICES` supplies unauthenticated static lists and manual entry.
@@ -235,6 +237,8 @@ Switching methods hides that feedback without changing the lookup or saved choic
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-15 09:16: Preserve authored native Codex settings after unfinished JSON and Harness round trips in the accompanying fix. (authoring-run/804dcfff-1adf-4a8e-96ba-47e3b5e122ff - d449d78c38d528a220e582ad38d383a978310f9a)
 
 - 2026-11-13 05:52: Trace Configuration Driver admission and cross-Namespace Secret binding checks before Agent creation saves resources. (authoring-run/09e9dfc6-0460-4492-905d-33d9fe7b60d4 - 4ecf71da20e0606cb4f78fc90551462af11b4981)
 

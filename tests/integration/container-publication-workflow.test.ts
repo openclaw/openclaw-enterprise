@@ -101,7 +101,7 @@ test("publication workflow requires explicit chart opt-in and a successful image
   assert.equal(record(downloaded.with).pattern, undefined);
   const verified = record(smokeSteps.find((step) => step.id === "verified"));
   const smoke = record(
-    smokeSteps.find((step) => optionalText(step.run)?.includes("container-release.mjs smoke")),
+    smokeSteps.find((step) => optionalText(step.run)?.includes("container-release.ts smoke")),
   );
   const qualified = record(
     smokeSteps.find((step) =>
@@ -114,9 +114,13 @@ test("publication workflow requires explicit chart opt-in and a successful image
   assert.equal(record(smoke.env).IMAGE_DIGEST, "${{ steps.verified.outputs.digest }}");
   assert.equal(smoke["continue-on-error"], undefined);
   assert.equal(qualified.if, undefined);
+  const cleanup = record(
+    smokeSteps.find((step) => optionalText(step.run)?.startsWith("node scripts/ci/cleanup.ts ")),
+  );
+  assert.equal(cleanup.if, "always()");
   assert.equal(
-    record(smokeSteps.find((step) => optionalText(step.run)?.includes("cleanup.mjs"))).if,
-    "always()",
+    cleanup.run,
+    'node scripts/ci/cleanup.ts --state "$RUNNER_TEMP/runtime-smoke-${{ matrix.arch }}.json"',
   );
   const controllerUpload = record(
     steps.find((step) => optionalText(optionalRecord(step.with)?.name)?.startsWith("platform-")),

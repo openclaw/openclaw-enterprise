@@ -195,7 +195,7 @@ then select the actual lane. The state and results paths must belong to this att
 ```sh
 export OCC_TEST_EGRESS_DISPATCH_OBSERVER_SOCKET="$new_observer_dir/control.sock"
 CI_RUNNER_DEADLINE_MS=$(node -p 'Date.now() + 95 * 60000') \
-CI_RUNNER_TEST_TIMEOUT_MS=5100000 node scripts/ci/run-tests.mjs run egress-custody-installed \
+CI_RUNNER_TEST_TIMEOUT_MS=5100000 node scripts/ci/run-tests.ts run egress-custody-installed \
   --state "$attempt/state.json" --results "$attempt/results.json"
 ```
 

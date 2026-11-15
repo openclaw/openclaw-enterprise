@@ -16,11 +16,13 @@ import test, { type TestContext } from "node:test";
 import type { Dialog, Locator, Page, Request } from "playwright";
 
 import { normalizePresetTemplate } from "../../packages/contracts/src/presets.ts";
-import type {
-  HarnessAuthBinding,
-  Preset,
-  PresetTemplate,
-  PresetVariable,
+import {
+  WORKSPACE_DEFAULTS,
+  WORKSPACE_DEFAULTS_ID,
+  type HarnessAuthBinding,
+  type Preset,
+  type PresetTemplate,
+  type PresetVariable,
 } from "../../packages/contracts/src/index.ts";
 import type { CreateAgentBody, CreateSecretBody } from "../../packages/contracts/src/api/common.ts";
 import type {
@@ -41,10 +43,6 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
-import {
-  WORKSPACE_DEFAULTS,
-  WORKSPACE_DEFAULTS_ID,
-} from "../../packages/contracts/src/workspace-defaults.mjs";
 import {
   createConsoleAppFixture as createBaseConsoleAppFixture,
   backendFixtures,
@@ -74,6 +72,7 @@ import {
   waitForInputValue,
 } from "./console-agents-browser-helpers.ts";
 import { trackSettledFetches, waitForSettledFetches } from "./console-fetch-accounting.ts";
+import { createNativeConsoleFixture, nativeBrowserSupported } from "./console-native-ingress.ts";
 import { normalizeProvisioningConfiguration } from "../../packages/occ/src/agent-provisioning.ts";
 import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
@@ -2043,26 +2042,25 @@ test("Harness switches preserve unrestricted and explicit native plugin allowlis
     const namespace = await fixture.createNamespace("Native plugin settings", { ready: true });
     const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "preset-model-key");
     const harnessAuth = { method: "api_key", source: secret.ref };
-    const values: ReturnType<typeof nativeValues> & {
-      plugins: { allow?: string[]; deny?: string[] };
-    } = nativeValues("preserved-native-plugin");
-    values.plugins.deny = ["blocked-plugin"];
-    if (allow !== undefined) {
-      values.plugins.allow = allow;
-    }
-    const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-      body: {
-        name: "Native plugins",
-        template: {
-          agent: { name: "Native plugin Agent", executionMode: "embedded", harnessAuth },
-          configuration: { values },
-        },
+    const base = nativeValues("preserved-native-plugin");
+    const values = {
+      ...base,
+      plugins: {
+        ...base.plugins,
+        deny: ["blocked-plugin"],
+        ...(allow === undefined ? {} : { allow }),
+      },
+    };
+    const preset = await createPreset(fixture, namespace.id, {
+      name: "Native plugins",
+      template: {
+        agent: { name: "Native plugin Agent", executionMode: "embedded", harnessAuth },
+        configuration: { values },
       },
     });
-    assert.equal(preset.status, 201);
     const { page } = await newPage(t, fixture);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template", { exact: true }).selectOption(preset.data.id);
+    await page.getByLabel("Preset template", { exact: true }).selectOption(preset.id);
     await page.getByRole("button", { name: "Use Preset", exact: true }).click();
     await openAdvancedSettings(page);
     const configuration = page.getByLabel("Configuration JSON", { exact: true });
@@ -2079,15 +2077,7 @@ test("Harness switches preserve unrestricted and explicit native plugin allowlis
     assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, values.plugins);
 
     // Save through the ordinary Agent form and read its owned Configuration back from the API.
-    const createdResponse = page.waitForResponse(
-      (response) =>
-        response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
-        response.request().method() === "POST",
-    );
-    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-    const response = await createdResponse;
-    assert.equal(response.status(), 201);
-    const created = (await response.json()).data;
+    const created = await createAgentThroughForm(page, fixture, namespace.id);
     assert.equal(created.executionMode, "embedded");
     assert.deepEqual(created.harnessAuth, harnessAuth);
     const saved = await fixture.request(
@@ -2132,23 +2122,31 @@ test("Default Codex policy survives Harness switches, explicit edits and restore
   assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, []);
 });
 
-test("A disabled Codex entry survives Harness switches and saves through existing admission", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Disabled Codex entry", { ready: true });
-  const secret = await fixture.createSecret(namespace.id, "Model key", "synthetic-model-key");
-  const base = nativeValues("disabled-codex-entry");
-  // A saved disable need not include the runtime-owned transport configuration.
-  const values = {
-    ...base,
-    plugins: {
+for (const finalHarness of ["openclaw", "codex"] as const) {
+  test(`A disabled Codex entry survives Harness switches and saves on ${finalHarness}`, async (t) => {
+    if (!nativeBrowserSupported(t)) {
+      return;
+    }
+    const { fixture, browserOptions } = await createNativeConsoleFixture(t, {
+      agentProvisioning: false,
+      filesystemConfiguration: true,
+      nativeAdminGatewayApiKey: async () => "synthetic-native-admin-gateway-key",
+      agentGatewayManagedMode: false,
+    });
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Disabled Codex entry", { ready: true });
+    const secret = await fixture.createSecret(namespace.id, "Model key", "synthetic-model-key");
+    const base = nativeValues("disabled-codex-entry");
+    const entry =
+      finalHarness === "openclaw"
+        ? { enabled: false }
+        : { enabled: false, config: { appServer: { sandbox: "workspace-write" } } };
+    const plugins = {
       ...base.plugins,
       allow: ["codex"],
-      entries: { ...base.plugins.entries, codex: { enabled: false } },
-    },
-  };
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: {
+      entries: { ...base.plugins.entries, codex: entry },
+    };
+    const preset = await createPreset(fixture, namespace.id, {
       name: "Disabled Codex entry",
       template: {
         agent: {
@@ -2156,36 +2154,70 @@ test("A disabled Codex entry survives Harness switches and saves through existin
           executionMode: "embedded",
           harnessAuth: { method: "api_key", source: secret.ref },
         },
-        configuration: { values },
+        configuration: { values: { ...base, plugins } },
       },
-    },
+    });
+    const { page } = await newPage(t, fixture, browserOptions);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template", { exact: true }).selectOption(preset.id);
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    await openAdvancedSettings(page);
+    const configuration = page.getByLabel("Configuration JSON", { exact: true });
+    const harness = page.getByLabel("Harness", { exact: true });
+    await harness.selectOption("codex");
+    let repairedPlugins: unknown;
+    if (finalHarness === "openclaw") {
+      // The selector can change while an unfinished JSON edit still holds the projected plugin.
+      const dedicated = JSON.parse(await configuration.inputValue());
+      const native = JSON.stringify({ ...dedicated, agents: base.agents, models: base.models });
+      const incomplete = native.slice(0, -1);
+      await configuration.fill(incomplete);
+      await harness.selectOption("openclaw");
+      assert.equal(await configuration.inputValue(), incomplete);
+      await configuration.fill(native);
+      repairedPlugins = JSON.parse(await configuration.inputValue()).plugins;
+      assert.equal(await harness.inputValue(), "openclaw");
+      await harness.selectOption("codex");
+    }
+    await harness.selectOption("openclaw");
+    if (finalHarness === "codex") {
+      assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, plugins);
+      await harness.selectOption("codex");
+    }
+    const configurationBeforeSave = await configuration.inputValue();
+    const created = await createAgentThroughForm(page, fixture, namespace.id);
+    assert.equal(created.executionMode, finalHarness === "openclaw" ? "embedded" : "dedicated");
+    const saved = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+    );
+    assert.equal(saved.status, 200);
+    const expected =
+      finalHarness === "openclaw"
+        ? entry
+        : {
+            enabled: false,
+            config: {
+              appServer: {
+                mode: "guardian",
+                approvalPolicy: "on-request",
+                transport: "websocket",
+                url: "${APP_SERVER_URL}",
+                authToken: "${APP_SERVER_TOKEN}",
+                sandbox: "workspace-write",
+              },
+            },
+          };
+    assert.deepEqual(saved.data.values.plugins, {
+      ...plugins,
+      entries: { ...plugins.entries, codex: expected },
+    });
+    assert.deepEqual(JSON.parse(configurationBeforeSave).plugins, saved.data.values.plugins);
+    if (finalHarness === "openclaw") {
+      assert.deepEqual(repairedPlugins, plugins);
+    }
   });
-  assert.equal(preset.status, 201);
-  const { page } = await newPage(t, fixture);
-  // Ordinary draft creation exercises real API admission without provisioning a workload.
-  await routeInstallationWithoutProvisioning(page, fixture);
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template", { exact: true }).selectOption(preset.data.id);
-  await page.getByRole("button", { name: "Use Preset", exact: true }).click();
-  await openAdvancedSettings(page);
-  const configuration = page.getByLabel("Configuration JSON", { exact: true });
-  const harness = page.getByLabel("Harness", { exact: true });
-  for (const selection of ["codex", "openclaw", "codex"]) {
-    await harness.selectOption(selection);
-    const current = JSON.parse(await configuration.inputValue());
-    assert.deepEqual(current.plugins.allow, ["codex"]);
-    assert.equal(current.plugins.entries.codex.enabled, false);
-  }
-  const created = await createAgentThroughForm(page, fixture, namespace.id);
-  assert.equal(created.executionMode, "dedicated");
-  const saved = await fixture.request(
-    "GET",
-    `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
-  );
-  assert.equal(saved.status, 200);
-  assert.equal(saved.data.values.plugins.entries.codex.enabled, false);
-  assert.deepEqual(saved.data.values.plugins.allow, ["codex"]);
-});
+}
 
 test("Dedicated OpenClaw Presets preserve custom provider transport across execution mode changes", async (t) => {
   const fixture = await createConsoleAppFixture(t, {

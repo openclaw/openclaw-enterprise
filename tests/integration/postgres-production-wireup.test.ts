@@ -19,7 +19,7 @@ import {
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { createServer } from "node:net";
-import { startApi } from "../../apps/controller/src/api-startup.mjs";
+import { startApi } from "../../apps/controller/src/api-startup.ts";
 import { listen } from "../helpers/listen.ts";
 import { setEnvironment } from "../helpers/environment.ts";
 import { fileURLToPath } from "node:url";

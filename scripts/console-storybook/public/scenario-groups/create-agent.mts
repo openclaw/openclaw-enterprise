@@ -2033,14 +2033,17 @@ export const createAgentProvisioningScenarios = {
     nativePluginSettings: {
       ...nativePlugins,
       allow: ["knowledge", "openai", "codex"],
-      entries: { ...nativePlugins.entries, codex: { enabled: false } },
+      entries: {
+        ...nativePlugins.entries,
+        codex: { enabled: false, config: { appServer: { sandbox: "workspace-write" } } },
+      },
     },
     actions: nativePluginForm,
     description:
-      "An explicit disabled Codex entry survives Harness switches. Existing admission accepts it because the runtime overlay enables the required plugin.",
+      "Harness switches preserve the disabled Codex entry and its authored App Server settings. Existing admission and runtime enablement remain separate.",
     steps: [
-      "Inspect plugins.entries.codex.enabled: false, switch to Codex, then OpenClaw and back. The explicit setting remains false.",
-      "Select Create Agent without repairing the entry. The simulated workflow starts provisioning; actual runtime enablement is not shown by this preview.",
+      "Inspect the disabled Codex entry and workspace-write sandbox. Switch to Codex, then OpenClaw: the original entry is restored.",
+      "Switch to Codex, make Configuration JSON incomplete, and select OpenClaw. Finish the JSON, then switch to Codex and OpenClaw again: authored settings remain. This preview simulates creation, not runtime enablement.",
     ],
     gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
   },
