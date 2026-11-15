@@ -396,7 +396,7 @@ export function registerOpenShellServiceTransportCases(token: string, serviceUrl
     const response: { socket?: Duplex } = {};
     const closed = new EventEmitter<{ closed: [] }>();
     const deadline = new AbortController();
-    const closing = once(closed, "closed", { signal: deadline.signal });
+    const closing = once(closed, "closed", { signal: deadline.signal }).then(() => {});
     const gateway = createServer();
     gateway.on("upgrade", (_request, peer) => {
       response.socket = peer;

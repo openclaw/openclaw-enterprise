@@ -397,7 +397,6 @@ export function registerOpenShellCodexReadinessCases(token: string, serviceUrl: 
       pod,
       writes,
     } = providerEndpointFixture();
-    assert.ok(sandbox);
     sandbox.harnessStatus = driver.harnessStatus.bind(driver);
     await prepare();
     setGatewayServing();

@@ -43,6 +43,20 @@ export function providerReadinessFixture({
   sandboxDriver,
   workspaceNodePeerLabels = async ({ revision }) => supervisorPeerLabels(revision.id),
 } = {}) {
+  /** @typedef {import("../../packages/contracts/src/index.ts").SandboxDriver} SandboxDriver */
+  /** @type {Pick<SandboxDriver, "id" | "implementation"> & Partial<SandboxDriver>} */
+  const sandbox = sandboxDriver ?? {
+    id: "sandbox-provider",
+    implementation: "openshell",
+    async provisionHarness(context) {
+      if (provisionHarness !== undefined) {
+        return provisionHarness(context);
+      }
+      assert.fail("activation must only observe the previously provisioned Harness");
+    },
+    ...(harnessEndpoint === undefined ? {} : { harnessEndpoint }),
+    workspaceNodePeerLabels,
+  };
   const driver = new KubernetesComputeDriver(
     routedOptions({
       runtime: {
@@ -67,18 +81,7 @@ export function providerReadinessFixture({
           return true;
         },
       },
-      sandboxDriver: sandboxDriver ?? {
-        id: "sandbox-provider",
-        implementation: "openshell",
-        async provisionHarness(context) {
-          if (provisionHarness !== undefined) {
-            return provisionHarness(context);
-          }
-          assert.fail("activation must only observe the previously provisioned Harness");
-        },
-        ...(harnessEndpoint === undefined ? {} : { harnessEndpoint }),
-        workspaceNodePeerLabels,
-      },
+      sandboxDriver: sandbox,
     },
   );
   const revision = routedRevision(driver, {
@@ -209,7 +212,7 @@ export function providerReadinessFixture({
     requests,
     core,
     // The Sandbox Driver Compute holds, so a test can add an optional method later.
-    sandbox: driver.sandboxDriver,
+    sandbox,
     /** @param {string} name */
     pod(name, ready = "True") {
       return {
