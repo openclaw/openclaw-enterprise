@@ -233,7 +233,7 @@ RUN echo 'b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538  /tmp
 
 # Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
 COPY deploy/runtime/openclaw-planned-completion.patch /tmp/openclaw-planned-completion.patch
-RUN echo '1d0a4b4941db7ffa834f4a8e951b72ed1057e76d9f3c8656f468bb4295b74c45  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
+RUN echo 'e6dd8a4c0c85c77390bb4aa68e62416d7a4fe950f5d622c79809e73c79e6f1cb  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-planned-completion.patch
 
 # Broad source verification is an explicit target, separate from image assembly.

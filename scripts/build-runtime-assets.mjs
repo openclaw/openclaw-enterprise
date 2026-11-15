@@ -52,7 +52,7 @@ const appliedPatches = [
   },
   {
     file: "openclaw-planned-completion.patch",
-    sha256: "1d0a4b4941db7ffa834f4a8e951b72ed1057e76d9f3c8656f468bb4295b74c45",
+    sha256: "e6dd8a4c0c85c77390bb4aa68e62416d7a4fe950f5d622c79809e73c79e6f1cb",
   },
 ];
 const [command, sourceRoot, output, manifestPath] = process.argv.slice(2);

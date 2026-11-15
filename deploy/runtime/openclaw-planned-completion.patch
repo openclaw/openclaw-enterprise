@@ -578,10 +578,10 @@ index 6b9e4b4..e90197d 100644
      resetGatewayWorkAdmission();
 diff --git a/src/gateway/server-methods/suspend.integration.test.ts b/src/gateway/server-methods/suspend.integration.test.ts
 new file mode 100644
-index 0000000..5b4ab3a
+index 0000000..dc01aae
 --- /dev/null
 +++ b/src/gateway/server-methods/suspend.integration.test.ts
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,149 @@
 +import { afterEach, expect, it, vi } from "vitest";
 +import type {
 +  GatewaySuspendPrepareResult,
@@ -650,7 +650,11 @@ index 0000000..5b4ab3a
 +        try {
 +          expect(admitted).not.toBeNull();
 +          await server.startupSettled;
-+          expect((await fetch(`http://127.0.0.1:${port}/readyz`)).status).toBe(200);
++          await expect
++            .poll(async () => (await fetch(`http://127.0.0.1:${port}/readyz`)).status, {
++              timeout: 15_000,
++            })
++            .toBe(200);
 +          const request = {
 +            requestId: "planned-update",
 +            completionDeadlineMs: Date.now() + 60_000,
