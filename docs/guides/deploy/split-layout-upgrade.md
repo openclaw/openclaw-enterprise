@@ -188,8 +188,10 @@ and Secret values.
    Secret name: `{"team-a": {"model-key": "..."}}`. List the names with
    `jq '.namespaces[] | {name, secrets: [.secrets[].name]}' /secure/occ/tenants.json`.
 4. Before you run `discard`, confirm that the bundle's Namespace names and IDs
-   still match the tenants you intend to delete. Verify the contents of the
-   workspace copies you need from step 2. The command refuses ambiguous source
+   still match the tenants you intend to delete. Tar can exit successfully while
+   omitting unreadable files. For each archive, compare its list of required files
+   and their contents with the source, and keep the old tenants if any copy is
+   incomplete. The command refuses ambiguous source
    IDs that the import map cannot represent. It also refuses if a Namespace in the bundle
    gained an Agent or Secret that the bundle lacks. If export could not read
    workspace files, recover them and export again. Use
@@ -263,6 +265,10 @@ and Secret values.
        && echo "restored $old -> $new" || echo "failed: $old -> $new"
    done
    ```
+
+   Extraction overlays the destination, so compare each mapped Agent's files
+   with its verified archive and investigate any extra or missing files or
+   differences in contents.
 
 8. Check the Agents (`occ agent list`) and re-issue any service-account
    credentials.
