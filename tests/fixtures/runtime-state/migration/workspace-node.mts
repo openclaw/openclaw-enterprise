@@ -7,7 +7,6 @@ import { parseObservation, readDeviceId, record, text, wholeNumber } from "./obs
 
 const state = "/home/node/.openclaw-node";
 const databasePath = state + "/state/openclaw.sqlite";
-const maxBuffer = 1_000_000;
 const [, , launcher, entrypoint, timeout, environmentJson] = process.argv;
 assert.ok(launcher === "harness" || launcher === "worker", "Expected a workspace launcher");
 assert.ok(entrypoint && timeout && environmentJson, "Expected entrypoint, timeout and environment");
@@ -66,7 +65,6 @@ function start(program: string) {
       },
       encoding: "utf8",
       timeout: timeoutMs,
-      maxBuffer,
     },
   );
   return {
@@ -106,6 +104,7 @@ function schema(path: string) {
 }
 
 const upgraded = start(entrypoint);
+assert.equal(upgraded.status, 0, upgraded.output);
 assert.equal(statSync(state).mode & 0o7777, 0o700);
 const identity = spawnSync(process.execPath, ["/app/openclaw.mjs", "node", "identity", "--json"], {
   env: {
@@ -117,7 +116,6 @@ const identity = spawnSync(process.execPath, ["/app/openclaw.mjs", "node", "iden
   },
   encoding: "utf8",
   timeout: 60_000,
-  maxBuffer,
 });
 const identityStatus = processStatus(identity, "OpenClaw node identity");
 assert.equal(identityStatus, 0, "OpenClaw must read the migrated device identity");

@@ -78,8 +78,8 @@ if (import.meta.main) {
   delete process.env.NODE_OPTIONS;
   delete process.env.OCE_TEST_STATE_SCHEMA;
   delete process.env.OCE_TEST_AGENT_SCHEMA;
-  assert.equal(existsSync("/home/node/previous-container"), false);
-  writeFileSync("/home/node/previous-container", "transient");
+  // Exclusive creation proves that this replacement received a fresh HOME tmpfs.
+  writeFileSync("/home/node/previous-container", "transient", { flag: "wx", mode: 0o600 });
   // Replace only Doctor and the long-lived Gateway. This preload is synchronous
   // so the real Kubernetes entrypoint sees the override before its first spawn.
   Object.assign(childProcess, {
