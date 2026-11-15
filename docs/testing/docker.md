@@ -153,7 +153,7 @@ OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_I
     tests/integration/runtime-image-gateway-retained-state.test.ts \
     tests/integration/runtime-image-gateway-peer.test.ts \
     tests/integration/runtime-image-native-worker.test.ts \
-    tests/integration/runtime-image-state-migration.test.mjs \
+    tests/integration/runtime-image-state-migration.test.ts \
     tests/integration/runtime-image-managed-files.test.ts \
     tests/integration/runtime-image-native-listener.test.ts \
     tests/integration/repository-runtime-volume.test.ts

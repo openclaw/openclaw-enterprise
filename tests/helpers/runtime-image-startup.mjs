@@ -4,7 +4,7 @@
 // runtime-image-gateway-unclean-restart.test.ts,
 // runtime-image-gateway-retained-state.test.ts,
 // runtime-image-gateway-peer.test.ts, runtime-image-native-worker.test.ts,
-// runtime-image-state-migration.test.mjs,
+// runtime-image-state-migration.test.ts,
 // runtime-image-managed-files.test.ts,
 // runtime-image-native-listener.test.ts and
 // runtime-image-gateway-workspace.test.ts).
