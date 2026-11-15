@@ -231,6 +231,11 @@ COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-r
 RUN echo 'b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
+# Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
+COPY deploy/runtime/openclaw-planned-completion.patch /tmp/openclaw-planned-completion.patch
+RUN echo '1d0a4b4941db7ffa834f4a8e951b72ed1057e76d9f3c8656f468bb4295b74c45  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-planned-completion.patch
+
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
@@ -243,6 +248,8 @@ FROM openclaw-patched-source AS openclaw-bridge-tests
 RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
+    packages/gateway-protocol/src/gateway-suspend.test.ts src/infra/gateway-suspend-coordinator.test.ts \
+    src/gateway/server-methods/suspend.integration.test.ts src/cli/gateway-cli/host-lifecycle.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     src/infra/private-store-file.test.ts \
     src/node-host/runner.test.ts \
