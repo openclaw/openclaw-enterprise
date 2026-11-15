@@ -100,3 +100,16 @@ JSON
   gatewayManagedMode keep their saved values; "harnessAuth": null clears the
   binding. The update changes the draft only; deploy to use it. See
   https://docs-enterprise.openclaw.org/reference/agents/`
+
+const agentApplyExample = `  cat > agent.json <<'JSON'
+  {"name": "example-agent", "executionMode": "dedicated",
+   "configuration": {"kind": "agent", "values": {"agents": {"defaults": {"model": "<provider>/<model>"}}}},
+   "harnessAuth": {"method": "api_key",
+     "source": {"kind": "secret", "namespaceId": "<namespace-id>", "id": "<secret-id>"}}}
+JSON
+  occ agent apply --file agent.json
+
+  The file is the body of POST /agents/provision without requestId. With no
+  Agent of that name, apply provisions one. Otherwise it updates the saved
+  Configuration and the listed Agent fields, and deploys only if one changed.
+  See https://docs-enterprise.openclaw.org/reference/cli/`

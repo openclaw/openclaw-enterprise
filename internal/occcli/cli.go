@@ -1084,6 +1084,7 @@ func (app *application) agentCommand() *cobra.Command {
 		list,
 		get,
 		update,
+		app.agentApplyCommand(),
 		deploy,
 		firstDeploymentCommand(false),
 		firstDeploymentCommand(true),

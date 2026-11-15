@@ -1461,6 +1461,37 @@ test("guarded first deployment admits enabled Slack over real HTTP and recovers 
   }
 });
 
+// Provisions an automation identity in the actual native IAM fixture and serves the app on
+// loopback. The HTTP auth service issues its key; the CLI never impersonates the
+// administrator's session. Without a Namespace, the key belongs to the Installation.
+async function serveCliServiceKey(fixture, directory, namespace, name) {
+  const scope = namespace === undefined ? {} : { namespaceId: namespace.id };
+  const automation = { kind: "service_principal", id: `sp_${randomUUID()}`, ...scope };
+  fixture.state.identities.push(automation);
+  fixture.state.bindings.push({
+    id: `${name}-automation`,
+    ...scope,
+    subjectKind: "identity",
+    subjectId: automation.id,
+    roleId: fixture.state.roles[0].id,
+  });
+  const app = fixture.createApp(undefined, createFastifyApp);
+  try {
+    const origin = await app.listen({ host: "127.0.0.1", port: 0 });
+    const issued = await request(origin, "POST", "/api/auth/service-keys", {
+      session: app.defaultSession,
+      body: { servicePrincipalId: automation.id, ...scope, name },
+    });
+    assert.equal(issued.status, 201, JSON.stringify(issued.body));
+    const keyFile = join(directory, "caller service-key.json");
+    await writeFile(keyFile, JSON.stringify({ data: issued.data }), { mode: 0o600 });
+    return { app, origin, keyFile, automation };
+  } catch (error) {
+    await app.close();
+    throw error;
+  }
+}
+
 test("first-deployment CLI recovers a lost committed response with the original caller and intent", async (t) => {
   const directory = await temporaryDirectory(t, "oce-first-deployment-cli-");
   const cli = join(directory, "occ");
@@ -1472,36 +1503,14 @@ test("first-deployment CLI recovers a lost committed response with the original 
       const { controller, namespace, agent, path, intent, work, secretDriver, providerCalls } =
         deployment;
       const fixture = controller.fixture;
-      // Provision an automation identity in the actual native IAM fixture. The HTTP auth
-      // service issues its key; the CLI never impersonates the administrator's session.
-      const automation = {
-        kind: "service_principal",
-        id: `sp_${randomUUID()}`,
-        namespaceId: namespace.id,
-      };
-      fixture.state.identities.push(automation);
-      fixture.state.bindings.push({
-        id: "first-deployment-cli-automation",
-        namespaceId: namespace.id,
-        subjectKind: "identity",
-        subjectId: automation.id,
-        roleId: fixture.state.roles[0].id,
-      });
-      const app = fixture.createApp(undefined, createFastifyApp);
+      const { app, origin, keyFile, automation } = await serveCliServiceKey(
+        fixture,
+        directory,
+        namespace,
+        "first-deployment-cli",
+      );
       let relay;
       try {
-        const origin = await app.listen({ host: "127.0.0.1", port: 0 });
-        const issued = await request(origin, "POST", "/api/auth/service-keys", {
-          session: app.defaultSession,
-          body: {
-            servicePrincipalId: automation.id,
-            namespaceId: namespace.id,
-            name: "first-deployment-cli",
-          },
-        });
-        assert.equal(issued.status, 201, JSON.stringify(issued.body));
-        const keyFile = join(directory, "caller service-key.json");
-        await writeFile(keyFile, JSON.stringify({ data: issued.data }), { mode: 0o600 });
         const forwarded = [];
         const relayErrors = [];
         let committed;
@@ -9993,4 +10002,108 @@ test("deployment credential use retains the selected Secret storage object after
     1,
   );
   assert.equal(namespace.id, bot.ref.namespaceId);
+});
+
+test("occ agent apply deploys an existing Agent only when its file changes", async (t) => {
+  const directory = await temporaryDirectory(t, "oce-agent-apply-cli-");
+  const cli = join(directory, "occ");
+  const execute = promisify(execFile);
+  await execute("go", ["build", "-trimpath", "-o", cli, "./cmd/occ"]);
+  const { controller, fixture, namespace, agent } = await admittedDeploymentFixture(
+    "agent-apply",
+    "applied-agent",
+  );
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { app, origin, keyFile } = await serveCliServiceKey(
+    fixture,
+    directory,
+    namespace,
+    "agent-apply-cli",
+  );
+  try {
+    const saved = await controller.request("GET", agentPath);
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    const file = {
+      name: agent.name,
+      executionMode: saved.data.executionMode,
+      harnessAuth: saved.data.harnessAuth,
+      configuration: { kind: "agent", values: {} },
+    };
+    const filePath = join(directory, "agent.json");
+    const apply = async (body) => {
+      await writeFile(filePath, JSON.stringify(body));
+      return execute(cli, [
+        "--url",
+        origin,
+        "--service-key-file",
+        keyFile,
+        "--ca-bundle",
+        "",
+        "--timeout-seconds",
+        "5",
+        "--namespace",
+        namespace.id,
+        "agent",
+        "apply",
+        "--file",
+        filePath,
+        "--output",
+        "json",
+      ]).then(({ stdout }) => JSON.parse(stdout));
+    };
+    const revisions = async () =>
+      (await controller.request("GET", `${agentPath}/revisions`)).data.length;
+    const mutations = () =>
+      fixture.auditSink.events.filter((event) => event.kind === "mutation").length;
+
+    // The file already matches the saved Agent, so apply writes and deploys nothing.
+    const revisionsBefore = await revisions();
+    const mutationsBefore = mutations();
+    assert.equal((await apply(file)).result, "unchanged");
+    assert.equal(await revisions(), revisionsBefore);
+    assert.equal(mutations(), mutationsBefore);
+
+    const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+    const withValues = (values) => ({ ...file, configuration: { kind: "agent", values } });
+
+    // The Compute Driver refuses this value at deploy, after apply saved it. The error names
+    // the command that finishes the job, and nothing is deployed.
+    const refused = withValues({ agents: { defaults: { model: "codex/gpt-6-astra" } } });
+    await assert.rejects(apply(refused), (error) => {
+      assert.match(error.stderr, /saved the changes but could not deploy; run "occ agent deploy /);
+      return true;
+    });
+    assert.equal((await controller.request("GET", configurationPath)).data.generation, 2);
+    assert.equal(await revisions(), revisionsBefore);
+
+    // A changed Configuration value is saved at its next generation and deployed once.
+    const model = "openai/gpt-5";
+    const changed = withValues({
+      agents: {
+        defaults: { model, models: { [model]: { agentRuntime: { id: "openclaw" } } } },
+      },
+    });
+    const updated = await apply(changed);
+    assert.equal(updated.result, "updated");
+    assert.equal(updated.agentId, agent.id);
+    assert.equal(await revisions(), revisionsBefore + 1);
+    const configuration = await controller.request("GET", configurationPath);
+    assert.equal(configuration.data.generation, 3);
+    assert.deepEqual(configuration.data.values, changed.configuration.values);
+
+    // The saved Agent reads back in the file's own shape, so the same file is now a no-op.
+    const again = await apply(changed);
+    assert.equal(again.result, "unchanged");
+    assert.equal(await revisions(), revisionsBefore + 1);
+
+    // Settings that only a new Agent can take are refused, not silently ignored.
+    const mutationsAfter = mutations();
+    await assert.rejects(apply({ ...changed, nativeAdmin: false }), (error) => {
+      assert.match(error.stderr, /apply cannot change nativeAdmin on an existing Agent/);
+      return true;
+    });
+    assert.equal(mutations(), mutationsAfter);
+  } finally {
+    await app.close();
+  }
 });
