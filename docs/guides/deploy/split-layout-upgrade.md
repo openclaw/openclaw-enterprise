@@ -126,8 +126,9 @@ IDs. A deleted Namespace's name stays
 reserved, so each Namespace comes back under a new name. These come back:
 Secrets (you supply the values again), Configurations that an Agent uses,
 Presets, credential sources, Roles, access bindings, service accounts (without
-issued credentials) and Agents. Agents that were running are deployed again,
-and a copy of each running Agent's Harness workspace can be put back. These do
+issued credentials) and Agents. Agents that were running are deployed again.
+The commands below can recover a workspace from a running, dedicated Harness
+Pod. Embedded Agent workspace recovery requires a separate backup. These do
 not come back:
 
 - chat history and other Gateway state (the copy keeps the transcripts for
@@ -163,9 +164,11 @@ and Secret values.
 
    It reads `AGENTS.md`, `SOUL.md`, `IDENTITY.md` and `USER.md` only where
    [workspace routing](workspace-routing.md) is configured and the Agent runs.
-   Step 2 copies the whole workspace instead.
+   These four files are only a partial copy of a workspace.
 
-2. Copy each running Agent's Harness workspace and Gateway state:
+2. Copy the workspace from each running, dedicated Harness Pod and the listed
+   Gateway state from each running Gateway. An embedded Agent runs its Harness
+   in the Gateway Pod. The Gateway archive omits that workspace:
 
    ```bash
    ARCHIVE=/secure/occ/tenant-archive
@@ -197,6 +200,16 @@ and Secret values.
    workspace files, recover them and export again. Use
    `--allow-unread-workspace-files` only if you have verified a separate copy
    of those files for each affected Agent.
+
+   For each embedded Agent whose workspace must survive, identify its old
+   Namespace and Agent IDs and the actual workspace directory and volume.
+   Use your supported storage backup procedure to keep a complete workspace
+   copy outside the resources that `discard` deletes. Restore the copy to an
+   isolated destination. Record which copy and destination belong to those
+   source IDs. Verify that the restored file list and contents match the
+   source, including nested files. If any required backup or restore check
+   is incomplete, stop before `discard` and keep the source tenants and
+   their volumes.
 
    ```bash
    node scripts/split-layout-tenants.ts discard --bundle /secure/occ/tenants.json --yes &&
@@ -250,7 +263,8 @@ and Secret values.
    left unchanged; inspect their account references before resuming an older
    import. See the [tenant restore flow](../../flows/tenant-restore.md).
 
-7. Put each Harness workspace back once the new Agent's Harness Pod runs:
+7. Put each archived dedicated workspace back once the mapped Agent's
+   dedicated Harness Pod runs:
 
    ```bash
    for tarball in "$ARCHIVE"/*-agent.tar; do
@@ -269,6 +283,11 @@ and Secret values.
    Extraction overlays the destination, so compare each mapped Agent's files
    with its verified archive and investigate any extra or missing files or
    differences in contents.
+
+   For an embedded Agent, use the separate backup and the recovery procedure
+   you verified in step 4. Check the old-to-new Namespace and Agent IDs in the
+   import map before you restore to the mapped Agent's workspace. Compare the
+   restored files with the verified backup.
 
 8. Check the Agents (`occ agent list`) and re-issue any service-account
    credentials.
