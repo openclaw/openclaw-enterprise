@@ -8,10 +8,11 @@
 
 `scripts/ci/prepare.mjs:prepareFile`, `scripts/ci/prepare.mjs:ensureK3dCluster`
 
-Static Checks restores and saves the documentation pnpm store after Pagefind
-builds. The baseline part 1 and browser part 1 lanes only restore it. Keys include
-OS, architecture, Node.js, pnpm, and lockfile hash. Prefix matches can restore a
-store for another lockfile. Frozen installation fetches missing packages.
+Static Checks restores the documentation pnpm store before installation. On
+cache misses, it saves the store after Pagefind succeeds. Baseline part 1 and
+browser part 1 only restore it. Keys include OS, architecture, Node.js, pnpm,
+and lockfile hash. Prefix matches can cross lockfiles. Frozen installation
+fetches missing packages.
 
 First Agent Smoke and `run-ci-lane` use `setup-ci-tools` to restore yq and k3d
 downloads outside `PATH`. On Linux, `scripts/ci/setup-tools.sh` selects the
