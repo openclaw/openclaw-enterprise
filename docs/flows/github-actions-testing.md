@@ -63,8 +63,8 @@ graph TD
 
 `loadTestSuites` reads ordered test, input, and preparation definitions.
 `scripts/ci/run-tests.ts:main` rejects noncanonical manifests before [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt).
-`runner-inputs.ts:parseArgs` rejects unknown options and repeated
-`--test-name` before starting work. `selectLane` validates paths and names.
+`runner-inputs.ts:parseArgs` rejects unknown options and duplicate
+`--test-name`. `selectLane` validates paths and names.
 `runFile` uses an anchored, escaped pattern for one required standalone case.
 `runner-aggregate.ts:validateLaneEvidence` rejects focused results.
 
@@ -127,7 +127,7 @@ and Docker Model Runtime, and First Agent Smoke. Aggregates check producer and c
 
 [run-ci-lane](../../.github/actions/run-ci-lane/action.yml) prepares and cleans resources, runs tests, and uploads sanitized results. Callers set source, credentials, environment and timeout; tests stop five minutes early.
 
-CI caches dependencies by PR merge-ref or main. It excludes results and credential-bearing state. Protected jobs never promote PR artifacts.
+Dependency caches for PR merge-refs and main exclude results and credential-bearing state. Protected jobs never promote PR artifacts.
 
 ### 2. Prepare resources under the job owner
 
