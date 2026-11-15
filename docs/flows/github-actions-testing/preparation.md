@@ -237,9 +237,9 @@ Service.
 
 OpenShell preparation uses digest-pinned K3s v1.36.4 with `runc`, installs
 matching kubectl and Agent Sandbox resources, obtains the OpenShell CLI and chart,
-and imports gateway, sandbox, and supervisor images. Before cluster creation,
-it mounts a private admission file read-only on the server. The admission file exempts only the selected RuntimeClass and exempts no
-namespaces or users. The API must reject a violating ordinary Pod in a restricted
+and imports gateway, sandbox, and supervisor images. During cluster creation,
+k3d mounts the private admission file read-only on the server. The file exempts
+only the selected RuntimeClass. It exempts no namespaces or users. The API must reject a violating ordinary Pod in a restricted
 namespace and admit it with the selected class. A smoke Pod checks that the class
 runs. The full lane checks filesystem, privilege, and binary-scoped Layer 7
 network policy enforcement by the supervisor. The Harness and supervisor receive
