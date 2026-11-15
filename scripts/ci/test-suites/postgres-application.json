@@ -71,6 +71,10 @@
     {
       "path": "tests/integration/postgres-worker-repository-roles.test.ts",
       "expectedTests": [
+        "retained protocol 1 consumes committed disposal with lost session ID and no sender",
+        "retained protocol 1 consumes committed disposal with saved session ID and no sender",
+        "retained protocol 3 consumes committed disposal with lost session ID and no sender",
+        "retained protocol 3 consumes committed disposal with saved session ID and no sender",
         "worker refuses repository credentials when repositoryPolicy is present with the wrong id",
         "worker refuses repository credentials when repositoryPolicy is present with the wrong implementation",
         "worker refuses repository credentials when repositoryPolicy is absent",
