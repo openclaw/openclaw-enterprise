@@ -239,6 +239,7 @@
     "fixtures/runtime-gateway-writable-restart.ts",
     "fixtures/runtime-codex-subagent-model.ts",
     "fixtures/runtime-codex-command-approval.ts",
+    "fixtures/repository-credentials/native-draft-child.ts",
     "fixtures/repository-credentials/module-guard.ts",
     "fixtures/repository-credentials/installation-module-guard.ts",
     "fixtures/repository-credentials/planning.ts",

@@ -340,7 +340,7 @@
     "tests/integration/repository-credentials-client-config.test.ts": 6900,
     "tests/integration/repository-credentials-config.test.ts": 300,
     "tests/integration/repository-credentials-control.test.ts": 1400,
-    "tests/integration/repository-credentials-draft-pr-cli.test.mjs": 1500,
+    "tests/integration/repository-credentials-draft-pr-cli.test.ts": 1500,
     "tests/integration/repository-credentials-driver.test.ts": 1800,
     "tests/integration/repository-credentials-github-installation-issuer.test.ts": 300,
     "tests/integration/repository-credentials-github-prepared.test.mjs": 500,
