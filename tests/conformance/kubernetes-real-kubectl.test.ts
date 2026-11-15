@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { AssertionError } from "node:assert";
 import { ChildProcess, execFile, type ExecFileException } from "node:child_process";
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { once } from "node:events";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { type TestContext } from "node:test";
@@ -35,7 +36,7 @@ import {
 } from "../helpers/kubernetes-real.ts";
 import { refusingPort } from "../helpers/available-port.ts";
 import { listen } from "../helpers/listen.ts";
-import { withEnvironment } from "../helpers/environment.ts";
+import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
 import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import {
@@ -188,9 +189,12 @@ for (const { name, chunks, exitCode } of [
   },
 ]) {
   test(`kubectl port-forward handles ${name}`, { timeout: 5_000 }, async (t) => {
-    const directory = await temporaryDirectory(t, "occ-port-forward-");
+    const directory = mkdtempSync(join(tmpdir(), "occ-port-forward-"));
     const ack = join(directory, "stdout-ack");
-    await writeCommand(
+    const kubeconfigPath = join(directory, "unused-kubeconfig");
+    let cleaningUp = false;
+    let stopChild: (() => Promise<void>) | undefined;
+    const commandReady = writeCommand(
       directory,
       "kubectl",
       `
@@ -205,7 +209,16 @@ ${exitCode === undefined ? "setInterval(() => {}, 1000);" : `process.exit(${exit
 `,
       { interpreter: process.execPath },
     );
-    prependPath(t, directory);
+    t.after(async () => {
+      cleaningUp = true;
+      await stopChild?.();
+      // Finish any in-progress file operation before removing its directory.
+      await commandReady.catch(() => {});
+      await rm(directory, { recursive: true, force: true });
+    });
+    await commandReady;
+    t.signal.throwIfAborted();
+    setEnvironment(t, { PATH: directory });
 
     // Observe the actual pipe reads and release each write only after its bytes
     // were read. The test exercises the same spawn and readiness path as kubectl.
@@ -214,33 +227,40 @@ ${exitCode === undefined ? "setInterval(() => {}, 1000);" : `process.exit(${exit
       ChildProcess.prototype,
       "emit",
       function (this: ChildProcess, ...args: Parameters<typeof emit>) {
-        if (args[0] === "spawn" && this.spawnfile === "kubectl") {
-          const exited = once(this, "exit");
-          t.after(async () => {
-            if (this.exitCode === null && this.signalCode === null) {
-              this.kill("SIGKILL");
-            }
-            await exited;
-          });
+        if (
+          args[0] === "spawn" &&
+          this.spawnfile === "kubectl" &&
+          this.spawnargs.includes(kubeconfigPath)
+        ) {
+          const { stdout } = this;
+          const closed = new Promise<void>((resolve) => this.once("close", () => resolve()));
           let remaining = "";
           let index = 0;
-          this.stdout?.on("data", (buffer: Buffer) => {
+          const acknowledge = (buffer: Buffer) => {
+            if (cleaningUp || t.signal.aborted) {
+              return;
+            }
             remaining += buffer.toString();
             if (remaining === chunks[index]) {
               writeFileSync(`${ack}${index}`, "");
               index++;
               remaining = "";
             }
-          });
+          };
+          stdout?.on("data", acknowledge);
+          stopChild = async () => {
+            stdout?.off("data", acknowledge);
+            if (this.exitCode === null && this.signalCode === null) {
+              this.kill("SIGKILL");
+            }
+            await closed;
+          };
         }
         return emit.apply(this, args);
       },
     );
 
-    const fixture = createRealKubernetesFixture({
-      kubeconfigPath: join(directory, "unused-kubeconfig"),
-      kubernetesContext: "fixture",
-    });
+    const fixture = createRealKubernetesFixture({ kubeconfigPath, kubernetesContext: "fixture" });
     const started = fixture.startPortForwardTarget("fixture", "service/gateway", "0:8080");
     if (exitCode !== undefined) {
       await assert.rejects(started, /port-forward exited \(7\)/);
