@@ -6,10 +6,11 @@ import { splitSetCookieHeader } from "better-auth/cookies";
 import { memoryAdapter, type MemoryDB } from "better-auth/adapters/memory";
 import { apiKey } from "@better-auth/api-key";
 import type { ApiKey } from "@better-auth/api-key/types";
-import type { ServicePrincipal } from "@openclaw-enterprise/contracts";
+import type { AuditEvent, ServicePrincipal } from "@openclaw-enterprise/contracts";
 import {
   NativeIAMDriver,
   createAuthPrincipalSeed,
+  validateAuthAccountPrincipalSeed,
   type AuthPrincipalSeed,
   type AuthPrincipalSeedOptions,
 } from "@openclaw-enterprise/iam";
@@ -168,7 +169,12 @@ import type {
 } from "../admission/admission-verifier.ts";
 import { AdmissionFailure, UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admission-verifier.ts";
 import { RequestFailure, unstorableTextFailure } from "../http/errors.ts";
-import { betterAuthIssuer, deriveSharedCookieDomain, validHttpBaseURL } from "./configuration.ts";
+import {
+  betterAuthIssuer,
+  deriveSharedCookieDomain,
+  validateAuthSecret,
+  validHttpBaseURL,
+} from "./configuration.ts";
 
 export {
   betterAuthIssuer,
@@ -299,6 +305,50 @@ export interface ProvisionAuthAccountInput {
   readonly email: string;
   readonly password: string;
   readonly name?: string;
+}
+
+/** The administrator account writer requires its authority on the creating State unit. */
+export type ProvisionAuthAccount = (
+  seed: AuthPrincipalSeed,
+  auditEvent: AuditEvent,
+  prepared: PreparedAuthAccount,
+  external: { readonly providerId: string; readonly subject: string } | undefined,
+  authority: {
+    readonly holdSession: (unit: PlatformUnitOfWork) => Promise<void>;
+    readonly authorize: (unit: PlatformUnitOfWork) => Promise<AuditEvent>;
+  },
+) => Promise<void>;
+
+export function createPostgresAuthAccountProvisioner({
+  state,
+  installationId,
+}: {
+  readonly state: PostgresPlatformState;
+  readonly installationId: string;
+}): ProvisionAuthAccount {
+  const persistence = new PostgresHumanAuthentication(
+    state,
+    installationId,
+    betterAuthIssuer(installationId),
+  );
+  return async (seed, auditEvent, prepared, external, authority) => {
+    if (
+      authority === undefined ||
+      typeof authority.holdSession !== "function" ||
+      typeof authority.authorize !== "function"
+    ) {
+      throw new ScopeViolationError("Account provisioning requires complete assigning authority.");
+    }
+    await persistence.provisionPasswordAccount(prepared, seed, auditEvent, external, {
+      holdSession: authority.holdSession,
+      authorize: async (unit) => {
+        const currentAuditEvent = await authority.authorize(unit);
+        const current = await state.loadNativeIAMStateInTransaction(unit, installationId);
+        validateAuthAccountPrincipalSeed(seed, current, installationId);
+        return currentAuditEvent;
+      },
+    });
+  };
 }
 
 export {
@@ -950,9 +1000,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   if (options.mode !== "development" && options.mode !== "production") {
     throw new Error("Controller auth requires an explicit runtime mode.");
   }
-  if (!isNonEmptyString(options.secret) || options.secret.length < 32) {
-    throw new Error("OCC_AUTH_SECRET must contain at least 256 bits of secret material.");
-  }
+  validateAuthSecret(options.secret);
   if (!validHttpBaseURL(options.baseURL)) {
     throw new Error("OCC_AUTH_BASE_URL must be an absolute HTTP origin URL.");
   }

@@ -22,6 +22,7 @@ export function supervisorPeerLabels(revisionId) {
 }
 
 export function providerReadinessFixture({
+  credentialGatewayDriver,
   provisionHarness,
   harnessEndpoint,
   providerNetwork = {
@@ -33,19 +34,37 @@ export function providerReadinessFixture({
   revisionOverrides = {},
   lifecycleDrivers = [],
   nodeEnrollment,
+  servicePrincipalCredentials = {
+    mode: "projectedServiceAccountToken",
+    audience: "openclaw-controller",
+    expirationSeconds: 900,
+  },
+  gatewayRouting,
+  sandboxDriver,
   workspaceNodePeerLabels = async ({ revision }) => supervisorPeerLabels(revision.id),
 } = {}) {
+  /** @typedef {import("../../packages/contracts/src/index.ts").SandboxDriver} SandboxDriver */
+  /** @type {Pick<SandboxDriver, "id" | "implementation"> & Partial<SandboxDriver>} */
+  const sandbox = sandboxDriver ?? {
+    id: "sandbox-provider",
+    implementation: "openshell",
+    async provisionHarness(context) {
+      if (provisionHarness !== undefined) {
+        return provisionHarness(context);
+      }
+      assert.fail("activation must only observe the previously provisioned Harness");
+    },
+    ...(harnessEndpoint === undefined ? {} : { harnessEndpoint }),
+    workspaceNodePeerLabels,
+  };
   const driver = new KubernetesComputeDriver(
     routedOptions({
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
       },
-      servicePrincipalCredentials: {
-        mode: "projectedServiceAccountToken",
-        audience: "openclaw-controller",
-        expirationSeconds: 900,
-      },
+      servicePrincipalCredentials,
+      ...(gatewayRouting === undefined ? {} : { gatewayRouting }),
       ...(harnessEndpoint === undefined
         ? {}
         : {
@@ -56,27 +75,17 @@ export function providerReadinessFixture({
     }),
     {
       lifecycleDrivers,
+      credentialGatewayDriver,
       nodeEnrollment: nodeEnrollment ?? {
         async isConnected() {
           return true;
         },
       },
-      sandboxDriver: {
-        id: "sandbox-provider",
-        implementation: "openshell",
-        async provisionHarness(context) {
-          if (provisionHarness !== undefined) {
-            return provisionHarness(context);
-          }
-          assert.fail("activation must only observe the previously provisioned Harness");
-        },
-        ...(harnessEndpoint === undefined ? {} : { harnessEndpoint }),
-        workspaceNodePeerLabels,
-      },
+      sandboxDriver: sandbox,
     },
   );
   const revision = routedRevision(driver, {
-    sandboxDriverId: "sandbox-provider",
+    sandboxDriverId: sandboxDriver?.id ?? "sandbox-provider",
     configuration: admitLoggingConfiguration(
       {
         agents: { defaults: { model: "codex/gpt-5" } },
@@ -107,6 +116,7 @@ export function providerReadinessFixture({
     undefined,
     preparedAuth(driver, namespace, false),
   );
+  /** @type {Pick<import("../../packages/contracts/src/index.ts").HarnessWorkloadRequirements, "labels">} */
   const { labels } = driver.harnessRequirementsFromDeployment(deployment, "api_key", false);
   const requests = [];
   let observe = () => ({ apiVersion: "v1", kind: "PodList", items: [] });
@@ -203,7 +213,8 @@ export function providerReadinessFixture({
     requests,
     core,
     // The Sandbox Driver Compute holds, so a test can add an optional method later.
-    sandbox: driver.sandboxDriver,
+    sandbox,
+    /** @param {string} name */
     pod(name, ready = "True") {
       return {
         apiVersion: "v1",

@@ -2,16 +2,16 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { failureSecrets } from "../../scripts/ci/failure-redaction.mjs";
+import { failureSecrets } from "../../scripts/ci/failure-redaction.ts";
 import {
   codexTurnTrace,
   observeSandboxProbe,
-  podFailureDiagnostic as diagnosePodFailure,
+  podFailureDiagnostic,
   tokenEchoDigest,
   tokenEchoReply,
-} from "../helpers/k3d-failure-diagnostics.mjs";
+} from "../helpers/k3d-failure-diagnostics.ts";
 import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.ts";
-import { diagnosticRequestTimeout, withinDiagnosticDeadline } from "../helpers/kubernetes-real.mjs";
+import { diagnosticRequestTimeout, withinDiagnosticDeadline } from "../helpers/kubernetes-real.ts";
 import { withHelmInstallDiagnostic } from "../helpers/production-helm-real.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -118,20 +118,6 @@ type DiagnosticEvent = Pick<
 >;
 type Kubectl = (...args: string[]) => Promise<string>;
 
-async function podFailureDiagnostic(options: {
-  kubectl: Kubectl;
-  namespace: string;
-  selector?: string;
-  eventPrefix?: string;
-  logLabels?: Record<string, string>;
-  secrets?: [string, string][];
-  budgets?: { events?: number; logs?: number };
-}): Promise<string> {
-  const result: unknown = await Reflect.apply(diagnosePodFailure, undefined, [options]);
-  assert.ok(typeof result === "string");
-  return result;
-}
-
 function fakeKubectl({
   pods = [hookPod, postgresPod],
   events: items = events,
@@ -164,6 +150,29 @@ function fakeKubectl({
   };
   return { kubectl, calls };
 }
+
+test("running hook diagnostics keep logs when Kubernetes has no start time", async () => {
+  const pod = {
+    ...hookPod,
+    status: {
+      phase: "Running",
+      initContainerStatuses: [{ name: "migration", state: { running: { startedAt: null } } }],
+    },
+  };
+  const { kubectl, calls } = fakeKubectl({
+    pods: [pod],
+    logs: { "obs-1234-initialization-abcde/migration": "starting the schema migration" },
+  });
+  // A zero Kubernetes timestamp serializes as null; the container still has logs.
+  const detail = await podFailureDiagnostic({
+    kubectl,
+    namespace: "oce-observe-1234",
+    logLabels: { "job-name": "obs-1234-initialization" },
+  });
+  assert.match(detail, /"name":"migration".*"running":true/u);
+  assert.match(detail, /starting the schema migration/u);
+  assert.equal(calls.filter(([, verb]) => verb === "logs").length, 1);
+});
 
 test("a failed hook Job's diagnostic shows Pod states, events and init container logs, redacted", async () => {
   const { kubectl, calls } = fakeKubectl({

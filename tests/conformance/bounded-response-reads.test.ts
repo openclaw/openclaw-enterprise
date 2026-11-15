@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { chmod, writeFile } from "node:fs/promises";
-import { createServer, type Server } from "node:http";
+import { ClientRequest, createServer, IncomingMessage, type Server } from "node:http";
 import { createRequire } from "node:module";
+import { Socket } from "node:net";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -11,6 +12,11 @@ import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/sl
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
+import {
+  UnixRepositoryCredentialControlClient,
+  RepositoryCredentialControlError,
+} from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
+import { readPrivateJsonResponse } from "../../apps/controller/src/drivers/repo/access/private-json-response.ts";
 import { RepositoryReceiptClient } from "../../apps/controller/src/drivers/repo/access/receipt-client.ts";
 import { callControl } from "../../apps/controller/src/drivers/repo/github/access/client/operator.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
@@ -124,13 +130,233 @@ function settled<T>(
   ]);
 }
 
-test("an oversized receipt reply rejects instead of hanging (finding 1328)", async (t) => {
+// Data events are controlled; response and socket destruction use native Node behavior.
+test("private reply overflow tears down even when the consumer throws", (t) => {
+  const socket = new Socket();
+  const incoming = new IncomingMessage(socket);
+  t.after(() => incoming.destroy());
+  const sentinel = new Error("consumer refused reply");
+  const retained = Buffer.alloc(8192, 0x20);
+  const overflow = Buffer.alloc(8193, 0x20);
+  const reentrant = Buffer.alloc(8, 0x20);
+  let receiveCount = 0;
+  let rejectCount = 0;
+  readPrivateJsonResponse(
+    incoming,
+    (bytes) => {
+      receiveCount++;
+      assert.equal(bytes, undefined);
+      assert.equal(incoming.destroyed, false, "delivery precedes teardown");
+      incoming.emit("data", reentrant);
+      throw sentinel;
+    },
+    () => rejectCount++,
+  );
+  incoming.emit("data", retained);
+  assert.throws(
+    () => incoming.emit("data", overflow),
+    (error) => error === sentinel,
+  );
+  assert.equal(receiveCount, 1);
+  assert.equal(rejectCount, 0);
+  incoming.emit("error", new Error("late response error"));
+  assert.equal(receiveCount, 1, "late error cannot notify the consumer again");
+  assert.equal(rejectCount, 0, "late error cannot reject after delivery");
+  for (const chunk of [retained, overflow, reentrant]) {
+    assert.ok(
+      chunk.every((byte) => byte === 0),
+      "all observed chunks are wiped",
+    );
+  }
+  assert.equal(incoming.destroyed, true, "response teardown is synchronous");
+  assert.equal(socket.destroyed, true, "native teardown destroys the socket");
+});
+
+// A real request installs the original caller's response listeners. Only the two
+// competing events are synthetic, so their order cannot depend on socket buffering.
+test("receipt settlement preserves the first refusal or outgoing error", async (t) => {
   const dir = await scratch(t);
-  await holdingServer(t, join(dir, "receipt.sock"), 32 * 1024, "application/json");
+  const socket = join(dir, "receipt.sock");
+  const server = createServer((request, response) => {
+    request.resume();
+    response.writeHead(200, { "content-type": "application/json" });
+    response.flushHeaders();
+  });
+  await new Promise<void>((resolve) => server.listen(socket, resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
   const client = new RepositoryReceiptClient(join(dir, "control.sock"), "generation-1");
-  const outcome = await settled(client.status("session-1"), 3_000);
-  assert.equal(outcome.pending, undefined, "the receipt call settles");
-  assert.equal(errorProperty(outcome.error, "message"), "RECEIPT_UNAVAILABLE");
+  for (const first of ["overflow", "transport"] as const) {
+    await t.test(first, async (t) => {
+      const failure = new Error("fixture transport failure");
+      const emit = ClientRequest.prototype.emit;
+      let dispatched = false;
+      t.mock.method(
+        ClientRequest.prototype,
+        "emit",
+        function (this: ClientRequest, event: string | symbol, ...args: unknown[]) {
+          const result = emit.call(this, event, ...args);
+          if (event === "response") {
+            const incoming = args[0] as IncomingMessage;
+            dispatched = true;
+            if (first === "transport") {
+              this.emit("error", failure);
+            }
+            incoming.emit("data", Buffer.alloc(16_385, 0x20));
+            if (first === "overflow") {
+              this.emit("error", failure);
+            }
+            incoming.destroy();
+          }
+          return result;
+        },
+      );
+      const outcome = await settled(client.status("session-1"), 1500);
+      assert.equal(dispatched, true);
+      assert.equal(outcome.pending, undefined);
+      if (first === "transport") {
+        assert.equal(outcome.error, failure, "preserve the original outgoing error object");
+      } else {
+        assert.notEqual(outcome.error, failure, "the later error cannot replace size refusal");
+        assert.equal(errorProperty(outcome.error, "message"), "RECEIPT_UNAVAILABLE");
+      }
+    });
+  }
+});
+
+test("private reply readers preserve bounded wire outcomes", async (t) => {
+  const dir = await scratch(t);
+  const socket = join(dir, "receipt.sock");
+  let reply: (response: import("node:http").ServerResponse) => void;
+  let requests = 0;
+  let peerClosed = Promise.resolve();
+  const server = createServer((request, response) => {
+    requests++;
+    request.resume();
+    peerClosed = new Promise<void>((resolve) => response.socket!.once("close", resolve));
+    reply(response);
+  });
+  await new Promise<void>((resolve) => server.listen(socket, resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+  const control = new UnixRepositoryCredentialControlClient({ controlSocket: socket });
+  const receipt = new RepositoryReceiptClient(join(dir, "control.sock"), "generation-1");
+  const clients = [
+    {
+      name: "control",
+      body: '{"error":"not-found"}',
+      status: 404,
+      call: () => control.status("session-1", new AbortController().signal),
+      expectError(error: unknown) {
+        assert.ok(error instanceof RepositoryCredentialControlError);
+        assert.equal(error.retryable, true);
+      },
+    },
+    {
+      name: "receipt",
+      body: '{"kind":"missing","note":"é🙂"}',
+      status: 200,
+      call: () => receipt.status("session-1"),
+      expectError(error: unknown, transport: boolean) {
+        if (transport) {
+          assert.equal(errorProperty(error, "code"), "ECONNRESET");
+          assert.notEqual(errorProperty(error, "message"), "RECEIPT_UNAVAILABLE");
+        } else {
+          assert.equal(errorProperty(error, "message"), "RECEIPT_UNAVAILABLE");
+        }
+      },
+    },
+  ];
+  for (const { name, body, status, call, expectError } of clients) {
+    for (const scenario of [
+      "exact cap",
+      "overflow",
+      "truncated",
+      "malformed",
+      "media",
+      "status",
+      "disconnect",
+    ] as const) {
+      await t.test(`${name}: ${scenario}`, async () => {
+        reply = (response) => {
+          if (scenario === "disconnect") {
+            response.destroy();
+            return;
+          }
+          const payload = scenario === "malformed" ? "{" : body;
+          const bytes = Buffer.alloc(scenario === "overflow" ? 16_385 : 16_384, 0x20);
+          bytes.write(payload);
+          response.writeHead(scenario === "status" ? 503 : status, {
+            "content-type":
+              scenario === "media" ? "application/json; charset=utf-8" : "application/json",
+            ...(scenario === "overflow"
+              ? {}
+              : { "content-length": scenario === "truncated" ? bytes.length + 1 : bytes.length }),
+          });
+          response.write(bytes.subarray(0, 8192));
+          // Separate writes across poll cycles so the exact-cap case exercises retained chunks.
+          setTimeout(() => {
+            response.write(bytes.subarray(8192));
+            if (scenario === "overflow") {
+              return; // Hold open: refusal and peer close must precede the client deadline.
+            }
+            if (scenario === "truncated") {
+              response.socket!.end();
+            } else {
+              response.end();
+            }
+          }, 25);
+        };
+        const before = requests;
+        const outcome = await settled(call(), 1500);
+        assert.equal(outcome.pending, undefined, "settles before either client deadline");
+        assert.equal(requests, before + 1, "one request, without a transport retry");
+        if (scenario === "exact cap") {
+          assert.equal(outcome.error, undefined);
+          assert.equal(outcome.value, undefined, "explicit absence is accepted");
+        } else {
+          expectError(outcome.error, scenario === "disconnect" || scenario === "truncated");
+        }
+        assert.equal(
+          (await settled(peerClosed, 1500)).pending,
+          undefined,
+          "peer closes before fixture cleanup",
+        );
+      });
+    }
+  }
+  await t.test("control caller abort rejects and closes the peer", async () => {
+    const abort = new AbortController();
+    reply = (response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.write('{"state":');
+      setImmediate(() => abort.abort());
+    };
+    const before = requests;
+    const outcome = await settled(control.status("session-1", abort.signal), 1500);
+    assert.ok(outcome.error instanceof RepositoryCredentialControlError);
+    assert.equal(outcome.error.retryable, true);
+    assert.equal(requests, before + 1);
+    assert.equal((await settled(peerClosed, 1500)).pending, undefined);
+  });
+  await t.test("control invalid request remains definite", async () => {
+    reply = (response) => {
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end('{"error":"invalid-request"}');
+    };
+    await assert.rejects(
+      control.status("session-1", new AbortController().signal),
+      (error: unknown) => {
+        assert.ok(error instanceof RepositoryCredentialControlError);
+        assert.equal(error.retryable, false);
+        return true;
+      },
+    );
+  });
 });
 
 test("an oversized control reply rejects instead of hanging (finding 1328)", async (t) => {

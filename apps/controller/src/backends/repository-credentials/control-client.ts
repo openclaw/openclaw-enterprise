@@ -1,13 +1,17 @@
 import { createStatusWirePrimitives } from "./status-wire.ts";
 import { request } from "node:http";
+import { readPrivateJsonResponse } from "../../drivers/repo/access/private-json-response.ts";
 import { admissionIdTimestamp } from "../../drivers/repo/access/admission-id.ts";
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
 import type { RepositoryCredentialClientConfiguration } from "../../drivers/repo/access/client-contracts.ts";
 import {
+  controlRequestBodyMaxBytes,
   hasControlCharacter,
   isCanonicalUnixSocketPath,
+  matchesRepositorySessionId,
   isValidGitClientConnection,
   normalizePushRefAllowlist,
+  repositoryCredentialClientStringKeys,
   repositorySessionBearerSource,
 } from "../../drivers/repo/access/client-contracts.ts";
 import {
@@ -65,7 +69,7 @@ const {
 } = createStatusWirePrimitives(unavailable);
 
 function sessionId(value: unknown): string {
-  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+  if (typeof value !== "string" || !matchesRepositorySessionId(value)) {
     return unavailable();
   }
   return value;
@@ -107,12 +111,7 @@ function client(value: unknown): RepositoryCredentialClientConfiguration {
   const hasPolicy =
     value !== null && typeof value === "object" && Object.hasOwn(value, "pushRefAllowlist");
   const parsed = object(value, [
-    "gatewayOrigin",
-    "gitRemote",
-    "gitUsername",
-    "canonicalApiHost",
-    "apiHost",
-    "repository",
+    ...repositoryCredentialClientStringKeys,
     ...(hasPolicy ? ["pushRefAllowlist"] : []),
   ]);
   const fields: RepositoryCredentialClientConfiguration = {
@@ -266,17 +265,14 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
     signal: AbortSignal,
     input?: RepositoryCredentialBoundSessionInput,
     admissionId?: string,
-    maximumResponseBytes = 16 * 1024,
   ): Promise<Reply> {
     const body = input === undefined ? "" : JSON.stringify(input);
     const bodyBytes = Buffer.byteLength(body);
-    if (bodyBytes > 16 * 1024) {
+    if (bodyBytes > controlRequestBodyMaxBytes) {
       throw new RepositoryCredentialControlError(false);
     }
     try {
       return await new Promise<Reply>((resolveReply, reject) => {
-        const chunks: Buffer[] = [];
-        let size = 0;
         const outgoing = request(
           {
             socketPath: this.#socket,
@@ -293,38 +289,23 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
             },
           },
           (incoming) => {
-            incoming.on("data", (chunk: Buffer) => {
-              size += chunk.length;
-              if (size > maximumResponseBytes) {
-                incoming.destroy();
-                outgoing.destroy();
-                reject(new RepositoryCredentialControlError(true));
-                return;
-              }
-              chunks.push(chunk);
-            });
-            incoming.once("error", reject);
-            incoming.once("end", () => {
-              try {
-                if (
-                  !incoming.complete ||
-                  incoming.statusCode === undefined ||
-                  incoming.headers["content-type"] !== "application/json"
-                ) {
-                  unavailable();
+            readPrivateJsonResponse(
+              incoming,
+              (bytes) => {
+                try {
+                  if (bytes === undefined || incoming.statusCode === undefined) {
+                    unavailable();
+                  }
+                  resolveReply({
+                    status: incoming.statusCode,
+                    body: JSON.parse(bytes.toString("utf8")),
+                  });
+                } catch {
+                  reject(new RepositoryCredentialControlError(true));
                 }
-                resolveReply({
-                  status: incoming.statusCode,
-                  body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
-                });
-              } catch {
-                reject(new RepositoryCredentialControlError(true));
-              } finally {
-                for (const chunk of chunks) {
-                  chunk.fill(0);
-                }
-              }
-            });
+              },
+              reject,
+            );
           },
         );
         outgoing.once("error", reject);

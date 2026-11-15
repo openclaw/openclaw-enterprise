@@ -18,7 +18,7 @@ import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { stopProcess } from "./stop-process.mjs";
 import { waitFor } from "./wait-for.mjs";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
-import { reservedPortArgs } from "./available-port.mjs";
+import { reservedPortArgs } from "./available-port.ts";
 import { databaseUrl, requiresPostgres } from "./postgres-database.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
@@ -33,6 +33,7 @@ export const serviceAccountDriverId = "chatgpt-service-accounts";
 export const workspaceId = "11111111-1111-4111-8111-111111111111";
 export const alternateWorkspaceId = "22222222-2222-4222-8222-222222222222";
 export const apiKeyPath = "/etc/openclaw/chatgpt/admin-key";
+/** @returns {import("../../packages/contracts/src/index.ts").ChatGPTBackendDefinition} */
 export function backendDefinition(options = {}) {
   return {
     id: backendId,

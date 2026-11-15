@@ -68,11 +68,12 @@ export function memoryLogger() {
 export const consoleOrigin = "https://console.oce.example.internal";
 export const sessionCookieName = "__Secure-openclaw_occ_shared.session_token";
 const gatewayApiKeyPath = "/etc/openclaw/gateway-api-key/key";
+/** @param {string} name @param {string} key */
 const secretRef = (name, key) => ({ secretKeyRef: { name, key } });
 
 /**
  * The API Pod's sign-in environment rendered from deploy/examples/production/values.yaml:
- * no OCC_AUTH_GITHUB_*, no trusted proxy. sign-in-chart-parity.test.mjs asserts the
+ * no OCC_AUTH_GITHUB_*, no trusted proxy. sign-in-chart-parity.test.ts asserts the
  * chart renders exactly these OCC_AUTH_* and OCC_AGENT_NATIVE_ADMIN_* entries.
  */
 export const defaultInstallSettings = Object.freeze({
@@ -83,7 +84,10 @@ export const defaultInstallSettings = Object.freeze({
   OCC_GATEWAY_API_KEY_PATH: gatewayApiKeyPath,
 });
 
-/** Google sign-in settings for the production chart. */
+/** Google sign-in settings for the production chart.
+ * @param {string} recoveryUserId
+ * @param {string[]} [allowedDomains]
+ */
 export function googleUpgradeValues(recoveryUserId, allowedDomains = []) {
   return {
     "auth.google.enabled": "true",
@@ -97,7 +101,10 @@ export function googleUpgradeValues(recoveryUserId, allowedDomains = []) {
   };
 }
 
-/** The API Pod's settings for googleUpgradeValues. The recovery setting is shared by every provider. */
+/** The API Pod's settings for googleUpgradeValues. The recovery setting is shared by every provider.
+ * @param {string} recoveryUserId
+ * @param {string[]} [allowedDomains]
+ */
 export function googleUpgradeSettings(recoveryUserId, allowedDomains = []) {
   return Object.freeze({
     OCC_AUTH_SECRET: secretRef("occ-auth", "secret"),
@@ -125,7 +132,11 @@ export const fixtureOidcIssuer = Object.freeze({
   jwksUrl: "https://tenant.idp.example.test/.well-known/jwks.json",
 });
 
-/** The example values plus generic OIDC sign-in, the OIDC counterpart of googleUpgradeValues. */
+/** The example values plus generic OIDC sign-in, the OIDC counterpart of googleUpgradeValues.
+ * @param {string} recoveryUserId
+ * @param {{ issuer: string, authorizationUrl: string, tokenUrl: string, jwksUrl: string }} [issuer]
+ * @param {Record<string, string | boolean | number>} [extra]
+ */
 export function oidcUpgradeValues(recoveryUserId, issuer = fixtureOidcIssuer, extra = {}) {
   return {
     "auth.oidc.enabled": "true",
@@ -139,7 +150,11 @@ export function oidcUpgradeValues(recoveryUserId, issuer = fixtureOidcIssuer, ex
   };
 }
 
-/** The API Pod's settings for oidcUpgradeValues. The recovery setting is shared by every provider. */
+/** The API Pod's settings for oidcUpgradeValues. The recovery setting is shared by every provider.
+ * @param {string} recoveryUserId
+ * @param {{ issuer: string, authorizationUrl: string, tokenUrl: string, jwksUrl: string }} [issuer]
+ * @param {{ tokenAuth?: string, displayName?: string }} [extra]
+ */
 export function oidcUpgradeSettings(recoveryUserId, issuer = fixtureOidcIssuer, extra = {}) {
   return Object.freeze({
     OCC_AUTH_SECRET: secretRef("occ-auth", "secret"),
@@ -177,7 +192,7 @@ function resolveSettings(settings, secrets) {
 
 /**
  * The production composition's configuration for rendered API Pod settings, parsing the
- * sign-in and native-admin names the way apps/controller/src/api-startup.mjs does.
+ * sign-in and native-admin names the way apps/controller/src/api-startup.ts does.
  */
 export async function productionSignInConfiguration(
   context,

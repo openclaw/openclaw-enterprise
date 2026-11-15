@@ -138,6 +138,10 @@ A lone `started` message identifies the operation still running or interrupted;
 it does not establish failure or completion. Progress contains fixed categories
 only. Final timing receipts and test results remain the completion evidence.
 
+For a scratch run, inspect `files[].measurements` in the lane result. The
+`scratch-sibling-isolation` and `scratch-queued-actor-revocation` stages each
+record the outcome and elapsed milliseconds when the check finishes.
+
 For canonical `openshell` and split `openshell-policy` runs, inspect
 `files[].installationPhases` in the lane result artifact for workspace Helm,
 gateway Helm and gateway Pod readiness intervals. These records do not appear
@@ -195,7 +199,7 @@ node comes from the selected revision's Gateway Pod. Failure reads of
 budget. A matching session response is labeled `fresh`. If the refresh fails,
 placement is labeled `fallback` when an earlier observation exists, or `absent`
 otherwise.
-`scripts/ci/reporter.mjs:nativeFirstAgentProofDiagnostic` validates the fixed categories,
+`scripts/ci/reporter.ts:nativeFirstAgentProofDiagnostic` validates the fixed categories,
 booleans and counters again. Raw errors and identifiers do not enter the record.
 Public RPCs do not expose workspace-binding readiness or restoration; a workspace
 reference does not prove either state.

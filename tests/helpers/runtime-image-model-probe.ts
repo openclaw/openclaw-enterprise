@@ -5,7 +5,7 @@
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import type { ExecFileOptions } from "node:child_process";
+import type { ExecFileOptions, ExecFileOptionsWithStringEncoding } from "node:child_process";
 import type { TestContext } from "node:test";
 import { randomBytes } from "node:crypto";
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
@@ -43,7 +43,7 @@ function assertCapturedOutput(
   assert.ok(operation.child.stdout, "the child process must capture stdout");
 }
 
-export function execute(command: string, args: string[], options: ExecFileOptions) {
+export function execute(command: string, args: string[], options?: ExecFileOptions) {
   const operation = executeFile(command, args, options);
   assertCapturedOutput(operation);
   return operation;
@@ -59,7 +59,7 @@ export const constrainedGatewayCpuLimit = "0.5";
 export const probeApiKey = "sk-openclaw-runtime-probe-synthetic";
 
 // Failures carry the exit code, signal, timeout and redacted output tails (finding 2184).
-export async function runDocker(args: string[], options: ExecFileOptions = {}) {
+export async function runDocker(args: string[], options: ExecFileOptionsWithStringEncoding = {}) {
   return runDockerCommand(docker, args, {
     timeout: 60_000 * imageSmokeTimeoutMultiplier,
     maxBuffer: 4_000_000,

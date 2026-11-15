@@ -23,12 +23,16 @@ export {
   repositoryRoot,
 } from "./runtime.mjs";
 
+/** @returns {Promise<import("../../../apps/controller/src/drivers/repo/access/service-contracts.ts").ServiceConfig>} */
 export async function createServiceConfiguration(
   t,
   limits = {},
   sessionPolicy = { maximumDurationSeconds: 172800 },
 ) {
   const { validateServiceConfig } = await appModule("drivers/repo/access/configuration");
+  if (typeof validateServiceConfig !== "function") {
+    throw new TypeError("missing repository service configuration validator");
+  }
   const directory = await socketDirectory(t, "rcs-");
   await chmod(directory, 0o700);
   return validateServiceConfig(

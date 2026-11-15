@@ -8,21 +8,41 @@ Compute, dedicated Codex, and the same OpenShell Driver for Sandbox and
 Credential Proxy. Repository access requires its own explicit Namespace policy;
 installing OpenShell does not grant it.
 
+### Identify the Namespace for the registry
+
+On a fresh installation, bootstrap the control plane with repository access
+disabled. Confirm Helm reports the release as `deployed` and the API and worker
+are ready. If the install failed or is pending, preserve its receipt and
+[check the original initialization Job](../deploy/production-handoff.md#resume-an-installation-in-progress).
+
+Fresh bootstrap creates an OCE Namespace named `default`. If you followed a
+quickstart, finish its platform setup and use the ready Namespace ID saved as
+`namespace` in the [operator session](../deploy/quickstart-session.md).
+That session also supports [first-Agent model registration](../deploy/deploy-first-agent.md#1-select-or-register-the-model-credential).
+For a custom production install, authenticate and run `occ namespace list`.
+Identify the intended OCE Namespace, [prepare its tenant access](../deploy/production-agents.md#prepare-each-namespace)
+while it is provisioning, and confirm it reaches `ready`. Use its server-assigned
+ID in the registry. Create the registry ConfigMap in the control plane’s
+Kubernetes namespace.
+
 ### Register the Harness model source first
 
 For a fresh local k3d installation, use the authenticated
 [Gateway setup](#prepare-an-authenticated-local-gateway).
 
-A fresh installation needs a ready, Gateway-owned model source before enabling
-the repository Credential Proxy. If that source already exists, start at step 2.
+Select the OpenShell Gateway and Sandbox, then
+[register one static model source using the OpenAI API-key example](../deploy/openshell-credential-sources.md#register-the-key).
+You can register it before or after enabling the validated bundled `repository.openShell`
+Git-only transport. Keep a separately selected OCE Credential Gateway for model
+delivery; the OpenShell gateway service alone does not select that capability. Verify that
+its state and Gateway status are ready and that it has no `egress`. Reuse an existing
+Gateway-owned source only if it meets these same static-source requirements.
+The selected Gateway catalog must declare Harness authentication without refresh,
+device authorization or ChatGPT OAuth. Bind only this one model source to the Agent.
 
-1. Select the OpenShell Gateway and Sandbox. Leave `drivers.credential_proxy`
-   and the Backend’s `drivers.credential_proxy` unset. [Register the model source](../deploy/openshell-credential-sources.md)
-   and verify that its state and Gateway status are ready and that it has no `egress`.
-2. Keep the Gateway selected and use that same source with
-   `harnessAuth.method: credential_source`. Enable the repository Credential Proxy
-   as described below. This procedure is for a fresh installation; changing an
-   existing installation can affect running Agents.
+Keep the Gateway selected and use the source with
+`harnessAuth.method: credential_source`. Configure the repository Credential Proxy
+as described below. Changing an existing installation can affect running Agents.
 
 ### Prepare an authenticated local Gateway
 
@@ -88,8 +108,12 @@ set `openshellGit.enabled: true`, `mode: protected`, its TLS Secret, public issu
 key ConfigMap and trusted Gateway/supervisor clients. Match the fragment's port
 8445, issuer, audience and key ID to the actual Gateway. Register `oce-prepared-git`
 with `binding_policy: allowlist` and `bindings: [http_request_pre_credentials]`.
-Missing or response-only bindings are not sufficient. Render the normal Helm
-release and run normal Installation startup validation before admitting Agents.
+Missing or response-only bindings are not sufficient. With a mutable Installation
+Secret, apply the registry and listener settings as an
+[Installation configuration change](../deploy/production-installation-changes.md)
+on the deployed release. An immutable Secret requires a separately reviewed
+configuration change that selects a new Secret with the same Installation
+identity and retains the original for recovery. Verify startup before admitting Agents.
 
 ### Allow the worker to reach GitHub
 

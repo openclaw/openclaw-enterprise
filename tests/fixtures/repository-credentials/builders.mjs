@@ -58,30 +58,6 @@ export function repositoryClientData({ repository = "example/project", ...overri
   };
 }
 
-// Keep raw targets byte-for-byte, including deliberately invalid protocol inputs.
-export function requestHead(
-  method,
-  rawTarget,
-  headers = {},
-  {
-    receivedMonoMs = 0,
-    contentEncoding = "identity",
-    framing = { kind: "none", bytes: undefined },
-  } = {},
-) {
-  return {
-    method,
-    rawTarget,
-    headers: {
-      ...(["POST", "PATCH"].includes(method) ? { "content-type": "application/json" } : {}),
-      ...headers,
-    },
-    receivedMonoMs,
-    contentEncoding,
-    framing,
-  };
-}
-
 const api = "https://api.github.com/repos/fixture/repository";
 function repositoryItem() {
   return {

@@ -19,6 +19,9 @@ import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const Fastify = require("fastify");
+// Socket receipts and cleanup must retain real deadlines when shutdown time is mocked.
+const realSetTimeout = globalThis.setTimeout;
+const realClearTimeout = globalThis.clearTimeout;
 
 // The active revision these cases authorize: an Agent Gateway with the native admin opt-in,
 // its Control UI allowed only from `origin`.
@@ -40,14 +43,14 @@ function within(promise, description, milliseconds = 1_500) {
   return Promise.race([
     promise,
     new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(description)), milliseconds);
+      timer = realSetTimeout(() => reject(new Error(description)), milliseconds);
     }),
-  ]).finally(() => clearTimeout(timer));
+  ]).finally(() => realClearTimeout(timer));
 }
 
 // Only authorization and audit persistence are controlled. Admission, TLS, the
 // upgrade relay, its lease timer and both ends of each connection are real.
-async function transportOwner(t, { authorize, append }) {
+async function transportOwner(t, { authorize, append, appendSocket = async () => {} }) {
   const directory = await mkdtemp(join(tmpdir(), "native-admin-audit-transport-"));
   const previousCertificates = getCACertificates("default");
   const sockets = new Set();
@@ -58,10 +61,14 @@ async function transportOwner(t, { authorize, append }) {
       socket.destroy();
     }
     try {
-      const results = await Promise.allSettled([
-        app?.close(),
-        gateway && new Promise((resolve) => gateway.close(resolve)),
-      ]);
+      const results = await within(
+        Promise.allSettled([
+          app?.close(),
+          gateway && new Promise((resolve) => gateway.close(resolve)),
+        ]),
+        "transport cleanup must finish after the shutdown drain",
+        6_500,
+      );
       for (const result of results) {
         assert.equal(result.status, "fulfilled", result.reason?.message);
       }
@@ -92,7 +99,7 @@ async function transportOwner(t, { authorize, append }) {
     socket.write("peer-ready");
   });
   gateway.listen(0, "127.0.0.1");
-  await once(gateway, "listening");
+  await within(once(gateway, "listening"), "the fixture gateway must listen");
 
   const installationId = "inst_native_admin_transport";
   const agent = { id: "agent_a", namespaceId: "ns_a", desiredRuntimeState: "running" };
@@ -110,7 +117,11 @@ async function transportOwner(t, { authorize, append }) {
   const auditEntered = pendingValue();
   const serverClosed = pendingValue();
   const audits = [];
+  const warnings = [];
+  const appClosed = pendingValue();
   app = Fastify({ logger: false });
+  t.mock.method(app.log, "warn", (fields) => warnings.push(fields));
+  app.addHook("onClose", async () => appClosed.resolve());
   app.server.on("connection", (socket) => {
     sockets.add(socket);
     socket.once("close", serverClosed.resolve);
@@ -175,14 +186,17 @@ async function transportOwner(t, { authorize, append }) {
           auditEntered.resolve();
           return append(event);
         }
-        return Promise.resolve();
+        return appendSocket(event);
       },
     },
   });
-  await app.listen({ host: "127.0.0.1", port: 0 });
+  await within(app.listen({ host: "127.0.0.1", port: 0 }), "the fixture controller must listen");
   return {
     denied,
     host,
+    audits,
+    warnings,
+    appClosed: appClosed.promise,
     entered: entered.promise,
     auditEntered: auditEntered.promise,
     serverClosed: serverClosed.promise,
@@ -204,7 +218,7 @@ async function transportOwner(t, { authorize, append }) {
           ready.resolve(received);
         }
       });
-      await once(socket, "connect");
+      await within(once(socket, "connect"), "the fixture client must connect");
       socket.write(
         `GET / HTTP/1.1\r\nHost: ${host}\r\nOrigin: ${origin}\r\nConnection: Upgrade\r\n` +
           "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n" +
@@ -213,6 +227,130 @@ async function transportOwner(t, { authorize, append }) {
       return { closed, ready: ready.promise };
     },
   };
+}
+
+for (const failedAudit of ["connect", "close"]) {
+  test(`native-admin shutdown releases a rejected ${failedAudit} audit`, async (t) => {
+    const rejected = new Error("Audit fixture unavailable");
+    const owner = await transportOwner(t, {
+      authorize: ({ agent, revision, mode }) => ({ agent, revision, mode }),
+      appendSocket: async (event) => {
+        if (event.details.nativeAdmin.event === failedAudit) {
+          throw rejected;
+        }
+      },
+    });
+    const client = await owner.open();
+    if (failedAudit === "connect") {
+      await within(client.closed, "failed connect audit must close the client");
+    } else {
+      await within(client.ready, "successful connect audit must allow forwarding");
+    }
+    await within(owner.shutdown(), "rejected audit must not wait out the shutdown deadline");
+    assert.deepEqual(
+      owner.audits.map((event) => event.details.nativeAdmin.event),
+      failedAudit === "connect" ? ["connect"] : ["connect", "close"],
+    );
+    assert.deepEqual(
+      owner.warnings.map((warning) => warning.event),
+      failedAudit === "connect" ? [] : ["native_admin.websocket_audit_failed"],
+    );
+  });
+}
+
+for (const deadline of [false, true]) {
+  test(`native-admin shutdown drains connect and follow-on close audits${deadline ? " under one deadline" : " before onClose"}`, async (t) => {
+    const connect = pendingValue();
+    const close = pendingValue();
+    const connectEntered = pendingValue();
+    const closeEntered = pendingValue();
+    const settled = [];
+    const owner = await transportOwner(t, {
+      authorize: ({ agent, revision, mode }) => ({ agent, revision, mode }),
+      appendSocket: async (event) => {
+        const name = event.details.nativeAdmin.event;
+        if (name === "connect") {
+          connectEntered.resolve();
+          await connect.promise;
+        } else {
+          closeEntered.resolve();
+          await close.promise;
+        }
+        settled.push(name);
+      },
+    });
+    let storageMayClose = false;
+    void owner.appClosed.then(() => {
+      storageMayClose = true;
+      settled.push("onClose");
+    });
+    // In the deadline case, create and clear the handshake and drain timers on
+    // the same clock. The TCP/TLS peers and the test's I/O deadlines stay real.
+    if (deadline) {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+    }
+    const client = await owner.open();
+    let closing;
+    try {
+      await within(connectEntered.promise, "authorized upstream 101 must reach connect audit");
+      closing = owner.shutdown();
+      await within(
+        Promise.all([client.closed, owner.serverClosed, owner.peerClosed]),
+        "shutdown must close both relay ends without waiting for audit acknowledgment",
+      );
+      await settleCallbacks();
+      if (deadline) {
+        t.mock.timers.tick(3_000);
+        await settleCallbacks();
+      }
+      assert.equal(storageMayClose, false, "onClose must wait for the connect audit");
+      assert.deepEqual(settled, []);
+      assert.equal(owner.audits.length, 1);
+      connect.resolve();
+      await within(closeEntered.promise, "connect settlement must emit its close audit");
+      await settleCallbacks();
+      assert.equal(storageMayClose, false, "onClose must also wait for the follow-on close audit");
+      assert.deepEqual(settled, ["connect"]);
+      if (deadline) {
+        t.mock.timers.tick(1_999);
+        await settleCallbacks();
+        assert.equal(storageMayClose, false, "shutdown must still wait at 4,999ms");
+        assert.deepEqual(owner.warnings, []);
+        t.mock.timers.tick(1);
+        await within(closing, "close work must not get a fresh five-second budget");
+        assert.deepEqual(owner.warnings, [
+          { event: "native_admin.pending_work_unresolved", pending: 1 },
+        ]);
+        assert.deepEqual(settled, ["connect", "onClose"]);
+      }
+      close.resolve();
+      await within(closing, "shutdown must finish after both audit acknowledgments");
+      await settleCallbacks();
+      assert.deepEqual(
+        settled,
+        deadline ? ["connect", "onClose", "close"] : ["connect", "close", "onClose"],
+      );
+      if (!deadline) {
+        assert.deepEqual(owner.warnings, []);
+      }
+      assert.equal(owner.gatewayConnections(), 1);
+      assert.equal(owner.audits.length, 2, "each socket audit is attempted exactly once");
+      const [connected, closed] = owner.audits.map((event) => event.details.nativeAdmin);
+      assert.equal(connected.event, "connect");
+      assert.equal(closed.event, "close");
+      assert.match(connected.connectionId, /^naws_/);
+      assert.equal(closed.connectionId, connected.connectionId);
+      assert.equal(closed.closeReason, "shutdown");
+    } finally {
+      connect.resolve();
+      close.resolve();
+      try {
+        await within(closing ?? owner.shutdown(), "shutdown cleanup must finish");
+      } finally {
+        t.mock.reset();
+      }
+    }
+  });
 }
 
 function assertTransportDenial(owner, revisionId) {

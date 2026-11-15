@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { loadConsoleTheme } from "../../apps/controller/src/composition/console-theme.ts";
+import { readConsoleAsset } from "../../apps/controller/src/console-assets.ts";
 import { renderConsoleThemeShell } from "../../apps/controller/src/console-theme.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { caAndLeaf } from "../helpers/certificates.mjs";
@@ -21,6 +22,8 @@ const execute = promisify(execFile);
 const sourcePath = "apps/controller/src/console";
 const shellPath = "/console/";
 const assetPath = "/console/console.css";
+const entryPath = "/console/console.mjs";
+const entryTag = `<script id="console-entry" type="module" src="${entryPath}"></script>`;
 const verifier = fileURLToPath(new URL("../../scripts/verify-console-release.ts", import.meta.url));
 const git = (cwd: string, ...args: string[]) =>
   execute("git", ["--no-lazy-fetch", "-C", cwd, ...args], { timeout: 5_000 });
@@ -46,7 +49,14 @@ type ResponseOverride = {
   headers?: string;
   status?: number;
 };
-type Release = { directory: string; source: string; revision: string; html: string; css: string };
+type Release = {
+  directory: string;
+  source: string;
+  revision: string;
+  html: string;
+  css: string;
+  entry?: string;
+};
 
 async function serveRelease(t: TestContext, release: Release) {
   const tls = await caAndLeaf(release.directory, {
@@ -68,11 +78,16 @@ async function serveRelease(t: TestContext, release: Release) {
       }
       requests.push(request.url!);
       const asset = request.url === assetPath;
+      const entry = request.url === entryPath;
       const selected = (override.route ?? shellPath) === request.url ? override : {};
-      const body = selected.body ?? (asset ? release.css : release.html);
+      const body =
+        selected.body ?? (entry ? (release.entry ?? "") : asset ? release.css : release.html);
       const headers =
         selected.headers ??
-        contentHeaders(asset ? "text/css" : "text/html", Buffer.byteLength(body));
+        contentHeaders(
+          entry ? "text/javascript; charset=utf-8" : asset ? "text/css" : "text/html",
+          Buffer.byteLength(body),
+        );
       const status = selected.status ?? 200;
       response.socket!.end(
         `HTTP/1.1 ${status} ${STATUS_CODES[status]}\r\n${headers}\r\nConnection: ${selected.connection ?? "close"}\r\n\r\n${body}`,
@@ -91,6 +106,7 @@ async function serveRelease(t: TestContext, release: Release) {
       hostname?: string;
       trust?: boolean;
       env?: NodeJS.ProcessEnv;
+      args?: string[];
     } = {},
   ) => {
     override = options.response ?? {};
@@ -112,22 +128,23 @@ async function serveRelease(t: TestContext, release: Release) {
         options.source ?? release.source,
         release.revision,
         origin.replace("127.0.0.1", options.hostname ?? "127.0.0.1") + (options.path ?? shellPath),
+        ...(options.args ?? []),
       ],
       childOptions,
     );
-    assert.equal(result.status, expected === "verified" ? 0 : 1);
+    assert.equal(result.status, expected === "verified" ? 0 : 1, result.stdout);
     assert.equal(result.signal, null);
     assert.equal(result.stderr.length, 0, "verifier must keep stderr empty");
-    assert.ok(
-      requests.length === paths.length && requests.every((path, index) => path === paths[index]),
-      "unexpected release request sequence",
-    );
     assert.ok(
       !/secret|private|127\.0\.0\.1|https:|<!doctype/i.test(result.stdout),
       "verifier output contains private request or response data",
     );
     const record = JSON.parse(result.stdout);
     assert.equal(record.result, expected);
+    assert.ok(
+      requests.length === paths.length && requests.every((path, index) => path === paths[index]),
+      "unexpected release request sequence",
+    );
     return record;
   };
 }
@@ -149,8 +166,11 @@ test("console image metadata preserves the supplied revision and rejects invalid
   assert.ok((await readFile(shell, "utf8")).includes('name="occ-build-revision" content=""'));
 });
 
-test("console release verification checks served build artifacts", async (t) => {
+async function stageRelease(t: TestContext, editShell?: (html: string) => string) {
   const build = await stageBuild(t);
+  if (editShell) {
+    await writeFile(build.shell, editShell(await readFile(build.shell, "utf8")));
+  }
   await cp(
     new URL("../../apps/controller/src/console/console.css", import.meta.url),
     join(build.source, sourcePath, "console.css"),
@@ -173,7 +193,12 @@ test("console release verification checks served build artifacts", async (t) => 
   );
   const revision = (await git(build.source, "rev-parse", "HEAD")).stdout.trim();
   await execute(process.execPath, [build.stamper, revision]);
-  const stamped = await readFile(build.shell, "utf8");
+  return { ...build, revision, html: await readFile(build.shell, "utf8") };
+}
+
+test("console release verification checks served build artifacts", async (t) => {
+  const build = await stageRelease(t);
+  const { revision, html: stamped } = build;
   const marker = `<meta name="occ-build-revision" content="${revision}" />`;
 
   const themeDirectory = join(build.directory, "theme");
@@ -395,5 +420,88 @@ test("console release verification checks served build artifacts", async (t) => 
     assert.ok(events.some((event) => event.event === "start"));
     assert.ok(events.every((event) => !Array.isArray(event.argv) || !event.argv.includes("fetch")));
     assert.deepEqual(await missing(), before);
+  });
+});
+
+test("console release verification checks optional served entry bytes", async (t) => {
+  const build = await stageRelease(t);
+  const css = await readConsoleAsset(assetPath, "identity");
+  const entry = await readConsoleAsset(entryPath, "identity");
+  assert.equal(css.statusCode, 200);
+  assert.equal(entry.statusCode, 200);
+  assert.equal(entry.contentType, "text/javascript; charset=utf-8");
+  const assetSha256 = createHash("sha256").update(css.body).digest("hex");
+  const entrySha256 = createHash("sha256").update(entry.body).digest("hex");
+  const args = ["--entry-sha256", entrySha256];
+  const both = [shellPath, assetPath];
+  const all = [...both, entryPath];
+  const verify = await serveRelease(t, {
+    ...build,
+    css: css.body.toString("utf8"),
+    entry: entry.body.toString("utf8"),
+  });
+
+  // The stale response changes only the entry. The default check still verifies shell and CSS.
+  const stale = { route: entryPath, body: "export const previousRelease = true;\n" };
+  const defaultProof = { result: "verified", revision: build.revision, assetSha256 };
+  assert.deepEqual(await verify("verified", both, { response: stale }), defaultProof);
+  assert.deepEqual(await verify("wrong-entry", all, { args, response: stale }), {
+    result: "wrong-entry",
+  });
+  assert.deepEqual(await verify("verified", all, { args }), { ...defaultProof, entrySha256 });
+
+  await t.test("an invalid digest or option is refused before Git or HTTPS reads", async () => {
+    const trace = join(build.directory, "invalid-entry-input.trace");
+    for (const invalid of [
+      ["--entry-sha256"],
+      ["--entry-sha256", ""],
+      ["--entry-sha256", "a".repeat(63)],
+      ["--entry-sha256", "A".repeat(64)],
+      ["--entry-sha256", `${entrySha256}\n`],
+      ["--entry-sha256", `${entrySha256.slice(1)}\n`],
+      ["--entry-sha256", entrySha256, "--entry-sha256", entrySha256],
+      ["--unknown", entrySha256],
+    ]) {
+      await verify("invalid-input", [], { args: invalid, env: { GIT_TRACE2_EVENT: trace } });
+    }
+    await assert.rejects(readFile(trace), { code: "ENOENT" });
+  });
+  await t.test("entry requests depend on the verified shell and exact stock script", async () => {
+    const alternateTag = entryTag.replace(entryPath, "//example.invalid/console/console.mjs");
+    await verify("wrong-shell", [shellPath], {
+      args,
+      response: { body: build.html.replace(entryTag, alternateTag) },
+    });
+    await verify("wrong-shell", [shellPath], {
+      args,
+      response: { body: build.html.replace(build.revision, "a".repeat(40)) },
+    });
+    // Even a shell matching its selected commit must declare the approved stock entry.
+    const alternate = await stageRelease(t, (html) => html.replace(entryTag, alternateTag));
+    const verifyAlternate = await serveRelease(t, { ...alternate, css: css.body.toString("utf8") });
+    await verifyAlternate("verified", both);
+    await verifyAlternate("wrong-shell", [shellPath], { args });
+  });
+  await t.test("entry responses use the same anonymous framing and redirect rules", async () => {
+    await verify("unexpected-content", all, {
+      args,
+      response: { route: entryPath, headers: contentHeaders("text/html", 0), body: "" },
+    });
+    await verify("incomplete-response", all, {
+      args,
+      response: {
+        route: entryPath,
+        headers: contentHeaders("text/javascript", entry.body.length + 1),
+      },
+    });
+    await verify("redirect-refused", all, {
+      args,
+      response: {
+        route: entryPath,
+        status: 302,
+        headers: "Location: /console/other.mjs",
+        body: "",
+      },
+    });
   });
 });

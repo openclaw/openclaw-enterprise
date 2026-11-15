@@ -63,7 +63,7 @@ const repositorySetPermissions = {
 } as const;
 import { gitExpiryGateway } from "./openshell-online-git-journey.mjs";
 import { harnessTlsFixture } from "./harness-tls.mjs";
-import { bindReservedPortInProcess, reservePort } from "./available-port.mjs";
+import { bindReservedPortInProcess, reservePort } from "./available-port.ts";
 import { invoke, token, openShellMiddlewareClient } from "./openshell-online-wire.mjs";
 import { exerciseNativeRepositorySet } from "./native-repository-set.ts";
 import {
@@ -130,7 +130,10 @@ type NarrowStartupOptions = NarrowPolicy & {
       ReturnType<NarrowJourney["maintenance"]["fixture"]["controller"]["createConfiguration"]>
     >;
   }) => Promise<void>;
-  configure?: Parameters<typeof gitExpiryGateway>[1]["configure"];
+  configure?: (
+    methods: { GetSandboxProviderStatus(request: unknown): unknown },
+    world: { version: number },
+  ) => void;
 };
 
 export async function createNarrowOnlineGitStartup(

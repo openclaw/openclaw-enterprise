@@ -33,6 +33,9 @@ state for `occ dev down`. See [hosted execution](README.md#run-the-hosted-local-
 Use Kubernetes 1.35+, Docker, k3d, `kubectl`, and a
 [dedicated migrated database](postgresql.md#other-postgresql-suites). Choose another
 cluster name if `oce` exists. Default kubeconfig and context remain unchanged.
+Set `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS` to the actual
+[API-server Pod-proxy source CIDRs](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
+as a comma-separated list before running the tests.
 
 ```sh
 mkdir -m 700 -p /tmp/oce-k3d
@@ -52,16 +55,20 @@ docker exec k3d-oce-server-0 ctr -n k8s.io images list -q |
 OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
 OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
 OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
+OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS="${OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS:?Set the API-server Pod-proxy source CIDRs}" \
 OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_k8s_local \
-  node --test --test-concurrency=1 tests/integration/kubernetes-compute-real.test.mjs \
+  node --test --test-concurrency=1 tests/integration/kubernetes-compute-real.test.ts \
     tests/integration/kubernetes-compute-provisioning-real.test.mjs \
-    tests/integration/kubernetes-compute-driver-real.test.mjs
+    tests/integration/kubernetes-compute-driver-real.test.ts
 ```
 
 Run sequentially against this database without skips.
 Missing selectors or database skip cases; partial selectors fail. Coverage:
 API, worker, Driver, RBAC, storage, lifecycle and network isolation.
 Verify cloud volume detach and node fencing separately.
+
+The [State and Lifecycle check](ci/required-checks.md#scenarios) traces a deploy
+from request to worker success and checks the direct Agent audit grant.
 
 For live OAuth, use [OpenShell OAuth](openshell-oauth.md) and
 [credentialed runtime](openshell.md). Delete only your disposable cluster:
@@ -220,8 +227,8 @@ and a free, bindable `127.0.0.1:443`. Run only one Keycloak lane per host.
 ```sh
 state="$PWD/.ci-state/keycloak-oidc.json"
 node scripts/ci/prepare.mjs --lane keycloak-oidc --state "$state" &&
-  node scripts/ci/run-tests.mjs run keycloak-oidc --state "$state" --results "$PWD/.ci-state/results.json"
-node scripts/ci/cleanup.mjs --state "$state"
+  node scripts/ci/run-tests.ts run keycloak-oidc --state "$state" --results "$PWD/.ci-state/results.json"
+node scripts/ci/cleanup.ts --state "$state"
 ```
 
 Preparation creates a private CA, fixture credentials and a Keycloak container.
@@ -275,12 +282,12 @@ node scripts/ci/prepare.mjs \
   --lane gateway-routing \
   --state "$RUNNER_TEMP/state/gateway-routing.json" \
   --github-env "$GITHUB_ENV" &&
-node scripts/ci/run-tests.mjs run gateway-routing \
+node scripts/ci/run-tests.ts run gateway-routing \
   --state "$RUNNER_TEMP/state/gateway-routing.json" \
   --results "$RUNNER_TEMP/results/gateway-routing.json"
 ```
 
-Use `scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/gateway-routing.json"`
+Use `scripts/ci/cleanup.ts --state "$RUNNER_TEMP/state/gateway-routing.json"`
 to remove the lane's resources.
 
 ### Native workspace identity
@@ -306,10 +313,8 @@ enrollment, Git, or OpenShell.
 
 ## Production TUI tests
 
-This opt-in test installs the Helm chart on a disposable k3d cluster, uses the
-production API and native TUI, and checks Agent revision cutover with a real
-model. Allow at least 4 GiB per gateway container. A selected test fails when
-prerequisites are missing; an unselected skip is not proof.
+This Helm test exercises production API and native TUI revision cutover with a real
+model on disposable k3d. Each gateway container needs at least 4 GiB.
 
 ### Production TUI Helm test environment
 
@@ -323,9 +328,9 @@ In a [private environment file](README.md#requirements-and-credentials), set:
 - `OPENAI_API_KEY`: existing authorized credential; optionally set
   `OCC_TEST_OPENAI_MODEL` (default `gpt-6-astra`).
 
-The test normally uninstalls its release and deletes only its namespaces.
-`OCC_TEST_PRODUCTION_TUI_KEEP=1` retains the owned setup and writes `attach.sh`
-and `proof.json` for rehearsal. Do not treat an in-progress run as a pass.
+Teardown requests Helm uninstall and asynchronous namespace deletion, suppressing errors. Verify resource removal.
+`OCC_TEST_PRODUCTION_TUI_KEEP=1` retains the setup for rehearsal with
+`attach.sh` and `proof.json`. Require a completed run for proof.
 
 ### Run the production TUI suite
 
@@ -334,32 +339,30 @@ OCC_TEST_PRODUCTION_TUI_REAL=1 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/production-tui-k3d-real.test.mjs
 ```
 
-Set both `OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE` and
-`OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE` to immutable candidate digests to
-check independent controller and runtime upgrades. Setting only one fails. With
-neither, a pass does not prove an upgrade.
+For independent upgrades, set both `OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE`
+and `OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE`. One input fails. Omit both to skip upgrades.
 
 ### Run an isolated upgrade qualification lane
 
-In the private file, set the controller and runtime images to a compatible
-prior release and both upgrade images to the reviewed candidate. Each candidate
-must differ from its baseline; verify provenance separately. Also set the
-PostgreSQL and Node images and the model credential and selection above. With
-Docker, k3d, kubectl, Helm, yq, and the built OCC CLI:
+Set `OCC_TEST_OPENAI_MODEL`. Verify provenance for compatible prior and distinct
+reviewed candidate controller and runtime digests. A disposable Pod selects the
+incumbent image’s worker probe for installation. The upgrade uses the candidate
+chart. Install Docker, k3d, kubectl, Helm, yq, and Go.
 
 ```sh
 run_dir="$(mktemp -d)"
 node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.mjs --lane production-tui --state "$run_dir/state.json" && \
-  node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.mjs run production-tui \
+  TMPDIR="$run_dir" node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.ts run production-tui \
     --state "$run_dir/state.json" --results "$run_dir/results.json"
 ```
 
-After success or failure, save the private state if needed for the source-to-local
-image mapping, then clean up:
+Before removing the runner, [retain both private availability receipts](populated-controller-return.md#retain-ordinary-upgrade-observations).
+
+After success or failure, save the private image mapping if needed and clean up:
 
 ```sh
 install -m 600 "$run_dir/state.json" "$run_dir/state-before-cleanup.json"
-node scripts/ci/cleanup.mjs --state "$run_dir/state.json"
+node scripts/ci/cleanup.ts --state "$run_dir/state.json"
 ```
 
 Retain the state if cleanup fails. Do not publish the state or environment file.

@@ -1,14 +1,11 @@
+import type { AgentProvisioningStatusWire } from "@openclaw-enterprise/contracts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import type {
-  AgentProvisioningResponse,
-  AgentProvisioningStatusWire,
-  ProvisionAgentBody,
-  SecretWire,
-} from "@openclaw-enterprise/contracts";
+import { AgentProvisioningStatusResponse } from "../../packages/contracts/src/api/resources.ts";
 import type {
   AgentProvisioningProgress,
   AgentProvisioningRecord,
+  ControllerWorkState,
   ProvisioningEffectReceipt,
 } from "../../packages/occ/src/index.ts";
 import type { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
@@ -25,10 +22,6 @@ type FixtureOptions = Pick<
   "computeDriver" | "configurationDriver" | "onWorkerEvent"
 >;
 type RuntimeComputeDriver = ReturnType<typeof createRuntimeComputeDriver>;
-type ProvisioningSecrets = Record<
-  "modelKey" | "slackBotToken" | "slackSigningSecret" | "externalServiceToken",
-  SecretWire
->;
 
 interface ProvisioningRow {
   status: AgentProvisioningRecord["status"];
@@ -47,14 +40,10 @@ interface RefusalDependencies {
   createProvisioningConfigurationDriver: (options: {
     id: string;
   }) => ReturnType<typeof createTestConfigurationDriver>;
-  createProvisioningSecrets: (
-    fixture: Pick<Fixture, "request">,
-    namespaceId: string,
-  ) => Promise<ProvisioningSecrets>;
-  provisioningBody: (
-    namespaceId: string,
-    secrets: ProvisioningSecrets,
-  ) => ProvisionAgentBody & { requestId: string };
+  admitProvisioning: (fixture: Fixture) => Promise<{
+    namespace: Awaited<ReturnType<Fixture["bootstrapNamespace"]>>;
+    provisioning: AgentProvisioningStatusWire & { requestId: string };
+  }>;
   provisioningRow: (
     pool: Fixture["pool"],
     namespaceId: string,
@@ -66,8 +55,7 @@ interface RefusalDependencies {
 export function registerProvisioningRefusalCases({
   createFixture,
   createProvisioningConfigurationDriver,
-  createProvisioningSecrets,
-  provisioningBody,
+  admitProvisioning,
   provisioningRow,
   refuseProvisioningWithoutGatewayRouting,
 }: RefusalDependencies): void {
@@ -85,20 +73,6 @@ export function registerProvisioningRefusalCases({
       },
     });
     return { fixture, completed };
-  }
-
-  async function admitProvisioning(fixture: Fixture) {
-    const namespace = await fixture.bootstrapNamespace();
-    const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const body = provisioningBody(namespace.id, secrets);
-    const admitted = await fixture.request<AgentProvisioningResponse["data"]>(
-      "POST",
-      `/namespaces/${namespace.id}/agents/provision`,
-      { body },
-    );
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-    assert.ok(admitted.data);
-    return { namespace, requestId: body.requestId, provisioning: admitted.data.provisioning };
   }
 
   test(
@@ -127,7 +101,8 @@ export function registerProvisioningRefusalCases({
         computeDriver,
         configurationDriver,
       });
-      const { namespace, requestId, provisioning } = await admitProvisioning(fixture);
+      const { namespace, provisioning } = await admitProvisioning(fixture);
+      const { requestId, workId } = provisioning;
 
       // The next attempt inspects the unfinished write before its fence, records the receipt,
       // and then fails the work on the refusal instead of retrying an unknown outcome. The job
@@ -138,7 +113,6 @@ export function registerProvisioningRefusalCases({
         return row.status === "failed" ? row : undefined;
       });
       await fixture.stopWorker();
-      const workId = provisioning.workId;
       assert.deepEqual(
         completed
           .filter((event) => event.workId === workId)
@@ -163,7 +137,11 @@ export function registerProvisioningRefusalCases({
         "the refusal deletes the Configuration the job wrote but never recorded",
       );
       assert.equal(failed.agent_id, null, "the refusal comes before the work creates its Agent");
-      const work = await fixture.pool.query(
+      const work = await fixture.pool.query<{
+        state: ControllerWorkState;
+        reason_code: string | null;
+        attempt_count: number;
+      }>(
         "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
         [workId],
       );
@@ -210,8 +188,8 @@ export function registerProvisioningRefusalCases({
         computeDriver,
         configurationDriver,
       });
-      const { namespace, requestId, provisioning } = await admitProvisioning(fixture);
-      const workId = provisioning.workId;
+      const { namespace, provisioning } = await admitProvisioning(fixture);
+      const { requestId, workId } = provisioning;
 
       await fixture.startWorker();
       await waitFor("the refused provisioning to report its outcome", async () =>
@@ -251,7 +229,11 @@ export function registerProvisioningRefusalCases({
       assert.equal(failed.progress.unrecordedConfigurationId, created[0]);
       const orphaned = { namespaceId: namespace.id, id: created[0] };
       assert.notEqual(configurationDriver.stored(orphaned), undefined);
-      const work = await fixture.pool.query(
+      const work = await fixture.pool.query<{
+        state: ControllerWorkState;
+        reason_code: string | null;
+        attempt_count: number;
+      }>(
         "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
         [workId],
       );
@@ -267,7 +249,8 @@ export function registerProvisioningRefusalCases({
       assert.equal(retried.status, 202, JSON.stringify(retried.body));
       await fixture.startWorker();
       const succeeded = await waitFor("the retried provisioning to succeed", async () => {
-        const observed = await fixture.request<AgentProvisioningStatusWire>(
+        const observed = await fixture.requestChecked(
+          AgentProvisioningStatusResponse,
           "GET",
           provisioning.url,
         );
@@ -329,8 +312,8 @@ export function registerProvisioningRefusalCases({
         computeDriver,
         configurationDriver,
       });
-      const { namespace, requestId, provisioning } = await admitProvisioning(fixture);
-      const workId = provisioning.workId;
+      const { namespace, provisioning } = await admitProvisioning(fixture);
+      const { requestId, workId } = provisioning;
 
       // The stalled attempt cannot record its refusal. Recovery requeues the job, which still
       // names the write only through its mark, and the next attempt's fence refuses it again.
@@ -399,7 +382,8 @@ export function registerProvisioningRefusalCases({
       const { fixture, completed } = await createRefusalFixture(context, {
         computeDriver,
       });
-      const { namespace, requestId, provisioning } = await admitProvisioning(fixture);
+      const { namespace, provisioning } = await admitProvisioning(fixture);
+      const { requestId, workId } = provisioning;
 
       await fixture.startWorker();
       const failed = await waitFor("the provisioning work to fail", async () => {
@@ -409,7 +393,6 @@ export function registerProvisioningRefusalCases({
       await fixture.stopWorker();
       assert.ok(failed.agent_id);
       fixture.cancelProvisioningAtTeardown(namespace.id, failed.agent_id);
-      const workId = provisioning.workId;
       assert.deepEqual(
         completed
           .filter((event) => event.workId === workId)
@@ -430,7 +413,11 @@ export function registerProvisioningRefusalCases({
         { kind: "transport", owner: pendingEffect?.owner, targetId: failed.agent_id },
       );
       assert.equal(provisioned, 1, "recovery never provisions the credentials again");
-      const work = await fixture.pool.query(
+      const work = await fixture.pool.query<{
+        state: ControllerWorkState;
+        reason_code: string | null;
+        attempt_count: number;
+      }>(
         "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
         [workId],
       );
@@ -438,7 +425,7 @@ export function registerProvisioningRefusalCases({
         { state: "failed_permanent", reason_code: "PROVISIONING_REJECTED", attempt_count: 2 },
       ]);
       // One failure audit per attempt: the unknown outcome, then the authorization denial.
-      const audit = await fixture.pool.query(
+      const audit = await fixture.pool.query<{ kind: string; outcome: string }>(
         `SELECT kind, outcome FROM occ.audit_events
          WHERE namespace_id = $1
            AND action = 'openclaw.agents.provision.failure'
@@ -450,7 +437,7 @@ export function registerProvisioningRefusalCases({
         { kind: "authorization_denial", outcome: "denied" },
         { kind: "mutation", outcome: "failure" },
       ]);
-      const revisions = await fixture.pool.query(
+      const revisions = await fixture.pool.query<{ id: string }>(
         "SELECT id FROM occ.agent_revisions WHERE namespace_id = $1",
         [namespace.id],
       );

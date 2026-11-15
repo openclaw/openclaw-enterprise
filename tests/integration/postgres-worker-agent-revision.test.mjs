@@ -43,7 +43,7 @@ import {
   assertFailedDeployment,
   runPreparationFailureCase,
   runRuntimeFailureCases,
-} from "../helpers/postgres-worker-revision-scenarios.mjs";
+} from "../helpers/postgres-worker-revision-scenarios.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
   advanceCleanupRetries,
@@ -2697,7 +2697,7 @@ revisionTest(
       failure: () =>
         new SandboxRevisionUnsupportedError(
           "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
-          "OpenShell v0.1.5 cannot receive secretKeyRef environment APP_SERVER_TOKEN.",
+          "OpenShell cannot receive secretKeyRef environment APP_SERVER_TOKEN.",
         ),
       expected: {
         error: {

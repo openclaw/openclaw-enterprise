@@ -997,6 +997,91 @@ async function openRefocusDraft(t: TestContext) {
   };
 }
 
+test("a slow Agent refocus shows the pending status beside the scrolled draft", async (t) => {
+  const { fixture, page, artifacts, url, editor, draft, requests, readCount, agentPath } =
+    await openRefocusDraft(t);
+  await tagView(page);
+  const scrollY = await editor.evaluate((node) => {
+    node.scrollIntoView({ block: "center" });
+    return window.scrollY;
+  });
+  assert.ok(scrollY > 0, "the editor is below the fold");
+  assert.ok(
+    await page
+      .locator(".content .page-actions")
+      .evaluate((node) => node.getBoundingClientRect().bottom < 0),
+    "the page actions have scrolled out of the viewport",
+  );
+  const capture = process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR;
+  if (capture) {
+    await page.screenshot({ path: `${artifacts}/slow-refocus-editor.png` });
+  }
+  const revisionsPath = `${agentPath}/revisions`;
+  const revisionsUrl = fixture.origin + revisionsPath;
+  // Hold the genuine retry response until the delayed cue can appear.
+  const retryRead = await holdRequests(t, page, revisionsUrl, { once: true, method: "GET" });
+  const firstRead = await holdRequests(t, page, revisionsUrl, {
+    once: true,
+    method: "GET",
+    fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
+  });
+  const first = responseTo(page, "GET", revisionsUrl);
+  await refocus(page);
+  await firstRead.requested;
+  firstRead.release();
+  assert.equal((await first).status(), 500);
+  await retryRead.requested;
+  const status = page.getByRole("status").filter({ hasText: /^Still checking…$/u });
+  await status.waitFor();
+  assert.equal(await status.count(), 1);
+  const pending = await status.evaluate((node) => {
+    const { top, right, bottom, left } = node.getBoundingClientRect();
+    return {
+      scrollY: window.scrollY,
+      inViewport: top >= 0 && left >= 0 && bottom <= innerHeight && right <= innerWidth,
+      painted: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
+    };
+  });
+  if (capture) {
+    await page.screenshot({ path: `${artifacts}/slow-refocus-held.png` });
+  }
+  assert.ok(
+    pending.painted && pending.inViewport,
+    `pending status must be visible in the viewport: ${JSON.stringify(pending)}`,
+  );
+  assert.equal(pending.scrollY, scrollY);
+  assert.deepEqual(
+    await editor.evaluate((node) => ({
+      concealed: !node.checkVisibility({ opacityProperty: true }),
+      inert: Boolean(node.closest("[inert]")),
+    })),
+    { concealed: true, inert: true },
+  );
+  assert.equal(await hasFocus(status), false);
+  const recovered = responseTo(page, "GET", revisionsUrl);
+  retryRead.release();
+  assert.equal((await recovered).status(), 200);
+  await waitForIdleFetches(page);
+  assert.equal(await status.count(), 0);
+  assert.equal(await viewTag(page), "kept");
+  assert.equal(page.url(), url.href);
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await hasFocus(editor), true);
+  assert.deepEqual(
+    await editor.evaluate((node) => {
+      const input = node as HTMLTextAreaElement;
+      return [input.selectionStart, input.selectionEnd, window.scrollY];
+    }),
+    [3, 7, scrollY],
+  );
+  assert.equal(readCount("/api/auth/session"), 1);
+  assert.equal(readCount(revisionsPath), 2);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  if (capture) {
+    await page.screenshot({ path: `${artifacts}/slow-refocus-recovered.png` });
+  }
+});
+
 test("a transient refocus failure recovers the same focused Agent draft automatically", async (t) => {
   const {
     fixture,

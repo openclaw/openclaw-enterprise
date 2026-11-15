@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { sha256Hex } from "../../packages/utils/src/hashing.ts";
 import assert from "node:assert/strict";
+import { record } from "./egress-observation-values.ts";
 import { selectLiveControllerPods } from "./egress-installed-stack.mjs";
 import { observeInstalledProtection } from "./egress-installed-agent.mjs";
 import { protectedConfigurationBody, sourceAccessBindingBody } from "./egress-connected-inputs.mjs";
@@ -158,7 +159,7 @@ export async function activateRepositoryAgent(setup, stack, evidence, owned, adm
     owned.provider.businessOrigin,
     "must address selected synthetic GitHub",
   );
-  assert.equal(exactRoute.binding.execution.revisionId, revision.id);
+  assert.equal(record(exactRoute.binding.execution).revisionId, revision.id);
   if (!noMaterial) {
     assert.ok(
       owned.provider.issues > 0,

@@ -988,6 +988,7 @@
               "testing/ci/openshell-execution",
               "testing/repository-credentials",
               "testing/static-egress",
+              "testing/static-egress-upgrade",
               "testing/protected-repository-custody"
             ]
           },

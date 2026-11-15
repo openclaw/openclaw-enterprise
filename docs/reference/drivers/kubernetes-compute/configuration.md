@@ -87,17 +87,18 @@ for label constraints, egress rules, and source-address verification.
 Omission selects the verification runtime. Storage requirements are defined in
 [storage and credentials](storage-and-credentials.md).
 
-| Setting                                 | Type       | Requirement | Value, default, and constraints                                                                                                                                                    |
-| --------------------------------------- | ---------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `runtime.transportSecretPrefix`         | string     | Required    | Must form a DNS-safe Secret name with `-` and a 12-character suffix.                                                                                                               |
-| `runtime.gatewayStorageClassName`       | string     | Required    | DNS-safe StorageClass name for private RWO Gateway disks with filesystem locking and durability.                                                                                   |
-| `runtime.gatewayStorageSizeGiB`         | integer    | Optional    | `1`–`65536` GiB, default `10`. Choose before creating claims and keep fixed until they are removed; see [Gateway storage](storage-and-credentials.md#gateway-storage).             |
-| `runtime.nodeSelector`                  | string map | Optional    | Harness and embedded Pod placement. Omission adds no selector.                                                                                                                     |
-| `runtime.gatewayNodeSelector`           | string map | Optional    | Required for dedicated real Gateways, including their state initializer. Use separate trusted and tenant node pools.                                                               |
-| `runtime.nativeOpenClawSessionCapacity` | integer    | Optional    | `1`–`1024`, default `8` retained native session workers per AgentRevision Sandbox.                                                                                                 |
-| `runtime.codexSeccompProfile`           | string     | Optional    | Relative localhost profile installed on every eligible node. Omission uses `RuntimeDefault`.                                                                                       |
-| `runtime.modelProvider`                 | object     | Optional    | Default OpenAI-compatible provider for new revisions. Requires `protocol` and `baseUrl`; see [model providers](model-provider.md).                                                 |
-| `runtime.channels`                      | object     | Optional    | Requires `proxyUrl`; optional `managedProxy` has `hostname`, `namespace`, `podLabels`, and `port`. No channel proxy by default. See [channel egress](networking-and-isolation.md). |
+| Setting                                 | Type         | Requirement | Value, default, and constraints                                                                                                                                                    |
+| --------------------------------------- | ------------ | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `runtime.transportSecretPrefix`         | string       | Required    | Must form a DNS-safe Secret name with `-` and a 12-character suffix.                                                                                                               |
+| `runtime.gatewayStorageClassName`       | string       | Required    | DNS-safe StorageClass name for private RWO Gateway disks with filesystem locking and durability.                                                                                   |
+| `runtime.gatewayStorageSizeGiB`         | integer      | Optional    | `1`–`65536` GiB, default `10`. Choose before creating claims and keep fixed until they are removed; see [Gateway storage](storage-and-credentials.md#gateway-storage).             |
+| `runtime.nodeSelector`                  | string map   | Optional    | Compute-owned Harness and embedded Pod placement. Omission adds no selector. OpenShell does not forward it.                                                                        |
+| `runtime.gatewayNodeSelector`           | string map   | Optional    | Required for dedicated real Gateways, including their state initializer. Use separate trusted and tenant node pools.                                                               |
+| `runtime.nativeOpenClawSessionCapacity` | integer      | Optional    | `1`–`1024`, default `8` retained native session workers per AgentRevision Sandbox.                                                                                                 |
+| `runtime.codexSeccompProfile`           | string       | Optional    | Relative localhost profile installed on every eligible node. Omission uses `RuntimeDefault`.                                                                                       |
+| `runtime.modelProvider`                 | object       | Optional    | Default OpenAI-compatible provider for new revisions. Requires `protocol` and `baseUrl`; see [model providers](model-provider.md).                                                 |
+| `runtime.channels`                      | object       | Optional    | Requires `proxyUrl`; optional `managedProxy` has `hostname`, `namespace`, `podLabels`, and `port`. No channel proxy by default. See [channel egress](networking-and-isolation.md). |
+| `runtime.scratchVolumes`                | object array | Optional    | Exclusive per-Agent bindings to existing scratch PVCs. Omission adds no scratch mount; see [scratch volumes](#scratch-volumes).                                                    |
 
 Stopping a hosted native session releases its slot; saved history does not consume
 capacity. OpenClaw does not retire idle paired-node workers, so size capacity
@@ -110,6 +111,45 @@ validation. Credential Sources retain separate destination authorization.
 Only the Harness receives its key. For dedicated Codex, transport uses the
 authenticated app server and fail-closed HTTP; see
 [Harness execution](../../harness-execution.md).
+
+### Scratch volumes
+
+`runtime.scratchVolumes` selects existing, operator-owned filesystem PVCs for
+dedicated Codex or OpenClaw Harnesses provisioned by OpenShell. Each entry requires
+`namespaceId` and `agentId` (OCE IDs), `namespace` (the resolved execution Kubernetes
+namespace), `claimName`, and `claimUid`. Each Agent and each namespace/claim pair
+may appear only once in the configuration. The operator must reserve the claim
+for that Agent while any retained revision can use it. The claim must be separate
+from OCE's workspace and Gateway claims. Fields use nonempty visible ASCII without whitespace,
+at most 253 characters each; `namespace` must be a Kubernetes DNS label and
+`claimName` a DNS subdomain. The combined saved Compute admission must fit 1,024
+characters.
+
+Admission freezes the selected binding in the Agent revision. Changing or removing
+the Installation entry affects new revisions only; revisions without a selection
+do not inherit one later. Preparation and activation reread the claim, rejecting
+missing, replaced, terminating, Lost, block-mode, or nonwritable claims. Pending
+claims are allowed for `WaitForFirstConsumer`; a successful check does not prove
+scheduling, filesystem permissions, or available capacity.
+
+The Harness mounts private subpath `scratch` read-write at `/sandbox/scratch`.
+OpenShell's `sandboxDataMount` cannot select the scratch claim or a path that
+overlaps `/sandbox/scratch`, including normalized aliases. It must retain separate
+durable storage. Native OpenClaw preparation creates the scratch directory if
+absent; an existing directory must already be owned by the preparation process
+with mode `0700`. The initializer does not chmod/chown existing scratch or move,
+delete or rewrite sibling content. Kubernetes or the storage driver may still
+change volume group ownership and modes through `fsGroup`; dedicate the claim to
+this Agent.
+Its workspace and the Gateway's state mounts stay unchanged. OCE retains the
+scratch claim on revision retirement and Agent deletion; the operator owns
+reclamation. Deleting its Kubernetes namespace still deletes the namespaced PVC. Native permission profiles still govern tool access. Commands must
+select scratch explicitly; caches, temporary files, and workspaces are not
+redirected automatically.
+
+Follow [scratch setup and verification](../../../guides/topics/remote-harness.md#add-operator-owned-scratch-storage)
+before admitting a replacement. The [stop-before-prepare limitation](storage-and-credentials.md#harness-storage)
+also applies to failed scratch checks.
 
 ## Private routing
 

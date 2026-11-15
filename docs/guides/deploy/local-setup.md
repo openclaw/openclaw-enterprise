@@ -129,7 +129,7 @@ CONSOLE_ORIGIN=$(jq -er .browserOrigin "$state/state.json")
 NATIVE_ADMIN_DOMAIN=$(jq -er .nativeAdminDomain "$state/state.json")
 # The local launcher supplies the cluster policies. No extra CNI service rules are needed.
 cat > "$RUN_DIR/platform.sh" <<'SH'
-deployment_preflight() { :; }
+deployment_preflight() { ./bin/occ dev check; }
 deployment_network() { :; }
 repository_network() { :; }
 SH

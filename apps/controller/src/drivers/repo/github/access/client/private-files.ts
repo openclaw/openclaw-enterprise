@@ -2,14 +2,7 @@ import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-export const clientSessionFileMaxBytes = Object.freeze({
-  bearer: 256,
-  "client.json": 16 * 1024,
-  gitconfig: 16 * 1024,
-  "gh/hosts.yml": 16 * 1024,
-  "gh/config.yml": 16 * 1024,
-  "ca.pem": 64 * 1024,
-});
+export { clientSessionFileMaxBytes } from "../../../access/client-contracts.ts";
 
 export async function assertPrivateDirectory(path: string): Promise<void> {
   const absolute = resolve(path);
