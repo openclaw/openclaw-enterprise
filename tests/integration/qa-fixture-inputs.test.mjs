@@ -1517,7 +1517,7 @@ test("QA log tails drop the body of an unregistered key that starts above the ta
 });
 
 test("failed native Gateway turns capture private bounded logs for the original revision", async (t) => {
-  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const { createNativePluginAssertions } = await import("../helpers/native-plugin-assertions.ts");
   for (const mode of ["capture", "read-unavailable", "write-unavailable", "success"]) {
     await t.test(mode, async () => {
       const credential = `private-runtime-fixture-${randomUUID()}`;
@@ -1669,7 +1669,7 @@ test("failed native Gateway turns capture private bounded logs for the original 
 });
 
 test("native cron positive control requires its own successful completed run", async (t) => {
-  const { assertNativeCronRunSucceeded } = await import("../helpers/plugin-driver-real.mjs");
+  const { assertNativeCronRunSucceeded } = await import("../helpers/native-cron-evidence.ts");
   const accepted = { ok: true, enqueued: true, runId: "control-run" };
   const finished = {
     jobId: "control-job",
@@ -1726,7 +1726,7 @@ test("native cron positive control requires its own successful completed run", a
 test("native tool evidence reads compressed rows, prompt snapshots and command exit status", async (t) => {
   const { DatabaseSync } = await import("node:sqlite");
   const { zstdCompressSync } = await import("node:zlib");
-  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const { createNativePluginAssertions } = await import("../helpers/native-plugin-assertions.ts");
   const directory = await temporaryDirectory(t, "oce-tool-evidence-");
   const databasePath = join(directory, "transcript.sqlite");
   const db = new DatabaseSync(databasePath);
@@ -2673,7 +2673,7 @@ const timedOut = {
 
 test("approval review evidence tells a reviewer error from a deny judgement", async () => {
   const { approvalReviewKind, automaticReviewerErrored, describeApprovalReviews } =
-    await import("../helpers/plugin-driver-real.mjs");
+    await import("../helpers/plugin-transcript-assertions.ts");
   assert.equal(approvalReviewKind(judgedDeny), "judged-deny");
   assert.equal(approvalReviewKind(failedClosed), "reviewer-error");
   assert.equal(approvalReviewKind(timedOut), "reviewer-error");
@@ -2773,7 +2773,7 @@ function calendarEvidence(reviews) {
 }
 
 test("a failed reviewed read names the review outcome before the evidence", async () => {
-  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const { createNativePluginAssertions } = await import("../helpers/native-plugin-assertions.ts");
   for (const [reviews, errored, reason] of [
     [[failedClosed], true, `reviewer-error: ${failedClosed.rationale}`],
     [[judgedDeny], false, "judged-deny (risk: high, authorization: low)"],
@@ -2810,7 +2810,7 @@ test("a failed reviewed read names the review outcome before the evidence", asyn
 });
 
 test("QA model failure evidence preserves the failure and its admitted revision", async () => {
-  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const { createNativePluginAssertions } = await import("../helpers/native-plugin-assertions.ts");
   const secret = `qa-log-secret-${randomUUID()}`;
   registerQaSecret(secret);
   const agent = { namespaceId: "namespace", id: "agent", revision: { id: "original" } };

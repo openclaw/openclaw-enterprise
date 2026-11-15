@@ -41,10 +41,8 @@ import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mj
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { selectPolicyProbeCommand } from "./openshell-policy-probe.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import {
-  assertNativeCronRunSucceeded,
-  createNativePluginAssertions,
-} from "../helpers/plugin-driver-real.mjs";
+import { assertNativeCronRunSucceeded } from "./native-cron-evidence.ts";
+import { createNativePluginAssertions } from "./native-plugin-assertions.ts";
 import {
   assertCodexPolicyChild,
   findCodexPolicyChild,
