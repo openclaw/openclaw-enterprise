@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 
-COMMAND = ['node', 'scripts/ci/run-tests.mjs', 'prepared-signin']
+COMMAND = ['node', 'scripts/ci/run-tests.ts', 'prepared-signin']
 
 
 def write_json(fd, value):

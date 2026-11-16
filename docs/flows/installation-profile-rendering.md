@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-11-13
-last_updated_session: authoring-run/6240a4c1-6718-4317-861f-b786ad5020b9
+updated: 2026-11-15
+last_updated_session: authoring-run/75fd678f-12c9-4f7c-adde-d32a16f8c0cf
 ---
 
 # Installation Profile Rendering Flow
@@ -9,7 +9,7 @@ last_updated_session: authoring-run/6240a4c1-6718-4317-861f-b786ad5020b9
 ## Overview
 
 An operator passes a profile, JSON inputs, and output directory to
-`scripts/render-installation-profile.mjs`. It validates inputs, resolves omitted
+`scripts/render-installation-profile.ts`. The renderer validates inputs, resolves omitted
 hosted Codex destinations, and writes paired Helm values, Installation YAML, and
 preflight. This flow ends at those files. Operators still prepare the cluster
 and Secrets, apply Helm, and configure hosted/runtime tokens, optional ChatGPT
@@ -17,10 +17,10 @@ service accounts, the repository registry, and Slack consumers.
 
 ## Entry Points
 
-- Trigger: `node scripts/render-installation-profile.mjs --profile openclaw|codex --input <json> --out-dir <dir>`.
-- Source: `scripts/render-installation-profile.mjs:parseArgs`,
-  `scripts/render-installation-profile.mjs:buildRendered`, and
-  `scripts/render-installation-profile.mjs:resolveHostedDiscoveryCidrs`.
+- Trigger: `node scripts/render-installation-profile.ts --profile openclaw|codex --input <json> --out-dir <dir>`.
+- Source: `scripts/render-installation-profile.ts:runInstallationProfileCli`,
+  `scripts/render-installation-profile.ts:buildRendered`, and
+  `scripts/render-installation-profile.ts:resolveHostedDiscoveryCidrs`.
 - Assumptions: The caller runs from the repository root with installed
   dependencies, a trusted profile under `deploy/profiles/`, and site inputs that
   contain no plaintext credentials.
@@ -55,7 +55,10 @@ graph TD
 
 ### 1. Parse arguments and select the profile
 
-`scripts/render-installation-profile.mjs:parseArgs`
+`scripts/render-installation-profile.ts:parseArgs`
+
+Direct Node execution runs the CLI. Importing the module exposes the renderer
+and its refusal type without running the command.
 
 `parseArgs` accepts `--profile`, `--input`, and `--out-dir`; other flags fail
 before output. Profiles are `openclaw` or `codex`, with no `default`. JSON supplies
@@ -73,7 +76,7 @@ files remain untouched.
 
 ### 2. Load profile and site input
 
-`scripts/render-installation-profile.mjs:readProfile`
+`scripts/render-installation-profile.ts:readProfile`
 
 `deploy/profiles/` supplies profile identity and PluginDriver selection. JSON
 supplies site images, domains, CIDRs, Secrets, and repository registry names.
@@ -82,7 +85,7 @@ Codex CIDRs make Helm values depend on DNS.
 
 ### 3. Validate every supplied input
 
-`scripts/render-installation-profile.mjs:buildInput`
+`scripts/render-installation-profile.ts:buildInput`
 
 Closed sections reject unknown fields, including unused readiness flags;
 OpenClaw rejects Codex-only inputs.
@@ -129,7 +132,7 @@ and repository Secrets cannot match `occ-installation-startup`, `occ-database`,
 collector Secrets, or earlier listed Secrets. Only the two public CA Secrets
 may share one; collisions fail preflight.
 
-`scripts/render-installation-profile.mjs:nodeSelector` checks
+`scripts/render-installation-profile.ts:nodeSelector` checks
 `controlPlane.nodeSelector`, `runtime.nodeSelector` and
 `runtime.gatewayNodeSelector` against the chart and bootstrap-volume helper's
 Kubernetes label-key and label-value rules (values may be empty). Compute copies
@@ -151,7 +154,7 @@ produces failed preflight without either deployment file.
 
 ### 4. Build Helm values
 
-`scripts/render-installation-profile.mjs:buildRendered`
+`scripts/render-installation-profile.ts:buildRendered`
 
 `controlPlane.databaseCa.key` allows letters, digits, `.`, `_`, or `-`, at most
 253 characters; neither `.` nor a `..` prefix. Thus `..ca.pem` and 254-character
@@ -161,6 +164,8 @@ keys fail preflight before Helm. Omission uses `ca.pem`.
 mounts: Installation, worker runtime, bootstrap, gateway key and private gateway CA.
 Relative, dot-segment and trailing-slash aliases collide too. Repository and
 ChatGPT paths are reserved only when enabled; execution-cluster paths remain free.
+Prepared Git also reserves `/etc/openclaw/prepared-repository`, including relative,
+dot-segment and trailing-slash aliases, when repository credentials are enabled.
 Without CA configuration no restriction applies; omission keeps
 `/etc/openclaw/database-ca`. A collision adds a field-specific error and withholds
 both deployment files. Noncolliding paths retain their supplied spelling.
@@ -196,7 +201,7 @@ profile schema accepts only string labels.
 
 ### 5. Build Installation startup YAML
 
-`scripts/render-installation-profile.mjs:buildRendered`
+`scripts/render-installation-profile.ts:buildRendered`
 
 The Installation output selects Kubernetes Configuration, native IAM,
 Kubernetes Compute, Kubernetes Secrets, default Preset seeding, and the profile
@@ -234,7 +239,7 @@ dot does not, because the suffix would start a new label with a hyphen.
 
 ### 6. Resolve hosted discovery egress
 
-`scripts/render-installation-profile.mjs:resolveHostedDiscoveryCidrs`
+`scripts/render-installation-profile.ts:resolveHostedDiscoveryCidrs`
 
 After validation, hosted `codex-plugin` with omitted `codex.modelDiscoveryCidrs`
 queries IPv4 addresses for `auth.openai.com` and `chatgpt.com` with a resolver timeout of 1.5 seconds and one try. Sorted unique
@@ -250,7 +255,7 @@ refreshes live policy.
 
 ### 7. Write outputs and preflight
 
-`scripts/render-installation-profile.mjs:writeYaml`
+`scripts/render-installation-profile.ts:renderYaml`
 
 On success, the renderer serializes a deterministic `installation.yaml`, hashes
 those exact bytes with SHA-256, and sets `controlPlane.installationChecksum` in
@@ -277,9 +282,9 @@ activation, and repository registry creation need separate evidence.
 
 ## Debugging and Verification
 
-- Run `node --test tests/integration/profile-renderer.test.mjs` to exercise the
+- Run `node --test tests/integration/profile-renderer.test.ts` to exercise the
   CLI and inspect generated profile output.
-- `tests/integration/profile-preflight-chart-parity.test.mjs` runs trusted proxy
+- `tests/integration/profile-preflight-chart-parity.test.ts` runs trusted proxy
   CIDRs and client address headers, namespaces, node selectors, sign-in Secret
   names and keys, controller images, claim names, Backend IDs and free-text
   values through the renderer and `helm template`, plus the API parser or
@@ -312,6 +317,12 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-15 10:07: Align database CA mount preflight with prepared Git mounts. (authoring-run/75fd678f-12c9-4f7c-adde-d32a16f8c0cf - c1ece768d5d104dfd26b66ed2afeae0b059adaf8)
+
+- 2026-11-14 12:18: Run the installation profile command directly from its TypeScript source in the accompanying change. (authoring-run/b17203e9-337c-40cf-9a41-0139532525fe - f0bfd8b1834a7a07fc008fa822fed9035f12ffbe)
+
+- 2026-11-14 13:26: Keep the public renderer entry point and point to its strict TypeScript owner in the accompanying change. (authoring-run/b8058a93-be93-46c4-a823-6c9397935811 - cc06a6ec22b7071dc7913086a0d891da53d8f8be)
 
 - 2026-11-13: Document how Installation checksum changes affect the Slack proxy during chart upgrades. (authoring-run/6240a4c1-6718-4317-861f-b786ad5020b9, accompanying change)
 

@@ -10,7 +10,7 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { composeProduction } from "../helpers/password-hasher.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 
@@ -393,7 +393,7 @@ export async function runSharingCases(t: TestContext, fixture: SharingFixture): 
         );
         await blocker.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [namespaceId]);
         pendingGrant = request("POST", `${policyPath}/access-bindings`, grant, assigning);
-        const protectedPid: unknown = await waitForLockWaiter(
+        const protectedPid = await waitForLockWaiter(
           pool,
           pid,
           "the protected sharing write waiting for the Namespace",

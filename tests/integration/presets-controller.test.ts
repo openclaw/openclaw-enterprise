@@ -44,6 +44,7 @@ import {
   InMemoryPlatformState,
   OpenClawController,
   type ControllerOptions,
+  type PlatformUnitOfWork,
 } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
@@ -2017,15 +2018,91 @@ describe("Presets", { concurrency: 2 }, () => {
     assert.ok(copy);
     const earlier = await archivedDefault("default-codex.json", "32576b8f13976778");
     const rolledBack = await patchTemplate(fixture, namespace.id, copy.id, earlier.template);
+    const unrelated = await createPreset(fixture, namespace.id, "Operator Preset", {
+      agent: { name: "Operator Agent" },
+    });
+    const missing = await fixture.createNamespace("Default removed", { ready: true });
+    const removed = required((await listPresets(fixture, missing.id))[0]);
+    await deletePreset(fixture, missing.id, removed.id);
+    const eligible = fixture
+      .fixtureResponse(
+        await fixture.request("GET", "/namespaces"),
+        200,
+        NamespaceListResponse,
+        "list Namespaces",
+      )
+      .data.filter(({ status }) => status === "ready" || status === "provisioning")
+      .map(({ id }) => id)
+      .sort((a, b) => a.localeCompare(b));
 
-    await initializeInstallationPresets(
-      fixture.controller,
-      iamOf(fixture),
-      fixture.policy.identities,
-      runtime.defaultPresets,
+    // Observe the real transaction's repository results only during startup.
+    type ListRead = { namespaceId: string; templates: number };
+    const reads = {
+      summaries: [] as ListRead[],
+      full: [] as ListRead[],
+      lookups: 0,
+    };
+    const transact = fixture.state.transact.bind(fixture.state);
+    const observe = t.mock.method(
+      fixture.state,
+      "transact",
+      <T>(work: (state: PlatformUnitOfWork) => Promise<T>) =>
+        transact((state) =>
+          work({
+            ...state,
+            presets: {
+              ...state.presets,
+              async listPresetSummaries(namespaceId) {
+                const rows = await state.presets.listPresetSummaries(namespaceId);
+                reads.summaries.push({
+                  namespaceId,
+                  templates: rows.filter((row) => "template" in row).length,
+                });
+                return rows;
+              },
+              async listPresets(namespaceId) {
+                const rows = await state.presets.listPresets(namespaceId);
+                reads.full.push({ namespaceId, templates: rows.length });
+                return rows;
+              },
+              findPreset(namespaceId, presetId) {
+                reads.lookups++;
+                return state.presets.findPreset(namespaceId, presetId);
+              },
+              lockPreset(namespaceId, presetId) {
+                reads.lookups++;
+                return state.presets.lockPreset(namespaceId, presetId);
+              },
+            },
+          }),
+        ),
     );
+    try {
+      await initializeInstallationPresets(
+        fixture.controller,
+        iamOf(fixture),
+        fixture.policy.identities,
+        runtime.defaultPresets,
+      );
+    } finally {
+      observe.mock.restore();
+    }
+
     assert.deepEqual((await readPreset(fixture, namespace.id, copy.id)).data, rolledBack);
+    assert.deepEqual((await readPreset(fixture, namespace.id, unrelated.id)).data, unrelated);
+    const [restored] = await listPresetDocuments(fixture, missing.id);
+    assert.ok(restored);
+    assert.notEqual(restored.id, removed.id);
+    assert.equal(restored.name, removed.name);
+    assert.deepEqual(restored.template, required(runtime.defaultPresets[0]).template);
     assert.deepEqual(auditFrom(fixture, "installation-defaults-refresh"), []);
+    await fixture.controller.initializeDefaultPresets(fixture.admin.id);
+    assert.deepEqual(await listPresetDocuments(fixture, missing.id), [restored]);
+    assert.deepEqual(reads, {
+      summaries: eligible.map((namespaceId) => ({ namespaceId, templates: 0 })),
+      full: [],
+      lookups: 0,
+    });
   });
 
   test("startup refreshes a copy only from its own bundled file's history, not another file reusing its name", async (t) => {

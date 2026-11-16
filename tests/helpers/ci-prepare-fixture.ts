@@ -1,20 +1,19 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import type { CleanupRegistrar } from "./console-file-app.ts";
-import { commandShim, startFixtureCommandServer } from "./ci-prepare-fixture-command.mjs";
+import { commandShim, startFixtureCommandServer } from "./ci-prepare-fixture-command.ts";
 import { readJsonLines } from "./json-lines.mjs";
 import { socketDirectory } from "./socket-directory.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
-export { forwardedEnv } from "./ci-prepare-fixture-command.mjs";
+export { forwardedEnv } from "./ci-prepare-fixture-command.ts";
 
-// Shared by ci-prepare.test.mjs and ci-prepare-k3d.test.mjs, which split the
-// preparation cases so Checks and Conformance 2 can run them at the same time.
+// Shared by the CI preparation suites.
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 
 export const digest = "a".repeat(64);
@@ -26,6 +25,38 @@ export async function fixture(t: CleanupRegistrar) {
   const root = await temporaryDirectory(t, "ci-prepare-test-");
   await mkdir(root, { recursive: true });
   return root;
+}
+
+// A ready Compose PostgreSQL server, owned by its own preparation prefix, published on port
+// (a fake server's, when the case runs SQL).
+export function composePostgres(name: string, port = 45431) {
+  return {
+    id: `compose-postgres-${name}`,
+    kind: "compose-postgres",
+    owner: `openclaw-ci-${name}`,
+    status: "ready",
+    name: `openclaw_ci_pg_${name}`,
+    composeFile: join(repositoryRoot, "compose.postgres.yaml"),
+    port,
+  };
+}
+
+// A postgres-application lane state holding the server and any other resources.
+export async function writePostgresState(
+  statePath: string,
+  server: ReturnType<typeof composePostgres>,
+  ...resources: FixtureResource[]
+) {
+  const state = {
+    version: 1,
+    repositoryRoot,
+    lane: "postgres-application",
+    prefix: server.owner,
+    statePath,
+    resources: [server, ...resources],
+  };
+  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  await chmod(statePath, 0o600);
 }
 
 // Lane preparation stderr opens with timing and host metrics, and assert.match's default
@@ -251,7 +282,7 @@ export async function fixtureImageCommands(
   await mkdir(bin);
   await mkdir(home);
   // Each fake is a bash script answered by this test's command server
-  // (ci-prepare-fixture-command.mjs), which runs the scenario's logic in this process.
+  // (ci-prepare-fixture-command.ts), which runs the scenario's logic in this process.
   const server = await fixtureCommandServer(t, root);
   for (const file of ["docker.mjs", "k3d.mjs", "kubectl.mjs", "podman", "corepack", "helm", "yq"]) {
     await writeFixtureCommand(join(bin, file), file.replace(/\.mjs$/, ""), server);
@@ -259,7 +290,7 @@ export async function fixtureImageCommands(
   await symlink(process.execPath, join(bin, "node"));
   const statePath = join(root, "state.json");
   const githubEnv = join(root, "github.env");
-  // The fake PostgreSQL server's Unix socket (ci-prepare-fixture-command.mjs).
+  // The fake PostgreSQL server's Unix socket (ci-prepare-fixture-command.ts).
   const postgresSockets = await socketDirectory(t, "ci-prepare-pg-", {
     longest: ".s.PGSQL.65535",
   });
@@ -288,7 +319,7 @@ export async function fixtureImageCommands(
       env: { ...env, ...options?.env },
     });
   const prepareArgs = ["--lane", lane, "--state", statePath, "--github-env", githubEnv];
-  const cleanup = () => run("cleanup.mjs", ["--state", statePath]);
+  const cleanup = () => run("cleanup.ts", ["--state", statePath]);
   return {
     statePath,
     githubEnv,

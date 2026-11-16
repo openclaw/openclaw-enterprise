@@ -9,7 +9,7 @@ import {
   explicitK3dSelection,
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
+} from "../helpers/kubernetes-real.ts";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
 // Premise test for delivering late workload inputs through optional volumes.

@@ -143,7 +143,7 @@ function readSnapshot(kind: "pods" | "events"): unknown[] {
 }
 
 async function registerStartupCase({ root, deleted, selection, target }: StartupCase) {
-  const { waitForDeploymentAvailable } = await import("../helpers/kubernetes-real.mjs");
+  const { waitForDeploymentAvailable } = await import("../helpers/kubernetes-real.ts");
   test("controller startup fails", async (t) => {
     await rm(join(root, "deployment-healthy.ready"), { force: true });
     await rm(join(root, "deployment-openclaw-enterprise-api.ready"), { force: true });
