@@ -954,7 +954,7 @@ test("Deployment activity keeps keyboard focus when refresh discovers a newer ve
   );
 
   // A keyboard reader can move to the disclosure while a refresh is in flight.
-  const summary = activity.getByRole("button", { name: "Deployment details", exact: true });
+  const summary = activity.locator(":scope > details > summary");
   const summaryHasFocus = () => summary.evaluate((node) => node === document.activeElement);
   await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("v3"));
   const third = await fixture.deployAgent(namespace.id, agent.id);
