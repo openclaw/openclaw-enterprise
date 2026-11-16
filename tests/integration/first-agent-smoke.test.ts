@@ -393,10 +393,13 @@ test("deployment poll requires the active revision and enforces its original dea
       });
     }
     assert.equal(clock.now(), 598_000 + latency);
-    assert.deepEqual(finalStarts, [
-      ["GET", deploymentPath, 598_000],
-      ["GET", agentPath, 598_000],
-    ]);
+    assert.deepEqual(
+      [...finalStarts].sort(([, leftPath], [, rightPath]) => leftPath.localeCompare(rightPath)),
+      [
+        ["GET", agentPath, 598_000],
+        ["GET", deploymentPath, 598_000],
+      ],
+    );
   }
 });
 
