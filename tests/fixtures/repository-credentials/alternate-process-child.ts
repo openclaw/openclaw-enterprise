@@ -14,6 +14,8 @@ export type AlternateProcessInput = {
   tls: Pick<Awaited<ReturnType<typeof createTlsMaterial>>, "keyFile" | "certFile">;
 };
 
+let failureReason = "invalid alternate service fixture input";
+
 async function start() {
   const input: unknown = JSON.parse(await text(process.stdin));
   if (
@@ -30,9 +32,10 @@ async function start() {
     !("certFile" in input.tls) ||
     typeof input.tls.certFile !== "string"
   ) {
-    throw new Error("invalid alternate service fixture input");
+    throw new Error(failureReason);
   }
 
+  failureReason = "alternate service setup failed";
   const [validateServiceConfig, createSystemClock, runService, key, cert] = await Promise.all([
     appFunction("drivers/repo/access/configuration", "validateServiceConfig"),
     appFunction("drivers/repo/access/clock", "createSystemClock"),
@@ -64,6 +67,7 @@ async function start() {
   );
 
   if (waitingForRotation) {
+    failureReason = "alternate service rotation check failed";
     assert.deepEqual(Reflect.ownKeys(service).sort(), ["close", "open", "shutdown", "status"]);
     assert.equal(Object.isFrozen(service), true);
 
@@ -92,7 +96,7 @@ try {
     process.stderr.fd,
     error instanceof Error && error.message === "startup-failed"
       ? "startup-failed\n"
-      : "alternate service fixture failed\n",
+      : `${failureReason}\n`,
   );
   process.exit(1);
 }

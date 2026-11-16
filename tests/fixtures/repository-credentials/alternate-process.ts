@@ -8,6 +8,14 @@ import { createTestResourceScope, type FixtureOwner } from "./resources.ts";
 import { appRoot } from "./runtime.ts";
 import { createServiceConfiguration } from "./service-fixture.ts";
 
+// Only these fixture-owned diagnostics are safe to include in a test failure.
+const startupDiagnostics = new Set([
+  "startup-failed",
+  "invalid alternate service fixture input",
+  "alternate service setup failed",
+  "alternate service rotation check failed",
+]);
+
 type ExitReceipt = { code: number | null; signal: NodeJS.Signals | null };
 
 export async function createAlternateProcessFixture(
@@ -68,9 +76,9 @@ export async function createAlternateProcessFixture(
           }
         });
         void closed.then(() => {
-          const reason = stderr.split("\n").includes("startup-failed")
-            ? "startup-failed"
-            : "alternate service exited before readiness";
+          const reason =
+            stderr.split("\n").find((line) => startupDiagnostics.has(line)) ??
+            "alternate service exited before readiness";
           reject(new Error(reason));
         }, reject);
       }),
