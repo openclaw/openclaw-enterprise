@@ -119,7 +119,7 @@ export async function verifyPendingDecisionCapacity(
   // A refusal answers before authority work. An admitted call waits for a decision.
   const admitted = (call: CapacityCall) => call.replies.length === 0;
   const assertRefused = (call: CapacityCall, message: string) =>
-    assert.deepEqual(call.replies, [denied], message);
+    assert.deepEqual([...call.replies], [denied], message);
   const pendingDecision = (call: CapacityCall): PendingDecision => {
     const decision = decisions.get(call.id);
     assert.ok(decision, `Missing authority work for ${call.id}`);
@@ -177,7 +177,7 @@ export async function verifyPendingDecisionCapacity(
         decision.resolve(exit);
       }
       await setImmediate();
-      assert.deepEqual(call.replies, [exit === "allow" ? { decision: 1 } : denied], exit);
+      assert.deepEqual([...call.replies], [exit === "allow" ? { decision: 1 } : denied], exit);
       const replacement = evaluate("sandbox-a");
       assert.ok(admitted(replacement), `${exit} must release a slot`);
       pending.push(replacement);
@@ -185,7 +185,7 @@ export async function verifyPendingDecisionCapacity(
       call.emit("cancelled");
       decision.resolve("allow");
       await setImmediate();
-      assert.deepEqual(call.replies, [exit === "allow" ? { decision: 1 } : denied], exit);
+      assert.deepEqual([...call.replies], [exit === "allow" ? { decision: 1 } : denied], exit);
       assertFull();
     }
 
@@ -194,7 +194,7 @@ export async function verifyPendingDecisionCapacity(
     t.mock.timers.tick(30_000);
     await setImmediate();
     for (const call of pending) {
-      assert.deepEqual(call.replies, [denied]);
+      assert.deepEqual([...call.replies], [denied]);
     }
     const afterTimeout = Array.from({ length: share }, () => evaluate("sandbox-a"));
     assert.ok(afterTimeout.every(admitted), "the budget must release the Sandbox's slots");
@@ -227,7 +227,7 @@ export async function verifyPendingDecisionCapacity(
     t.mock.timers.tick(30_000);
     await setImmediate();
     for (const call of stuck) {
-      assert.deepEqual(call.replies, [denied]);
+      assert.deepEqual([...call.replies], [denied]);
     }
     assertRefused(evaluate(ignoresAbort), "unsettled authority work keeps its Sandbox slots");
     resolveAll(stuck, "allow");
