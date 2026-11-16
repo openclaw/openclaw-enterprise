@@ -290,7 +290,8 @@
     "integration/native-admin-http-integrity-cases.ts",
     "helpers/postgres-worker-revision-queue.ts",
     "conformance/topology-launch-cases.ts",
-    "integration/configuration-credential-save-cases.ts"
+    "integration/configuration-credential-save-cases.ts",
+    "integration/configuration-stored-compatibility-cases.ts"
   ],
   "references": [
     {
