@@ -910,7 +910,7 @@ export async function checkPodModelCredentialPlacement(embedded: boolean) {
 }
 
 type CredentialWorkspace = {
-  driver: Pick<KubernetesComputeDriver, "prepareRevision">;
+  driver: Pick<KubernetesComputeDriver, "prepareRevision" | "stopRevision">;
   revision: AgentRevision;
   namespace: string;
   objects: Map<string, ReturnType<typeof observedResource>>;
@@ -927,8 +927,7 @@ type ModelCredentialMethod = Extract<
   }
 >["method"];
 
-function modelCredentialWorkspace(embedded: boolean, method: ModelCredentialMethod) {
-  const fixture: CredentialWorkspace = workspaceSetupFixture(embedded);
+function modelAuthBindings(fixture: CredentialWorkspace, method: ModelCredentialMethod) {
   assert.equal(fixture.revision.harnessAuth.method, "api_key");
   const harnessAuth =
     method === "api_key"
@@ -943,32 +942,25 @@ function modelCredentialWorkspace(embedded: boolean, method: ModelCredentialMeth
     "the fixture must resolve the canonical model credential",
   );
   return {
-    driver: concreteComputeDriver(fixture.driver),
-    namespace: fixture.namespace,
-    objects: fixture.objects,
-    records: fixture.records,
-    revision: { ...fixture.revision, compute: { ...fixture.revision.compute }, harnessAuth },
-    context: {
-      workspaceSetup: fixture.context.workspaceSetup,
-      harnessAuth: {
-        ...harnessAuth,
-        backendRef: {
-          namespaceName: backendRef.namespaceName,
-          name: backendRef.name,
-          key: backendRef.key,
-          uid: backendRef.uid,
-        },
+    harnessAuth,
+    resolvedHarnessAuth: {
+      ...harnessAuth,
+      backendRef: {
+        namespaceName: backendRef.namespaceName,
+        name: backendRef.name,
+        key: backendRef.key,
+        uid: backendRef.uid,
       },
-      secretEnvironment: [],
-    } satisfies ComputeRevisionContext,
+    } satisfies ComputeRevisionContext["harnessAuth"],
   };
 }
 
 export async function checkDedicatedModelCredentialPreparation(method: ModelCredentialMethod) {
-  const { driver, namespace, objects, records, revision, context } = modelCredentialWorkspace(
-    false,
-    method,
-  );
+  const fixture: CredentialWorkspace = workspaceSetupFixture(false);
+  const { namespace, objects, records } = fixture;
+  const driver = concreteComputeDriver(fixture.driver);
+  const { harnessAuth, resolvedHarnessAuth } = modelAuthBindings(fixture, method);
+  const revision = { ...fixture.revision, compute: { ...fixture.revision.compute }, harnessAuth };
   admitRevisionHarness(driver, revision);
 
   const modelEnvironment = method === "api_key" ? "OPENAI_API_KEY" : "CODEX_ACCESS_TOKEN";
@@ -996,7 +988,8 @@ export async function checkDedicatedModelCredentialPreparation(method: ModelCred
     secretBindings: { SLACK_BOT_TOKEN: { source } },
   };
   const preparedContext: ComputeRevisionContext = {
-    ...context,
+    ...fixture.context,
+    harnessAuth: resolvedHarnessAuth,
     secretEnvironment: [
       {
         name: "SLACK_BOT_TOKEN",
@@ -1177,10 +1170,15 @@ export async function checkDedicatedModelCredentialPreparation(method: ModelCred
 }
 
 export async function checkStoppedRevisionCredentialCleanup(embedded: boolean) {
-  const { driver, namespace, objects, revision, context } = modelCredentialWorkspace(
-    embedded,
-    "api_key",
-  );
+  const fixture: CredentialWorkspace = workspaceSetupFixture(embedded);
+  const { driver, namespace, objects } = fixture;
+  const { harnessAuth, resolvedHarnessAuth } = modelAuthBindings(fixture, "api_key");
+  const revision = { ...fixture.revision, harnessAuth };
+  const context: ComputeRevisionContext = {
+    ...fixture.context,
+    harnessAuth: resolvedHarnessAuth,
+    secretEnvironment: [],
+  };
   await driver.prepareRevision(revision, context);
   const agentDigest = digest(revision.agentId);
   const revisionDigest = digest(revision.id);
