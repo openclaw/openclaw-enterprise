@@ -1,29 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {
-  ClientCommand,
-  CredentialClientFixture,
-  StartCredentialClientFixture,
-} from "../fixtures/repository-credentials/clients.ts";
+import type { ClientCommand } from "../fixtures/repository-credentials/clients.ts";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { JsonValue } from "../../apps/controller/src/drivers/repo/access/json-value.ts";
 import {
-  gatewayRequest as requestGateway,
+  gatewayRequest,
   eventually,
-  startCredentialServiceFixture as startService,
-} from "../fixtures/repository-credentials/service.mjs";
+  startCredentialServiceFixture,
+} from "../fixtures/repository-credentials/service-fixture.ts";
 import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
 import { exerciseGit } from "../fixtures/repository-credentials/workflows.ts";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.ts";
 
-const startCredentialServiceFixture = startService as StartCredentialClientFixture;
-type GatewayOptions = { method?: string; body?: JsonValue; headers?: Record<string, string> };
-const gatewayRequest: (
-  fixture: CredentialClientFixture,
-  target: string,
-  options?: GatewayOptions,
-) => Promise<{ status: number; body: string }> = requestGateway;
+type GatewayOptions = NonNullable<Parameters<typeof gatewayRequest>[2]>;
 const run = runProcess as ClientCommand;
 
 test("real Git clones, fetches, switches and pushes using an explicit development token", async (t) => {
@@ -31,7 +20,6 @@ test("real Git clones, fetches, switches and pushes using an explicit developmen
     return;
   }
   const fixture = await startCredentialServiceFixture(t, { profile: "git-write" });
-  assert.ok(fixture);
   await exerciseGit(t, fixture);
   assert.ok(fixture.git.trace.some((entry) => entry.gitProtocol === "version=2"));
   assert.ok(fixture.git.trace.some((entry) => entry.path.endsWith("/git-receive-pack")));
@@ -44,7 +32,6 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
     const fixture = await startCredentialServiceFixture(t, {
       profile: "git-read",
     });
-    assert.ok(fixture);
     const gitPath = new URL(fixture.opened.client.gitRemote).pathname;
     const gitAuthorization = `Basic ${Buffer.from(
       `${fixture.opened.client.gitUsername}:${fixture.opened.bearer}`,
@@ -126,7 +113,6 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
 
   test("git-write preserves native repository deletion policy without widening or replay", async (t) => {
     const fixture = await startCredentialServiceFixture(t, { profile: "git-write" });
-    assert.ok(fixture);
     // The same repository policy allows branch creation but forbids deletion;
     // real receive-pack must enforce it after the gateway admits the write.
     await run("git", ["config", "receive.denyDeletes", "true"], { cwd: fixture.git.bare });
@@ -156,7 +142,6 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
 
   test("closed gateway sessions deny remote requests while native local work remains usable", async (t) => {
     const fixture = await startCredentialServiceFixture(t);
-    assert.ok(fixture);
     const { client, checkout } = await exerciseGit(t, fixture);
     const before = fixture.git.trace.length;
     fixture.service.close(fixture.opened.session.sessionId);
@@ -182,7 +167,6 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
         pushRefAllowlist: ["refs/heads/agent-feature", "refs/heads/uncertain-feature"],
       },
     });
-    assert.ok(fixture);
     const { client, checkout } = await exerciseGit(t, fixture);
     await writeFile(join(checkout, "uncertain.txt"), "Accepted despite lost response\n");
     await client.git(["add", "uncertain.txt"], { cwd: checkout });
@@ -234,7 +218,6 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
               : { gitResponseBytes: 4096, gitFetchResponseBytes: 200000 },
             profile: "git-read",
           });
-          assert.ok(fixture);
           await run("git", ["push", fixture.git.bare, "HEAD:refs/heads/large-fixture"], {
             cwd: seed,
           });
@@ -269,7 +252,6 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
       profile: "git-read",
       limits: { gitFetchStallMs: 8000, gitFetchFirstHeaderMs: 20000 },
     });
-    assert.ok(fixture);
     const client = await runPinnedClients(t, fixture);
     const hold = fixture.git.holdNextFetch();
     t.after(hold.release);
@@ -313,7 +295,6 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
       profile: "git-read",
       limits: { gitFetchFirstHeaderMs: 40000 },
     });
-    assert.ok(fixture);
     const client = await runPinnedClients(t, fixture);
     const hold = fixture.git.holdNextFetch({ beforeHeaders: true });
     t.after(hold.release);
@@ -339,7 +320,6 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
     for (const beforeHeaders of [true, false]) {
       await t.test(beforeHeaders ? "response headers" : "response progress", async (t) => {
         const fixture = await startCredentialServiceFixture(t, { profile: "git-read" });
-        assert.ok(fixture);
         const client = await runPinnedClients(t, fixture);
         const hold = fixture.git.holdNextFetch({ beforeHeaders });
         t.after(hold.release);

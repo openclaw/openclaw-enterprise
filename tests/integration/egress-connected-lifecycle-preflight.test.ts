@@ -21,7 +21,7 @@ import {
   supervisorSessionLifecycle,
   type ObservedSession,
 } from "../helpers/egress-supervisor-sessions.ts";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 
 const controllerFields = [
   "name",

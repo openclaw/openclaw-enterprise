@@ -13,6 +13,17 @@ import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
  * to switch the credential method. Modes: "up", "error" (503), and "hang" (until cancellation). It proves OCE
  * against its own reading of OIDC, not any IdP's behaviour.
  */
+
+/**
+ * @typedef {{ issuer: string, authorizationUrl: string, tokenUrl: string, jwksUrl: string }} OidcIssuer
+ * @typedef {{
+ *   clientId: string, clientSecret: string, issuer: OidcIssuer,
+ *   tokenAuth?: string, recordHistory?: boolean,
+ * }} OidcProviderOptions
+ * @typedef {{ subject: string, claims?: Record<string, unknown>, key?: string, codeLength?: number }} OidcAuthorization
+ */
+
+/** @param {OidcProviderOptions} options */
 export function createOidcProvider({
   clientId,
   clientSecret,
@@ -31,7 +42,7 @@ export function createOidcProvider({
     issuer,
     tokenAuth,
     authorizations: /** @type {Record<string, string>[]} */ ([]),
-    tokens: [],
+    tokens: /** @type {Record<string, string>[]} */ ([]),
     get jwks() {
       return { keys: [key.jwk] };
     },
@@ -39,6 +50,10 @@ export function createOidcProvider({
       generation += 1;
       key = rsaSigningKey(`fixture-oidc-kid-${generation}`);
     },
+    /**
+     * @param {string | URL} url
+     * @param {OidcAuthorization} authorization
+     */
     authorize(url, { subject, claims = {}, key: signer = "published", codeLength = 0 }) {
       const request = Object.fromEntries(new URL(url).searchParams);
       if (recordHistory) {
@@ -49,6 +64,7 @@ export function createOidcProvider({
       codes.set(code, { request, subject, claims, signer, key });
       return code;
     },
+    answer,
   };
   function idToken({ request, subject, claims, signer, key: issuedWith }) {
     const now = Math.floor(Date.now() / 1000);
@@ -68,6 +84,7 @@ export function createOidcProvider({
       status,
       headers: { "content-type": "application/json" },
     });
+  /** @param {Request} request @returns {Promise<Response>} */
   async function answer(request) {
     fixture.requests += 1;
     if (fixture.mode === "hang") {
@@ -136,6 +153,5 @@ export function createOidcProvider({
       id_token: idToken(grant),
     });
   }
-  fixture.answer = answer;
   return fixture;
 }

@@ -20,8 +20,8 @@ import {
 import { extractImageFile } from "../../scripts/lib/image-file.ts";
 import { createTlsMaterial, run } from "../fixtures/repository-credentials/process.mjs";
 import { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
-import { availablePort } from "./available-port.mjs";
-import { listen } from "./listen.mjs";
+import { availablePort } from "./available-port.ts";
+import { listen } from "./listen.ts";
 import { localFirstAgentStack, ownFirstAgentWork } from "./local-first-agent-stack.mjs";
 import { localOpenShellGatewayOptions } from "./local-openshell-gateway.mjs";
 import { stopProcess } from "./stop-process.mjs";

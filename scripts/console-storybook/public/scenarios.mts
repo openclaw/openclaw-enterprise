@@ -1285,7 +1285,10 @@ const authoredScenarios = {
     nativeAdmin: "available",
     nativeAdminMode: "chat",
     observabilityDenied: true,
-    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    rules: [
+      { path: "/installation", status: 403, code: "FORBIDDEN" },
+      { suffix: "/native-admin", skip: 1, delayMs: 1500 },
+    ],
     agentPermissionSummary: {
       update: false,
       deploy: false,
@@ -1304,7 +1307,8 @@ const authoredScenarios = {
       "An operator opens chat through the Agent’s restricted browser route. The card explains the shared conversations without promising administrative access. API responses are simulated.",
     steps: [
       "Open chat and confirm the simulated native page opens in another tab.",
-      "Return to the Agent and refresh access.",
+      "Return to the Agent, Tab to Refresh access, and press Enter. While Checking access… shows, Open chat is disabled and focus stays on Refresh access.",
+      "When the check finishes, confirm Open chat is a link again.",
     ],
   } satisfies LocalScenario,
   nativeAdmin: {

@@ -22,7 +22,7 @@
     "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
     "tests/integration/postgres-default-users.test.ts",
     "tests/integration/postgres-agent-runtime-logs.test.ts",
-    "tests/integration/postgres-repository-broker-receipts.test.mjs",
+    "tests/integration/postgres-repository-broker-receipts.test.ts",
     "tests/integration/postgres-worker-stale-claim.test.ts",
     "tests/integration/postgres-worker-audit.test.ts",
     "tests/integration/postgres-namespace-iam-policy.test.ts",
@@ -30,7 +30,7 @@
     "tests/integration/postgres-connection-templates.test.ts",
     "tests/integration/workspace-setup-worker.test.ts",
     "tests/integration/postgres-repository-sessions.test.ts",
-    "tests/integration/postgres-secret-state.test.mjs",
+    "tests/integration/postgres-secret-state.test.ts",
     "tests/integration/postgres-service-account-deletion.test.ts",
     "tests/integration/postgres-service-account-issuance-recovery.test.ts",
     "tests/integration/postgres-service-account-compensation.test.ts",
@@ -61,7 +61,7 @@
     "tests/integration/postgres-openshell-standing-repository-set.test.ts",
     "tests/integration/postgres-openshell-standing-selected-repository.test.ts",
     "tests/integration/postgres-openshell-standing-cold-worker.test.ts",
-    "tests/integration/postgres-egress-send-receipts.test.mjs",
+    "tests/integration/postgres-egress-send-receipts.test.ts",
     "tests/integration/postgres-protected-credential-free.test.mjs",
     "tests/integration/postgres-standing-approval-api.test.ts",
     "tests/integration/postgres-standing-repository-boundary.test.ts",
@@ -223,9 +223,10 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-secret-state.test.mjs",
+      "path": "tests/integration/postgres-secret-state.test.ts",
       "expectedTests": [
         "in-memory state persists Secret metadata and binding references without values",
+        "PostgreSQL PAT Secret bindings enforce exact ownership and reject retired auth methods",
         "PostgreSQL state persists Secret metadata and enforces binding dependencies"
       ]
     },
@@ -389,7 +390,7 @@
       "path": "tests/integration/postgres-repository-sessions.test.ts"
     },
     {
-      "path": "tests/integration/postgres-repository-broker-receipts.test.mjs",
+      "path": "tests/integration/postgres-repository-broker-receipts.test.ts",
       "expectedTests": [
         "only the reserving broker generation fences its own reservation",
         "memory",
@@ -581,7 +582,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-egress-send-receipts.test.mjs",
+      "path": "tests/integration/postgres-egress-send-receipts.test.ts",
       "expectedTests": [
         "PostgreSQL send receipts survive owner loss and fence exact static versions",
         "after COMMIT and loss of the acknowledgment and caller process, recover the exact outcome and feedback",

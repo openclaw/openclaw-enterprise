@@ -5,9 +5,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { text } from "node:stream/consumers";
 import { appModule } from "../fixtures/repository-credentials/runtime.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
-import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
+import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
 import {
   observeTlsOrigin,
   receiveThroughFin,

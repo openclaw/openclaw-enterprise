@@ -8,7 +8,7 @@ import {
   deployQaAgentAndWait,
   prepareQaPluginCatalogs,
 } from "./qa-installation.mjs";
-import { protectedText } from "./qa-secrets.mjs";
+import { protectedText } from "./qa-secrets.ts";
 import { assertGatewayModelTurn } from "./kubernetes-real.ts";
 import { waitFor } from "./qa-utils.mjs";
 

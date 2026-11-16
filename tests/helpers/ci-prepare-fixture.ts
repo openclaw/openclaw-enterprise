@@ -8,7 +8,7 @@ import { asRecord } from "../../packages/utils/src/index.ts";
 import type { CleanupRegistrar } from "./console-file-app.ts";
 import { commandShim, startFixtureCommandServer } from "./ci-prepare-fixture-command.ts";
 import { readJsonLines } from "./json-lines.mjs";
-import { socketDirectory } from "./socket-directory.mjs";
+import { socketDirectory } from "./socket-directory.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export { forwardedEnv } from "./ci-prepare-fixture-command.ts";

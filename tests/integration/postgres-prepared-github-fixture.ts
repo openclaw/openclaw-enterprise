@@ -22,7 +22,9 @@ import {
   fixtureInstallationId,
   fixtureRepositoryId,
   fixtureRepository,
-} from "../fixtures/repository-credentials/github.mjs";
+  startGitHubFixture,
+  type GitHubFixtureOptions,
+} from "../fixtures/repository-credentials/github.ts";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
@@ -30,9 +32,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import {
   record,
   resourceId,
-  startLifecycleGitHub,
   wireResponses,
-  type GitHubFixtureOptions,
   type LifecycleEgress,
   callFixture,
   deployedEgress,
@@ -97,13 +97,20 @@ interface Registration {
  */
 export async function preparedLifecycleFixture(
   t: TestContext,
-  githubOptions: GitHubFixtureOptions = {},
+  githubOptions: Pick<
+    GitHubFixtureOptions,
+    | "tokenLifetimeMs"
+    | "tokenResponse"
+    | "beforeIssueResponse"
+    | "issueResponseGate"
+    | "revokeResponseGate"
+  > = {},
   now?: () => Date,
 ) {
   const dir = await temporaryDirectory(t, "occ-prepared-gh-");
   const key = join(dir, "custody.key");
   await writeFile(key, randomBytes(32), { mode: 0o600 });
-  const gh = await startLifecycleGitHub(t, createSystemClock(), githubOptions);
+  const gh = await startGitHubFixture(t, { clock: createSystemClock(), ...githubOptions });
   const secretValue = gh.privateKey.export({ format: "pem", type: "pkcs8" });
   let owner:
     | {

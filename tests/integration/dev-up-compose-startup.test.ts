@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, stat, symlink, writeFile } from "node:fs/prom
 import { delimiter, join } from "node:path";
 import test from "node:test";
 
-import { browserEnvironment } from "../helpers/compose.mjs";
+import { browserEnvironment } from "../helpers/compose.ts";
 import {
   composeInvocations,
   composeOptions,

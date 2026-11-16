@@ -1,11 +1,12 @@
 import { createServer, request as httpsRequest } from "node:https";
 import type { ClientRequest } from "node:http";
 import type { RepositoryCredentialSessionResult } from "../../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
-import type { createControlledClock } from "../clock.mjs";
-import { startGitHubFixture } from "../github.mjs";
+import type { Clock } from "../../../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import { startGitHubFixture } from "../github.ts";
 import { startGitSmartHttpFixture } from "../git.mjs";
 import { listen, type createTlsMaterial } from "../process.mjs";
-import type { FixtureOwner, RegistryFixtureDefinition } from "./material.ts";
+import type { FixtureOwner } from "../resources.ts";
+import type { RegistryFixtureDefinition } from "./material.ts";
 
 type TlsMaterial = Awaited<ReturnType<typeof createTlsMaterial>>;
 type ProviderTransportOptions = {
@@ -14,60 +15,8 @@ type ProviderTransportOptions = {
     pathname: string,
   ): { origin: string } | undefined | Promise<{ origin: string } | undefined>;
 };
-type GitHubRequestTrace = {
-  method: string | undefined;
-  target: string | undefined;
-  userAgent: string | undefined;
-  apiVersion: string | string[] | undefined;
-  graphQLFeatures: string | string[] | undefined;
-  accept: string | undefined;
-  tokenIndex: number | undefined;
-  query?: string;
-  variables?: Record<string, unknown>;
-  operation?: "createPullRequest" | "query";
-  forwardedOperationId?: boolean;
-  usedBearer?: boolean;
-};
-
-type GitHubTokenState = {
-  index: number;
-  expires: number;
-  revoked: boolean;
-  uses: number;
-  attempts: number;
-  permissions: Readonly<Record<string, string>>;
-  repositoryIds?: readonly string[] | "installation";
-  static?: true;
-};
-
-export type GitHubFixture = Omit<
-  Awaited<ReturnType<typeof startGitHubFixture>>,
-  "trace" | "errors" | "issuesOfTokens" | "authenticationAttempts" | "tokenState"
-> & {
-  trace: readonly GitHubRequestTrace[];
-  errors: readonly string[];
-  issuesOfTokens: readonly {
-    index: number;
-    jwtDigest: string;
-    claims: Readonly<Record<string, unknown>>;
-    permissions: Readonly<Record<string, string>>;
-    repositoryIds: readonly (string | number)[] | "installation";
-    expires: number;
-  }[];
-  authenticationAttempts: readonly { tokenIndex: number | undefined; boundary: string }[];
-  tokenState(): GitHubTokenState[];
-};
-
-type GitRequestTrace = {
-  method: string | undefined;
-  path: string;
-  gitProtocol: string | string[] | undefined;
-  contentEncoding: string | undefined;
-  contentLength: string | undefined;
-};
-type GitFixture = Omit<Awaited<ReturnType<typeof startGitSmartHttpFixture>>, "trace"> & {
-  trace: readonly GitRequestTrace[];
-};
+export type GitHubFixture = Awaited<ReturnType<typeof startGitHubFixture>>;
+type GitFixture = Awaited<ReturnType<typeof startGitSmartHttpFixture>>;
 type RegistryProviderRepository = RegistryFixtureDefinition & {
   github: GitHubFixture;
   git: GitFixture;
@@ -76,7 +25,7 @@ type RegistryProviderRepository = RegistryFixtureDefinition & {
 };
 type RegistryProviderOptions = {
   definitions: readonly RegistryFixtureDefinition[];
-  clock: ReturnType<typeof createControlledClock>;
+  clock: Clock;
   tls: TlsMaterial;
 };
 
@@ -155,7 +104,7 @@ export async function startRegistryProviderFixtures(
       description: entry.description,
       beforeMetadataResponse: entry.beforeMetadataResponse,
     };
-    const github: GitHubFixture = await startGitHubFixture(resources, githubOptions);
+    const github = await startGitHubFixture(resources, githubOptions);
     const git = await startGitSmartHttpFixture(resources, {
       tls,
       repository: entry.repository,

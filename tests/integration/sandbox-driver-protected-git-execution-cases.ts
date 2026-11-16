@@ -13,7 +13,6 @@ import { bindRepositoryGitTransport } from "../../apps/controller/src/compositio
 import { harnessEgressEnrollment } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
-import type { OpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import type {
   AgentRevision,
   HarnessWorkloadRequirements,
@@ -23,10 +22,11 @@ import type {
   RepositoryRevisionState,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
+import { routeStore } from "../fixtures/openshell-git-route-store.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.mjs";
-import { image, imageTestOptions, runDocker } from "../helpers/runtime-image-startup.mjs";
+import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.ts";
+import { runDocker } from "../helpers/runtime-image-docker.ts";
+import { image, imageTestOptions } from "../helpers/runtime-image-startup.ts";
 import type { ProtectedOpenShellGitFixture } from "./sandbox-driver-protected-git-configuration-cases.ts";
 import { verifyProtectedGitNetworkPolicy } from "./sandbox-driver-protected-git-network-admission.ts";
 import { verifyPreparedGitCleanupRefusals } from "./sandbox-driver-revision-observation-cases.ts";
@@ -44,13 +44,7 @@ async function bindGitWithFixtureRoutes(
   // The image lane has no PostgreSQL. Substitute the existing route-store fixture at
   // the public runtime start boundary while binding the real worker, authority, and Sandbox.
   const outOfScope = async () => assert.fail("Unexpected persistent route operation");
-  const routes = {
-    ...routeStore(),
-    standing: outOfScope,
-    expire: outOfScope,
-    beginDetach: outOfScope,
-    confirmDetached: outOfScope,
-  } satisfies OpenShellGitRouteStore;
+  const routes = routeStore();
   const authority = {
     ...noMaterial,
     online: { ...noMaterial, githubRepository: noMaterial },

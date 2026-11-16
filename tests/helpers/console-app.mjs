@@ -665,7 +665,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     return fixtureResponse(result, 201, InstallationResponse, "bootstrap Installation").data;
   }
 
-  /** @param {string} name */
+  /** @param {string} name @param {{ready?: boolean}} [options] */
   async function createNamespace(name, { ready = false } = {}) {
     const result = await request("POST", "/namespaces", { body: { name } });
     const namespace = fixtureResponse(result, 201, NamespaceResponse, "create Namespace").data;

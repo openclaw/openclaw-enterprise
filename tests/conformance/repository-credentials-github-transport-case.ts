@@ -1,36 +1,17 @@
 import assert from "node:assert/strict";
-import { KeyObject } from "node:crypto";
 import type { TestContext } from "node:test";
 import { prepareProviderScope } from "../../apps/controller/src/drivers/repo/github/access/provider-transport/request-options.ts";
 import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/access/material.ts";
-import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
+import { startGitHubFixture } from "../fixtures/repository-credentials/github.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import {
   createProviderTransport,
   type ProviderAttempt,
 } from "../../apps/controller/src/drivers/repo/github/access/provider-transport.ts";
-import type { Clock } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type { ProviderObservation } from "../../apps/controller/src/drivers/repo/github/access/provider-diagnostics.ts";
 
 type Grant = Parameters<typeof prepareProviderScope>[1];
-interface FixtureClock extends Clock {
-  schedule(delayMs: number, callback: () => void): () => boolean;
-  advance(milliseconds: number, wallDelta?: number): Promise<void>;
-  pendingTimers(): number;
-  deadlines(): number[];
-}
-const startProvider: (t: TestContext, options: { clock: FixtureClock }) => Promise<unknown> =
-  startGitHubFixture;
-const createClock: () => FixtureClock = createControlledClock;
 const parseJson: (text: string) => unknown = JSON.parse;
-
-function array(value: unknown): value is readonly unknown[] {
-  return Array.isArray(value);
-}
-
-function isReader(value: unknown): value is () => unknown {
-  return typeof value === "function";
-}
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -42,35 +23,15 @@ function fixtureToken(body: Buffer): string {
   return packet.token;
 }
 
-function issuance(value: unknown) {
-  assert.ok(record(value), "provider observed an issuance request");
-  const { repositoryIds, permissions } = value;
-  assert.ok(array(repositoryIds) && repositoryIds.every((id) => typeof id === "number"));
-  assert.ok(record(permissions));
-  return { repositoryIds, permissions };
-}
-
-function revocation(value: unknown): { revoked: boolean } {
-  assert.ok(record(value) && typeof value.revoked === "boolean", "provider recorded token state");
-  return { revoked: value.revoked };
-}
-
 export async function providerTransportCase(t: TestContext) {
-  const clock = createClock();
-  const fixture = await startProvider(t, { clock });
-  assert.ok(record(fixture));
-  const { origin, tls, privateKey, issuesOfTokens, tokenState, errors } = fixture;
-  assert.ok(typeof origin === "string" && record(tls) && Buffer.isBuffer(tls.ca));
+  const clock = createControlledClock();
+  const { origin, tls, privateKey, issuesOfTokens, tokenState, errors } = await startGitHubFixture(
+    t,
+    {
+      clock,
+    },
+  );
   const ca = tls.ca;
-  assert.ok(privateKey instanceof KeyObject);
-  assert.ok(array(issuesOfTokens));
-  assert.ok(array(errors));
-  assert.ok(isReader(tokenState));
-  const readTokenState = () => {
-    const state = tokenState();
-    assert.ok(array(state));
-    return state.map(revocation);
-  };
   const key = createGitHubKeyOwner({ privateKey, appId: "12345", clock });
   t.after(() => key.close());
   const scope = {
@@ -193,13 +154,12 @@ export async function providerTransportCase(t: TestContext) {
   assert.equal(dispatches, 0);
   assert.equal(issuesOfTokens.length, 0);
   let borrowed: Buffer | undefined;
-  let token: string | undefined;
+  let capturedResponse: { status: number; body: Buffer } | undefined;
   await key.withJwt((jwt, assertCurrent) =>
     transport.issue(jwt, attempt("acquire"), assertCurrent, (response) => {
       observeResponse();
       borrowed = response.body;
-      assert.equal(response.status, 201);
-      token = fixtureToken(response.body);
+      capturedResponse = { status: response.status, body: Buffer.from(response.body) };
     }),
   );
   assert.ok(borrowed);
@@ -208,7 +168,12 @@ export async function providerTransportCase(t: TestContext) {
     "transport cleared the borrowed body",
   );
   assert.equal(observations, 1);
-  const issued = issuance(issuesOfTokens[0]);
+  assert.ok(capturedResponse);
+  assert.equal(capturedResponse.status, 201);
+  const token = fixtureToken(capturedResponse.body);
+  capturedResponse.body.fill(0);
+  const [issued] = issuesOfTokens;
+  assert.ok(issued, "provider observed an issuance request");
   assert.deepEqual(issued.repositoryIds, [73]);
   assert.deepEqual(issued.permissions, {
     metadata: "read",
@@ -218,10 +183,9 @@ export async function providerTransportCase(t: TestContext) {
     checks: "read",
     statuses: "read",
   });
-  assert.ok(token);
   assert.equal(await transport.revoke(token, attempt("retire")), true);
   assert.equal(dispatches, 2);
-  const [firstToken] = readTokenState();
+  const [firstToken] = tokenState();
   assert.ok(firstToken);
   assert.equal(firstToken.revoked, true);
 
@@ -299,7 +263,7 @@ export async function providerTransportCase(t: TestContext) {
   }
   assert.equal(dispatches, 12, "one issue and retirement per token, with no retry");
   assert.equal(issuesOfTokens.length, 6);
-  const retired = readTokenState();
+  const retired = tokenState();
   assert.equal(retired.length, 6);
   assert.ok(retired.every((token) => token.revoked));
 

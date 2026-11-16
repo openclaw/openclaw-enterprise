@@ -7,8 +7,8 @@ import { chmod, lstat, readFile, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { appRoot, credentialDriverModule } from "../fixtures/repository-credentials/runtime.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
-import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service-fixture.ts";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 
 async function configuration(t: TestContext) {
   const resources = createTestResourceScope(t);

@@ -32,7 +32,7 @@ import {
   ensureInstallation,
   requiresPostgres,
 } from "../helpers/postgres-backend-state.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 type WorkRow = {
   state: ControllerWorkState;

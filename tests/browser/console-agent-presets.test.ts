@@ -91,7 +91,7 @@ import {
 } from "../helpers/refusal-text.mjs";
 import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
-import { within } from "../helpers/wait-for.mjs";
+import { within } from "../helpers/wait-for.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createBaseConsoleAppFixture>>;
 type FixtureResponse<Data> = Omit<Awaited<ReturnType<ConsoleFixture["request"]>>, "data"> & {

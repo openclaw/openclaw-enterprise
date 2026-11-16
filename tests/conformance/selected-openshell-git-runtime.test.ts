@@ -24,7 +24,7 @@ import {
   SandboxGatewayUnavailableError,
 } from "../../packages/occ/src/errors.ts";
 import { selectOpenShellGitWithdrawalDenials } from "../../scripts/ci/openshell-git-retention.mjs";
-import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
+import { routeStore } from "../fixtures/openshell-git-route-store.ts";
 import { deferred } from "../helpers/deferred.ts";
 import {
   bootstrappingOpenShellGitRuntimeFixture,

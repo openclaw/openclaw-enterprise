@@ -19,7 +19,7 @@ import {
   signInWithEmailPassword,
 } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { attachPostgresToK3d, attachKeycloakToK3d } from "./k3d-postgres-network.mjs";
+import { attachPostgresToK3d, attachKeycloakToK3d } from "./k3d-postgres-network.ts";
 import { buildControllerTopologyManifests } from "./topology-controller-manifests.ts";
 import {
   createNativeTopologyConfiguration,

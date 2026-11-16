@@ -32,8 +32,10 @@ export async function commitAckProxy(databaseUrl, options = {}) {
   let heldCommit;
   const sockets = new Set();
   let expectedInstance;
+  /** @type {ReturnType<typeof dispatch>} */
   let dropped;
   let authorizations = 0;
+  /** @param {string[]} params */
   const dispatch = (params) => {
     const [instanceId, useId, attemptId] = params;
     if (
@@ -59,7 +61,9 @@ export async function commitAckProxy(databaseUrl, options = {}) {
     let startup = true;
     let dropping = false;
     let parsedDispatch = false;
+    /** @type {ReturnType<typeof dispatch>} */
     let selected;
+    /** @type {ReturnType<typeof dispatch>} */
     let updated;
     let sawTransactionStatement = false;
     const close = () => {
@@ -209,6 +213,7 @@ export async function commitAckProxy(databaseUrl, options = {}) {
   proxyUrl.searchParams.delete("port");
   return {
     url: proxyUrl.toString(),
+    /** @param {{skipCommits?: number, pauseCommit?: boolean, instanceId?: string}} [options] */
     arm(options = {}) {
       const skip = options.skipCommits ?? 0;
       if (!Number.isSafeInteger(skip) || skip < 0) {

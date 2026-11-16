@@ -18,7 +18,7 @@ import {
 import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
 import { sessionAttempt } from "../conformance/repository-sessions.contract.mjs";
 import { disposeBrokerSession, fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
-import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
+import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 
