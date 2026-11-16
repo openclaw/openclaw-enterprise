@@ -99,11 +99,13 @@ function string(value: unknown, field: string): string {
 }
 
 function timestamp(value: unknown, field: string): Timestamp {
-  const { seconds, nanos } = object(value, field);
+  const { seconds = "0", nanos } = object(value, field);
   assert.ok(
     typeof seconds === "string" &&
       /^-?\d+$/.test(seconds) &&
-      Number.isSafeInteger(Number(seconds)) &&
+      // google.protobuf.Timestamp represents years 0001 through 9999.
+      Number(seconds) >= -62_135_596_800 &&
+      Number(seconds) <= 253_402_300_799 &&
       (nanos === undefined || isBoundedInteger(nanos, 999_999_999)),
     `Invalid installation exchange ${field} timestamp`,
   );
@@ -111,9 +113,12 @@ function timestamp(value: unknown, field: string): Timestamp {
 }
 
 function headers(value: unknown, field: string): Header[] {
+  if (value === undefined) {
+    return [];
+  }
   assert.ok(isArray(value), `Invalid installation exchange ${field}`);
   return value.map((line) => {
-    const { name, value } = object(line, field);
+    const { name, value = "" } = object(line, field);
     return { name: string(name, field), value: string(value, field) };
   });
 }
@@ -204,7 +209,7 @@ function completeResponse(value: unknown): CompleteReply {
   return {
     status: response.status,
     ...(response.headers === undefined ? {} : { headers: headers(response.headers, "headers") }),
-    body: bytes(response.body, "body"),
+    body: response.body === undefined ? Buffer.alloc(0) : bytes(response.body, "body"),
     ...(response.trailers === undefined
       ? {}
       : { trailers: headers(response.trailers, "trailers") }),

@@ -259,8 +259,16 @@ type Permit = {
 
 type Progress = { head_received: boolean; body_bytes: string | number };
 type Opening = { open: { resolve_request: Buffer; signature: Buffer } };
-type ExchangeRequest =
-  Opening | { authorize: Permit } | { progress: Progress } | { response: ResponseFrame };
+type RequestPayloads = {
+  open: Opening["open"];
+  authorize: Permit;
+  progress: Progress;
+  response: ResponseFrame;
+};
+type ExchangeRequest = {
+  [Event in keyof RequestPayloads]: Record<Event, RequestPayloads[Event]> &
+    Partial<Record<Exclude<keyof RequestPayloads, Event>, never>>;
+}[keyof RequestPayloads];
 
 // The SDK's stream includes permissive Node overloads. Expose the raw operations
 // the fixture uses with their request and terminal status types.

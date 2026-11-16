@@ -144,14 +144,15 @@ test("exchange reader rejects invalid reply envelopes and preserves terminal ord
     /Missing bidirectional Exchange method descriptor/,
   );
   const challenge = Buffer.alloc(32, 1);
-  const shape = {
-    resolved: {
-      ready: {
-        request_id: "request",
-        operation_handle: Buffer.from("handle"),
-        audience: "oce-egress",
-        evidence: { material_id: "material", usable_until: { seconds: 1 } },
-      },
+  const ready = {
+    request_id: "request",
+    operation_handle: Buffer.from("handle"),
+    audience: "oce-egress",
+    evidence: {
+      material_id: "material",
+      material_version: "v1",
+      authority_evidence: Buffer.from("evidence"),
+      usable_until: { seconds: 1 },
     },
   };
   const server = new grpc.Server();
@@ -162,7 +163,11 @@ test("exchange reader rejects invalid reply envelopes and preserves terminal ord
         if (scenario === "conflicting") {
           call.write({ resolved: { refused: { code: 1 } }, challenge });
         } else if (scenario === "malformed") {
-          call.write(shape);
+          call.write({
+            resolved: {
+              ready: { ...ready, evidence: { ...ready.evidence, material_version: undefined } },
+            },
+          });
         } else if (scenario === "nested-conflict") {
           call.write({
             resolved: {
@@ -174,6 +179,20 @@ test("exchange reader rejects invalid reply envelopes and preserves terminal ord
               },
             },
           });
+        } else if (scenario === "invalid-timestamp") {
+          call.write({ lease: { renew_by: { seconds: "253402300800" }, expires_at: {} } });
+        } else if (scenario === "defaults") {
+          call.write({ resolved: { ready } });
+          call.write({ lease: { renew_by: {}, expires_at: { nanos: 1 } } });
+          call.write({
+            response: {
+              status: 204,
+              headers: [{ name: "x-first" }, { name: "x-second", value: "two" }],
+              trailers: [{ name: "x-finish" }],
+              response_complete: true,
+            },
+          });
+          call.end();
         } else if (scenario === "error") {
           call.write({ challenge }, () => {
             call.emit("error", { code: grpc.status.PERMISSION_DENIED, details: "first status" });
@@ -221,6 +240,7 @@ test("exchange reader rejects invalid reply envelopes and preserves terminal ord
     ["conflicting", /event oneof/],
     ["nested-conflict", /result oneof/],
     ["malformed", /material_version/],
+    ["invalid-timestamp", /renew_by timestamp/],
   ] as const) {
     const exchange = open(scenario);
     const rejected = Promise.all([
@@ -233,6 +253,32 @@ test("exchange reader rejects invalid reply envelopes and preserves terminal ord
     assert.deepEqual(exchange.received, []);
     await assert.rejects(exchange.next(), expected);
   }
+  // Proto3 encoders can omit scalar defaults, including an empty response body.
+  const defaults = open("defaults");
+  defaults.request();
+  const resolution = await defaults.next();
+  assert.equal(resolution.event, "resolved");
+  assert.equal(resolution.resolved.result, "ready");
+  assert.deepEqual(resolution.resolved.ready.credential_headers, []);
+  assert.deepEqual(await defaults.next(), {
+    event: "lease",
+    lease: { renew_by: { seconds: "0" }, expires_at: { seconds: "0", nanos: 1 } },
+  });
+  assert.deepEqual(await defaults.next(), {
+    event: "response",
+    response: {
+      status: 204,
+      headers: [
+        { name: "x-first", value: "" },
+        { name: "x-second", value: "two" },
+      ],
+      body: Buffer.alloc(0),
+      trailers: [{ name: "x-finish", value: "" }],
+      response_complete: true,
+    },
+  });
+  assert.equal((await defaults.terminal).code, grpc.status.OK);
+
   const failed = open("error");
   failed.request();
   assert.equal((await failed.terminal).code, grpc.status.PERMISSION_DENIED);
