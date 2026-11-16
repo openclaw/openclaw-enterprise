@@ -367,8 +367,9 @@ verification incomplete. Preserve the job link and attempt-specific results.
 
 Startup failures report elapsed time, the 1,100,000 ms limit, and the observed
 exit code or signal. `timed out` identifies deadline expiry. A later `SIGPIPE`
-can follow teardown closing output pipes. Failure detail is redacted and
-command arguments and protected output stay private.
+can follow teardown closing output pipes. Failure details are redacted; command
+arguments and protected output stay private. Console login failures retain
+[fixed state/status diagnostics](../../../tests/helpers/qa-browser.mjs).
 
 The `startup timings` JSON contains at most 64 recognized CLI timings and an
 omitted-record count. Each reports stage, elapsed milliseconds and failure status

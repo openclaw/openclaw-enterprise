@@ -11,6 +11,107 @@ import { prepareQaConsoleTheme } from "./qa-installation.mjs";
 import { waitFor } from "./qa-wait.ts";
 import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.ts";
 
+// Failure evidence uses fixed resource classes and error names, never page content or URLs.
+function consoleLoginDiagnostics(f, page) {
+  const origin = new URL(f.consoleUrl).origin;
+  const resources = [];
+  const pageErrors = [];
+  let navigationStatus = null;
+  const classify = (request) => {
+    const url = new URL(request.url());
+    if (url.origin !== origin) {
+      return undefined;
+    }
+    const endpoint = {
+      "/api/auth/session": "session",
+      "/api/auth/providers": "providers",
+      "/api/auth/sign-in/email": "sign-in",
+    }[url.pathname];
+    return (
+      endpoint ??
+      { document: "document", script: "script", stylesheet: "stylesheet" }[request.resourceType()]
+    );
+  };
+  const retain = (request, status) => {
+    const resource = classify(request);
+    if (resource !== undefined) {
+      resources.push(status === undefined ? { resource, failed: true } : { resource, status });
+      if (resources.length > 16) {
+        resources.shift();
+      }
+    }
+  };
+  const response = (value) => retain(value.request(), value.status());
+  const failed = (request) => retain(request);
+  const pageError = (error) => {
+    if (pageErrors.length < 8) {
+      pageErrors.push(
+        "Error TypeError ReferenceError SyntaxError RangeError URIError EvalError AggregateError"
+          .split(" ")
+          .includes(error.name)
+          ? error.name
+          : "OtherError",
+      );
+    }
+  };
+  page.on("response", response);
+  page.on("requestfailed", failed);
+  page.on("pageerror", pageError);
+  return {
+    navigated(result) {
+      navigationStatus = result?.status() ?? null;
+    },
+    detach() {
+      page.off("response", response);
+      page.off("requestfailed", failed);
+      page.off("pageerror", pageError);
+    },
+    async record() {
+      let timer;
+      let expired = false;
+      try {
+        await Promise.race([
+          (async () => {
+            const control = async (locator) => ({
+              count: await locator.count(),
+              visible: await locator.first().isVisible(),
+            });
+            const current = new URL(page.url());
+            const evidence = {
+              navigationStatus,
+              finalRoute:
+                current.origin === origin &&
+                (current.pathname === "/console" || current.pathname.startsWith("/console/"))
+                  ? "console"
+                  : "other",
+              email: await control(page.getByLabel("Email", { exact: true })),
+              password: await control(page.getByLabel("Password")),
+              recoveryVisible: await page
+                .getByRole("button", { name: "Recovery sign-in", exact: true })
+                .isVisible(),
+              resources: [...resources],
+              pageErrors: [...pageErrors],
+            };
+            if (!expired) {
+              await f.record("console-login-failure", evidence);
+            }
+          })(),
+          new Promise((resolve) => {
+            timer = setTimeout(() => {
+              expired = true;
+              resolve();
+            }, 1000);
+          }),
+        ]);
+      } catch {
+        // Diagnostic failures must preserve the original login failure.
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
 export async function createQaBrowser(f, { themed }) {
   if (themed) {
     await prepareQaConsoleTheme(f);
@@ -115,22 +216,30 @@ export async function createQaBrowser(f, { themed }) {
   });
   f.resources.after(() => browser.close());
   const page = await browser.newPage();
-  await page.goto(f.consoleUrl + "/console/");
-  if (themed) {
-    assert.equal(await page.title(), "Example Agents");
+  const diagnostic = consoleLoginDiagnostics(f, page);
+  try {
+    diagnostic.navigated(await page.goto(f.consoleUrl + "/console/"));
+    if (themed) {
+      assert.equal(await page.title(), "Example Agents");
+    }
+    await page.getByLabel("Email", { exact: true }).fill(f.credentials.email);
+    await page.getByLabel("Password").fill(f.credentials.password);
+    const signedIn = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/auth/sign-in/email" &&
+        response.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    assert.equal((await signedIn).status(), 200, "console sign-in must succeed");
+    // An authenticated API read disambiguates a still-visible login page.
+    const authenticated = await page.evaluate(async () => (await fetch("/installation")).status);
+    assert.equal(authenticated, 200);
+  } catch (error) {
+    await diagnostic.record();
+    throw error;
+  } finally {
+    diagnostic.detach();
   }
-  await page.getByLabel("Email", { exact: true }).fill(f.credentials.email);
-  await page.getByLabel("Password").fill(f.credentials.password);
-  const signedIn = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === "/api/auth/sign-in/email" &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  assert.equal((await signedIn).status(), 200, "console sign-in must succeed");
-  // An authenticated API read disambiguates a still-visible login page.
-  const authenticated = await page.evaluate(async () => (await fetch("/installation")).status);
-  assert.equal(authenticated, 200);
   await f.record("console", {
     authenticated: true,
     origin: f.consoleUrl,
