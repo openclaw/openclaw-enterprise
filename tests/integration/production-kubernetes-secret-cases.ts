@@ -74,14 +74,6 @@ function podSpec(workload: ChartResources[number] | undefined, expected: string)
   return workload.spec.template.spec;
 }
 
-function controlPlanePods(objects: ChartResources) {
-  return {
-    initialization: controlPlanePod(objects, "Job", "initialization"),
-    api: controlPlanePod(objects, "Deployment", "api"),
-    worker: controlPlanePod(objects, "Deployment", "worker"),
-  };
-}
-
 function controlPlanePod(objects: ChartResources, kind: string, component: string) {
   const workload = objects.find(
     (object) =>
@@ -257,10 +249,17 @@ export function registerDatabaseCaCases({
         { "bootstrap.password.mountPath": "/custom/bootstrap" },
       ]) {
         const objects = await resources((await render(features)).stdout);
-        const { api, worker, initialization } = controlPlanePods(objects);
         // Derive the existing mounts from shipped workloads, independently of the validation list.
         const paths = new Set(
-          [api, worker, initialization]
+          objects
+            .filter((object) => {
+              const component = object.metadata.labels?.["app.kubernetes.io/component"];
+              return (
+                ["Deployment", "Job"].includes(object.kind) &&
+                (component === "api" || component === "worker" || component === "initialization")
+              );
+            })
+            .map((object) => podSpec(object, object.metadata.name))
             .flatMap((pod) => [...(pod.initContainers ?? []), ...pod.containers])
             .filter((container) =>
               ["api", "worker", "migration", "bootstrap"].includes(container.name),
@@ -353,7 +352,7 @@ export function registerDatabaseCaCases({
     tooling,
     async () => {
       const objects = await resources((await render(databaseCaValues)).stdout);
-      const { initialization, api, worker } = controlPlanePods(objects);
+      const initialization = controlPlanePod(objects, "Job", "initialization");
       const assertDatabaseCaMount = (container: Container | undefined) => {
         assert.ok(container, "Helm must render the database client container");
         assert.deepEqual(
@@ -364,8 +363,8 @@ export function registerDatabaseCaCases({
       };
       for (const [role, pod] of [
         ["bootstrap", initialization],
-        ["api", api],
-        ["worker", worker],
+        ["api", controlPlanePod(objects, "Deployment", "api")],
+        ["worker", controlPlanePod(objects, "Deployment", "worker")],
       ] as const) {
         assert.deepEqual(pod.volumes?.find(({ name }) => name === "database-ca")?.secret, {
           secretName: "occ-rds-ca",
