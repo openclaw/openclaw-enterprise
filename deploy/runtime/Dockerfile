@@ -251,6 +251,11 @@ COPY deploy/runtime/openclaw-planned-completion.patch /tmp/openclaw-planned-comp
 RUN echo 'e6dd8a4c0c85c77390bb4aa68e62416d7a4fe950f5d622c79809e73c79e6f1cb  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-planned-completion.patch
 
+# Remove this backport when the pinned core includes upstream openclaw/openclaw#185180.
+COPY deploy/runtime/openclaw-native-turn-settlement.patch /tmp/openclaw-native-turn-settlement.patch
+RUN echo '5f2127b46a4a92d24469e43d67301ee0b99d99eb2582c4e690b81b12fd8b7da6  /tmp/openclaw-native-turn-settlement.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-native-turn-settlement.patch
+
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
@@ -266,6 +271,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     packages/gateway-protocol/src/gateway-suspend.test.ts src/infra/gateway-suspend-coordinator.test.ts \
     src/gateway/server-methods/suspend.integration.test.ts src/cli/gateway-cli/host-lifecycle.test.ts \
     src/gateway/server-methods.suspension-admission.test.ts \
+    src/sessions/session-controller.watchdog.test.ts src/agents/embedded-agent-runner/runs.liveness.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     src/infra/private-store-file.test.ts \
     src/node-host/runner.test.ts \
