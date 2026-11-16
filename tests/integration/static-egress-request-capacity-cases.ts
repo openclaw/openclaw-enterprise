@@ -27,7 +27,6 @@ import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-sta
 import { asRecord } from "../../packages/utils/src/index.ts";
 import capturedOperation from "../fixtures/static-egress/openshell-operation.json" with { type: "json" };
 import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
-import type { Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 import { requestId } from "../helpers/static-egress-request-id.ts";
 import { staticEgressFixture, wireTime } from "../helpers/static-egress.mjs";
@@ -162,12 +161,13 @@ export function registerStaticEgressRequestCapacityCases(): void {
         now: () => new Date(start + elapsed),
         credentialProxyCapacity: capacity,
       });
+      assert.ok(f.controller instanceof OpenClawController);
       assert.deepEqual(
         f.controller.createCredentialProxy(capacityProbeOwner).capacity,
         capacity,
         "the controller builds the exchange's proxy with the configured bounds",
       );
-      const peer: Grpc.Metadata = f.metadata({ exp: Math.floor(Date.now() / 1000) + 3600 });
+      const peer = f.metadata({ exp: Math.floor(Date.now() / 1000) + 3600 });
       // Advance the controller's supported clock while keeping genuine signed identity, IAM,
       // Secret SDK, authority transport and HTTPS provider. Completion must release active capacity;
       // fixed operation horizons must release replay capacity during the same long-lived JWT.

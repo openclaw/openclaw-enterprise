@@ -158,7 +158,7 @@ async function expectStreamRefused(
   );
 }
 
-async function openExchange(f: Fixture, metadata?: unknown) {
+async function openExchange(f: Fixture, metadata?: ReturnType<Fixture["metadata"]>) {
   const exchange = await f.beginExchange(metadata);
   const capture = f.capture();
   exchange.stream.write(exchange.opening(capture));

@@ -119,6 +119,7 @@ async function buildStaticEgressFixture(
   const [key, cert] = [Buffer.from(generated.key), Buffer.from(generated.cert)];
   const certPath = generated.certPath;
   const objects = new Map();
+  /** @type {import("../../packages/contracts/src/index.ts").Namespace} */
   let namespace;
   const namespaceResource = () => ({
     apiVersion: "v1",
@@ -906,11 +907,13 @@ async function buildStaticEgressFixture(
     ).pathname,
     { keepCase: true, longs: String, enums: Number, defaults: false, oneofs: true },
   );
+  /** @param {Uppercase<import("../../packages/contracts/src/index.ts").EgressRefusal["kind"]> | "UNSPECIFIED"} name
+   * @returns {number} */
   const refusalCode = (name) => {
     const entry = definition["openshell.middleware.v1.HttpCredentialRefusalCode"].type.value.find(
       (value) => value.name === `HTTP_CREDENTIAL_REFUSAL_CODE_${name}`,
     );
-    assert.ok(entry, `Unknown HTTP credential refusal code: ${name}`);
+    assert.ok(typeof entry?.number === "number", `Unknown HTTP credential refusal code: ${name}`);
     return entry.number;
   };
   const services = grpc.loadPackageDefinition(definition).openshell.middleware.v1;
@@ -933,27 +936,28 @@ async function buildStaticEgressFixture(
       client.close();
     }
   });
-  const metadata = (overrides = {}) => {
+  const supervisorClaims = () => {
     const now = Math.floor(Date.now() / 1000);
-    const token = supervisorBearer(
-      {
-        iss: "https://gateway.example.test",
-        aud: "oce-egress",
-        sub: `spiffe://openshell/sandbox/${sandboxId}`,
-        iat: now,
-        exp: now + 60,
-        jti: randomUUID(),
-        caller_kind: "supervisor",
-        sandbox_id: sandboxId,
-        instance_id: installation.enforcement.instanceId,
-        exchange_key: {
-          profile: "openshell-exchange-v1",
-          ...exchangeKeys.publicKey.export({ format: "jwk" }),
-        },
-        ...overrides,
+    return {
+      iss: "https://gateway.example.test",
+      aud: "oce-egress",
+      sub: `spiffe://openshell/sandbox/${sandboxId}`,
+      iat: now,
+      exp: now + 60,
+      jti: randomUUID(),
+      caller_kind: "supervisor",
+      sandbox_id: sandboxId,
+      instance_id: installation.enforcement.instanceId,
+      exchange_key: {
+        profile: "openshell-exchange-v1",
+        ...exchangeKeys.publicKey.export({ format: "jwk" }),
       },
-      keys.privateKey,
-    );
+    };
+  };
+  /** @param {Partial<Record<keyof ReturnType<typeof supervisorClaims>, unknown>>} [overrides]
+   * @returns {import("./openshell-grpc-sdk.ts").Grpc.Metadata} */
+  const metadata = (overrides = {}) => {
+    const token = supervisorBearer({ ...supervisorClaims(), ...overrides }, keys.privateKey);
     const result = new grpc.Metadata();
     result.set("authorization", token);
     return result;
@@ -1045,6 +1049,7 @@ async function buildStaticEgressFixture(
     });
   }
   async function beginExchange(peer = metadata()) {
+    /** @type {import("./openshell-grpc-sdk.ts").Grpc.ClientDuplexStream<unknown, unknown>} */
     const stream = clients.HttpInstallationExchange.Exchange(peer, {
       deadline: Date.now() + 5000,
     });
