@@ -11,7 +11,7 @@ import {
   SandboxGatewayUnauthorizedError,
 } from "../../packages/occ/src/index.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { occLogLine } from "../helpers/occ-log-line.ts";
 import { withNamespaceLockHeld } from "../helpers/postgres-locks.ts";
 import { removeAccessBindings } from "../helpers/postgres-worker-revision-support.mjs";

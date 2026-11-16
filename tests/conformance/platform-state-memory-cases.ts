@@ -14,7 +14,7 @@ import {
   type PlatformOperation,
 } from "../../packages/occ/src/state/platform-state.ts";
 import { BINDING_SUBJECT_INELIGIBLE } from "../helpers/refusal-text.mjs";
-import { seedSessionRevision, sessionAttempt } from "./repository-sessions.contract.mjs";
+import { seedSessionRevision, sessionAttempt } from "./repository-sessions.contract.ts";
 
 type CreateAttemptInput = Parameters<RepositorySessionRepository["createAttempt"]>[0];
 

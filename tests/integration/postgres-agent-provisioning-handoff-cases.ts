@@ -21,7 +21,7 @@ import { handedOff, readPendingEffect, required } from "./postgres-agent-provisi
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter, withNamespaceLockHeld } from "../helpers/postgres-locks.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import {
   createRuntimeComputeDriver,
   failingTransportDriver,

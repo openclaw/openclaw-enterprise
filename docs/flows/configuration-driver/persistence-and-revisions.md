@@ -186,7 +186,9 @@ After Compute admission, OCC calls the selected Driver's optional
 `snapshotRuntimeInputs` hook and saves any result as `compute.runtimeInputs`
 in the immutable revision snapshot. For locally managed dedicated Codex
 revisions without protected egress, Kubernetes Compute captures the Gateway
-and Agent image references. During preparation and activation it selects those
+and Agent image references. When the Installation requires immutable images,
+Compute rejects saved tags before it reconciles workloads. Deploy a new Agent revision
+to admit the current digest-pinned images. During preparation and activation it selects those
 saved images, including the Gateway image for workspace setup, even if the
 Installation's image settings have changed. Revisions without the field keep
 using the configured images. A malformed snapshot or unknown version

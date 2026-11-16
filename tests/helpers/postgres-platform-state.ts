@@ -25,7 +25,7 @@ import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { createConsoleFixtureTransport, fetchLoopback } from "./console-fixture-transport.ts";
 import { jsonRequestInit } from "./inject-json.mjs";
 import { jsonLines as parseJsonLines } from "./json-lines.mjs";
-import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
+import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
 import {
   cleanupKubernetesNamespaces,
   createKubernetesStartupEnvironment,
@@ -33,7 +33,7 @@ import {
 } from "./postgres-platform-kubernetes.ts";
 import { stopProcess } from "./stop-process.mjs";
 import { temporaryDirectory } from "./temporary-directory.ts";
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 
 type Configuration = ConfigurationResponse["data"];
 type Agent = AgentResponse["data"];

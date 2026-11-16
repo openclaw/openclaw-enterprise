@@ -9,7 +9,7 @@ import {
 } from "../../packages/contracts/src/api/resources.ts";
 import { PluginDiscoveryError } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import {
   accessToken,
   catalogEntry,

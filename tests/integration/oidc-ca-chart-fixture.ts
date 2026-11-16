@@ -5,12 +5,12 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
-import { caAndLeaf } from "../helpers/certificates.mjs";
+import { caAndLeaf } from "../helpers/certificates.ts";
 import {
   chartTooling,
   parseProductionChart,
   renderProductionChart,
-} from "../helpers/production-chart.mjs";
+} from "../helpers/production-chart.ts";
 import { findResource } from "../helpers/production-chart-resource.ts";
 
 export const execute = promisify(execFile);

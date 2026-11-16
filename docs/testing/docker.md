@@ -172,7 +172,7 @@ against the preparation record. Cleanup removes the file with the run-owned clus
 
 For a standalone run of the default Codex version where Docker's default profile blocks
 the sandbox, obtain the reviewed manual file separately from the image export and set
-`OCC_TEST_CODEX_SECCOMP_PROFILE` to its path. The [smoke helper](../../tests/helpers/runtime-image-startup.mjs)
+`OCC_TEST_CODEX_SECCOMP_PROFILE` to its path. The [smoke helper](../../tests/helpers/runtime-image-startup.ts)
 checks the versioned filename and the file's SHA-256 against its manual pin.
 Use the prepared lane when the manual file is unavailable or when testing a supported
 historical Codex version.

@@ -9,7 +9,7 @@ import { required } from "./postgres-agent-provisioning-setup.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter, withNamespaceLockHeld } from "../helpers/postgres-locks.ts";
 import { PROVISIONING_NOT_COMPLETED } from "../helpers/refusal-text.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 import {
   claimProvisioningWork,

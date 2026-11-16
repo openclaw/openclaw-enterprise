@@ -12,13 +12,12 @@ import type {
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.mjs";
+import { execute, runDocker } from "../helpers/runtime-image-docker.ts";
+import { waitForContainerReady } from "../helpers/runtime-image-gateway-observations.ts";
 import {
   createAdmittedRuntimeImageConfiguration,
-  execute,
   image,
-  runDocker,
-  waitForContainerReady,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 
 const envoyImage = process.env.OCC_TEST_WORKSPACE_ENVOY_IMAGE;
 const selected = image !== undefined || envoyImage !== undefined;
