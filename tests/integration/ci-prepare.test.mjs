@@ -43,7 +43,7 @@ import {
   writeFixtureCommand,
   writePostgresState,
 } from "../helpers/ci-prepare-fixture.ts";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 import { startFakePostgres } from "../helpers/fake-postgres-server.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));

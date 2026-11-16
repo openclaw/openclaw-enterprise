@@ -3,7 +3,7 @@ import { createServer, type Socket } from "node:net";
 import test from "node:test";
 import { listen } from "../helpers/listen.ts";
 import { tlsPeerCertificate } from "../helpers/tls-peer-certificate.ts";
-import { within } from "../helpers/wait-for.mjs";
+import { within } from "../helpers/wait-for.ts";
 
 // TCP is reachable, but the peer never answers the TLS ClientHello. This must
 // hit the helper's absolute deadline before the test timeout.

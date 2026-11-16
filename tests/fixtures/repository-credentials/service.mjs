@@ -8,8 +8,8 @@ import { createTlsMaterial } from "./process.mjs";
 import { startGitHubFixture } from "./github.mjs";
 import { startGitSmartHttpFixture } from "./git.mjs";
 import { createResourceScope, createTestResourceScope } from "./resources.mjs";
-import { socketDirectory } from "../../helpers/socket-directory.mjs";
-import { waitFor } from "../../helpers/wait-for.mjs";
+import { socketDirectory } from "../../helpers/socket-directory.ts";
+import { waitFor } from "../../helpers/wait-for.ts";
 import { serviceConfigurationData } from "./builders.mjs";
 import { startStaticTokenService, writeSessionClientConfiguration } from "./service-resources.mjs";
 

@@ -15,7 +15,7 @@ import {
   fixtureRepository,
 } from "../fixtures/repository-credentials/github.mjs";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 import {
   captureMetadata,
   callFixture,

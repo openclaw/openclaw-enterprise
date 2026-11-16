@@ -37,9 +37,9 @@ import {
   reservePort,
   reservedPortArgs,
 } from "../helpers/available-port.ts";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { credentialClientPath } from "../fixtures/repository-credentials/runtime.mjs";
 import type { RuntimeRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/access/client/manifest.ts";

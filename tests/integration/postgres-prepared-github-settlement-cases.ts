@@ -3,7 +3,7 @@ import test from "node:test";
 import pg from "pg";
 import type { Clock } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 import { fixtureInstallationId } from "../fixtures/repository-credentials/github.mjs";
 import { preparedAttemptSettled } from "../../apps/controller/src/drivers/repo/github/access/prepared-postgres.ts";
 import {

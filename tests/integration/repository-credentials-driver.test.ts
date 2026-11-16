@@ -15,8 +15,8 @@ import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { DependencyUnavailableError, ScopeViolationError } from "../../packages/occ/src/index.ts";
 import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.ts";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
+import { waitUntil } from "../helpers/wait-for.ts";
 import { readJsonObject, startRegistryFixture } from "./repository-credentials-driver-fixture.ts";
 import { registerAdmissionCapabilityCases } from "./repository-credentials-driver-admission-capability-cases.ts";
 

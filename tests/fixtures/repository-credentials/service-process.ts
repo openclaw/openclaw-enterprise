@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { ControlRequest } from "../../../apps/controller/src/drivers/repo/access/control-contracts.ts";
 import type { RepositoryCredentialBoundSessionInput } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
-import { within } from "../../helpers/wait-for.mjs";
+import { within } from "../../helpers/wait-for.ts";
 import { appModule, appRoot } from "./runtime.mjs";
 import { createControlledClock } from "./clock.mjs";
 import { cleanEnvironment, createTlsMaterial } from "./process.mjs";

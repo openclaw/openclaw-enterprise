@@ -8,7 +8,7 @@ import type { ControlErrorCode } from "../../../apps/controller/src/drivers/repo
 import type { RunningListeners } from "../../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
 import type { JsonValue } from "../../../apps/controller/src/drivers/repo/access/json-value.ts";
 import type { SessionStatus } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
-import { socketDirectory } from "../../helpers/socket-directory.mjs";
+import { socketDirectory } from "../../helpers/socket-directory.ts";
 import { registerResourceCleanup, closeAndDispose, type ResourceCleanup } from "./cleanup.ts";
 import {
   loadRepositoryClientModule,

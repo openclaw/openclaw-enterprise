@@ -17,7 +17,7 @@ import type {
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { startListeners } from "../../apps/controller/src/drivers/repo/access/server.ts";
 import type { DispatchGate } from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
-import { within } from "../helpers/wait-for.mjs";
+import { within } from "../helpers/wait-for.ts";
 import type { GitHubStaticTokenOwner } from "../../apps/controller/src/drivers/repo/github/access/types.ts";
 import { githubTokenConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";

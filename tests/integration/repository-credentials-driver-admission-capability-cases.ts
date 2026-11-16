@@ -6,7 +6,7 @@ import test from "node:test";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { run } from "../fixtures/repository-credentials/process.mjs";
 import { controlRequest } from "../fixtures/repository-credentials/service.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import {
   controlledClock,
   isJsonObject,

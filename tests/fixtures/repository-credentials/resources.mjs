@@ -1,4 +1,4 @@
-import { within } from "../../helpers/wait-for.mjs";
+import { within } from "../../helpers/wait-for.ts";
 
 // Local resource ownership only. Remote writes keep their existing reconciliation obligations.
 export function createResourceScope({ cleanupTimeoutMs = 10000 } = {}) {

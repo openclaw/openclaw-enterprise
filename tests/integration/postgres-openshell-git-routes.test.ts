@@ -17,7 +17,7 @@ import {
   sessionAttempt,
 } from "../conformance/repository-sessions.contract.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 // The persisted OpenShell Git route (migration 0062) as the application role
 // writes it: identity and custody facts only, one holder named by a fence, a pending write

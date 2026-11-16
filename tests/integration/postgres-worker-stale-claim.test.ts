@@ -37,7 +37,7 @@ import {
   ensureInstallation,
 } from "../helpers/postgres-backend-state.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { expireWorkLease } from "../helpers/postgres-worker-revision-queue.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 

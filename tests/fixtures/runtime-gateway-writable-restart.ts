@@ -17,7 +17,7 @@ import {
   runDocker,
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.mjs";
-import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
+import { waitFor, waitUntil } from "../helpers/wait-for.ts";
 
 interface GatewayState {
   ready: boolean;

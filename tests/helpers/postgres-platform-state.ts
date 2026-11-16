@@ -33,7 +33,7 @@ import {
 } from "./postgres-platform-kubernetes.ts";
 import { stopProcess } from "./stop-process.mjs";
 import { temporaryDirectory } from "./temporary-directory.ts";
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 
 type Configuration = ConfigurationResponse["data"];
 type Agent = AgentResponse["data"];

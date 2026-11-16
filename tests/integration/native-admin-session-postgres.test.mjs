@@ -5,7 +5,7 @@ import test from "node:test";
 
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { injectJson as inject } from "../helpers/inject-json.mjs";
-import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
+import { waitFor, waitUntil } from "../helpers/wait-for.ts";
 import {
   publicOrigin,
   nativeGatewayApiKey,

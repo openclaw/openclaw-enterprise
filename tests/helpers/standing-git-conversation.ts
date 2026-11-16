@@ -11,7 +11,7 @@ import type { TestContext } from "node:test";
 import { reservePort, reservedPortArgs } from "./available-port.ts";
 import { harnessTlsFixture } from "./harness-tls.mjs";
 import { listen } from "./listen.ts";
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { HARNESS_EGRESS_ENROLLMENT_PATH } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import type { signComputeExecutionRelease } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";

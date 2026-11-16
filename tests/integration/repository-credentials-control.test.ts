@@ -52,8 +52,8 @@ import {
   startServiceListeners,
   startStaticTokenService,
 } from "../fixtures/repository-credentials/service-resources.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
+import { waitUntil } from "../helpers/wait-for.ts";
 import type {
   Clock,
   RepositoryBackendFactory,

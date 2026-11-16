@@ -21,7 +21,7 @@ import {
 import { readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
-import { waitForResult } from "../helpers/wait-for.mjs";
+import { waitForResult } from "../helpers/wait-for.ts";
 
 export const CODEX_ASANA_NATIVE_ID = "asana@openai-curated-remote";
 const PLUGIN_APP_SERVER_TOKEN_DOMAIN = "openclaw-plugin-runtime/app-server-token/v1";

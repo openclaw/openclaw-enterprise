@@ -54,7 +54,7 @@ import {
   registerBoundedTeardownRejectionCases,
   shortTeardownOptions,
 } from "./kubernetes-teardown-cases.ts";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 type RetryOptions = {
   sleep: (ms: number) => Promise<unknown>;
@@ -2308,10 +2308,9 @@ async function fakeKubectlExec(script: string, ...args: string[]) {
 // A loopback port that refuses connections until the test ends. A released port could be
 // taken by a test running in parallel, and the probe would then connect.
 async function refusingLoopbackPort(t: TestContext) {
-  const refusing: { port: number | undefined; release: () => Promise<void> } = await refusingPort();
-  t.after(() => refusing.release());
-  assert.ok(typeof refusing.port === "number");
-  return refusing.port;
+  const { port, release } = await refusingPort();
+  t.after(release);
+  return port;
 }
 
 const quiet = { sleep: async () => {}, log: () => {} };
@@ -2328,8 +2327,7 @@ test("the probe's own refused connection passes a deny check", async (t) => {
 
 test("a connected probe fails a deny check", async (context) => {
   const server = createServer((socket) => socket.end());
-  const port: unknown = await listen(context, server);
-  assert.equal(typeof port, "number");
+  const port = await listen(context, server);
   await assert.rejects(
     assertProbeDenied(
       "open loopback traffic",
