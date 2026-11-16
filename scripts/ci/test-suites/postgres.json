@@ -9,7 +9,7 @@
       "path": "tests/integration/ci-prepare-postgres-real.test.ts",
       "env": { "OCC_TEST_CI_POSTGRES_REAL": "1" },
       "expectedTests": [
-        "PostgreSQL preparation uses distinct Docker-assigned loopback ports and cleans its projects"
+        "PostgreSQL preparation uses distinct engine-assigned loopback ports and cleans its projects"
       ]
     },
     {
