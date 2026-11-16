@@ -57,6 +57,7 @@
     "integration/postgres-state-plugin-case.ts",
     "integration/postgres-state-provisioning-cases.ts",
     "integration/postgres-state-worker-cases.ts",
+    "integration/postgres-agent-sandbox-policy-worker-recovery-cases.ts",
     "conformance/configuration-occ-persistence-cases.ts",
     "conformance/kubernetes-account-secret-cases.ts",
     "conformance/kubernetes-credential-delivery-cases.ts",
