@@ -259,7 +259,10 @@ test("protected repository startup closes an external registration it refuses", 
     },
   });
   await assert.rejects(
-    createExternalProtectedDriver(partial(() => void closes++), selection),
+    createExternalProtectedDriver(
+      partial(() => void closes++),
+      selection,
+    ),
     { name: "DriverSelectionError" },
   );
   await assert.rejects(
