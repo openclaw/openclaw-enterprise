@@ -3,6 +3,20 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
+type WorkTarget = [
+  agentId: string | null,
+  revisionId: string | null,
+  namespaceTarget: "ready" | "deleted" | null,
+  agentTarget: "stopped" | "deleted" | null,
+];
+
+type WorkTargetRow = {
+  agent_id: WorkTarget[0];
+  revision_id: WorkTarget[1];
+  namespace_target: WorkTarget[2];
+  agent_target: WorkTarget[3];
+};
+
 test(
   "PostgreSQL controller work requires exactly one complete target shape",
   requiresPostgres,
@@ -12,12 +26,12 @@ test(
     await client.connect();
     context.after(async () => {
       try {
-        await client.query("ROLLBACK");
+        await client.query<Record<string, never>, []>("ROLLBACK");
       } finally {
         await client.end();
       }
     });
-    await client.query("BEGIN");
+    await client.query<Record<string, never>, []>("BEGIN");
 
     const namespaceId = `ns_${randomUUID()}`;
     const agentId = `agt_${randomUUID()}`;
@@ -28,31 +42,31 @@ test(
       method: "api_key",
       source: { kind: "secret", namespaceId, id: secretId },
     };
-    // Real owners and an admitted revision ensure failures reach the target CHECK,
-    // rather than a foreign-key or snapshot constraint. All fixtures roll back.
-    await client.query(
+    // Real resource owners and an admitted revision isolate the target CHECK.
+    // All fixtures roll back.
+    await client.query<Record<string, never>, [string]>(
       `INSERT INTO occ.installation (id, name, created_at)
        VALUES ($1, 'Queue target integration', now()) ON CONFLICT DO NOTHING`,
       [`ins_${randomUUID()}`],
     );
-    await client.query(
+    await client.query<Record<string, never>, [string]>(
       `INSERT INTO occ.namespaces (id, name, status, created_at)
        VALUES ($1, $1, 'ready', now())`,
       [namespaceId],
     );
-    await client.query(
+    await client.query<Record<string, never>, [string, string]>(
       `INSERT INTO occ.configurations (id, namespace_id, kind, generation, created_at)
        VALUES ($1, $2, 'agent', 1, now())`,
       [configurationId, namespaceId],
     );
-    await client.query(
+    await client.query<Record<string, never>, [string, string, string]>(
       `INSERT INTO occ.secrets
          (id, namespace_id, name, driver_id, backend_namespace_name, backend_name,
           backend_key, backend_uid, created_at)
        VALUES ($1, $2, $1, 'secret-queue', 'queue-target', 'harness-key', 'value', $3, now())`,
       [secretId, namespaceId, randomUUID()],
     );
-    await client.query(
+    await client.query<Record<string, never>, [string, string, string, string, string]>(
       `INSERT INTO occ.agents
          (id, namespace_id, name, configuration_id, execution_mode, service_principal_id, harness_auth, created_at)
        VALUES ($1, $2, $1, $3, 'embedded', $4, $5::jsonb, now())`,
@@ -64,7 +78,7 @@ test(
         JSON.stringify(harnessAuth),
       ],
     );
-    await client.query(
+    await client.query<Record<string, never>, [string, string, string, object]>(
       `INSERT INTO occ.agent_revisions
          (id, namespace_id, agent_id, revision_number, admitted_spec, admitted_at)
        VALUES ($1, $2, $3, 1, $4, now())`,
@@ -120,12 +134,12 @@ test(
         target: [agentId, revisionId, "ready", null],
         valid: false,
       },
-    ];
+    ] satisfies { name: string; target: WorkTarget; valid: boolean }[];
     for (const { name, target, valid } of cases) {
       await context.test(name, async () => {
-        await client.query("SAVEPOINT target_case");
+        await client.query<Record<string, never>, []>("SAVEPOINT target_case");
         try {
-          const insert = client.query(
+          const insert = client.query<WorkTargetRow, [string, string, ...WorkTarget]>(
             `INSERT INTO occ.controller_work
                (idempotency_key, namespace_id, actor_id, agent_id, revision_id,
                 namespace_target, agent_target, available_at, created_at, updated_at)
@@ -135,14 +149,14 @@ test(
           );
           if (valid) {
             const { rows } = await insert;
-            assert.deepEqual(rows, [
-              {
-                agent_id: target[0],
-                revision_id: target[1],
-                namespace_target: target[2],
-                agent_target: target[3],
-              },
-            ]);
+            const [agent, revision, namespaceTarget, agentTarget] = target;
+            const expected: WorkTargetRow = {
+              agent_id: agent,
+              revision_id: revision,
+              namespace_target: namespaceTarget,
+              agent_target: agentTarget,
+            };
+            assert.deepEqual(rows, [expected]);
           } else {
             // SQL CHECK accepts UNKNOWN, so missing targets must produce FALSE.
             await assert.rejects(insert, {
@@ -151,8 +165,8 @@ test(
             });
           }
         } finally {
-          await client.query("ROLLBACK TO SAVEPOINT target_case");
-          await client.query("RELEASE SAVEPOINT target_case");
+          await client.query<Record<string, never>, []>("ROLLBACK TO SAVEPOINT target_case");
+          await client.query<Record<string, never>, []>("RELEASE SAVEPOINT target_case");
         }
       });
     }

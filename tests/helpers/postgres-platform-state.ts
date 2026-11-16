@@ -25,7 +25,7 @@ import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { createConsoleFixtureTransport, fetchLoopback } from "./console-fixture-transport.ts";
 import { jsonRequestInit } from "./inject-json.mjs";
 import { jsonLines as parseJsonLines } from "./json-lines.mjs";
-import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
+import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
 import {
   cleanupKubernetesNamespaces,
   createKubernetesStartupEnvironment,
