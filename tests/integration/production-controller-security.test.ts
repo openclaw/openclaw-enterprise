@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
+import { Check } from "typebox/value";
 import { resolveApprovedProductionHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import {
   currentComputeAbortSignal,
@@ -8,6 +9,13 @@ import {
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import {
+  type AuthorizationDecision,
+  type IAMDriver,
+  NamespaceResponse,
+  ObservabilityResponse,
+  type Restriction,
+} from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
@@ -75,7 +83,7 @@ test("the singleton Namespace HTTP route enforces internal admission and exact I
     for (const [id, name] of [
       [allowedNamespace, "Allowed tenant"],
       [deniedNamespace, "Denied tenant"],
-    ]) {
+    ] as const) {
       await state.namespaces.createNamespace({
         id,
         name,
@@ -119,7 +127,7 @@ test("the singleton Namespace HTTP route enforces internal admission and exact I
     {},
     { authorization: "Bearer wrong" },
     { authorization: "Basic no-longer-supported" },
-  ]) {
+  ] satisfies HeadersInit[]) {
     const response = await fetch(`${endpoint}/namespaces/${allowedNamespace}`, {
       headers,
     });
@@ -139,11 +147,16 @@ test("the singleton Namespace HTTP route enforces internal admission and exact I
   assert.equal(forwarded.status, 403);
 
   // The authorized request reaches the real controller and returns its exact Namespace.
-  const allowed = await fetch(`${endpoint}/namespaces/${allowedNamespace}`, {
-    headers: authenticatedHeaders(session),
-  });
+  const allowed: Pick<Response, "status"> & { json(): Promise<unknown> } = await fetch(
+    `${endpoint}/namespaces/${allowedNamespace}`,
+    {
+      headers: authenticatedHeaders(session),
+    },
+  );
   assert.equal(allowed.status, 200);
-  assert.deepEqual((await allowed.json()).data, {
+  const reply = await allowed.json();
+  assert.ok(Check(NamespaceResponse, reply), "expected a Namespace response");
+  assert.deepEqual(reply.data, {
     id: allowedNamespace,
     name: "Allowed tenant",
     status: "ready",
@@ -151,13 +164,20 @@ test("the singleton Namespace HTTP route enforces internal admission and exact I
   });
 });
 
+type TestAuthorizationReply = Omit<AuthorizationDecision, "reason" | "evidence"> & {
+  reason?: string | null | number | Record<string, never>;
+  evidence: Omit<AuthorizationDecision["evidence"], "roleIds"> & {
+    roleIds: AuthorizationDecision["evidence"]["roleIds"] | null;
+  };
+};
+
 test("IAM decision reasons must be strings before an installation-admin read", async (t) => {
   const authFixture = await createTestAuthPrincipal({
     installationId,
     mode: "production",
     baseURL: "https://console.oce.localhost",
   });
-  let restrictions = [];
+  let restrictions: Restriction[] = [];
   const native = new NativeIAMDriver({
     loadNativeIAMState: async () => ({
       identities: [authFixture.seed.principal],
@@ -168,13 +188,17 @@ test("IAM decision reasons must be strings before an installation-admin read", a
       restrictions,
     }),
   });
-  let transform = (decision) => decision;
-  const iam = {
+  let transform: (decision: AuthorizationDecision) => TestAuthorizationReply = (decision) =>
+    decision;
+  const iam: IAMDriver = {
     id: native.id,
     capability: native.capability,
     implementation: native.implementation,
     lookupIdentity: (input) => native.lookupIdentity(input),
-    authorize: async (request) => transform(await native.authorize(request)),
+    async authorize(request) {
+      // Inject malformed replies only where the controller receives the selected Driver's decision.
+      return transform(await native.authorize(request)) as AuthorizationDecision;
+    },
   };
   const controller = new OpenClawController({
     id: installationId,
@@ -187,6 +211,7 @@ test("IAM decision reasons must be strings before an installation-admin read", a
   const app = createFastifyApp({
     controller,
     iamDriver: iam,
+    resolveHarness: resolveApprovedProductionHarness,
     auditSink: new InMemoryAuditSink(),
     development: { enabled: false, installationId },
     auth: authFixture.auth,
@@ -197,31 +222,36 @@ test("IAM decision reasons must be strings before an installation-admin read", a
   });
   t.after(() => app.close());
   const session = await signInToControllerApp(app, authFixture);
+  const injectControllerJson: (
+    controllerApp: typeof app,
+    method: "GET",
+    path: string,
+    options: Parameters<typeof injectJson>[3],
+  ) => ReturnType<typeof app.inject> = injectJson;
   const read = () =>
-    injectJson(app, "GET", "/observability", { session, remoteAddress: "127.0.0.1" });
+    injectControllerJson(app, "GET", "/observability", { session, remoteAddress: "127.0.0.1" });
+
+  async function assertRefusedRead(
+    status: 403 | 503,
+    code: "DEPENDENCY_UNAVAILABLE" | "FORBIDDEN",
+  ) {
+    const before = protectedReads;
+    assertApiError(await read(), status, code);
+    assert.equal(protectedReads, before, "a refused request must not read the protected setting");
+  }
 
   for (const [name, reason] of [
     ["omitted", undefined],
     ["null", null],
     ["number", 42],
     ["object", {}],
-  ]) {
+  ] satisfies [string, TestAuthorizationReply["reason"]][]) {
     await t.test(name, async () => {
       transform = (decision) => {
-        const result = { ...decision, reason };
-        if (reason === undefined) {
-          delete result.reason;
-        }
-        return result;
+        const { reason: _originalReason, ...rest } = decision;
+        return reason === undefined ? rest : { ...rest, reason };
       };
-      const before = protectedReads;
-      const response = await read();
-      assertApiError(response, 503, "DEPENDENCY_UNAVAILABLE");
-      assert.equal(
-        protectedReads,
-        before,
-        "a malformed decision must not read the protected setting",
-      );
+      await assertRefusedRead(503, "DEPENDENCY_UNAVAILABLE");
     });
   }
   for (const reason of ["Allowed by the selected IAM Driver.", ""]) {
@@ -230,7 +260,9 @@ test("IAM decision reasons must be strings before an installation-admin read", a
       const before = protectedReads;
       const response = await read();
       assert.equal(response.statusCode, 200);
-      assert.deepEqual(response.json().data, { url: "https://metrics.example.test" });
+      const reply = response.json<unknown>();
+      assert.ok(Check(ObservabilityResponse, reply), "expected an observability response");
+      assert.deepEqual(reply.data, { url: "https://metrics.example.test" });
       assert.equal(protectedReads, before + 1);
     });
   }
@@ -238,12 +270,9 @@ test("IAM decision reasons must be strings before an installation-admin read", a
     for (const invalid of [
       (decision) => ({ ...decision, driverId: "another-driver" }),
       (decision) => ({ ...decision, evidence: { ...decision.evidence, roleIds: null } }),
-    ]) {
+    ] satisfies (typeof transform)[]) {
       transform = invalid;
-      const before = protectedReads;
-      const response = await read();
-      assertApiError(response, 503, "DEPENDENCY_UNAVAILABLE");
-      assert.equal(protectedReads, before);
+      await assertRefusedRead(503, "DEPENDENCY_UNAVAILABLE");
     }
   });
   await t.test("a genuine Restriction remains forbidden", async () => {
@@ -251,23 +280,14 @@ test("IAM decision reasons must be strings before an installation-admin read", a
     restrictions = [
       { id: "deny-admin-read", action: "administer", resourceKind: "installation", effect: "deny" },
     ];
-    const before = protectedReads;
-    const response = await read();
-    assertApiError(response, 403, "FORBIDDEN");
-    assert.equal(protectedReads, before);
+    await assertRefusedRead(403, "FORBIDDEN");
   });
 });
 
 test("compute operation cancellation disconnects an actual in-flight HTTP request", async (t) => {
   // Hold a real server request open so cancelling its operation is observable as a disconnect.
-  let received;
-  const requestReceived = new Promise((resolve) => {
-    received = resolve;
-  });
-  let disconnected;
-  const requestDisconnected = new Promise((resolve) => {
-    disconnected = resolve;
-  });
+  const { promise: requestReceived, resolve: received } = Promise.withResolvers<void>();
+  const { promise: requestDisconnected, resolve: disconnected } = Promise.withResolvers<void>();
   const server = createServer((request) => {
     request.once("close", disconnected);
     received();
@@ -275,11 +295,13 @@ test("compute operation cancellation disconnects an actual in-flight HTTP reques
   const endpoint = `http://127.0.0.1:${await listen(t, server)}`;
   const cancellation = new AbortController();
 
-  // This proves operation-context transport cancellation; it does not simulate a database lease.
-  const operation = withComputeAbortSignal(cancellation.signal, async () =>
-    fetch(`${endpoint}/pending`, { signal: currentComputeAbortSignal() }),
-  );
-  await requestReceived;
+  // Require the operation context to carry the same signal down to the HTTP request.
+  const operation = withComputeAbortSignal(cancellation.signal, async () => {
+    const signal = currentComputeAbortSignal();
+    assert.equal(signal, cancellation.signal);
+    return fetch(`${endpoint}/pending`, { signal });
+  });
+  await Promise.race([requestReceived, operation]);
   cancellation.abort(new Error("The compute operation was cancelled."));
 
   await assert.rejects(operation, /operation was cancelled/i);
