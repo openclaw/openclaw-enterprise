@@ -341,7 +341,7 @@ export async function fixtureImageCommands(
         { env },
       ),
     warmImageCache: (args: string[] = []) =>
-      run("prepare.mjs", ["--warm-image-cache", "--state", statePath, ...args]),
+      run("warm-image-cache.ts", ["--state", statePath, ...args]),
     prepareFile: (file: string) =>
       run("prepare.mjs", ["--lane", lane, "--file", file, "--state", statePath]),
     cleanup,
