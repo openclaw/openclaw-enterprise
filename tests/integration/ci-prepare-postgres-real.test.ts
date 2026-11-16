@@ -9,7 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
 import { setEnvironment } from "../helpers/environment.ts";
-import { attachKeycloakToK3d, attachPostgresToK3d } from "../helpers/k3d-postgres-network.mjs";
+import { attachKeycloakToK3d, attachPostgresToK3d } from "../helpers/k3d-postgres-network.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -325,8 +325,6 @@ if (command === "ps" && args.includes("--no-trunc") && args.includes("{{.ID}}"))
   } else {
     throw new Error("Unexpected recording engine filter " + JSON.stringify(args));
   }
-} else if (command === "ps" && args.includes("{{.Names}}")) {
-  console.log("postgres");
 } else if (command === "inspect" && field === "{{.Id}}") {
   console.log(reference === server ? serverId : reference === container ? container : selected);
 } else if (command === "inspect" && field === "{{json .NetworkSettings.Networks}}") {
@@ -518,7 +516,7 @@ if (command === "ps" && args.includes("--no-trunc") && args.includes("{{.ID}}"))
           "--input-type=module",
           "--eval",
           `import { attachPostgresToK3d } from ${JSON.stringify(
-            new URL("../helpers/k3d-postgres-network.mjs", import.meta.url).href,
+            new URL("../helpers/k3d-postgres-network.ts", import.meta.url).href,
           )};
         await attachPostgresToK3d(() => {});`,
         ],
