@@ -14,7 +14,7 @@ import {
   NATIVE_ADMIN_DENIED,
   nativeAdminOffDenied,
 } from "../helpers/refusal-text.mjs";
-import { grantRole, restrict } from "../helpers/iam-grants.mjs";
+import { grantRole, restrict } from "../helpers/iam-grants.ts";
 import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -34,7 +34,7 @@ import {
   createHarnessConfiguration,
   withNativeAdminGateway,
 } from "../helpers/harness-configuration.mjs";
-import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
+import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.ts";
 import { selfSigned } from "../helpers/certificates.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { registerNativeAdminHttpIntegrityCases } from "./native-admin-http-integrity-cases.ts";

@@ -3,7 +3,7 @@ import { closeWorkerComposition } from "../../apps/controller/src/worker/shutdow
 import assert from "node:assert/strict";
 import { stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";

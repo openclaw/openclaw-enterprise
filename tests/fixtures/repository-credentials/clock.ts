@@ -1,22 +1,14 @@
-/**
- * @returns {{
- *   wallNow(): number,
- *   monotonicNow(): number,
- *   schedule(delayMs: number, callback: () => void): () => boolean,
- *   advance(milliseconds: number, wallDelta?: number): Promise<void>,
- *   pendingTimers(): number,
- *   deadlines(): number[],
- * }}
- */
+import { setImmediate } from "node:timers/promises";
+
 export function createControlledClock(wallMs = Date.now()) {
   let wall = wallMs;
   let mono = 0;
   let sequence = 0;
-  const scheduled = new Map();
+  const scheduled = new Map<number, { at: number; callback: () => void }>();
   return Object.freeze({
     wallNow: () => wall,
     monotonicNow: () => mono,
-    schedule(delayMs, callback) {
+    schedule(delayMs: number, callback: () => void) {
       if (!Number.isFinite(delayMs) || delayMs < 0) {
         throw new Error("invalid fixture timer");
       }
@@ -24,7 +16,7 @@ export function createControlledClock(wallMs = Date.now()) {
       scheduled.set(id, { at: mono + delayMs, callback });
       return () => scheduled.delete(id);
     },
-    async advance(milliseconds, wallDelta = milliseconds) {
+    async advance(milliseconds: number, wallDelta = milliseconds) {
       if (!Number.isFinite(milliseconds) || milliseconds < 0) {
         throw new Error("invalid clock advance");
       }
@@ -33,7 +25,7 @@ export function createControlledClock(wallMs = Date.now()) {
       for (let round = 0; round < 1000; round++) {
         const ready = [...scheduled.entries()].filter(([, timer]) => timer.at <= mono);
         if (!ready.length) {
-          await new Promise((resolve) => setImmediate(resolve));
+          await setImmediate();
           if (![...scheduled.values()].some((timer) => timer.at <= mono)) {
             return;
           }
@@ -44,7 +36,7 @@ export function createControlledClock(wallMs = Date.now()) {
             timer.callback();
           }
         }
-        await new Promise((resolve) => setImmediate(resolve));
+        await setImmediate();
       }
       throw new Error("fixture timer loop did not settle");
     },

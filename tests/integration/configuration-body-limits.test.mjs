@@ -5,7 +5,7 @@ import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers
 import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import {
   assertWriteAuthorizationDenial,
   partialWrite,

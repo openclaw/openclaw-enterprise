@@ -8,7 +8,7 @@ import { isIP } from "node:net";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cleanEnvironment, run } from "./repository-credentials/process.mjs";
+import { cleanEnvironment, run } from "./repository-credentials/process.ts";
 import { createTokenAuthority } from "./repository-credentials/github/token-authority.ts";
 import { fixtureAppId, fixtureInstallationId } from "./repository-credentials/github/metadata.ts";
 

@@ -48,7 +48,7 @@ import { installEgressAuthority } from "../../apps/controller/src/composition/eg
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
-import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
+import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
 

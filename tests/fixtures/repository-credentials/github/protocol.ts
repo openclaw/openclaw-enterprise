@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { KeyObject } from "node:crypto";
 import type { IncomingMessage, OutgoingHttpHeaders, ServerResponse } from "node:http";
-import { sharedRsaKeyPair } from "../shared-keys.mjs";
+import { sharedRsaKeyPair } from "../shared-keys.ts";
 import { fixtureInstallationId, fixtureRepository, fixtureRepositoryId } from "./metadata.ts";
 import { createTokenAuthority, type Permissions, type WallClock } from "./token-authority.ts";
 import {

@@ -73,7 +73,7 @@ const execute = promisify(execFile);
 
 // Returns the openssl key arguments: `-key keyPath` after writing `keyPem` there, or
 // arguments that generate a fresh P-256 key at `keyPath` (much faster than RSA). Shared
-// fixture keys (shared-keys.mjs) save the generation entirely where a test needs RSA.
+// fixture keys (shared-keys.ts) save the generation entirely where a test needs RSA.
 async function keyArguments(keyPath: string, keyPem: string | undefined): Promise<string[]> {
   if (keyPem === undefined) {
     return [

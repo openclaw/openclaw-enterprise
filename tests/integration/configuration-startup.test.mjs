@@ -52,7 +52,7 @@ import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
   createInstallationDriverConfiguration as installation,
 } from "../helpers/installation-driver-configuration.mjs";
-import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
+import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
 import { socketDirectory } from "../helpers/socket-directory.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 

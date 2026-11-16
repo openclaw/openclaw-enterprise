@@ -87,7 +87,7 @@ import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.ts";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
 import { memberRole } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
 import { SECRET_OPERATE_DENIED } from "../helpers/refusal-text.mjs";
 import { waitUntil } from "../helpers/wait-for.ts";
 

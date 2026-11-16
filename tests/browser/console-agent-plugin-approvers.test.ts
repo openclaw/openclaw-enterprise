@@ -43,7 +43,7 @@ import {
   SECRET_CREATE_DENIED,
   SLACK_LOOKUP_DENIED,
 } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
 
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 

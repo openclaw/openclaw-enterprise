@@ -84,7 +84,7 @@ import {
   NAMESPACE_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 
 function deferred<T>() {
   let resolve: (value: T | PromiseLike<T>) => void = () =>

@@ -10,10 +10,10 @@ import {
   createTlsMaterial,
   listen,
   temporaryDirectory,
-} from "../../repository-credentials/process.mjs";
-import { startGitSmartHttpFixture } from "../../repository-credentials/git.mjs";
+} from "../../repository-credentials/process.ts";
+import { startGitSmartHttpFixture } from "../../repository-credentials/git.ts";
 import { createRepositoryResources } from "../../repository-credentials/github/repository-resources.ts";
-import { sharedRsaKeyPair } from "../../repository-credentials/shared-keys.mjs";
+import { sharedRsaKeyPair } from "../../repository-credentials/shared-keys.ts";
 
 export async function installationOrigin(
   t: TestContext,

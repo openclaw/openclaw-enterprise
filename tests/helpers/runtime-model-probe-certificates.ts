@@ -1,4 +1,4 @@
-import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
+import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.ts";
 import { caAndLeaf, type OpenSslRunner } from "./certificates.ts";
 
 interface ModelProbeCertificateOptions {

@@ -4,7 +4,7 @@ import { createServer } from "node:https";
 import { readFile, chmod, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { credentialDriverModule } from "../fixtures/repository-credentials/runtime.mjs";
+import { credentialDriverModule } from "../fixtures/repository-credentials/runtime.ts";
 import { runPinnedClients } from "../fixtures/repository-credentials/clients.ts";
 import { removeRemoteBranches } from "../fixtures/repository-credentials/workflows.ts";
 import {
@@ -17,7 +17,7 @@ import {
   listen,
   run,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 
 test("a BOM-prefixed public CA published for a client session verifies Git HTTPS", async (t) => {
   const parent = await realpath(await temporaryDirectory(t, "repository-credentials-live-ca-"));

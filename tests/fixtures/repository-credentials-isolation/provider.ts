@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer, request } from "node:https";
 import type { Socket } from "node:net";
 import { startGitHubFixture } from "../repository-credentials/github.ts";
-import { startGitSmartHttpFixture } from "../repository-credentials/git.mjs";
+import { startGitSmartHttpFixture } from "../repository-credentials/git.ts";
 
 export type ProviderReport = {
   ready: boolean;
