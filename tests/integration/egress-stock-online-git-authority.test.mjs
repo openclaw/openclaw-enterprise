@@ -21,7 +21,7 @@ import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { signedLeaf } from "../helpers/certificates.ts";
 import { listen } from "../helpers/listen.ts";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
-import { waitFor } from "../helpers/qa-utils.mjs";
+import { waitFor } from "../helpers/qa-wait.ts";
 
 const binding = {
   sandboxId: "immutable-sandbox-id",

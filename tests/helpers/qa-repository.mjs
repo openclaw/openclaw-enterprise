@@ -26,7 +26,8 @@ import {
   readQaRepositoryUpstreamPolicy,
   selectPreparedQaRepository,
 } from "./qa-repository-preparation.ts";
-import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
+import { dumpYaml, loadYaml, yamlMapping } from "./kubernetes-yaml.ts";
+import { waitFor } from "./qa-wait.ts";
 import { protectedText, redactedQaTail, registerQaSecret } from "./qa-secrets.ts";
 
 // Run where prepared GitHub issuance runs, before any QA Agent binds this repository.
@@ -256,7 +257,8 @@ export async function prepareQaRepository(f) {
   ]);
   await write("inputs/config.json", qaRepositoryServiceConfig(registry, host));
   const path = join(f.stateDirectory, "compose.yaml");
-  const compose = loadYaml(await readFile(path, "utf8"));
+  const compose = yamlMapping(loadYaml(await readFile(path, "utf8")));
+  const services = yamlMapping(compose, "services");
   const mount = (source, target, readOnly = true) => ({
     type: "volume",
     source: `qa-repository-${source}`,
@@ -334,7 +336,7 @@ export async function prepareQaRepository(f) {
       await f.run("docker", ["volume", "rm", name]);
     }
   };
-  compose.volumes ??= {};
+  const composeVolumes = yamlMapping((compose.volumes ??= {}));
   for (const [name, volume] of Object.entries(volumes)) {
     assert.equal(
       (
@@ -360,7 +362,7 @@ export async function prepareQaRepository(f) {
     const [result] = JSON.parse(await f.run("docker", ["volume", "inspect", volume]));
     assert.equal(result.Labels?.["openclaw.dev/qa-repository"], f.suffix);
     created.push(volume);
-    compose.volumes[`qa-repository-${name}`] = { external: true, name: volume };
+    composeVolumes[`qa-repository-${name}`] = { external: true, name: volume };
   }
   const files = {};
   for (const [name, names] of Object.entries(volumeFiles)) {
@@ -478,7 +480,7 @@ export async function prepareQaRepository(f) {
     storage: "run-owned Docker volumes",
     paths: inputOwnership,
   });
-  compose.services["repository-credentials"] = {
+  services["repository-credentials"] = {
     image,
     entrypoint: ["node", "/app/dist/repository-credentials.js"],
     command: ["--config", "/etc/openclaw/repository-inputs/config.json"],
@@ -494,12 +496,14 @@ export async function prepareQaRepository(f) {
     ],
   };
   for (const name of ["controller", "worker-kubernetes"]) {
-    compose.services[name].volumes.push(
+    const serviceVolumes = yamlMapping(services, name).volumes;
+    assert.ok(Array.isArray(serviceVolumes), `expected volumes for ${name}`);
+    serviceVolumes.push(
       mount("registry", "/etc/openclaw/repository-registry"),
       mount("ca", "/etc/openclaw/repository-ca"),
     );
     if (name === "worker-kubernetes") {
-      compose.services[name].volumes.push(
+      serviceVolumes.push(
         mount("control", "/run/openclaw/repository-control", false),
         mount("prepared", PREPARED_REPOSITORY_DIRECTORY),
       );
