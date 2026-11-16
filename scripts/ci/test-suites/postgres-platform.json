@@ -42,7 +42,7 @@
     "tests/integration/postgres-controller-work-targets.test.ts",
     "tests/integration/postgres-transaction-commit.test.mjs",
     "tests/integration/postgres-agent-sandbox-policy.test.mjs",
-    "tests/integration/postgres-static-egress.test.mjs",
+    "tests/integration/postgres-static-egress.test.ts",
     "tests/integration/postgres-static-retired-admission.test.ts",
     "tests/integration/postgres-prepared-token-service.test.ts",
     "tests/integration/postgres-prepared-github-lifecycle.test.ts",
@@ -62,7 +62,7 @@
     "tests/integration/postgres-openshell-standing-selected-repository.test.ts",
     "tests/integration/postgres-openshell-standing-cold-worker.test.ts",
     "tests/integration/postgres-egress-send-receipts.test.ts",
-    "tests/integration/postgres-protected-credential-free.test.mjs",
+    "tests/integration/postgres-protected-credential-free.test.ts",
     "tests/integration/postgres-standing-approval-api.test.ts",
     "tests/integration/postgres-standing-repository-boundary.test.ts",
     "tests/integration/postgres-standing-execution.test.ts",
@@ -567,7 +567,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-static-egress.test.mjs"
+      "path": "tests/integration/postgres-static-egress.test.ts"
     },
     {
       "path": "tests/integration/postgres-static-retired-admission.test.ts",
@@ -590,7 +590,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-protected-credential-free.test.mjs",
+      "path": "tests/integration/postgres-protected-credential-free.test.ts",
       "expectedTests": [
         "explicit protected credential-free metadata: both gates, false selections, lost COMMIT and last withdrawal"
       ]
