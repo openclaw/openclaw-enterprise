@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { connect, createServer } from "node:net";
+import { connect, createServer, type Socket } from "node:net";
 import { Duplex } from "node:stream";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { listen } from "./listen.ts";
@@ -12,12 +12,13 @@ import { relaySockets } from "./socket-relay.ts";
 // The client side of the relay. With `hold`, each write completes only when the test
 // releases it, as when a slow reader keeps the kernel send buffer full and Node queues the
 // chunk. destroy() discards held and buffered writes, as net.Socket cancels queued writes.
-function relayClient({ hold }) {
-  const held = [];
-  const received = [];
+function relayClient(t: TestContext, upstream: Socket, { hold }: { hold: boolean }) {
+  const held: (() => void)[] = [];
+  const received: Buffer[] = [];
   const socket = new Duplex({
     read() {},
-    write(chunk, _encoding, callback) {
+    // Duplex decodes strings to Buffer in its default byte mode.
+    write(chunk: Buffer, _encoding, callback) {
       const deliver = () => {
         received.push(chunk);
         callback();
@@ -28,6 +29,10 @@ function relayClient({ hold }) {
         deliver();
       }
     },
+  });
+  t.after(() => {
+    socket.destroy();
+    upstream.destroy();
   });
   return {
     socket,
@@ -48,8 +53,8 @@ test(
       t,
       createServer((socket) => socket.end(payload)),
     );
-    const client = relayClient({ hold: true });
     const upstream = connect(port, "127.0.0.1");
+    const client = relayClient(t, upstream, { hold: true });
     let heldAtUpstreamClose = 0;
     upstream.once("close", () => {
       heldAtUpstreamClose = client.held.length;
@@ -83,8 +88,9 @@ test("relay destroys the client when the upstream resets", { timeout: 20000 }, a
     t,
     createServer((socket) => socket.write("partial", () => socket.resetAndDestroy())),
   );
-  const client = relayClient({ hold: false });
-  relaySockets(client.socket, connect(port, "127.0.0.1"));
+  const upstream = connect(port, "127.0.0.1");
+  const client = relayClient(t, upstream, { hold: false });
+  relaySockets(client.socket, upstream);
 
   // An ended Duplex client would finish but never close: it never ends its readable side.
   await once(client.socket, "close", { signal: AbortSignal.timeout(5000) });

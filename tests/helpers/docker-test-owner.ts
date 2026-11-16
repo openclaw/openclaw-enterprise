@@ -1,11 +1,6 @@
-// Containers, volumes and networks an image test creates are not children of the test
-// process. When a signal stops the test runner (a cancelled CI job, `timeout`, a stopped
-// local run), Node exits without running `t.after` hooks, and those containers keep running
-// for hours, with their CPU, memory and volumes. runDockerCommand labels each resource it
-// creates with this process's owner value, so:
-// - on SIGINT or SIGTERM this process removes the resources it owns before it exits;
-// - after SIGKILL, which no process can handle, a later cleanup can still tell an orphan:
-//   the label's host is the local host and no live process has that pid and start time.
+// Docker resources outlive a cancelled test runner. Label containers, volumes and networks
+// so the runner can remove its own resources on SIGINT or SIGTERM and orphan cleanup can
+// identify them by host, PID and process start time after SIGKILL.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
@@ -14,7 +9,7 @@ export const testOwnerLabel = "org.openclaw.test.owner";
 
 // "<host>/<pid>/<start>": the start (clock ticks after boot, /proc/<pid>/stat field 22)
 // separates this process from a later one that reuses its pid. "-" where /proc is missing.
-function processStartTicks() {
+function processStartTicks(): string {
   try {
     const stat = readFileSync("/proc/self/stat", "utf8");
     return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] ?? "-";
@@ -25,7 +20,7 @@ function processStartTicks() {
 export const testOwner = `${hostname()}/${process.pid}/${processStartTicks()}`;
 
 // Where the label goes for each Docker command that creates a resource.
-function labelPosition([command, subcommand]) {
+function labelPosition([command, subcommand]: readonly unknown[]): number {
   if (command === "run" || command === "create") {
     return 1;
   }
@@ -38,20 +33,23 @@ function labelPosition([command, subcommand]) {
   return -1;
 }
 
-let cleanupDocker;
+let cleanupRegistered = false;
 
 // Returns `args` with the owner label when the command creates a resource, and from then on
 // removes this process's resources on SIGINT and SIGTERM.
-export function withTestOwnerLabel(dockerBin, args) {
+export function withTestOwnerLabel<Argument>(
+  dockerBin: string,
+  args: readonly Argument[],
+): readonly (Argument | string)[] {
   const at = labelPosition(args);
   if (at < 0) {
     return args;
   }
-  if (cleanupDocker === undefined) {
-    cleanupDocker = dockerBin;
-    for (const signal of ["SIGINT", "SIGTERM"]) {
+  if (!cleanupRegistered) {
+    cleanupRegistered = true;
+    for (const signal of ["SIGINT", "SIGTERM"] satisfies NodeJS.Signals[]) {
       const handler = () => {
-        removeOwnedResources();
+        removeOwnedResources(dockerBin);
         process.removeListener(signal, handler);
         // The test runner's own handler, when present, reports and exits; without one,
         // end the process as the signal would have.
@@ -66,11 +64,11 @@ export function withTestOwnerLabel(dockerBin, args) {
 }
 
 // Synchronous: the process exits right after the signal handlers return.
-function removeOwnedResources() {
+function removeOwnedResources(dockerBin: string) {
   const filter = `label=${testOwnerLabel}=${testOwner}`;
-  const docker = (args) => {
+  const docker = (args: readonly string[]): string[] => {
     try {
-      return execFileSync(cleanupDocker, args, {
+      return execFileSync(dockerBin, args, {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 20_000,
@@ -81,16 +79,24 @@ function removeOwnedResources() {
       return [];
     }
   };
-  const containers = docker(["ps", "-aq", "--filter", filter]);
-  if (containers.length > 0) {
-    docker(["rm", "-f", "-v", ...containers]);
-  }
-  const volumes = docker(["volume", "ls", "-q", "--filter", filter]);
-  if (volumes.length > 0) {
-    docker(["volume", "rm", "-f", ...volumes]);
-  }
-  const networks = docker(["network", "ls", "-q", "--filter", filter]);
-  if (networks.length > 0) {
-    docker(["network", "rm", ...networks]);
+  // Remove containers first so their mounts and network attachments are released.
+  for (const [listArgs, removeArgs] of [
+    [
+      ["ps", "-aq"],
+      ["rm", "-f", "-v"],
+    ],
+    [
+      ["volume", "ls", "-q"],
+      ["volume", "rm", "-f"],
+    ],
+    [
+      ["network", "ls", "-q"],
+      ["network", "rm"],
+    ],
+  ] satisfies [string[], string[]][]) {
+    const owned = docker([...listArgs, "--filter", filter]);
+    if (owned.length > 0) {
+      docker([...removeArgs, ...owned]);
+    }
   }
 }
