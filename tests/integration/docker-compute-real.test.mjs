@@ -17,7 +17,8 @@ import { asRecord } from "../../packages/utils/src/index.ts";
 import { assertDockerRuntimeOtelSettings } from "../helpers/logging-otel-runtime-settings.ts";
 import { availablePort } from "../helpers/available-port.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
-import { browserEnvironment } from "../helpers/compose.mjs";
+import { browserEnvironment } from "../helpers/compose.ts";
+import { selectComposeSubnet } from "../helpers/compose-network.ts";
 
 const executeFile = promisify(execFile);
 
@@ -732,7 +733,6 @@ test(
       ...browserEnvironment,
       COMPOSE_PROJECT_NAME: project,
       OCC_POSTGRES_PORT: String(await availablePort()),
-      OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR: randomComposeSubnet(),
       OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker",
       OCC_DEVELOPMENT_CONTAINER_ENGINE: engineBinary,
       OPENAI_API_KEY: "",
@@ -743,6 +743,17 @@ test(
         env,
       });
       env.OCC_CONTAINER_ENGINE_SOCKET = stdout.trim().replace(/^unix:\/\//, "");
+      env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = randomComposeSubnet();
+    } else {
+      const inventoryEnv = {
+        ...env,
+        OPENAI_API_KEY_FILE: undefined,
+        CODEX_ACCESS_TOKEN: undefined,
+        CODEX_ACCESS_TOKEN_FILE: undefined,
+      };
+      env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = await selectComposeSubnet({
+        runDocker: async (args) => (await docker(args, { env: inventoryEnv })).stdout,
+      });
     }
     context.after(() => cleanupProject(project, env, [], { verify: true }));
 
