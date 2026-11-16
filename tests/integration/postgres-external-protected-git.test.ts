@@ -34,7 +34,7 @@ import {
   listen,
   run,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 import { registerCoreDrivers } from "../helpers/postgres-backend-state.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";

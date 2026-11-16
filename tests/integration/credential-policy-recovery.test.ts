@@ -25,7 +25,7 @@ import {
   repositoryCredentials,
 } from "../fixtures/repository-credentials/session-state.ts";
 import { createDriver } from "../fixtures/driver-packages/protected-execution-driver/index.ts";
-import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
+import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.ts";
 
 test("Git reduction recovery observes its original operation despite discovery failure", async (t) => {
   const state = new InMemoryPlatformState();

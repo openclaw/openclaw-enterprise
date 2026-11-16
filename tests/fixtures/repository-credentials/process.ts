@@ -1,8 +1,13 @@
+/// <reference lib="es2024.promise" />
+
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import type { Server, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sharedRsaPrivateKeyPem } from "./shared-keys.mjs";
+
+import type { CleanupRegistrar } from "../../helpers/console-file-app.ts";
+import { sharedRsaPrivateKeyPem } from "./shared-keys.ts";
 
 // Fixture children start from this allowlist rather than the runner's environment,
 // and every Git they start inherits it. A commit, merge or receive-pack otherwise
@@ -12,8 +17,10 @@ import { sharedRsaPrivateKeyPem } from "./shared-keys.mjs";
 // objects. The entry has command-line scope, so no repository or system config turns
 // it back on. Callers passing their own GIT_CONFIG_* replace it and must set every
 // index. Git drops it for the receiving side of a local push, so a repository that
-// receives one sets maintenance.auto=false itself (git.mjs, the router test's target).
-export function cleanEnvironment(extra = {}) {
+// receives one sets maintenance.auto=false itself (git.ts, the router test's target).
+export function cleanEnvironment(extra?: Record<string, string>): Record<string, string>;
+export function cleanEnvironment(extra: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+export function cleanEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     PATH: "/usr/local/bin:/usr/bin:/bin",
     LANG: "C.UTF-8",
@@ -28,19 +35,29 @@ export function cleanEnvironment(extra = {}) {
 
 export class FixtureCommandTimeoutError extends Error {}
 
-/**
- * @param {string} command
- * @param {readonly string[]} [args]
- * @param {{cwd?: string | URL | undefined, env?: NodeJS.ProcessEnv | undefined,
- *   input?: string | NodeJS.ArrayBufferView | undefined, timeout?: number | undefined,
- *   allowFailure?: boolean | undefined, signal?: AbortSignal | undefined}} [options]
- * @returns {Promise<{code: number | null, stdout: string, stderr: string}>}
- */
+export type FixtureCommandOptions = {
+  cwd?: string | URL | undefined;
+  env?: NodeJS.ProcessEnv | undefined;
+  input?: string | NodeJS.ArrayBufferView | undefined;
+  timeout?: number | undefined;
+  allowFailure?: boolean | undefined;
+  signal?: AbortSignal | undefined;
+};
+
+export type FixtureCommandResult = { code: number | null; stdout: string; stderr: string };
+
 export async function run(
-  command,
-  args,
-  { cwd, env = cleanEnvironment(), input, timeout = 30000, allowFailure = false, signal } = {},
-) {
+  command: string,
+  args?: readonly string[],
+  {
+    cwd,
+    env = cleanEnvironment(),
+    input,
+    timeout = 30000,
+    allowFailure = false,
+    signal,
+  }: FixtureCommandOptions = {},
+): Promise<FixtureCommandResult> {
   if (process.platform === "win32") {
     throw new Error("fixture requires POSIX process groups");
   }
@@ -56,9 +73,9 @@ export async function run(
   let stdout = "";
   let stderr = "";
   let bytes = 0;
-  let failure;
-  let joinTimer;
-  let finish;
+  let failure: string | undefined;
+  let joinTimer: NodeJS.Timeout | undefined;
+  const { promise: closed, resolve: finish } = Promise.withResolvers<number | null>();
   // The launcher and its Git/gh children inherit this private process group.
   // Killing only the launcher leaves descendants holding the output pipes.
   const killGroup = () => {
@@ -68,12 +85,12 @@ export async function run(
     try {
       process.kill(-child.pid, "SIGKILL");
     } catch (error) {
-      if (error.code !== "ESRCH") {
+      if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) {
         failure ??= "termination failed";
       }
     }
   };
-  const stop = (reason) => {
+  const stop = (reason: string) => {
     failure ??= reason;
     killGroup();
     joinTimer ??= setTimeout(() => {
@@ -84,7 +101,7 @@ export async function run(
       finish(null);
     }, 1000);
   };
-  const collect = (kind, chunk) => {
+  const collect = (kind: "stdout" | "stderr", chunk: Buffer) => {
     if (failure) {
       return;
     }
@@ -92,20 +109,16 @@ export async function run(
     if (bytes > 2 * 1024 * 1024) {
       stop("output overflow");
     } else if (kind === "stdout") {
-      stdout += chunk;
+      stdout += chunk.toString();
     } else {
-      stderr += chunk;
+      stderr += chunk.toString();
     }
   };
-  child.stdout.on("data", (chunk) => collect("stdout", chunk));
-  child.stderr.on("data", (chunk) => collect("stderr", chunk));
+  child.stdout.on("data", (chunk: Buffer) => collect("stdout", chunk));
+  child.stderr.on("data", (chunk: Buffer) => collect("stderr", chunk));
   child.stdin.on("error", () => {});
-  /** @type {Promise<number | null>} */
-  const closed = new Promise((resolve) => {
-    finish = resolve;
-    child.once("error", () => stop("spawn failed"));
-    child.once("close", resolve);
-  });
+  child.once("error", () => stop("spawn failed"));
+  child.once("close", finish);
   const cancelled = () => stop("cancelled");
   signal?.addEventListener("abort", cancelled, { once: true });
   const timer = setTimeout(() => stop("timeout"), timeout);
@@ -132,18 +145,17 @@ export async function run(
   }
 }
 
-export async function temporaryDirectory(t, prefix = "repository-credentials-") {
+export async function temporaryDirectory(t: CleanupRegistrar, prefix = "repository-credentials-") {
   const directory = await mkdtemp(join(tmpdir(), prefix));
   t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
 
-// One self-signed certificate per process on the shared fixture key (shared-keys.mjs), minted by
+// One self-signed certificate per process on the shared fixture key (shared-keys.ts), minted by
 // the first call in a directory of its own. Every certificate minted from that key and subject
 // would verify the others anyway, so later calls lose nothing by reusing it; each still gets its
 // own key and cert files.
-/** @type {ReturnType<typeof mintFixtureCertificate> | undefined} */
-let fixtureCertificate;
+let fixtureCertificate: ReturnType<typeof mintFixtureCertificate> | undefined;
 
 async function mintFixtureCertificate() {
   const directory = await mkdtemp(join(tmpdir(), "repository-credentials-tls-mint-"));
@@ -173,7 +185,7 @@ async function mintFixtureCertificate() {
   }
 }
 
-export async function createTlsMaterial(t) {
+export async function createTlsMaterial(t: CleanupRegistrar) {
   if (fixtureCertificate === undefined) {
     fixtureCertificate = mintFixtureCertificate();
     fixtureCertificate.catch(() => {
@@ -198,13 +210,13 @@ export async function createTlsMaterial(t) {
 // Like tests/helpers/listen.ts (note: positional `port` before `host`, and it returns an
 // https URL), but self-contained: the isolation fixture mounts this directory alone into
 // its containers, where tests/helpers is absent.
-export async function listen(t, server, port = 0, host = "127.0.0.1") {
-  const sockets = new Set();
+export async function listen(t: CleanupRegistrar, server: Server, port = 0, host = "127.0.0.1") {
+  const sockets = new Set<Socket>();
   server.on("connection", (socket) => {
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
   });
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject: (reason: unknown) => void) => {
     server.once("error", reject);
     server.listen(port, host, resolve);
   });
@@ -212,7 +224,11 @@ export async function listen(t, server, port = 0, host = "127.0.0.1") {
     for (const socket of sockets) {
       socket.destroy();
     }
-    await new Promise((resolve) => server.close(resolve));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   });
-  return `https://127.0.0.1:${server.address().port}`;
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("fixture requires a TCP listener");
+  }
+  return `https://127.0.0.1:${address.port}`;
 }

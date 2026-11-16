@@ -44,7 +44,7 @@ import {
   listen,
   run,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 
 // Both process-wide child_process mocks run before the concurrent suite.
 const launcher = resolve("apps/controller/src/drivers/repo/github/access/client/launch.ts");

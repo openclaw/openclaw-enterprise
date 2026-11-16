@@ -25,7 +25,7 @@ import type {
   GitHubTokenClass,
   GitHubTokenConfiguration,
 } from "../../apps/controller/src/drivers/repo/github/access/types.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import {
   githubConfigurationData,
   githubTokenConfigurationData,

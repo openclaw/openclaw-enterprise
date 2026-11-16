@@ -24,7 +24,7 @@ import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/re
 import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
 import { sessionAttempt } from "../conformance/repository-sessions.contract.ts";
 import { disposeBrokerSession, fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
-import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import {
   createLoopbackServiceConfiguration,

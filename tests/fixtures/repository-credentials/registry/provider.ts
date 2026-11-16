@@ -3,8 +3,8 @@ import type { ClientRequest } from "node:http";
 import type { RepositoryCredentialSessionResult } from "../../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import type { Clock } from "../../../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import { startGitHubFixture } from "../github.ts";
-import { startGitSmartHttpFixture } from "../git.mjs";
-import { listen, type createTlsMaterial } from "../process.mjs";
+import { startGitSmartHttpFixture } from "../git.ts";
+import { listen, type createTlsMaterial } from "../process.ts";
 import type { FixtureOwner } from "../resources.ts";
 import type { RegistryFixtureDefinition } from "./material.ts";
 

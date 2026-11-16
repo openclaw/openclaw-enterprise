@@ -16,7 +16,7 @@ import {
   withdrawDuringFetchCommand,
 } from "../fixtures/skipper-private-git-origin.mjs";
 import { createSkipperPreparedComputeEvents } from "../fixtures/skipper-prepared-compute-model.mjs";
-import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.mjs";
+import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.ts";
 

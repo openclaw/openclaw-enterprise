@@ -6,7 +6,7 @@ import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
