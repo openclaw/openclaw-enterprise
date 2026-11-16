@@ -7,6 +7,7 @@ import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { json } from "node:stream/consumers";
 import test from "node:test";
+import { asRecord } from "../../packages/utils/src/objects.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
   codexLaunchEntrypoint,
@@ -214,30 +215,42 @@ test(
       t.after(stop);
       return { stop, diagnostics: () => diagnostics };
     };
-    const getChallenge = async () =>
-      waitFor(
-        "authenticated enrollment challenge",
-        async () => {
-          assert.equal(
-            businessRequests,
-            0,
-            "startup must not send a business request before enrollment",
-          );
-          try {
-            const document = await transport.getServiceDocument(
-              serviceUrl,
-              path,
-              token,
-              AbortSignal.timeout(1000),
+    const getChallenge = async () => {
+      const challenge = asRecord(
+        await waitFor(
+          "authenticated enrollment challenge",
+          async () => {
+            assert.equal(
+              businessRequests,
+              0,
+              "startup must not send a business request before enrollment",
             );
-            return document.status === 200 && document.json;
-          } catch {
-            return undefined;
-          }
-        },
-        10000,
-        { interval: 20 },
+            try {
+              const document = await transport.getServiceDocument(
+                serviceUrl,
+                path,
+                token,
+                AbortSignal.timeout(1000),
+              );
+              return document.status === 200 && document.json;
+            } catch {
+              return undefined;
+            }
+          },
+          10000,
+          { interval: 20 },
+        ),
       );
+      assert.ok(challenge, "expected an enrollment challenge");
+      const { startupId } = challenge;
+      const execution = asRecord(challenge.execution);
+      const plan = asRecord(challenge.plan);
+      assert.ok(
+        typeof startupId === "string" && execution && plan,
+        "expected enrollment challenge fields",
+      );
+      return { ...challenge, startupId, execution, plan };
+    };
     const calls = async () =>
       (await readFile(callsPath, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
     const first = start();
