@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import type { Page, WebSocket } from "playwright";
 
-export function textFromFrame(frame) {
+type CapturedFrame = { readonly payload: string | Buffer };
+type SocketFrame = CapturedFrame & { readonly socket: WebSocket };
+type Poll = <Result>(description: string, observe: () => Result | undefined) => Promise<Result>;
+type StockUi = { snapshot(): { booted: boolean } };
+
+export function textFromFrame(frame?: { readonly payload?: unknown } | null): string {
   const payload = frame?.payload;
   if (typeof payload === "string") {
     return payload;
@@ -12,46 +18,96 @@ export function textFromFrame(frame) {
   return String(payload ?? "");
 }
 
-function messageText(message) {
-  if (typeof message?.content === "string") {
-    return message.content;
+function record(value: unknown): Record<string, unknown> | undefined {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
   }
-  if (Array.isArray(message?.content)) {
-    return message.content
-      .map((part) => (part?.type === "text" && typeof part.text === "string" ? part.text : ""))
-      .join("");
-  }
-  return "";
+  return undefined;
 }
 
-function terminalAssistantSessionMessage(frameText, marker, prompt) {
-  let parsed;
+function parseFrame(frame: CapturedFrame): unknown {
+  return JSON.parse(textFromFrame(frame));
+}
+
+function frameRecord(value: unknown) {
+  if (value === null) {
+    throw new TypeError("expected a non-null Gateway frame");
+  }
+  return record(value);
+}
+
+function terminalAssistantSessionMessage(frameText: string, marker: string, prompt: string) {
+  let parsed: unknown;
   try {
     parsed = JSON.parse(frameText);
   } catch {
     return false;
   }
-  if (parsed?.type !== "event" || parsed.event !== "session.message") {
+  const frame = record(parsed);
+  if (frame?.type !== "event" || frame.event !== "session.message") {
     return false;
   }
-  const message = parsed.payload?.message;
-  const text = messageText(message);
-  return (
-    message?.role === "assistant" &&
-    !["toolUse", "error", "aborted"].includes(message.stopReason) &&
-    !message.isError &&
-    text.includes(marker) &&
-    !text.includes(prompt)
+  const message = record(record(frame.payload)?.message);
+  if (
+    message?.role !== "assistant" ||
+    ["toolUse", "error", "aborted"].some((reason) => message.stopReason === reason) ||
+    message.isError
+  ) {
+    return false;
+  }
+  const { content } = message;
+  let text = "";
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content)) {
+    const parts: readonly unknown[] = content;
+    for (const value of parts) {
+      const part = record(value);
+      if (part?.type === "text" && typeof part.text === "string") {
+        text += part.text;
+      }
+    }
+  }
+  return text.includes(marker) && !text.includes(prompt);
+}
+
+function findFrame(
+  frames: readonly CapturedFrame[],
+  start: number,
+  matches: (frame: Record<string, unknown>) => boolean,
+) {
+  // Parse the complete slice so malformed JSON still fails after an earlier match.
+  return frames
+    .slice(start)
+    .map(parseFrame)
+    .find((value): value is Record<string, unknown> => {
+      const frame = frameRecord(value);
+      return frame !== undefined && matches(frame);
+    });
+}
+
+function chatRequest(frames: readonly CapturedFrame[], start: number, prompt: string) {
+  return findFrame(
+    frames,
+    start,
+    (frame) =>
+      frame.type === "req" &&
+      frame.method === "chat.send" &&
+      record(frame.params)?.message === prompt,
   );
 }
 
-export async function submitChatTurnWithAssistantProof(
-  page,
-  marker,
-  receivedFrames,
-  waitFor,
-  authenticate,
-) {
+function responseTo(frames: readonly CapturedFrame[], start: number, requestId: unknown) {
+  return findFrame(frames, start, (frame) => frame.type === "res" && frame.id === requestId);
+}
+
+export async function submitChatTurnWithAssistantProof<Frame extends CapturedFrame>(
+  page: Page,
+  marker: string,
+  receivedFrames: readonly Frame[],
+  waitFor: Poll,
+  authenticate?: () => void | Promise<void>,
+): Promise<Frame> {
   await page.goto(new URL("/new", page.url()).href);
   // Password authentication is held by the native UI in memory. Authenticate
   // after navigation so a reload cannot discard the connection being tested.
@@ -70,9 +126,12 @@ export async function submitChatTurnWithAssistantProof(
   );
 }
 
-export async function waitForStockUi(page) {
+export async function waitForStockUi(page: Page) {
   await page.waitForFunction(
-    () => globalThis.openclawControlUi?.snapshot().booted === true,
+    () =>
+      (
+        globalThis as typeof globalThis & { openclawControlUi?: StockUi }
+      ).openclawControlUi?.snapshot().booted === true,
     undefined,
     { timeout: 120_000 },
   );
@@ -96,10 +155,16 @@ export async function assertChatStreamStopAndResume({
   receivedFrames,
   sentFrames,
   waitFor,
+}: {
+  page: Page;
+  initialReply: SocketFrame;
+  initialMarker: string;
+  receivedFrames: readonly SocketFrame[];
+  sentFrames: readonly CapturedFrame[];
+  waitFor: Poll;
 }) {
-  const sessionKey = JSON.parse(textFromFrame(initialReply)).payload.sessionKey;
-  assert.equal(typeof sessionKey, "string");
-  assert.ok(sessionKey.length > 0);
+  const sessionKey = record(frameRecord(parseFrame(initialReply))?.payload)?.sessionKey;
+  assert.ok(typeof sessionKey === "string" && sessionKey.length > 0, "missing initial session key");
   const composer = page.locator(".agent-chat__input textarea").first();
   await composer.waitFor({ state: "visible", timeout: 60_000 });
   const sessionUrl = page.url();
@@ -111,71 +176,62 @@ export async function assertChatStreamStopAndResume({
   await composer.fill(prompt);
   await page.getByRole("button", { name: "Send message", exact: true }).click();
   const sent = await waitFor("the stock UI's streaming chat request", () =>
-    sentFrames
-      .slice(firstSent)
-      .map((frame) => JSON.parse(textFromFrame(frame)))
-      .find(
-        (frame) =>
-          frame.type === "req" && frame.method === "chat.send" && frame.params?.message === prompt,
-      ),
+    chatRequest(sentFrames, firstSent, prompt),
   );
-  assert.equal(sent.params.sessionKey, sessionKey);
+  assert.equal(record(sent.params)?.sessionKey, sessionKey);
   const accepted = await waitFor("the streaming chat admission", () =>
-    receivedFrames
-      .slice(firstReceived)
-      .map((frame) => JSON.parse(textFromFrame(frame)))
-      .find((frame) => frame.type === "res" && frame.id === sent.id),
+    responseTo(receivedFrames, firstReceived, sent.id),
   );
   assert.equal(accepted.ok, true, JSON.stringify(accepted.error));
-  const runId = accepted.payload.runId;
-  assert.equal(typeof runId, "string");
+  const runId = record(accepted.payload)?.runId;
+  assert.ok(typeof runId === "string", "streaming chat admission did not include a run ID");
   const runEvents = () =>
     receivedFrames
       .slice(firstReceived)
-      .map((frame) => JSON.parse(textFromFrame(frame)))
-      .filter(
-        (frame) =>
-          frame.type === "event" &&
+      .map(parseFrame)
+      .flatMap((value) => {
+        const frame = frameRecord(value);
+        const payload = record(frame?.payload);
+        return frame?.type === "event" &&
           frame.event === "chat" &&
-          frame.payload?.sessionKey === sessionKey &&
-          frame.payload?.runId === runId,
-      );
+          payload?.sessionKey === sessionKey &&
+          payload.runId === runId
+          ? [payload]
+          : [];
+      });
   const deltas = await waitFor("two incremental model text frames before Stop", () => {
     const values = runEvents().filter(
-      (frame) =>
-        frame.payload.state === "delta" &&
-        typeof frame.payload.deltaText === "string" &&
-        frame.payload.deltaText.length > 0,
+      (payload) =>
+        payload.state === "delta" &&
+        typeof payload.deltaText === "string" &&
+        payload.deltaText.length > 0,
     );
     return values.length >= 2 ? values : undefined;
   });
   assert.equal(
-    runEvents().some((frame) => frame.payload.state === "final"),
+    runEvents().some((payload) => payload.state === "final"),
     false,
     "the bounded model reply must still be active when Stop is pressed",
   );
   await page.getByRole("button", { name: "Stop", exact: true }).click();
   const abort = await waitFor("the stock UI's exact-run Stop request", () =>
-    sentFrames
-      .slice(firstSent)
-      .map((frame) => JSON.parse(textFromFrame(frame)))
-      .find(
-        (frame) =>
-          frame.type === "req" &&
-          ["chat.abort", "sessions.abort"].includes(frame.method) &&
-          (frame.params?.sessionKey ?? frame.params?.key) === sessionKey &&
-          frame.params?.runId === runId,
-      ),
+    findFrame(sentFrames, firstSent, (frame) => {
+      if (
+        frame.type !== "req" ||
+        (frame.method !== "chat.abort" && frame.method !== "sessions.abort")
+      ) {
+        return false;
+      }
+      const params = record(frame.params);
+      return (params?.sessionKey ?? params?.key) === sessionKey && params?.runId === runId;
+    }),
   );
   const stopped = await waitFor("Stop acknowledgement", () =>
-    receivedFrames
-      .slice(firstReceived)
-      .map((frame) => JSON.parse(textFromFrame(frame)))
-      .find((frame) => frame.type === "res" && frame.id === abort.id),
+    responseTo(receivedFrames, firstReceived, abort.id),
   );
   assert.equal(stopped.ok, true, JSON.stringify(stopped.error));
   await waitFor("the same model run's aborted event", () =>
-    runEvents().find((frame) => frame.payload.state === "aborted"),
+    runEvents().find((payload) => payload.state === "aborted"),
   );
   await page.getByRole("button", { name: "Stop", exact: true }).waitFor({ state: "hidden" });
 
@@ -191,12 +247,11 @@ export async function assertChatStreamStopAndResume({
       .find(
         (frame) =>
           frame.socket !== initialReply.socket &&
-          JSON.parse(textFromFrame(frame)).payload?.type === "hello-ok",
+          record(frameRecord(parseFrame(frame))?.payload)?.type === "hello-ok",
       ),
   );
-  assert.deepEqual(JSON.parse(textFromFrame(reconnected)).payload.auth.scopes, [
-    "operator.sessions.write",
-  ]);
+  const hello = record(frameRecord(parseFrame(reconnected))?.payload);
+  assert.deepEqual(record(hello?.auth)?.scopes, ["operator.sessions.write"]);
   // The stock transcript virtualizes older replies and reloads at the newest
   // message. Reveal the beginning through the focused scroll surface before
   // asserting that the earlier assistant reply survived the reconnect.
@@ -214,17 +269,9 @@ export async function assertChatStreamStopAndResume({
   await composer.fill(resumePrompt);
   await page.getByRole("button", { name: "Send message", exact: true }).click();
   const resumedRequest = await waitFor("a follow-up in the persisted conversation", () =>
-    sentFrames
-      .slice(resumeSent)
-      .map((frame) => JSON.parse(textFromFrame(frame)))
-      .find(
-        (frame) =>
-          frame.type === "req" &&
-          frame.method === "chat.send" &&
-          frame.params?.message === resumePrompt,
-      ),
+    chatRequest(sentFrames, resumeSent, resumePrompt),
   );
-  assert.equal(resumedRequest.params.sessionKey, sessionKey);
+  assert.equal(record(resumedRequest.params)?.sessionKey, sessionKey);
   const resumedReply = await waitFor("a real assistant reply after reconnecting", () =>
     receivedFrames
       .slice(resumeReceived)
@@ -232,6 +279,6 @@ export async function assertChatStreamStopAndResume({
         terminalAssistantSessionMessage(textFromFrame(frame), resumeMarker, resumePrompt),
       ),
   );
-  assert.equal(JSON.parse(textFromFrame(resumedReply)).payload.sessionKey, sessionKey);
+  assert.equal(record(frameRecord(parseFrame(resumedReply))?.payload)?.sessionKey, sessionKey);
   return { deltaCount: deltas.length, stopped: true, resumed: true };
 }
