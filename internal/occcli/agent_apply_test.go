@@ -213,6 +213,12 @@ func TestAgentApplyDeployAdviceDependsOnWhetherOCCRefused(t *testing.T) {
 	if message, err := runApply(t, lost, changed); err == nil || !strings.Contains(message, "deploy result is unknown") || strings.Contains(message, "occ agent deploy") {
 		t.Fatalf("lost reply: message = %q, err = %v", message, err)
 	}
+	gateway := &applyServer{deploy: func(writer http.ResponseWriter) {
+		writer.WriteHeader(http.StatusBadGateway)
+	}}
+	if message, err := runApply(t, gateway, changed); err == nil || !strings.Contains(message, "deploy result is unknown") {
+		t.Fatalf("5xx reply: message = %q, err = %v", message, err)
+	}
 	refused := &applyServer{deploy: func(writer http.ResponseWriter) {
 		writer.WriteHeader(http.StatusConflict)
 		_, _ = writer.Write([]byte(`{"error":{"code":"CONFLICT","message":"no"},"meta":{"requestId":"req_test"}}`))

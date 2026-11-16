@@ -63,15 +63,18 @@ pending, or after a lost response, replays the request.
 The CLI compares decoded JSON, and counts an empty object as an omitted value,
 except `pluginApprovers`: an explicit empty list differs from an omitted one.
 It compares only the fields in the file. Before each write it rereads the Agent
-and stops if another Configuration is bound. The saved Configuration is patched with
+and stops if another Configuration is bound. The server has no Configuration
+precondition on an Agent patch or deploy, so a rebind between that reread and the
+write is not caught. The saved Configuration is patched with
 its read `generation`, so a concurrent edit gets a conflict. The Agent patch
 carries only changed fields. Deployment runs once after the saves.
 
 Each call is a separate request. If the Agent patch or deploy fails, the earlier
 saves stay. The error names the next command. A deploy failure leaves the saved
 Configuration unchanged on the next `apply`, so the error asks for
-`occ agent deploy ID`. If the deploy reply is lost, the result is unknown, and
-the error says to check `occ agent revisions ID` before deploying again.
+`occ agent deploy ID`. A 4xx reply is a refusal. If the reply is lost or is a 5xx,
+the result is unknown, and the error says to check `occ agent revisions ID`
+before deploying again.
 
 ## Debugging and Verification
 

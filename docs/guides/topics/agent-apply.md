@@ -12,8 +12,8 @@ The result is `created`, `updated` or `unchanged`. The file is the
 references to Secrets, never Secret values. `name` selects the Agent.
 
 - **No Agent has the name:** `apply` queues first-time provisioning with a
-  `requestId` derived from the file, so repeating the same file is safe. The result is `created`. Check progress with the work ID it
-  prints. Provisioning needs Installation `administer`, and it needs dedicated
+  `requestId` derived from the file, so repeating the same file is safe. The
+  result is `created`. Check progress with the work ID it prints. Provisioning needs Installation `administer`, and it needs dedicated
   execution on Kubernetes Compute.
 - **An Agent has the name:** `apply` compares the file with the saved
   Configuration and Agent. It saves each change and deploys once. The result is
@@ -30,9 +30,9 @@ settings. The other three apply only when the Agent is created.
 
 Deployment checks the saved Configuration against the Agent. If the deploy fails
 after the save, the error names the cause and the command `occ agent deploy ID`.
-Fix the cause, then run that command. If the reply was lost, the error says the
-result is unknown. Check `occ agent revisions ID` for a revision with the saved
-generation before you deploy again. A second `apply` reports `unchanged`,
-because the values are saved.
+Fix the cause, then run that command. If the reply was lost or was a server
+error, the error says the result is unknown. Check `occ agent revisions ID` for
+a revision with the saved generation before you deploy again. A second `apply`
+reports `unchanged`, because the values are saved.
 
 See the [CLI apply flow](../../flows/cli-agent-apply.md).

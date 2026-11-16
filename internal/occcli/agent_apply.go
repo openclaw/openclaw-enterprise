@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -224,7 +225,7 @@ func updateAgent(client *occclient.Client, namespace string, agent, desired map[
 	}
 	revision, err := client.DeployAgent(namespace, agentID, nil)
 	var refusal *occclient.APIError
-	if errors.As(err, &refusal) {
+	if errors.As(err, &refusal) && refusal.Status < http.StatusInternalServerError {
 		return nil, fmt.Errorf("saved the changes but could not deploy; run \"occ agent deploy %s\": %w", agentID, err)
 	}
 	if err != nil {
