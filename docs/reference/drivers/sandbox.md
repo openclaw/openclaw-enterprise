@@ -97,12 +97,7 @@ directory from `harnessHome`. The Sandbox creates that owner-only directory
 outside the Harness workspace and file-transfer roots. Compute validates the path
 and owns the relay URL and authentication.
 
-A Driver that provisions a dedicated Harness and supplies its endpoint can set
-`harnessTransportCredential: "verifier"`. The Harness requirements then carry
-the transport token's verifier (`APP_TOKEN_SHA`), never the raw bearer, and
-Codex authenticates the Gateway against it. OpenShell and protected plans
-already use this delivery. Without the setting, other providers receive the
-bearer reference.
+`harnessTransportCredential: "verifier"` sends the Harness the verifier, not the bearer.
 
 Compute calls `harnessStatus(context)` with the Agent transport token. The
 Driver returns `serving` only after an authenticated handshake. It returns
