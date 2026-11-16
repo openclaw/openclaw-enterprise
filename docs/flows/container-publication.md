@@ -80,16 +80,15 @@ docker build -f deploy/runtime/Dockerfile \
   "${openclaw_build_args[@]}" --target openclaw-bridge-tests .
 ```
 
-Before assembly, `openclaw-bridge-tests` runs bridge suites, CUA tests, and
-typechecks with the same checkout, arguments, base, and platform. Failure blocks
-smoke and upload. Local assembly can run independently.
-Tests cover native turn settlement.
+`openclaw-bridge-tests` typechecks and tests bridge and CUA assembly inputs.
+Coverage includes native turn settlement, approval discovery after reconnect,
+HTTP rejection and native handoff during late writes. Failure blocks smoke and
+upload. Local builds can run independently.
 
-The `resources` step checks architecture, CPU, memory, and cgroup-v2 ancestor
-limits. Both stages use its Node compiler budget. ARM runtime can select eight
-jobs, with four for unknown or smaller limits. Before smoke,
-`scripts/ci/setup-tools.sh` installs checksum-pinned kubectl, k3d, Helm, and yq.
-See [build settings](../release/configuration.md#build-settings) for capacity and cleanup.
+The `resources` step checks architecture, CPU, memory and ancestor cgroup-v2 limits.
+Both stages use its Node compiler budget. ARM uses up to eight jobs, or four for
+smaller or unknown limits. Before smoke, `scripts/ci/setup-tools.sh` installs
+checksum-pinned kubectl, k3d, Helm and yq. See [build settings](../release/configuration.md#build-settings).
 
 Buildx runs up to two steps at once and caches by image and architecture on
 Blacksmith sticky disks or in GitHub Actions. Standalone `container-check.yml`
