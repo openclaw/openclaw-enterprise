@@ -1,7 +1,9 @@
 // Exercise the packaged host over the stdio transport used by Codex.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -10,7 +12,8 @@ const cli = createRequire(app.resolve("@openai/codex/package.json"));
 const platform = path.dirname(cli.resolve("@openai/codex-linux-arm64/package.json"));
 const vendor = path.join(platform, "vendor/aarch64-unknown-linux-musl");
 const manifest = cli(path.join(vendor, "codex-package.json"));
-const host = spawn(path.join(vendor, manifest.resourcesDir, "codex-code-mode-host"), [], {
+const packaged = path.join(vendor, manifest.resourcesDir, "codex-code-mode-host");
+const host = spawn(packaged, [], {
   stdio: ["pipe", "pipe", "inherit"],
   signal: AbortSignal.timeout(15_000),
 });
@@ -90,7 +93,25 @@ try {
     executed && shutdown,
     "the host exited before returning a result and acknowledging shutdown",
   );
-  console.log("Code Mode returned 42 and closed its session.");
 } finally {
   host.kill();
 }
+
+// The refreshed runtime inventory must identify the host that Codex now selects.
+const runtime = "/opt/oce/runtime";
+const contents = readFileSync(path.join(runtime, "contents.json"));
+const provenance = JSON.parse(readFileSync(path.join(runtime, "provenance.json"), "utf8"));
+const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const hostSha256 = sha256(readFileSync(packaged));
+assert.equal(provenance.runtimeContentsSha256, sha256(contents));
+assert.equal(provenance.codeModeHost.sha256, hostSha256);
+assert.ok(
+  JSON.parse(contents.toString("utf8")).some(
+    (entry) =>
+      path.join("/app/node_modules/openclaw", entry.path) === packaged &&
+      entry.sha256 === hostSha256 &&
+      entry.mode === 0o555,
+  ),
+  "the runtime inventory must list the packaged Code Mode host",
+);
+console.log("Code Mode returned 42 and closed its session.");
