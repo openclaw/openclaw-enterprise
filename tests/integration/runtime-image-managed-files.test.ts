@@ -20,16 +20,15 @@ import {
   AGENT_WITH_NODE_ENTRYPOINT,
   gatewayRuntimeEntrypoint,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { runDocker, waitForDockerLog } from "../helpers/runtime-image-docker.ts";
+import { waitForContainerReady } from "../helpers/runtime-image-gateway-observations.ts";
 import {
   createAdmittedRuntimeImageConfiguration,
   image,
   imageTestOptions,
-  runDocker,
-  waitForContainerReady,
-  waitForDockerLog,
   temporaryGatewayConfiguration,
   runGatewaySmoke,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 
 function requiredRecord(value: unknown): Record<string, unknown> {
   const record = asRecord(value);
