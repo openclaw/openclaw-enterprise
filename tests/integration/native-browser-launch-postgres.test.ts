@@ -34,15 +34,28 @@ type NativeApi = Awaited<ReturnType<typeof createApi>>;
 type NativeSession = Awaited<ReturnType<typeof signIn>>;
 type InjectResponse = Awaited<ReturnType<NativeApi["app"]["inject"]>>;
 
+type RawLaunchTarget = Pick<
+  Awaited<ReturnType<typeof createNativeAgent>>,
+  "principal" | "revision"
+> & {
+  agent: unknown;
+  namespace: unknown;
+  native: unknown;
+};
+
 async function createLaunchTarget(
   api: NativeApi,
   session: NativeSession,
   upstream: Awaited<ReturnType<typeof startNativeHttpsUpstream>>,
 ) {
-  const fixture = await createNativeAgent(api, session, upstream);
-  const agent: unknown = fixture.agent;
-  const namespace: unknown = fixture.namespace;
-  const native = asRecord(fixture.native);
+  const {
+    agent,
+    namespace,
+    native: access,
+    principal,
+    revision,
+  }: RawLaunchTarget = await createNativeAgent(api, session, upstream);
+  const native = asRecord(access);
   assert.ok(Check(AgentSchema, agent), "the fixture must create an Agent");
   assert.ok(Check(NamespaceSchema, namespace), "the fixture must create a Namespace");
   assert.ok(native && isNonEmptyString(native.origin), "native access must return an origin");
@@ -50,8 +63,8 @@ async function createLaunchTarget(
     agent,
     namespace,
     native: { origin: native.origin },
-    principal: fixture.principal,
-    revision: fixture.revision,
+    principal,
+    revision,
   };
 }
 
