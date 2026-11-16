@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import type { SandboxHarnessContext } from "../../packages/contracts/src/index.ts";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
+import { admitRevisionHarness } from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
   validateWorkspaceNodeSetupSecret,
   WorkspaceNodeSetupValidationError,
@@ -142,6 +143,8 @@ test("a selected external provider explicitly opts in to the native transport ve
       implementation: "external",
       ...(optedIn && { harnessTransportCredential: "verifier" }),
     });
+    // Admit against the external provider: an OpenShell admission selects OpenShell's launch.
+    admitRevisionHarness(fixture.driver, fixture.revision);
     await fixture.prepare();
     fixture.setGatewayServing();
     fixture.setSetupAvailable(true);
