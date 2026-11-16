@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import type {
   HarnessWorkloadRequirements,
+  RevisionHarnessDescriptor,
   RuntimeFailureEvidence,
   SandboxDriver,
   SandboxHarnessContext,
@@ -9,6 +11,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { supervisorPeerLabels } from "../fixtures/kubernetes-provider-readiness.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { labelSelectorLabels, tenant } from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
@@ -248,6 +251,23 @@ export function nativeSandboxIdentity(): Pick<
     capability: "sandbox",
     supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
+  };
+}
+
+export function nativeSandboxRevision(sandboxDriverId: SandboxDriver["id"], loggingLevel?: "info") {
+  const configuration = createHarnessConfiguration("openclaw", "gpt-5");
+  return {
+    harness: {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: "dedicated",
+    } satisfies RevisionHarnessDescriptor,
+    sandboxDriverId,
+    configuration:
+      loggingLevel === undefined
+        ? configuration
+        : admitLoggingConfiguration(configuration, loggingLevel),
+    plugins: undefined,
   };
 }
 
