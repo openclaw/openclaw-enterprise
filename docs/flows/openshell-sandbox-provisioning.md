@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-11-14
-last_updated_session: authoring-run/e22da2ae-8be7-42d3-876f-6355fa901e9f
+updated: "2026-11-16"
+last_updated_session: "authoring-run/e9ccbf5f-ad37-4b03-80d1-9af4109c533d"
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -97,13 +97,14 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-[downloadVerified](../../internal/occdev/openshell_assets.go) streams archives.
-[Go](../../internal/occdev/routing_manifest.go) and [CI](../../scripts/ci/routing.ts) cap manifests at 32 MiB.
-Only network errors or HTTP 408/429/5xx retry: up to eight cancelable 60-second attempts starting
-within 120 seconds. Retries remove incomplete `0600` archives, preserving existing files.
+[downloadVerified](../../internal/occdev/openshell_assets.go) streams archives. The
+[Go launcher](../../internal/occdev/routing_manifest.go) and [CI](../../scripts/ci/routing.ts)
+cap manifests at 32 MiB. Network and HTTP 408/429/5xx failures allow eight
+60-second cancelable attempts starting within 120 seconds. Retries remove
+partial `0600` archives and preserve existing files.
 
-Kubernetes-only uses PostgreSQL in `oce-system`, in-cluster authentication and
-[per-Agent HTTPS](../guides/deploy/local-setup.md). Compose uses PostgreSQL/OCC with k3d.
+[Kubernetes-only setup](../guides/deploy/local-setup.md) uses PostgreSQL in
+`oce-system`, in-cluster authentication and per-Agent HTTPS. Compose uses k3d.
 
 `prepareOpenShell`/[installAgentSandbox](../../scripts/ci/openshell.ts) verify native/descriptor identity
 from cached children/indexes or exact-child pulls. Manifest/config/CRI checks precede apply
@@ -112,8 +113,8 @@ The [importer](../../internal/occdev/openshell_image.go) journals tag/engine-ID 
 Return/rollback/`dev down` reconcile without clusters/Compose providers. Incomplete inspection
 or uncertain/replaced tags retain state.
 
-[first-agent](../../scripts/first-agent.ts) and the operator hook [check](../../internal/occdev/check.go)
-controller availability before provisioning and share refusal diagnostics.
+[first-agent](../../scripts/first-agent.ts) and the [operator check](../../internal/occdev/check.go)
+share controller readiness diagnostics.
 
 [captureAgentSandboxRollout](../../internal/occdev/agent_sandbox_rollout_diagnostics.go) reports Deployment,
 UID-linked ReplicaSets/Pods and Warning reasons once, preserving rollback errors. It excludes
@@ -121,22 +122,18 @@ messages, environment, full labels and logs, marking unavailable/malformed/overs
 Limits: 15 seconds total, three seconds/256 KiB per command, 32 KiB per record, no retries.
 The 200 ms pipe drain cannot terminate descendants.
 
-`network.providerHarness` records Gateway ClusterIP, Pod selector and TCP/8080.
-Agent Gateways alias its hostname, preserving HTTP Host; policy permits only those
-Pods/port. Launchers install private Envoy routing and operator Workspaces.
-`docs/snippets/openshell-quickstart/kubernetes/service-policies.py` uses live
-selectors to admit API, worker, supervisors and Agent Gateways on TCP/8080.
-Supervisor grants accumulate per Namespace; callers must match ownership labels.
-Protected Git preserves Gateway DNS/API egress through Service addresses, DNS
-selectors/ports and ready API endpoints. Empty discovery warns and removes stale
-grants; failed reads abort. Policies are recorded before application and
-deleted on uninstall. See [local deployment](../guides/deploy/local-kubernetes-development.md)
-and the [retired local protected profile](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
+`network.providerHarness` identifies the Gateway ClusterIP and Pod selector.
+Agent Gateways retain the HTTP Host and connect only to those Pods on TCP/8080.
+`docs/snippets/openshell-quickstart/kubernetes/service-policies.py` grants that port
+to the API, worker, supervisors and Agent Gateways using live ownership labels.
+Supervisor grants accumulate per Namespace. Protected Git preserves DNS and API
+egress through ready endpoints. Empty discovery warns and removes stale rules.
+Failed discovery aborts. Uninstall removes recorded policies.
 
 `internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` validates
-policies (maximum 1 MiB) before provisioning; persisted rules augment generated
-rules. See [startup network policy](../guides/deploy/local-sandbox-network-policy.md).
-Cleanup validates ownership before deleting the cluster, project and volumes.
+persisted policies (maximum 1 MiB) before adding them to generated rules.
+Cleanup checks ownership before deleting the cluster, project and volumes.
+See [startup network policy](../guides/deploy/local-sandbox-network-policy.md).
 
 ### 0.1. Check Harness mode support
 
@@ -398,14 +395,16 @@ attempts other authorized withdrawals. Retirement remains separate.
 
 ## Debugging and verification
 
-See [test prerequisites and proof](../testing/openshell.md). Compose needs the
-provider ClusterIP, advertised `ws://*.openshell.localhost:8080/` route, and inactive
-direct Service. Native model proof requires Landlock; Console admission and
-initialized files are insufficient.
+The [quickstart chat probe](../snippets/openshell-quickstart/chat.mts) runs in the
+ready API Pod. It waits on the ID from its only `chat.send`, then reads history.
+A malformed reply fails the command and closes the WebSocket.
+
+See [test prerequisites](../testing/openshell.md). Compose requires the provider
+ClusterIP, advertised `ws://*.openshell.localhost:8080/` route, and inactive
+direct Service. Native model proof requires Landlock.
 
 `tests/integration/runtime-image-node-state-permissions.test.ts` checks packaged
-setup, retry and restart under setgid parents. It does not prove Kubernetes or
-model execution.
+setup, retry and restart under setgid parents.
 
 ## Related docs
 
@@ -422,6 +421,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-16 13:30: Trace Gateway reply checks in the operator turn helper. (authoring-run/e9ccbf5f-ad37-4b03-80d1-9af4109c533d - 7a8e52f38b378151c8c08ef1b6dd466ab24834bb)
 
 - 2026-11-14 14:53: Explain workspace lock and retry timing. (authoring-run/e22da2ae-8be7-42d3-876f-6355fa901e9f - 8a15b18175c508fe54672fc12ea0ff5a0847967d)
 

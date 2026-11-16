@@ -223,7 +223,7 @@ test(
 test("CI retains the unfinished upstream stage without changing the failed case", async (t) => {
   const file = "tests/integration/openshell-upstream-real.test.ts";
   const title = "OpenShell model and tool upstream outages fail closed";
-  const stageModule = new URL("tests/helpers/openshell-stage.mjs", repositoryUrl).href;
+  const stageModule = new URL("tests/helpers/openshell-stage.ts", repositoryUrl).href;
   const gatewayFailure = {
     kind: "openshell-gateway-turn-failure",
     checkpoint: "gateway-setup",

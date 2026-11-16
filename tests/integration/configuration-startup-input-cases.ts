@@ -7,7 +7,7 @@ import type {
   ErrorDetail,
 } from "../../packages/contracts/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.ts";
 
 type StartupFixture = (
   context: TestContext,
@@ -29,8 +29,14 @@ type ComputeConfiguration = InstallationFixture["drivers"]["compute"]["configura
 type InstallationInput = Omit<InstallationFixture, "drivers"> & {
   observability?: ObservabilityInput;
   runtime?: NativeWorkerInput;
-  drivers: InstallationFixture["drivers"] & {
-    configuration: ConfigurationDriver & { implementation?: string };
+  drivers: Omit<InstallationFixture["drivers"], "configuration"> & {
+    configuration: Omit<ConfigurationDriver, "configuration"> & {
+      implementation?: string;
+      configuration: {
+        authentication:
+          ConfigurationDriver["configuration"]["authentication"] | { mode: "kubeconfig" };
+      };
+    };
     iam: { configuration: { unexpected?: boolean } };
     compute: {
       configuration: ComputeConfiguration & {

@@ -1848,11 +1848,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           return;
         }
       }
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
   }
 
@@ -1879,11 +1875,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         logRequestAuditFailure(request, operation, auditAction(operation, request), error);
         return;
       }
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
   }
 
@@ -2179,11 +2171,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         admitted.admittedScope.namespaceId !== params.namespaceId)
     ) {
       await denial(operation, request, "authorization_denial");
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
 
     admissions.set(request, admitted);
@@ -2192,11 +2180,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   async function resolveIdentity(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
     const admitted = admissions.get(request);
     if (!admitted) {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
     let selected: IAMDriver;
     let identity;
@@ -2216,11 +2200,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
       );
     } catch {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
 
     if (
@@ -2323,11 +2303,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   ): Promise<void> {
     const context = contexts.get(request);
     if (!context) {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
     const params = request.params as Record<string, string>;
     const body = request.body as Record<string, unknown> | undefined;
@@ -2347,11 +2323,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           context,
         );
         if (!options.createController) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
         const installation: Installation = {
           id: installationId,
@@ -4620,18 +4592,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       async (request, reply) => {
         const context = contexts.get(request);
         if (!context) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
         if (options.provisionAuthAccount === undefined) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
 
         const body = request.body as Record<string, unknown> | undefined;

@@ -13,12 +13,14 @@ import {
   type ImageFileTextOptions,
 } from "../lib/image-file.ts";
 import { readReleaseDownloadClientSelection } from "../lib/runtime-download-clients.ts";
-import { validateReceipt } from "./container-promote.ts";
-import { ghcrPackageName } from "./container-release/admission.ts";
+import { validatePublicationRun, validateReceipt } from "./container-promote.ts";
+import { ghcrPackageName, github, githubPages, repository } from "./container-release/admission.ts";
 import {
   digestPattern,
+  field,
   integerPattern,
   isPlatform,
+  match,
   platforms,
   shaPattern,
   type Platform,
@@ -95,7 +97,75 @@ function downloadClients(metadata: unknown, architecture: string, selection: Map
   );
 }
 
-async function project(path: string, platform: Platform, signal: AbortSignal) {
+async function selectNativeArtifact(env: NodeJS.ProcessEnv, signal: AbortSignal) {
+  const { SOURCE_SHA, PUBLICATION_RUN_ID, PUBLICATION_ATTEMPT } = env;
+  const runPath = `repos/${repository}/actions/runs/${PUBLICATION_RUN_ID}`;
+  const run = await github(runPath, { signal });
+  const workflow = await github(`repos/${repository}/actions/workflows/container-publish.yml`, {
+    signal,
+  });
+  validatePublicationRun(run, workflow, env);
+  const repo = field(run, "repository");
+  assert.equal(field(repo, "private"), false, "Require a public Enterprise publication.");
+  const repositoryId = field(repo, "id");
+  assert.ok(
+    typeof repositoryId === "number" && Number.isSafeInteger(repositoryId) && repositoryId > 0,
+  );
+  assert.equal(field(field(run, "head_repository"), "id"), repositoryId);
+
+  const jobs = await githubPages(`${runPath}/attempts/${PUBLICATION_ATTEMPT}/jobs`, "jobs", signal);
+  function successfulJob(name: string) {
+    const matches = jobs.filter((job) => field(job, "name") === name);
+    const [job] = matches;
+    assert.ok(
+      matches.length === 1 &&
+        field(job, "head_sha") === SOURCE_SHA &&
+        field(job, "status") === "completed" &&
+        field(job, "conclusion") === "success",
+      `Require a successful ${name} job for the original publication attempt.`,
+    );
+    return job;
+  }
+  successfulJob("Publish exact OCI digests to public GHCR");
+  const smoke = successfulJob("prepare / Smoke runtime (amd64)");
+  const artifactName = `platform-runtime-amd64-${PUBLICATION_RUN_ID}-${PUBLICATION_ATTEMPT}`;
+  const artifacts = await githubPages(
+    `${runPath}/artifacts?name=${artifactName}`,
+    "artifacts",
+    signal,
+  );
+  const matches = artifacts.filter((artifact) => field(artifact, "name") === artifactName);
+  assert.equal(matches.length, 1, `Require exactly one Actions artifact named ${artifactName}.`);
+  const [artifact] = matches;
+  assert.equal(field(artifact, "expired"), false, "Require an unexpired native runtime artifact.");
+  const producer = field(artifact, "workflow_run");
+  assert.ok(
+    String(field(producer, "id")) === PUBLICATION_RUN_ID &&
+      field(producer, "repository_id") === repositoryId &&
+      field(producer, "head_repository_id") === repositoryId &&
+      field(producer, "head_branch") === "main" &&
+      field(producer, "head_sha") === SOURCE_SHA,
+    "The native runtime artifact is unbound to the original publication run.",
+  );
+  // The artifact API scopes records to the run. The name and creation time
+  // bind the ZIP to the successful smoke job in the selected attempt.
+  const created = Date.parse(String(field(artifact, "created_at")));
+  assert.ok(
+    created >= Date.parse(String(field(smoke, "started_at"))) &&
+      created <= Date.parse(String(field(smoke, "completed_at"))),
+    "The native runtime artifact was not uploaded during the selected smoke job.",
+  );
+  const id = field(artifact, "id");
+  assert.ok(
+    typeof id === "number" && Number.isSafeInteger(id) && id > 0,
+    "Invalid native artifact ID.",
+  );
+  const digest = field(artifact, "digest");
+  match(digest, digestPattern, "Require the GitHub Actions ZIP digest.");
+  return { artifactId: String(id), artifactName, archiveSha256: digest.slice("sha256:".length) };
+}
+
+async function project(path: string, platform: Platform, signal: AbortSignal, native: boolean) {
   const env = process.env;
   const { SOURCE_SHA, PUBLICATION_RUN_ID, PUBLICATION_ATTEMPT, GHCR_RUNTIME_IMAGE } = env;
   assert.ok(SOURCE_SHA, "Select the exact publication source SHA.");
@@ -107,6 +177,12 @@ async function project(path: string, platform: Platform, signal: AbortSignal) {
   // The operator selects a receipt already authenticated against the release workflow.
   // Matching fields here prevents mixing receipts, images and platform variants.
   const receipt = await readReceipt(path);
+  if (native) {
+    assert.ok(
+      Array.isArray(receipt),
+      "Native selection requires an authenticated direct publication receipt and its original native preparation.",
+    );
+  }
   validateReceipt(receipt, env);
   const runtime = receipt[1];
   assert.equal(
@@ -133,6 +209,7 @@ async function project(path: string, platform: Platform, signal: AbortSignal) {
   assert.ok(selected, "Require a seal for the selected platform.");
   const sourceImage = `${GHCR_RUNTIME_IMAGE}@${runtime.digest}`;
   const platformImage = `${GHCR_RUNTIME_IMAGE}@${selected.digest}`;
+  const artifact = native ? await selectNativeArtifact(env, signal) : undefined;
 
   const commandEnv = { ...env };
   delete commandEnv.GH_TOKEN;
@@ -209,16 +286,28 @@ async function project(path: string, platform: Platform, signal: AbortSignal) {
       maxBytes: maxMetadataBytes,
     });
     const metadata: unknown = JSON.parse(await readFile(destination, { encoding: "utf8", signal }));
-    return {
-      sourceImage,
-      platformImage,
-      platform,
-      downloadClients: downloadClients(
-        metadata,
-        platform === "linux/amd64" ? "x64" : "arm64",
-        selection,
-      ),
-    };
+    const clients = downloadClients(
+      metadata,
+      platform === "linux/amd64" ? "x64" : "arm64",
+      selection,
+    );
+    if (artifact) {
+      return {
+        sourceImage,
+        platformImage,
+        configDigest: selected.configDigest,
+        archive: "platform.zip",
+        ...artifact,
+        sourceSha: SOURCE_SHA,
+        workflowSha: SOURCE_SHA,
+        runId: PUBLICATION_RUN_ID,
+        attempt: PUBLICATION_ATTEMPT,
+        ciRunId: runtime.ciRunId,
+        ciAttempt: runtime.ciAttempt,
+        nodeBaseImage: env.NODE_BASE_IMAGE,
+      };
+    }
+    return { sourceImage, platformImage, platform, downloadClients: clients };
   } finally {
     try {
       await cleanup[0]?.();
@@ -228,11 +317,13 @@ async function project(path: string, platform: Platform, signal: AbortSignal) {
   }
 }
 
-const [path, platform, extra] = process.argv.slice(2);
+const [path, platform, mode, extra] = process.argv.slice(2);
+const native = mode === "--native-selection";
 assert.ok(
-  path && isPlatform(platform) && extra === undefined,
-  "Usage: node scripts/ci/runtime-download-client-projection.ts PUBLICATION_JSON linux/amd64|linux/arm64",
+  path && isPlatform(platform) && (mode === undefined || native) && extra === undefined,
+  "Usage: node scripts/ci/runtime-download-client-projection.ts PUBLICATION_JSON linux/amd64|linux/arm64 [--native-selection]",
 );
+assert.ok(!native || platform === "linux/amd64", "Native selection supports only linux/amd64.");
 const cancellation = new AbortController();
 const interrupt = (signal: NodeJS.Signals) => {
   if (!cancellation.signal.aborted) {
@@ -243,7 +334,7 @@ const interrupt = (signal: NodeJS.Signals) => {
 process.on("SIGINT", interrupt);
 process.on("SIGTERM", interrupt);
 try {
-  const projection = await project(path, platform, cancellation.signal);
+  const projection = await project(path, platform, cancellation.signal, native);
   cancellation.signal.throwIfAborted();
   process.stdout.write(`${JSON.stringify(projection, null, 2)}\n`);
 } catch (error) {

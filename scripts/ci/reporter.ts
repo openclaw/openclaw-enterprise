@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type { TestEvent } from "node:test/reporters";
 import { projectFailureDiagnostic, isRecord } from "./reporter-diagnostics.ts";
 import {
@@ -516,7 +517,9 @@ function* interruptedOutput({ lines, omitted }: OutputTail) {
   }
 }
 
-function location(data: ReporterEventData = {}, recordCoverage = false) {
+const nativeChildTestFile = resolve("tests/integration/harness-topology-k3d-real.test.mjs");
+
+function location(data: ReporterEventData = {}, recordCoverage = false, failed = false) {
   const rawError = data.details?.error;
   const error = failureFields(rawError);
   const cause = error?.cause ?? rawError;
@@ -587,7 +590,16 @@ function location(data: ReporterEventData = {}, recordCoverage = false) {
                 ? { code: "ERR_ASSERTION", name: "AssertionError" }
                 : undefined,
             location: failureLocation,
-            diagnostic: projectFailureDiagnostic(cause, nativeFirstAgentProofDiagnostic),
+            diagnostic: projectFailureDiagnostic(
+              cause,
+              nativeFirstAgentProofDiagnostic,
+              failed &&
+                file === nativeChildTestFile &&
+                data.name === "native child returns its own exact answer" &&
+                data.nesting === 1 &&
+                data.details?.type === "test" &&
+                error.failureType === "testCodeFailure",
+            ),
             ...failureText(cause, fields),
           }
         : undefined,
@@ -716,7 +728,7 @@ export default async function* jsonLinesReporter(
 
     yield `${JSON.stringify({
       type: event.type,
-      data: location(event.data, recordCoverage),
+      data: location(event.data, recordCoverage, event.type === "test:fail"),
     })}\n`;
   }
   // Passing files send nothing extra.

@@ -381,7 +381,7 @@ function seedTranscript(db: DatabaseSync, key: string, marker: string, scenario:
 export async function registerFiniteConversationTests() {
   // The outer test imports the inventory without initializing the child readers.
   const { DatabaseSync } = await import("node:sqlite");
-  const { run } = await import("./repository-credentials/process.mjs");
+  const { run } = await import("./repository-credentials/process.ts");
   const { createFiniteGitConversation, finiteGitConversationFailureStage } =
     await import("../helpers/finite-git-conversation.ts");
 

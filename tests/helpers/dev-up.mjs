@@ -16,7 +16,12 @@ import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after } from "node:test";
 
-import { commandPath, composeConfigurationProvider } from "./compose.mjs";
+import { commandPath, composeConfigurationProvider } from "./compose.ts";
+import {
+  holdK3dCreate,
+  kubernetesLifecycleCommand,
+  parseDevUpResourceState,
+} from "./dev-up-k3d-commands.ts";
 import { bashString, commandShim, startCommandServer } from "./fixture-command-server.ts";
 import { readJsonLines as readJsonLinesFile } from "./json-lines.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
@@ -429,18 +434,10 @@ function lifecycleCommand(fake, invocation, io) {
   const { engine } = fake;
   const scenario = env.DEV_UP_LIFECYCLE_SCENARIO;
   const statePath = env.DEV_UP_RESOURCE_STATE;
-  // Hold only the external command before an observable result: the real Go launcher
-  // owns cancellation, rollback, and journal retention.
-  if (
-    scenario === "cancelled-creation" &&
-    command === "k3d" &&
-    args[0] === "cluster" &&
-    args[1] === "create"
-  ) {
-    writeFileSync(join(fake.directory, "creation-started"), "dispatched");
+  if (holdK3dCreate(invocation, fake.directory)) {
     return hold;
   }
-  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  const state = parseDevUpResourceState(readFileSync(statePath, "utf8"));
   const save = () => writeFileSync(statePath, JSON.stringify(state));
   const output = (value) => stdout(value + "\n");
   const fail = (message) => exit(77, message);
@@ -661,149 +658,16 @@ function lifecycleCommand(fake, invocation, io) {
     } else {
       fail("unexpected " + engine + ": " + args.join(" "));
     }
-  } else if (command === "k3d") {
-    if (args[0] === "cluster" && args[1] === "list") {
-      output(JSON.stringify(state.clusters.map((name) => ({ name }))));
-    } else if (args[0] === "cluster" && args[1] === "create") {
-      if (scenario === "cluster-create-rolled-back") {
-        // k3d's own rollback after a port clash: nothing of the cluster remains.
-        return fail(
-          "ERRO[0009] Failed Cluster Start: Failed to start server k3d-" +
-            args[2] +
-            "-serverlb: Bind for 127.0.0.1:3000 failed: port is already allocated\n" +
-            "FATA[0009] Cluster creation FAILED, all changes have been rolled back!",
-        );
-      }
-      state.clusters.push(args[2]);
-      save();
-      if (scenario === "cluster-create-failed") {
-        fail("partial cluster creation");
-      }
-    } else if (args[0] === "cluster" && args[1] === "delete") {
-      if (scenario === "cluster-delete-failed") {
-        fail("cluster cleanup unavailable");
-      }
-      state.clusters = state.clusters.filter((name) => name !== args[2]);
-      save();
-    } else if (args[0] === "kubeconfig" && args[1] === "get") {
-      output(
-        JSON.stringify({
-          apiVersion: "v1",
-          kind: "Config",
-          "current-context": "k3d-occ-dev-owned",
-          contexts: [
-            { name: "k3d-occ-dev-owned", context: { cluster: "k3d-occ-dev-owned", user: "admin" } },
-          ],
-          clusters: [
-            {
-              name: "k3d-occ-dev-owned",
-              cluster: {
-                server: "https://127.0.0.1:6443",
-                "certificate-authority-data": "fixture-ca",
-              },
-            },
-          ],
-          users: [{ name: "admin", user: { token: "fixture-kubernetes-token" } }],
-        }),
-      );
-    } else if (args[0] !== "image") {
-      fail("unexpected k3d: " + args.join(" "));
-    }
-  } else if (command === "kubectl") {
-    if (args.includes("get") && args.includes("--raw=/version")) {
-      // Reachable.
-    } else if (
-      args[0] === "apply" ||
-      args[0] === "rollout" ||
-      args[0] === "create" ||
-      args[0] === "patch"
-    ) {
-      // Inert.
-    } else if (args[0] === "get" && args[1] === "node" && args[2].endsWith("-server-0")) {
-      output(JSON.stringify({ spec: { podCIDR: "10.42.0.0/24" } }));
-    } else if (args[0] === "get" && args[1] === "namespace") {
-      output(JSON.stringify({ metadata: { name: args[2] } }));
-    } else if (args[0] === "-n" && args.includes("wait")) {
-      // Ready.
-    } else if (args[0] === "-n" && args.includes("rollout")) {
-      // Rolled out.
-    } else if (args[0] === "-n" && args.includes("delete")) {
-      // Deleted.
-    } else if (args[0] === "-n" && args.includes("exec")) {
-      output(serviceKeyFile);
-    } else if (
-      args[0] === "-n" &&
-      args.includes("pod") &&
-      args.includes("bootstrap-password-prepare")
-    ) {
-      output("Succeeded");
-    } else if (args[0] === "-n" && args.includes("pod") && args.includes("postgres-0")) {
-      output("10.42.0.20");
-    } else if (
-      args[0] === "-n" &&
-      args.includes("endpoints") &&
-      args.includes("kubernetes") &&
-      args.includes("jsonpath={.subsets[0].ports[0].port}")
-    ) {
-      output("6443");
-    } else if (args[0] === "-n" && args.includes("endpoints") && args.includes("kubernetes")) {
-      output("172.30.42.3");
-    } else if (args[0] === "get" && args[1] === "service" && args[2] === "kubernetes") {
-      output(JSON.stringify({ spec: { clusterIP: "10.43.0.1" } }));
-    } else if (
-      args[0] === "get" &&
-      args[1] === "service" &&
-      args[2] === "openshell-gateway" &&
-      args.includes("jsonpath={.spec.clusterIP}")
-    ) {
-      output("10.43.0.50");
-    } else if (args[0] === "get" && args[1] === "endpoints" && args[2] === "kubernetes") {
-      output(JSON.stringify({ subsets: [{ addresses: [{ ip: "172.30.41.4" }] }] }));
-    } else if (args[0] === "get" && args[1] === "namespaces") {
-      output(
-        JSON.stringify({
-          items: [
-            {
-              metadata: {
-                name: "oce-123456789012345",
-                labels: { "openclaw.dev/namespace": "namespace_fixture" },
-                annotations: { "openclaw.dev/namespace-id": "namespace_fixture" },
-              },
-            },
-          ],
-        }),
-      );
-    } else if (
-      args[0] === "get" &&
-      args[1] === "service" &&
-      args.includes("jsonpath={.spec.ports[0].nodePort}")
-    ) {
-      output("30051");
-    } else {
-      fail("unexpected kubectl: " + args.join(" "));
-    }
-  } else if (command === "helm") {
-    if ((args[0] === "show" && args[1] === "chart") || args[0] === "upgrade") {
-      // Inert.
-    } else if (args[0] === "template") {
-      output(
-        [
-          "apiVersion: v1",
-          "kind: ServiceAccount",
-          "metadata:",
-          "  name: openshell-sandbox",
-          "  namespace: openclaw-workspace-template",
-          "---",
-          "apiVersion: rbac.authorization.k8s.io/v1",
-          "kind: Role",
-          "metadata:",
-          "  name: openshell-workspace-sandbox",
-          "  namespace: openclaw-workspace-template",
-        ].join("\n"),
-      );
-    } else {
-      fail("unexpected helm: " + args.join(" "));
-    }
+  } else if (command === "k3d" || command === "kubectl" || command === "helm") {
+    return kubernetesLifecycleCommand(command, {
+      args,
+      scenario,
+      state,
+      save,
+      output,
+      fail,
+      serviceKeyFile,
+    });
   }
 }
 

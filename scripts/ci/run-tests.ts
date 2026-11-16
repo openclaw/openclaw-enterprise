@@ -270,7 +270,10 @@ async function runFile(
   };
   let nodeElapsedMs: number | undefined;
   let agentActivity: Awaited<ReturnType<typeof startAgentNamespaceCapture>>;
-  const installationProgress = ["openshell", "openshell-policy"].includes(lane.name);
+  const installationProgress =
+    ["openshell", "openshell-policy"].includes(lane.name) ||
+    (lane.name === "openshell-installers" &&
+      relativePath === "tests/integration/openshell-upstream-real.test.ts");
   const installationPhases = collectInstallationPhases();
   let timeout: ReturnType<typeof fileTimeout> | undefined;
   let case2Directory: Case2Directory | undefined;
@@ -832,7 +835,7 @@ async function main() {
         "prepared-signin accepts no file, command, preparation or manifest overrides",
       );
     }
-    const { runPreparedSigninCase } = await import("./prepared-signin-case.mjs");
+    const { runPreparedSigninCase } = await import("./prepared-signin-case.ts");
     const exitCode: number = await runPreparedSigninCase(repositoryRoot, (root, lane, file) =>
       runFile(root, lane, file, { statePath: null, prepareFile: null }, async (step) => step()),
     );

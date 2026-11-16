@@ -1,20 +1,23 @@
-import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import test, { type TestContext } from "node:test";
 import type {
   AgentProvisioningResponse,
   AgentProvisioningStatusWire,
-  AgentReadWire,
   Configuration,
   ConfigurationDriver,
   ProvisionAgentBody,
   SecretWire,
 } from "@openclaw-enterprise/contracts";
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import test, { type TestContext } from "node:test";
 import { ConfigurationConflictError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
+import {
+  AgentProvisioningStatusResponse,
+  AgentReadResponse,
+} from "../../packages/contracts/src/api/resources.ts";
 import type { ControllerWorkState } from "../../packages/occ/src/index.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import type { createProvisioningFixture } from "./postgres-agent-provisioning-fixture.ts";
 import { createRuntimeComputeDriver } from "./postgres-agent-provisioning-transport-fixture.ts";
 
@@ -25,6 +28,7 @@ type ResendFixture = Pick<
   | "cancelProvisioningAtTeardown"
   | "pool"
   | "request"
+  | "requestChecked"
   | "revokeCurrentPrincipal"
   | "startWorker"
   | "stopWorker"
@@ -41,11 +45,11 @@ interface ResendDependencies {
   ) => Promise<ResendFixture>;
   createProvisioningConfigurationDriver: (options: { id: string }) => ConfigurationDriver;
   createProvisioningSecrets: (
-    fixture: Pick<Fixture, "request">,
+    fixture: Pick<Fixture, "request" | "requestChecked">,
     namespaceId: string,
   ) => Promise<ProvisioningSecrets>;
   requestAcceptedProvisioning: (
-    fixture: Pick<Fixture, "request">,
+    fixture: Pick<Fixture, "request" | "requestChecked">,
     namespaceId: string,
     secrets: ProvisioningSecrets,
     overrides?: Pick<ProvisionAgentBody, "name">,
@@ -72,7 +76,7 @@ function timeoutBeforeFirstCreate(driver: ConfigurationDriver): Configuration[] 
 // database-clock start moves 91 s back, and its deferred work becomes claimable now. The
 // effect's owner and target stay exactly as the worker recorded them.
 async function elapseConfigurationSettleWindow(fixture: Pick<Fixture, "pool">, workId: string) {
-  const aged = await fixture.pool.query(
+  const aged = await fixture.pool.query<Record<string, unknown>>(
     `UPDATE occ.agent_provisioning_work
      SET progress = jsonb_set(
        progress,
@@ -93,7 +97,7 @@ async function elapseConfigurationSettleWindow(fixture: Pick<Fixture, "pool">, w
 // Runs the worker until the first Configuration create has failed with an unknown outcome and
 // the next attempt has deferred inside the settle window, then stops it.
 async function provisionUntilConfigurationSettling(
-  fixture: Pick<Fixture, "pool" | "request" | "startWorker" | "stopWorker">,
+  fixture: Pick<Fixture, "pool" | "requestChecked" | "startWorker" | "stopWorker">,
   { url, workId }: AgentProvisioningStatusWire,
   sent: readonly Configuration[],
 ) {
@@ -101,7 +105,7 @@ async function provisionUntilConfigurationSettling(
   const deferred = await waitFor(
     "the absent Configuration create to wait out its settle window",
     async () => {
-      const observed = await fixture.request<AgentProvisioningStatusWire>("GET", url);
+      const observed = await fixture.requestChecked(AgentProvisioningStatusResponse, "GET", url);
       assert.equal(observed.status, 200, JSON.stringify(observed.body));
       assert.ok(observed.data);
       assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
@@ -161,7 +165,8 @@ export function registerConfigurationResendCases({
       const succeeded = await waitFor(
         "Agent provisioning to succeed after the resend",
         async () => {
-          const observed = await fixture.request<AgentProvisioningStatusWire>(
+          const observed = await fixture.requestChecked(
+            AgentProvisioningStatusResponse,
             "GET",
             admittedProvisioning.url,
           );
@@ -180,7 +185,8 @@ export function registerConfigurationResendCases({
       const [firstSend] = sent;
       assert.ok(firstSend);
       assert.deepEqual(sent[1], firstSend);
-      const agent = await fixture.request<AgentReadWire>(
+      const agent = await fixture.requestChecked(
+        AgentReadResponse,
         "GET",
         `/namespaces/${namespace.id}/agents/${succeeded.agentId}`,
       );
@@ -238,7 +244,8 @@ export function registerConfigurationResendCases({
       const succeeded = await waitFor(
         "Agent provisioning to settle the late original",
         async () => {
-          const observed = await fixture.request<AgentProvisioningStatusWire>(
+          const observed = await fixture.requestChecked(
+            AgentProvisioningStatusResponse,
             "GET",
             exactProvisioning.url,
           );
@@ -276,7 +283,8 @@ export function registerConfigurationResendCases({
       const failed = await waitFor(
         "Agent provisioning to refuse the foreign Configuration",
         async () => {
-          const observed = await fixture.request<AgentProvisioningStatusWire>(
+          const observed = await fixture.requestChecked(
+            AgentProvisioningStatusResponse,
             "GET",
             mismatchedProvisioning.url,
           );

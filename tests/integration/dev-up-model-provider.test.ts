@@ -8,8 +8,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 
 import { asRecord } from "../../packages/utils/src/objects.ts";
-import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
-import type { LauncherScope } from "../helpers/dev-up-model-provider.mjs";
+import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.ts";
+import type { LauncherScope } from "../helpers/dev-up-model-provider.ts";
 import { configureModelProviderDNS } from "../helpers/runtime-model-provider.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { ownerLabel, providerScenario, revision } from "./dev-up-model-provider-fixture.ts";

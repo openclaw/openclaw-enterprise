@@ -12,10 +12,9 @@ import {
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
-import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";
 import {
-  onboarded,
   readAccount,
   type SignInApp,
   changeAccount,
@@ -56,10 +55,7 @@ test(
       admin,
       roles: { reader: readerRole },
       accounts: { member },
-    } = onboarded(
-      await onboard({ accounts: { member: { email: "activation-provisioned@example.test" } } }),
-      ["member"],
-    );
+    } = await onboard({ accounts: { member: { email: "activation-provisioned@example.test" } } });
     const installation = await state.loadInstallation();
     assert.ok(installation);
     app = await composeApp(defaultInstallSettings);

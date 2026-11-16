@@ -6,7 +6,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import {
   agentPrincipalDenied,
   callerDenied,
@@ -16,7 +16,7 @@ import {
   INSTALLATION_ADMINISTER_DENIED,
   NAMESPACE_CREATE_DENIED,
 } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 
 type Body = Record<string, unknown> | undefined;
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
@@ -465,7 +465,7 @@ test("a create a Restriction denies names it only to an Installation administrat
   const member = await memberSession(fixture, "restricted-member", namespace.id, [
     ["read", "namespace"],
   ]);
-  restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
+  const restriction = restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
   const path = `/namespaces/${namespace.id}/agents`;
   const body = {
     name: "Refused Agent",
@@ -496,6 +496,6 @@ test("a create a Restriction denies names it only to an Installation administrat
   );
 
   // Without the Restriction the administrator creates the Agent: the text followed the rule.
-  fixture.policy.restrictions.pop();
+  liftRestriction(fixture.policy, restriction);
   assert.equal((await fixture.request("POST", path, { body })).status, 201);
 });

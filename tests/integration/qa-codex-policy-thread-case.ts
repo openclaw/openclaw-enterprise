@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import {
   assertCodexPolicyChild,
+  createCodexPolicyMetadataReader,
   parseCodexPolicyMetadata,
+  readCodexPolicyThread,
   readCodexPolicyRolloutHead,
 } from "../helpers/codex-policy-thread-evidence.ts";
 
@@ -293,6 +297,35 @@ export function registerQaCodexPolicyThreadCase() {
         assert.throws(() => assertCodexPolicyChild(value), assert.AssertionError);
       });
     }
+    await t.test("binds the Gateway thread response before reading its rollout", async () => {
+      const directory = await mkdtemp(join(tmpdir(), "codex-policy-thread-"));
+      try {
+        const parent = { id: "parent", path: join(directory, "parent.jsonl"), turns: [] };
+        const child = { id: "child", path: join(directory, "child.jsonl"), turns: [] };
+        await writeFile(parent.path, `${parentLine}\n`);
+        await writeFile(child.path, `${childLine}\n`);
+        const reads: string[] = [];
+        const readMetadata = createCodexPolicyMetadataReader(
+          "codex",
+          async (_agent, [, ...args]) => {
+            reads.push(args[2]);
+            return promisify(execFile)(process.execPath, args);
+          },
+        );
+        const readBoundMetadata = async (response: unknown) =>
+          readMetadata({ id: "agent" }, readCodexPolicyThread(response, parent.id));
+
+        // The other thread has a valid rollout of its own, but cannot supply the parent's catalog.
+        await assert.rejects(readBoundMetadata(child), /thread must match the requested ID/);
+        assert.deepEqual(reads, []);
+        const result = await readBoundMetadata(parent);
+        assert.deepEqual(reads, [parent.path]);
+        assert.deepEqual(result.tools, [{ namespace: "openclaw", name: "agents_list" }]);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    });
+
     await t.test("reads only the exact plain or compressed SessionMeta head", async () => {
       const { zstdCompressSync } = await import("node:zlib");
       const directory = await mkdtemp(join(tmpdir(), "codex-policy-metadata-"));
