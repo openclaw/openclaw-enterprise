@@ -92,6 +92,7 @@
     "tests/conformance/repository-credentials-contracts.test.ts",
     "tests/integration/plugin-driver-startup.test.ts",
     "tests/integration/repository-credentials-config.test.ts",
+    "tests/integration/qa-repository-remote-cleanup.test.ts",
     "tests/integration/kubernetes-peer-status.test.ts",
     "tests/conformance/repository-credentials-lifecycle.test.ts",
     "tests/integration/ssh-compute-startup.test.ts",
@@ -218,6 +219,15 @@
     },
     {
       "path": "tests/integration/dev-codex-seccomp-failure.test.ts"
+    },
+    {
+      "path": "tests/integration/qa-repository-remote-cleanup.test.ts",
+      "expectedTests": [
+        "repository cleanup reconciles an unknown write and removes only the owned ref",
+        "repository cleanup retains the ref and PR on ownership mismatch",
+        "repository cleanup rejects a malformed PR number before mutation",
+        "repository cleanup preserves a concurrent ref update when Git refuses its stale lease"
+      ]
     },
     {
       "path": "tests/integration/first-agent-startup.test.ts",
