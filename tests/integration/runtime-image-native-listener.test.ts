@@ -3,7 +3,7 @@
 // proves why Compute admission refuses native listener TLS and binds that
 // cannot serve Pod-IP traffic.
 import type { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.mjs";
+import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.ts";
 import assert from "node:assert/strict";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { randomBytes } from "node:crypto";
