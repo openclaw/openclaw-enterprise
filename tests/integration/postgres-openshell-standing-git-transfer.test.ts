@@ -11,7 +11,7 @@ import { openShellGitExecutionIdentity } from "../../apps/controller/src/drivers
 
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import { CREDENTIAL_GATEWAY_FIXTURE_ID } from "../helpers/postgres-worker-revision-fixture.mjs";

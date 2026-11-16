@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { type IncomingHttpHeaders, type OutgoingHttpHeaders } from "node:http";
-import { request as httpsRequest } from "node:https";
+import {
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type OutgoingHttpHeaders,
+} from "node:http";
+import { request as httpsRequest, Server as HttpsServer } from "node:https";
 import { stripTypeScriptTypes } from "node:module";
+import { text } from "node:stream/consumers";
 import test, { type TestContext } from "node:test";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
@@ -1716,6 +1721,54 @@ test("console static routes expose only public assets and preserve API JSON fail
   const methodMiss = await fixture.rawRequest("POST", "/backends");
   assert.equal(methodMiss.response.status, 405);
   assert.equal(errorBody(methodMiss.text).error.code, "METHOD_NOT_ALLOWED");
+});
+
+test("Console HTTPS ingress stops listening before it closes connections and awaits its close callback", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  const origin = new URL(fixture.origin);
+  const response = await new Promise<IncomingMessage>((resolve, reject) => {
+    httpsRequest(
+      new URL("/console/", origin),
+      {
+        hostname: "127.0.0.1",
+        servername: origin.hostname,
+        headers: { host: origin.host },
+      },
+      resolve,
+    )
+      .on("error", reject)
+      .end();
+  });
+  assert.equal(response.statusCode, 200);
+  assert.match(await text(response), /src="\/console\/console\.mjs"/);
+
+  // Observe Node's listener and callback while both shutdown methods run normally.
+  const { close, closeAllConnections } = HttpsServer.prototype;
+  let listeningAtSweep: boolean | undefined;
+  let closeCallbackRan = false;
+  t.mock.method(HttpsServer.prototype, "closeAllConnections", function (this: HttpsServer) {
+    listeningAtSweep = this.listening;
+    return closeAllConnections.call(this);
+  });
+  t.mock.method(
+    HttpsServer.prototype,
+    "close",
+    function (this: HttpsServer, callback?: (error?: Error) => void) {
+      if (callback === undefined) {
+        return close.call(this);
+      }
+      return close.call(this, (error) => {
+        closeCallbackRan = true;
+        callback(error);
+      });
+    },
+  );
+
+  // The next fixture cleanup may proceed only after the HTTPS server has closed.
+  fixture.registerCleanupBeforeAppClose(() => {
+    assert.equal(listeningAtSweep, false);
+    assert.equal(closeCallbackRan, true);
+  });
 });
 
 test("console scripts and styles are compressed when accepted; the shell and binaries are not", async (t) => {

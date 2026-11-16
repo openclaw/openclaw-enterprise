@@ -4,9 +4,9 @@ import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { appRoot } from "../fixtures/repository-credentials/runtime.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
-import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
+import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service-fixture.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 // The child uses the real process composition and common settlement owner. An
 // unresolved alternate-provider callback must never defeat finite process exit.
@@ -63,7 +63,7 @@ test(
         cert: tls.certFile,
         adapter: pathToFileURL(
           fileURLToPath(
-            new URL("../fixtures/repository-credentials/alternate.mjs", import.meta.url),
+            new URL("../fixtures/repository-credentials/alternate.ts", import.meta.url),
           ),
         ).href,
       }),

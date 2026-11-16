@@ -28,7 +28,7 @@ import {
   workspaceId,
 } from "../helpers/postgres-backend-state.mjs";
 import { testPool } from "../helpers/postgres-database.mjs";
-import { waitForLockHolder } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockHolder } from "../helpers/postgres-locks.ts";
 
 type CredentialStorage = ConstructorParameters<typeof ChatGPTServiceAccountDriver>[3];
 
@@ -293,7 +293,7 @@ test(
           [account.id],
         );
         waiting.catch(() => {});
-        const holder: unknown = await waitForLockHolder(
+        const holder = await waitForLockHolder(
           pool,
           probeBackend.pid,
           "the probe to wait for the account lock",

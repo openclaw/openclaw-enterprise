@@ -2,15 +2,14 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import pg from "pg";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import {
   clientAddressConfiguration,
   humanLoginConfiguration,
 } from "../../apps/controller/src/auth/index.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { jsonLineDestination } from "./json-lines.mjs";
@@ -24,7 +23,6 @@ import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
 import { createReadyComputeDriver } from "./development.mjs";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
 import { createOidcProvider } from "./oidc-provider.mjs";
-import { databaseUrl as testDatabaseUrl } from "./postgres-database.mjs";
 import { composeProduction } from "./password-hasher.mjs";
 
 // Only Compute is passive: no Agent is deployed, so sign-in proofs need no cluster.
@@ -36,7 +34,10 @@ function passiveComputeDriver(id) {
   });
 }
 
-/** Runs the chart's initialization Job command and returns the generated administrator password. */
+/** Runs the chart's initialization Job command and returns the generated administrator password.
+ * @param {Pick<import("node:test").TestContext, "after">} context
+ * @param {{databaseUrl: string | undefined, email: string, authSecret: string}} options
+ */
 export async function bootstrapProductionInstallation(context, { databaseUrl, email, authSecret }) {
   const directory = await privateBootstrapDirectory(context, "openclaw-sign-in-proof-");
   const environment = productionBootstrapEnvironment({
@@ -68,11 +69,12 @@ export function memoryLogger() {
 export const consoleOrigin = "https://console.oce.example.internal";
 export const sessionCookieName = "__Secure-openclaw_occ_shared.session_token";
 const gatewayApiKeyPath = "/etc/openclaw/gateway-api-key/key";
+/** @param {string} name @param {string} key */
 const secretRef = (name, key) => ({ secretKeyRef: { name, key } });
 
 /**
  * The API Pod's sign-in environment rendered from deploy/examples/production/values.yaml:
- * no OCC_AUTH_GITHUB_*, no trusted proxy. sign-in-chart-parity.test.mjs asserts the
+ * no OCC_AUTH_GITHUB_*, no trusted proxy. sign-in-chart-parity.test.ts asserts the
  * chart renders exactly these OCC_AUTH_* and OCC_AGENT_NATIVE_ADMIN_* entries.
  */
 export const defaultInstallSettings = Object.freeze({
@@ -83,7 +85,10 @@ export const defaultInstallSettings = Object.freeze({
   OCC_GATEWAY_API_KEY_PATH: gatewayApiKeyPath,
 });
 
-/** Google sign-in settings for the production chart. */
+/** Google sign-in settings for the production chart.
+ * @param {string} recoveryUserId
+ * @param {string[]} [allowedDomains]
+ */
 export function googleUpgradeValues(recoveryUserId, allowedDomains = []) {
   return {
     "auth.google.enabled": "true",
@@ -97,7 +102,10 @@ export function googleUpgradeValues(recoveryUserId, allowedDomains = []) {
   };
 }
 
-/** The API Pod's settings for googleUpgradeValues. The recovery setting is shared by every provider. */
+/** The API Pod's settings for googleUpgradeValues. The recovery setting is shared by every provider.
+ * @param {string} recoveryUserId
+ * @param {string[]} [allowedDomains]
+ */
 export function googleUpgradeSettings(recoveryUserId, allowedDomains = []) {
   return Object.freeze({
     OCC_AUTH_SECRET: secretRef("occ-auth", "secret"),
@@ -125,7 +133,11 @@ export const fixtureOidcIssuer = Object.freeze({
   jwksUrl: "https://tenant.idp.example.test/.well-known/jwks.json",
 });
 
-/** The example values plus generic OIDC sign-in, the OIDC counterpart of googleUpgradeValues. */
+/** The example values plus generic OIDC sign-in, the OIDC counterpart of googleUpgradeValues.
+ * @param {string} recoveryUserId
+ * @param {{ issuer: string, authorizationUrl: string, tokenUrl: string, jwksUrl: string }} [issuer]
+ * @param {Record<string, string | boolean | number>} [extra]
+ */
 export function oidcUpgradeValues(recoveryUserId, issuer = fixtureOidcIssuer, extra = {}) {
   return {
     "auth.oidc.enabled": "true",
@@ -139,7 +151,11 @@ export function oidcUpgradeValues(recoveryUserId, issuer = fixtureOidcIssuer, ex
   };
 }
 
-/** The API Pod's settings for oidcUpgradeValues. The recovery setting is shared by every provider. */
+/** The API Pod's settings for oidcUpgradeValues. The recovery setting is shared by every provider.
+ * @param {string} recoveryUserId
+ * @param {{ issuer: string, authorizationUrl: string, tokenUrl: string, jwksUrl: string }} [issuer]
+ * @param {{ tokenAuth?: string, displayName?: string }} [extra]
+ */
 export function oidcUpgradeSettings(recoveryUserId, issuer = fixtureOidcIssuer, extra = {}) {
   return Object.freeze({
     OCC_AUTH_SECRET: secretRef("occ-auth", "secret"),
@@ -176,8 +192,25 @@ function resolveSettings(settings, secrets) {
 }
 
 /**
+ * @typedef {import("../../apps/controller/src/composition/production.ts").ProductionConfig} ProductionConfig
+ * @typedef {import("../../apps/controller/src/composition/production.ts").CompositionDependencies} CompositionDependencies
+ * @typedef {import("../../packages/contracts/src/index.ts").InstallationConfiguration["iam"]} IAMConfiguration
+ * @typedef {{
+ *   databaseUrl: string | undefined,
+ *   settings: import("./sign-in-chart.ts").SignInSettings,
+ *   secrets: Readonly<Record<string, string>>,
+ *   logger?: ProductionConfig["logger"],
+ *   metrics?: ProductionConfig["metrics"],
+ *   passwordSlowLaneFloors?: ProductionConfig["passwordSlowLaneFloors"],
+ *   iamConfiguration?: IAMConfiguration | undefined,
+ * }} ProductionSignInOptions
+ */
+
+/**
  * The production composition's configuration for rendered API Pod settings, parsing the
- * sign-in and native-admin names the way apps/controller/src/api-startup.mjs does.
+ * sign-in and native-admin names the way apps/controller/src/api-startup.ts does.
+ * @param {Pick<import("node:test").TestContext, "after">} context
+ * @param {ProductionSignInOptions} options
  */
 export async function productionSignInConfiguration(
   context,
@@ -242,6 +275,8 @@ export async function productionSignInConfiguration(
  * Composes the production API from rendered API Pod settings (see
  * productionSignInConfiguration). It hashes with the fixtures' cheap hasher unless
  * `passwordHasher` is given (see password-hasher.mjs).
+ * @param {Pick<import("node:test").TestContext, "after">} context
+ * @param {ProductionSignInOptions & {passwordHasher?: CompositionDependencies["passwordHasher"]}} options
  */
 export async function composeProductionSignIn(context, { passwordHasher, ...options }) {
   return composeProduction(
@@ -250,7 +285,12 @@ export async function composeProductionSignIn(context, { passwordHasher, ...opti
   );
 }
 
-/** Password sign-in through the public route, from one client address. */
+/** Password sign-in through the public route, from one client address.
+ * @param {Pick<SignInApp, "inject">} app
+ * @param {string} origin
+ * @param {Credentials} account
+ * @param {string} [remoteAddress]
+ */
 export function passwordSignIn(app, origin, { email, password }, remoteAddress = "192.0.2.10") {
   return app.inject({
     method: "POST",
@@ -261,6 +301,19 @@ export function passwordSignIn(app, origin, { email, password }, remoteAddress =
   });
 }
 
+/**
+ * @typedef {Awaited<ReturnType<typeof import("../../apps/controller/src/composition/production.ts").composeProduction>>} SignInApp
+ * @typedef {{ email: string, password: string }} Credentials
+ * @typedef {{ host: string, cookie: string, origin: string }} SessionHeaders
+ */
+
+/**
+ * @param {Pick<SignInApp, "inject">} app
+ * @param {string} origin
+ * @param {Credentials} account
+ * @param {string} [remoteAddress]
+ * @returns {Promise<SessionHeaders>}
+ */
 export async function signedInHeaders(app, origin, account, remoteAddress) {
   const response = await passwordSignIn(app, origin, account, remoteAddress);
   if (response.statusCode !== 200) {
@@ -335,24 +388,6 @@ export async function assertExternalSignInRefused(
   return attemptId;
 }
 
-/**
- * A pool and PlatformState on the test database for one sign-in test. After the test, each
- * object `closeFirst()` returns (an app, or anything with `close()`) closes in order, then
- * the pool ends.
- * `let app; const { pool, state } = postgresSignInState(t, () => [app]);`
- */
-export function postgresSignInState(context, closeFirst = () => []) {
-  const pool = new pg.Pool({ connectionString: testDatabaseUrl });
-  const state = new PostgresPlatformState(pool);
-  context.after(async () => {
-    for (const closable of closeFirst()) {
-      await closable?.close();
-    }
-    await pool.end();
-  });
-  return { pool, state };
-}
-
 /** Distinct client addresses, so a suite's many sign-ins never meet the per-address limit. */
 export function clientAddresses(prefix = "198.18") {
   let next = 0;
@@ -360,30 +395,6 @@ export function clientAddresses(prefix = "198.18") {
     next += 1;
     return `${prefix}.${Math.floor(next / 250)}.${(next % 250) + 1}`;
   };
-}
-
-/**
- * The bootstrap policy's Installation administrator Role, and an Installation reader Role
- * without administer that this fixture adds (the bootstrap policy has only the administrator).
- */
-export async function installationRoles(state, pool) {
-  const installation = await state.loadInstallation();
-  const { roles } = await state.loadNativeIAMState(installation.id);
-  const admin = roles.find((role) =>
-    role.permissions.some(
-      ({ action, resourceKind }) => action === "administer" && resourceKind === "installation",
-    ),
-  );
-  if (admin === undefined) {
-    throw new Error("The bootstrap policy lacks an Installation administrator Role.");
-  }
-  const reader = { id: "role_installation_reader_fixture" };
-  await pool.query(
-    `INSERT INTO occ.iam_roles (id, namespace_id, name, permissions)
-     VALUES ($1, NULL, 'Installation reader', $2::jsonb) ON CONFLICT (id) DO NOTHING`,
-    [reader.id, JSON.stringify([{ action: "read", resourceKind: "installation" }])],
-  );
-  return { admin, reader };
 }
 
 /** Signed Google token fixture. Only upstream HTTP is simulated. */
@@ -531,7 +542,7 @@ export async function googleSignIn(
 /**
  * Installs the shared synthetic OIDC protocol on this test's fetch transport.
  * @param {import("node:test").TestContext} t
- * @param {{ clientId: string, clientSecret: string, issuer?: typeof fixtureOidcIssuer, tokenAuth?: string }} options
+ * @param {Omit<import("./oidc-provider.mjs").OidcProviderOptions, "issuer"> & {issuer?: typeof fixtureOidcIssuer}} options
  */
 export function fakeOidc(t, { issuer = fixtureOidcIssuer, ...options } = {}) {
   const fixture = createOidcProvider({ issuer, ...options });
@@ -572,6 +583,9 @@ export async function oidcSignIn(app, origin, idp, authorization, remoteAddress 
 /**
  * Creates a password account through the administrator route, bound to `roleId` when given.
  * Returns `{ id, email, password }`, which signs in with passwordSignIn.
+ * @param {Pick<SignInApp, "inject">} app
+ * @param {SessionHeaders} headers
+ * @param {Credentials & {roleId?: string | undefined}} options
  */
 export async function createAccount(app, headers, { email, password, roleId }) {
   const response = await app.inject({
@@ -583,66 +597,9 @@ export async function createAccount(app, headers, { email, password, roleId }) {
   if (response.statusCode !== 201) {
     throw new Error(`Account creation failed with ${response.statusCode}: ${response.body}`);
   }
-  return { id: response.json().data.id, email, password };
-}
-
-/**
- * The password onboarding each external sign-in proof starts from. Bootstraps a production
- * Installation, composes its default password install, signs the recovery administrator in
- * (from `remoteAddress` when given) and creates one password account per `accounts` entry,
- * then closes that app. `accounts` maps a name to its email and its Installation Role from
- * installationRoles: "reader" (the default) or "admin". Every account uses `password`.
- * `passwordHasher` replaces the fixtures' cheap hasher for the accounts it creates.
- * Returns `{ admin: { email, password, id }, roles, accounts: { [name]: { id, email, password } } }`.
- */
-export async function onboardPasswordAccounts(
-  context,
-  {
-    databaseUrl,
-    state,
-    pool,
-    email,
-    authSecret,
-    secrets,
-    password,
-    accounts = {},
-    remoteAddress,
-    passwordSlowLaneFloors,
-    passwordHasher,
-  },
-) {
-  const admin = {
-    email,
-    password: await bootstrapProductionInstallation(context, { databaseUrl, email, authSecret }),
-  };
-  const roles = await installationRoles(state, pool);
-  const app = await composeProductionSignIn(context, {
-    databaseUrl,
-    settings: defaultInstallSettings,
-    secrets,
-    passwordSlowLaneFloors,
-    passwordHasher,
-  });
-  try {
-    const headers = await signedInHeaders(app, consoleOrigin, admin, remoteAddress);
-    admin.id = (await currentSession(app, headers.cookie)).user.id;
-    const created = {};
-    for (const [name, account] of Object.entries(accounts)) {
-      const roleName = account.role ?? "reader";
-      const role = Object.hasOwn(roles, roleName) ? roles[roleName] : undefined;
-      if (role === undefined) {
-        throw new Error(`Unknown Installation Role ${account.role} for ${name}.`);
-      }
-      created[name] = await createAccount(app, headers, {
-        email: account.email,
-        password,
-        roleId: role.id,
-      });
-    }
-    return { admin, roles, accounts: created };
-  } finally {
-    await app.close();
-  }
+  const data = asRecord(asRecord(response.json())?.data);
+  assert.ok(typeof data?.id === "string", "Expected an account ID in the creation response.");
+  return { id: data.id, email, password };
 }
 
 /** Attaches a provider subject to an account at its current version; returns the response. */

@@ -733,6 +733,25 @@ test("repository API credential issuance is refused while ordinary collaboration
     input.target.host = "api.github.com";
     return send(input);
   };
+  await t.test("gh authentication discovery uses the current API grant", async () => {
+    // gh auth status reads the API root after its viewer query. Refusing this discovery
+    // incorrectly reports a valid installation token as invalid and prevents later commands.
+    for (scope of ["github-repository", "github-installation"]) {
+      for (const method of ["GET", "HEAD"]) {
+        assert.equal((await evaluate("/", method)).decision, 1, `${scope}: ${method} /`);
+      }
+      current = false;
+      assert.equal((await evaluate("/", "GET")).reason_code, "access_withdrawn");
+      current = true;
+      for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+        assert.equal((await evaluate("/", method)).reason_code, "request_not_allowed");
+      }
+      assert.equal((await evaluate("/", "GET", {})).reason_code, "request_not_allowed");
+    }
+    // Git-only grants do not gain general API discovery.
+    scope = undefined;
+    assert.equal((await evaluate("/", "GET")).decision, 2);
+  });
   for (scope of ["github-repository", "github-installation"]) {
     for (const prefix of ["/repos/example/project", "/orgs/example"]) {
       for (const endpoint of ["registration-token", "remove-token", "generate-jitconfig"]) {

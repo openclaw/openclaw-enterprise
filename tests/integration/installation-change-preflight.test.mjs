@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { captureChild } from "../helpers/child-processes.mjs";
 import {
@@ -18,6 +19,7 @@ import {
   requireChartListener,
 } from "../../apps/controller/src/composition/installation-fields.ts";
 import { openShellGitChartListener } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
+import { generateInstallationCheck } from "../../deploy/helm/src/generate-installation-check.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // An Installation change restarts the API with the Recreate strategy, so an Installation
@@ -80,17 +82,14 @@ async function render(values, isUpgrade) {
 }
 
 test(
-  "the upgrade hook loads the Installation with the API's files before migration",
+  "install and upgrade hooks load the Installation with the API's files before migration",
   tooling,
   async () => {
-    // A fresh install has no running API to protect and may create the Secret alongside.
-    const install = await render({}, false);
-    assert.deepEqual(
-      install.hook.initContainers.map(({ name }) => name),
-      ["migration"],
+    assert.equal(
+      await generateInstallationCheck(),
+      checkScript,
+      "Regenerate the Installation check with node deploy/helm/src/generate-installation-check.ts",
     );
-    assert.ok(!install.hook.volumes.some(({ name }) => name === "installation-startup"));
-
     for (const values of [
       {},
       repositoryCredentialValues,
@@ -101,6 +100,18 @@ test(
       issuerCaValues,
     ]) {
       const { job, hook, api } = await render(values, true);
+      const install = await render(values, false);
+      assert.deepEqual(install.hook.initContainers[0], hook.initContainers[0]);
+      assert.deepEqual(install.hook.volumes, hook.volumes);
+      assert.deepEqual(
+        install.hook.initContainers.map(({ name }) => name),
+        ["installation-check", "migration"],
+      );
+      assert.deepEqual(install.hook.initContainers[1].args, [
+        "scripts/migrate-production.mjs",
+        "--expect-empty",
+      ]);
+      assert.deepEqual(install.hook.containers, hook.containers);
       // Pre-upgrade hooks finish before Helm updates the Deployments.
       assert.match(job.metadata.annotations["helm.sh/hook"], /(^|,)pre-upgrade(,|$)/);
       assert.equal(job.spec.backoffLimit, 0);
@@ -252,15 +263,59 @@ async function runHook(t, configuration, { files = {}, environment, refusal }) {
   return { ...result, directory };
 }
 
+test(
+  "the first-install check refuses malformed Compute configuration before migration",
+  tooling,
+  async (t) => {
+    const { hook } = await render({}, false);
+    const [check] = hook.initContainers;
+    assert.equal(check.name, "installation-check");
+    assert.deepEqual(check.args, ["--input-type=module", "-e", checkScript]);
+    const environment = () =>
+      Object.fromEntries(
+        check.env
+          .filter(({ name }) => name !== "OCC_CONFIG_PATH")
+          .map(({ name, value }) => [name, value]),
+      );
+    const configuration = installation();
+    const accepted = await runCheck(t, configuration, {}, environment);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(accepted.stdout, "installation-startup-ready\n");
+    configuration.drivers.compute.configuration.network.gatewayTrustedProxyCidrs = [];
+    const refused = await runCheck(t, configuration, {}, environment);
+    assert.equal(refused.status, 1);
+    assert.match(
+      refused.stderr,
+      /DRIVER_CONFIGURATION_INVALID.*\/network\/gatewayTrustedProxyCidrs.*INVALID_FORMAT/,
+    );
+    assert.equal(refused.stdout, "");
+  },
+);
+
 test("the upgrade hook check passes an Installation API startup accepts", async (t) => {
   const configuration = installation();
   configuration.presets = { includeDefaults: true, files: ["presets/team.json"] };
   const result = await runCheck(
     t,
     configuration,
-    { "presets/team.json": JSON.stringify({ name: "Team Codex", template: {} }) },
-    // The documented example bundle, as the chart mounts it for the API.
-    () => ({ OCC_CONSOLE_THEME_DIR: resolve("deploy/examples/console-theme") }),
+    {
+      "presets/team.json": JSON.stringify({ name: "Team Codex", template: {} }),
+      "unavailable-transport.mjs": `
+        import { registerHooks } from "node:module";
+        registerHooks({
+          resolve(specifier, context, nextResolve) {
+            if (specifier === "@grpc/grpc-js") {
+              throw new Error("OpenShell transport is unavailable");
+            }
+            return nextResolve(specifier, context);
+          },
+        });
+      `,
+    },
+    (directory) => ({
+      OCC_CONSOLE_THEME_DIR: resolve("deploy/examples/console-theme"),
+      NODE_OPTIONS: `--import=${pathToFileURL(join(directory, "unavailable-transport.mjs")).href}`,
+    }),
   );
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "installation-startup-ready\n");

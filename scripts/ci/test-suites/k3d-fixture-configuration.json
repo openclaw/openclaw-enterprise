@@ -16,7 +16,7 @@
   },
   "fileConcurrency": 2,
   "parallelFiles": [
-    "tests/integration/kubernetes-compute-real.test.mjs",
+    "tests/integration/kubernetes-compute-real.test.ts",
     "tests/integration/kubernetes-plugin-status-real.test.mjs",
     "tests/integration/installation-handoff-k3d-real.test.ts"
   ],
@@ -29,7 +29,7 @@
       ]
     },
     {
-      "path": "tests/integration/kubernetes-compute-real.test.mjs",
+      "path": "tests/integration/kubernetes-compute-real.test.ts",
       "expectedTests": [
         "authenticated PostgreSQL OCC API and worker deploy real Agent-owned gateways, Secret bindings, and revisions"
       ]

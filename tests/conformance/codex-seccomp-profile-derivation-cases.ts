@@ -6,7 +6,7 @@ import test from "node:test";
 import {
   codexBwrapAdditionalSyscalls,
   deriveCodexBwrapProfile,
-} from "../../scripts/lib/codex-seccomp-profile.mjs";
+} from "../../scripts/lib/codex-seccomp-profile.ts";
 import {
   fixture,
   repositoryRoot,
@@ -14,7 +14,7 @@ import {
   writeJson,
 } from "./codex-seccomp-preparation-fixture.ts";
 
-const generatorPath = join(repositoryRoot, "scripts/generate-codex-seccomp.mjs");
+const generatorPath = join(repositoryRoot, "scripts/generate-codex-seccomp.ts");
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);

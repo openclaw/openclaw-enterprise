@@ -1,27 +1,32 @@
-import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.mjs";
+import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.ts";
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { createServer as createNetServer, connect, Socket } from "node:net";
 import { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 import { channel } from "node:diagnostics_channel";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import {
   defaultRegistryRepositories,
   startRegistryCredentialServiceFixture,
-} from "../fixtures/repository-credentials/registry.mjs";
+} from "../fixtures/repository-credentials/registry.ts";
 import {
   createResourceScope,
   createTestResourceScope,
-} from "../fixtures/repository-credentials/resources.mjs";
-import { createServer as createTlsServer, request as tlsRequest } from "node:https";
+} from "../fixtures/repository-credentials/resources.ts";
+import {
+  createServer as createTlsServer,
+  request as tlsRequest,
+  type RequestOptions,
+} from "node:https";
+import { startRegistryProviderFixtures } from "../fixtures/repository-credentials/registry/provider.ts";
 import { chmod, lstat, symlink, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { startAlternateUpstream } from "../fixtures/repository-credentials/alternate.mjs";
-import { createAlternateFixtureFactory } from "../fixtures/repository-credentials/alternate-shape.ts";
 import {
-  fixtureRepository,
-  type startGitHubFixture,
-} from "../fixtures/repository-credentials/github.mjs";
+  createAlternateDriverFactory,
+  startAlternateUpstream,
+} from "../fixtures/repository-credentials/alternate.ts";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.ts";
 import {
   createTlsMaterial,
   listen,
@@ -29,27 +34,26 @@ import {
   run,
 } from "../fixtures/repository-credentials/process.mjs";
 import {
-  githubProviderModule,
-  appModule,
-  appRoot,
-  appExtension,
   controlRequest,
   createServiceConfiguration,
   eventually,
   createLoopbackServiceConfiguration,
   startTokenServiceScope,
-} from "../fixtures/repository-credentials/service.mjs";
+} from "../fixtures/repository-credentials/service-fixture.ts";
+import {
+  githubProviderModule,
+  appModule,
+  appRoot,
+  appExtension,
+} from "../fixtures/repository-credentials/runtime.mjs";
 import {
   createStaticTokenServiceFactory,
   startServiceListeners,
   startStaticTokenService,
-} from "../fixtures/repository-credentials/service-resources.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
-import type {
-  Clock,
-  RepositoryBackendFactory,
-} from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+} from "../fixtures/repository-credentials/service-resources.ts";
+import { socketDirectory } from "../helpers/socket-directory.ts";
+import { waitUntil } from "../helpers/wait-for.ts";
+import type { RepositoryBackendFactory } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type { ControlRequest } from "../../apps/controller/src/drivers/repo/access/control-contracts.ts";
 import type {
   CredentialServiceOwner,
@@ -62,38 +66,10 @@ import type {
   SessionStatus,
 } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import type { BoundListeners } from "../../apps/controller/src/drivers/repo/access/server.ts";
-import type { GitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import type { RegistryFixtureDefinition } from "../fixtures/repository-credentials/registry/material.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
 
 type ResourceOwner = Pick<TestContext, "after">;
-type ControlledClock = Clock & { advance(milliseconds: number): Promise<void> };
-type TokenScope<C extends Clock> = {
-  resources: ResourceOwner;
-  clock: C;
-  config: ServiceConfig;
-  tls: Awaited<ReturnType<typeof createTlsMaterial>>;
-  github: Awaited<ReturnType<typeof startGitHubFixture>> | undefined;
-};
-type RegistryFixture = {
-  clock: ControlledClock;
-  config: ServiceConfig;
-  registry: GitHubRepositoryRegistry;
-  service: CredentialServiceOwner;
-  namespaceId: string;
-  backendId: string;
-  repositories: readonly { github: { trace: readonly object[] } }[];
-  restart(): Promise<void>;
-};
-type AlternateUpstream = {
-  origin: string;
-  accepted: Map<string, number>;
-  trace: { committed?: boolean }[];
-};
-type RepositoryDefinition = Readonly<{
-  repositoryRef: string;
-  repository: string;
-  repositoryId: string;
-}>;
 type SessionResult = {
   session: Record<string, unknown> & {
     sessionId: string;
@@ -210,15 +186,13 @@ async function dropControlResponse(t: ResourceOwner, target: string) {
 
 async function admissionFixture(t: TestContext, onCreate?: (sessionId: string) => void) {
   const scopeOptions = { limits: { sessions: 1 }, github: false };
-  const { resources, clock, tls, config }: TokenScope<ControlledClock> =
-    await startTokenServiceScope(t, scopeOptions);
+  const { resources, clock, tls, config } = await startTokenServiceScope(t, scopeOptions);
   const {
     callControl,
   }: typeof import("../../apps/controller/src/drivers/repo/github/access/client/operator.ts") =
     await appModule("drivers/repo/github/access/client/operator");
-  const upstreamOptions = { clock, tls };
-  const upstream: AlternateUpstream = await startAlternateUpstream(resources, upstreamOptions);
-  const driverFactory = createAlternateFixtureFactory({
+  const upstream = await startAlternateUpstream(resources, { clock, tls });
+  const driverFactory = createAlternateDriverFactory({
     origin: upstream.origin,
     gatewayOrigin: config.gateway.publicOrigin,
     clock,
@@ -431,8 +405,7 @@ test(
   { timeout: 10000 },
   async (t) => {
     const scopeOptions: { clock: "system"; github?: boolean } = { clock: "system" };
-    const { resources, clock, tls, config, github }: TokenScope<Clock> =
-      await startTokenServiceScope(t, scopeOptions);
+    const { resources, clock, tls, config, github } = await startTokenServiceScope(t, scopeOptions);
     assert.ok(github);
     const { listeners }: { listeners: BoundListeners } = await startStaticTokenService(resources, {
       config,
@@ -480,7 +453,18 @@ test(
         input: { durationSeconds: 86400, provider: "caller-selected" },
         status: 400,
       },
-      { name: "oversized control body", input: { padding: "x".repeat(17000) }, status: 413 },
+      {
+        name: "exact-limit control body reaches schema refusal",
+        // JSON adds 14 ASCII bytes: {"padding":""}. The unknown field is refused.
+        input: { padding: "x".repeat(16_384 - 14) },
+        status: 400,
+      },
+      {
+        name: "control body one UTF-8 byte over the limit",
+        // 14 + 16,369 ASCII bytes + 2 bytes for é = 16,385 bytes, but 16,384 JS characters.
+        input: { padding: "x".repeat(16_384 - 14 - 1) + "é" },
+        status: 413,
+      },
     ];
     for (const scenario of invalidInputs) {
       await t.test(scenario.name, async () => {
@@ -619,7 +603,7 @@ test(
       ...base,
       gateway: { ...base.gateway, listen: "127.0.0.1:0", controlSocket: target },
     };
-    const factory = createAlternateFixtureFactory({
+    const factory = createAlternateDriverFactory({
       origin: "https://upstream.example.test",
       gatewayOrigin: config.gateway.publicOrigin,
       clock,
@@ -655,11 +639,10 @@ test(
     );
     const clock = createSystemClock();
     const tls = await createTlsMaterial(resources);
-    const upstreamOptions: { tls: typeof tls; clock?: Clock } = { tls };
-    const upstream: AlternateUpstream = await startAlternateUpstream(resources, upstreamOptions);
+    const upstream = await startAlternateUpstream(resources, { tls });
     const config: ServiceConfig = await createLoopbackServiceConfiguration(resources);
     const { promise: barrier, resolve: resume } = Promise.withResolvers<void>();
-    const factory = createAlternateFixtureFactory({
+    const factory = createAlternateDriverFactory({
       origin: upstream.origin,
       gatewayOrigin: config.gateway.publicOrigin,
       clock,
@@ -718,8 +701,7 @@ test(
       // A single exchange slot makes leaked ownership observable on the next request.
       limits: { exchanges: 1, exchangesPerSession: 1 },
     };
-    const { resources, clock, tls, config, github }: TokenScope<Clock> =
-      await startTokenServiceScope(t, scopeOptions);
+    const { resources, clock, tls, config, github } = await startTokenServiceScope(t, scopeOptions);
     assert.ok(github);
     const [{ createCredentialService }, { startListeners }]: [
       typeof import("../fixtures/repository-credentials/service.ts"),
@@ -876,10 +858,124 @@ test(
   },
 );
 
+test(
+  "registry provider transports reject origin overrides and preserve valid requests",
+  { timeout: 15000 },
+  async (t) => {
+    const resources = createTestResourceScope(t);
+    const tls = await createTlsMaterial(resources);
+    const definition = defaultRegistryRepositories[0];
+    assert.ok(definition);
+    const { apiOrigin, gitOrigin, repositories } = await startRegistryProviderFixtures(resources, {
+      definitions: [definition],
+      clock: createControlledClock(),
+      tls,
+    });
+    const [repository] = repositories;
+    assert.ok(repository);
+    const outsideRequests: (string | undefined)[] = [];
+    const outside = createTlsServer(tls, (request, response) => {
+      outsideRequests.push(request.url);
+      response.writeHead(204).end();
+    });
+    let outsideConnections = 0;
+    outside.on("connection", () => outsideConnections++);
+    // The proxy trusts this listener's certificate too, so TLS alone cannot prevent a misroute.
+    const outsideOrigin = new URL(await listen(resources, outside));
+    const send = (origin: string, path: string, options: RequestOptions = {}, body?: string) =>
+      new Promise<{ status: number | undefined; body: string }>((resolve, reject) => {
+        const outgoing = tlsRequest(
+          new URL(origin),
+          { ...options, path, ca: tls.ca, agent: false, signal: t.signal },
+          (incoming) => {
+            let body = "";
+            incoming.setEncoding("utf8");
+            incoming.on("data", (chunk: string) => (body += chunk));
+            incoming.once("error", reject);
+            incoming.once("end", () => resolve({ status: incoming.statusCode, body }));
+          },
+        );
+        outgoing.once("error", reject);
+        outgoing.end(body);
+      });
+    const apiPath = `/repos/${repository.repository}/issues`;
+    const gitPath = `/${repository.repository}.git/git-upload-pack`;
+    const refusals = [];
+    for (const [origin, path] of [
+      [apiOrigin, `${apiPath}?per_page=1`],
+      [gitOrigin, gitPath],
+    ] as const) {
+      // Each invalid target still has a registered repository path after URL parsing.
+      for (const target of [
+        `${outsideOrigin.origin}${path}`,
+        `//${outsideOrigin.host}${path}`,
+        `/\\${outsideOrigin.host}${path}`,
+        `/%2e%2e${path}`,
+      ]) {
+        refusals.push({ target, status: (await send(origin, target)).status });
+      }
+    }
+    assert.deepEqual(outsideRequests, []);
+    assert.equal(outsideConnections, 0);
+    for (const { target, status } of refusals) {
+      assert.equal(status, 400, target);
+    }
+    assert.equal(repository.github.trace.length, 0);
+    assert.deepEqual(repository.git.traffic(), { connections: 0, requests: 0 });
+
+    // The real API fixture echoes the issue body, and Git needs the protocol packet to list refs.
+    const token = randomUUID();
+    repository.github.acceptStatic(token);
+    const issue = { title: "Registry proxy fixture", body: "Synthetic issue body" };
+    const created = await send(
+      apiOrigin,
+      apiPath,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      },
+      JSON.stringify(issue),
+    );
+    assert.equal(created.status, 201);
+    const createdIssue = record(JSON.parse(created.body));
+    assert.equal(createdIssue.title, issue.title);
+    assert.equal(createdIssue.body, issue.body);
+    assert.equal(repository.github.trace[0]?.method, "POST");
+    assert.equal(repository.github.trace[0]?.target, apiPath);
+    const listing = `${apiPath}?per_page=1&labels=needs%20review`;
+    const listed = await send(apiOrigin, listing, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(listed.status, 200);
+    assert.deepEqual(JSON.parse(listed.body), [createdIssue]);
+    assert.equal(repository.github.trace[1]?.target, listing);
+
+    const gitBody = "0014command=ls-refs\n00010000";
+    const refs = await send(
+      gitOrigin,
+      gitPath,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Basic ${Buffer.from(`fixture:${token}`).toString("base64")}`,
+          "content-type": "application/x-git-upload-pack-request",
+          "content-length": Buffer.byteLength(gitBody),
+          "git-protocol": "version=2",
+        },
+      },
+      gitBody,
+    );
+    assert.equal(refs.status, 200);
+    assert.match(refs.body, / refs\/heads\/main\n/);
+    assert.equal(repository.git.trace[0]?.method, "POST");
+    assert.equal(repository.git.trace[0]?.path, gitPath);
+  },
+);
+
 async function boundControlFixture(
   t: TestContext,
   limits: Partial<ServiceLimits> = {},
-  repositories?: readonly RepositoryDefinition[],
+  repositories?: readonly RegistryFixtureDefinition[],
 ) {
   // One scope owns every cleanup of these tests. node:test stops a test's after hooks at
   // the first failure, so a failed fixture cleanup used to skip the receipt listener and
@@ -889,19 +985,15 @@ async function boundControlFixture(
   const resources = createTestResourceScope(t);
   const receiptResources = createResourceScope();
   resources.after(() => receiptResources.close());
-  const fixture: RegistryFixture | undefined = await startRegistryCredentialServiceFixture(
-    resources,
-    {
-      namespaceId: `ns_${randomUUID()}`,
-      autoOpen: false,
-      maximumDurationSeconds: 1200,
-      durationSeconds: 600,
-      gateway: { listen: "127.0.0.1:0" },
-      limits,
-      ...(repositories === undefined ? {} : { repositories }),
-    },
-  );
-  assert.ok(fixture);
+  const fixture = await startRegistryCredentialServiceFixture(resources, {
+    namespaceId: `ns_${randomUUID()}`,
+    autoOpen: false,
+    maximumDurationSeconds: 1200,
+    durationSeconds: 600,
+    gateway: { listen: "127.0.0.1:0" },
+    limits,
+    ...(repositories === undefined ? {} : { repositories }),
+  });
   const {
     resolveGitHubRepositoryBinding,
   }: typeof import("../../apps/controller/src/drivers/repo/github/access/registry.ts") =

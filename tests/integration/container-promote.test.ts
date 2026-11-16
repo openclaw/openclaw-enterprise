@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   hubRepositoryPath,
   validateHubRepository,
   validatePublicationRun,
   validateReceipt,
 } from "../../scripts/ci/container-promote.ts";
-import { repository, publishWorkflow } from "../../scripts/ci/container-release.mjs";
+import { repository, publishWorkflow } from "../../scripts/ci/container-release.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const sourceSha = "a".repeat(40);
 const digest = `sha256:${"b".repeat(64)}`;
@@ -133,4 +138,81 @@ test("Docker Hub promotion requires an exact pre-existing private repository", (
       message: /^Set an explicit Docker Hub namespace\/repository without a tag or digest\./,
     });
   }
+});
+
+test("promotion validation writes only the artifact ID for the selected publication attempt", async (t) => {
+  const directory = await temporaryDirectory(t, "container-promotion-");
+  const preload = join(directory, "github.mjs");
+  const output = join(directory, "output");
+  const promoteWorkflow = ".github/workflows/container-promote.yml";
+  // Supply GitHub metadata only. The real command must match the attempt and own
+  // all CLI streams and Actions output, including when the artifact is refused.
+  await writeFile(
+    preload,
+    `
+const env = process.env;
+const repository = ${JSON.stringify(repository)};
+const workflow = ${JSON.stringify(publishWorkflow)};
+const repo = { full_name: repository, default_branch: "main", private: false };
+const run = {
+  id: 123, run_attempt: 2, workflow_id: 89, path: workflow, repository: repo,
+  head_repository: repo, head_branch: "main", head_sha: env.SOURCE_SHA,
+  event: "workflow_dispatch", status: "completed", conclusion: "success",
+};
+const artifact = {
+  id: 789, name: "container-publication-123-" + env.FIXTURE_ARTIFACT_ATTEMPT,
+  expired: false, workflow_run: { id: 123, head_sha: env.SOURCE_SHA },
+};
+const prefix = "/repos/" + repository;
+const responses = new Map([
+  [prefix, repo],
+  [prefix + "/compare/" + env.SOURCE_SHA + "...main", { status: "identical" }],
+  [prefix + "/compare/" + env.SOURCE_SHA + "..." + env.GITHUB_WORKFLOW_SHA, { status: "identical" }],
+  [prefix + "/environments/container-publish", {
+    name: "container-publish", can_admins_bypass: false,
+    deployment_branch_policy: { custom_branch_policies: true, protected_branches: false },
+  }],
+  [prefix + "/environments/container-publish/deployment-branch-policies", {
+    branch_policies: [{ name: "main", type: "branch" }],
+  }],
+  [prefix + "/actions/runs/123", run],
+  [prefix + "/actions/workflows/container-publish.yml", { id: 89, path: workflow, state: "active" }],
+  [prefix + "/actions/runs/123/artifacts", { artifacts: [artifact] }],
+]);
+globalThis.fetch = async (url) => {
+  const { origin, pathname } = new URL(url);
+  return origin === "https://api.github.com" && responses.has(pathname)
+    ? Response.json(responses.get(pathname))
+    : new Response(null, { status: 404 });
+};
+`,
+  );
+  const command = new URL("../../scripts/ci/container-promote.ts", import.meta.url);
+  const validate = (artifactAttempt: string, outputPath: string) =>
+    spawnSync(process.execPath, ["--import", preload, fileURLToPath(command), "validate"], {
+      encoding: "utf8",
+      env: {
+        ...env,
+        GITHUB_REPOSITORY: repository,
+        GITHUB_EVENT_NAME: "workflow_dispatch",
+        GITHUB_REF: "refs/heads/main",
+        GITHUB_WORKFLOW_REF: `${repository}/${promoteWorkflow}@refs/heads/main`,
+        GITHUB_WORKFLOW_SHA: sourceSha,
+        GITHUB_SHA: sourceSha,
+        GITHUB_OUTPUT: outputPath,
+        GH_TOKEN: "synthetic-workflow-token",
+        FIXTURE_ARTIFACT_ATTEMPT: artifactAttempt,
+      },
+    });
+  const admitted = validate("2", output);
+  assert.deepEqual([admitted.status, admitted.stdout, admitted.stderr], [0, "", ""]);
+  assert.equal(await readFile(output, "utf8"), "artifact_id=789\n");
+
+  const refusedOutput = join(directory, "refused-output");
+  const refused = validate("1", refusedOutput);
+  assert.deepEqual(
+    [refused.status, refused.stdout, refused.stderr],
+    [1, "", "The exact successful publication receipt is required.\n\n0 !== 1\n\n"],
+  );
+  await assert.rejects(readFile(refusedOutput), { code: "ENOENT" });
 });

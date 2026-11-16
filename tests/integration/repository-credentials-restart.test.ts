@@ -7,8 +7,8 @@ import { chmod, lstat, readFile, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { appRoot, credentialDriverModule } from "../fixtures/repository-credentials/runtime.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
-import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service-fixture.ts";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 
 async function configuration(t: TestContext) {
   const resources = createTestResourceScope(t);
@@ -78,7 +78,7 @@ function startProcess({ resources, config, tls }: Awaited<ReturnType<typeof conf
     JSON.stringify({
       config,
       runtime: new URL("../fixtures/repository-credentials/runtime.mjs", import.meta.url).href,
-      adapter: new URL("../fixtures/repository-credentials/alternate.mjs", import.meta.url).href,
+      adapter: new URL("../fixtures/repository-credentials/alternate.ts", import.meta.url).href,
       key: tls.keyFile,
       cert: tls.certFile,
     }),

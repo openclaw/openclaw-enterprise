@@ -13,6 +13,14 @@
     "tsBuildInfoFile": "../.build/scripts/tsconfig.tsbuildinfo",
     "paths": {
       "@openclaw-enterprise/contracts": ["../packages/contracts/src/index.ts"],
+      "/app/packages/occ/src/index.ts": ["../packages/occ/src/index.ts"],
+      "/app/packages/utils/src/index.ts": ["../packages/utils/src/index.ts"],
+      "/app/apps/controller/src/backends/openshell.ts": [
+        "../apps/controller/src/backends/openshell.ts"
+      ],
+      "/app/apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts": [
+        "../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts"
+      ],
       "/console/agents/plugin-fields.mjs": [
         "../apps/controller/src/console/agents/plugin-fields.mts"
       ],
@@ -34,6 +42,10 @@
     "*.ts",
     "ci/**/*.ts",
     "lib/**/*.ts",
+    "../deploy/helm/src/*.ts",
+    "../deploy/runtime/native-tools/fetch.ts",
+    "../deploy/runtime/node/verify.mts",
+    "../deploy/runtime/with-pinned-matrix-sdk-crypto.mts",
     "docs-site/compute-matrix.ts",
     "docs-site/serve.ts",
     "docs-site/preview-build.ts",

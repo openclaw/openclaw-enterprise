@@ -28,7 +28,7 @@ const (
 )
 
 // developmentCodexProfile matches the localhost seccomp profile name
-// `scripts/lib/codex-seccomp-k3d.mjs` builds for the dedicated Codex sandbox.
+// `scripts/lib/codex-seccomp-k3d.ts` builds for the dedicated Codex sandbox.
 //
 // The reviewed Codex version is deliberately not pinned here. That script owns
 // the list of reviewed versions and refuses to prepare a profile for any other,

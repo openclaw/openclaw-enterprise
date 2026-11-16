@@ -30,7 +30,7 @@ import {
   AUTHORIZATION_HEADER_REFUSED,
   CREDENTIAL_REQUIRED,
   serviceKeyOutsideNamespace,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/request-admission-expectations.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 type MutableIAMState = { [K in keyof NativeIAMState]: NativeIAMState[K][number][] };

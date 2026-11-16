@@ -85,7 +85,7 @@ async function copyRepositoryTemplate(repository, bare, seed) {
 // git-http-backend owns the protocol and repository mutation; the fixture only
 // supplies CGI framing and a controlled provider authentication check.
 /**
- * @param {import("node:test").TestContext} t
+ * @param {{after(cleanup: () => void | Promise<void>): void}} t
  * @param {{authorize?: (authorization: string | undefined, boundary: "git") => boolean,
  *   repository?: string, tls?: Awaited<ReturnType<typeof createTlsMaterial>>,
  *   observeRequest?: (method: string, url: string) => void}} options
@@ -106,6 +106,8 @@ export async function startGitSmartHttpFixture(
   const bare = join(directory, `${repository}.git`);
   const seed = join(directory, "seed");
   await copyRepositoryTemplate(repository, bare, seed);
+  /** @type {{method: string | undefined, path: string, gitProtocol: string | string[] | undefined,
+   * contentEncoding: string | undefined, contentLength: string | undefined}[]} */
   const trace = [];
   const children = new Set();
   let disconnectPush = false;
@@ -244,6 +246,7 @@ export async function startGitSmartHttpFixture(
     bare,
     trace,
     traffic: () => ({ connections, requests }),
+    /** @returns {{observed: Promise<void>, release(): void}} */
     holdNextFetch({ beforeHeaders = false } = {}) {
       let started;
       let release;
@@ -266,6 +269,7 @@ export async function startGitSmartHttpFixture(
       await run("git", ["push", bare, "HEAD:refs/heads/main"], { cwd: seed });
       return (await run("git", ["rev-parse", "HEAD"], { cwd: seed })).stdout.trim();
     },
+    /** @param {string} name */
     async ref(name) {
       return (await run("git", ["rev-parse", name], { cwd: bare })).stdout.trim();
     },

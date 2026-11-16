@@ -10,7 +10,7 @@ import { createSystemClock } from "../../apps/controller/src/drivers/repo/access
 import {
   PREPARED_REPOSITORY_DIRECTORY,
   REPOSITORY_CONTROL_SOCKET,
-} from "../../scripts/lib/prepared-repository-installation.mjs";
+} from "../../scripts/lib/prepared-repository-installation.ts";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import {
@@ -19,7 +19,7 @@ import {
   qaRepositoryServiceConfig,
   prepareQaRepository,
 } from "../helpers/qa-repository.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // The QA matrix's repository leg (manual Full Integration only) writes these files

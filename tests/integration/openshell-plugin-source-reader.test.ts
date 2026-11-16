@@ -201,7 +201,7 @@ test("OpenShell source discovery uses the selected Backend reader with no Gatewa
     }),
   );
   const credentialSource = {
-    kind: "credential_source",
+    kind: "credential_source" as const,
     id: sourceId,
     namespaceId: namespace.id,
   };

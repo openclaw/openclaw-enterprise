@@ -22,12 +22,12 @@ import {
   fixtureInstallationId,
   fixtureRepositoryId,
   fixtureRepository,
-} from "./repository-credentials/github.mjs";
+} from "./repository-credentials/github.ts";
 import {
   seedSessionRevision,
   sessionAttempt,
-} from "../conformance/repository-sessions.contract.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+} from "../conformance/repository-sessions.contract.ts";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
 import { authorizedPrincipal } from "../helpers/postgres-backend-state.mjs";

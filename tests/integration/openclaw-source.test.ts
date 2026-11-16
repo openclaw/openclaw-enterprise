@@ -19,7 +19,7 @@ test("runtime source arguments reject missing, malformed, and conflicting identi
     OPENCLAW_BUILD_TIMESTAMP: source.buildTimestamp,
   };
   const run = (command: string, env: NodeJS.ProcessEnv = {}) =>
-    spawnSync(process.execPath, ["scripts/lib/openclaw-source.mjs", command, manifest], {
+    spawnSync(process.execPath, ["scripts/lib/openclaw-source.ts", command, manifest], {
       encoding: "utf8",
       env: { ...process.env, ...values, ...env },
     });

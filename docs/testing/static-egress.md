@@ -39,12 +39,12 @@ provider and cluster credentials are unnecessary:
   umask 077
   PG_PLATFORM_RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/oce-postgres-platform.XXXXXX")"
   printf 'PostgreSQL run directory: %s\n' "$PG_PLATFORM_RUN_DIR"
-  trap 'pg_run_status=$?; node scripts/ci/cleanup.mjs --state "$PG_PLATFORM_RUN_DIR/state.json" || pg_run_status=1; exit "$pg_run_status"' EXIT
+  trap 'pg_run_status=$?; node scripts/ci/cleanup.ts --state "$PG_PLATFORM_RUN_DIR/state.json" || pg_run_status=1; exit "$pg_run_status"' EXIT
 
   node scripts/ci/prepare.mjs --lane postgres-platform \
     --state "$PG_PLATFORM_RUN_DIR/state.json" \
     --github-env "$PG_PLATFORM_RUN_DIR/owner.env"
-  node scripts/ci/run-tests.mjs run postgres-platform \
+  node scripts/ci/run-tests.ts run postgres-platform \
     --state "$PG_PLATFORM_RUN_DIR/state.json" \
     --results "$PG_PLATFORM_RUN_DIR/results.json"
 )
@@ -77,7 +77,7 @@ credential reflection, rejection fencing and withdrawal. Sequential requests exc
 blocked Secret reads fill the 1,024 active slots, which delivery releases.
 
 The digest regression reads in-memory committed authorization without sending.
-`postgres-egress-send-receipts.test.mjs` uses PostgreSQL, a fault proxy and a byte-counting
+`postgres-egress-send-receipts.test.ts` uses PostgreSQL, a fault proxy and a byte-counting
 origin. It drops the second COMMIT reply after reservation, verifies no permit or
 origin arrival, then reconstructs the Forwarder before the deadline to exclude
 replacement sends. Policy, material and acceptance remain synthetic. Other cases
@@ -180,7 +180,7 @@ middleware. Independent loopback wire and production Kubernetes packaging checks
 
 ```sh
 node --test --test-name-pattern='OpenShell mTLS|OpenShell service transport never' \
-  tests/conformance/openshell-gateway-wire.test.mjs
+  tests/conformance/openshell-gateway-wire.test.ts
 OCC_HELM_BIN=/absolute/bin/helm node --test --test-name-pattern='protected authority' \
   tests/integration/production-kubernetes-packaging.test.mjs
 ```
@@ -296,7 +296,7 @@ With those prerequisites ready, select a fresh result directory:
 run_dir="$PWD/.build/egress-connected/run-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$run_dir"
 node --env-file=/absolute/path/to/private/connected.env \
-  scripts/ci/run-tests.mjs run egress-connected \
+  scripts/ci/run-tests.ts run egress-connected \
   --state "$run_dir/state.json" --results "$run_dir/results.json"
 ```
 

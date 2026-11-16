@@ -329,7 +329,7 @@ test("production image upgrades preserve controller/runtime ownership and wait f
   const bin = join(directory, "bin");
   await mkdir(bin);
   // Use real JSON operations for the run's dispatch journal and receipts.
-  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "$*" == *'repositoryWorkerRestart'* || "$*" == *'def identifier:'* || "$*" == '-e .spec.replicas == 1 '* || "$*" == '-e .spec.replicas == 0 '* || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$*" == *'.metadata.ownerReferences'* || "$*" == *'.status.initContainerStatuses'* || "\${!#}" == */preflight-cleanup-dependency.json || "$1" == '-cs' || "$1" == '-ser' || "$1" == '-cser' || "$1" == '-Rse' ]]; then
+  const dispatchJson = `if [[ "\${!#}" == */before-helm-status.json || "\${!#}" == */after-helm-status.json || "$*" == *'repositoryWorkerRestart'* || "$*" == *'def identifier:'* || "$*" == '-e .spec.replicas == 1 '* || "$*" == '-e .spec.replicas == 0 '* || "$*" == *'.revisionId'* || "$*" == *'.harness.overrides'* || "$*" == *'revisionId: .activeRevisionId'* || "$*" == *'.evidenceDirectory.path'* || "$*" == *'.dispatchJournal'* || "$*" == *'.agentId, .state'* || "$*" == *'.baselineRevisionId'* || "$*" == *'.preconditions.uid'* || "$*" == *'propagationPolicy'* || "$*" == '-er .metadata.name' || "$*" == '-er .metadata.uid' || "$*" == *'.metadata.ownerReferences'* || "$*" == *'.status.initContainerStatuses'* || "\${!#}" == */preflight-cleanup-dependency.json || "$1" == '-cs' || "$1" == '-ser' || "$1" == '-cser' || "$1" == '-Rse' ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 `;
@@ -913,6 +913,20 @@ esac
   assert.match(controllerOnly.stdout, /no Agent deployments were requested/u);
   const controllerCommands = await readFile(commandLog, "utf8");
   assert.doesNotMatch(controllerCommands, /agent deploy|apply --filename/u);
+  const commands = controllerCommands.trimEnd().split("\n");
+  const submission = commands.findIndex(
+    (line) => line.startsWith("helm upgrade ") && !line.includes("--dry-run"),
+  );
+  assert.ok(submission >= 0);
+  const finalStatusReads = commands
+    .slice(submission + 1)
+    .filter((line) => line.startsWith("helm status "));
+  assert.equal(finalStatusReads.length, 1);
+  assert.match(finalStatusReads[0] ?? "", / --output json$/u);
+  assert.equal(
+    await readFile(join(controllerEvidence, "after-helm-status.txt"), "utf8"),
+    "Summary from after-helm-status.json\nNAME: oce\nNAMESPACE: openclaw-system\nSTATUS: deployed\nREVISION: 2\n",
+  );
   assert.equal(await readFile(protectedFiles.installation, "utf8"), installationDocument);
   await assertCompletedRunCannotResume(controllerEvidence, ["controller"], controllerOptions);
   await rm(commandLog);
