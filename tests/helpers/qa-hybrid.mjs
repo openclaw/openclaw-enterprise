@@ -170,13 +170,13 @@ export async function prepareHybridInstallation(f) {
   const services = yamlMapping(compose, "services");
   const controllerEnv = yamlMapping(services, "controller", "environment");
   const bootstrapEnv = yamlMapping(services, "bootstrap", "environment");
-  const passwordFile = yamlMapping(compose, "secrets", "bootstrap-admin-password").file;
-  assert.ok(typeof passwordFile === "string", "expected a bootstrap password input file");
+  // The mount copy belongs to the container UID; read the retained host-owned input.
+  const passwordFile = join(f.stateDirectory, "initial-admin-password");
   f.consoleUrl = controllerEnv.OCC_AUTH_BASE_URL;
   f.browserCA = join(f.stateDirectory, "browser-ca.crt");
   f.credentials = {
     email: bootstrapEnv.OPENCLAW_DEV_EMAIL,
-    password: (await readFile(passwordFile, "utf8")).replace(/\r?\n$/, ""),
+    password: await readFile(passwordFile, "utf8"),
   };
   // Use the same pinned controllers as the shipped Kubernetes-only launcher.
   for (const pin of Object.values(gatewayRoutingPins)) {
