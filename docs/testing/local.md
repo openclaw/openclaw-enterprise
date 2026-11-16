@@ -309,7 +309,7 @@ With an exclusively used disposable database from [PostgreSQL setup](postgresql.
 ```sh
 OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_test_local \
 OCC_METRICS_TEST_MIGRATION_DATABASE_URL=postgresql://occ_migrator:occ-migrator-local@127.0.0.1:55432/openclaw_test_local \
-  node --test tests/integration/occ-metrics.test.mjs
+  node --test tests/integration/occ-metrics.test.ts
 ```
 
 The migration URL must target the same database; without it the lock case skips.
