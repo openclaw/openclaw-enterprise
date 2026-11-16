@@ -46,10 +46,10 @@ endpoint while model dispatch stays held. The node enrolls independently with th
 separately checks authenticated native readiness for the original execution. The Worker requires
 both observations for the same admitted revision before activation.
 
-The Gateway and Compute's trusted readiness client present the revision's transport bearer over TLS
-to the same trusted listener. Before sending the bearer, each client must verify that the TLS peer
-is the listener for the admitted Sandbox execution generation. If a stale endpoint routes either
-client to a replacement, the replacement must receive neither the bearer nor any native protocol
+The Gateway and Compute's trusted readiness client use the same trusted listener. Each client must
+verify that its TLS peer is the listener for the admitted Sandbox execution generation before
+sending the revision's transport bearer over that connection. If either client reaches a replacement
+through a stale endpoint, the replacement must receive neither the bearer nor any native protocol
 frames.
 
 Compute supplies a verifier to the listener. The listener compares the presented value in memory
