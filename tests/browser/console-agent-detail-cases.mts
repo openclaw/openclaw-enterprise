@@ -285,6 +285,20 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     assert.equal(await configRow.status.textContent(), "");
     assert.equal(await secretRow.status.textContent(), "");
 
+    // Keep rejection and reopening in one browser task so the rejection handler runs after both toggles.
+    await configRow.button.press("Enter");
+    await clipboard.evaluate((take, command) => {
+      const details = globalThis.document.activeElement?.closest("details");
+      if (!details?.open) {
+        throw new Error("Expected focus inside the open cleanup disclosure");
+      }
+      take(command).deny();
+      details.open = false;
+      details.open = true;
+    }, configuration);
+    assert.equal(await selectionText(), "");
+    assert.equal(await configRow.status.textContent(), "");
+
     const canceled = await startCopy(configRow);
     await cancel.click();
     await dialog.waitFor({ state: "detached" });
