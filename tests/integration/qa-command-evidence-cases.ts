@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import {
@@ -12,6 +12,16 @@ import {
 } from "../helpers/qa-command.ts";
 import { registerQaSecret } from "../helpers/qa-secrets.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+
+async function readPrivateLog(path: string): Promise<string> {
+  const log = await open(path, "r");
+  try {
+    assert.equal((await log.stat()).mode & 0o777, 0o600);
+    return await log.readFile("utf8");
+  } finally {
+    await log.close();
+  }
+}
 
 function evidenceRecorder(artifacts: string): NonNullable<QaCommandFixture["record"]> {
   return async (name, value) => {
@@ -188,8 +198,7 @@ export function registerQaImageBuildEvidenceCases(): void {
     const [privateFile] = privateFiles;
     assert.ok(privateFile);
     const privatePath = join(f.directory, privateFile);
-    assert.equal((await stat(privatePath)).mode & 0o777, 0o600);
-    assert.match(await readFile(privatePath, "utf8"), /env-private-value-2025/);
+    assert.match(await readPrivateLog(privatePath), /env-private-value-2025/);
 
     // A protected command withholds raw output even from the installation's private log.
     await assert.rejects(
@@ -208,8 +217,7 @@ export function registerQaImageBuildEvidenceCases(): void {
     const [protectedFile] = protectedLogs;
     assert.ok(protectedFile);
     const protectedPath = join(f.directory, protectedFile);
-    assert.equal((await stat(protectedPath)).mode & 0o777, 0o600);
-    assert.equal(await readFile(protectedPath, "utf8"), "protected subprocess output withheld\n");
+    assert.equal(await readPrivateLog(protectedPath), "protected subprocess output withheld\n");
   });
 }
 
