@@ -49,6 +49,26 @@ export async function verifyPlatformStateTransactions(
     );
   }
 
+  for (const runtimeInputs of ["", "a".repeat(4097), "bad\nvalue", {}]) {
+    await assert.rejects(
+      store.transact((transaction) =>
+        transaction.revisions.createRevision({
+          ...revision,
+          id: identifier("rev"),
+          revision: 2,
+          // @ts-expect-error A persisted value can have the wrong shape.
+          compute: { ...revision.compute, runtimeInputs },
+        }),
+      ),
+      storeRefusal(
+        "ScopeViolationError",
+        "An AgentRevision requires valid Configuration metadata, a native document, and pinned Harness and Compute descriptors.",
+        postgresOwnershipViolation,
+      ),
+      "malformed runtime inputs must be rejected",
+    );
+  }
+
   // The draft binding and the pending deployment both reference the key: one Agent entry.
   await store.read(async (state) => {
     assert.deepEqual(await state.secrets.listReferences(namespace.id, harnessSecret.id, 50), {
