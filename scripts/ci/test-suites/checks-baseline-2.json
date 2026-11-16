@@ -110,7 +110,7 @@
     "tests/conformance/postgres-transaction-unknown-commit.test.ts",
     "tests/integration/oidc-id-token.test.ts",
     "tests/integration/repository-credentials-shutdown.test.mjs",
-    "tests/conformance/repository-transactions.test.mjs",
+    "tests/conformance/repository-transactions.test.ts",
     "tests/integration/google-id-token.test.ts",
     "tests/integration/first-agent-startup.test.ts",
     "tests/conformance/repository-sessions-memory.test.ts",
@@ -508,7 +508,7 @@
       "path": "tests/integration/plugin-driver-real-preflight.test.ts"
     },
     {
-      "path": "tests/conformance/repository-transactions.test.mjs"
+      "path": "tests/conformance/repository-transactions.test.ts"
     },
     {
       "path": "tests/conformance/postgres-transaction-commit.test.mjs"
@@ -863,7 +863,8 @@
       "path": "tests/integration/workspace-gateway-host-route.test.ts",
       "expectedTests": [
         "Linux Gateway routes reuse distinct bound ports and preserve the HTTPS Service target",
-        "Gateway Service mapping failure retains forwarder cleanup and reports shutdown failure"
+        "Gateway Service mapping failure retains forwarder cleanup and reports shutdown failure",
+        "Gateway relay rejects a malformed HTTPS Service target before starting a forwarder"
       ]
     }
   ]

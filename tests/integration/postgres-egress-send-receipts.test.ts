@@ -1,34 +1,43 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import pg from "pg";
-import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
+import type { StaticMaterialEvidence } from "../../packages/contracts/src/index.ts";
+import { CredentialProxy } from "../../packages/occ/src/credential-proxy.ts";
+import {
+  EgressSendReceipts,
+  type SendAttempt,
+  type SendOutcome,
+  type StoredSendReceipt,
+} from "../../packages/occ/src/egress-send-receipts.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
+import type { SendReceiptOwnerCommand } from "../fixtures/egress-send-receipt-owner.mts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 
-function openReceiptStore(t, connectionString = databaseUrl) {
-  const pool = new pg.Pool({ connectionString, max: 1 });
-  t.after(() => pool.end());
-  return new EgressSendReceipts(new PostgresPlatformState(pool));
+type Rejection = NonNullable<Parameters<EgressSendReceipts["record"]>[3]>;
+function openReceiptStore(t: TestContext, connectionString = databaseUrl): EgressSendReceipts {
+  return new EgressSendReceipts(
+    new PostgresPlatformState(testPool(t, { connectionString, max: 1 })),
+  );
 }
 
 const conflict = { name: "ResourceStateConflictError" };
+const execOwner = promisify(execFile);
 
-async function loseCommitReplyWithCallerProcess(method, ...args) {
-  const caller = new URL("../fixtures/egress-send-receipt-owner.mjs", import.meta.url);
+async function loseCommitReplyWithCallerProcess(...[method, ...args]: SendReceiptOwnerCommand) {
+  assert.ok(databaseUrl);
+  const caller = new URL("../fixtures/egress-send-receipt-owner.mts", import.meta.url);
   const proxy = await commitAckProxy(databaseUrl);
   try {
     proxy.arm();
-    await promisify(execFile)(
-      process.execPath,
-      [fileURLToPath(caller), method, JSON.stringify(args)],
-      { env: { ...process.env, OCC_TEST_DATABASE_URL: proxy.url }, timeout: 20_000 },
-    );
+    await execOwner(process.execPath, [fileURLToPath(caller), method, JSON.stringify(args)], {
+      env: { ...process.env, OCC_TEST_DATABASE_URL: proxy.url },
+      timeout: 20_000,
+    });
     assert.equal(proxy.observedCommit, true, "PostgreSQL committed; the caller lost its reply");
   } finally {
     await proxy.close();
@@ -44,17 +53,16 @@ test(
     timeout: 60_000,
   },
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
-    // The disposable database owner handles cleanup; the sender cannot erase its receipt.
-    t.after(() => pool.end());
+    // The disposable database owner removes test rows. The sender cannot erase its receipt.
+    const pool = testPool(t, { connectionString: databaseUrl, max: 4 });
     const state = new PostgresPlatformState(pool);
     const receipts = new EgressSendReceipts(state);
-    const sender = { id: randomUUID(), generation: 1 };
+    const ref = () => ({ id: randomUUID(), generation: 1 });
+    const sender = ref();
     const namespaceId = `ns_${randomUUID()}`;
     const createdAt = new Date().toISOString();
-    let installation;
-    await state.transact(async (unit) => {
-      installation = await unit.installations.getInstallation();
+    const installation = await state.transact(async (unit) => {
+      let installation = await unit.installations.getInstallation();
       if (installation === undefined) {
         installation = { id: `ins_${randomUUID()}`, name: "Send receipt persistence", createdAt };
         await unit.installations.createInstallation(installation);
@@ -65,9 +73,9 @@ test(
         status: "ready",
         createdAt,
       });
+      return installation;
     });
-    const ref = () => ({ id: randomUUID(), generation: 1 });
-    const evidence = {
+    const evidence: StaticMaterialEvidence = {
       kind: "static",
       source: {
         installationId: installation.id,
@@ -89,7 +97,7 @@ test(
       usableUntil: "2099-01-01T00:00:00.000Z",
       retention: "none",
     };
-    const attempt = (material = evidence) => ({
+    const attempt = (material: SendAttempt["material"] = evidence): SendAttempt => ({
       sender,
       instanceId: randomUUID(),
       useId: randomUUID(),
@@ -97,8 +105,12 @@ test(
       material,
       deadlineAt: "2099-01-01T00:00:00.000Z",
     });
-    const feedback = { classification: "credential_rejected", evidence };
-    const blocked = { kind: "response_blocked", dispatch: "confirmed", code: "response_policy" };
+    const feedback: Rejection = { classification: "credential_rejected", evidence };
+    const blocked: SendOutcome = {
+      kind: "response_blocked",
+      dispatch: "confirmed",
+      code: "response_policy",
+    };
 
     await t.test(
       "after COMMIT and loss of the acknowledgment and caller process, recover the exact outcome and feedback",
@@ -146,11 +158,11 @@ test(
           assert.equal(await view.credentialSources.isEgressMaterialRejected(next), false);
           assert.equal(await view.credentialSources.isEgressMaterialRejected(otherStore), false);
         });
-        const count = await pool.query(
+        const count = await pool.query<{ count: number }>(
           "SELECT count(*)::int AS count FROM occ.egress_rejected_material WHERE namespace_id=$1",
           [namespaceId],
         );
-        assert.equal(count.rows[0].count, 1);
+        assert.deepEqual(count.rows, [{ count: 1 }]);
         for (const mismatch of [next, otherStore]) {
           await assert.rejects(receipts.reject(sender, input, mismatch), conflict);
         }
@@ -179,12 +191,13 @@ test(
     await t.test(
       "closed outcomes, exact bindings, and concurrent duplicates preserve their original verdict",
       async () => {
-        for (const result of [
+        const outcomes: readonly SendOutcome[] = [
           { kind: "refused", dispatched: false, error: { kind: "cancelled" } },
           { kind: "uncertain", dispatch: "possible" },
           { kind: "response", dispatch: "confirmed", status: 200 },
           blocked,
-        ]) {
+        ];
+        for (const result of outcomes) {
           const input = attempt();
           const starts = await Promise.all([
             receipts.begin(sender, input),
@@ -243,7 +256,9 @@ test(
           }),
           conflict,
         );
-        assert.equal((await receipts.recover(sender, input)).settled, false);
+        const pending = await receipts.recover(sender, input);
+        assert.ok(pending);
+        assert.equal(pending.settled, false);
         // Constraints protect the persisted state even when SQL bypasses the repository.
         await assert.rejects(
           pool.query(
@@ -265,6 +280,7 @@ test(
       await t.test(
         fault ? "lost authorization acknowledgment" : "acknowledged authorization",
         async (t) => {
+          assert.ok(databaseUrl);
           const proxy = await commitAckProxy(databaseUrl);
           const receipts = openReceiptStore(t, proxy.url);
           const recovered = openReceiptStore(t);
@@ -273,23 +289,14 @@ test(
           const ready = await f.resolve();
           assert.equal(ready.kind, "ready");
           const input = f.attempt();
-          let reservationObserved = false;
+          let reservation: { receipt: StoredSendReceipt | undefined; commits: number } | undefined;
           const check = f.ports.check;
           f.ports.check = async (use, material) => {
             if (material !== undefined) {
               // Inspect committed state independently while the final synthetic policy
               // decision is pending. This is the first COMMIT, not our fault target.
-              const reserved = await recovered.recover(f.sender, input);
-              assert.equal(proxy.commits, 1);
-              assert.deepEqual(reserved, {
-                ...input,
-                authorization: null,
-                observation: null,
-                outcome: { kind: "uncertain", dispatch: "possible" },
-                settled: false,
-                feedback: null,
-              });
-              reservationObserved = true;
+              const receipt = await recovered.recover(f.sender, input);
+              reservation = { receipt, commits: proxy.commits };
             }
             return check(use, material);
           };
@@ -299,10 +306,24 @@ test(
             proxy.arm({ skipCommits: 1 });
           }
           const decision = await f.dispatch();
-          assert.equal(reservationObserved, true);
-          assert.equal(decision.kind, fault ? "refused" : "allow");
+          // A thrown policy callback is converted to a refusal. Check the captured
+          // reservation here so a missing or incorrect observation fails the test.
+          assert.deepEqual(reservation, {
+            commits: 1,
+            receipt: {
+              ...input,
+              authorization: null,
+              observation: null,
+              outcome: { kind: "uncertain", dispatch: "possible" },
+              settled: false,
+              feedback: null,
+            },
+          });
           if (fault) {
+            assert.equal(decision.kind, "refused");
             assert.deepEqual(decision.error, { kind: "unavailable", code: "authority" });
+          } else {
+            assert.equal(decision.kind, "allow");
           }
           assert.equal(proxy.observedCommit, fault);
           assert.equal(
@@ -318,25 +339,27 @@ test(
             "selection is a material read, independent of permit or arrival",
           );
           const row = await recovered.recover(f.sender, input);
-          assert.deepEqual(row.authorization.association, f.association);
-          assert.equal(row.authorization.authorizedAt, f.startedAt);
-          assert.equal(row.authorization.injectionDigest, ready.injectionDigest);
+          assert.ok(row?.authorization);
+          const authorization = row.authorization;
+          assert.deepEqual(authorization.association, f.association);
+          assert.equal(authorization.authorizedAt, f.startedAt);
+          assert.equal(authorization.injectionDigest, ready.injectionDigest);
           assert.deepEqual(row.material, input.material);
           assert.equal(row.deadlineAt, input.deadlineAt);
           assert.equal(
-            row.authorization.requestDigest,
+            authorization.requestDigest,
             createHash("sha256")
               .update(JSON.stringify({ ...f.request, body: f.request.body.toString("base64") }))
               .digest("hex"),
           );
-          if (!fault) {
-            assert.deepEqual(row.authorization, decision.authorization);
+          if (decision.kind === "allow") {
+            assert.deepEqual(authorization, decision.authorization);
           }
           assert.equal(
-            Date.parse(row.authorization.sendStartBy) - Date.parse(row.authorization.authorizedAt),
+            Date.parse(authorization.sendStartBy) - Date.parse(authorization.authorizedAt),
             1000,
           );
-          assert.ok(Date.parse(row.authorization.sendStartBy) <= Date.parse(input.deadlineAt));
+          assert.ok(Date.parse(authorization.sendStartBy) <= Date.parse(input.deadlineAt));
           assert.equal(row.settled, false);
           assert.deepEqual(row.outcome, { kind: "uncertain", dispatch: "possible" });
           const original = structuredClone(row);
@@ -348,10 +371,7 @@ test(
           assert.equal(f.permits, fault ? 0 : 1);
           assert.equal(f.arrivals, fault ? 0 : 1);
           assert.deepEqual(await recovered.recover(f.sender, input), original);
-          await assert.rejects(
-            receipts.authorize(f.sender, input, original.authorization),
-            conflict,
-          );
+          await assert.rejects(receipts.authorize(f.sender, input, authorization), conflict);
         },
       );
     }
@@ -366,10 +386,9 @@ test(
       await t.test(reason, async (t) => {
         const receipts = openReceiptStore(t);
         const cancellation = new AbortController();
-        let f;
         // Delay the real committed result at the transport boundary, without changing
         // persistence or its result. The permit must recheck state after this await.
-        const transport = {
+        const transport: NonNullable<Parameters<typeof syntheticDispatchFixture>[1]> = {
           begin: receipts.begin.bind(receipts),
           record: receipts.record.bind(receipts),
           observe: receipts.observe.bind(receipts),
@@ -387,15 +406,18 @@ test(
             return committed;
           },
         };
-        f = await syntheticDispatchFixture(t, transport);
+        const f = await syntheticDispatchFixture(t, transport);
         assert.equal((await f.resolve()).kind, "ready");
         assert.equal((await f.dispatch(cancellation.signal)).kind, "refused");
         assert.equal(f.permits, 0);
         assert.equal(f.arrivals, 0);
-        const row = await receipts.recover(f.sender, f.attempt());
-        assert.deepEqual(row.authorization.association, f.association);
+        const recovered = openReceiptStore(t);
+        const row = await recovered.recover(f.sender, f.attempt());
+        assert.ok(row?.authorization);
+        const authorization = row.authorization;
+        assert.deepEqual(authorization.association, f.association);
         assert.equal(
-          Date.parse(row.authorization.sendStartBy) - Date.parse(row.authorization.authorizedAt),
+          Date.parse(authorization.sendStartBy) - Date.parse(authorization.authorizedAt),
           1000,
         );
         assert.equal(row.deadlineAt, f.request.deadlineAt);
@@ -406,9 +428,7 @@ test(
 );
 
 test("verified peer identity cannot substitute for capture by the exchange owner", async (t) => {
-  const { syntheticDispatchFixture } = await import("../helpers/static-egress-dispatch.ts");
-  const { CredentialProxy } = await import("../../packages/occ/src/credential-proxy.ts");
-  const f = await syntheticDispatchFixture(t, undefined);
+  const f = await syntheticDispatchFixture(t);
   const forwarder = new CredentialProxy({
     ...f.ports,
     exchangeOwner: { ...f.ports.exchangeOwner, capture: () => undefined },

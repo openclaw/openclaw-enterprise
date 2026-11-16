@@ -3,7 +3,9 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
-import playwright from "playwright";
+import { chromium, type Browser } from "playwright";
+
+import { matrixCell, validateMatrix } from "../../scripts/generate-compute-matrix.ts";
 
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.ts";
 import {
@@ -13,15 +15,15 @@ import {
   spawnDocsPreview,
   waitForDocsPreview,
   writeComputeMatrixReadme,
-} from "../helpers/docs-site.mjs";
+} from "../helpers/docs-site.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
 
-const { chromium } = playwright;
-
 test("docs preview filters the ComputeDriver matrix in a browser", async (t) => {
-  let child;
-  let browser;
-  let diagnostics;
+  const preview: {
+    child?: ReturnType<typeof spawnDocsPreview>;
+    browser?: Browser;
+    diagnostics?: Awaited<ReturnType<typeof watchBrowserContext>>;
+  } = {};
   const { directory: fixture } = await createDocsFixture(
     t,
     "enterprise-docs-compute-matrix-browser-",
@@ -30,19 +32,22 @@ test("docs preview filters the ComputeDriver matrix in a browser", async (t) => 
       // Stop the preview before its directory is removed; removal runs even if this throws.
       async beforeRemove() {
         try {
-          await diagnostics?.capture();
-          await browser?.close();
+          try {
+            await preview.diagnostics?.capture();
+          } finally {
+            await preview.browser?.close();
+          }
         } finally {
-          if (child) {
-            await stopProcess(child, { graceMs: 5_000 });
+          if (preview.child?.pid !== undefined) {
+            await stopProcess(preview.child, { graceMs: 5_000 });
           }
         }
       },
     },
   );
-  const matrix = JSON.parse(
-    await readFile(join(root, "docs/assets/compute-driver-matrix.json"), "utf8"),
-  );
+  const matrixFile = join(root, "docs/assets/compute-driver-matrix.json");
+  const matrix: unknown = JSON.parse(await readFile(matrixFile, "utf8"));
+  validateMatrix(matrix, matrixFile);
   const storageRows = matrix.rows.filter((row) => row.category === "Storage").length;
   const transportRows = matrix.rows.filter((row) =>
     JSON.stringify(row).toLocaleLowerCase("en-US").includes("transport"),
@@ -50,22 +55,25 @@ test("docs preview filters the ComputeDriver matrix in a browser", async (t) => 
   const transportRowData = matrix.rows.find(
     (row) => row.name === "Persist dedicated transport authentication across retries",
   );
-  const partialTransportCell = Object.values(transportRowData.cells).find(
-    (cell) => cell.status === "partial",
-  );
+  assert.ok(transportRowData, "The matrix must include the dedicated transport row");
+  const partialTransportCell = matrix.drivers
+    .map((driver) => matrixCell(transportRowData, driver.id))
+    .find((cell) => cell.status === "partial");
+  assert.ok(partialTransportCell, "The dedicated transport row must include partial support");
   await writeComputeMatrixReadme(fixture, matrix);
   const build = buildDocs(fixture);
   assert.equal(build.status, 0, build.stderr || build.stdout);
 
-  child = spawnDocsPreview(fixture);
-  const origin = await waitForDocsPreview(child);
-  browser = await chromium.launch({
+  preview.child = spawnDocsPreview(fixture);
+  const origin = await waitForDocsPreview(preview.child);
+  preview.browser = await chromium.launch({
+    headless: true,
     ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
       ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
       : {}),
   });
-  const page = await browser.newPage();
-  diagnostics = await watchBrowserContext(t, page.context());
+  const page = await preview.browser.newPage();
+  preview.diagnostics = await watchBrowserContext(t, page.context());
   await page.goto(origin);
   await page.getByRole("rowheader", { name: /Persist Agent state/ }).waitFor();
   await page.getByLabel("Filter ComputeDriver feature matrix by category").selectOption("Storage");

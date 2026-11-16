@@ -6,7 +6,7 @@ import {
   createModelProviderFiles,
   writeModelProviderTrust,
 } from "../../../tests/helpers/runtime-model-provider.mjs";
-import { postgresImage, registryImage, runtimeNodeBaseImage } from "../fixture-support-images.mjs";
+import { postgresImage, registryImage, runtimeNodeBaseImage } from "../fixture-support-images.ts";
 import { ensureImage } from "../image-pull.ts";
 import {
   openclawBuildArguments,

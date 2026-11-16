@@ -7,7 +7,7 @@ import { createQaInstallation } from "./qa-installation.mjs";
 import { createNativePluginAssertions } from "./native-plugin-assertions.ts";
 import { protectedText, redactQaError } from "./qa-secrets.ts";
 import { waitFor } from "./qa-utils.mjs";
-import { nativeProvisioningPath } from "./local-first-agent-native.mjs";
+import { nativeProvisioningPath } from "./local-first-agent-native-diagnostics.ts";
 
 const nativeReadScript = String.raw`
 (async () => {

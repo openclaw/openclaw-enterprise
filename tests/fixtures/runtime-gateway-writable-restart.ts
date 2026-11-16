@@ -9,14 +9,16 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { runDocker } from "../helpers/runtime-image-docker.ts";
 import {
   containerLogTail,
-  createAdmittedRuntimeImageConfiguration,
   gatewayReadinessReport,
+} from "../helpers/runtime-image-gateway-observations.ts";
+import {
+  createAdmittedRuntimeImageConfiguration,
   image,
-  runDocker,
   runGatewaySmoke,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 import { waitFor, waitUntil } from "../helpers/wait-for.ts";
 
 interface GatewayState {
