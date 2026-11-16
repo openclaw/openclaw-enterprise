@@ -425,6 +425,7 @@ export async function startPreparedGitHubGitOwner(
   const protectedGit = store.protectedAuthority(stop.signal, useRequest);
   return {
     protectedGit,
+    recoverInstallReservation: store.recoverInstallReservation.bind(store),
     use,
     // Recovery-only observation for the worker, never part of its use socket.
     inspectTokenAttempt: (familyId: string, attemptId: string) =>

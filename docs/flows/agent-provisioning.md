@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: "2026-11-14"
-last_updated_session: "authoring-run/f1cd3476-f00f-41a4-bdc9-1f1cfd095762"
+updated: "2026-11-16"
+last_updated_session: "authoring-run/fa0bbd3a-70f6-47e0-8a76-8ccb321b94ac"
 ---
 
 # Agent provisioning flow
@@ -136,7 +136,12 @@ Kubernetes Configuration requests.
 
 `packages/occ/src/index.ts:observeProvisioningDeployment`
 
-Ordinary and first deploy authorize Configuration read before checking the saved Agent's enrollment. Both check before Channel preparation and under the Agent lock. Current Agent and Configuration authority can recover an exact first-deployment receipt.
+Ordinary and first deploy authorize Configuration read before checking the saved Agent's
+enrollment. Both check before Channel preparation and under the Agent lock.
+An enrollment conflict tells the caller to deploy the enrolled Agent with its
+repository selections or remove the selections and try again. Current Agent
+and Configuration authority can recover an exact first-deployment receipt.
+See [remote issuer enrollment](../reference/repository-credentials/remote-prepared-git-issuer.md).
 
 At handoff, provisioning saves the first Agent revision ID and stays `running`.
 Provisioning waits without using attempts. On success, PostgreSQL
@@ -244,6 +249,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-16 23:13: Document recovery from a repository enrollment conflict. (authoring-run/fa0bbd3a-70f6-47e0-8a76-8ccb321b94ac - 7223624a812d191e3613e6f80f9d8ea04bb82f8a)
 
 - 2026-11-14 02:53: Trace recipient checks before Configuration and Channel preparation. (authoring-run/f1cd3476-f00f-41a4-bdc9-1f1cfd095762 - 6a954eeb209690261b17db4cd91181aa629cd046)
 - 2026-11-14 02:27: Trace recipient enrollment checks before new provisioning writes. (authoring-run/2d33bc98-b254-4e9a-9e69-8d859a58b543 - b7964df8777077ca4197038f9217ab3785ca4dba)

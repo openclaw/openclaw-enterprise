@@ -355,101 +355,110 @@ test("credential source boundary rejects new raw capabilities in the real source
       /raw process capability getBuiltinModule/,
       issuerEntrypoint,
     ],
-    ...[
+    ...(
       [
-        "createRequire",
-        'import { createRequire as boundaryRequire } from "node:module";',
-        /unreviewed issuer source import from node:module/,
-      ],
-      [
-        "register",
-        'import { register as boundaryRegister } from "node:module";',
-        /unreviewed issuer source import from node:module/,
-      ],
-      [
-        "registerHooks",
-        'import { registerHooks as boundaryHooks } from "node:module";',
-        /unreviewed issuer source import from node:module/,
-      ],
-      [
-        "additional file reader",
-        'import { open as boundaryOpen } from "node:fs/promises";',
-        /unreviewed issuer source import from node:fs\/promises/,
-      ],
-      [
-        "file writer",
-        'import { writeFile as boundaryWrite } from "node:fs/promises";',
-        /unreviewed issuer source import from node:fs\/promises/,
-      ],
-      [
-        "default metadata import",
-        'import boundaryModule from "node:module";',
-        /unreviewed issuer source import from node:module/,
-      ],
-      [
-        "namespace metadata import",
-        'import * as boundaryModule from "node:module";',
-        /unreviewed issuer source import from node:module/,
-      ],
-      [
-        "namespace file import",
-        'import * as boundaryFs from "node:fs/promises";',
-        /unreviewed issuer source import from node:fs\/promises/,
-      ],
-      [
-        "evaluating a resolved entry",
-        "await import(boundaryResolved.entryUrl.href);",
-        /nonliteral module loading/,
-      ],
-      ["generated executable code", 'Function("return 1")();', /raw global Function/],
-    ].map(([label, source, expected]) => [
+        [
+          "createRequire",
+          'import { createRequire as boundaryRequire } from "node:module";',
+          /unreviewed issuer source import from node:module/,
+        ],
+        [
+          "register",
+          'import { register as boundaryRegister } from "node:module";',
+          /unreviewed issuer source import from node:module/,
+        ],
+        [
+          "registerHooks",
+          'import { registerHooks as boundaryHooks } from "node:module";',
+          /unreviewed issuer source import from node:module/,
+        ],
+        [
+          "additional file reader",
+          'import { open as boundaryOpen } from "node:fs/promises";',
+          /unreviewed issuer source import from node:fs\/promises/,
+        ],
+        [
+          "file writer",
+          'import { writeFile as boundaryWrite } from "node:fs/promises";',
+          /unreviewed issuer source import from node:fs\/promises/,
+        ],
+        [
+          "default metadata import",
+          'import boundaryModule from "node:module";',
+          /unreviewed issuer source import from node:module/,
+        ],
+        [
+          "namespace metadata import",
+          'import * as boundaryModule from "node:module";',
+          /unreviewed issuer source import from node:module/,
+        ],
+        [
+          "namespace file import",
+          'import * as boundaryFs from "node:fs/promises";',
+          /unreviewed issuer source import from node:fs\/promises/,
+        ],
+        [
+          "evaluating a resolved entry",
+          "await import(boundaryResolved.entryUrl.href);",
+          /nonliteral module loading/,
+        ],
+        ["generated executable code", 'Function("return 1")();', /raw global Function/],
+      ] satisfies [string, string, RegExp][]
+    ).map(([label, source, expected]): RejectedMutation => [
       `package metadata resolution rejects ${label}`,
       source,
       expected,
       packageResolution,
     ]),
-    ...[
-      ["full package loader", 'import { loadDriverPackage } from "../driver-packages.ts";'],
+    ...(
       [
-        "full installation loader",
-        'import { loadInstallationConfiguration } from "../installation-config.ts";',
-      ],
-      ["Worker entrypoint", 'import "../../worker.mjs";'],
-      ["unscanned neighboring helper", 'import "../boundary-unscanned.ts";'],
-    ].map(([label, source]) => [
+        ["full package loader", 'import { loadDriverPackage } from "../driver-packages.ts";'],
+        [
+          "full installation loader",
+          'import { loadInstallationConfiguration } from "../installation-config.ts";',
+        ],
+        ["Worker entrypoint", 'import "../../worker.mjs";'],
+        ["unscanned neighboring helper", 'import "../boundary-unscanned.ts";'],
+      ] satisfies [string, string][]
+    ).map(([label, source]): RejectedMutation => [
       `issuer selection cannot load ${label}`,
       source,
       /runtime import has no scanned credential source/,
       issuerSelection,
     ]),
-    ...[
+    ...(
       [
-        "additional member",
-        'const { loadYaml: boundaryYaml, KubeConfig: BoundaryKube } = await import("@kubernetes/client-node");',
-      ],
-      [
-        "rest binding",
-        'const { loadYaml: boundaryYaml, ...boundaryRest } = await import("@kubernetes/client-node");',
-      ],
-      ["module namespace", 'const boundaryYamlModule = await import("@kubernetes/client-node");'],
-      [
-        "later destructuring",
-        'const boundaryYamlModule = await import("@kubernetes/client-node"); const { loadYaml: boundaryYaml } = boundaryYamlModule;',
-      ],
-      ["unawaited import", 'const { loadYaml: boundaryYaml } = import("@kubernetes/client-node");'],
-      [
-        "computed property",
-        'const { ["loadYaml"]: boundaryYaml } = await import("@kubernetes/client-node");',
-      ],
-      [
-        "default value",
-        'const { loadYaml: boundaryYaml = undefined } = await import("@kubernetes/client-node");',
-      ],
-      [
-        "import options",
-        'const { loadYaml: boundaryYaml } = await import("@kubernetes/client-node", {});',
-      ],
-    ].map(([label, source]) => [
+        [
+          "additional member",
+          'const { loadYaml: boundaryYaml, KubeConfig: BoundaryKube } = await import("@kubernetes/client-node");',
+        ],
+        [
+          "rest binding",
+          'const { loadYaml: boundaryYaml, ...boundaryRest } = await import("@kubernetes/client-node");',
+        ],
+        ["module namespace", 'const boundaryYamlModule = await import("@kubernetes/client-node");'],
+        [
+          "later destructuring",
+          'const boundaryYamlModule = await import("@kubernetes/client-node"); const { loadYaml: boundaryYaml } = boundaryYamlModule;',
+        ],
+        [
+          "unawaited import",
+          'const { loadYaml: boundaryYaml } = import("@kubernetes/client-node");',
+        ],
+        [
+          "computed property",
+          'const { ["loadYaml"]: boundaryYaml } = await import("@kubernetes/client-node");',
+        ],
+        [
+          "default value",
+          'const { loadYaml: boundaryYaml = undefined } = await import("@kubernetes/client-node");',
+        ],
+        [
+          "import options",
+          'const { loadYaml: boundaryYaml } = await import("@kubernetes/client-node", {});',
+        ],
+      ] satisfies [string, string][]
+    ).map(([label, source]): RejectedMutation => [
       `startup YAML exception rejects ${label}`,
       source,
       /unreviewed issuer source import from @kubernetes\/client-node/,
@@ -473,33 +482,35 @@ test("credential source boundary rejects new raw capabilities in the real source
       /raw I\/O binding cannot be re-exported/,
       startupFile,
     ],
-    ...[
+    ...(
       [
-        "namespace import",
-        'import * as boundaryPino from "pino";',
-        /only the reviewed default pino import is permitted/,
-      ],
-      [
-        "named default import",
-        'import { default as boundaryPino } from "pino";',
-        /only the reviewed default pino import is permitted/,
-      ],
-      [
-        "extra runtime binding",
-        'import boundaryPino, { destination as boundaryDestination } from "pino";',
-        /only the reviewed default pino import is permitted/,
-      ],
-      [
-        "direct re-export",
-        'export { default as boundaryPino } from "pino";',
-        /unreviewed issuer source export from pino/,
-      ],
-      [
-        "local re-export",
-        'import boundaryPino from "pino"; export { boundaryPino };',
-        /raw I\/O binding cannot be re-exported/,
-      ],
-    ].map(([label, source, expected]) => [
+        [
+          "namespace import",
+          'import * as boundaryPino from "pino";',
+          /only the reviewed default pino import is permitted/,
+        ],
+        [
+          "named default import",
+          'import { default as boundaryPino } from "pino";',
+          /only the reviewed default pino import is permitted/,
+        ],
+        [
+          "extra runtime binding",
+          'import boundaryPino, { destination as boundaryDestination } from "pino";',
+          /only the reviewed default pino import is permitted/,
+        ],
+        [
+          "direct re-export",
+          'export { default as boundaryPino } from "pino";',
+          /unreviewed issuer source export from pino/,
+        ],
+        [
+          "local re-export",
+          'import boundaryPino from "pino"; export { boundaryPino };',
+          /raw I\/O binding cannot be re-exported/,
+        ],
+      ] satisfies [string, string, RegExp][]
+    ).map(([label, source, expected]): RejectedMutation => [
       `logging rejects logger ${label}`,
       source,
       expected,

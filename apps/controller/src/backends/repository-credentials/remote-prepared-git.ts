@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { createServer, request, type ServerOptions } from "node:https";
 import type { Socket } from "node:net";
@@ -10,7 +11,9 @@ import { inspectRequestHead } from "../../drivers/repo/access/transport/request.
 
 const path = "/v1/prepared-git/authority";
 const probeHeader = "openclaw-prepared-git-authority";
-const probeVersion = "v1";
+const probeVersion = "v2";
+const reservationLifetimeMs = 30_000;
+const maxReservations = 64;
 const maxBytes = 128 * 1024;
 const unavailable = () => new Error("PREPARED_REPOSITORY_GIT_UNAVAILABLE");
 const denied = { kind: "denied", reason: "unavailable" } as const;
@@ -62,6 +65,13 @@ type Authority = ProtectedRepositoryGitAuthority;
 type Recipient = Parameters<Authority["recipients"]["observe"]>[0];
 type Route = NonNullable<Awaited<ReturnType<Authority["recipients"]["observe"]>>>;
 type Version = Parameters<Authority["recipients"]["beginInstall"]>[1];
+type Pending = Route & Version;
+type Reservation = {
+  readonly requestDigest: string;
+  readonly expiresAt: number;
+  readonly result: Promise<Pending | undefined>;
+  collected: boolean;
+};
 type Repository = NonNullable<Authority["online"]["githubRepository"]>;
 type UseRequest = Parameters<Repository["authorize"]>[0];
 
@@ -120,9 +130,6 @@ function dispatch(authority: Authority, input: Record<string, unknown>, signal: 
     case "read":
       fields(input, "operation", "route");
       return repository.readMaterial(route(input.route), signal);
-    case "begin":
-      fields(input, "operation", "route", "version");
-      return authority.recipients.beginInstall(route(input.route), version(input.version));
     case "confirm":
       fields(input, "operation", "pending");
       return authority.recipients.confirmInstall({
@@ -154,6 +161,7 @@ function authorizedWorker(socket: Socket, expected: string) {
 
 export async function serveRemotePreparedGit(
   authority: Authority,
+  currentReservation: (pending: Pending) => Promise<boolean>,
   tls: Pick<ServerOptions, "cert" | "key" | "ca">,
   endpoint: { host: string; port: number; workerFingerprintSha256: string },
 ) {
@@ -166,6 +174,60 @@ export async function serveRemotePreparedGit(
   const stop = new AbortController();
   const pending = new Set<Promise<void>>();
   const sockets = new Set<Socket>();
+  // This listener already binds every request to one enrolled Worker certificate.
+  const reservations = new Map<string, Reservation>();
+  async function reservation(input: Record<string, unknown>) {
+    fields(input, "operation", "requestId", "route", "version");
+    const { requestId } = input;
+    if (typeof requestId !== "string" || !versionPattern.test(requestId)) {
+      throw unavailable();
+    }
+    const requestedRoute = route(input.route);
+    const requestedVersion = version(input.version);
+    const requestDigest = createHash("sha256")
+      .update(JSON.stringify([requestedRoute, requestedVersion]))
+      .digest("hex");
+    const now = performance.now();
+    const existing = reservations.get(requestId);
+    if (input.operation === "collect-reservation") {
+      if (
+        !existing ||
+        existing.collected ||
+        existing.expiresAt <= now ||
+        existing.requestDigest !== requestDigest
+      ) {
+        return;
+      }
+      // Once this request can receive the fence, a later request must refuse it.
+      existing.collected = true;
+      const receipt = await existing.result;
+      if (
+        receipt &&
+        (await currentReservation(receipt)) &&
+        existing.expiresAt > performance.now()
+      ) {
+        return receipt;
+      }
+      return;
+    }
+    for (const [id, entry] of reservations) {
+      if (entry.expiresAt <= now) {
+        reservations.delete(id);
+      }
+    }
+    if (existing || reservations.size >= maxReservations) {
+      return;
+    }
+    const result = authority.recipients.beginInstall(requestedRoute, requestedVersion);
+    reservations.set(requestId, {
+      requestDigest,
+      expiresAt: now + reservationLifetimeMs,
+      result,
+      collected: false,
+    });
+    // The first response carries no fence. The pending result survives its socket closing.
+    await result;
+  }
   const server = createServer(
     {
       ...tls,
@@ -213,7 +275,10 @@ export async function serveRemotePreparedGit(
           res.writeHead(204, { ...headers, [probeHeader]: probeVersion }).end();
           return;
         }
-        const result = await dispatch(authority, input, signal);
+        const result =
+          input.operation === "begin" || input.operation === "collect-reservation"
+            ? await reservation(input)
+            : await dispatch(authority, input, signal);
         signal.throwIfAborted();
         if (result === undefined) {
           res.writeHead(204, headers).end();
@@ -384,7 +449,21 @@ export async function connectRemotePreparedGit(
     protectedGit: {
       recipients: {
         observe: (installation) => call({ operation: "observe", installation }),
-        beginInstall: (route, version) => call({ operation: "begin", route, version }),
+        async beginInstall(route, version) {
+          const request = { requestId: randomUUID(), route, version };
+          let acknowledged = false;
+          try {
+            await call({ operation: "begin", ...request });
+            acknowledged = true;
+          } catch {
+            // The first reply carries no fence. Collect once even when its outcome is unknown.
+          }
+          const pending = await call<Pending>({ operation: "collect-reservation", ...request });
+          if (!acknowledged && pending === undefined) {
+            throw unavailable();
+          }
+          return pending;
+        },
         confirmInstall: (pending) => call({ operation: "confirm", pending }),
       },
       online: {

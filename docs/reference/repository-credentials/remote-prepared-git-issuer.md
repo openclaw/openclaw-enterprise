@@ -30,8 +30,10 @@ start it before any revision, recipient witness, or token exists.
 To deploy with repository selections, save them on the enrolled Agent and
 deploy it. Ordinary deploy and first deploy return `409 RESOURCE_CONFLICT` for an
 Agent with repository selections outside the enrollment, before preparing its
-Configuration or checking Channel credentials. You can still recover a saved
-first-deployment receipt with current access to the Agent and Configuration.
+Configuration or checking Channel credentials. Deploy the enrolled Agent with
+your repository selections, or remove the selections and try again. You can
+still recover a saved first-deployment receipt with current access to the Agent
+and Configuration.
 
 A fresh guided provisioning request with repository selections returns the same
 conflict before Configuration or Channel preparation because it creates a new
@@ -53,6 +55,13 @@ The issuer JSON requires `listenHost` (specific IP), `listenPort`,
 configurations. The issuer compares the private Installation ID with the
 singleton in PostgreSQL. Optional `apiOrigin` and `issuerCaPath` select the upstream
 GitHub API and its CA. Use canonical absolute paths.
+
+Set `workerInstanceId` once for the enrollment. Keep it when the Worker or issuer
+restarts and when you rotate the Worker certificate. Update the issuer's
+fingerprint for the replacement certificate. For an intentional UUID change,
+stop the enrolled Agent and retire the old revision's repository delivery before
+changing the issuer configuration. Then redeploy the Agent to create a fresh
+revision and witness. The issuer preserves the earlier witness's owner.
 
 Mount the GitHub App private key and custody key only on the issuer. Mount its
 server TLS key and certificate and the CA for Worker client certificates there.
@@ -77,3 +86,18 @@ and verifies the database Installation, custody schema, and application role
 grants for claim, issuance, retirement, and recipient custody before accepting
 probes. The Worker requires the issuer’s versioned response over mutual TLS
 before binding its sender. See the [production startup flow](../../flows/production-startup.md).
+
+## Recover a lost reservation reply
+
+The Worker requests a reservation before installing material. If its first reply
+is lost, the same Worker call can collect the committed fence once. The issuer
+holds up to 64 reservation records, including used records, for 30 seconds each
+and checks the current session, enrolled Worker, recipient and material before
+returning a fence. It declines new reservations while the table is full. The
+Worker and issuer must support the same protocol version.
+
+If the collection reply is lost or either process restarts mid-reservation, the
+pending delivery can still represent an unconfirmed installation. The issuer
+refuses to issue another fence for that delivery. To resume Git access, stop the
+Agent, allow the old revision and repository delivery to retire, then deploy a
+fresh revision. The enrolled UUID can stay the same.

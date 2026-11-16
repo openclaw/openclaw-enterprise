@@ -127,13 +127,18 @@ const registeredObservation = `SELECT FROM occ.credential_deliveries WHERE revis
     AND binding_id=$3::jsonb#>>'{plan,execution,executionId}'
     AND target=jsonb_build_object('transport','${repositoryGitDeliveryTransport}','installation',$3::jsonb)
     AND settlement='witness' AND live_revision_id IS NOT NULL AND blocked IS NULL AND write_pending IS NULL`;
-export const registeredGitRecipientEvidence: RepositoryGitRecipientEvidence = Object.freeze({
-  join: `occ.credential_deliveries r USING(namespace_id,agent_id,revision_id)`,
-  released: `p.installation=r.target->'installation'
+const registeredRelease = `p.installation=r.target->'installation'
     AND r.target->>'transport'='${repositoryGitDeliveryTransport}'
     AND r.binding_id=p.installation#>>'{plan,execution,executionId}'
-    AND r.settlement='witness' AND r.live_revision_id IS NOT NULL AND r.blocked IS NULL AND r.write_pending IS NULL
-    AND ${registeredGitSelection}`,
+    AND r.settlement='witness' AND r.live_revision_id IS NOT NULL AND r.blocked IS NULL
+    AND ${registeredGitSelection}`;
+
+export const pendingRegisteredGitRelease = `${registeredRelease}
+    AND r.write_pending='rotate' AND r.fence=r.operation_fence`;
+
+export const registeredGitRecipientEvidence: RepositoryGitRecipientEvidence = Object.freeze({
+  join: `occ.credential_deliveries r USING(namespace_id,agent_id,revision_id)`,
+  released: `${registeredRelease} AND r.write_pending IS NULL`,
   observed: registeredObservation,
   installed: `${registeredObservation} AND preparation_attempt_id=$4 AND material_version=$5`,
 });

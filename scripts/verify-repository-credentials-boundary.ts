@@ -38,6 +38,7 @@ const issuerEntrypoints = [
 ];
 const issuerImports = {
   "backends/repository-credentials/remote-prepared-git.ts": {
+    "node:crypto": ["createHash", "randomUUID"],
     "node:https": ["createServer", "request"],
     "node:tls": ["createSecureContext", "TLSSocket"],
     "../../composition/repository-credentials/public-ca.ts": ["loadPublicCa"],

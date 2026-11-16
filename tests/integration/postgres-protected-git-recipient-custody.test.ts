@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { access, cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
-import { createServer } from "node:https";
+import { createServer, request as httpsRequest } from "node:https";
 import { connect, createServer as createTcpServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,16 +13,16 @@ import {
   createTlsMaterial,
   listen,
   run,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 import { loadPreparedGitIssuerSelection } from "../../apps/controller/src/composition/repository-credentials/issuer-selection.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
-import { availablePort } from "../helpers/available-port.mjs";
-import { certificateAuthority, signedLeaf } from "../helpers/certificates.mjs";
+import { availablePort } from "../helpers/available-port.ts";
+import { certificateAuthority, signedLeaf } from "../helpers/certificates.ts";
 import { connectRemotePreparedGit } from "../../apps/controller/src/backends/repository-credentials/remote-prepared-git.ts";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
-import { waitFor, within } from "../helpers/wait-for.mjs";
+import { waitFor, within } from "../helpers/wait-for.ts";
 import type {
   RecipientCommand,
   RecipientSend,
@@ -43,7 +43,8 @@ import {
   OpenClawController,
   ResourceStateConflictError,
 } from "../../packages/occ/src/index.ts";
-import { authorizedPrincipal, registerCoreDrivers } from "../helpers/postgres-backend-state.mjs";
+import { registerCoreDrivers } from "../helpers/postgres-backend-state.mjs";
+import { authorizedPrincipal } from "../helpers/development-iam-state.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
@@ -53,6 +54,7 @@ import type {
   DriverRegistrationRef,
   PreparedGitHubUseRequest,
   PreparedGitHubRepositoryUseRequest,
+  RepositoryGitInstallationFence,
   RepositoryGitMaterialVersion,
   RepositoryGitOnlineDecision,
   RepositoryGitSendDecision,
@@ -1751,8 +1753,94 @@ test(
       keyPem: undefined,
     });
     const issuerEndpoint = "https://127.0.0.1:" + listenPort;
+    const caBytes = await readFile(ca.caPath);
+    async function issuerRequest(bytes: Buffer, identity = workerIdentity) {
+      return new Promise<{
+        status: number;
+        headers: Record<string, string | string[] | undefined>;
+        body: Buffer;
+      }>((resolve, reject) => {
+        const request = httpsRequest(
+          issuerEndpoint + "/v1/prepared-git/authority",
+          {
+            cert: identity.cert,
+            key: identity.key,
+            ca: caBytes,
+            agent: false,
+            method: "POST",
+            signal: AbortSignal.any([t.signal, AbortSignal.timeout(5000)]),
+            headers: { "content-type": "application/json", "content-length": bytes.length },
+          },
+          async (response) => {
+            try {
+              const chunks = [];
+              for await (const chunk of response) {
+                chunks.push(Buffer.from(chunk));
+              }
+              resolve({
+                status: response.statusCode!,
+                headers: response.headers,
+                body: Buffer.concat(chunks),
+              });
+            } catch (error) {
+              reject(error);
+            }
+          },
+        );
+        request.once("error", reject);
+        request.end(bytes);
+      });
+    }
+    type ReservationInput = {
+      operation: string;
+      requestId: string;
+      route: RepositoryGitInstallationFence;
+      version: RepositoryGitMaterialVersion;
+    };
+    const relayOperations: string[] = [];
+    let fault: ((input: ReservationInput) => Promise<void>) | undefined;
+    let relayFailure: unknown;
+    const workerEndpoint = await listen(
+      t,
+      createServer(
+        {
+          cert: issuerIdentity.cert,
+          key: issuerIdentity.key,
+          ca: caBytes,
+          requestCert: true,
+          rejectUnauthorized: true,
+        },
+        async (request, response) => {
+          try {
+            const chunks = [];
+            for await (const chunk of request) {
+              chunks.push(Buffer.from(chunk));
+            }
+            const bytes = Buffer.concat(chunks);
+            const input = JSON.parse(bytes.toString("utf8")) as ReservationInput;
+            const upstream = await issuerRequest(bytes);
+            relayOperations.push(input.operation);
+            if (input.operation === "begin" && fault) {
+              assert.ok(
+                [200, 204].includes(upstream.status),
+                "the issuer accepted the reservation RPC",
+              );
+              await fault(input);
+              assert.equal(response.headersSent, false);
+              assert.equal(response.destroyed, false);
+              response.destroy();
+              return;
+            }
+            response.writeHead(upstream.status, upstream.headers).end(upstream.body);
+          } catch (error) {
+            relayFailure = error;
+            response.destroy();
+          }
+        },
+      ),
+    );
     const client = {
-      issuerEndpoint,
+      issuerEndpoint: workerEndpoint,
       issuerCaPath: ca.caPath,
       workerCertificatePath: workerIdentity.certPath,
       workerPrivateKeyPath: workerIdentity.keyPath,
@@ -2180,7 +2268,7 @@ test(
       await assert.rejects(deployment.deployAgent(actor.id, other, resolveApprovedHarness), {
         name: ResourceStateConflictError.name,
         message:
-          "The Installation has no prepared repository credential enrollment for this Agent.",
+          "The Installation has no prepared repository credential enrollment for this Agent. Deploy the enrolled Agent with your repository selections, or remove the selections and try again.",
       });
       assert.deepEqual(
         await f.state.read((view) =>
@@ -2353,7 +2441,7 @@ test(
           assert.equal(refused.json().error.code, "RESOURCE_CONFLICT");
           assert.match(
             refused.json().error.message,
-            /no prepared repository credential enrollment/,
+            /Deploy the enrolled Agent with your repository selections, or remove the selections/,
           );
           assert.deepEqual(await counts(), before);
           const afterRequest = effectCounts();
@@ -2660,20 +2748,6 @@ test(
       bindingId: installation.plan.execution.executionId,
     };
     const foreignWorker = randomUUID();
-    const witnessClient = await f.pool.connect();
-    try {
-      // A committed, otherwise valid release belongs to a different Worker instance.
-      assert.equal(
-        await new CredentialDeliveries(witnessClient).observe(
-          deliveryKey,
-          { transport: "registered-repository-git/v1", installation },
-          foreignWorker,
-        ),
-        1,
-      );
-    } finally {
-      witnessClient.release();
-    }
     const issuerConfiguration = {
       listenHost: "127.0.0.1",
       listenPort,
@@ -2758,7 +2832,7 @@ test(
           assert.equal(refused.code, 1);
           assert.match(refused.stderr, /PREPARED_GIT_ISSUER_STARTUP_FAILED/);
           assert.doesNotMatch(refused.stdout, /prepared-git-issuer.ready/);
-          await assert.rejects(connectRemotePreparedGit(client), {
+          await assert.rejects(connectRemotePreparedGit({ ...client, issuerEndpoint }), {
             message: "PREPARED_REPOSITORY_GIT_UNAVAILABLE",
           });
         } finally {
@@ -2879,25 +2953,80 @@ test(
           }),
           false,
         );
-        assert.equal(await command({ kind: "observe", installation }), false);
-        // Multiple maintenance passes have an eligible release but no enrolled witness.
+        const witness = () =>
+          f.pool.query(
+            `SELECT fence, operation_fence, worker_instance, write_pending, preparation_attempt_id,
+             material_version, target_preparation_attempt_id, target_material_version
+             FROM occ.credential_deliveries WHERE revision_id=$1 AND binding_id=$2`,
+            [deliveryKey.revisionId, deliveryKey.bindingId],
+          );
+        assert.deepEqual((await witness()).rows, []);
+        // An exact Compute release alone cannot issue. The Worker must create its enrolled witness.
         await delay(5500, undefined, { signal: t.signal });
         assert.equal(peer.gh.issuesOfTokens.length, 0);
-        const absent = await installedRows(f, admissionId, binding.grant.grantId);
-        assert.deepEqual(absent.uses, []);
+        assert.deepEqual((await installedRows(f, admissionId, binding.grant.grantId)).uses, []);
         const prepared = await f.pool.query(
           `SELECT f.source_id, a.id FROM occ.prepared_github_families f
            LEFT JOIN occ.prepared_github_attempts a USING (source_id) WHERE f.source_id=$1`,
           ["repository-git:" + admissionId],
         );
         assert.deepEqual(prepared.rows, []);
-        const adoption = await f.pool.connect();
-        try {
-          await new CredentialDeliveries(adoption).adopt(deliveryKey, workerInstanceId);
-        } finally {
-          adoption.release();
-        }
         assert.equal(await command({ kind: "observe", installation }), true);
+        const enrolled = (await witness()).rows;
+        assert.equal(enrolled.length, 1);
+        assert.equal(enrolled[0].worker_instance, workerInstanceId);
+        assert.equal(Number(enrolled[0].fence), 1);
+        assert.equal(enrolled[0].write_pending, null);
+
+        let dropped: ReservationInput | undefined;
+        const raw = (input: object, identity?: typeof workerIdentity) =>
+          issuerRequest(Buffer.from(JSON.stringify(input)), identity);
+        fault = async (input) => {
+          // Read the committed pending write over a separate connection before cutting the reply.
+          const pending = (await witness()).rows;
+          assert.deepEqual(pending, [
+            {
+              fence: "2",
+              operation_fence: "2",
+              worker_instance: workerInstanceId,
+              write_pending: "rotate",
+              preparation_attempt_id: null,
+              material_version: null,
+              target_preparation_attempt_id: input.version.preparationAttemptId,
+              target_material_version: input.version.materialVersion,
+            },
+          ]);
+          const collect = { ...input, operation: "collect-reservation" };
+          const wrongWorker = await raw(collect, otherIdentity);
+          assert.equal(wrongWorker.status, 403);
+          const wrongVersion = await raw({
+            ...collect,
+            version: { ...input.version, materialVersion: randomUUID() },
+          });
+          assert.equal(wrongVersion.status, 204);
+          const wrongRoute = await raw({ ...collect, route: { ...input.route, fence: 2 } });
+          assert.equal(wrongRoute.status, 204);
+          const fresh = await connectRemotePreparedGit({ ...client, issuerEndpoint });
+          try {
+            assert.equal(await fresh.protectedGit.recipients.observe(installation), undefined);
+            const read = await fresh.protectedGit.online.githubRepository!.readMaterial(
+              input.route,
+              t.signal,
+            );
+            assert.ok(!read || !("value" in read), "ordinary reads cannot use a pending witness");
+            assert.equal(
+              await fresh.protectedGit.recipients.beginInstall(input.route, input.version),
+              undefined,
+            );
+          } finally {
+            await fresh.close();
+          }
+          assert.deepEqual((await witness()).rows, pending);
+          assert.equal(peer.gh.issuesOfTokens.length, 1);
+          assert.deepEqual(peer.origin.traffic(), { connections: 0, requests: 0 });
+          dropped = input;
+          fault = undefined;
+        };
         const version = await waitFor(
           "issuer maintenance to commit and install material",
           async () => {
@@ -2908,6 +3037,21 @@ test(
           },
           { timeoutMs: 15_000, intervalMs: 100 },
         );
+        assert.equal(relayFailure, undefined);
+        assert.ok(dropped);
+        assert.deepEqual(version, dropped.version);
+        assert.equal((await raw({ ...dropped, operation: "collect-reservation" })).status, 204);
+        assert.equal((await raw(dropped)).status, 204);
+        assert.deepEqual(
+          relayOperations.filter((operation) =>
+            ["begin", "collect-reservation", "confirm"].includes(operation),
+          ),
+          ["begin", "collect-reservation", "confirm"],
+        );
+        const settled = (await witness()).rows;
+        assert.equal(Number(settled[0].fence), 2);
+        assert.equal(settled[0].write_pending, null);
+        assert.equal(settled[0].material_version, version.materialVersion);
         const repository = entries[0]!.repository;
         const advertise: RecipientSend = {
           method: "GET",
@@ -3182,6 +3326,20 @@ test(
         );
         assert.equal(await command({ kind: "read" }), "unprepared");
         assert.equal((await use(request())).decision.kind, "denied");
+        const foreign = (await witness()).rows;
+        assert.equal(foreign[0].worker_instance, foreignWorker);
+        // Keep the live fixture Driver's original route for its withdrawal checks.
+        const successor = await connectRemotePreparedGit({ ...client, issuerEndpoint });
+        try {
+          assert.equal(await successor.protectedGit.recipients.observe(installation), undefined);
+        } finally {
+          await successor.close();
+        }
+        assert.deepEqual(
+          (await witness()).rows,
+          foreign,
+          "observation must preserve a foreign witness",
+        );
         assert.equal(
           peer.gh.trace.filter(({ method }) => method === "DELETE").length,
           0,

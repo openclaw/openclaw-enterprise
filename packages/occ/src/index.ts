@@ -1731,7 +1731,7 @@ const FIXED_PROTECTED_SOURCE_REFUSALS = Object.freeze({
 });
 
 const REPOSITORY_RECIPIENT_NOT_ENROLLED =
-  "The Installation has no prepared repository credential enrollment for this Agent.";
+  "The Installation has no prepared repository credential enrollment for this Agent. Deploy the enrolled Agent with your repository selections, or remove the selections and try again.";
 
 /**
  * The provisioning status message for a worker failure. Only the shared duplicate-name,

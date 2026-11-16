@@ -214,7 +214,12 @@ export async function startPreparedGitIssuer(
     if (!owner.protectedGit) {
       throw unavailable();
     }
-    const listener = await serveRemotePreparedGit(owner.protectedGit, tls, endpoint);
+    const listener = await serveRemotePreparedGit(
+      owner.protectedGit,
+      owner.recoverInstallReservation,
+      tls,
+      endpoint,
+    );
     return {
       async close() {
         try {

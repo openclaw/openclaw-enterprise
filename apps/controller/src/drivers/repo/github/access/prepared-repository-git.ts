@@ -36,6 +36,7 @@ import {
   selectedGitAdoption,
   releasedGitProfile,
   registeredGitSelection,
+  pendingRegisteredGitRelease,
   repositoryGitAdmissionEnded,
   repositoryGitBrokerOwnerPredicate,
   repositoryGitOwnerPredicate,
@@ -144,7 +145,13 @@ const lockIssuanceWitness = `SELECT FROM occ.repository_session_attempts s
 
 /** The session snapshot binds the Agent and the exact installation used for Compute release or the broker generation.
  * The deadline is checked live instead of extending or treating the snapshot as a lease. */
-function sessionQuery(proxy: Recipient, enrolled = false): string {
+type WitnessState = "settled" | "enrolled-pending";
+
+function sessionQuery(
+  proxy: Recipient,
+  enrolled = false,
+  witness: WitnessState = "settled",
+): string {
   // An old protected sender without a selected Driver may already hold material or have sent
   // a request. Without a selected Driver we can neither adopt that custody nor retire it.
   if (proxy?.kind === "unavailable") {
@@ -182,7 +189,7 @@ function sessionQuery(proxy: Recipient, enrolled = false): string {
   FROM occ.repository_session_attempts s
   ${
     proxy
-      ? `JOIN ${proxy.policy.evidence.join} JOIN occ.egress_installations p ON ${proxy.policy.evidence.released}`
+      ? `JOIN ${proxy.policy.evidence.join} JOIN occ.egress_installations p ON ${witness === "enrolled-pending" ? pendingRegisteredGitRelease : proxy.policy.evidence.released}`
       : "JOIN occ.repository_broker_receipts b USING(admission_id)"
   }
   JOIN occ.agents g ON g.namespace_id=s.namespace_id AND g.id=s.agent_id AND g.active_revision_id=s.live_revision_id
@@ -257,6 +264,7 @@ async function lockLiveSession(
   by: "session_id" | "live_revision_id",
   id: string,
   proxy: Recipient,
+  witness: WitnessState = "settled",
 ): Promise<LockedSession | null | undefined> {
   if (proxy?.kind === "unavailable") {
     return undefined; // Missing a protected sender is not a withdrawal of its outstanding custody.
@@ -290,7 +298,7 @@ async function lockLiveSession(
   }
 
   // The Agent lock also serializes closure or replacement of its standing execution.
-  const exact = `${sessionQuery(proxy)} AND (s.namespace_id,s.agent_id,s.live_revision_id,s.admission_id)=($1,$2,$3,$4)
+  const exact = `${sessionQuery(proxy, witness === "enrolled-pending", witness)} AND (s.namespace_id,s.agent_id,s.live_revision_id,s.admission_id)=($1,$2,$3,$4)
     AND s.${by}=$5`;
   const identity = [...target, admission_id, id];
   if (!(await c.query(exact, identity)).rowCount) {
@@ -730,6 +738,44 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       return (await this.ownsDelivery(c, key)) ? key : undefined;
     }
     return undefined;
+  }
+
+  /** Private issuer readback after the transport proves this is the original reservation request. */
+  async recoverInstallReservation(
+    pending: RepositoryGitInstallationFence & {
+      preparationAttemptId: string;
+      materialVersion: string;
+    },
+  ): Promise<boolean> {
+    if (!this.enrolledWorker || !this.proxy?.policy?.controllerWitness) {
+      return false;
+    }
+    const { revisionId, observed, fence, preparationAttemptId, materialVersion } = pending;
+    return this.transaction(async (c) => {
+      const current = await lockLiveSession(
+        c,
+        "live_revision_id",
+        revisionId,
+        this.proxy,
+        "enrolled-pending",
+      );
+      const source = current && this.policy(current.session);
+      if (!source || !(await this.tokens.current(c, source, pending))) {
+        return false;
+      }
+      const key = await this.deliveryKey(c, revisionId, observed);
+      if (!key) {
+        return false;
+      }
+      const exact = await c.query(
+        `SELECT FROM occ.credential_deliveries
+         WHERE revision_id=$1 AND binding_id=$2 AND fence=$3 AND operation_fence=$3
+           AND write_pending='rotate' AND settlement='witness' AND blocked IS NULL
+           AND live_revision_id=$1 AND target_preparation_attempt_id=$4 AND target_material_version=$5`,
+        [revisionId, key.bindingId, fence, preparationAttemptId, materialVersion],
+      );
+      return exact.rowCount === 1;
+    });
   }
 
   private readonly recipients: ProtectedRepositoryGitAuthority["recipients"] = Object.freeze({
