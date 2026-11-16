@@ -16,9 +16,9 @@ import {
   createDevelopmentComputeDriver,
   registerAndSelectDrivers,
 } from "../helpers/development.ts";
+import { authorizedPrincipal } from "../helpers/development-iam-state.ts";
 import {
   apiKeyPath,
-  authorizedPrincipal,
   backendId,
   createBackendFixture,
   databaseUrl,

@@ -33,18 +33,18 @@ import {
   renderNativeGitConfiguration,
 } from "../../apps/controller/src/drivers/repo/github/access/client/native-git.ts";
 import { readRuntimeRepositoryManifest } from "../../apps/controller/src/drivers/repo/github/access/client/manifest.ts";
-import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
-import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
+import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service-fixture.ts";
+import { selfSigned } from "../helpers/certificates.ts";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import { relaySockets } from "../helpers/socket-relay.ts";
 import {
   cleanEnvironment,
   listen,
   run,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 
 // Both process-wide child_process mocks run before the concurrent suite.
 const launcher = resolve("apps/controller/src/drivers/repo/github/access/client/launch.ts");

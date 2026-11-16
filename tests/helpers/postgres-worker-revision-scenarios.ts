@@ -10,7 +10,7 @@ import type {
   DeploymentStatusResult,
 } from "../../packages/occ/src/index.ts";
 import type { RevisionFixture, WorkIdentity } from "./postgres-worker-refused-candidate.ts";
-import type { waitFor } from "./wait-for.mjs";
+import type { waitFor } from "./wait-for.ts";
 
 type PollingOptions = Parameters<typeof waitFor>[2];
 

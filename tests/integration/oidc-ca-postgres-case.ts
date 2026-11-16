@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { createServer as createTlsServer } from "node:tls";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import {

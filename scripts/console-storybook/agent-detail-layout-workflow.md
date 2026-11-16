@@ -148,8 +148,11 @@ Use **Deployment needs Secret operate** to check access that stays denied.
    button stays enabled. Press Enter during the next six seconds. The button
    becomes busy immediately and keeps focus as the panel switches to v8.
    When the simulated record read fails, v8 shows a retry notice and the
-   button is enabled and still focused. Reset the story to replay. The real
-   Controller regression for this replacement is in
+   button is enabled and still focused. Reset and repeat the refresh. While
+   it is pending, press Shift+Tab to move focus to **Deployment details**.
+   When v8 shows the retry notice, focus stays on the summary. Press Enter to
+   fold the details and Space to reopen them. The real Controller regression
+   for this replacement is in
    `tests/browser/console-agent-detail-2.test.ts`.
    These stories simulate responses. The real Controller browser regression in
    `tests/browser/console-deployment-activity.test.ts` additionally checks queued →

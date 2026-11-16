@@ -7,7 +7,7 @@ import { PostgresWorkQueue } from "../../packages/occ/src/state/postgres-work-qu
 import { createDevelopmentComputeDriver } from "../helpers/development.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, withPool } from "../helpers/postgres-database.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 const migrationUrl = process.env.OCC_TEST_WORKER_AUDIT_MIGRATION_DATABASE_URL;
 const claimAction = "openclaw.controller_work.claimed";

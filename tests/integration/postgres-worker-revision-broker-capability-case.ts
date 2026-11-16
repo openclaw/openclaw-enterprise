@@ -14,7 +14,7 @@ import type {
 } from "../fixtures/repository-credentials/control-relay.ts";
 import type { RevisionFixture } from "../helpers/postgres-worker-refused-candidate.ts";
 import { repositoryAttempts } from "../helpers/postgres-worker-revision-support.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 type CapabilityFixture = Pick<RevisionFixture, "revision" | "requestStop" | "state" | "work">;
 

@@ -8,7 +8,7 @@ import { delimiter, join, resolve } from "node:path";
 import test, { before } from "node:test";
 import { promisify } from "node:util";
 import { devUpUnrelatedImage, prepareDevUpImage } from "../../scripts/ci/prepare.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import { availablePort } from "../helpers/available-port.ts";
 import { startupFailureObservation } from "./local-first-agent-stack.mjs";
 
 const execute = promisify(execFile);

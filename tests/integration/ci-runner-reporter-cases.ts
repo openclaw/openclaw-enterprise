@@ -15,6 +15,7 @@ import {
   writeRunnerManifest,
   writeSingleFileRunnerLane,
 } from "../helpers/ci-runner-fixture.ts";
+import { selectPolicyProbeCommand } from "../helpers/openshell-policy-probe.ts";
 import {
   firstRunnerRecord,
   parseRunnerRecord,
@@ -199,7 +200,6 @@ export function registerReporterCases() {
   });
 
   test("policy probe diagnostics preserve first-match failure and omit model content", async (t) => {
-    const { selectPolicyProbeCommand } = await import("../helpers/openshell-policy-probe.mjs");
     const uri = "http://private-fixture.invalid:8083/policy-probe";
     const event = (command: string) => ({
       method: "item/completed",
@@ -221,11 +221,30 @@ export function registerReporterCases() {
       { code: "ERR_ASSERTION" },
     );
     assert.equal(calls, 1);
-    const selected: unknown = selectPolicyProbeCommand([correct], { uri, port: 8083 }, () => {
-      calls += 1;
-    });
+    // Only completed execution records can establish the probe result.
+    const selected = selectPolicyProbeCommand(
+      [
+        { method: "item/started", params: first.params },
+        { method: "item/completed", params: { item: null } },
+        correct,
+      ],
+      { uri, port: 8083 },
+      () => {
+        calls += 1;
+      },
+    );
     assert.equal(selected, correct.params.item);
     assert.equal(calls, 1, "successful probes emit no failure receipt");
+
+    // A malformed first completion cannot yield policy evidence or select a later candidate.
+    const malformed = {
+      method: "item/completed",
+      params: { item: { ...correct.params.item, exitCode: "0" } },
+    };
+    assert.throws(
+      () => selectPolicyProbeCommand([malformed, correct], { uri, port: 8083 }, () => {}),
+      { code: "ERR_ASSERTION", message: "expected a Codex command result" },
+    );
 
     const root = await fixture(t);
     const resultsPath = join(root, "results/policy.json");
@@ -234,7 +253,7 @@ export function registerReporterCases() {
       join(root, "tests/integration/policy.test.mjs"),
       [
         'import test from "node:test";',
-        `import { selectPolicyProbeCommand } from ${JSON.stringify(new URL("../helpers/openshell-policy-probe.mjs", import.meta.url).href)};`,
+        `import { selectPolicyProbeCommand } from ${JSON.stringify(new URL("../helpers/openshell-policy-probe.ts", import.meta.url).href)};`,
         `const first = ${JSON.stringify(first)};`,
         `const later = ${JSON.stringify(event(first.params.item.command + " # later-command"))};`,
         `const prefix = ${JSON.stringify(event("echo private-model-content"))};`,

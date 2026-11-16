@@ -35,7 +35,7 @@ import {
   PROVISIONING_NOT_COMPLETED,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { failingTransportDriver } from "./postgres-agent-provisioning-transport-fixture.ts";
 
 import {

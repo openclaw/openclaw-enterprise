@@ -26,7 +26,7 @@ With installed workspace dependencies, run the focused source suites:
 ```sh
 pnpm test:files -- tests/integration/static-egress.test.mjs \
   tests/integration/egress-prepared-github-metadata.test.mjs \
-  tests/integration/egress-installation-exchange.test.mjs
+  tests/integration/egress-installation-exchange.test.ts
 ```
 
 This selects literal files without provisioning dependencies or preventing skips.
@@ -77,7 +77,7 @@ credential reflection, rejection fencing and withdrawal. Sequential requests exc
 blocked Secret reads fill the 1,024 active slots, which delivery releases.
 
 The digest regression reads in-memory committed authorization without sending.
-`postgres-egress-send-receipts.test.mjs` uses PostgreSQL, a fault proxy and a byte-counting
+`postgres-egress-send-receipts.test.ts` uses PostgreSQL, a fault proxy and a byte-counting
 origin. It drops the second COMMIT reply after reservation, verifies no permit or
 origin arrival, then reconstructs the Forwarder before the deadline to exclude
 replacement sends. Policy, material and acceptance remain synthetic. Other cases
@@ -143,7 +143,7 @@ synthetic fixtures, not one installed Sandbox.
 With a migrated disposable database selected through `OCC_TEST_DATABASE_URL`, run:
 
 ```sh
-node --test tests/integration/postgres-static-egress.test.mjs
+node --test tests/integration/postgres-static-egress.test.ts
 ```
 
 Follow [database setup](postgresql.md): migrate with `occ_migrator`, run with `occ_app`.

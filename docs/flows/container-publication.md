@@ -80,9 +80,10 @@ docker build -f deploy/runtime/Dockerfile \
   "${openclaw_build_args[@]}" --target openclaw-bridge-tests .
 ```
 
-`openclaw-bridge-tests` runs bridge and CUA tests and typechecks against the
-assembly inputs. Failure blocks smoke and upload. Tests cover approval discovery
-after reconnect, HTTP rejection and native handoff during a late terminal write.
+`openclaw-bridge-tests` typechecks and tests bridge and CUA assembly inputs.
+Coverage includes native turn settlement, approval discovery after reconnect,
+HTTP rejection and native handoff during late writes. Failure blocks smoke and
+upload. Local builds can run independently.
 
 The `resources` step checks architecture, CPU, memory and ancestor cgroup-v2 limits.
 Both stages use its Node compiler budget. ARM uses up to eight jobs, or four for

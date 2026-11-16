@@ -9,8 +9,8 @@ import {
   REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
-import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
-import { run as runFixtureCommand } from "../fixtures/repository-credentials/process.mjs";
+import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service-fixture.ts";
+import { run as runFixtureCommand } from "../fixtures/repository-credentials/process.ts";
 import { execute, runDocker, waitForDockerLog } from "../helpers/runtime-image-docker.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.ts";

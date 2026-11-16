@@ -60,7 +60,7 @@ import {
 } from "../helpers/postgres-backend-state.mjs";
 import { reservePort } from "../helpers/available-port.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.ts";
 import { claimIsolatedWork } from "../helpers/postgres-work-claim.ts";
 import {

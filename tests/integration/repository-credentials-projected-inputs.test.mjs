@@ -20,8 +20,8 @@ import { createSystemClock } from "../../apps/controller/src/drivers/repo/access
 import {
   createTlsMaterial,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+} from "../fixtures/repository-credentials/process.ts";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 
 async function project(directory, generation, values) {
   const path = join(directory, generation);

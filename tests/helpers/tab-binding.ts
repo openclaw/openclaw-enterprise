@@ -6,6 +6,7 @@ import { reservePort } from "./available-port.ts";
 import { chromiumTrustArg, startHttpsIngress } from "./console-app.mjs";
 import { deferred } from "./deferred.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import { onboardPasswordAccounts } from "./postgres-sign-in-installation.ts";
 import {
   assertProviderAttached,
   authRowCounts,
@@ -13,7 +14,6 @@ import {
   composeProductionSignIn,
   consoleOrigin,
   sessionCookieName,
-  onboardPasswordAccounts,
   signedInHeaders,
 } from "./production-sign-in.mjs";
 import type { SignInSettings } from "./sign-in-chart.ts";
@@ -47,13 +47,6 @@ const staleProbePath = `${sessionPath}?stale-probe`;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function passwordAccount(value: unknown) {
-  assert.ok(isRecord(value));
-  const { id, email, password } = value;
-  assert.ok(typeof id === "string" && typeof email === "string" && typeof password === "string");
-  return { id, email, password };
 }
 
 function responseData(payload: unknown) {
@@ -128,7 +121,10 @@ export async function proveTabBinding(t: TestContext, databaseUrl: string, provi
   });
   await provider.start(t);
   const address = clientAddresses();
-  const onboarding: unknown = await onboardPasswordAccounts(t, {
+  const {
+    admin,
+    accounts: { alice, bob },
+  } = await onboardPasswordAccounts(t, {
     databaseUrl,
     state,
     pool,
@@ -144,10 +140,6 @@ export async function proveTabBinding(t: TestContext, databaseUrl: string, provi
       bob: { email: "tabs-bob@example.test", role: "admin" },
     },
   });
-  assert.ok(isRecord(onboarding) && isRecord(onboarding.accounts));
-  const admin = passwordAccount(onboarding.admin);
-  const alice = passwordAccount(onboarding.accounts.alice);
-  const bob = passwordAccount(onboarding.accounts.bob);
 
   const reservation = await reservePort();
   t.after(reservation.release);

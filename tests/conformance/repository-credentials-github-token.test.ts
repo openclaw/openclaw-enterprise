@@ -25,13 +25,13 @@ import type {
   GitHubTokenClass,
   GitHubTokenConfiguration,
 } from "../../apps/controller/src/drivers/repo/github/access/types.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import {
   githubConfigurationData,
   githubTokenConfigurationData,
   serviceConfigurationData,
   custodyLimits,
-} from "../fixtures/repository-credentials/builders.mjs";
+} from "../fixtures/repository-credentials/builders.ts";
 import { requestHead } from "../fixtures/repository-credentials/request-head.ts";
 
 // Synthetic values: the prefix selects a class; nothing here is a real credential.

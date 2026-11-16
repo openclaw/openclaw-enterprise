@@ -5,7 +5,7 @@ import { request as httpRequest } from "node:http";
 import { promisify } from "node:util";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
-import { waitForResult } from "../helpers/wait-for.mjs";
+import { waitForResult } from "../helpers/wait-for.ts";
 
 const execute = promisify(execFile);
 const socketPath = "/var/run/docker.sock";

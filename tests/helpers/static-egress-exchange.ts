@@ -158,7 +158,7 @@ export function createExchangeClients(
     request && "serialize" in request && typeof request.serialize === "function",
     "Missing credential resolve request codec",
   );
-  const serializeCapture: (request: Capture) => Buffer = request.serialize;
+  const serializeCapture: (request: Capture | CaptureWithoutCustody) => Buffer = request.serialize;
 
   const loaded = grpc.loadPackageDefinition(definition);
   const services = serviceNamespace(
@@ -246,6 +246,8 @@ type Capture = {
   };
 };
 
+type CaptureWithoutCustody = Omit<Capture, "response_custody"> & { response_custody?: never };
+
 type Permit = {
   context: Capture["request"]["context"];
   operation_handle: Buffer;
@@ -279,23 +281,36 @@ type ExchangeStream = {
   once(event: "status", listener: (status: Grpc.StatusObject) => void): void;
 };
 
+type RawExchangeReader = {
+  on(event: "data", listener: (message: unknown) => void): void;
+  on(event: "error", listener: (error: Grpc.ServiceError) => void): void;
+  on(event: "end", listener: () => void): void;
+  cancel(): void;
+};
+
+type RawExchangeStream = ExchangeStream &
+  RawExchangeReader & {
+    once(event: "error", listener: (error: Grpc.ServiceError) => void): void;
+  };
+
 export type Exchange = {
   stream: ExchangeStream;
   next(): Promise<ExchangeReply>;
   challenge: Buffer;
   received: ExchangeReply[];
   opening(captured: Capture, privateKey?: KeyObject, boundChallenge?: Buffer): Opening;
+  openingWithoutCustody(captured: CaptureWithoutCustody): Opening;
 };
 
 type ExchangeTransport = {
   getClient(): Grpc.Client;
   refusalCode(name: Uppercase<EgressRefusal["kind"]> | "UNSPECIFIED"): number;
-  serializeCapture(capture: Capture): Buffer;
+  serializeCapture(capture: Capture | CaptureWithoutCustody): Buffer;
   serialize(request: ExchangeRequest): Buffer;
   deserialize(bytes: Buffer): unknown;
 };
 
-export function receiveExchange<Request>(stream: Grpc.ClientDuplexStream<Request, unknown>) {
+export function receiveExchange(stream: RawExchangeReader) {
   const queued: ExchangeReply[] = [];
   const received: ExchangeReply[] = [];
   const waiting: PromiseWithResolvers<ExchangeReply>[] = [];
@@ -510,33 +525,46 @@ export function createStaticEgressExchange<Provider extends Server>({
       outgoing.end(captured.request.body);
     });
   }
-  async function beginExchange(peer = metadata()): Promise<Exchange> {
-    const stream = transport
+  function openRawExchange(peer: Grpc.Metadata): RawExchangeStream {
+    return transport
       .getClient()
       .makeBidiStreamRequest(exchangeMethod, transport.serialize, transport.deserialize, peer, {
         deadline: Date.now() + 5000,
       });
+  }
+  async function beginExchange(peer = metadata()): Promise<Exchange> {
+    const stream = openRawExchange(peer);
     const reader = receiveExchange(stream);
     try {
       const first = await reader.next();
       assert.equal(first.event, "challenge", "Expected the initial exchange challenge");
       const { challenge } = first;
+      function signOpening(
+        captured: Capture | CaptureWithoutCustody,
+        privateKey: KeyObject,
+        boundChallenge: Buffer,
+      ): Opening {
+        const encoded = transport.serializeCapture(captured);
+        return {
+          open: {
+            resolve_request: encoded,
+            signature: sign(
+              null,
+              Buffer.concat([Buffer.from("openshell-exchange-v1\0"), boundChallenge, encoded]),
+              privateKey,
+            ),
+          },
+        };
+      }
       return {
         stream,
         ...reader,
         challenge,
         opening(captured, privateKey = exchangeKeys.privateKey, boundChallenge = challenge) {
-          const encoded = transport.serializeCapture(captured);
-          return {
-            open: {
-              resolve_request: encoded,
-              signature: sign(
-                null,
-                Buffer.concat([Buffer.from("openshell-exchange-v1\0"), boundChallenge, encoded]),
-                privateKey,
-              ),
-            },
-          };
+          return signOpening(captured, privateKey, boundChallenge);
+        },
+        openingWithoutCustody(captured) {
+          return signOpening(captured, exchangeKeys.privateKey, challenge);
         },
       };
     } catch (error) {
@@ -668,6 +696,7 @@ export function createStaticEgressExchange<Provider extends Server>({
     exchangeResponse,
     metadata,
     namespace,
+    openRawExchange,
     permitRequest,
     progress,
     protect,

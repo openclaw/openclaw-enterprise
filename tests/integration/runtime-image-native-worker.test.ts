@@ -27,17 +27,18 @@ import {
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { commandOutput, runDocker } from "../helpers/runtime-image-docker.ts";
 import {
-  commandOutput,
+  openClawGatewaySpawnedRequest,
+  openClawProcessRunningRequest,
+} from "../helpers/runtime-image-gateway-observations.ts";
+import {
   gatewayStateVolume,
   image,
   imageTestOptions,
-  openClawGatewaySpawnedRequest,
-  openClawProcessRunningRequest,
-  runDocker,
   temporaryGatewayConfiguration,
   runGatewaySmoke,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
 

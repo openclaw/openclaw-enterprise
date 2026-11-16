@@ -8,7 +8,7 @@ import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
 import type { OpenClawConfigurationDocument } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
+import { run as runCommand } from "../fixtures/repository-credentials/process.ts";
 import { prepareObservabilityNativeRepository } from "./observability-native-repository.mjs";
 import { createObservabilityCollector } from "./production-observability-collector.ts";
 import { installProductionHelmControlPlane } from "./production-helm-real.ts";
@@ -67,13 +67,6 @@ const nativeRepositoryValues = Type.Object({
 type HarnessConfiguration = OpenClawConfigurationDocument & {
   agents: { defaults: OpenClawConfigurationDocument };
 };
-
-// The JavaScript runner infers its default environment's exact allowlist.
-const runCommand = runProcess as (
-  command: string,
-  args: string[],
-  options: CommandOptions & { allowFailure: boolean },
-) => Promise<unknown>;
 
 function importedImage(variable: string): string {
   const image = process.env[variable] ?? "";

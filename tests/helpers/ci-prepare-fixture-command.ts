@@ -445,13 +445,13 @@ async function fakeCommand({
       const role = args.includes("--target") ? "controller" : "runtime";
       const metadata = resolve(cwd, argument(args.indexOf("--metadata-file") + 1));
       if (scenario === "engine-bad-metadata") {
-        // Unparsable for the controller, no image digest for the runtime.
+        // The runtime field is an array whose string representation looks like a valid digest.
         writeFileSync(
           metadata,
           role === "controller"
             ? "{"
             : JSON.stringify({
-                "containerimage.config.digest": "sha256:not-a-digest",
+                "containerimage.config.digest": [heldImages.runtime],
               }),
         );
         return finish();
@@ -577,6 +577,10 @@ async function fakeCommand({
         state.runtime,
         "localhost/openclaw-ci-main/runtime:bbbbbbbbbbbb",
       ]);
+      if (scenario === "warm-runtime-tag-failed") {
+        stderr("Error response from daemon: synthetic runtime retention failure\n");
+        return exit(1);
+      }
       return finish();
     }
     if (equals(args.slice(0, 3), ["build", "--pull=false", "-t"]) && args.length === 5) {
