@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   createPluginDriverRealFixture,
   readCodexServiceAccountCredential,
-} from "../helpers/plugin-driver-real.mjs";
+} from "../helpers/plugin-driver-real.ts";
 import { assertNoSecretMaterial } from "../helpers/native-plugin-assertions.ts";
 import { pluginProofSkipReason } from "../helpers/plugin-driver-proof-inputs.ts";
 

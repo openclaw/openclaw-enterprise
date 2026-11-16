@@ -4,6 +4,48 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
+import Type, { type Static, type TSchema } from "typebox";
+import { Check } from "typebox/value";
+import type { ServiceAccountDriverFactory } from "../../apps/controller/src/composition/installation-config.ts";
+import type { composeProduction } from "../../apps/controller/src/composition/production.ts";
+import type {
+  KubernetesComputeDriver as KubernetesCompute,
+  KubernetesComputeDriverOptions,
+  KubernetesGatewayRoutingOptions,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import type {
+  ControllerWorker,
+  ControllerWorkerOptions,
+} from "../../apps/controller/src/worker.ts";
+import {
+  AgentDeploymentStatusResponse,
+  AgentReadResponse,
+  AgentResponse,
+  AgentRevisionResponse,
+  ConfigurationResponse,
+  JsonValue,
+  NamespaceId,
+  NamespaceResponse,
+  PluginApproversSchema,
+  PluginDesiredSelectionSchema,
+  PluginDesiredStateSchema,
+  PluginDriverIdentitySchema,
+  PluginToolDefaultsSchema,
+  PluginToolPolicySchema,
+  SecretResponse,
+  ServiceAccountResponse,
+  type HarnessAuthBinding,
+  type HarnessExecutionMode,
+  type PluginDesiredSelection,
+  type PluginDesiredState,
+  type ServiceAccountDriver,
+} from "../../packages/contracts/src/index.ts";
+import type {
+  PersistedNativeIAMState,
+  PostgresPool,
+} from "../../packages/occ/src/state/postgres-state.ts";
+import type { PostgresQueryClient } from "../../packages/occ/src/state/postgres-work-queue.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
@@ -26,51 +68,135 @@ import {
   optionalPluginProofModel,
   requiredPluginProofEnv,
   selectPluginProofInputs,
+  type PluginProofInputOptions,
 } from "./plugin-driver-proof-inputs.ts";
 
 const authSecret = "plugin-driver-real-auth-secret-32-bytes";
 const authBaseURL = "https://console.oce.localhost";
 const proofPrefix = "occ-plugin-01a08228";
 
-function nativeConfiguration(harnessId) {
-  const configuration = createHarnessConfiguration(harnessId, optionalPluginProofModel());
-  if (harnessId === "codex") {
-    configuration.tools = {
-      fs: { workspaceOnly: true },
-    };
+type FixtureContext = { after: (cleanup: () => Promise<void>) => void };
+type FixtureOptions = PluginProofInputOptions & {
+  codexCredential?: CodexCredential;
+  pluginDriverConfiguration?: Record<string, unknown>;
+};
+type ControllerApp = Awaited<ReturnType<typeof composeProduction>>;
+type InjectOptions = Exclude<
+  ControllerApp["inject"] extends {
+    (options: infer Options): Promise<unknown>;
+    (): unknown;
   }
-  return configuration;
+    ? Options
+    : never,
+  string
+>;
+type KubernetesFixture = ReturnType<typeof createRealKubernetesFixture>;
+type WorkerEvent = Parameters<NonNullable<ControllerWorkerOptions["emit"]>>[0];
+type CodexCredential = { accessToken: string; workspaceId: string };
+type CodexServiceAccountImport = Awaited<ReturnType<typeof codexServiceAccountImportConfiguration>>;
+type AgentSelection = { id: string };
+type WorkspaceGateway = {
+  apiKey: string;
+  routing: KubernetesGatewayRoutingOptions;
+  nativeOptions: {
+    gatewayAuth: Omit<
+      Awaited<ReturnType<typeof createEnvoyWorkspaceGatewayPlan>>["nativeOptions"]["gatewayAuth"],
+      "trustedProxies"
+    > & { trustedProxies: string[] };
+  };
+};
+type GatewayAuth = WorkspaceGateway["nativeOptions"]["gatewayAuth"];
+
+const podSchema = Type.Object({
+  metadata: Type.Object({
+    name: Type.String(),
+    uid: Type.String(),
+    namespace: Type.String(),
+    labels: Type.Optional(Type.Record(Type.String(), Type.String())),
+    deletionTimestamp: Type.Optional(Type.String()),
+  }),
+  status: Type.Optional(
+    Type.Object({
+      phase: Type.Optional(Type.String()),
+      conditions: Type.Optional(
+        Type.Array(Type.Object({ type: Type.String(), status: Type.String() })),
+      ),
+    }),
+  ),
+});
+type TenantPod = Static<typeof podSchema>;
+
+const schemaRefs = {
+  SafeJsonValue: JsonValue,
+  PluginApprovers: PluginApproversSchema,
+  PluginDesiredSelection: PluginDesiredSelectionSchema,
+  PluginDesiredState: PluginDesiredStateSchema,
+  PluginDriverIdentity: PluginDriverIdentitySchema,
+  PluginToolDefaults: PluginToolDefaultsSchema,
+  PluginToolPolicy: PluginToolPolicySchema,
+};
+type ResponseEnvelope = { status: number; data?: unknown; error?: unknown; meta?: unknown };
+
+function nativeConfiguration(harnessId: string, gatewayAuth: GatewayAuth | undefined) {
+  const configuration = createHarnessConfiguration(harnessId, optionalPluginProofModel());
+  return {
+    ...configuration,
+    ...(harnessId === "codex" ? { tools: { fs: { workspaceOnly: true } } } : {}),
+    ...(gatewayAuth === undefined
+      ? {}
+      : {
+          gateway: {
+            ...configuration.gateway,
+            ...gatewayAuth,
+            auth: { ...gatewayAuth.auth, password: configuration.gateway.auth.password },
+          },
+        }),
+  };
 }
 
-function createServiceKeyControllerRequest(app, serviceKey) {
+function createServiceKeyControllerRequest(app: ControllerApp, serviceKey: string) {
   assert.equal(typeof serviceKey, "string", "a bootstrap service API key is required");
   assert.ok(serviceKey.length > 0, "a bootstrap service API key is required");
-  return async (method, url, payload) => {
+  return async (
+    method: NonNullable<InjectOptions["method"]>,
+    url: string,
+    payload?: InjectOptions["payload"],
+  ): Promise<ResponseEnvelope> => {
     const response = await app.inject({
       method,
       url,
       headers: { "x-api-key": serviceKey, host: "127.0.0.1" },
       ...(payload === undefined ? {} : { payload }),
     });
-    return {
-      status: response.statusCode,
-      ...(response.body.length === 0 ? {} : response.json()),
-    };
+    const body: unknown = response.body.length === 0 ? undefined : response.json<unknown>();
+    return { status: response.statusCode, ...asRecord(body) };
   };
 }
 
-async function bootstrapServiceKeyFromFile(path) {
-  const parsed = JSON.parse(await readFile(path, "utf8"));
-  assert.equal(
-    typeof parsed.data?.key,
-    "string",
-    "bootstrap service-key file must contain data.key",
+function responseData<Data extends TSchema>(
+  response: ResponseEnvelope,
+  status: number,
+  schema: { properties: { data: Data } },
+): Static<Data, typeof schemaRefs> {
+  assert.equal(response.status, status, JSON.stringify(response.error));
+  assert.ok(
+    Check(schemaRefs, schema.properties.data, response.data),
+    `HTTP ${status} response must match the data schema`,
   );
-  assert.ok(parsed.data.key.length > 0, "bootstrap service-key file must contain data.key");
-  return parsed.data.key;
+  return response.data;
 }
 
-function installationAdministratorServicePrincipal(iamState) {
+async function bootstrapServiceKeyFromFile(path: string) {
+  const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+  const key = asRecord(asRecord(parsed)?.data)?.key;
+  assert.ok(
+    typeof key === "string" && key.length > 0,
+    "bootstrap service-key file must contain data.key",
+  );
+  return key;
+}
+
+function installationAdministratorServicePrincipal(iamState: PersistedNativeIAMState) {
   const administratorRoles = new Set(
     iamState.roles
       .filter((role) =>
@@ -91,43 +217,74 @@ function installationAdministratorServicePrincipal(iamState) {
   const principal = iamState.identities.find(
     (identity) => identity.kind === "service_principal" && administratorPrincipals.has(identity.id),
   );
-  assert.ok(principal, "existing proof Installation must have a bootstrap service Principal");
+  assert.ok(
+    principal?.kind === "service_principal",
+    "existing proof Installation must have a bootstrap service Principal",
+  );
   return principal;
 }
 
-function createAgentPluginApi({ request, namespaceId, gatewayAuth }) {
-  async function createAgent({ harnessId, executionMode, name, harnessAuth, backendId }) {
-    const values = nativeConfiguration(harnessId);
-    if (gatewayAuth !== undefined) {
-      values.gateway = {
-        ...values.gateway,
-        ...gatewayAuth,
-        auth: { ...gatewayAuth.auth, password: values.gateway.auth.password },
-      };
-    }
-    const configuration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
-      kind: "agent",
-      values,
-    });
-    assert.equal(configuration.status, 201, JSON.stringify(configuration.error));
-    const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
-      name,
-      configurationId: configuration.data.id,
-      executionMode,
-      ...(backendId === undefined ? {} : { backendId }),
-      ...(harnessAuth === undefined ? {} : { harnessAuth }),
-    });
-    assert.equal(agent.status, 201, JSON.stringify(agent.error));
-    return agent.data;
+function isDesiredPluginState(value: unknown): value is PluginDesiredState {
+  return Check(schemaRefs, PluginDesiredStateSchema, value);
+}
+
+function desiredPlugins(value: unknown): PluginDesiredState {
+  if (value === undefined) {
+    return {};
+  }
+  assert.ok(isDesiredPluginState(value), "Agent response must contain valid plugin selections");
+  return value;
+}
+
+function createAgentPluginApi({
+  request,
+  namespaceId,
+  gatewayAuth,
+}: {
+  request: ReturnType<typeof createServiceKeyControllerRequest>;
+  namespaceId: string;
+  gatewayAuth: GatewayAuth | undefined;
+}) {
+  async function createAgent({
+    harnessId,
+    executionMode,
+    name,
+    harnessAuth,
+    backendId,
+  }: {
+    harnessId: string;
+    executionMode: HarnessExecutionMode;
+    name: string;
+    harnessAuth?: HarnessAuthBinding;
+    backendId?: string;
+  }) {
+    const configuration = responseData(
+      await request("POST", `/namespaces/${namespaceId}/configurations`, {
+        kind: "agent",
+        values: nativeConfiguration(harnessId, gatewayAuth),
+      }),
+      201,
+      ConfigurationResponse,
+    );
+    return responseData(
+      await request("POST", `/namespaces/${namespaceId}/agents`, {
+        name,
+        configurationId: configuration.id,
+        executionMode,
+        ...(backendId === undefined ? {} : { backendId }),
+        ...(harnessAuth === undefined ? {} : { harnessAuth }),
+      }),
+      201,
+      AgentResponse,
+    );
   }
 
-  async function getAgent(agentId) {
+  async function getAgent(agentId: string) {
     const response = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
-    assert.equal(response.status, 200, JSON.stringify(response.error));
-    return response.data;
+    return responseData(response, 200, AgentReadResponse);
   }
 
-  async function replaceAgentPlugins(agentId, plugins) {
+  async function replaceAgentPlugins(agentId: string, plugins: Record<string, unknown>) {
     const current = await getAgent(agentId);
     const response = await request("PATCH", `/namespaces/${namespaceId}/agents/${agentId}`, {
       configurationId: current.configurationId,
@@ -135,44 +292,43 @@ function createAgentPluginApi({ request, namespaceId, gatewayAuth }) {
       ...(current.backendId === undefined ? {} : { backendId: current.backendId }),
       plugins,
     });
-    assert.equal(response.status, 200, JSON.stringify(response.error));
-    return response.data.plugins ?? {};
+    return desiredPlugins(responseData(response, 200, AgentResponse).plugins);
   }
 
-  function installPolicy(payload) {
-    const { pluginId: _pluginId, ...policy } = payload;
-    return { enabled: true, ...policy };
-  }
-
-  async function selectPlugin(agentId, payload) {
+  async function selectPlugin(
+    agentId: string,
+    { pluginId, ...policy }: { pluginId: string } & Partial<PluginDesiredSelection>,
+  ) {
     const current = await getAgent(agentId);
     const plugins = {
-      ...(current.plugins ?? {}),
-      [payload.pluginId]: installPolicy(payload),
+      ...desiredPlugins("plugins" in current ? current.plugins : undefined),
+      [pluginId]: { enabled: true, ...policy },
     };
     const updated = await replaceAgentPlugins(agentId, plugins);
-    return updated[payload.pluginId];
-  }
-
-  async function updatePluginPolicy(agentId, pluginId, payload) {
-    const current = await getAgent(agentId);
-    assert.ok(current.plugins?.[pluginId], `Plugin ${pluginId} must already be selected.`);
-    const nextPolicy = { ...current.plugins[pluginId], ...payload };
-    for (const [key, value] of Object.entries(nextPolicy)) {
-      if (value === null || value === undefined) {
-        delete nextPolicy[key];
-      }
-    }
-    const updated = await replaceAgentPlugins(agentId, {
-      ...current.plugins,
-      [pluginId]: nextPolicy,
-    });
     return updated[pluginId];
   }
 
-  async function removePluginSelection(agentId, pluginId) {
+  async function updatePluginPolicy(
+    agentId: string,
+    pluginId: string,
+    payload: { [Key in keyof PluginDesiredSelection]?: PluginDesiredSelection[Key] | null },
+  ) {
     const current = await getAgent(agentId);
-    const plugins = { ...(current.plugins ?? {}) };
+    const plugins = desiredPlugins("plugins" in current ? current.plugins : undefined);
+    const policy = plugins[pluginId];
+    assert.ok(policy, `Plugin ${pluginId} must already be selected.`);
+    const nextPolicy = Object.fromEntries(
+      Object.entries({ ...policy, ...payload }).filter(
+        ([, value]) => value !== undefined && value !== null,
+      ),
+    );
+    const updated = await replaceAgentPlugins(agentId, { ...plugins, [pluginId]: nextPolicy });
+    return updated[pluginId];
+  }
+
+  async function removePluginSelection(agentId: string, pluginId: string) {
+    const current = await getAgent(agentId);
+    const plugins = { ...desiredPlugins("plugins" in current ? current.plugins : undefined) };
     delete plugins[pluginId];
     await replaceAgentPlugins(agentId, plugins);
   }
@@ -189,6 +345,14 @@ function installationConfiguration({
   pluginDriverConfiguration,
   codexServiceAccountImport,
   workspaceGateway,
+}: Pick<
+  Parameters<typeof createKubernetesInstallationConfiguration>[0],
+  "authentication" | "platformNamespace" | "gatewayImage" | "codexImage"
+> & {
+  pluginDriverId: FixtureOptions["pluginDriverId"];
+  pluginDriverConfiguration: Record<string, unknown>;
+  codexServiceAccountImport: CodexServiceAccountImport | undefined;
+  workspaceGateway: WorkspaceGateway | undefined;
 }) {
   const configuration = createKubernetesInstallationConfiguration({
     authentication,
@@ -198,51 +362,85 @@ function installationConfiguration({
     cluster: `k3d-${proofPrefix}`,
     codexSeccompProfile: process.env.OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE,
   });
-  if (pluginDriverId === "codex-plugin") {
-    configuration.drivers.compute.configuration.resources.gateway.limits.memory =
-      productionGatewayMemoryLimit;
-    configuration.drivers.compute.configuration.resources.agent.limits.memory = "2Gi";
-  }
-  configuration.drivers.secret.configuration.authentication = authentication;
-  configuration.drivers.configuration.id = "configuration-kubernetes-plugin-real";
-  configuration.drivers.compute.id = "compute-kubernetes-plugin-real";
-  configuration.drivers.plugin = [{ id: pluginDriverId, configuration: pluginDriverConfiguration }];
-  if (workspaceGateway !== undefined) {
-    configuration.drivers.compute.configuration.gatewayRouting = workspaceGateway.routing;
-    configuration.drivers.compute.configuration.network.gatewayTrustedProxyCidrs =
-      workspaceGateway.nativeOptions.gatewayAuth.trustedProxies;
-    delete configuration.drivers.compute.configuration.network.gatewayClients;
-  }
-  configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
-    pluginProofPluginStatusProxyCidrs();
-  if (codexServiceAccountImport !== undefined) {
-    configuration.backend = [
-      {
-        id: "openai",
-        type: "chatgpt",
-        configuration: {
-          workspaceId: codexServiceAccountImport.workspaceId,
-          apiKeyPath: codexServiceAccountImport.apiKeyPath,
-          credentialTtlSeconds: 3_600,
-        },
-        drivers: { service_account: "chatgpt-service-accounts" },
+  const compute = configuration.drivers.compute.configuration;
+  const { gatewayClients, ...network } = compute.network;
+  const dedicated = pluginDriverId === "codex-plugin";
+  const resources = {
+    ...compute.resources,
+    gateway: dedicated
+      ? {
+          ...compute.resources.gateway,
+          limits: { ...compute.resources.gateway.limits, memory: productionGatewayMemoryLimit },
+        }
+      : compute.resources.gateway,
+    namespace: {
+      ...compute.resources.namespace,
+      quota: {
+        pods: "8",
+        "requests.cpu": "2",
+        "requests.memory": "2Gi",
+        // Two Agent/gateway pairs plus an overlapping revision during cutover.
+        "limits.cpu": "12",
+        "limits.memory": dedicated ? "12Gi" : "6Gi",
       },
-    ];
-    configuration.drivers.service_account = {
-      id: "chatgpt-service-accounts",
-      configuration: {},
-    };
-  }
-  configuration.drivers.compute.configuration.resources.namespace.quota = {
-    pods: "8",
-    "requests.cpu": "2",
-    "requests.memory": "2Gi",
-    // Two Agent/gateway pairs plus an overlapping revision during cutover.
-    "limits.cpu": "12",
-    "limits.memory": pluginDriverId === "codex-plugin" ? "12Gi" : "6Gi",
+    },
   };
-  configuration.drivers.compute.configuration.servicePrincipalCredentials.expirationSeconds = 3_600;
-  return configuration;
+  return {
+    ...configuration,
+    ...(codexServiceAccountImport === undefined
+      ? {}
+      : {
+          backend: [
+            {
+              id: "openai",
+              type: "chatgpt",
+              configuration: {
+                workspaceId: codexServiceAccountImport.workspaceId,
+                apiKeyPath: codexServiceAccountImport.apiKeyPath,
+                credentialTtlSeconds: 3_600,
+              },
+              drivers: { service_account: "chatgpt-service-accounts" },
+            },
+          ],
+        }),
+    drivers: {
+      ...configuration.drivers,
+      secret: {
+        ...configuration.drivers.secret,
+        configuration: { authentication },
+      },
+      configuration: {
+        ...configuration.drivers.configuration,
+        id: "configuration-kubernetes-plugin-real",
+      },
+      compute: {
+        id: "compute-kubernetes-plugin-real",
+        configuration: {
+          ...compute,
+          ...(workspaceGateway === undefined ? {} : { gatewayRouting: workspaceGateway.routing }),
+          network: {
+            ...network,
+            ...(workspaceGateway === undefined
+              ? { gatewayClients }
+              : {
+                  gatewayTrustedProxyCidrs:
+                    workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
+                }),
+            pluginStatusProxySourceCidrs: pluginProofPluginStatusProxyCidrs(),
+          } satisfies KubernetesComputeDriverOptions["network"],
+          resources,
+          servicePrincipalCredentials: {
+            ...compute.servicePrincipalCredentials,
+            expirationSeconds: 3_600,
+          },
+        },
+      },
+      plugin: [{ id: pluginDriverId, configuration: pluginDriverConfiguration }],
+      ...(codexServiceAccountImport === undefined
+        ? {}
+        : { service_account: { id: "chatgpt-service-accounts", configuration: {} } }),
+    },
+  };
 }
 
 function pluginProofPluginStatusProxyCidrs() {
@@ -262,7 +460,10 @@ function pluginProofPluginStatusProxyCidrs() {
   return cidrs;
 }
 
-async function codexServiceAccountImportConfiguration(directory, credential) {
+async function codexServiceAccountImportConfiguration(
+  directory: string,
+  credential: CodexCredential | undefined,
+) {
   const imported = credential ?? (await readCodexServiceAccountCredential());
   const apiKeyPath = join(directory, "codex-service-account-import-provider-marker");
   await writeFile(apiKeyPath, "test-only-existing-codex-service-account-import\n", {
@@ -271,7 +472,7 @@ async function codexServiceAccountImportConfiguration(directory, credential) {
   return { ...imported, apiKeyPath };
 }
 
-async function deriveCodexWorkspaceId(accessToken) {
+async function deriveCodexWorkspaceId(accessToken: string) {
   const response = await fetch(
     "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami",
     {
@@ -280,18 +481,26 @@ async function deriveCodexWorkspaceId(accessToken) {
     },
   );
   assert.equal(response.status, 200, "the Codex service-account token must authenticate.");
-  const body = await response.json();
-  const accountId = body?.chatgpt_account_id;
-  assert.equal(typeof accountId, "string", "whoami must return a ChatGPT account identity.");
+  const body: unknown = await response.json();
+  const accountId = asRecord(body)?.chatgpt_account_id;
+  assert.ok(typeof accountId === "string", "whoami must return a ChatGPT account identity.");
   assert.match(accountId, /^[0-9a-f-]{36}$/i, "the ChatGPT account identity must be a UUID.");
   return accountId;
 }
 
-function createImportedCodexServiceAccountDriverFactory(imported, compute) {
+type ServiceAccountCompute = Pick<
+  KubernetesCompute,
+  "storeServiceAccountCredential" | "deleteServiceAccountCredential"
+>;
+
+function createImportedCodexServiceAccountDriverFactory(
+  imported: CodexServiceAccountImport,
+  compute: ServiceAccountCompute,
+): ServiceAccountDriverFactory {
   const driverId = "chatgpt-service-accounts";
   const backendId = "openai";
   return (controller, state) => {
-    const driver = {
+    const driver: ServiceAccountDriver = {
       capability: "service_account",
       implementation: "test-existing-codex-import",
       id: driverId,
@@ -319,7 +528,6 @@ function createImportedCodexServiceAccountDriverFactory(imported, compute) {
           serviceAccountId: account.id,
           credentialId: `imported-credential-${account.id}`,
           accessToken: imported.accessToken,
-          workspaceId: imported.workspaceId,
         });
         controller.registerRollback(() =>
           compute.deleteServiceAccountCredential({
@@ -366,25 +574,31 @@ function createImportedCodexServiceAccountDriverFactory(imported, compute) {
   };
 }
 
-async function waitForPluginProofWorkerSuccess(waitFor, events, revisionId, options) {
-  const description = typeof options === "string" ? options : options.description;
+async function waitForPluginProofWorkerSuccess(
+  waitFor: KubernetesFixture["waitFor"],
+  events: readonly WorkerEvent[],
+  revisionId: string,
+) {
   try {
-    await waitFor(description, () =>
+    await waitFor(`worker completion of ${revisionId}`, () =>
       events.find(
         (event) =>
           event.event === "worker.completed" &&
           event.revisionId === revisionId &&
           event.outcome === "success" &&
-          ["REVISION_ACTIVATED", "REVISION_ALREADY_ACTIVE"].includes(event.code),
+          (event.code === "REVISION_ACTIVATED" || event.code === "REVISION_ALREADY_ACTIVE"),
       ),
     );
   } catch (error) {
-    const diagnostics = typeof options === "string" ? [] : options.diagnostics();
-    throw new Error(`${error.message} Worker events: ${JSON.stringify(diagnostics)}`);
+    const eventsSummary = sanitizedPluginProofWorkerEvents(events, revisionId);
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message} Worker events: ${JSON.stringify(eventsSummary)}`, {
+      cause: error,
+    });
   }
 }
 
-function sanitizedPluginProofWorkerEvents(events, revisionId) {
+function sanitizedPluginProofWorkerEvents(events: readonly WorkerEvent[], revisionId: string) {
   return events
     .filter((event) => event.revisionId === revisionId || event.event === "worker.error")
     .slice(-8)
@@ -405,16 +619,15 @@ function sanitizedPluginProofWorkerEvents(events, revisionId) {
     }));
 }
 
-/**
- * @param {{ after: (cleanup: () => Promise<void>) => void }} context
- * @param {import("./plugin-driver-proof-inputs.ts").PluginProofInputOptions & {
- *   codexCredential?: Awaited<ReturnType<typeof readCodexServiceAccountCredential>>,
- *   pluginDriverConfiguration?: Record<string, unknown>,
- * }} options
- */
 export async function createPluginDriverRealFixture(
-  context,
-  { scenario, pluginDriverId, databaseUrl, codexCredential, pluginDriverConfiguration = {} },
+  context: FixtureContext,
+  {
+    scenario,
+    pluginDriverId,
+    databaseUrl,
+    codexCredential,
+    pluginDriverConfiguration = {},
+  }: FixtureOptions,
 ) {
   const inputs = selectPluginProofInputs({ scenario, pluginDriverId, databaseUrl });
   const { gatewayImage, codexImage, databaseUrl: selectedDatabaseUrl } = inputs;
@@ -437,28 +650,22 @@ export async function createPluginDriverRealFixture(
     applyManifest,
   } = createRealKubernetesFixture(inputs);
 
-  await validatePrerequisites();
-  let worker;
-  let app;
-  let pool;
-  const forwarders = [];
-  const gatewayPasswords = new Map();
-  let tenantNamespace;
-  let gatewayRuntimeNamespace;
-  let gatewayPlacement;
+  const kubeconfig = await validatePrerequisites();
+  const cleanupState: {
+    worker?: ControllerWorker;
+    app?: ControllerApp;
+    pool?: PostgresPool;
+    tenantNamespace?: string;
+  } = {};
+  const forwarders: Awaited<ReturnType<typeof startPortForward>>[] = [];
+  const gatewayPasswords = new Map<string, string>();
 
-  function isKubernetesNotFound(error) {
-    return /NotFound|not found/i.test(`${error?.stderr ?? ""}\n${error?.message ?? ""}`);
-  }
-
-  async function waitForTenantNamespaceDeletion() {
-    if (tenantNamespace === undefined) {
-      return;
-    }
+  async function waitForTenantNamespaceDeletion(tenantNamespace: string) {
     try {
       await kubectl("wait", "--for=delete", `namespace/${tenantNamespace}`, "--timeout=60s");
     } catch (error) {
-      if (isKubernetesNotFound(error)) {
+      const failure = asRecord(error);
+      if (/NotFound|not found/i.test(`${failure?.stderr ?? ""}\n${failure?.message ?? ""}`)) {
         return;
       }
       throw error;
@@ -467,8 +674,8 @@ export async function createPluginDriverRealFixture(
 
   const directory = await mkdtemp(join(tmpdir(), "occ-plugin-driver-real-"));
   context.after(async () => {
-    const failures = [];
-    async function cleanup(operation) {
+    const failures: unknown[] = [];
+    async function cleanup(operation: () => Promise<unknown> | undefined) {
       try {
         await operation();
       } catch (error) {
@@ -476,33 +683,17 @@ export async function createPluginDriverRealFixture(
       }
     }
     for (const forwarder of forwarders.splice(0)) {
-      forwarder.stop();
+      await cleanup(() => forwarder.stop());
     }
-    if (worker !== undefined) {
-      await cleanup(() => worker.stop());
-    }
-    if (app !== undefined) {
-      await cleanup(() => app.close());
-    }
-    if (pool !== undefined) {
-      await cleanup(() => pool.end());
-    }
-    if (gatewayRuntimeNamespace !== undefined && gatewayRuntimeNamespace !== tenantNamespace) {
+    await cleanup(() => cleanupState.worker?.stop());
+    await cleanup(() => cleanupState.app?.close());
+    await cleanup(() => cleanupState.pool?.end());
+    const namespace = cleanupState.tenantNamespace;
+    if (namespace !== undefined) {
       await cleanup(() =>
-        kubectl(
-          "delete",
-          "namespace",
-          gatewayRuntimeNamespace,
-          "--ignore-not-found=true",
-          "--wait=true",
-        ),
+        kubectl("delete", "namespace", namespace, "--ignore-not-found=true", "--wait=false"),
       );
-    }
-    if (tenantNamespace !== undefined) {
-      await cleanup(() =>
-        kubectl("delete", "namespace", tenantNamespace, "--ignore-not-found=true", "--wait=false"),
-      );
-      await cleanup(() => waitForTenantNamespaceDeletion());
+      await cleanup(() => waitForTenantNamespaceDeletion(namespace));
     }
     for (const role of ["api", "worker"]) {
       await cleanup(() =>
@@ -538,7 +729,7 @@ export async function createPluginDriverRealFixture(
   await kubectl("create", "namespace", platformNamespace);
   // Dedicated Agents use the production routed endpoint. The fixture owns the
   // real Envoy resources; Compute creates each Agent's route during deployment.
-  let workspaceGateway;
+  let workspaceGateway: WorkspaceGateway | undefined;
   if (pluginDriverId === "codex-plugin") {
     const helpers = {
       kubectl,
@@ -549,16 +740,23 @@ export async function createPluginDriverRealFixture(
       applyManifest,
     };
     await ensureEnvoyGatewayControllers(helpers);
-    workspaceGateway = await createEnvoyWorkspaceGatewayPlan(
-      context,
-      { platformNamespace },
-      helpers,
+    const plan = await createEnvoyWorkspaceGatewayPlan(context, { platformNamespace }, helpers);
+    const endpointPort: unknown = await startWorkspaceGatewayHostRelay(context, plan, {
+      ...helpers,
+      gatewayImage,
+    });
+    const { gatewayAuth } = plan.nativeOptions;
+    const trustedProxies: unknown = gatewayAuth.trustedProxies;
+    assert.ok(typeof endpointPort === "number", "the Gateway relay must return its bound port");
+    assert.ok(
+      Check(Type.Array(Type.String()), trustedProxies),
+      "the Gateway must supply trusted proxy CIDRs",
     );
-    workspaceGateway.routing.endpointPort = await startWorkspaceGatewayHostRelay(
-      context,
-      workspaceGateway,
-      { ...helpers, gatewayImage },
-    );
+    workspaceGateway = {
+      apiKey: plan.apiKey,
+      routing: { ...plan.routing, endpointPort },
+      nativeOptions: { gatewayAuth: { ...gatewayAuth, trustedProxies } },
+    };
   }
   await kubectl(
     "create",
@@ -596,22 +794,20 @@ export async function createPluginDriverRealFixture(
     "--resource=secrets",
   );
 
-  const kubeconfig = JSON.parse(
-    await kubectl("config", "view", "--minify", "--flatten", "-o", "json"),
-  );
-  const [api, workerIdentity] = await Promise.all(
-    ["api", "worker"].map((role) =>
-      createControllerIdentity({
-        directory,
-        platformNamespace,
-        kubeconfig,
-        account: `${proofPrefix}-${role}`,
-        clusterRole: `${proofPrefix}-namespaces-${suffix}`,
-        clusterRoleBinding: `${proofPrefix}-${role}-${suffix}`,
-        context: `${proofPrefix}-${role}-${suffix}`,
-      }),
-    ),
-  );
+  const createIdentity = (role: "api" | "worker") =>
+    createControllerIdentity({
+      directory,
+      platformNamespace,
+      kubeconfig,
+      account: `${proofPrefix}-${role}`,
+      clusterRole: `${proofPrefix}-namespaces-${suffix}`,
+      clusterRoleBinding: `${proofPrefix}-${role}-${suffix}`,
+      context: `${proofPrefix}-${role}-${suffix}`,
+    });
+  const [api, workerIdentity] = await Promise.all([
+    createIdentity("api"),
+    createIdentity("worker"),
+  ]);
 
   const apiConfigurationPath = join(directory, "api-installation.yaml");
   const workerConfigurationPath = join(directory, "worker-installation.yaml");
@@ -654,7 +850,7 @@ export async function createPluginDriverRealFixture(
     ),
   ]);
 
-  const driverEnvironment = {};
+  const driverEnvironment: NodeJS.ProcessEnv = {};
   if (workspaceGateway !== undefined) {
     const keyPath = join(directory, "gateway-api-key");
     await writeFile(keyPath, workspaceGateway.apiKey, { mode: 0o600 });
@@ -668,7 +864,7 @@ export async function createPluginDriverRealFixture(
     { loadInstallationConfiguration },
     { composeProduction },
     { createControllerWorker },
-    { kubernetesNamespaceName },
+    { KubernetesComputeDriver, kubernetesNamespaceName },
   ] = await Promise.all([
     import("../../packages/occ/src/state/postgres-state.ts"),
     import("../../apps/controller/src/auth/index.ts"),
@@ -688,21 +884,28 @@ export async function createPluginDriverRealFixture(
       environment: { ...driverEnvironment, OCC_CONFIG_PATH: workerConfigurationPath },
     }),
   ]);
-  assert.equal(apiDrivers.pluginDrivers[0]?.id, pluginDriverId);
-  assert.equal(workerDrivers.pluginDrivers[0]?.id, pluginDriverId);
+  assert.ok(apiDrivers && workerDrivers, "both Installation configurations are required");
+  assert.equal(apiDrivers.pluginDrivers?.[0]?.id, pluginDriverId);
+  assert.equal(workerDrivers.pluginDrivers?.[0]?.id, pluginDriverId);
 
-  const serviceAccountDriverFactory =
-    codexServiceAccountImport === undefined
-      ? undefined
-      : createImportedCodexServiceAccountDriverFactory(
-          codexServiceAccountImport,
-          apiDrivers.computeDriver,
-        );
+  let serviceAccountDriverFactory: ServiceAccountDriverFactory | undefined;
+  if (codexServiceAccountImport !== undefined) {
+    assert.ok(
+      apiDrivers.computeDriver instanceof KubernetesComputeDriver,
+      "the configured Kubernetes Compute Driver must store imported ServiceAccount credentials",
+    );
+    serviceAccountDriverFactory = createImportedCodexServiceAccountDriverFactory(
+      codexServiceAccountImport,
+      apiDrivers.computeDriver,
+    );
+  }
 
-  pool = new pg.Pool({ connectionString: selectedDatabaseUrl, max: 4 });
-  const state = new PostgresPlatformState(pool);
+  const databasePool = new pg.Pool({ connectionString: selectedDatabaseUrl, max: 4 });
+  const proofPool: PostgresPool & PostgresQueryClient = databasePool;
+  cleanupState.pool = proofPool;
+  const state = new PostgresPlatformState(proofPool);
   const existing = await state.loadInstallation();
-  let serviceKey;
+  let serviceKey: string;
   if (existing !== undefined) {
     assert.equal(
       existing.name,
@@ -715,7 +918,7 @@ export async function createPluginDriverRealFixture(
       secret: authSecret,
       baseURL: authBaseURL,
       agentDomain: "agents.oce.localhost",
-      pool,
+      pool: databasePool,
     });
     const servicePrincipal = installationAdministratorServicePrincipal(
       await state.loadNativeIAMState(existing.id),
@@ -740,7 +943,7 @@ export async function createPluginDriverRealFixture(
     );
   }
 
-  app = await composeProduction({
+  const app = await composeProduction({
     mode: "production",
     host: "127.0.0.1",
     databaseUrl: selectedDatabaseUrl,
@@ -750,31 +953,37 @@ export async function createPluginDriverRealFixture(
     drivers: apiDrivers,
     ...(serviceAccountDriverFactory === undefined ? {} : { serviceAccountDriverFactory }),
   });
+  cleanupState.app = app;
   const request = createServiceKeyControllerRequest(app, serviceKey);
-  const events = [];
-  worker = createControllerWorker({
+  const events: WorkerEvent[] = [];
+  const worker = createControllerWorker({
     mode: "production",
     pool: new pg.Pool({ connectionString: selectedDatabaseUrl, max: 6 }),
     drivers: workerDrivers,
     pollIntervalMs: 50,
     leaseDurationMs: 60_000,
     maxAttempts: 30,
-    emit: (event) => events.push(event),
+    emit: (event) => {
+      events.push(event);
+    },
   });
+  cleanupState.worker = worker;
   await worker.start();
 
   const createdNamespace = await request("POST", "/namespaces", {
     name: `${proofPrefix}-${suffix}`,
   });
   assert.equal(createdNamespace.status, 201, JSON.stringify(createdNamespace.error));
-  tenantNamespace = kubernetesNamespaceName(createdNamespace.data.id);
-  gatewayRuntimeNamespace = kubernetesNamespaceName(createdNamespace.data.id);
-  gatewayPlacement = pluginDriverId === "codex-plugin" ? gatewayRuntimeNamespace : tenantNamespace;
+  const namespaceId = asRecord(createdNamespace.data)?.id;
+  assert.ok(Check(NamespaceId, namespaceId), "the created Namespace must have an ID");
+  const tenantNamespace = kubernetesNamespaceName(namespaceId);
+  cleanupState.tenantNamespace = tenantNamespace;
   await waitFor(`the worker to create ${tenantNamespace}`, async () => {
     try {
       return await resource("namespace", tenantNamespace);
     } catch (error) {
-      if (/NotFound|not found/i.test(error.stderr ?? error.message)) {
+      const failure = asRecord(error);
+      if (/NotFound|not found/i.test(String(failure?.stderr ?? failure?.message))) {
         return undefined;
       }
       throw error;
@@ -828,120 +1037,118 @@ export async function createPluginDriverRealFixture(
     `--clusterrole=${proofPrefix}-secrets-${suffix}`,
     `--serviceaccount=${platformNamespace}:${workerIdentity.account}`,
   );
-  await waitFor(`namespace ${createdNamespace.data.id} to become API-ready`, async () => {
-    const observed = await request("GET", `/namespaces/${createdNamespace.data.id}`);
-    assert.equal(observed.status, 200, JSON.stringify(observed.error));
-    return observed.data.status === "ready" ? observed.data : undefined;
+  await waitFor(`namespace ${namespaceId} to become API-ready`, async () => {
+    const observed = await request("GET", `/namespaces/${namespaceId}`);
+    const namespace = responseData(observed, 200, NamespaceResponse);
+    return namespace.status === "ready" ? namespace : undefined;
   });
 
   const agentApi = createAgentPluginApi({
     request,
-    namespaceId: createdNamespace.data.id,
+    namespaceId,
     gatewayAuth: workspaceGateway?.nativeOptions.gatewayAuth,
   });
 
-  async function createCodexServiceAccountFromToken({ accessToken, name }) {
+  async function createCodexServiceAccountFromToken({
+    accessToken,
+    name,
+  }: {
+    accessToken: string;
+    name: string;
+  }) {
     assert.ok(
-      serviceAccountDriverFactory,
+      codexServiceAccountImport,
       "Codex ServiceAccounts require the configured test import ServiceAccount Driver.",
     );
     assert.ok(
       accessToken === codexServiceAccountImport.accessToken,
       "Codex ServiceAccount import must use the configured existing test credential.",
     );
-    const account = await request(
-      "POST",
-      `/namespaces/${createdNamespace.data.id}/service-accounts`,
-      { name },
+    const account = responseData(
+      await request("POST", `/namespaces/${namespaceId}/service-accounts`, { name }),
+      201,
+      ServiceAccountResponse,
     );
-    assert.equal(account.status, 201, JSON.stringify(account.error));
-    const binding = await pool.query(
+    const binding = await proofPool.query(
       `SELECT external_account_id, workspace_id, backend_id, driver_id
        FROM occ.service_account_driver_bindings
        WHERE namespace_id = $1 AND service_account_id = $2`,
-      [createdNamespace.data.id, account.data.id],
+      [namespaceId, account.id],
     );
     assert.equal(binding.rowCount, 1, "ServiceAccount creation must persist provider binding.");
-    assert.equal(binding.rows[0].external_account_id, `imported-${account.data.id}`);
-    assert.equal(binding.rows[0].workspace_id, codexServiceAccountImport.workspaceId);
-    assert.equal(binding.rows[0].backend_id, "openai");
-    assert.equal(binding.rows[0].driver_id, "chatgpt-service-accounts");
+    const row = asRecord(binding.rows[0]);
+    assert.ok(row, "ServiceAccount binding row must exist");
+    assert.equal(row.external_account_id, `imported-${account.id}`);
+    assert.equal(row.workspace_id, codexServiceAccountImport.workspaceId);
+    assert.equal(row.backend_id, "openai");
+    assert.equal(row.driver_id, "chatgpt-service-accounts");
 
     const issued = await request(
       "POST",
-      `/namespaces/${createdNamespace.data.id}/service-accounts/${account.data.id}/credentials`,
+      `/namespaces/${namespaceId}/service-accounts/${account.id}/credentials`,
       {},
     );
-    assert.equal(issued.status, 201, JSON.stringify(issued.error));
-    assert.equal(issued.data.credential.kind, "access_token");
+    const serviceAccount = responseData(issued, 201, ServiceAccountResponse);
+    assert.equal(serviceAccount.credential?.kind, "access_token");
     assertNoSecretMaterial(
       issued,
       [accessToken, codexServiceAccountImport.workspaceId],
       "service-account responses must not expose imported credential values.",
     );
-    return issued.data;
+    return serviceAccount;
   }
 
-  async function deployAndWait(agent) {
+  async function deployAndWait(agent: AgentSelection) {
     let gatewayPassword = gatewayPasswords.get(agent.id);
     if (gatewayPassword === undefined) {
-      gatewayPassword = await provisionAgentTransportSecret(directory, tenantNamespace, agent.id, {
-        executionMode: agent.executionMode,
-      });
+      gatewayPassword = await provisionAgentTransportSecret(directory, tenantNamespace, agent.id);
       gatewayPasswords.set(agent.id, gatewayPassword);
     }
-    const deployed = await request(
-      "POST",
-      `/namespaces/${createdNamespace.data.id}/agents/${agent.id}/deploy`,
+    const revision = responseData(
+      await request("POST", `/namespaces/${namespaceId}/agents/${agent.id}/deploy`),
+      202,
+      AgentRevisionResponse,
     );
-    assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
     try {
-      await waitFor(`revision ${deployed.data.id} activation`, async () => {
-        const observed = await request(
-          "GET",
-          `/namespaces/${createdNamespace.data.id}/agents/${agent.id}`,
-        );
-        assert.equal(observed.status, 200, JSON.stringify(observed.error));
-        const deployment = await getDeploymentStatus(agent.id, deployed.data.id);
+      await waitFor(`revision ${revision.id} activation`, async () => {
+        const current = await agentApi.getAgent(agent.id);
+        const deployment = await getDeploymentStatus(agent.id, revision.id);
         assert.notEqual(deployment.status, "failed", JSON.stringify(deployment.error));
-        return observed.data.activeRevisionId === deployed.data.id ? observed.data : undefined;
+        return current.activeRevisionId === revision.id ? current : undefined;
       });
     } catch (error) {
-      const diagnostics = await deploymentActivationDiagnostics(agent, deployed.data.id, events);
-      assert.fail(`${error.message} Diagnostics: ${JSON.stringify(diagnostics)}`);
+      const diagnostics = await deploymentActivationDiagnostics(agent, revision.id, events);
+      const message = error instanceof Error ? error.message : String(error);
+      assert.fail(`${message} Diagnostics: ${JSON.stringify(diagnostics)}`);
     }
-    await waitForPluginProofWorkerSuccess(waitFor, events, deployed.data.id, {
-      description: `worker completion of ${deployed.data.id}`,
-      diagnostics: () => sanitizedPluginProofWorkerEvents(events, deployed.data.id),
-    });
-    const status = await getDeploymentStatus(agent.id, deployed.data.id);
+    await waitForPluginProofWorkerSuccess(waitFor, events, revision.id);
+    const status = await getDeploymentStatus(agent.id, revision.id);
     assert.equal(status.status, "succeeded", JSON.stringify(status.error));
-    return { revision: deployed.data, gatewayPassword, status };
+    return { revision, gatewayPassword, status };
   }
 
-  async function getDeploymentStatus(agentId, deploymentId) {
+  async function getDeploymentStatus(agentId: string, deploymentId: string) {
     const status = await request(
       "GET",
-      `/namespaces/${createdNamespace.data.id}/agents/${agentId}/deployments/${deploymentId}`,
+      `/namespaces/${namespaceId}/agents/${agentId}/deployments/${deploymentId}`,
     );
-    assert.equal(status.status, 200, JSON.stringify(status.error));
-    return status.data;
+    return responseData(status, 200, AgentDeploymentStatusResponse);
   }
 
-  async function deploymentActivationDiagnostics(agent, revisionId, workerEvents) {
+  async function deploymentActivationDiagnostics(
+    agent: AgentSelection,
+    revisionId: string,
+    workerEvents: readonly WorkerEvent[],
+  ) {
     return {
       revisionId,
       agentId: agent.id,
-      namespaceId: createdNamespace.data.id,
+      namespaceId,
       agent: await safeDiagnostic(async () => {
-        const observed = await request(
-          "GET",
-          `/namespaces/${createdNamespace.data.id}/agents/${agent.id}`,
-        );
-        assert.equal(observed.status, 200, JSON.stringify(observed.error));
+        const current = await agentApi.getAgent(agent.id);
         return {
-          activeRevisionId: observed.data.activeRevisionId ?? null,
-          desiredRuntimeState: observed.data.desiredRuntimeState ?? null,
+          activeRevisionId: current.activeRevisionId ?? null,
+          desiredRuntimeState: current.desiredRuntimeState ?? null,
         };
       }),
       deployment: await safeDiagnostic(async () => {
@@ -955,7 +1162,7 @@ export async function createPluginDriverRealFixture(
         };
       }),
       controllerWork: await safeDiagnostic(async () => {
-        const { rows } = await pool.query(
+        const { rows } = await proofPool.query(
           `SELECT state, reason_code, result_data, attempt_count, available_at, created_at, updated_at, completed_at
              FROM occ.controller_work
             WHERE revision_id = $1
@@ -966,11 +1173,12 @@ export async function createPluginDriverRealFixture(
         if (rows[0] === undefined) {
           return null;
         }
-        const row = rows[0];
+        const row = asRecord(rows[0]);
+        assert.ok(row, "controller work diagnostic must be a PostgreSQL row");
         return {
           state: row.state,
           reasonCode: row.reason_code,
-          warnings: row.result_data?.warnings ?? [],
+          warnings: asRecord(row.result_data)?.warnings ?? [],
           attemptCount: row.attempt_count,
           availableAt: row.available_at,
           createdAt: row.created_at,
@@ -980,7 +1188,7 @@ export async function createPluginDriverRealFixture(
       }),
       workerEvents: sanitizedPluginProofWorkerEvents(workerEvents, revisionId),
       runtime: await safeDiagnostic(async () => {
-        const pods = (await resources("pods", gatewayPlacement)).filter(
+        const pods = (await tenantPods()).filter(
           (pod) => pod.metadata.labels?.["openclaw.dev/agent"] === agent.id,
         );
         const privateDiagnostics = await mkdtemp(join(tmpdir(), "occ-plugin-proof-failure-"));
@@ -991,7 +1199,7 @@ export async function createPluginDriverRealFixture(
               "logs",
               pod.metadata.name,
               "--namespace",
-              gatewayPlacement,
+              tenantNamespace,
               "--all-containers=true",
               "--tail=200",
             );
@@ -1016,30 +1224,36 @@ export async function createPluginDriverRealFixture(
     };
   }
 
-  async function safeDiagnostic(operation) {
+  async function safeDiagnostic<Result>(operation: () => Promise<Result>) {
     try {
       return await operation();
     } catch (error) {
       return {
         unavailable: true,
-        reason: error?.name ?? "Error",
+        reason: error instanceof Error ? error.name : "Error",
       };
     }
   }
 
-  function isPodReady(pod) {
+  async function tenantPods() {
+    const pods = await resources("pods", tenantNamespace);
+    assert.ok(Check(Type.Array(podSchema), pods), "kubectl must return the tenant Pod list");
+    return pods;
+  }
+
+  function isPodReady(pod: TenantPod) {
     return pod.status?.conditions?.some(
       ({ type, status }) => type === "Ready" && status === "True",
     );
   }
 
-  function gatewayPodPrefix(agent) {
+  function gatewayPodPrefix(agent: AgentSelection) {
     return `gateway-${hash(agent.id)}`;
   }
 
-  async function gatewayPods(agent) {
+  async function gatewayPods(agent: AgentSelection) {
     const prefix = gatewayPodPrefix(agent);
-    return (await resources("pods", gatewayPlacement)).filter(
+    return (await tenantPods()).filter(
       (pod) =>
         pod.metadata.labels?.["openclaw.dev/agent"] === agent.id &&
         pod.metadata.deletionTimestamp === undefined &&
@@ -1047,7 +1261,10 @@ export async function createPluginDriverRealFixture(
     );
   }
 
-  async function waitForSameGatewayPodReady(agent, expected) {
+  async function waitForSameGatewayPodReady(
+    agent: AgentSelection,
+    expected: ReturnType<typeof podIdentity>,
+  ) {
     return waitFor(`existing gateway Pod ${expected.podName} to become Ready`, async () => {
       const pods = await gatewayPods(agent);
       const samePod = pods.find(
@@ -1068,7 +1285,7 @@ export async function createPluginDriverRealFixture(
     });
   }
 
-  async function gatewayPod(agent) {
+  async function gatewayPod(agent: AgentSelection) {
     const pods = await gatewayPods(agent);
     assert.ok(pods.length > 0, "the exact Agent must have running workload Pods to inspect.");
     const pod = pods.find(isPodReady);
@@ -1076,7 +1293,7 @@ export async function createPluginDriverRealFixture(
     return pod;
   }
 
-  function podIdentity(pod) {
+  function podIdentity(pod: TenantPod) {
     return {
       podName: pod.metadata.name,
       podUid: pod.metadata.uid,
@@ -1085,29 +1302,33 @@ export async function createPluginDriverRealFixture(
     };
   }
 
-  async function gatewayPodIdentity(agent) {
+  async function gatewayPodIdentity(agent: AgentSelection) {
     const pod = await gatewayPod(agent);
     return podIdentity(pod);
   }
 
-  async function activeReadyCodexAgentPods(agent, activeRevisionId) {
-    return (await resources("pods", tenantNamespace)).filter(
+  async function activeReadyCodexAgentPods(agent: AgentSelection, activeRevisionId: string) {
+    return (await tenantPods()).filter(
       (pod) =>
         pod.metadata.labels?.["openclaw.dev/agent"] === agent.id &&
         pod.metadata.labels?.["openclaw.dev/revision"] === activeRevisionId &&
         pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
         pod.metadata.deletionTimestamp === undefined &&
-        pod.status?.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
+        isPodReady(pod),
     );
   }
 
-  async function activeCodexAgentPod(agent, activeRevisionId) {
+  async function activeCodexAgentPod(agent: AgentSelection, activeRevisionId: string) {
     const pods = await activeReadyCodexAgentPods(agent, activeRevisionId);
-    assert.equal(pods.length, 1, "native inspection requires the exact active Ready Codex Pod.");
-    return pods[0];
+    const [pod] = pods;
+    assert.ok(
+      pod !== undefined && pods.length === 1,
+      "native inspection requires the exact active Ready Codex Pod.",
+    );
+    return pod;
   }
 
-  async function restartActiveCodexAgentPod(agent) {
+  async function restartActiveCodexAgentPod(agent: AgentSelection) {
     assert.equal(
       pluginDriverId,
       "codex-plugin",
@@ -1130,10 +1351,11 @@ export async function createPluginDriverRealFixture(
       `active revision ${activeRevisionId} Codex Agent Pod restart`,
       async () => {
         const pods = await activeReadyCodexAgentPods(agent, activeRevisionId);
-        if (pods.length !== 1) {
+        const [pod] = pods;
+        if (pod === undefined || pods.length !== 1) {
           return undefined;
         }
-        const candidate = podIdentity(pods[0]);
+        const candidate = podIdentity(pod);
         return candidate.podUid === agentBefore.podUid ? undefined : candidate;
       },
     );
@@ -1156,21 +1378,15 @@ export async function createPluginDriverRealFixture(
     proofMode: pluginDriverId === "codex-plugin" ? "codex" : "openclaw",
     waitFor,
     execCodex: async (agent, argv) => {
+      assert.ok(agent.id, "native inspection requires an Agent ID");
       const current = await agentApi.getAgent(agent.id);
-      const pods = (await resources("pods", tenantNamespace)).filter(
-        (pod) =>
-          pod.metadata.labels?.["openclaw.dev/agent"] === agent.id &&
-          pod.metadata.labels?.["openclaw.dev/revision"] === current.activeRevisionId &&
-          pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
-          pod.metadata.deletionTimestamp === undefined &&
-          pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
-      );
-      assert.equal(pods.length, 1, "native inspection requires the exact active Ready Codex Pod.");
+      assert.ok(current.activeRevisionId, "native inspection requires an active revision");
+      const pod = await activeCodexAgentPod({ id: agent.id }, current.activeRevisionId);
       return {
-        label: pods[0].metadata.name,
+        label: pod.metadata.name,
         stdout: await kubectl(
           "exec",
-          pods[0].metadata.name,
+          pod.metadata.name,
           "--namespace",
           tenantNamespace,
           "--container",
@@ -1181,12 +1397,14 @@ export async function createPluginDriverRealFixture(
       };
     },
     gatewayUrl: async (agent) => {
-      const forwarding = await startPortForward(gatewayPlacement, `gateway-${hash(agent.id)}`);
+      assert.ok(agent.id, "Gateway forwarding requires an Agent ID");
+      const forwarding = await startPortForward(tenantNamespace, `gateway-${hash(agent.id)}`);
       forwarders.push(forwarding);
       return { url: forwarding.url };
     },
     execGateway: async (agent, argv) => {
-      const pod = await gatewayPod(agent);
+      assert.ok(agent.id, "Gateway inspection requires an Agent ID");
+      const pod = await gatewayPod({ id: agent.id });
       return {
         label: pod.metadata.name,
         stdout: await kubectl(
@@ -1201,24 +1419,20 @@ export async function createPluginDriverRealFixture(
     },
   });
 
-  async function bindOpenAIModelSecret(agentId) {
+  async function bindOpenAIModelSecret(agentId: string) {
     const key = requiredPluginProofEnv("OPENAI_API_KEY", "OpenClaw embedded model credential");
-    const secret = await request("POST", `/namespaces/${createdNamespace.data.id}/secrets`, {
+    const secret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
       name: `Plugin model key ${agentId}`,
       value: key,
     });
-    assert.equal(secret.status, 201, JSON.stringify(secret.error));
+    const selectedSecret = responseData(secret, 201, SecretResponse);
     const agent = await agentApi.getAgent(agentId);
-    const bound = await request(
-      "PATCH",
-      `/namespaces/${createdNamespace.data.id}/agents/${agentId}`,
-      {
-        configurationId: agent.configurationId,
-        harnessAuth: { method: "api_key", source: secret.data.ref },
-      },
-    );
-    assert.equal(bound.status, 200, JSON.stringify(bound.error));
-    await grantAgentSecretOperate(pool, bound.data, secret.data.id);
+    const bound = await request("PATCH", `/namespaces/${namespaceId}/agents/${agentId}`, {
+      configurationId: agent.configurationId,
+      harnessAuth: { method: "api_key", source: selectedSecret.ref },
+    });
+    const boundAgent = responseData(bound, 200, AgentResponse);
+    await grantAgentSecretOperate(proofPool, boundAgent, selectedSecret.id);
     assertNoSecretMaterial(
       [secret, bound],
       [key],
@@ -1228,11 +1442,11 @@ export async function createPluginDriverRealFixture(
   }
 
   return {
-    namespaceId: createdNamespace.data.id,
+    namespaceId,
     tenantNamespace,
     request,
     events,
-    pool,
+    pool: proofPool,
     kubectl,
     resource,
     waitFor,
@@ -1262,7 +1476,7 @@ export async function createPluginDriverRealFixture(
   };
 }
 
-export async function readCodexServiceAccountCredential() {
+export async function readCodexServiceAccountCredential(): Promise<CodexCredential> {
   const accessToken = requiredPluginProofEnv(
     "CODEX_ACCESS_TOKEN",
     "Codex service-account access token",
