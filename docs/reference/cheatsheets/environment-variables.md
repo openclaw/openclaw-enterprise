@@ -77,16 +77,16 @@ for authentication modes and TLS requirements.
 
 ## Installation bootstrap
 
-These belong to the initializer, not the running API or worker. See
+These belong to initialization and its setup tools, not the running API or worker. See
 [production bootstrap settings](../settings/production.md#production-installation-bootstrap-environment)
 and [development defaults](../settings/development.md#required-development-controller-environment).
 
 - `OCC_BOOTSTRAP_ADMIN_EMAIL` — Initial production administrator email.
 - `OCC_BOOTSTRAP_INSTALLATION_NAME` — Initial production Installation display name.
-- `OCC_BOOTSTRAP_PASSWORD_FILE` — New protected output path for the production administrator password.
-- `OCC_BOOTSTRAP_SERVICE_KEY_FILE` — New private absolute output path for the initial service-key JSON; used in production and development.
+- `OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE` — Absolute UTF-8 input file for the initial administrator password; required for fresh initialization in both modes.
+- `OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE` — Absolute UTF-8 input file for the cryptographically generated initial service key; required for fresh initialization in both modes.
 - `OPENCLAW_DEV_EMAIL` — Development administrator email; default: `admin@openclaw.local`.
-- `OPENCLAW_DEV_PASSWORD` — Development administrator password.
+- `OPENCLAW_DEV_PASSWORD` — Development setup-tool password input; the initializer reads the private password file instead.
 - `OPENCLAW_DEV_INSTALLATION_NAME` — Development Installation display name; default: `OpenClaw Local Development`.
 
 ## Worker

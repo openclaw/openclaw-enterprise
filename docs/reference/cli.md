@@ -9,16 +9,16 @@ fail before execution; omit a flag to use its default. `--ca-bundle=` clears
 its environment variable; `--namespace=` does so for Installation-scoped
 `service-key create`.
 
-| Flag                 | Environment variable   | What it controls                                                                                                                           |
-| -------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--url`              | `OCC_URL`              | Required for resource commands. An HTTP or HTTPS origin, without embedded credentials, a base path, query, or fragment.                    |
-| `--service-key-file` | `OCC_SERVICE_KEY_FILE` | Required for resource commands. Path to the complete bootstrap or issued service-key JSON response.                                        |
-| `--namespace`        | `OCC_NAMESPACE`        | Required for `configuration`, `secret`, `preset`, `credential-source`, `iam`, and `agent` commands. Supply the Namespace ID, not its name. |
-| `--ca-bundle`        | `OCC_CA_BUNDLE`        | Adds a PEM certificate-authority bundle to the system trust roots for HTTPS. TLS verification cannot be disabled.                          |
-| `--timeout-seconds`  | `OCC_TIMEOUT_SECONDS`  | Positive whole seconds for an OCC request or installation handoff check. Default: `30`.                                                    |
-| `--output`, `-o`     | —                      | Command-specific formats and defaults appear in `--help`. Unsupported explicit values fail before requests.                                |
-| `--help`, `-h`       | —                      | Prints help for the command.                                                                                                               |
-| `--version`, `-v`    | —                      | Prints the CLI version. Source builds report `dev`; published binaries report their OCE release version.                                   |
+| Flag                 | Environment variable   | What it controls                                                                                                                                 |
+| -------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--url`              | `OCC_URL`              | Required for resource commands. An HTTP or HTTPS origin, without embedded credentials, a base path, query, or fragment.                          |
+| `--service-key-file` | `OCC_SERVICE_KEY_FILE` | Required for resource commands. Path to JSON containing `data.key`: a locally prepared bootstrap file or a complete issued service-key response. |
+| `--namespace`        | `OCC_NAMESPACE`        | Required for `configuration`, `secret`, `preset`, `credential-source`, `iam`, and `agent` commands. Supply the Namespace ID, not its name.       |
+| `--ca-bundle`        | `OCC_CA_BUNDLE`        | Adds a PEM certificate-authority bundle to the system trust roots for HTTPS. TLS verification cannot be disabled.                                |
+| `--timeout-seconds`  | `OCC_TIMEOUT_SECONDS`  | Positive whole seconds for an OCC request or installation handoff check. Default: `30`.                                                          |
+| `--output`, `-o`     | —                      | Command-specific formats and defaults appear in `--help`. Unsupported explicit values fail before requests.                                      |
+| `--help`, `-h`       | —                      | Prints help for the command.                                                                                                                     |
+| `--version`, `-v`    | —                      | Prints the CLI version. Source builds report `dev`; published binaries report their OCE release version.                                         |
 
 The service-key JSON must contain a nonempty `data.key` with no line breaks.
 The client sends it as `x-api-key` and does not follow redirects.

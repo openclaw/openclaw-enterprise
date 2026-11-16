@@ -94,9 +94,8 @@ are never printed.
 [local command diagnostics](../../reference/cli/local-development.md);
 concurrent durations can overlap.
 
-For unselected runtime images, `dev-up` builds missing
-`openclaw-enterprise-runtime:quickstart` from `deploy/runtime/Dockerfile` at
-repository root. Custom images must exist; partial selection fails.
+`dev-up` builds missing, unselected `openclaw-enterprise-runtime:quickstart` images
+from `deploy/runtime/Dockerfile` at repository root. Custom images must exist; partial selection fails.
 Tags survive recipe edits; [rebuild and verify](../../../deploy/runtime/README.md#rebuild-an-existing-image)
 after package changes. The recipe owns plugin and gateway/Codex compatibility;
 `dev-up` neither installs plugins nor proves model turns.
@@ -122,8 +121,11 @@ IAM, audit evidence, service key, and a `provisioning` default Namespace. The
 worker provisions its Docker boundary. Existing Installation state is preserved;
 missing, expired, or revoked keys never trigger reissue.
 
-Only the initializer mounts `occ_bootstrap_data`; the API and worker load
-committed state after initializer success. The
+`scripts/dev-up` and `internal/occdev/bootstrap.go:prepareBootstrapCredentials`
+prepare private inputs outside the checkout. Compose projects bootstrap-only
+secrets; Kubernetes setup precreates the Secret before Helm. Migration, API and
+worker receive neither credential. API and worker load committed state after
+initializer success. The
 [bootstrap flow](../local-password-authentication.md) owns credentials, concurrent
 attempts, and failure recovery.
 
@@ -143,15 +145,13 @@ control-plane traffic, while non-loopback clients, forwarded headers,
 caller-supplied identity headers, bearer credentials, and trusted-proxy claims
 remain rejected.
 
-After controller and worker readiness, `dev-up` copies initializer-owned
-service-key JSON from the stopped bootstrap container. Docker uses `compose cp`;
-`podman-compose` lacks `cp`, so Podman selects one bootstrap container by Compose
-labels and runs `podman cp` by ID. `--key-output` requires an absent file in a
-private operator-owned directory; otherwise startup creates a private temporary
-directory. It never overwrites files, prints `data.key`, or bootstraps replacement keys.
+`scripts/dev-up` wraps the retained raw key as JSON containing `data.key`, without
+container extraction. `--key-output` requires an absent file in a private
+directory; omission creates a temporary directory. Setup never overwrites files,
+prints credentials, or bootstraps replacement keys.
 
-`./bin/occ installation get` uses the copied key. The returned Installation ID
-must match the key's `meta.installationId`. `apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify`
+After readiness, `./bin/occ installation get` discovers the server-owned
+Installation ID. Local key JSON has no Installation metadata. `apps/controller/src/auth/index.ts:ControllerAdmissionVerifier.verify`
 resolves the Installation-scoped service administrator; IAM authorizes each
 operation. The [service-key flow](../service-api-keys.md#3-verify-the-credential-and-enforce-its-fixed-identity-scope)
 owns admission and `401` rejection without cookie fallback.
@@ -348,17 +348,16 @@ identity resolution.
 
 ### 14. Prove readiness and clean up the owned Kubernetes profile
 
-`internal/occdev/up.go:waitReady`, `internal/occdev/up.go:copyAndVerifyKey`,
-`internal/occdev/openshell_k3d.go:copyAndVerifyKubernetesKey`,
+`internal/occdev/up.go:waitReady`,
+`internal/occdev/bootstrap.go:verifyBootstrapKey`,
 `internal/occdev/down.go:Down`, `internal/occdev/down.go:cleanup`,
 `internal/occdev/state.go:readState`.
 
-After API/worker readiness, both bootstrap readers use private temporary keys
-and cancellation-bound `occclient` requests. Installation IDs must match bootstrap
-before exclusive key export; cancellation triggers owned cleanup. OpenShell also
-waits for its bootstrap Namespace and operator-mode Workspace. Namespace readiness
-and repository discovery use `occclient.Client.WithContext` for polling deadlines,
-preserving the original client.
+After API/worker readiness, `verifyBootstrapKey` authenticates with local
+`bootstrap-client-key.json` before exclusive CLI export. The response supplies
+the Installation ID; cancellation triggers cleanup. OpenShell also waits for
+Namespace and Workspace readiness. Readiness and repository discovery use
+`occclient.Client.WithContext` deadlines.
 Both Compose Kubernetes profiles verify the HTTPS session route using the
 generated CA and console name.
 
@@ -427,6 +426,8 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 - 2026-11-17 01:37: Remove duplicate full-access probe; retain real Agent qualification. (authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a - 8d3f95dd5)
 
 - 2026-11-16 22:56: Add explicit container-boundary development verification without changing workspace-write defaults. (authoring-run/e151ca6f-93f3-4976-bad1-585c8dde1264 - ac72edfbf884219d7392f32fd245173dffccf922)
+
+- 2026-11-16 09:42: Replace output-volume extraction with private credential preparation and authenticated Installation discovery in the accompanying uncommitted implementation. (authoring-run/e8039d10-1e3b-41aa-82f2-0d2c709b421f - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
 
 - 2026-11-12 00:24: Correct readiness ownership. (authoring-run/289927cc-a9eb-477c-8cfa-1f6c9aa9f291 - 6b44940d40419e4cd9889cf4b0316d95a798be56)
 

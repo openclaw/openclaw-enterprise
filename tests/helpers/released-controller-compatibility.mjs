@@ -294,18 +294,29 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
     await migrate(images.released);
     const before = await history();
     assert.ok(before.length > 0);
-    await command(
-      args(images.released, bootstrapProgram, {
+    await command([
+      ...args(images.released, "--input-type=module", {
         NODE_ENV: "development",
         OCC_DATABASE_URL: applicationUrl.toString(),
         OCC_AUTH_SECRET: authSecret,
         OCC_AUTH_BASE_URL,
         OCC_AGENT_NATIVE_ADMIN_DOMAIN,
         OPENCLAW_DEV_EMAIL: "postgres-admin@openclaw.local",
-        OPENCLAW_DEV_PASSWORD: "postgres-development-password",
-        OCC_BOOTSTRAP_SERVICE_KEY_FILE: "/bootstrap/service-key.json",
+        OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: "/bootstrap/admin-password",
+        OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: "/bootstrap/admin-service-key",
       }),
-    );
+      "--eval",
+      `
+          import { writeFile } from "node:fs/promises";
+          import { randomBytes } from "node:crypto";
+          await writeFile(process.env.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE,
+            "postgres-development-password", { mode: 0o600, flag: "wx" });
+          await writeFile(process.env.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE,
+            "occ_" + randomBytes(32).toString("base64url"), { mode: 0o600, flag: "wx" });
+          const { bootstrapInstallation } = await import(${JSON.stringify(bootstrapProgram)});
+          process.exitCode = await bootstrapInstallation({ args: [] });
+        `,
+    ]);
     await scenario({
       start,
       migrate,

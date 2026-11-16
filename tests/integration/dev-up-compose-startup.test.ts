@@ -11,7 +11,6 @@ import {
   customRuntimeOverride,
   defaultRuntimeImage,
   matchingInstallationId,
-  mismatchedInstallationId,
   perImageOverride,
   prepareLifecycleCommands,
   publicControllerOverride,
@@ -122,6 +121,28 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
   assert.equal(outputMode & 0o077, 0);
 
   const dockerLogs = await readEngineInvocations(fixture.dockerLog);
+  const config = dockerLogs.find(
+    (entry) => entry.args.includes("config") && entry.env.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE,
+  );
+  assert.ok(config);
+  const passwordPath = config.env.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE;
+  const keyPath = config.env.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE;
+  assert.ok(passwordPath && keyPath);
+  const password = await readFile(passwordPath, "utf8");
+  const key = await readFile(keyPath, "utf8");
+  assert.equal(password, "openclaw-development-password");
+  assert.match(key, /^occ_[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(JSON.parse(await readFile(keyOutput, "utf8")), { data: { key } });
+  for (const path of [passwordPath, keyPath]) {
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+  }
+  assert.equal((await stat(join(keyPath, ".."))).mode & 0o777, 0o700);
+  assert.ok(!(result.stdout + result.stderr + JSON.stringify(dockerLogs)).includes(key));
+  assert.ok(!(result.stdout + result.stderr + JSON.stringify(dockerLogs)).includes(password));
+  assert.equal(
+    dockerLogs.some((entry) => entry.args.includes("cp")),
+    false,
+  );
   assert.ok(
     dockerLogs.some((entry) => entry.args.join(" ") === `image inspect ${defaultRuntimeImage}`),
   );
@@ -442,6 +463,8 @@ for (const selection of ["environment", "explicit", "default", "interpolated"] a
             OCC_DEVELOPMENT_BROWSER_PORT: "8443",
             OCC_DEVELOPMENT_BROWSER_TLS_CERT: "/fixture/tls.crt",
             OCC_DEVELOPMENT_BROWSER_TLS_KEY: "/fixture/tls.key",
+            OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: "/fixture/admin-password",
+            OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: "/fixture/admin-service-key",
           },
         },
       );
@@ -463,7 +486,7 @@ test("Compose shutdown keeps copied service keys and leaves Namespace networks t
   const key = join(fixture.directory, created, "initial-admin-service-key.json");
   assert.ok(started.stdout.includes(`Service key file: ${key}`), started.stdout);
   const copy = await readFile(key, "utf8");
-  assert.match(copy, new RegExp(serviceKey));
+  assert.match(JSON.parse(copy).data.key, /^occ_[A-Za-z0-9_-]{43}$/);
 
   // Older launchers shared one list across all projects in this checkout.
   const [browser] = (await readdir(fixture.directory)).filter((name) =>
@@ -580,7 +603,7 @@ test("dev-up fails closed when the worker exits before readiness", async (t) => 
   );
 });
 
-test("dev-up preserves a copied key when the authenticated installation check is rejected", async (t) => {
+test("dev-up preserves its precreated key when the authenticated installation check is rejected", async (t) => {
   const fixture = await createFixture(t, { scenario: "api-unauthorized" });
   const keyOutput = join(fixture.directory, "unauthorized-key.json");
 
@@ -592,10 +615,12 @@ test("dev-up preserves a copied key when the authenticated installation check is
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /authorization failed: occ could not read the Installation/);
   assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
-  assert.match(await readFile(keyOutput, "utf8"), new RegExp(serviceKey));
+  const retained = JSON.parse(await readFile(keyOutput, "utf8"));
+  assert.match(retained.data.key, /^occ_[A-Za-z0-9_-]{43}$/);
+  assert.ok(!(result.stdout + result.stderr).includes(retained.data.key));
 });
 
-test("dev-up rejects an authenticated installation response for a different Installation", async (t) => {
+test("dev-up rejects an Installation response without its server-owned ID", async (t) => {
   const fixture = await createFixture(t, { scenario: "api-mismatch" });
   const keyOutput = join(fixture.directory, "mismatch-key.json");
 
@@ -605,9 +630,10 @@ test("dev-up rejects an authenticated installation response for a different Inst
   );
 
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, new RegExp(`Installation ID mismatch.*${mismatchedInstallationId}`));
-  assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
-  assert.match(await readFile(keyOutput, "utf8"), new RegExp(serviceKey));
+  assert.match(result.stderr, /API did not return an Installation ID/);
+  const retained = JSON.parse(await readFile(keyOutput, "utf8"));
+  assert.match(retained.data.key, /^occ_[A-Za-z0-9_-]{43}$/);
+  assert.ok(!(result.stdout + result.stderr).includes(retained.data.key));
 });
 
 // Container engine selection and Compose file arguments
@@ -631,7 +657,9 @@ test("dev-up selects Podman when no docker command exists and completes the supp
     ),
   );
   assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
-  assert.match(await readFile(keyOutput, "utf8"), new RegExp(serviceKey));
+  const retained = JSON.parse(await readFile(keyOutput, "utf8"));
+  assert.match(retained.data.key, /^occ_[A-Za-z0-9_-]{43}$/);
+  assert.ok(!(result.stdout + result.stderr).includes(retained.data.key));
 
   const invocations = await readEngineInvocations(fixture.podmanLog);
   assert.ok(invocations.some((entry) => entry.args[0] === "info"));
@@ -665,13 +693,9 @@ test("dev-up selects Podman when no docker command exists and completes the supp
   assert.ok(
     invocations.some((entry) => entry.args.includes("ps") && !entry.args.includes("--all")),
   );
-  assert.ok(
-    invocations.some(
-      (entry) =>
-        entry.args[0] === "cp" &&
-        entry.args[1] ===
-          "bootstrap-container-id:/var/lib/openclaw/bootstrap/initial-admin-service-key.json",
-    ),
+  assert.equal(
+    invocations.some((entry) => entry.args.includes("cp")),
+    false,
   );
   assert.equal(await readEngineInvocations(fixture.dockerLog).then((entries) => entries.length), 0);
 });

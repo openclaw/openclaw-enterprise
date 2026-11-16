@@ -122,19 +122,30 @@ test(
     await f.run("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
     const source = (await f.run("git", ["rev-parse", "HEAD"])).trim();
     const keyPath = join(f.directory, "service-key.json");
-    const key = await f.kubectl(
-      "-n",
-      f.system,
-      "exec",
-      "operator",
-      "--",
-      "cat",
-      "/bootstrap/initial-admin-service-key.json",
+    // The fixture has already removed the fresh-install credential Secret.
+    // Resolve the real administrator identity from auth storage, then issue a
+    // normal CLI key through the API instead of extracting bootstrap output.
+    const principalId = (
+      await sql("SELECT reference_id FROM occ.apikey WHERE name = 'bootstrap-admin'")
+    ).trim();
+    assert.ok(
+      principalId && !principalId.includes("\n"),
+      "one bootstrap service identity is required",
     );
-    const serviceKey = record(record(JSON.parse(key)).data);
+    const serviceKey = record(
+      await f.api(
+        "POST",
+        "/api/auth/service-keys",
+        {
+          servicePrincipalId: principalId,
+          name: "migration-preflight",
+        },
+        201,
+      ),
+    );
     const serviceKeyId = string(serviceKey.id);
     f.secrets.push(string(serviceKey.key));
-    await writeFile(keyPath, key, { mode: 0o600 });
+    await writeFile(keyPath, JSON.stringify({ data: serviceKey }), { mode: 0o600 });
     const startup = record(await f.get("secret", "occ-installation-startup"));
     const installationPath = join(f.directory, "installation.json");
     await writeFile(

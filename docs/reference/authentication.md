@@ -34,51 +34,50 @@ under the bootstrap Principal's ordinary Namespace creation permission.
 Installation/IAM state, the Namespace, its queued reconciliation, and bootstrap
 audit commit together. Worker provisioning is asynchronous.
 
-Bootstrap issues a 30-day service API key named `bootstrap-admin` and writes its
-one-time response to `OCC_BOOTSTRAP_SERVICE_KEY_FILE`. The JSON contains
-`data.id`, `data.servicePrincipalId`, `data.name`, `data.expiresAt`, `data.key`,
-and `meta.installationId`.
-Better Auth keeps only the hash; there is no server-side plaintext retrieval.
+Fresh development and production initialization require
+`OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE` and `OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE`:
+absolute paths to readable regular UTF-8 files, each at most 4 KiB, without NUL
+or embedded line breaks. Bootstrap removes one final LF or CRLF, preserving
+password spaces. Passwords require 12–128 characters. Generate the key
+cryptographically: `occ_` plus canonical unpadded base64url encoding of 32 random
+bytes. Format validation cannot prove entropy. Never reuse the password as the key.
 
-Production also creates the configured `OCC_BOOTSTRAP_ADMIN_EMAIL` account with
-a random password written to `OCC_BOOTSTRAP_PASSWORD_FILE`. Both paths must be
-absolute, distinct siblings on protected operator-owned storage. Output is
-exclusive, owner-only (`0600`), and synced before committing Installation/IAM
-state; existing files, symlinks, or unsafe parent directories fail closed.
-Credentials never appear in logs, audit, or the bootstrap response. OCC creates no Kubernetes Secret or PVC for delivery.
+Bootstrap validates both inputs before creating credentials. It follows projected
+Secret symlinks. Host installers must restrict file access to required identities.
+Retired output settings `OCC_BOOTSTRAP_PASSWORD_FILE` and
+`OCC_BOOTSTRAP_SERVICE_KEY_FILE` fail with a non-secret diagnostic.
 
-In Helm, `bootstrap.password.claimName` selects the existing protected PVC.
-Only the initialization Job mounts it; `bootstrap.password.fileName` and
-`bootstrap.serviceKey.fileName` are written under `bootstrap.password.mountPath`.
-See [initial-key retrieval](authentication/service-api-keys.md#retrieve-the-bootstrap-service-key)
-and [bootstrap recovery](authentication/service-api-keys.md#recover-an-incomplete-bootstrap).
+Better Auth hashes the supplied `bootstrap-admin` key with its service identity,
+Installation metadata and 30-day expiry from registration. No plaintext reaches bootstrap output,
+audit or logs. Ordinary issuance generates keys.
 
-The shared `scripts/bootstrap-installation.mjs` initializer runs after migration
-and before either API or worker startup in Compose and Helm. Development
-provisions the configured `OPENCLAW_DEV_EMAIL` and
-`OPENCLAW_DEV_PASSWORD` on a fresh database, using the defaults in
-[settings](settings/development.md#required-development-controller-environment), and
-bootstraps the Installation before serving requests. It does not generate a
-password output file or rotate an existing account's password. Compose stores
-the service-key JSON on the bootstrap-only `occ_bootstrap_data` volume. The API
-and worker do not mount it. Direct development runs the same initializer with
-an explicit private key-file path before starting the API or worker.
-The [quickstart](../guides/quickstart.md) uses the service key for its API check.
+Before Helm installation, precreate `bootstrap.credentials.secretName` in the
+release namespace. `passwordKey` and `serviceKeyKey` default to `admin-password`
+and `admin-service-key`. Only fresh-install bootstrap receives the read-only
+projection; migration, API and worker do not. Upgrades need no Secret. No bootstrap PVC, preparation/reader Pod or Secret API permission is needed.
+Operators retain sources.
 
-An already-bootstrapped Installation receives no new Namespace, identity, grants, key, or
-output, including installations created before initial-key delivery existed.
+`scripts/bootstrap-installation.mjs` runs between migration and API/worker
+startup. Compose uses bootstrap-only input secrets. Setup tools prepare private
+files outside the checkout; `OPENCLAW_DEV_PASSWORD` selects their password, not
+an initializer credential. Direct runs supply both paths.
+
+An already-bootstrapped Installation receives no new Namespace, identity, grants,
+key or password. It verifies the administrator without reading credential files.
 Restarting does not replace missing files, expired/revoked keys, removed service
 identities, or removed grants. Use normal issuance/revocation for credential
 recovery and rotation.
 
 Bootstrap makes one attempt. Any error emits `installation.bootstrap-failed`
-with available non-secret IDs and paths, then exits unsuccessfully. Created
-accounts, keys, and files remain, including partial output from a failed write.
+with available non-secret attempt IDs, then exits unsuccessfully. Created
+accounts and keys remain for reconciliation.
 Bootstrap does not automatically revoke, delete, retry, repair, or reset them.
 The Helm initialization Job uses `backoffLimit: 0`. Better Auth persistence and the Installation/IAM commit are separate,
 so an error leaves the commit outcome unknown; resolve it before manual repair
 or reset an identified disposable Installation. See [incomplete bootstrap recovery](authentication/service-api-keys.md#recover-an-incomplete-bootstrap).
-File existence alone is not proof of successful initialization.
+A retained input or locally prepared CLI key file is not proof of successful
+initialization. Confirm access with `occ installation get`. Editing a source
+Secret does not rotate credentials, restore grants or renew an expired key.
 
 ## Browser request origin
 

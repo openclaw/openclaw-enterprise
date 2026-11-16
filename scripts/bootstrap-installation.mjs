@@ -1,15 +1,8 @@
-import { dirname } from "node:path";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { betterAuthIssuer } from "../apps/controller/src/auth/configuration.ts";
-import {
-  BootstrapOutputPreflightError,
-  bootstrapOutputPath,
-  requireAbsentBootstrapOutput,
-  writeProtectedBootstrapFile,
-  writeProtectedBootstrapJson,
-} from "../apps/controller/src/composition/bootstrap-output.ts";
+import { BootstrapInputError, bootstrapCredentials } from "./lib/bootstrap-credentials.ts";
 import { createBootstrapAdministratorSeed, NativeIAMDriver } from "../packages/iam/src/index.ts";
 import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
@@ -27,7 +20,6 @@ import {
   required,
 } from "./lib/bootstrap-configuration.ts";
 
-const DEFAULT_DEV_ADMIN_PASSWORD = "openclaw-development-password";
 const DEFAULT_DEV_INSTALLATION_NAME = "OpenClaw Local Development";
 
 class BootstrapVerificationError extends Error {}
@@ -60,49 +52,20 @@ function installationName(value, name) {
   return value;
 }
 
-function passwordOutputPath(raw) {
-  return bootstrapOutputPath(raw, "OCC_BOOTSTRAP_PASSWORD_FILE");
-}
-
-function serviceKeyOutputPath(raw, passwordPath) {
-  const path = bootstrapOutputPath(raw, "OCC_BOOTSTRAP_SERVICE_KEY_FILE");
-  if (
-    passwordPath !== undefined &&
-    (path === passwordPath || dirname(path) !== dirname(passwordPath))
-  ) {
-    throw new Error(
-      "OCC_BOOTSTRAP_SERVICE_KEY_FILE must be a distinct sibling of OCC_BOOTSTRAP_PASSWORD_FILE.",
-    );
-  }
-  return path;
-}
-
-function randomPassword() {
-  return randomBytes(32).toString("base64url");
-}
-
 function freshBootstrapConfig(config, environment) {
   if (config.mode === "production") {
-    const passwordPath = passwordOutputPath(required(environment, "OCC_BOOTSTRAP_PASSWORD_FILE"));
     return {
       installationName: installationName(
         required(environment, "OCC_BOOTSTRAP_INSTALLATION_NAME"),
         "OCC_BOOTSTRAP_INSTALLATION_NAME",
       ),
-      passwordPath,
-      serviceKeyPath: serviceKeyOutputPath(
-        required(environment, "OCC_BOOTSTRAP_SERVICE_KEY_FILE"),
-        passwordPath,
-      ),
     };
   }
   return {
-    password: optional(environment, "OPENCLAW_DEV_PASSWORD", DEFAULT_DEV_ADMIN_PASSWORD),
     installationName: installationName(
       optional(environment, "OPENCLAW_DEV_INSTALLATION_NAME", DEFAULT_DEV_INSTALLATION_NAME),
       "OPENCLAW_DEV_INSTALLATION_NAME",
     ),
-    serviceKeyPath: serviceKeyOutputPath(required(environment, "OCC_BOOTSTRAP_SERVICE_KEY_FILE")),
   };
 }
 
@@ -319,11 +282,7 @@ export async function bootstrapInstallation({
       });
     } else {
       const freshConfig = freshBootstrapConfig(config, environment);
-      if (freshConfig.passwordPath !== undefined) {
-        await requireAbsentBootstrapOutput(freshConfig.passwordPath);
-      }
-      await requireAbsentBootstrapOutput(freshConfig.serviceKeyPath);
-      const password = freshConfig.password ?? randomPassword();
+      const { password, serviceKey: suppliedKey } = await bootstrapCredentials(environment);
       const installation = {
         id: `ins_${randomUUID()}`,
         name: freshConfig.installationName,
@@ -331,10 +290,6 @@ export async function bootstrapInstallation({
       };
       bootstrapAttempt = {
         installationId: installation.id,
-        ...(freshConfig.passwordPath === undefined
-          ? {}
-          : { passwordFile: freshConfig.passwordPath }),
-        serviceKeyFile: freshConfig.serviceKeyPath,
       };
       const auth = await createAuth(pool, config, installation.id);
       const user = await createCredentialUser(auth, config.adminEmail, password);
@@ -345,22 +300,22 @@ export async function bootstrapInstallation({
         principalId: authorization.principal.id,
         servicePrincipalId: authorization.servicePrincipal.id,
       };
-      const serviceKey = await auth.createServiceKey({
-        principal: authorization.servicePrincipal,
-        name: "bootstrap-admin",
-      });
+      const { registerBootstrapServiceKey } = await import("../apps/controller/src/auth/index.ts");
+      const serviceKey = await registerBootstrapServiceKey(
+        {
+          mode: config.mode,
+          installationId: installation.id,
+          ...config.auth,
+          pool,
+        },
+        authorization.servicePrincipal,
+        suppliedKey,
+      );
       bootstrapAttempt = {
         ...bootstrapAttempt,
         serviceKeyId: serviceKey.id,
         serviceKeyExpiresAt: serviceKey.expiresAt,
       };
-      if (freshConfig.passwordPath !== undefined) {
-        await writeProtectedBootstrapFile(freshConfig.passwordPath, `${password}\n`);
-      }
-      await writeProtectedBootstrapJson(freshConfig.serviceKeyPath, {
-        data: serviceKey,
-        meta: { installationId: installation.id },
-      });
       state.setBootstrapNativeIAM(authorization.state);
       const controller = new OpenClawController(installation, {
         state,
@@ -405,14 +360,14 @@ export async function bootstrapInstallation({
       });
     }
   } catch (error) {
-    const preflightFailure = error instanceof BootstrapOutputPreflightError;
+    const preflightFailure = error instanceof BootstrapInputError;
     if (preflightFailure || error instanceof BootstrapVerificationError) {
       // This message is fixed; filesystem causes may contain private paths.
       stderr.write(`${error.message}\n`);
     }
     emitOccLogEvent(logger, {
       event: "installation.bootstrap-failed",
-      code: preflightFailure ? error.code : bootstrapFailureCode(error),
+      code: preflightFailure ? "BOOTSTRAP_INPUT_INVALID" : bootstrapFailureCode(error),
       attempt: bootstrapAttempt,
     });
     status = 1;

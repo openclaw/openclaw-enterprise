@@ -86,7 +86,7 @@ Keep files mode 0600 and retain the keys for redeployment.
 
 From the matching release checkout, use jq, yq v4, and Node.js matching
 `engines.node` in `package.json`. Check that the OpenShell PKI job’s
-`openshell-client-tls` Secret exists before creating the bootstrap claim and Secrets.
+`openshell-client-tls` Secret exists before creating the OCC inputs.
 
 ```bash
 : "${OCC_SECRET_DIR:?Set OCC_SECRET_DIR to the protected input directory}"
@@ -107,14 +107,19 @@ fi
 
 platform_kube=(kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" -n "$PLATFORM_NS")
 "${platform_kube[@]}" get secret openshell-client-tls -o name
-bootstrap_claim=$(jq -er '.bootstrap.password.claimName' "$RUN_DIR/values.json")
-bootstrap_image=$(jq -er '.images.controller' "$RUN_DIR/values.json")
-BOOTSTRAP_CLAIM="$bootstrap_claim" yq e '
-  .metadata.namespace = strenv(PLATFORM_NS) |
-  .metadata.name = strenv(BOOTSTRAP_CLAIM) |
-  .spec.storageClassName = strenv(STORAGE_CLASS)
-' deploy/examples/production/bootstrap-pvc.yaml > "$RUN_DIR/bootstrap-pvc.yaml"
-"${platform_kube[@]}" create -f "$RUN_DIR/bootstrap-pvc.yaml"
+# Generate once; retain these inputs if installation fails or its outcome is unknown.
+OCC_SECRET_DIR="$OCC_SECRET_DIR" node --input-type=module <<'JS'
+import { randomBytes } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const dir = process.env.OCC_SECRET_DIR;
+writeFileSync(join(dir, 'admin-password'), randomBytes(32).toString('base64url'), { mode: 0o600, flag: 'wx' });
+writeFileSync(join(dir, 'admin-service-key'), `occ_${randomBytes(32).toString('base64url')}`, { mode: 0o600, flag: 'wx' });
+JS
+bootstrap_secret=$(jq -er '.bootstrap.credentials.secretName' "$RUN_DIR/values.json")
+"${platform_kube[@]}" create secret generic "$bootstrap_secret" \
+  --from-file="admin-password=$OCC_SECRET_DIR/admin-password" \
+  --from-file="admin-service-key=$OCC_SECRET_DIR/admin-service-key"
 "${platform_kube[@]}" create secret generic occ-database \
   --from-file="application-url=$OCC_SECRET_DIR/application-url" \
   --from-file="migration-url=$OCC_SECRET_DIR/migration-url"
@@ -126,18 +131,13 @@ BOOTSTRAP_CLAIM="$bootstrap_claim" yq e '
   --from-file="occ=$OCC_SECRET_DIR/routing-key"
 ```
 
-Prepare the fresh claim on the OCC initialization Job’s `oce-role=control` pool.
-If cluster policy forbids the preparation Pod or you cannot verify its network
-isolation, skip the helper. Have the storage administrator set the same fresh
-volume’s root to UID/GID 1000 and mode 0700.
-
-```bash
-scripts/prepare-bootstrap-volume --kubeconfig "$KUBECONFIG" --context "$CONTEXT" \
-  --namespace "$PLATFORM_NS" --claim "$bootstrap_claim" --image "$bootstrap_image" \
-  --node-selector oce-role=control
-```
-
-Continue after helper success or storage administrator confirmation that the root is ready.
+The bootstrap Secret must exist before the pre-install hook. Only the bootstrap
+container receives its read-only projection, and only on installation, not on
+upgrade. Keep the local inputs private and outside the checkout. The service
+key expires 30 days after registration; changing the Secret does not rotate it.
+If a create or installation attempt fails or has an unknown outcome, stop and
+[reconcile that attempt](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap)
+before continuing. Do not regenerate credentials or repeat confirmed creates.
 
 ```bash
 # Allow the initialization hook to reach the DNS Service VIP.

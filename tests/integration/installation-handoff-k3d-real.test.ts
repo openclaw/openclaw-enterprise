@@ -406,7 +406,7 @@ test("first install retains exact attempt evidence after a lost client", { skip 
   await kubectl("create", "namespace", namespace);
   t.after(() => kubectl("delete", "namespace", namespace, "--wait=false"));
   const values = join(dir, "values.json");
-  // Missing input Secrets/PVC keep the genuine chart Job pending. This proves
+  // Missing input Secrets keep the genuine chart Job pending. This proves
   // Helm dispatch and handoff, without claiming database initialization ran.
   await writeFile(
     values,
@@ -417,7 +417,7 @@ test("first install retains exact attempt evidence after a lost client", { skip 
       agentNativeAdmin: { domain: "agents.example.invalid" },
       bootstrap: {
         adminEmail: "admin@example.invalid",
-        password: { claimName: "absent-bootstrap" },
+        credentials: { secretName: "absent-bootstrap" },
       },
       api: { clients: [{ namespace: "operator-tools", podLabels: { app: "operator" } }] },
       database: { cidrs: ["10.45.0.12/32"] },

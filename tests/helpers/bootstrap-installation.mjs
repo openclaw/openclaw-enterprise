@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { existsSync, writeFileSync } from "node:fs";
 import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +9,24 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 const repository = fileURLToPath(new URL("../..", import.meta.url));
+
+function credentialInputs(directory, password = "openclaw-development-password") {
+  const passwordPath = join(directory, "admin-password-input");
+  const keyPath = join(directory, "admin-service-key-input");
+  if (!existsSync(passwordPath)) {
+    writeFileSync(passwordPath, password, { mode: 0o600, flag: "wx" });
+  }
+  if (!existsSync(keyPath)) {
+    writeFileSync(keyPath, `occ_${randomBytes(32).toString("base64url")}`, {
+      mode: 0o600,
+      flag: "wx",
+    });
+  }
+  return {
+    OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: passwordPath,
+    OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: keyPath,
+  };
+}
 
 export async function privateBootstrapDirectory(context, prefix = "openclaw-bootstrap-") {
   const directory = await mkdtemp(join(tmpdir(), prefix));
@@ -26,7 +46,6 @@ export function developmentBootstrapEnvironment({
   authBaseURL = "https://console.oce.localhost",
   agentDomain = "agents.oce.localhost",
   installationName,
-  serviceKeyFile = "initial-admin-service-key.json",
   environment = process.env,
 }) {
   return {
@@ -37,9 +56,8 @@ export function developmentBootstrapEnvironment({
     OCC_AUTH_BASE_URL: authBaseURL,
     OCC_AGENT_NATIVE_ADMIN_DOMAIN: agentDomain,
     OPENCLAW_DEV_EMAIL: email,
-    OPENCLAW_DEV_PASSWORD: password,
     OPENCLAW_DEV_INSTALLATION_NAME: installationName,
-    OCC_BOOTSTRAP_SERVICE_KEY_FILE: join(directory, serviceKeyFile),
+    ...credentialInputs(directory, password),
   };
 }
 
@@ -61,8 +79,7 @@ export function productionBootstrapEnvironment({
     OCC_AUTH_BASE_URL: authBaseURL,
     OCC_AGENT_NATIVE_ADMIN_DOMAIN: agentDomain,
     OCC_BOOTSTRAP_ADMIN_EMAIL: email,
-    OCC_BOOTSTRAP_PASSWORD_FILE: join(directory, "initial-admin-password"),
-    OCC_BOOTSTRAP_SERVICE_KEY_FILE: join(directory, "initial-admin-service-key.json"),
+    ...credentialInputs(directory),
     OCC_BOOTSTRAP_INSTALLATION_NAME: installationName,
   };
 }

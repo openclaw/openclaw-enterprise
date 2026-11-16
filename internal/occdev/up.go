@@ -167,6 +167,10 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := r.ensureAbsent(ctx, state); err != nil {
 		return err
 	}
+	// Compose interpolation needs paths before the exclusive state-directory claim;
+	// materialize credentials only after that ownership boundary is established.
+	r.env["OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE"] = filepath.Join(directory, "initial-admin-password")
+	r.env["OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE"] = filepath.Join(directory, "initial-admin-service-key")
 	r.env["KUBECONFIG"] = filepath.Join(directory, "kubeconfig")
 	r.env["OCC_DEVELOPMENT_INSTALLATION_CONFIG"] = filepath.Join(directory, "installation.yaml")
 	r.env["OCC_DEVELOPMENT_KUBECONFIG"] = filepath.Join(directory, "container-kubeconfig")
@@ -283,6 +287,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	if err := exclusiveWrite(filepath.Join(directory, "state.json"), stateData, 0600); err != nil {
+		return err
+	}
+	if err := r.prepareBootstrapCredentials(state); err != nil {
 		return err
 	}
 	if err := prepareComposeBootstrapSQL(rendered, state); err != nil {
@@ -617,7 +624,7 @@ func (r *runner) ensureAbsent(ctx context.Context, s *developmentState) error {
 		}
 	}
 	// Unlabelled resources with the names Compose would adopt also belong to someone else.
-	for _, resource := range []struct{ kind, name string }{{"volume", "occ_postgres_data"}, {"volume", "occ_bootstrap_data"}, {"volume", "occ_configuration_data"}, {"network", "development"}} {
+	for _, resource := range []struct{ kind, name string }{{"volume", "occ_postgres_data"}, {"volume", "occ_configuration_data"}, {"network", "development"}} {
 		if _, err := r.output(ctx, r.engine, resource.kind, "inspect", s.ComposeProject+"_"+resource.name); err == nil {
 			return fmt.Errorf("Compose resource already exists: %s_%s", s.ComposeProject, resource.name)
 		}
@@ -737,54 +744,7 @@ func waitBrowserReady(ctx context.Context, state *developmentState, timeout time
 	})
 }
 func (r *runner) copyAndVerifyKey(ctx context.Context, s *developmentState, url string) (string, *occclient.Client, error) {
-	id, err := r.composeOutput(ctx, s, "ps", "--all", "-q", "bootstrap")
-	if err != nil {
-		return "", nil, err
-	}
-	if len(id) == 0 || strings.ContainsAny(string(id), "\r\n") {
-		return "", nil, fmt.Errorf("could not identify bootstrap container")
-	}
-	temporary := filepath.Join(s.directory, "bootstrap-key-copy.json")
-	if err := r.run(ctx, r.engine, "cp", string(id)+":/var/lib/openclaw/bootstrap/initial-admin-service-key.json", temporary); err != nil {
-		return "", nil, err
-	}
-	if err := os.Chmod(temporary, 0600); err != nil {
-		return "", nil, err
-	}
-	data, err := os.ReadFile(temporary)
-	if err != nil {
-		return "", nil, err
-	}
-	var key struct {
-		Meta struct {
-			InstallationID string `json:"installationId"`
-		} `json:"meta"`
-		Data struct {
-			Key string `json:"key"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(data, &key); err != nil || key.Meta.InstallationID == "" || strings.TrimSpace(key.Data.Key) == "" {
-		return "", nil, fmt.Errorf("bootstrap service key is missing its key or Installation ID")
-	}
-	client, err := occclient.New(occclient.Config{URL: url, ServiceKeyFile: temporary, Timeout: 15 * time.Second, Context: ctx})
-	if err != nil {
-		return "", nil, err
-	}
-	installation, err := client.GetInstallation()
-	if err != nil {
-		return "", nil, fmt.Errorf("Installation authorization failed: %w", err)
-	}
-	record, ok := installation.(map[string]any)
-	if !ok || record["id"] != key.Meta.InstallationID {
-		return "", nil, fmt.Errorf("Installation ID does not match the bootstrap service key")
-	}
-	if err := exclusiveWrite(s.KeyPath, data, 0600); err != nil {
-		return "", nil, err
-	}
-	if err := os.Remove(temporary); err != nil {
-		return "", nil, err
-	}
-	return key.Meta.InstallationID, client, nil
+	return r.verifyBootstrapKey(ctx, s, url)
 }
 
 func waitForDevelopmentNamespace(ctx context.Context, client *occclient.Client, namespaceID string, timeout time.Duration) error {

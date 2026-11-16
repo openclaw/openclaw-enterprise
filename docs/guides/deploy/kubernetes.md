@@ -47,7 +47,7 @@ Provide these cluster services before installing OCC:
 | Requirement               | Operator preparation                                                                                               |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | Private gateway state     | An explicit block-backed filesystem StorageClass supporting `10Gi` RWO claims and reliable SQLite locking.         |
-| Bootstrap output          | A fresh `1Gi` RWO claim using a protected StorageClass; prepare it during shared installation.                     |
+| Bootstrap credentials     | An existing Secret containing the administrator password and service key; create it before Helm installation.      |
 | Dedicated Agent workspace | A default StorageClass supporting `40Gi` RWO claims. Embedded Agents do not need this Harness claim.               |
 | PostgreSQL                | An external database with separate application and migrator roles and verified TLS.                                |
 | Container registry        | Push access for the image builder and pull access from every eligible node, including tenant workloads.            |

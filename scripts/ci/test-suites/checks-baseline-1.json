@@ -84,7 +84,6 @@
     "tests/conformance/openshell-oauth-wire.test.mjs",
     "tests/conformance/openshell-codex-device.test.mjs",
     "tests/conformance/openshell-harness-status.test.mjs",
-    "tests/integration/bootstrap-volume.test.ts",
     "tests/integration/secret-driver-startup.test.ts",
     "tests/conformance/kubernetes-configuration.test.ts",
     "tests/conformance/occ-read.test.ts",
@@ -124,7 +123,7 @@
     "tests/conformance/console-namespace-name.test.ts",
     "tests/conformance/console-agent-name-runs.test.ts",
     "tests/conformance/console-json-errors.test.ts",
-    "tests/integration/bootstrap-output.test.ts",
+    "tests/integration/bootstrap-credentials.test.ts",
     "tests/conformance/slack-configuration.test.ts",
     "tests/integration/slack-destination.test.ts",
     "tests/conformance/console-gateway-safety.test.ts",
@@ -447,10 +446,7 @@
       ]
     },
     {
-      "path": "tests/integration/bootstrap-output.test.ts"
-    },
-    {
-      "path": "tests/integration/bootstrap-volume.test.ts"
+      "path": "tests/integration/bootstrap-credentials.test.ts"
     },
     {
       "path": "tests/integration/configuration-controller.test.mjs"

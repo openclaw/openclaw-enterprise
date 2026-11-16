@@ -4,33 +4,32 @@ published: false
 
 ### Configure browser access
 
-Continue in the same operator shell. The laptop needs OpenSSL, jq and kubectl, plus permission to read the bootstrap claim, get the listener Deployment, list its Pods and create `pods/portforward` in `oce-system`. The listener terminates TLS on Pod loopback and forwards HTTP/WebSocket traffic to OCC. OCC retains browser authentication and authorizes access to the Agent UI.
+Continue in the same operator shell. The laptop needs OpenSSL, jq and kubectl, plus access to the retained credential files, permission to get the listener Deployment, list its Pods and create `pods/portforward` in `oce-system`. The listener terminates TLS on Pod loopback and forwards HTTP/WebSocket traffic to OCC. OCC retains browser authentication and authorizes access to the Agent UI.
 
-### Read the protected initial owner files
+<a id="read-the-protected-initial-owner-files"></a>
 
-After the Helm initialization Job succeeds, mount its output claim read-only. Use a fresh private output directory. Kubernetes permission to read this claim is privileged. The one-use reader must run in the claim’s volume topology on a control node with access to the chosen storage.
+### Use the protected initial owner files
+
+After the Helm initialization Job succeeds, prepare the CLI file from the
+retained raw key. No reader Pod or container extraction is needed. This command
+refuses to overwrite an existing CLI file:
 
 ```bash
-jq -n --arg image "$CONTROLLER_IMAGE" --arg namespace "$PLATFORM_NS" \
-  --arg claim occ-bootstrap-admin-password --argjson nodeSelector '{"oce-role":"control"}' \
-  -f "$assets/bootstrap-reader.jq" |
-  kubectl --context "$CONTEXT" create -f -
-kubectl -n "$PLATFORM_NS" wait --for=condition=Ready pod/oce-owner-bootstrap-reader --timeout=3m
-for file in initial-admin-password initial-admin-service-key.json; do
-  test ! -e "$RUN_DIR/$file"
-  kubectl -n "$PLATFORM_NS" exec oce-owner-bootstrap-reader -- \
-    node -e 'process.stdout.write(require("node:fs").readFileSync(process.argv[1]))' \
-    "/bootstrap/$file" > "$RUN_DIR/$file.tmp"
-  test -s "$RUN_DIR/$file.tmp"
-  chmod 600 "$RUN_DIR/$file.tmp"
-  mv "$RUN_DIR/$file.tmp" "$RUN_DIR/$file"
-done
-kubectl -n "$PLATFORM_NS" delete pod oce-owner-bootstrap-reader
-mv "$RUN_DIR/initial-admin-service-key.json" "$RUN_DIR/service-key.json"
 export OCC_SERVICE_KEY_FILE="$RUN_DIR/service-key.json"
+OCC_SECRET_DIR="$OCC_SECRET_DIR" node --input-type=module <<'JS'
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const key = readFileSync(join(process.env.OCC_SECRET_DIR, 'admin-service-key'), 'utf8').replace(/\r?\n$/, '');
+writeFileSync(process.env.OCC_SERVICE_KEY_FILE, JSON.stringify({ data: { key } }), { mode: 0o600, flag: 'wx' });
+JS
 ```
 
-Use `ADMIN_EMAIL` and `$RUN_DIR/initial-admin-password` for ordinary Console password sign-in. The initial administrator has the required Agent administration access. Other owners need a browser account with `administer` permission on this exact Agent. The service key file authenticates operator REST calls. Retain the original bootstrap claim for recovery.
+Use `ADMIN_EMAIL` and `$OCC_SECRET_DIR/admin-password` for ordinary Console
+password sign-in. The initial administrator has the required Agent
+administration access. Other owners need a browser account with `administer`
+permission on this exact Agent. The service key file authenticates operator REST
+calls; the authenticated API response supplies the Installation ID. Retain the
+original protected inputs for recovery; bootstrap does not reissue them.
 
 ### Install the loopback TLS listener
 
