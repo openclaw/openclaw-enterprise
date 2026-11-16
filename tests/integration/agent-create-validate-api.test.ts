@@ -22,6 +22,7 @@ import {
   type CreateAgentBody,
   type CreateConfigurationBody,
   type PluginDesiredState,
+  type ResourceRef,
   type SecretReference,
   type ValidateAgentCreateBody,
 } from "../../packages/contracts/src/index.ts";
@@ -31,7 +32,7 @@ import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { consoleFixtureClient } from "../helpers/console-fixture-client.ts";
 import { grantRole } from "../helpers/iam-grants.mjs";
-import { assertWriteAuthorizationDenial } from "../helpers/partial-write-authorization.mjs";
+import { assertWriteAuthorizationDenial } from "../helpers/partial-write-authorization.ts";
 import { createDenied } from "../helpers/refusal-text.mjs";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
@@ -437,7 +438,7 @@ test("Agent create preflight refuses a caller without Agent create as Agent crea
     });
   });
   const session = await f.signIn(member.credentials);
-  const target = { kind: "agent", id: f.namespace.id, namespaceId: f.namespace.id };
+  const target: ResourceRef = { kind: "agent", id: f.namespace.id, namespaceId: f.namespace.id };
   const preflight: PreflightBody = {
     configuration: { kind: "agent", values: denyAll },
     plugins,
