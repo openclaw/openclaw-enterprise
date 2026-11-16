@@ -229,6 +229,7 @@
     "helpers/reuse-port-preload.ts",
     "helpers/released-controller-process.mts",
     "helpers/image-smoke-timeout.ts",
+    "integration/production-image-controller-startup-cases.ts",
     "helpers/runtime-image-model-probe.ts",
     "helpers/runtime-image-native-download-clients.ts",
     "helpers/runtime-image-memory.ts",
