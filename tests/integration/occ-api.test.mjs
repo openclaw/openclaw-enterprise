@@ -13,9 +13,13 @@ import {
   registerOpenClawPluginPolicyCases,
 } from "./occ-api-plugin-policy-cases.ts";
 import {
+  checkMalformedResourcePaths,
+  checkPayloadLimitAndAllowedMethods,
+  checkResourceCreationSchemas,
   runBodylessRoutes,
   runNamespaceIsolation,
   runResourceRoutes,
+  withValidationBeforeIam,
 } from "./occ-api-resource-route-cases.ts";
 import {
   bindHarnessKey,
@@ -75,7 +79,6 @@ import {
   DEDICATED_STORAGE_ROUTING_REQUIRED,
   DEPLOYMENT_FAILED,
   MODEL_CREDENTIAL_REJECTED_RECORDED,
-  NAMESPACE_NAME_CONFLICT,
   referenceFormRefusal,
   SECRET_NAME_CONFLICT,
   SERVICE_ACCOUNT_CROSS_NAMESPACE,
@@ -4748,51 +4751,7 @@ test("administrator-created auth accounts sign in and receive only provisioned I
 test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB limit", async () => {
   const controller = await configuredController();
 
-  const malformedJson = await controller.request("POST", "/installation/bootstrap", {
-    rawBody: "{not-json",
-    headers: { "content-type": "application/json" },
-  });
-  assertApiError(malformedJson, 400, "INVALID_REQUEST");
-
-  const unsupportedType = await controller.request("POST", "/installation/bootstrap", {
-    rawBody: "name=enterprise",
-    headers: { "content-type": "text/plain" },
-  });
-  assertApiError(unsupportedType, 415, "UNSUPPORTED_MEDIA_TYPE");
-
-  for (const invalid of [null, [], {}, { name: "" }, { name: "   " }]) {
-    const result = await controller.request("POST", "/installation/bootstrap", { body: invalid });
-    assert.equal(result.status, 400);
-  }
-
-  await bootstrap(controller);
-
-  for (const invalid of [null, [], {}, { name: "" }, { name: 4 }]) {
-    const result = await controller.request("POST", "/namespaces", {
-      body: invalid,
-    });
-    assert.equal(result.status, 400);
-  }
-
-  const namespace = await createNamespace(controller, "validated");
-  const duplicateNamespace = await controller.request("POST", "/namespaces", {
-    body: { name: "validated" },
-  });
-  assertApiError(duplicateNamespace, 409, "RESOURCE_CONFLICT");
-  assert.equal(duplicateNamespace.body.error.message, NAMESPACE_NAME_CONFLICT);
-
-  const invalidAgent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "" },
-  });
-  assert.equal(invalidAgent.status, 400);
-
-  const agent = await createAgent(controller, namespace.id, "valid-agent");
-  const duplicateAgent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "valid-agent", configurationId: agent.configurationId },
-  });
-  assertApiError(duplicateAgent, 409, "RESOURCE_CONFLICT");
-  // The caller chose only the name, so the conflict says the name is taken here.
-  assert.equal(duplicateAgent.body.error.message, AGENT_NAME_CONFLICT);
+  const { namespace, agent } = await checkResourceCreationSchemas(controller);
 
   for (const configurationId of [null, [], "invalid"]) {
     const invalidCreation = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
@@ -4865,55 +4824,8 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
   const unexpectedQuery = await controller.request("GET", "/namespaces?owner=foreign");
   assertApiError(unexpectedQuery, 400, "INVALID_REQUEST");
 
-  const malformedIdentifier = await controller.request("GET", "/namespaces/ns_not-a-uuid");
-  assert.equal(malformedIdentifier.status, 400);
-  // Path-parameter failures name the parameter and its syntax, like body failures name fields.
-  assert.deepEqual(malformedIdentifier.body.error.details, [
-    { path: "/namespaceId", code: "INVALID_FORMAT" },
-  ]);
-  assert.match(malformedIdentifier.body.error.message, /params \/namespaceId .* expected ns_ /);
-
-  const wrongResourceKind = await controller.request("GET", `/namespaces/${agent.id}`);
-  assert.equal(wrongResourceKind.status, 400);
-
-  const nonV4Agent = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/agt_00000000-0000-0000-0000-000000000000`,
-  );
-  assert.equal(nonV4Agent.status, 400);
-  assert.deepEqual(nonV4Agent.body.error.details, [{ path: "/agentId", code: "INVALID_FORMAT" }]);
-
-  // A deployment is addressed by its revision ID, so the message names the rev_ prefix.
-  const malformedDeployment = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deployments/rev_bogus/runtime/logs?source=gateway`,
-  );
-  assert.equal(malformedDeployment.status, 400);
-  assert.deepEqual(malformedDeployment.body.error.details, [
-    { path: "/deploymentId", code: "INVALID_FORMAT" },
-  ]);
-  assert.match(malformedDeployment.body.error.message, /params \/deploymentId .* expected rev_ /);
-
-  const oversized = await controller.request("POST", "/namespaces", {
-    body: { name: "x".repeat(64 * 1024) },
-  });
-  assertApiError(oversized, 413, "PAYLOAD_TOO_LARGE");
-
-  // Keep method order and overlapping literal/parameter paths in the public Allow header.
-  for (const [method, path, allowed] of [
-    ["DELETE", "/namespaces", "POST, GET"],
-    [
-      "OPTIONS",
-      `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-      "GET, PATCH, DELETE",
-    ],
-    ["OPTIONS", `/namespaces/${namespace.id}/agents/${agent.id}/deploy?ignored=true`, "POST"],
-    ["OPTIONS", `/namespaces/${namespace.id}/agents/provision`, "POST, PATCH, GET, DELETE"],
-  ]) {
-    const unsupportedMethod = await controller.request(method, path);
-    assertApiError(unsupportedMethod, 405, "METHOD_NOT_ALLOWED");
-    assert.equal(unsupportedMethod.headers.get("allow"), allowed);
-  }
+  await checkMalformedResourcePaths(controller, namespace, agent);
+  await checkPayloadLimitAndAllowedMethods(controller, namespace, agent);
 
   const fixture = await createInjectedFixture();
   const bootstrapped = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
@@ -4921,35 +4833,16 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
   });
   assert.equal(bootstrapped.status, 201);
 
-  const originalLookup = fixture.iamDriver.lookupIdentity;
-  const originalAuthorize = fixture.iamDriver.authorize;
-  let identityLookups = 0;
-  let authorizationChecks = 0;
-  fixture.iamDriver.lookupIdentity = async (...args) => {
-    identityLookups += 1;
-    return originalLookup.apply(fixture.iamDriver, args);
-  };
-  fixture.iamDriver.authorize = async (...args) => {
-    authorizationChecks += 1;
-    return originalAuthorize.apply(fixture.iamDriver, args);
-  };
-  const auditCount = fixture.auditSink.events.length;
-
-  try {
+  await withValidationBeforeIam(fixture, async (assertUnchanged) => {
     for (const options of [
       { rawBody: '{"name":' },
       { body: { name: "invalid-scope", installationId: fixture.installationId } },
     ]) {
       const invalid = await injectedRequest(fixture.app, "POST", "/namespaces", options);
       assertApiError(invalid, 400, "INVALID_REQUEST");
-      assert.equal(identityLookups, 0);
-      assert.equal(authorizationChecks, 0);
-      assert.equal(fixture.auditSink.events.length, auditCount);
+      assertUnchanged();
     }
-  } finally {
-    fixture.iamDriver.lookupIdentity = originalLookup;
-    fixture.iamDriver.authorize = originalAuthorize;
-  }
+  });
 
   const untouched = await injectedRequest(fixture.app, "GET", "/namespaces");
   assertOnlyDefaultNamespace(untouched);
