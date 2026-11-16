@@ -10,7 +10,7 @@ import type {
 import type { ShutdownSummary } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
+import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
 
 type Hooks = {
   resolve?: () => void;

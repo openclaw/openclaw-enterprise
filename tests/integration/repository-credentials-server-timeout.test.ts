@@ -7,17 +7,17 @@ import { connect as connectTls } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 import { within } from "../helpers/wait-for.mjs";
 import { listen } from "../fixtures/repository-credentials/process.mjs";
-import { startTokenServiceScope } from "../fixtures/repository-credentials/service.mjs";
+import { startTokenServiceScope } from "../fixtures/repository-credentials/service-fixture.ts";
 import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
 import {
   createStaticTokenServiceFactory,
   startServiceListeners,
-} from "../fixtures/repository-credentials/service-resources.mjs";
+} from "../fixtures/repository-credentials/service-resources.ts";
 
 async function fixture(t: TestContext) {
   const options = {
     github: true,
-    clock: "system",
+    clock: "system" as const,
     limits: {
       headerMs: 200,
       stallMs: 2000,

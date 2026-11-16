@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
@@ -87,7 +87,7 @@ test(
     ] = await Promise.all([
       import("../../apps/controller/src/drivers/repo/github/policy.ts"),
       import("../../apps/controller/src/backends/repository-credentials/control-client.ts"),
-      import("../fixtures/repository-credentials/registry.mjs"),
+      import("../fixtures/repository-credentials/registry.ts"),
     ]);
     const resources = createResourceScope();
     const credentialResources = createResourceScope();

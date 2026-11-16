@@ -1,6 +1,30 @@
 import { appModule } from "./runtime.mjs";
 
 type AppModules = {
+  "drivers/repo/github/access/client/config": Pick<
+    typeof import("../../../apps/controller/src/drivers/repo/github/access/client/config.ts"),
+    "writeClientConfiguration"
+  >;
+  "drivers/repo/github/access/warm-registry-factory": Pick<
+    typeof import("../../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts"),
+    "createPreparedGitHubRegistryFactory"
+  >;
+  "drivers/repo/github/access/registry": Pick<
+    typeof import("../../../apps/controller/src/drivers/repo/github/access/registry.ts"),
+    "resolveGitHubRepositoryBinding"
+  >;
+  "composition/repository-credentials/registry": Pick<
+    typeof import("../../../apps/controller/src/composition/repository-credentials/registry.ts"),
+    "loadGitHubRepositoryRegistry"
+  >;
+  "drivers/repo/access/server": Pick<
+    typeof import("../../../apps/controller/src/drivers/repo/access/server.ts"),
+    "startListeners"
+  >;
+  "drivers/repo/access/clock": Pick<
+    typeof import("../../../apps/controller/src/drivers/repo/access/clock.ts"),
+    "createSystemClock"
+  >;
   "drivers/repo/access/service": Pick<
     typeof import("../../../apps/controller/src/drivers/repo/access/service.ts"),
     "createCredentialService"

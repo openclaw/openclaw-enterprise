@@ -1,13 +1,20 @@
 import { within } from "../../helpers/wait-for.mjs";
 
+type Cleanup = () => void | Promise<void>;
+export type FixtureOwner = { after(cleanup: Cleanup): void };
+
+type ScopeOptions = { cleanupTimeoutMs?: number };
+type ResourceScope = FixtureOwner & { close(...error: [] | [unknown]): Promise<void> };
+
 // Local resource ownership only. Remote writes keep their existing reconciliation obligations.
-export function createResourceScope({ cleanupTimeoutMs = 10000 } = {}) {
+export function createResourceScope({
+  cleanupTimeoutMs = 10000,
+}: ScopeOptions = {}): ResourceScope {
   if (!Number.isFinite(cleanupTimeoutMs) || cleanupTimeoutMs <= 0) {
     throw new Error("invalid fixture cleanup timeout");
   }
-  const cleanups = [];
-  /** @type {Promise<void> | undefined} */
-  let closing;
+  const cleanups: Cleanup[] = [];
+  let closing: Promise<void> | undefined;
   return Object.freeze({
     after(cleanup) {
       if (closing) {
@@ -15,10 +22,11 @@ export function createResourceScope({ cleanupTimeoutMs = 10000 } = {}) {
       }
       cleanups.push(cleanup);
     },
-    close(primaryError) {
-      const hasPrimaryError = arguments.length > 0;
+    close(...errors) {
+      const [primaryError] = errors;
+      const hasPrimaryError = errors.length > 0;
       closing ??= Promise.resolve().then(async () => {
-        const failures = [];
+        const failures: unknown[] = [];
         if (hasPrimaryError) {
           failures.push(primaryError);
         }
@@ -50,7 +58,7 @@ export function createResourceScope({ cleanupTimeoutMs = 10000 } = {}) {
 }
 
 /** A resource scope that closes after the test `t`. */
-export function createTestResourceScope(t, options) {
+export function createTestResourceScope(t: FixtureOwner, options?: ScopeOptions) {
   const resources = createResourceScope(options);
   t.after(() => resources.close());
   return resources;

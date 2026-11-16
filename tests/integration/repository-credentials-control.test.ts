@@ -9,11 +9,11 @@ import { createControlledClock } from "../fixtures/repository-credentials/clock.
 import {
   defaultRegistryRepositories,
   startRegistryCredentialServiceFixture,
-} from "../fixtures/repository-credentials/registry.mjs";
+} from "../fixtures/repository-credentials/registry.ts";
 import {
   createResourceScope,
   createTestResourceScope,
-} from "../fixtures/repository-credentials/resources.mjs";
+} from "../fixtures/repository-credentials/resources.ts";
 import {
   createServer as createTlsServer,
   request as tlsRequest,
@@ -26,10 +26,7 @@ import {
   createAlternateDriverFactory,
   startAlternateUpstream,
 } from "../fixtures/repository-credentials/alternate.ts";
-import {
-  fixtureRepository,
-  type startGitHubFixture,
-} from "../fixtures/repository-credentials/github.mjs";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
 import {
   createTlsMaterial,
   listen,
@@ -37,27 +34,26 @@ import {
   run,
 } from "../fixtures/repository-credentials/process.mjs";
 import {
-  githubProviderModule,
-  appModule,
-  appRoot,
-  appExtension,
   controlRequest,
   createServiceConfiguration,
   eventually,
   createLoopbackServiceConfiguration,
   startTokenServiceScope,
-} from "../fixtures/repository-credentials/service.mjs";
+} from "../fixtures/repository-credentials/service-fixture.ts";
+import {
+  githubProviderModule,
+  appModule,
+  appRoot,
+  appExtension,
+} from "../fixtures/repository-credentials/runtime.mjs";
 import {
   createStaticTokenServiceFactory,
   startServiceListeners,
   startStaticTokenService,
-} from "../fixtures/repository-credentials/service-resources.mjs";
+} from "../fixtures/repository-credentials/service-resources.ts";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
-import type {
-  Clock,
-  RepositoryBackendFactory,
-} from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import type { RepositoryBackendFactory } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type { ControlRequest } from "../../apps/controller/src/drivers/repo/access/control-contracts.ts";
 import type {
   CredentialServiceOwner,
@@ -70,33 +66,10 @@ import type {
   SessionStatus,
 } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import type { BoundListeners } from "../../apps/controller/src/drivers/repo/access/server.ts";
-import type { GitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import type { RegistryFixtureDefinition } from "../fixtures/repository-credentials/registry/material.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
 
 type ResourceOwner = Pick<TestContext, "after">;
-type ControlledClock = Clock & { advance(milliseconds: number): Promise<void> };
-type TokenScope<C extends Clock> = {
-  resources: ResourceOwner;
-  clock: C;
-  config: ServiceConfig;
-  tls: Awaited<ReturnType<typeof createTlsMaterial>>;
-  github: Awaited<ReturnType<typeof startGitHubFixture>> | undefined;
-};
-type RegistryFixture = {
-  clock: ControlledClock;
-  config: ServiceConfig;
-  registry: GitHubRepositoryRegistry;
-  service: CredentialServiceOwner;
-  namespaceId: string;
-  backendId: string;
-  repositories: readonly { github: { trace: readonly object[] } }[];
-  restart(): Promise<void>;
-};
-type RepositoryDefinition = Readonly<{
-  repositoryRef: string;
-  repository: string;
-  repositoryId: string;
-}>;
 type SessionResult = {
   session: Record<string, unknown> & {
     sessionId: string;
@@ -213,8 +186,7 @@ async function dropControlResponse(t: ResourceOwner, target: string) {
 
 async function admissionFixture(t: TestContext, onCreate?: (sessionId: string) => void) {
   const scopeOptions = { limits: { sessions: 1 }, github: false };
-  const { resources, clock, tls, config }: TokenScope<ControlledClock> =
-    await startTokenServiceScope(t, scopeOptions);
+  const { resources, clock, tls, config } = await startTokenServiceScope(t, scopeOptions);
   const {
     callControl,
   }: typeof import("../../apps/controller/src/drivers/repo/github/access/client/operator.ts") =
@@ -433,8 +405,7 @@ test(
   { timeout: 10000 },
   async (t) => {
     const scopeOptions: { clock: "system"; github?: boolean } = { clock: "system" };
-    const { resources, clock, tls, config, github }: TokenScope<Clock> =
-      await startTokenServiceScope(t, scopeOptions);
+    const { resources, clock, tls, config, github } = await startTokenServiceScope(t, scopeOptions);
     assert.ok(github);
     const { listeners }: { listeners: BoundListeners } = await startStaticTokenService(resources, {
       config,
@@ -730,8 +701,7 @@ test(
       // A single exchange slot makes leaked ownership observable on the next request.
       limits: { exchanges: 1, exchangesPerSession: 1 },
     };
-    const { resources, clock, tls, config, github }: TokenScope<Clock> =
-      await startTokenServiceScope(t, scopeOptions);
+    const { resources, clock, tls, config, github } = await startTokenServiceScope(t, scopeOptions);
     assert.ok(github);
     const [{ createCredentialService }, { startListeners }]: [
       typeof import("../fixtures/repository-credentials/service.ts"),
@@ -1005,7 +975,7 @@ test(
 async function boundControlFixture(
   t: TestContext,
   limits: Partial<ServiceLimits> = {},
-  repositories?: readonly RepositoryDefinition[],
+  repositories?: readonly RegistryFixtureDefinition[],
 ) {
   // One scope owns every cleanup of these tests. node:test stops a test's after hooks at
   // the first failure, so a failed fixture cleanup used to skip the receipt listener and
@@ -1015,19 +985,15 @@ async function boundControlFixture(
   const resources = createTestResourceScope(t);
   const receiptResources = createResourceScope();
   resources.after(() => receiptResources.close());
-  const fixture: RegistryFixture | undefined = await startRegistryCredentialServiceFixture(
-    resources,
-    {
-      namespaceId: `ns_${randomUUID()}`,
-      autoOpen: false,
-      maximumDurationSeconds: 1200,
-      durationSeconds: 600,
-      gateway: { listen: "127.0.0.1:0" },
-      limits,
-      ...(repositories === undefined ? {} : { repositories }),
-    },
-  );
-  assert.ok(fixture);
+  const fixture = await startRegistryCredentialServiceFixture(resources, {
+    namespaceId: `ns_${randomUUID()}`,
+    autoOpen: false,
+    maximumDurationSeconds: 1200,
+    durationSeconds: 600,
+    gateway: { listen: "127.0.0.1:0" },
+    limits,
+    ...(repositories === undefined ? {} : { repositories }),
+  });
   const {
     resolveGitHubRepositoryBinding,
   }: typeof import("../../apps/controller/src/drivers/repo/github/access/registry.ts") =

@@ -21,11 +21,11 @@ import {
   startGitHubFixture,
 } from "../fixtures/repository-credentials/github.mjs";
 import { requestHead } from "../fixtures/repository-credentials/request-head.ts";
-import { createGitHubTokenServiceFactory } from "../fixtures/repository-credentials/service-resources.mjs";
+import { createGitHubTokenServiceFactory } from "../fixtures/repository-credentials/service-resources.ts";
 import {
   createServiceConfiguration,
   eventually,
-} from "../fixtures/repository-credentials/service.mjs";
+} from "../fixtures/repository-credentials/service-fixture.ts";
 
 const { createCredentialService } = await import("../fixtures/repository-credentials/service.ts");
 const completed = { kind: "completed", status: 200 } as const;

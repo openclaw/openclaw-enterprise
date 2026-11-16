@@ -11,7 +11,7 @@ import type {
   AgentRevision,
   RepositoryCredentialRuntimeBinding,
 } from "../../packages/contracts/src/index.ts";
-import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
+import { repositoryClientData } from "../fixtures/repository-credentials/builders.ts";
 import { writeSafeKubeconfig } from "../helpers/unsafe-kubeconfigs.mjs";
 
 type Core = ConstructorParameters<typeof RepositoryMaterialStore>[1];

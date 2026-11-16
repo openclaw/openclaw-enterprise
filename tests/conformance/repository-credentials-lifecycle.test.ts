@@ -10,7 +10,7 @@ import { createProviderQueue } from "../../apps/controller/src/drivers/repo/acce
 import { createCustody } from "../../apps/controller/src/drivers/repo/access/custody.ts";
 import { createLifecycle } from "../../apps/controller/src/drivers/repo/access/lifecycle.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { custodyLimits } from "../fixtures/repository-credentials/builders.mjs";
+import { custodyLimits } from "../fixtures/repository-credentials/builders.ts";
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 const unexpected = () => {

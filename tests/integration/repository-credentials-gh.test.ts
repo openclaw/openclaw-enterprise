@@ -2,11 +2,7 @@ import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
-import type {
-  ClientCommand,
-  CredentialClientFixture,
-  StartCredentialClientFixture,
-} from "../fixtures/repository-credentials/clients.ts";
+import type { ClientCommand } from "../fixtures/repository-credentials/clients.ts";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { JsonValue } from "../../apps/controller/src/drivers/repo/access/json-value.ts";
@@ -20,9 +16,9 @@ import {
   run as runProcess,
 } from "../fixtures/repository-credentials/process.mjs";
 import {
-  startCredentialServiceFixture as startService,
-  gatewayRequest as requestGateway,
-} from "../fixtures/repository-credentials/service.mjs";
+  startCredentialServiceFixture,
+  gatewayRequest,
+} from "../fixtures/repository-credentials/service-fixture.ts";
 import { exerciseGit, exerciseGh } from "../fixtures/repository-credentials/workflows.ts";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.ts";
 import {
@@ -30,23 +26,6 @@ import {
   type ResourceCleanup,
 } from "../fixtures/repository-credentials/cleanup.ts";
 
-type GhFixture = Pick<CredentialClientFixture, "tls" | "github"> &
-  Parameters<typeof exerciseGit>[1] &
-  Parameters<typeof exerciseGh>[0];
-const startCredentialServiceFixture: (
-  ...args: Parameters<StartCredentialClientFixture>
-) => Promise<GhFixture | undefined> = startService;
-
-type GatewayOptions = {
-  method?: string;
-  body?: JsonValue | undefined;
-  headers?: Record<string, string>;
-};
-const gatewayRequest: (
-  fixture: GhFixture,
-  target: string,
-  options?: GatewayOptions,
-) => Promise<{ status: number; body: string }> = requestGateway;
 const run = runProcess as ClientCommand;
 function jsonObject(value: unknown): Record<string, unknown> {
   assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
@@ -70,7 +49,6 @@ test("pinned gh uses selected development token routing for repository, issue an
   const fixture = await startCredentialServiceFixture(t, {
     configuration: { pushRefAllowlist: ["refs/heads/agent-feature", "refs/heads/native-feature"] },
   });
-  assert.ok(fixture);
   const singleHostsPath = join(fixture.clientDirectory, "gh", "hosts.yml");
   const originalSingleHosts = await readFile(singleHostsPath);
   const { client, checkout } = await exerciseGit(t, fixture);
@@ -113,6 +91,7 @@ test("pinned gh uses selected development token routing for repository, issue an
   );
   assert.ok(
     fixture.github.trace.some((entry) => {
+      assert.ok(entry.target);
       const target = new URL(entry.target, "https://api.github.com");
       return (
         target.pathname === "/repos/fixture/repository/issues" && target.searchParams.has("after")
@@ -120,7 +99,7 @@ test("pinned gh uses selected development token routing for repository, issue an
     }),
   );
   assert.equal(
-    fixture.github.trace.some((entry) => entry.target.startsWith("/repositories/")),
+    fixture.github.trace.some((entry) => entry.target?.startsWith("/repositories/")),
     false,
   );
   assert.ok(
@@ -134,7 +113,7 @@ test("pinned gh uses selected development token routing for repository, issue an
   registerResourceCleanup(cleanups, {
     request: async ({ method, path, body }) => {
       const response = await gatewayRequest(fixture, `/${path}`, { method, body });
-      assert.ok(response.status < 400);
+      assert.ok(response.status !== undefined && response.status < 400);
       if (!response.body) {
         return undefined;
       }
@@ -171,14 +150,15 @@ test("pinned gh uses selected development token routing for repository, issue an
   assert.equal(writes.length, 1, "gh must not replay an uncertain pull-request creation");
   assert.ok(writes[0]?.tokenIndex, "the controlled provider must authenticate the write");
   const pulls = fixture.github.pulls;
-  const accepted = [...pulls.values()].filter((pull) => pull.body === marker);
+  const accepted = [...pulls].filter(([, pull]) => pull.body === marker);
   assert.equal(accepted.length, 1, "the provider must accept the marked pull request once");
   const acceptedPull = accepted[0];
   assert.ok(acceptedPull);
-  assert.equal(acceptedPull.draft, true);
+  const [pullNumber, storedPull] = acceptedPull;
+  assert.equal(storedPull.draft, true);
   assert.ok(cleanups[0]);
   await cleanups[0](AbortSignal.timeout(5000));
-  assert.equal(pulls.get(acceptedPull.number)?.state, "closed");
+  assert.equal(pulls.get(pullNumber)?.state, "closed");
   // All fixed runtime paths below live only inside the disposable fixture
   // container. Private HOME configuration proves real child Git is preserved;
   // image-owned system include qualification belongs to the platform tests.
@@ -307,7 +287,7 @@ test("pinned gh uses selected development token routing for repository, issue an
     "/repositories/73/issues",
   ]) {
     const denied = await gatewayRequest(fixture, target);
-    assert.ok(denied.status >= 400);
+    assert.ok(denied.status !== undefined && denied.status >= 400);
   }
   assert.equal(fixture.github.trace.length, before);
   assert.ok(
@@ -324,7 +304,6 @@ test("pinned gh uses selected development token routing for repository, issue an
 if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
   test("uncertain API POST, PATCH and DELETE requests are sent once", async (t) => {
     const fixture = await startCredentialServiceFixture(t);
-    assert.ok(fixture);
     const prefix = "/repos/fixture/repository";
     const issued = await gatewayRequest(fixture, `${prefix}/issues`, {
       method: "POST",
@@ -348,7 +327,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
       fixture.github.disconnectAfterMutation(method, target);
       try {
         const response = await gatewayRequest(fixture, target, { method, body });
-        assert.ok(response.status >= 400);
+        assert.ok(response.status !== undefined && response.status >= 400);
       } catch (error) {
         assert.ok(error instanceof Error);
         const code = "code" in error && typeof error.code === "string" ? error.code : error.message;
