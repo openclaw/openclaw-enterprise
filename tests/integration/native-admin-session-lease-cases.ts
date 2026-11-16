@@ -33,7 +33,7 @@ interface LeaseScenario {
   socket: NativeSocket;
 }
 
-interface LeaseDependencies<Scenario extends LeaseScenario> {
+export interface LeaseDependencies<Scenario extends LeaseScenario = LeaseScenario> {
   openNativeAdminSocketScenario(
     t: TestContext,
     label: string,
