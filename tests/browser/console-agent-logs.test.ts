@@ -7,7 +7,11 @@ import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page, Route } from "playwright";
 
-import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
+import type {
+  AgentRevisionWire,
+  AgentWire,
+  NamespaceWire,
+} from "../../packages/contracts/src/api/resources.ts";
 import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import type {
   AgentRuntimeEvent,
@@ -1845,6 +1849,22 @@ async function openStoppedLogs(
   return { agentPath, page, shows, poll };
 }
 
+async function routeQueuedDeployment(
+  page: Page,
+  { fixture, namespace, agent }: Awaited<ReturnType<typeof logsFixture>>,
+  { id, createdAt }: Pick<AgentRevisionWire, "id" | "createdAt">,
+) {
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  await page.route(`${fixture.origin}${agentPath}/deployments/${id}`, (route) =>
+    route.fulfill(
+      deploymentStatusResponse(
+        { id, namespaceId: namespace.id, agentId: agent.id, createdAt },
+        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
+      ),
+    ),
+  );
+}
+
 // Finding 2978 (dogfood r60, D818). The Agent was stopped and redeployed from elsewhere while its
 // Logs stayed open, and the new version's deployment failed. A failed deployment selects no
 // version, so the Agent read each poll makes showed only that the Agent runs again: the page kept
@@ -1856,24 +1876,12 @@ async function openStoppedLogs(
 test("Logs of a stopped version show a redeploy from elsewhere that failed", async (t) => {
   const logs = await logsFixture(t);
   const { fixture, namespace, agent } = logs;
-  const { agentPath, page, shows, poll } = await openStoppedLogs(t, logs);
+  const { page, shows, poll } = await openStoppedLogs(t, logs);
 
   // It deploys a new version, which runs with no version selected while its deployment is queued.
   // The in-memory app has no worker records, so the record is the API's shape, fulfilled.
   const deployed = await fixture.deployAgent(namespace.id, agent.id);
-  await page.route(`${fixture.origin}${agentPath}/deployments/${deployed.id}`, (route) =>
-    route.fulfill(
-      deploymentStatusResponse(
-        {
-          id: deployed.id,
-          namespaceId: namespace.id,
-          agentId: agent.id,
-          createdAt: deployed.createdAt,
-        },
-        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
-      ),
-    ),
-  );
+  await routeQueuedDeployment(page, logs, deployed);
   const queued = await poll();
   await shows(/Latest visible deployment\s+v2\s+·\s+Queued/);
   assert.equal(await poll(), queued);
@@ -1918,14 +1926,7 @@ test("Logs show a second redeploy from elsewhere after a failed one, then its ow
     [after.desiredRuntimeState, after.activeRevisionId, after.status],
     [before.desiredRuntimeState, before.activeRevisionId, before.status],
   );
-  await page.route(`${fixture.origin}${agentPath}/deployments/${third.id}`, (route) =>
-    route.fulfill(
-      deploymentStatusResponse(
-        { id: third.id, namespaceId: namespace.id, agentId: agent.id, createdAt: third.createdAt },
-        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
-      ),
-    ),
-  );
+  await routeQueuedDeployment(page, logs, third);
   // Polls soon after the last list read do not read it again; one within the minute after does.
   for (let index = 0; index < 3; index += 1) {
     assert.equal(await poll(), listed, `poll ${index + 1} lists the versions`);
@@ -1957,19 +1958,7 @@ test("Logs show a second redeploy from elsewhere after a failed one, then its ow
   assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
   const beforeFourth = await poll();
   const fourth = await fixture.deployAgent(namespace.id, agent.id);
-  await page.route(`${fixture.origin}${agentPath}/deployments/${fourth.id}`, (route) =>
-    route.fulfill(
-      deploymentStatusResponse(
-        {
-          id: fourth.id,
-          namespaceId: namespace.id,
-          agentId: agent.id,
-          createdAt: fourth.createdAt,
-        },
-        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
-      ),
-    ),
-  );
+  await routeQueuedDeployment(page, logs, fourth);
   assert.equal(await poll(), beforeFourth + 1, "the poll after the redeploy lists the versions");
   await shows(/Latest visible deployment\s+v4\s+·\s+Queued/);
 });
@@ -1984,19 +1973,7 @@ test("a Logs reread answered after this page's Stop keeps the Stop", async (t) =
   const { agentPath, page, shows, poll } = await openStoppedLogs(t, logs);
   // Another session deploys v2, which stays queued: the Agent runs with no version selected.
   const deployed = await fixture.deployAgent(namespace.id, agent.id);
-  await page.route(`${fixture.origin}${agentPath}/deployments/${deployed.id}`, (route) =>
-    route.fulfill(
-      deploymentStatusResponse(
-        {
-          id: deployed.id,
-          namespaceId: namespace.id,
-          agentId: agent.id,
-          createdAt: deployed.createdAt,
-        },
-        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
-      ),
-    ),
-  );
+  await routeQueuedDeployment(page, logs, deployed);
   await poll();
   await shows(/Latest visible deployment\s+v2\s+·\s+Queued/);
   const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });

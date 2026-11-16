@@ -5,7 +5,7 @@ import type { Pool } from "pg";
 import { hashLocalPassword } from "../../apps/controller/src/auth/index.ts";
 import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import { assertSessionUser, consoleOrigin as origin } from "../helpers/production-sign-in.mjs";
-import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.mjs";
+import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.ts";
 import { signInRateLimited } from "../helpers/refusal-text.mjs";
 import {
   authOperation,
@@ -143,11 +143,7 @@ export async function runPasswordFallbackCases(t: TestContext, context: Password
         assert.equal(response.statusCode, 401, `attempt ${index}`);
       }
       await assertSpentDeviceProofRefusal({
-        installReader(
-          holdRead: (
-            read: () => ReturnType<PostgresHumanAuthentication["knownDeviceState"]>,
-          ) => ReturnType<PostgresHumanAuthentication["knownDeviceState"]>,
-        ) {
+        installReader(holdRead) {
           const readState = PostgresHumanAuthentication.prototype.knownDeviceState;
           return t.mock.method(
             PostgresHumanAuthentication.prototype,
@@ -168,8 +164,7 @@ export async function runPasswordFallbackCases(t: TestContext, context: Password
             body: "authentication response omitted",
           };
         },
-        knownDeviceOf: (result: Pick<InjectedResponse, "headers">) =>
-          knownDeviceOf(result) === undefined ? undefined : "present",
+        knownDeviceOf: (result) => (knownDeviceOf(result) === undefined ? undefined : "present"),
       });
     },
   );

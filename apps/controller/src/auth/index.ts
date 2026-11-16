@@ -169,7 +169,12 @@ import type {
 } from "../admission/admission-verifier.ts";
 import { AdmissionFailure, UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admission-verifier.ts";
 import { RequestFailure, unstorableTextFailure } from "../http/errors.ts";
-import { betterAuthIssuer, deriveSharedCookieDomain, validHttpBaseURL } from "./configuration.ts";
+import {
+  betterAuthIssuer,
+  deriveSharedCookieDomain,
+  validateAuthSecret,
+  validHttpBaseURL,
+} from "./configuration.ts";
 
 export {
   betterAuthIssuer,
@@ -995,9 +1000,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   if (options.mode !== "development" && options.mode !== "production") {
     throw new Error("Controller auth requires an explicit runtime mode.");
   }
-  if (!isNonEmptyString(options.secret) || options.secret.length < 32) {
-    throw new Error("OCC_AUTH_SECRET must contain at least 256 bits of secret material.");
-  }
+  validateAuthSecret(options.secret);
   if (!validHttpBaseURL(options.baseURL)) {
     throw new Error("OCC_AUTH_BASE_URL must be an absolute HTTP origin URL.");
   }

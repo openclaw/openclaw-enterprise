@@ -8,8 +8,8 @@ import test from "node:test";
 import { once } from "node:events";
 import { createRequire } from "node:module";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { composeConfiguration } from "../helpers/compose.mjs";
-import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
+import { composeConfiguration } from "../helpers/compose.ts";
+import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import {
@@ -25,7 +25,7 @@ import {
 } from "../helpers/dev-up.mjs";
 
 // dev-up's Kubernetes Compute lifecycle: authenticated startup, cleanup, rollback and the real
-// Go launcher's recovery. The Compose stack cases are in dev-up-compose.test.mjs.
+// Go launcher's recovery. The Compose startup and preflight suites cover the Compose stack.
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "@kubernetes/client-node",

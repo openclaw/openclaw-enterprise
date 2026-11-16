@@ -130,7 +130,10 @@ type NarrowStartupOptions = NarrowPolicy & {
       ReturnType<NarrowJourney["maintenance"]["fixture"]["controller"]["createConfiguration"]>
     >;
   }) => Promise<void>;
-  configure?: Parameters<typeof gitExpiryGateway>[1]["configure"];
+  configure?: (
+    methods: { GetSandboxProviderStatus(request: unknown): unknown },
+    world: { version: number },
+  ) => void;
 };
 
 export async function createNarrowOnlineGitStartup(

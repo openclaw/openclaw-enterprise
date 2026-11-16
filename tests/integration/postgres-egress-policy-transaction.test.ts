@@ -24,7 +24,8 @@ import {
   type SendAttempt,
   type StoredSendReceipt,
 } from "../../packages/occ/src/egress-send-receipts.ts";
-import { staticEgressFixture, syntheticDispatchFixture } from "../helpers/static-egress.mjs";
+import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 import { waitUntil, within } from "../helpers/wait-for.mjs";
 
 const admitMetadata = async ({
@@ -143,6 +144,7 @@ async function assertDenialAudit(
       namespaceId: f.namespace.id,
       id: f.source.id,
     });
+    assert.ok(event.details);
     assert.equal(event.details.phase, "before_send");
     assert.equal(event.details.code, code);
     assert.equal(event.details.revisionId, f.revision.id);

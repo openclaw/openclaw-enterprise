@@ -9,7 +9,7 @@ import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-import { syntheticDispatchFixture } from "../helpers/static-egress.mjs";
+import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 
 function openReceiptStore(t, connectionString = databaseUrl) {
   const pool = new pg.Pool({ connectionString, max: 1 });
@@ -406,7 +406,7 @@ test(
 );
 
 test("verified peer identity cannot substitute for capture by the exchange owner", async (t) => {
-  const { syntheticDispatchFixture } = await import("../helpers/static-egress.mjs");
+  const { syntheticDispatchFixture } = await import("../helpers/static-egress-dispatch.ts");
   const { CredentialProxy } = await import("../../packages/occ/src/credential-proxy.ts");
   const f = await syntheticDispatchFixture(t, undefined);
   const forwarder = new CredentialProxy({

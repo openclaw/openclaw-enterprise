@@ -1709,7 +1709,7 @@ for (const c of declinedCarryCases) {
 // it for another browser's save and offered a Reload draft that met the same refusal forever
 // (finding 1511). Only the stale-generation refusal, marked by its /expectedGeneration detail,
 // offers Reload draft now. The API answer is replayed here in the exact shape the controller
-// returns for a reservation (proved in postgres-agent-provisioning.test.mjs).
+// returns for a reservation (proved in postgres-agent-provisioning.test.ts).
 // A Kubernetes resourceVersion conflict answers the catch-all "already exists" sentence instead,
 // which names nothing to fix, so each save shows its own conflict text (finding 1639).
 const SAVED_STATE_CONFLICT =

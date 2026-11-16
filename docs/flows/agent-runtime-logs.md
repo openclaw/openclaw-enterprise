@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-11-12
-last_updated_session: authoring-run/424005d3-ef73-4fd2-82c5-0237e640ba5a
+updated: 2026-11-15
+last_updated_session: authoring-run/bfa808f8-e7f0-4a19-ba6d-00a3972ac541
 ---
 
 # Agent runtime logs flow
@@ -197,17 +197,28 @@ take `-previous.log` from the request.
 Console saves a file only for HTTP 200 plain text; other successful formats show retry feedback without saving a file, and JSON error envelopes retain applicable guidance.
 `runtimeLogPageAtLevel` filters after signing, preserving unknown levels, gaps and withheld counts.
 
-`console/agents/logs.mts` clears output when status selects another source, Pod or instance.
-Only a readable replacement starts a fresh tail. Status denial preserves log access; cached `403` avoids repeat denials.
-An unreadable version or a fresh or cached status denial stops status reads. Polls reread only the Agent, as does refocus on every tab (3000, 3005, 3010).
-Without a running Pod, polls reread the Agent (`detail.mts:runningVersion`) and link to another running version's Logs.
-A running Agent without a selected version also polls the version list for newer deployment failures. With unchanged Agent state, it checks at most once a minute. An unchanged list keeps the version chooser.
-Newer Agent state, including this page's Stop, invalidates an outstanding reread (2998).
-The view repeats the recovery card's failure line in place, without its code, until a later deployment succeeds (`deployment-recovery.mts:show`).
-For unreadable versions, the view reports a requested stop or removal from service selection in place (`detail.mts:servingChange`, 3012).
-Follow preserves rows and unchanged statuses. Its first line replaces an empty-tail status.
-A same-selection refresh validates required fields and prepares all rows before replacing output. An unreadable page shows the read error and preserves rows and cursor for the next valid page. Follow appends nothing and retains its cursor when preparation fails. A selection change or lost log access clears output.
-Pod cards show state and exit. Gateway links Harness output or Deployment activity.
+`console/agents/logs.mts` clears output on source, Pod or instance changes;
+only readable replacements start fresh tails. Status denial preserves log access;
+cached `403` avoids repeat denials. Unreadable versions and denied status reads
+stop status polling. Polls and every tab's refocus reread only the Agent (3000,
+3005, 3010). Without a running Pod, `detail.mts:runningVersion` links another
+running version's Logs. Running Agents without selected versions also poll
+revision lists for newer deployment failures, at most once per minute while
+Agent state stays unchanged. Unchanged lists preserve the chooser. Newer Agent
+state, including Stop, invalidates outstanding rereads (2998).
+
+`deployment-recovery.mts:show` repeats the recovery failure without its code
+until deployment succeeds. For unreadable versions, `detail.mts:servingChange`
+reports requested stops or removal from service selection in place (3012).
+Follow preserves rows and unchanged statuses; its first line replaces empty-tail
+status. Refresh prepares and validates all rows before replacing output. Failed
+reads or preparation retain rows and cursor, report the error, and append nothing.
+Selection changes or lost log access clear output. Pod cards show state and exit;
+Gateway links Harness output or Deployment activity.
+
+`internal/occcli/agent_runtime_output.go:printRuntimeLogPage` compacts indented
+API records into single NDJSON lines, preserving fields, string escapes and
+number representations.
 
 See the [CLI reference](../reference/cli.md#runtime-status-and-logs) for flags,
 polling and `Retry-After` (`internal/occclient/transport.go:apiError`).
@@ -220,9 +231,9 @@ When an Agent has no active revision, a failed fallback notice stops
 text-mode stderr errors for no-Pod, gap or withheld notices.
 `cmd/occ/main.go:main` exits nonzero on these errors.
 
-`cmd/occ/main.go:main` restores default signal handling after the first
-cancellation. A subsequent Ctrl-C or `SIGTERM` can terminate a command blocked
-on local I/O or cleanup; that forced exit does not guarantee completed cleanup.
+`cmd/occ/main.go:main` restores default signal handling after cancellation.
+Another Ctrl-C or `SIGTERM` can terminate a command blocked on local I/O or
+cleanup without guaranteeing completed cleanup.
 Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadlines.
 
 ## Debugging and Verification
@@ -232,10 +243,9 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 
 - `503 RUNTIME_LOGS_CLUSTER_RBAC`: API ServiceAccount lacks namespace
   `pods/log`, `events` or execution-cluster `pods` reads.
-- `runtime-logs-content.test.mjs` verifies handlers with synthetic Driver pages;
-  `occ-api-security.test.mjs` verifies authorization and cursor failures.
-  Kubernetes conformance substitutes API observations; Sandbox conformance/wire tests prove
-  protocol boundaries, not runtime execution.
+- Verify content and cursors with `runtime-logs-content.test.ts`, HTTP pages and downloads with
+  `runtime-logs-container-wire.test.ts`, and authorization with `occ-runtime-logs-security.test.ts`.
+  `kubernetes-runtime-logs.test.ts` uses Kubernetes API fixtures. Sandbox tests use protocol fixtures.
 
 ## Related docs
 
@@ -248,6 +258,10 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-15 10:15: Condense Console and CLI return descriptions. (authoring-run/bfa808f8-e7f0-4a19-ba6d-00a3972ac541 - 0c8d829040492a70031f4b4e3b1581945884c231)
+
+- 2026-11-15 10:05: Keep CLI NDJSON records on one line in the accompanying serialization fix. (authoring-run/9146809c-6569-4bd2-9252-4aaed7391146 - c1ece768d5d104dfd26b66ed2afeae0b059adaf8)
 
 - 2026-11-12 23:26: Honor disconnects. (authoring-run/424005d3-ef73-4fd2-82c5-0237e640ba5a - 0dc9387e2521098fa1648d47f6350f1fd52fb46f)
 

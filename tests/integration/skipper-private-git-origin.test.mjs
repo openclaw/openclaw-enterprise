@@ -857,6 +857,7 @@ test("the installed Skipper model requires terminal success and keeps failure di
     const model = await controlledModel(t);
     const initial = toolCall(model.next());
     assert.equal(model.result(initial, output), "SKIPPER_INCOMPLETE_skipper-test");
+    assert.equal(model.observations.at(-1).modelFixtureSelectedTerminalSuccess, undefined);
     assert.doesNotMatch(JSON.stringify(model.observations), /private-error-canary/);
     assert.equal(
       model.observations.some((event) => event.event === "skipper-native-poll"),
@@ -874,6 +875,24 @@ test("the installed Skipper model rejects a changed native session and stops pol
     "SKIPPER_INCOMPLETE_skipper-test",
   );
   assert.equal(model.observations.at(-1).status, "unrecognized");
+
+  // Replay the mixed-session history with a terminal result after losing callback state.
+  model.restart();
+  const beforeReplay = model.observations.length;
+  assert.equal(
+    model.result(
+      { ...poll, call_id: model.command.id + "-wait-2" },
+      nativeToolOutput({ exit: 0, output: "SKIPPER_COMPUTE_DONE_skipper-test" }),
+    ),
+    "SKIPPER_INCOMPLETE_skipper-test",
+  );
+  assert.equal(model.observations.length, beforeReplay + 1);
+  assert.equal(model.observations[beforeReplay].modelFixtureSelectedTerminalSuccess, undefined);
+  assert.partialDeepStrictEqual(model.observations[beforeReplay], {
+    event: "skipper-native-result",
+    id: model.command.id,
+    status: "unrecognized",
+  });
 
   const expired = await controlledModel(t);
   const exec = toolCall(expired.next());

@@ -35,7 +35,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { cookieHeaderFromSetCookie, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { injectJson } from "../helpers/inject-json.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import {
   STANDING_APPROVAL_BINDING_LOCKED,
   STANDING_APPROVAL_NOT_PERMITTED,

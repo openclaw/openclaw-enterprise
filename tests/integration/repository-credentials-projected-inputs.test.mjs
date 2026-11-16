@@ -370,7 +370,22 @@ test("projection startup preserves unexpected stale entries and rejects unsafe p
   await symlink(join(f.options.privateDirectory, "tls.key"), key);
   await assert.rejects(f.prepare(), { message: "invalid-projected-inputs" });
   await unlink(key);
-  await writeFile(key, Buffer.alloc(65537), { flag: "wx", mode: 0o440 });
+  // Valid PEM whitespace isolates the byte limit from TLS key validation.
+  const keyAtLimit = Buffer.concat([
+    f.values["tls.key"],
+    Buffer.alloc(65536 - f.values["tls.key"].length, " "),
+  ]);
+  await writeFile(key, keyAtLimit, { flag: "wx", mode: 0o440 });
+  const atLimit = await f.prepare();
+  atLimit.close();
+  assert.equal((await readFile(privateKey)).equals(keyAtLimit), true);
+  // Replace the read-only projection in place, preserving its exact mode.
+  await unlink(key);
+  await writeFile(key, Buffer.concat([keyAtLimit, Buffer.from(" ")]), {
+    flag: "wx",
+    mode: 0o440,
+  });
   await assert.rejects(f.prepare(), { message: "invalid-projected-inputs" });
+  assert.equal((await readFile(privateKey)).equals(keyAtLimit), true);
   assert.equal((await readdir(f.options.privateDirectory)).length, 4);
 });

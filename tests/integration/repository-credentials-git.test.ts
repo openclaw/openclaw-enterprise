@@ -14,8 +14,8 @@ import {
   startCredentialServiceFixture as startService,
 } from "../fixtures/repository-credentials/service.mjs";
 import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
-import { exerciseGit } from "../fixtures/repository-credentials/workflows.mjs";
-import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
+import { exerciseGit } from "../fixtures/repository-credentials/workflows.ts";
+import { runInFixtureContainer } from "../fixtures/repository-credentials/container.ts";
 
 const startCredentialServiceFixture = startService as StartCredentialClientFixture;
 type GatewayOptions = { method?: string; body?: JsonValue; headers?: Record<string, string> };

@@ -12,14 +12,13 @@ import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import {
-  assertDockerRuntimeOtelSettings,
-  createOtelLogObservation,
-  OTEL_RESOURCE,
-} from "../helpers/logging-otel-observation.mjs";
+import { createOtelLogObservation, OTEL_RESOURCE } from "../helpers/logging-otel-observation.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
+import { assertDockerRuntimeOtelSettings } from "../helpers/logging-otel-runtime-settings.ts";
 import { availablePort } from "../helpers/available-port.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
-import { browserEnvironment } from "../helpers/compose.mjs";
+import { browserEnvironment } from "../helpers/compose.ts";
+import { selectComposeSubnet } from "../helpers/compose-network.ts";
 
 const executeFile = promisify(execFile);
 
@@ -168,6 +167,7 @@ function composeArguments(project, commandName, args = [], { withLogging = false
   ];
 }
 
+/** @param {ReadonlyArray<readonly [string, string]>} labels */
 function labelFilters(labels) {
   return labels.flatMap(([name, value]) => ["--filter", `label=${name}=${value}`]);
 }
@@ -303,6 +303,10 @@ async function idsByNamespace(namespaceIds, baseArgs, { ignoreErrors = true } = 
   ).flat();
 }
 
+/**
+ * @param {string} project
+ * @param {string} service
+ */
 async function composeServiceContainer(project, service) {
   const ids = await dockerLines([
     "ps",
@@ -313,12 +317,26 @@ async function composeServiceContainer(project, service) {
     ]),
   ]);
   assert.equal(ids.length, 1, `Compose service ${service} must have exactly one container`);
-  const [container] = await dockerJson(["inspect", ids[0]]);
+  /** @type {unknown} */
+  const inspected = await dockerJson(["inspect", ids[0]]);
+  assert.ok(Array.isArray(inspected), "Container inspect output must be an array");
+  /** @type {readonly unknown[]} */
+  const containers = inspected;
+  const container = asRecord(containers[0]);
+  assert.ok(container, "Container inspect must return a container");
   return container;
 }
 
+/**
+ * @param {Record<string, unknown>} container
+ * @param {string} destination
+ */
 function hasMountDestination(container, destination) {
-  return (container.Mounts ?? []).some((mount) => mount.Destination === destination);
+  const mounts = container.Mounts ?? [];
+  assert.ok(Array.isArray(mounts), "Container inspect mounts must be an array");
+  /** @type {readonly unknown[]} */
+  const entries = mounts;
+  return entries.some((mount) => asRecord(mount)?.Destination === destination);
 }
 
 function serviceKeyHeaders(serviceKey) {
@@ -351,6 +369,7 @@ function apiClient(baseUrl, serviceKey) {
   };
 }
 
+/** @param {{project: string, env: NodeJS.ProcessEnv, outputDirectory: string, secrets: string[]}} input */
 async function copyBootstrapServiceKey({ project, env, outputDirectory, secrets }) {
   const localFile = join(outputDirectory, "initial-admin-service-key.json");
   const bootstrap = await composeServiceContainer(project, "bootstrap");
@@ -367,7 +386,9 @@ async function copyBootstrapServiceKey({ project, env, outputDirectory, secrets 
     false,
     "controller service must not mount the private bootstrap output volume",
   );
-  await docker(["cp", `${bootstrap.Id}:${BOOTSTRAP_SERVICE_KEY_PATH}`, localFile], {
+  const bootstrapId = bootstrap.Id;
+  assert.ok(typeof bootstrapId === "string", "Bootstrap container must have an ID");
+  await docker(["cp", `${bootstrapId}:${BOOTSTRAP_SERVICE_KEY_PATH}`, localFile], {
     env,
     timeoutMs: 60_000,
     secrets,
@@ -375,14 +396,24 @@ async function copyBootstrapServiceKey({ project, env, outputDirectory, secrets 
   await chmod(localFile, 0o600);
   const outputStatus = await stat(localFile);
   assert.equal(outputStatus.mode & 0o777, 0o600);
+  /** @type {unknown} */
   const output = JSON.parse(await readFile(localFile, "utf8"));
-  assert.equal(typeof output, "object", "bootstrap service-key output must be JSON");
-  assert.equal(typeof output?.meta?.installationId, "string");
-  assert.match(output.data?.key ?? "", /^occ_/);
-  assert.equal(typeof output.data?.id, "string");
-  assert.equal(typeof output.data?.servicePrincipalId, "string");
-  assert.equal(output.data?.name, "bootstrap-admin");
-  return { localFile, output };
+  const record = asRecord(output);
+  assert.ok(record, "bootstrap service-key output must be JSON");
+  const data = asRecord(record.data);
+  const installationId = asRecord(record.meta)?.installationId;
+  const key = data?.key;
+  assert.ok(typeof installationId === "string", "bootstrap output requires an Installation ID");
+  assert.ok(typeof key === "string", "bootstrap output requires a service key");
+  assert.match(key, /^occ_/);
+  assert.equal(typeof data?.id, "string");
+  const servicePrincipalId = data?.servicePrincipalId;
+  assert.ok(
+    typeof servicePrincipalId === "string",
+    "bootstrap output requires a ServicePrincipal ID",
+  );
+  assert.equal(data?.name, "bootstrap-admin");
+  return { localFile, installationId, key, servicePrincipalId };
 }
 
 async function runOcc({ baseUrl, serviceKeyFile, args, secrets }) {
@@ -398,6 +429,7 @@ async function runOcc({ baseUrl, serviceKeyFile, args, secrets }) {
   return JSON.parse(stdout.trim());
 }
 
+/** @param {string} value */
 function sqlLiteral(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
@@ -425,17 +457,21 @@ async function postgresJson(project, env, sql, { secrets = [] } = {}) {
   return JSON.parse(stdout.trim());
 }
 
+/**
+ * @param {{project: string, env: NodeJS.ProcessEnv, bootstrapServicePrincipalId: string,
+ *   serviceKey: string, namespaceIds: readonly string[], agentIds: readonly string[]}} input
+ */
 async function assertLifecycleDatabaseEvidence({
   project,
   env,
-  serviceKeyOutput,
+  bootstrapServicePrincipalId,
   serviceKey,
   namespaceIds,
   agentIds,
 }) {
   const namespaceArray = namespaceIds.map(sqlLiteral).join(", ");
   const agentArray = agentIds.map(sqlLiteral).join(", ");
-  const servicePrincipalId = sqlLiteral(serviceKeyOutput.data.servicePrincipalId);
+  const servicePrincipalId = sqlLiteral(bootstrapServicePrincipalId);
   // One Configuration and one Agent per refused deployment; no deploy succeeds.
   const expectedOperatorMutationAudits = namespaceIds.length + agentIds.length * 2;
   const evidence = await postgresJson(
@@ -697,7 +733,6 @@ test(
       ...browserEnvironment,
       COMPOSE_PROJECT_NAME: project,
       OCC_POSTGRES_PORT: String(await availablePort()),
-      OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR: randomComposeSubnet(),
       OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker",
       OCC_DEVELOPMENT_CONTAINER_ENGINE: engineBinary,
       OPENAI_API_KEY: "",
@@ -708,6 +743,17 @@ test(
         env,
       });
       env.OCC_CONTAINER_ENGINE_SOCKET = stdout.trim().replace(/^unix:\/\//, "");
+      env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = randomComposeSubnet();
+    } else {
+      const inventoryEnv = {
+        ...env,
+        OPENAI_API_KEY_FILE: undefined,
+        CODEX_ACCESS_TOKEN: undefined,
+        CODEX_ACCESS_TOKEN_FILE: undefined,
+      };
+      env.OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR = await selectComposeSubnet({
+        runDocker: async (args) => (await docker(args, { env: inventoryEnv })).stdout,
+      });
     }
     context.after(() => cleanupProject(project, env, [], { verify: true }));
 
@@ -718,7 +764,7 @@ test(
     });
     await waitFor("development PostgreSQL readiness", async () => {
       const postgres = await composeServiceContainer(project, "postgres");
-      return postgres.State.Health?.Status === "healthy";
+      return asRecord(asRecord(postgres.State)?.Health)?.Status === "healthy";
     });
     const composeOptions = composeArguments(project, "down").slice(1, -1);
     const cliEnv = { ...env, OCC_CONTAINER_ENGINE_SOCKET: "" };
@@ -786,6 +832,7 @@ test(
     const postgresPort = await availablePort();
     const project = `oce-${engineBinary}-${randomUUID().replaceAll("-", "").slice(0, 18)}`;
     const namespaceIds = [];
+    /** @type {string | undefined} */
     let cleanupServiceKey;
     const adminEmail = `admin-${project}@example.test`;
     const adminPassword = `${engineBinary}-admin-${randomUUID()}`;
@@ -915,31 +962,33 @@ test(
       }).catch(() => undefined);
       return response?.status === 200 ? true : undefined;
     });
-    assertDockerRuntimeOtelSettings(
-      otelLogs,
-      await Promise.all(
-        ["bootstrap", "controller", "worker"].map((service) =>
-          composeServiceContainer(project, service),
-        ),
+    const loggingContainers = await Promise.all(
+      ["bootstrap", "controller", "worker"].map((service) =>
+        composeServiceContainer(project, service),
       ),
     );
+    assertDockerRuntimeOtelSettings(otelLogs, loggingContainers);
 
-    const { localFile: serviceKeyFile, output: serviceKeyOutput } = await copyBootstrapServiceKey({
+    const {
+      localFile: serviceKeyFile,
+      installationId,
+      key: serviceKey,
+      servicePrincipalId: bootstrapServicePrincipalId,
+    } = await copyBootstrapServiceKey({
       project,
       env,
       outputDirectory: bootstrapDirectory,
       secrets: composeSecrets,
     });
-    const serviceKey = serviceKeyOutput.data.key;
     cleanupServiceKey = serviceKey;
-    assert.equal(serviceKeyOutput.meta.installationId.startsWith("ins_"), true);
+    assert.equal(installationId.startsWith("ins_"), true);
     const helperInstallation = await runOcc({
       baseUrl,
       serviceKeyFile,
       args: ["installation", "get"],
       secrets: [...composeSecrets, serviceKey],
     });
-    assert.equal(helperInstallation.id, serviceKeyOutput.meta.installationId);
+    assert.equal(helperInstallation.id, installationId);
     const helperNamespace = await runOcc({
       baseUrl,
       serviceKeyFile,
@@ -960,7 +1009,7 @@ test(
     const installation = await request("GET", "/installation");
     assert.equal(installation.status, 200, JSON.stringify(installation.error));
     assert.equal(installation.data.name, env.OPENCLAW_DEV_INSTALLATION_NAME);
-    assert.equal(installation.data.id, serviceKeyOutput.meta.installationId);
+    assert.equal(installation.data.id, installationId);
 
     // Preserve development admission boundaries against the real Compose API listener.
     const unauthenticated = await request(
@@ -1053,16 +1102,18 @@ test(
     await assertLifecycleDatabaseEvidence({
       project,
       env,
-      serviceKeyOutput,
+      bootstrapServicePrincipalId,
       serviceKey,
       namespaceIds,
       agentIds,
     });
-    const scrape = async (service) => {
+    const scrape = async (/** @type {string} */ service) => {
       const container = await composeServiceContainer(project, service);
+      const id = container.Id;
+      assert.ok(typeof id === "string", `${service} container must have an ID`);
       const { stdout } = await docker([
         "exec",
-        container.Id,
+        id,
         "node",
         "-e",
         "fetch('http://127.0.0.1:9464/metrics').then(async r=>{if(!r.ok)process.exit(1);process.stdout.write(await r.text())}).catch(()=>process.exit(1))",

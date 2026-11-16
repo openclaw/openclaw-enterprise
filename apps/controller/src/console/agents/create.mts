@@ -2015,6 +2015,7 @@ function renderAgentForm(
   let savedCredentialSource = draft.savedCredentialSource;
   let credentialRegistration: CredentialRegistration | null = null;
   let credentialRegistrationRejected = false;
+  let registrationRefusal = "";
   let failedCredentialSource: RegisteredCredential | null = null;
   let provisioningRequestId = createClientRequestId();
   // The API admitted (or may have admitted) a job under provisioningRequestId. Create Agent
@@ -2171,8 +2172,9 @@ function renderAgentForm(
         if (credentialRegistrationRejected) {
           credentialRegistration = null;
           credentialRegistrationRejected = false;
-          feedback.textContent =
-            "No credential registration exists. Correct the source configuration and try again.";
+          feedback.textContent = `${registrationRefusal ? registrationRefusal + " " : ""}No credential registration exists. Correct the source configuration and try again.`;
+        } else if (registrationRefusal) {
+          feedback.textContent = `${registrationRefusal} No credential registration is visible. The selected Secret remains saved. Resolve the reported problem with an administrator if needed, then select Create Agent to retry.`;
         } else {
           feedback.textContent =
             "No credential registration is visible. Select Create Agent to retry the same registration.";
@@ -2709,10 +2711,6 @@ function renderAgentForm(
   // Every step of a provisioning plan needs a ready Namespace, so the API would refuse it; a
   // draft plan still saves (finding 2007, #2867).
   const provisioningWaitsForNamespace = () => Boolean(notReady) && shouldProvision();
-  const deploymentNeedsRepository = () =>
-    installationCapabilities?.repositoryAccessRequired === true &&
-    !repositories.hasValidSelection();
-  const provisioningNeedsRepository = () => shouldProvision() && deploymentNeedsRepository();
   // A Namespace that takes no new Agent, draft or not: an adopted one still provisioning, which
   // becomes ready by waiting, or one that turned failed or deleting, or went missing, while the
   // form was open, which never does (finding 2022). A refocus still rechecks it.
@@ -3054,9 +3052,6 @@ function renderAgentForm(
           : namespaceEnded()
             ? "This Namespace cannot hold new Agents, so Create Agent is unavailable."
             : "Create Agent is unavailable until this Namespace is ready.";
-      } else if (!modeUnavailable && deploymentNeedsRepository()) {
-        nextStatus =
-          "This installation’s Credential Proxy requires repository access to deploy an Agent. Select approved repository access if this Agent needs Git, or use an installation that supports deployment without repositories.";
       } else if (!modeUnavailable) {
         nextStatus = shouldProvision()
           ? notReady
@@ -3274,19 +3269,14 @@ function renderAgentForm(
       credentialGrantRefused ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
-      (!savedAgent &&
-        (provisioningNeedsRepository() ||
-          provisioningWaitsForNamespace() ||
-          namespaceRefusesAgents())) ||
+      (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
       Boolean(provisioningAttempt);
     // Create Agent names why it waits: the status line above says so (finding 2007).
     let submitReason: HTMLElement | null = null;
     if (
       !savedAgent &&
       capabilitiesSettled() &&
-      (namespaceRefusesAgents() ||
-        (!selectedModeUnavailable() &&
-          (provisioningNeedsRepository() || provisioningWaitsForNamespace())))
+      (namespaceRefusesAgents() || (!selectedModeUnavailable() && provisioningWaitsForNamespace()))
     ) {
       submitReason = capabilityStatus;
       submit.setAttribute("aria-describedby", capabilityStatus.id);
@@ -3420,7 +3410,6 @@ function renderAgentForm(
   }
   function applyCapabilities(capabilities: InstallationCapabilities | undefined) {
     installationCapabilities = capabilities;
-    repositories.setDeploymentRequiresRepository(capabilities?.repositoryAccessRequired === true);
     applyPluginCapabilities();
     nativeAdminAvailable = capabilities?.nativeAdmin === true;
     nativeWorkersAvailable = capabilities?.nativeWorkers !== undefined;
@@ -3785,10 +3774,7 @@ function renderAgentForm(
       !capabilitiesSettled() ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
-      (!savedAgent &&
-        (provisioningNeedsRepository() ||
-          provisioningWaitsForNamespace() ||
-          namespaceRefusesAgents())) ||
+      (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
       // The console's own errors under each field, not the browser's bubble (UX plan C3).
       !validateFields([...form.elements])
     ) {
@@ -3990,6 +3976,7 @@ function renderAgentForm(
     context.setDraftCapture(null);
     let mutationStarted = false;
     let creatingSecret = false;
+    let postingRegistration = false;
     const requestedSecretName = requestedModelSecretName();
     let refusedInConfiguration = false;
     try {
@@ -4039,11 +4026,14 @@ function renderAgentForm(
           };
           mutationStarted = true;
           credentialRegistrationRejected = false;
+          registrationRefusal = "";
+          postingRegistration = true;
           const result = await request(`${namespacePath(namespaceId)}/credential-sources`, {
             method: "POST",
             expectedStatus: 201,
             body: credentialRegistration,
           });
+          postingRegistration = false;
           if (!context.isCurrent()) {
             return;
           }
@@ -4269,6 +4259,9 @@ function renderAgentForm(
       }
       const registrationProblem =
         error.status && error.status >= 400 ? ` ${describeFailure(cause, { mutation: true })}` : "";
+      if (postingRegistration && knownRejection) {
+        registrationRefusal = registrationProblem.trim();
+      }
       // A refused grant on a saved Agent shows this text only to an Installation administrator (a
       // member sees MEMBER_GRANT_REFUSED below), so its denial names nobody to ask (finding 2113).
       const detail = credentialRegistration

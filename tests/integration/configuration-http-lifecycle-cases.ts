@@ -33,7 +33,6 @@ import {
   type Role,
 } from "../../packages/contracts/src/index.ts";
 import type { OpenClawController } from "../../packages/occ/src/index.ts";
-import type { resolveKubernetesControlNamespace } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import {
@@ -42,7 +41,7 @@ import {
 } from "../helpers/admitted-configuration.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
-import { FlakyConfigurationCoreV1Api } from "../helpers/kubernetes-configuration-core.mjs";
+import { FlakyConfigurationCoreV1Api } from "../helpers/kubernetes-configuration-core.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const schemaContext = {
@@ -54,15 +53,6 @@ const schemaContext = {
   PluginDesiredSelection: PluginDesiredSelectionSchema,
   PluginDesiredState: PluginDesiredStateSchema,
 };
-
-type ConfigurationCoreApi = Pick<
-  Parameters<typeof resolveKubernetesControlNamespace>[0],
-  | "listNamespace"
-  | "createNamespacedConfigMap"
-  | "readNamespacedConfigMap"
-  | "replaceNamespacedConfigMap"
-  | "deleteNamespacedConfigMap"
->;
 
 interface HttpResponse {
   status: number;
@@ -266,7 +256,7 @@ export function registerConfigurationCrudCases(fixtures: ConfigurationHttpLifecy
     // limit, committed after the Console ingress had answered 504 at 15 s, so the caller thought
     // the save had failed. The real Kubernetes Configuration Driver runs here over an in-memory
     // CoreV1Api (not cluster proof); the Fastify, IAM, OCC and transaction paths are real.
-    const client = new FlakyConfigurationCoreV1Api() satisfies ConfigurationCoreApi;
+    const client = new FlakyConfigurationCoreV1Api();
     const configurationDriver = new KubernetesConfigurationDriver({
       authentication: { mode: "inCluster" },
     });
@@ -287,7 +277,7 @@ export function registerConfigurationCrudCases(fixtures: ConfigurationHttpLifecy
     const clock = Date.now;
     t.mock.method(Date, "now", () => clock() + lag);
     const called = client.called.bind(client);
-    client.called = (method: string) => {
+    client.called = (method) => {
       lag += 4_000;
       return called(method);
     };
@@ -301,22 +291,13 @@ export function registerConfigurationCrudCases(fixtures: ConfigurationHttpLifecy
     // The 12 s budget ran out after three calls, before the update's read and replace, which
     // were never sent. The compensation still ran its own namespace verification and read after
     // the budget, found the stored generation unchanged, and left it alone.
-    assert.deepEqual(
-      Object.fromEntries(
-        Object.entries(client.calls).map(([method, n]) => {
-          const previous = before[method];
-          assert.ok(previous !== undefined);
-          return [method, n - previous];
-        }),
-      ),
-      {
-        listNamespace: 3,
-        readNamespacedConfigMap: 2,
-        createNamespacedConfigMap: 0,
-        replaceNamespacedConfigMap: 0,
-        deleteNamespacedConfigMap: 0,
-      },
-    );
+    assert.deepEqual(client.calls, {
+      listNamespace: before.listNamespace + 3,
+      readNamespacedConfigMap: before.readNamespacedConfigMap + 2,
+      createNamespacedConfigMap: before.createNamespacedConfigMap,
+      replaceNamespacedConfigMap: before.replaceNamespacedConfigMap,
+      deleteNamespacedConfigMap: before.deleteNamespacedConfigMap,
+    });
     const read = await request(context.app, "GET", pathname);
     assert.equal(read.status, 200, JSON.stringify(read.body));
     assert.ok(Check(schemaContext, ConfigurationResponse, read.body));

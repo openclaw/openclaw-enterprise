@@ -3,10 +3,10 @@ import {
   submitChatTurnWithAssistantProof,
   textFromFrame,
   waitForStockUi,
-} from "../helpers/native-ui-chat.mjs";
+} from "../helpers/native-ui-chat.ts";
 import assert from "node:assert/strict";
 import { keycloakRealmAdmin } from "./ci-keycloak-realm.mjs";
-import { tlsPeerCertificate } from "./tls-peer-certificate.mjs";
+import { tlsPeerCertificate } from "./tls-peer-certificate.ts";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID, X509Certificate } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";

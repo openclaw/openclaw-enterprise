@@ -15,15 +15,15 @@ import {
   REPOSITORY_REGISTRY_PATH,
   preparedRepositoryBackend,
   preparedRepositoryInstallation,
-} from "../../scripts/lib/prepared-repository-installation.mjs";
+} from "../../scripts/lib/prepared-repository-installation.ts";
 import { verifyNativeRepositoryJourney } from "./repository-native-journey.mjs";
-import { createGitHubAppRepositoryObserver } from "./github-app-observer.mjs";
+import { createGitHubAppRepositoryObserver } from "./github-app-observer.ts";
 import {
   createRepositoryObserver,
   readInstalledCredentialSession,
 } from "./repository-credentials-installed.mjs";
 import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
-import { protectedText, redactedQaTail, registerQaSecret } from "./qa-secrets.mjs";
+import { protectedText, redactedQaTail, registerQaSecret } from "./qa-secrets.ts";
 
 /** The one run-owned branch that every repository scenario of a QA run may push. */
 export function qaRepositoryBranch(suffix) {

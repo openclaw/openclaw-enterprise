@@ -4,7 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { readKeycloakImage } from "../../scripts/ci/keycloak.mjs";
+import { readKeycloakImage } from "../../scripts/ci/keycloak.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 const executeFile = promisify(execFile);

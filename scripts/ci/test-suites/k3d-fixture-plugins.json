@@ -16,7 +16,7 @@
   "fileConcurrency": 2,
   "parallelFiles": [
     "tests/integration/kubelet-volume-refresh-k3d.test.ts",
-    "tests/integration/kubernetes-compute-driver-real.test.mjs",
+    "tests/integration/kubernetes-compute-driver-real.test.ts",
     "tests/integration/harness-workspace-released-k3d.test.ts"
   ],
   "files": [
@@ -27,7 +27,7 @@
       ]
     },
     {
-      "path": "tests/integration/kubernetes-compute-driver-real.test.mjs",
+      "path": "tests/integration/kubernetes-compute-driver-real.test.ts",
       "expectedTests": [
         "real Kubernetes Compute Driver owns isolated Agent gateways, identities, revisions, and deletion"
       ]
