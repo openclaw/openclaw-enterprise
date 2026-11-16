@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import test from "node:test";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
 import {
   observationGateway,

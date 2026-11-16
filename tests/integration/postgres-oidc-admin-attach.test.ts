@@ -9,7 +9,7 @@ import {
   oidcUpgradeSettings,
 } from "../helpers/production-sign-in.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 import {
   onboarded,

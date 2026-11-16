@@ -18,7 +18,7 @@ import {
   signIn,
   startNativeHttpsUpstream,
 } from "../helpers/native-admin-postgres.ts";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { waitUntil, within } from "../helpers/wait-for.mjs";
 
 type NativeApi = Awaited<ReturnType<typeof createApi>>;
@@ -142,7 +142,7 @@ export async function assertNativeBrowserLaunchAuthorityLockOrder(
         },
       }),
     );
-    const creatorPid: unknown = await waitForLockWaiter(
+    const creatorPid = await waitForLockWaiter(
       observer,
       holderPid,
       "Agent creation waiting on the parent session fence",
