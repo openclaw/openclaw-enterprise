@@ -11,7 +11,7 @@ import {
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { repositoryBoundary } from "../helpers/postgres-worker-revision-support.mjs";
 import {

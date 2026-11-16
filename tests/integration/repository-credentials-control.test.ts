@@ -5,15 +5,15 @@ import { createServer as createNetServer, connect, Socket } from "node:net";
 import { IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
 import { channel } from "node:diagnostics_channel";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import {
   defaultRegistryRepositories,
   startRegistryCredentialServiceFixture,
-} from "../fixtures/repository-credentials/registry.mjs";
+} from "../fixtures/repository-credentials/registry.ts";
 import {
   createResourceScope,
   createTestResourceScope,
-} from "../fixtures/repository-credentials/resources.mjs";
+} from "../fixtures/repository-credentials/resources.ts";
 import {
   createServer as createTlsServer,
   request as tlsRequest,
@@ -26,38 +26,30 @@ import {
   createAlternateDriverFactory,
   startAlternateUpstream,
 } from "../fixtures/repository-credentials/alternate.ts";
-import {
-  fixtureRepository,
-  type startGitHubFixture,
-} from "../fixtures/repository-credentials/github.mjs";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.ts";
 import {
   createTlsMaterial,
   listen,
   temporaryDirectory,
   run,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 import {
-  githubProviderModule,
-  appModule,
-  appRoot,
-  appExtension,
   controlRequest,
   createServiceConfiguration,
   eventually,
   createLoopbackServiceConfiguration,
   startTokenServiceScope,
-} from "../fixtures/repository-credentials/service.mjs";
+} from "../fixtures/repository-credentials/service-fixture.ts";
+import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.ts";
+import { appFunction } from "../fixtures/repository-credentials/app-functions.ts";
 import {
   createStaticTokenServiceFactory,
   startServiceListeners,
   startStaticTokenService,
-} from "../fixtures/repository-credentials/service-resources.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
-import type {
-  Clock,
-  RepositoryBackendFactory,
-} from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+} from "../fixtures/repository-credentials/service-resources.ts";
+import { socketDirectory } from "../helpers/socket-directory.ts";
+import { waitUntil } from "../helpers/wait-for.ts";
+import type { RepositoryBackendFactory } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type { ControlRequest } from "../../apps/controller/src/drivers/repo/access/control-contracts.ts";
 import type {
   CredentialServiceOwner,
@@ -70,33 +62,10 @@ import type {
   SessionStatus,
 } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import type { BoundListeners } from "../../apps/controller/src/drivers/repo/access/server.ts";
-import type { GitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import type { RegistryFixtureDefinition } from "../fixtures/repository-credentials/registry/material.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
 
 type ResourceOwner = Pick<TestContext, "after">;
-type ControlledClock = Clock & { advance(milliseconds: number): Promise<void> };
-type TokenScope<C extends Clock> = {
-  resources: ResourceOwner;
-  clock: C;
-  config: ServiceConfig;
-  tls: Awaited<ReturnType<typeof createTlsMaterial>>;
-  github: Awaited<ReturnType<typeof startGitHubFixture>> | undefined;
-};
-type RegistryFixture = {
-  clock: ControlledClock;
-  config: ServiceConfig;
-  registry: GitHubRepositoryRegistry;
-  service: CredentialServiceOwner;
-  namespaceId: string;
-  backendId: string;
-  repositories: readonly { github: { trace: readonly object[] } }[];
-  restart(): Promise<void>;
-};
-type RepositoryDefinition = Readonly<{
-  repositoryRef: string;
-  repository: string;
-  repositoryId: string;
-}>;
 type SessionResult = {
   session: Record<string, unknown> & {
     sessionId: string;
@@ -213,12 +182,11 @@ async function dropControlResponse(t: ResourceOwner, target: string) {
 
 async function admissionFixture(t: TestContext, onCreate?: (sessionId: string) => void) {
   const scopeOptions = { limits: { sessions: 1 }, github: false };
-  const { resources, clock, tls, config }: TokenScope<ControlledClock> =
-    await startTokenServiceScope(t, scopeOptions);
-  const {
-    callControl,
-  }: typeof import("../../apps/controller/src/drivers/repo/github/access/client/operator.ts") =
-    await appModule("drivers/repo/github/access/client/operator");
+  const { resources, clock, tls, config } = await startTokenServiceScope(t, scopeOptions);
+  const callControl = await appFunction(
+    "drivers/repo/github/access/client/operator",
+    "callControl",
+  );
   const upstream = await startAlternateUpstream(resources, { clock, tls });
   const driverFactory = createAlternateDriverFactory({
     origin: upstream.origin,
@@ -433,8 +401,7 @@ test(
   { timeout: 10000 },
   async (t) => {
     const scopeOptions: { clock: "system"; github?: boolean } = { clock: "system" };
-    const { resources, clock, tls, config, github }: TokenScope<Clock> =
-      await startTokenServiceScope(t, scopeOptions);
+    const { resources, clock, tls, config, github } = await startTokenServiceScope(t, scopeOptions);
     assert.ok(github);
     const { listeners }: { listeners: BoundListeners } = await startStaticTokenService(resources, {
       config,
@@ -614,14 +581,10 @@ test(
   "control startup rejects unsafe parents and refuses existing paths",
   { timeout: 10000 },
   async (t) => {
-    const [{ createSystemClock }, { createCredentialService }, { startListeners }]: [
-      typeof import("../../apps/controller/src/drivers/repo/access/clock.ts"),
-      typeof import("../fixtures/repository-credentials/service.ts"),
-      typeof import("../../apps/controller/src/drivers/repo/access/server.ts"),
-    ] = await Promise.all([
-      appModule("drivers/repo/access/clock"),
+    const [createSystemClock, { createCredentialService }, startListeners] = await Promise.all([
+      appFunction("drivers/repo/access/clock", "createSystemClock"),
       import("../fixtures/repository-credentials/service.ts"),
-      appModule("drivers/repo/access/server"),
+      appFunction("drivers/repo/access/server", "startListeners"),
     ]);
     const clock = createSystemClock();
     const tls = await createTlsMaterial(t);
@@ -661,11 +624,7 @@ test(
   { timeout: 10000 },
   async (t) => {
     const resources = createTestResourceScope(t);
-    const {
-      createSystemClock,
-    }: typeof import("../../apps/controller/src/drivers/repo/access/clock.ts") = await appModule(
-      "drivers/repo/access/clock",
-    );
+    const createSystemClock = await appFunction("drivers/repo/access/clock", "createSystemClock");
     const clock = createSystemClock();
     const tls = await createTlsMaterial(resources);
     const upstream = await startAlternateUpstream(resources, { tls });
@@ -730,15 +689,11 @@ test(
       // A single exchange slot makes leaked ownership observable on the next request.
       limits: { exchanges: 1, exchangesPerSession: 1 },
     };
-    const { resources, clock, tls, config, github }: TokenScope<Clock> =
-      await startTokenServiceScope(t, scopeOptions);
+    const { resources, clock, tls, config, github } = await startTokenServiceScope(t, scopeOptions);
     assert.ok(github);
-    const [{ createCredentialService }, { startListeners }]: [
-      typeof import("../fixtures/repository-credentials/service.ts"),
-      typeof import("../../apps/controller/src/drivers/repo/access/server.ts"),
-    ] = await Promise.all([
+    const [{ createCredentialService }, startListeners] = await Promise.all([
       import("../fixtures/repository-credentials/service.ts"),
-      appModule("drivers/repo/access/server"),
+      appFunction("drivers/repo/access/server", "startListeners"),
     ]);
     const received: { method: string | undefined; body: string }[] = [];
     let upstreamCancelled = false;
@@ -1005,7 +960,7 @@ test(
 async function boundControlFixture(
   t: TestContext,
   limits: Partial<ServiceLimits> = {},
-  repositories?: readonly RepositoryDefinition[],
+  repositories?: readonly RegistryFixtureDefinition[],
 ) {
   // One scope owns every cleanup of these tests. node:test stops a test's after hooks at
   // the first failure, so a failed fixture cleanup used to skip the receipt listener and
@@ -1015,23 +970,19 @@ async function boundControlFixture(
   const resources = createTestResourceScope(t);
   const receiptResources = createResourceScope();
   resources.after(() => receiptResources.close());
-  const fixture: RegistryFixture | undefined = await startRegistryCredentialServiceFixture(
-    resources,
-    {
-      namespaceId: `ns_${randomUUID()}`,
-      autoOpen: false,
-      maximumDurationSeconds: 1200,
-      durationSeconds: 600,
-      gateway: { listen: "127.0.0.1:0" },
-      limits,
-      ...(repositories === undefined ? {} : { repositories }),
-    },
+  const fixture = await startRegistryCredentialServiceFixture(resources, {
+    namespaceId: `ns_${randomUUID()}`,
+    autoOpen: false,
+    maximumDurationSeconds: 1200,
+    durationSeconds: 600,
+    gateway: { listen: "127.0.0.1:0" },
+    limits,
+    ...(repositories === undefined ? {} : { repositories }),
+  });
+  const resolveGitHubRepositoryBinding = await appFunction(
+    "drivers/repo/github/access/registry",
+    "resolveGitHubRepositoryBinding",
   );
-  assert.ok(fixture);
-  const {
-    resolveGitHubRepositoryBinding,
-  }: typeof import("../../apps/controller/src/drivers/repo/github/access/registry.ts") =
-    await githubProviderModule("registry");
   const deadlineWallMs = fixture.clock.wallNow() + 90_000;
   const bindings = (repositories ?? [{ repositoryRef: "repo-a" }]).map(({ repositoryRef }) =>
     resolveGitHubRepositoryBinding(fixture.registry, {
@@ -1635,10 +1586,10 @@ test(
 );
 
 test("the control client refuses socket paths over 103 bytes before connecting", async () => {
-  const {
-    callControl,
-  }: typeof import("../../apps/controller/src/drivers/repo/github/access/client/operator.ts") =
-    await appModule("drivers/repo/github/access/client/operator");
+  const callControl = await appFunction(
+    "drivers/repo/github/access/client/operator",
+    "callControl",
+  );
   const request = { method: "GET", path: "/v1/sessions" };
   // The deliberately unsupported GET path keeps this runtime input outside ControlRequest.
   // 104 ASCII bytes, and 61 characters that encode to 115 bytes. Neither file exists,

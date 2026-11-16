@@ -18,7 +18,7 @@ import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sa
 import { OpenShellServiceTransportError } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { refusingPort } from "../helpers/available-port.ts";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 

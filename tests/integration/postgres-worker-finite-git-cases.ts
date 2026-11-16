@@ -8,7 +8,7 @@ import type { WorkIdentity } from "../helpers/postgres-worker-refused-candidate.
 import { type ClaimedWork } from "../../packages/occ/src/index.ts";
 import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import {
   removeAccessBindings,
   repositoryAttempts,

@@ -76,6 +76,21 @@ export function lifecycleNamespaceReads(
   };
 }
 
+function stopResourceNotFound() {
+  return Object.assign(new Error("Not found"), { code: 404 });
+}
+
+async function readAbsentStopResource() {
+  throw stopResourceNotFound();
+}
+
+const absentStopResourceReads = {
+  readNamespacedConfigMap: readAbsentStopResource,
+  readNamespacedSecret: readAbsentStopResource,
+  readNamespacedService: readAbsentStopResource,
+  readNamespacedServiceAccount: readAbsentStopResource,
+};
+
 export async function checkContainmentRetirementRetry() {
   const cleanupCalls: Parameters<SandboxCleanup>[0][] = [];
   const deletionCalls: DeleteDeployment[] = [];
@@ -124,33 +139,19 @@ export async function checkContainmentRetirementRetry() {
   deployment.metadata.uid = "containment-workload-uid";
   const gatewayName = `gateway-${digest(revision.agentId)}`;
   let gatewayReads = 0;
-  const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
 
   // Only Kubernetes transport observations are substituted; retirement and Sandbox dispatch
   // execute through the production driver against a supported containment-only extension.
   Object.assign(driver, {
     apiClients: Promise.resolve({
       core: {
-        async readNamespacedSecret() {
-          throw notFound();
-        },
+        ...absentStopResourceReads,
         ...namespaceReads,
         async listNamespacedPod() {
           assert.equal(deploymentPresent, false);
           return { apiVersion: "v1", kind: "PodList", items: [] };
         },
-        async readNamespacedPersistentVolumeClaim() {
-          throw notFound();
-        },
-        async readNamespacedConfigMap() {
-          throw notFound();
-        },
-        async readNamespacedService() {
-          throw notFound();
-        },
-        async readNamespacedServiceAccount() {
-          throw notFound();
-        },
+        readNamespacedPersistentVolumeClaim: readAbsentStopResource,
       },
       apps: {
         async readNamespacedDeployment({ name }: ReadDeployment) {
@@ -160,7 +161,7 @@ export async function checkContainmentRetirementRetry() {
           if (name === gatewayName) {
             gatewayReads += 1;
           }
-          throw notFound();
+          throw stopResourceNotFound();
         },
         async deleteNamespacedDeployment(request: DeleteDeployment) {
           deletionCalls.push(request);
@@ -168,14 +169,10 @@ export async function checkContainmentRetirementRetry() {
         },
       },
       networking: {
-        async readNamespacedNetworkPolicy() {
-          throw notFound();
-        },
+        readNamespacedNetworkPolicy: readAbsentStopResource,
       },
       objects: {
-        async read() {
-          throw notFound();
-        },
+        read: readAbsentStopResource,
       },
     }),
   });
@@ -295,7 +292,7 @@ export async function checkStopRetainsAgentStorage() {
       apps: {
         async readNamespacedDeployment({ name }: ReadDeployment) {
           if (name !== gatewayName || gatewayDeleted) {
-            throw Object.assign(new Error("Not found"), { code: 404 });
+            throw stopResourceNotFound();
           }
           return structuredClone(gateway);
         },
@@ -320,7 +317,7 @@ export async function checkStopRetainsAgentStorage() {
         },
         async readNamespacedService({ name }: ReadDeployment) {
           if (name !== gatewayName || serviceDeleted) {
-            throw Object.assign(new Error("Not found"), { code: 404 });
+            throw stopResourceNotFound();
           }
           return structuredClone(service);
         },
@@ -334,7 +331,7 @@ export async function checkStopRetainsAgentStorage() {
         },
         async readNamespacedServiceAccount({ name }: ReadDeployment) {
           if (name !== gatewayName || accountDeleted) {
-            throw Object.assign(new Error("Not found"), { code: 404 });
+            throw stopResourceNotFound();
           }
           return structuredClone(account);
         },
@@ -350,19 +347,15 @@ export async function checkStopRetainsAgentStorage() {
           deletions.push(["PersistentVolumeClaim", request]);
           privateClaimDeleted = true;
         },
-        async readNamespacedConfigMap() {
-          throw Object.assign(new Error("Not found"), { code: 404 });
-        },
+        readNamespacedConfigMap: readAbsentStopResource,
       },
       networking: {
-        async readNamespacedNetworkPolicy() {
-          throw Object.assign(new Error("Not found"), { code: 404 });
-        },
+        readNamespacedNetworkPolicy: readAbsentStopResource,
       },
       objects: {
         async read({ kind, metadata }: ReadObject) {
           if (routeDeleted || kind !== route.kind || metadata.name !== route.metadata.name) {
-            throw Object.assign(new Error("Not found"), { code: 404 });
+            throw stopResourceNotFound();
           }
           return structuredClone(route);
         },
@@ -444,11 +437,10 @@ export async function checkStopPreservesReplacement(
   }
   let raced = false;
   const deletions: string[] = [];
-  const missing = () => Object.assign(new Error("Not found"), { code: 404 });
   const read = (kind: string) => {
     const resource = resources.get(kind);
     if (resource === undefined) {
-      throw missing();
+      throw stopResourceNotFound();
     }
     return structuredClone(resource);
   };
@@ -463,7 +455,7 @@ export async function checkStopPreservesReplacement(
     }
     const resource = resources.get(kind);
     if (resource === undefined) {
-      throw missing();
+      throw stopResourceNotFound();
     }
     for (const field of ["uid", "resourceVersion"] as const) {
       if (
@@ -494,12 +486,8 @@ export async function checkStopPreservesReplacement(
         async readNamespacedServiceAccount() {
           return read("ServiceAccount");
         },
-        async readNamespacedConfigMap() {
-          throw missing();
-        },
-        async readNamespacedSecret() {
-          throw missing();
-        },
+        readNamespacedConfigMap: readAbsentStopResource,
+        readNamespacedSecret: readAbsentStopResource,
         async deleteNamespacedService({ body }: DeleteService) {
           remove("Service", body);
         },
@@ -523,7 +511,7 @@ export async function checkStopPreservesReplacement(
       objects: {
         async read({ kind, metadata }: ReadObject) {
           if (kind !== route.kind || metadata.name !== route.metadata.name) {
-            throw missing();
+            throw stopResourceNotFound();
           }
           return read("HTTPRoute");
         },
@@ -607,22 +595,10 @@ export async function checkContainmentStopOrder() {
       labels: structuredClone(asRecord(asRecord(deployment.spec?.template)?.metadata)?.labels),
     },
   };
-  const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
   Object.assign(driver, {
     apiClients: Promise.resolve({
       core: {
-        async readNamespacedConfigMap() {
-          throw notFound();
-        },
-        async readNamespacedSecret() {
-          throw notFound();
-        },
-        async readNamespacedService() {
-          throw notFound();
-        },
-        async readNamespacedServiceAccount() {
-          throw notFound();
-        },
+        ...absentStopResourceReads,
         ...namespaceReads,
         async listNamespacedPod(request: ListPods) {
           assert.ok(request.labelSelector);
@@ -648,7 +624,7 @@ export async function checkContainmentStopOrder() {
           if (name === deploymentName && deploymentPresent) {
             return structuredClone(deployment);
           }
-          throw notFound();
+          throw stopResourceNotFound();
         },
         async deleteNamespacedDeployment(request: DeleteDeployment) {
           deletionCalls.push(request);
@@ -681,21 +657,6 @@ export async function checkContainmentStopOrder() {
     assert.deepEqual(context.revision, revision);
   }
 }
-
-function stopResourceNotFound() {
-  return Object.assign(new Error("Not found"), { code: 404 });
-}
-
-async function readAbsentStopResource() {
-  throw stopResourceNotFound();
-}
-
-const absentStopResourceReads = {
-  readNamespacedConfigMap: readAbsentStopResource,
-  readNamespacedSecret: readAbsentStopResource,
-  readNamespacedService: readAbsentStopResource,
-  readNamespacedServiceAccount: readAbsentStopResource,
-};
 
 // A dedicated revision whose Gateway and Agent Pods stay for `gatewayPodsLeft` and
 function stopOrderFixture(id: string) {
@@ -988,9 +949,7 @@ export async function checkProviderStopTermination() {
         },
       },
       apps: {
-        async readNamespacedDeployment() {
-          throw stopResourceNotFound();
-        },
+        readNamespacedDeployment: readAbsentStopResource,
       },
       objects: {},
     }),

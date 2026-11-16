@@ -2179,7 +2179,7 @@ export class ControllerWorker {
       if (previous === undefined) {
         continue;
       }
-      await this.state.transactWithQueue(async (unit, queue) => {
+      const retargeted = await this.state.transactWithQueue(async (unit, queue) => {
         const agent = await this.lockClaimAgent(unit, claim);
         if ((await queue.heartbeat(claim)) === undefined) {
           throw new WorkClaimLostError();
@@ -2196,7 +2196,9 @@ export class ControllerWorker {
           operation.phase === "pre-stop" &&
           operation.candidateRevisionId !== claim.revisionId
         ) {
-          throw new WorkClaimLostError();
+          // Release the live claim so the winning deployment can run immediately.
+          await queue.defer(claim, { code: "PREDECESSOR_STOP_RETARGETED" });
+          return true;
         }
         await unit.agents.recordPredecessorReplacement(previous.namespaceId, previous.agentId, {
           predecessorRevisionId: previous.id,
@@ -2204,6 +2206,10 @@ export class ControllerWorker {
           phase: "stopping",
         });
       }, this.queueOptions);
+      if (retargeted) {
+        // The transaction already released this claim and refunded its attempt.
+        throw new WorkClaimLostError();
+      }
       await this.closeRevisionCredentials(claim, previous);
       if (drain === "wait") {
         await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(previous));

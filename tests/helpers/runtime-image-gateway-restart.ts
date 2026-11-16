@@ -15,12 +15,8 @@ import type { EmbeddedContainerInspect } from "../../apps/controller/src/drivers
 import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.ts";
 import { assertGatewayFirstTurnMemory, gatewayMemoryPeak } from "./runtime-image-memory.ts";
-import {
-  image,
-  imageTestOptions,
-  runDocker,
-  gatewayStateVolume,
-} from "./runtime-image-startup.mjs";
+import { runDocker } from "./runtime-image-docker.ts";
+import { image, imageTestOptions, gatewayStateVolume } from "./runtime-image-startup.ts";
 import {
   runStartupProbeScenario,
   observedValue,

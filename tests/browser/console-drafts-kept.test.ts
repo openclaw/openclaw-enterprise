@@ -53,7 +53,7 @@ import {
   REPOSITORY_EDITS_PENDING,
   RESOURCE_NOT_FOUND,
 } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { createDraftStore } from "../../apps/controller/src/console/drafts.mts";
 
 // Legacy resource fields enter the suite as unknown; the checks below narrow them.

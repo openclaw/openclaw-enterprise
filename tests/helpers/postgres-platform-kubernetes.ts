@@ -17,7 +17,7 @@ import {
   kubernetesHash,
   validateExplicitK3dLoopbackContext,
 } from "./kubernetes-real.ts";
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 
 const execute = promisify(execFile);
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;

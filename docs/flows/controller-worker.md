@@ -160,7 +160,9 @@ without Git, has a held runtime failure. Under
 [exclusive replacement](../reference/drivers/compute.md#production-revision-stages),
 the [shared stop boundary](../reference/agents/planned-replacement.md) controls
 native access and predecessor maintenance. Later admissions cannot reopen a
-stopped predecessor. Superseded inactive versions stop with
+stopped predecessor, including after an explicit Stop or a change in replacement mode.
+A worker whose predecessor was retargeted releases its claim for the newer deployment.
+Superseded inactive versions stop with
 `SUPERSEDED_STOP_YIELDED`; recovery deploys a new version.
 
 Agent-stop work rechecks current exact-Agent `operate`; superseded desired state
@@ -388,6 +390,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 - `worker.compute-prepare-failed` names the failed Driver stage without the raw
   exception; match its `workId` or `revisionId` to the next `worker.completed`.
 - [Version](../../tests/integration/postgres-worker-agent-revision.test.mjs),
+  [revision lifecycle](../../tests/integration/postgres-worker-agent-revision-lifecycle.test.ts),
   [convergence](../../tests/integration/postgres-worker-agent-revision-convergence.test.ts),
   [credential-sources](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts),
   [health](../../tests/integration/postgres-worker-agent-revision-health.test.mjs),

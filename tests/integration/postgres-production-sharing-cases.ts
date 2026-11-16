@@ -11,7 +11,7 @@ import { OpenClawController, PostgresPlatformState } from "../../packages/occ/sr
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { composeProduction } from "../helpers/password-hasher.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 
 function isRecord(value: unknown): value is Record<string, unknown> {

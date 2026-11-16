@@ -10,7 +10,7 @@ import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { NotImplementedError } from "../../packages/occ/src/index.ts";
 import type { CodexCatalogPeer } from "../fixtures/codex-catalog-peer.mts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import {
   calendarPluginId,
   codexCatalogFixture,

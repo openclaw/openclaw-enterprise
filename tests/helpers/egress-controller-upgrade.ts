@@ -29,7 +29,7 @@ import type {
   UpgradeSetup,
   UpgradeStack,
 } from "./egress-upgrade-contracts.ts";
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 
 function readPodItems(raw: string) {
   const { items } = record(parseJson(raw));

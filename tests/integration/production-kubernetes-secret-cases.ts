@@ -3,7 +3,7 @@ import test from "node:test";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
 
-import { parseProductionChart, productionCollectorValues } from "../helpers/production-chart.mjs";
+import { parseProductionChart, productionCollectorValues } from "../helpers/production-chart.ts";
 import {
   gatewayRoutingValues,
   gatewaySandboxValues,

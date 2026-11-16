@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { asRecord } from "../../packages/utils/src/objects.ts";
-import { registryImage } from "../../scripts/ci/fixture-support-images.mjs";
+import { registryImage } from "../../scripts/ci/fixture-support-images.ts";
 import { openclawBuildArguments, readOpenclawSource } from "../../scripts/lib/openclaw-source.ts";
 import { availablePort } from "./available-port.ts";
 import {

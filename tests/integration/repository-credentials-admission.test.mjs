@@ -5,13 +5,17 @@ import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import {
+  registerRepositoryAccessUpdateCases,
+  registerRepositoryAdmissionCases,
+  registerRepositoryOptionCases,
+} from "./repository-credentials-agent-access-cases.ts";
 import { registerRepositoryCredentialsDeploymentAdmissionCases } from "./repository-credentials-deployment-admission-cases.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { harnessEgressEnrollment } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
-import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
@@ -45,16 +49,14 @@ import {
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   callerDenied,
-  COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
   CREDENTIAL_PROXY_GIT_ALONE,
   CREDENTIAL_PROXY_INSTALLATION_ACCESS,
   CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
   DEPENDENCY_UNAVAILABLE,
   PROXY_REGISTRATION_UNAVAILABLE,
-  REPOSITORY_ACCESS_OR_BINDINGS,
   REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
@@ -136,6 +138,7 @@ class OpenShellGitComputeDriver extends KubernetesComputeDriver {
 // An Installation with runtime storage that dedicated Agents can use: gateway routing, node
 // enrollment and a Gateway node selector (deployment admission refuses dedicated Agents
 // otherwise, finding 2349).
+/** @param {typeof KubernetesComputeDriver} [Driver] */
 function kubernetesCompute(Driver = KubernetesComputeDriver, selection = {}) {
   const resources = {
     requests: { cpu: "100m", memory: "64Mi" },
@@ -438,85 +441,7 @@ async function fixture(
   };
 }
 
-test("Repository options expose only Namespace-approved display choices behind Agent create authorization", async (t) => {
-  const f = await fixture(t);
-  const path = `${f.collection}/repository-options`;
-  const options = await f.request("GET", path);
-  assert.equal(options.status, 200, JSON.stringify(options));
-  assert.deepEqual(options.data, [
-    {
-      repositoryRef: "project",
-      displayName: "example/project",
-      allowedProfiles: ["git-full", "git-read", "git-write"],
-    },
-  ]);
-  assert.deepEqual(Object.keys(options.data[0]).sort(), [
-    "allowedProfiles",
-    "displayName",
-    "repositoryRef",
-  ]);
-  assert.doesNotMatch(
-    JSON.stringify(options.data),
-    /provider|backend|installation|repositoryId|grant|duration|token|key|credential/i,
-  );
-
-  const removedQuery = await f.request("GET", `${path}?descriptionRefs=project`);
-  assert.equal(removedQuery.status, 400, JSON.stringify(removedQuery));
-
-  restrict(f.iamState, "create", "agent", { namespaceId: f.namespace.id });
-  const denied = await f.request("GET", path);
-  assert.equal(denied.status, 403, JSON.stringify(denied));
-  assert.equal(denied.error.code, "FORBIDDEN");
-
-  f.iamState.restrictions.pop();
-  const sandbox = {
-    id: "repository-options-sandbox",
-    capability: "sandbox",
-    implementation: "test-sandbox",
-    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
-    facets: ["networking", "filesystem", "process"],
-    async cleanup() {},
-  };
-  f.controller.registerDriver(sandbox);
-  f.controller.selectDriver("sandbox", sandbox.id);
-  const incompatible = await f.request("GET", path);
-  assert.equal(incompatible.status, 503, JSON.stringify(incompatible));
-  assert.equal(incompatible.error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
-
-  const transient = await f.request("POST", "/namespaces", { name: "deleting-options" });
-  assert.equal(transient.status, 201, JSON.stringify(transient));
-  const deleting = await f.request("DELETE", `/namespaces/${transient.data.id}`);
-  assert.equal(deleting.status, 202, JSON.stringify(deleting));
-  const conflict = await f.request(
-    "GET",
-    `/namespaces/${transient.data.id}/agents/repository-options`,
-  );
-  assert.equal(conflict.status, 409, JSON.stringify(conflict));
-  assert.equal(conflict.error.code, "RESOURCE_CONFLICT");
-});
-
-test("Exact-Agent repository choices require Agent update authorization", async (t) => {
-  const f = await fixture(t);
-  const agent = await f.createAgent();
-  const path = `${f.collection}/${agent.id}/repository-options`;
-  assert.equal((await f.request("GET", path)).status, 200);
-  restrict(f.iamState, "update", "agent", { namespaceId: f.namespace.id });
-  const denied = await f.request("GET", path);
-  assert.equal(denied.status, 403, JSON.stringify(denied));
-  assert.equal(denied.error.code, "FORBIDDEN");
-});
-
-test("Repository options preserve an empty successful discovery", async (t) => {
-  const f = await fixture(t);
-  const registry = structuredClone(f.registry);
-  registry.repositories = registry.repositories.filter(
-    (repository) => repository.repositoryRef === "foreign-project",
-  );
-  const reconfigured = await f.compose(registry);
-  const options = await reconfigured.request("GET", `${f.collection}/repository-options`);
-  assert.equal(options.status, 200, JSON.stringify(options));
-  assert.deepEqual(options.data, []);
-});
+registerRepositoryOptionCases(fixture);
 
 test("Repository options preserve the full valid GitHub catalog and refuse overflow", async (t) => {
   const f = await fixture(t);
@@ -671,146 +596,7 @@ test("Repository options refuse Driver display text with C0 controls or DEL", as
   );
 });
 
-test("Repository discovery supports a dedicated-only Compute Driver without admitting unsupported Harnesses", async (t) => {
-  // A Driver may support a narrower topology than the platform's Harness catalog.
-  // Discovery must not invent an embedded Harness to test that Driver's availability.
-  class DedicatedRepositoryComputeDriver extends KubernetesComputeDriver {
-    validateRepositoryCredentials(harness, sandboxDriverId) {
-      super.validateRepositoryCredentials(harness, sandboxDriverId);
-      if (harness.mode !== "dedicated") {
-        throw new Error("This Compute Driver supports only dedicated repository execution.");
-      }
-    }
-  }
-
-  for (const [harness, executionMode, status] of [
-    ["codex", "dedicated", 202],
-    ["openclaw", "embedded", 409],
-  ]) {
-    const f = await fixture(t, {
-      compute: kubernetesCompute(DedicatedRepositoryComputeDriver),
-      harness,
-    });
-    const options = await f.request("GET", `${f.collection}/repository-options`);
-    assert.equal(options.status, 200, JSON.stringify(options));
-    assert.equal(options.data[0].repositoryRef, "project");
-
-    if (status === 409) {
-      // Agent save refuses the topology every deployment refuses (finding 1117), with
-      // deployment's message, and stores no Agent.
-      const refused = await f.request("POST", f.collection, {
-        name: `Repository Agent ${randomUUID()}`,
-        configurationId: f.configuration.id,
-        executionMode,
-        repositoryBindings: selection,
-      });
-      assert.equal(refused.status, 409, JSON.stringify(refused));
-      assert.equal(refused.error.code, "RESOURCE_CONFLICT");
-      assert.equal(refused.error.message, COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED);
-      assert.deepEqual((await f.request("GET", f.collection)).data, []);
-      continue;
-    }
-    const agent = await f.createAgent({ executionMode, repositoryBindings: selection });
-    await f.prepareDeployment(agent);
-    const deployed = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
-    assert.equal(deployed.status, status, JSON.stringify(deployed));
-    assert.equal(deployed.data.harness.mode, "dedicated");
-    assert.equal(deployed.data.repositoryCredentials.bindings[0].repositoryRef, "project");
-  }
-});
-
-test("Missing repository composition cannot hide denied or unavailable IAM", async (t) => {
-  const f = await fixture(t, { repositories: false });
-  const path = `${f.collection}/repository-options`;
-  // No repository settings is a fixed Installation state, not an outage (finding 2387): the
-  // authorized read answers no options and says why instead of a 503 on every Agent page.
-  const notConfigured = await f.request("GET", path);
-  assert.equal(notConfigured.status, 200, JSON.stringify(notConfigured));
-  assert.deepEqual(notConfigured.data, []);
-  assert.equal(notConfigured.meta.notConfigured, true);
-
-  restrict(f.iamState, "create", "agent", { namespaceId: f.namespace.id });
-  const denied = await f.request("GET", path);
-  assert.equal(denied.status, 403, JSON.stringify(denied));
-  assert.equal(denied.error.code, "FORBIDDEN");
-  f.iamState.restrictions.pop();
-
-  // Fail the real NativeIAM store during identity lookup, then after lookup at authorization.
-  for (const successfulReads of [0, 1]) {
-    f.failIAMAfterReads(successfulReads);
-    const failure = await f.request("GET", path);
-    assert.equal(failure.status, 503, JSON.stringify(failure));
-    assert.equal(failure.error.code, "DEPENDENCY_UNAVAILABLE");
-    assert.equal(failure.error.message, DEPENDENCY_UNAVAILABLE);
-  }
-});
-
-test("Successful repository discovery does not authorize later writes", async (t) => {
-  const f = await fixture(t);
-  const agent = await f.createAgent({ repositoryBindings: selection });
-  await f.prepareDeployment(agent);
-  const path = `${f.collection}/${agent.id}`;
-  const before = (await f.request("GET", path)).data;
-  const options = await f.request("GET", `${f.collection}/repository-options`);
-  assert.equal(options.status, 200, JSON.stringify(options));
-
-  for (const scenario of [
-    { action: "create", method: "POST", target: f.collection, fields: { name: "Denied Agent" } },
-    { action: "update", method: "PATCH", target: path, fields: {} },
-    { action: "deploy", method: "POST", target: `${path}/deploy` },
-  ]) {
-    // Fresh NativeIAM policy must win over an earlier successful discovery.
-    restrict(f.iamState, scenario.action, "agent", {
-      id: `deny-${scenario.action}-after-discovery`,
-      namespaceId: f.namespace.id,
-    });
-    const response = await f.request(
-      scenario.method,
-      scenario.target,
-      scenario.fields === undefined
-        ? undefined
-        : {
-            configurationId: f.configuration.id,
-            repositoryBindings: selection,
-            ...scenario.fields,
-          },
-    );
-    assert.equal(response.status, 403, JSON.stringify(response));
-    assert.equal(response.error.code, "FORBIDDEN");
-    f.iamState.restrictions.pop();
-  }
-  assert.deepEqual((await f.request("GET", path)).data, before);
-  assert.deepEqual((await f.request("GET", f.collection)).data, [before]);
-  assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
-});
-
-test("Repository bindings normalize through Agent create and preserve or clear through PATCH", async (t) => {
-  const f = await fixture(t);
-  for (const fields of [{}, { repositoryBindings: [] }]) {
-    const agent = await f.createAgent(fields);
-    assert.equal(Object.hasOwn(agent, "repositoryBindings"), false);
-  }
-  const agent = await f.createAgent({ repositoryBindings: [{ repositoryRef: "project" }] });
-  const path = `${f.collection}/${agent.id}`;
-  assert.deepEqual(agent.repositoryBindings, selection);
-  assert.deepEqual((await f.request("GET", path)).data.repositoryBindings, selection);
-  const patch = { configurationId: f.configuration.id };
-  const preserved = await f.request("PATCH", path, patch);
-  assert.equal(preserved.status, 200);
-  assert.deepEqual(preserved.data.repositoryBindings, selection);
-  const cleared = await f.request("PATCH", path, { ...patch, repositoryBindings: [] });
-  assert.equal(cleared.status, 200);
-  assert.equal(Object.hasOwn(cleared.data, "repositoryBindings"), false);
-  assert.equal(Object.hasOwn((await f.request("GET", path)).data, "repositoryBindings"), false);
-  // A configured GitHub Backend cannot supply an Agent ServiceAccount association.
-  const incompatible = await f.request("POST", f.collection, {
-    name: "Wrong Backend kind",
-    configurationId: f.configuration.id,
-    backendId,
-  });
-  assert.equal(incompatible.status, 404, JSON.stringify(incompatible));
-  assert.equal(incompatible.error.code, "NOT_FOUND");
-});
+registerRepositoryAdmissionCases({ fixture, kubernetesCompute, selection, backendId });
 
 test("Repository policy rejects invalid create and PATCH before changing stored Agents", async (t) => {
   const f = await fixture(t);
@@ -911,109 +697,7 @@ test("Installation-wide repository access refuses other bindings at save, as dep
   assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
 });
 
-test("Agent repository access preserves inheritance intent and admits only resolved approved profiles", async (t) => {
-  const f = await fixture(t);
-  const intent = { defaultProfile: "git-full", repositories: [{ repositoryRef: "project" }] };
-  const agent = await f.createAgent({ repositoryAccess: intent });
-  const path = `${f.collection}/${agent.id}`;
-  assert.deepEqual(agent.repositoryAccess, intent);
-  assert.deepEqual(agent.repositoryBindings, [{ repositoryRef: "project", profile: "git-full" }]);
-  assert.deepEqual((await f.request("GET", path)).data.repositoryAccess, intent);
-  assert.equal((await f.request("GET", `${path}/repository-options`)).status, 200);
-  const patch = { configurationId: f.configuration.id };
-  const preserved = await f.request("PATCH", path, patch);
-  assert.deepEqual(preserved.data.repositoryAccess, intent);
-
-  // An explicit override stays explicit even while it equals the Agent default.
-  const custom = {
-    defaultProfile: "git-full",
-    repositories: [{ repositoryRef: "project", profile: "git-full" }],
-  };
-  assert.equal(
-    (await f.request("PATCH", path, { ...patch, repositoryAccess: custom })).status,
-    200,
-  );
-  custom.defaultProfile = "git-read";
-  const changed = await f.request("PATCH", path, { ...patch, repositoryAccess: custom });
-  assert.equal(changed.status, 200, JSON.stringify(changed));
-  assert.deepEqual(changed.data.repositoryAccess, custom);
-  assert.deepEqual(changed.data.repositoryBindings, agent.repositoryBindings);
-
-  // Reset to inheritance materializes the new default, without changing the saved intent.
-  const reset = { defaultProfile: "git-read", repositories: [{ repositoryRef: "project" }] };
-  const inherited = await f.request("PATCH", path, { ...patch, repositoryAccess: reset });
-  assert.equal(inherited.status, 200);
-  assert.deepEqual(inherited.data.repositoryAccess, reset);
-  assert.deepEqual(inherited.data.repositoryBindings, [
-    { repositoryRef: "project", profile: "git-read" },
-  ]);
-  const denied = await f.request("PATCH", path, {
-    ...patch,
-    repositoryAccess: { ...reset, defaultProfile: "unapproved" },
-  });
-  assert.equal(denied.status, 400, JSON.stringify(denied));
-  assert.equal(denied.error.message, REPOSITORY_SELECTION_NOT_APPROVED);
-  assert.deepEqual((await f.request("GET", path)).data.repositoryAccess, reset);
-  const ambiguous = await f.request("PATCH", path, {
-    ...patch,
-    repositoryAccess: reset,
-    repositoryBindings: selection,
-  });
-  assert.equal(ambiguous.status, 400, JSON.stringify(ambiguous));
-  assert.equal(ambiguous.error.message, REPOSITORY_ACCESS_OR_BINDINGS);
-  const legacy = await f.request("PATCH", path, { ...patch, repositoryBindings: selection });
-  assert.equal(legacy.status, 200);
-  assert.equal(Object.hasOwn(legacy.data, "repositoryAccess"), false);
-  const empty = { defaultProfile: "git-full", repositories: [] };
-  const cleared = await f.request("PATCH", path, { ...patch, repositoryAccess: empty });
-  assert.equal(cleared.status, 200);
-  assert.deepEqual(cleared.data.repositoryAccess, empty);
-  assert.equal(Object.hasOwn(cleared.data, "repositoryBindings"), false);
-});
-
-test("Agent updates apply repository access and validate plugin policy together", async (t) => {
-  const f = await fixture(t);
-  const driver = new OCCPluginDriver();
-  f.controller.registerDriver(driver);
-  f.controller.selectDriver("plugin", driver.id);
-  const initialAccess = {
-    defaultProfile: "git-read",
-    repositories: [{ repositoryRef: "project" }],
-  };
-  const initialPlugins = { "occ-plugin:diffs": { enabled: true } };
-  const agent = await f.createAgent({ repositoryAccess: initialAccess, plugins: initialPlugins });
-  const path = `${f.collection}/${agent.id}`;
-  const nextAccess = { ...initialAccess, defaultProfile: "git-full" };
-
-  // A policy the selected Driver cannot enforce rejects the whole update, including access.
-  const denied = await f.request("PATCH", path, {
-    configurationId: f.configuration.id,
-    repositoryAccess: nextAccess,
-    plugins: { "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "all_actions" } } },
-  });
-  assert.equal(denied.status, 400, JSON.stringify(denied));
-  const unchanged = await f.request("GET", path);
-  assert.deepEqual(unchanged.data.repositoryAccess, initialAccess);
-  assert.deepEqual(unchanged.data.repositoryBindings, [
-    { repositoryRef: "project", profile: "git-read" },
-  ]);
-  assert.deepEqual(unchanged.data.plugins, initialPlugins);
-
-  const nextPlugins = {
-    "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "none" } },
-  };
-  const updated = await f.request("PATCH", path, {
-    configurationId: f.configuration.id,
-    repositoryAccess: nextAccess,
-    plugins: nextPlugins,
-  });
-  assert.equal(updated.status, 200, JSON.stringify(updated));
-  assert.deepEqual(updated.data.repositoryAccess, nextAccess);
-  assert.deepEqual(updated.data.repositoryBindings, [
-    { repositoryRef: "project", profile: "git-full" },
-  ]);
-  assert.deepEqual(updated.data.plugins, nextPlugins);
-});
+registerRepositoryAccessUpdateCases({ fixture, selection });
 
 test("Agent repository access preserves request order when the Driver returns bindings in another order", async (t) => {
   // Driver resolutions are keyed by reference; their order is not part of the contract.

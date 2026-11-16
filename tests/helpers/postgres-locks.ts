@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { Pool } from "pg";
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 
 type WaitDescription = Parameters<typeof waitFor>[0];
 type WaitOptions = Parameters<typeof waitFor>[2];

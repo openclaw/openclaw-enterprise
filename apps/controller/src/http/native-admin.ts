@@ -922,9 +922,10 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       return { status: "stopped", agent, revision, target, mode };
     }
     if (
-      successor !== undefined &&
-      replacesActiveWorkload(successor) &&
-      !selection.servingBeforeStop
+      selection.predecessorPhase === "stopping" ||
+      (selection.predecessorPhase === undefined &&
+        successor !== undefined &&
+        replacesActiveWorkload(successor))
     ) {
       return { status: "unavailable" };
     }

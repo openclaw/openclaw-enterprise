@@ -8,15 +8,15 @@ import type {
 } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type { JsonValue } from "../../apps/controller/src/drivers/repo/access/json-value.ts";
 import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.ts";
-import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
-import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
-import { startTokenServiceScope } from "../fixtures/repository-credentials/service.mjs";
-import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
+import { createResourceScope } from "../fixtures/repository-credentials/resources.ts";
+import { temporaryDirectory } from "../fixtures/repository-credentials/process.ts";
+import { startTokenServiceScope } from "../fixtures/repository-credentials/service-fixture.ts";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
 import {
   startStaticTokenService,
   writeSessionClientConfiguration,
-} from "../fixtures/repository-credentials/service-resources.mjs";
-import { issueResponse, pullResponse } from "../fixtures/repository-credentials/builders.mjs";
+} from "../fixtures/repository-credentials/service-resources.ts";
+import { issueResponse, pullResponse } from "../fixtures/repository-credentials/builders.ts";
 import { requestHead } from "../fixtures/repository-credentials/request-head.ts";
 import { validateDraftProjection } from "../../apps/controller/src/drivers/repo/github/access/prepared-draft-pull.ts";
 
@@ -638,32 +638,17 @@ test(
   "service resource factories dispose development sessions before closing local upstreams",
   { timeout: 15000 },
   async (t) => {
-    const scope = await startTokenServiceScope(t);
-    const { resources, tls, github } = scope;
-    const clock = jsonObject(scope.clock);
-    const config = jsonObject(scope.config);
-    const gateway = jsonObject(config.gateway);
-    assert.ok(typeof gateway.controlSocket === "string");
+    const { resources, tls, github, config, clock } = await startTokenServiceScope(t);
     assert.ok(github);
-    // The fixture accepts resource scopes at runtime; its JavaScript annotation names the broader test context.
-    const git = jsonObject(
-      await Reflect.apply(startGitSmartHttpFixture, undefined, [
-        resources,
-        { authorize: github.authorize, tls },
-      ]),
-    );
-    assert.ok(typeof git.origin === "string");
-    const started = await startStaticTokenService(resources, {
+    const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
+    const { service, listeners } = await startStaticTokenService(resources, {
       config,
       clock,
       tls,
       github,
       gitOrigin: git.origin,
     });
-    const { service } = started;
-    const address = jsonObject(jsonObject(started.listeners).address);
-    assert.ok(typeof address.port === "number");
-    const port = address.port;
+    const port = listeners.address.port;
     const opened = service.open({ durationSeconds: 86400, profile: "git-full" });
     const clientDirectory = await writeSessionClientConfiguration(resources, {
       opened,
@@ -706,7 +691,7 @@ test(
     assert.equal(github.tokenState()[0]?.revoked, false);
     assert.deepEqual(github.errors, []);
     await assert.rejects(access(clientDirectory), { code: "ENOENT" });
-    await assert.rejects(access(gateway.controlSocket), { code: "ENOENT" });
+    await assert.rejects(access(config.gateway.controlSocket), { code: "ENOENT" });
   },
 );
 

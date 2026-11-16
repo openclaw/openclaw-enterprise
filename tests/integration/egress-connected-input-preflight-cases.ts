@@ -15,7 +15,7 @@ import {
   type SyntheticEvent,
 } from "../fixtures/synthetic-egress-provider.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyComputeDriver } from "../helpers/development.ts";
 import {
@@ -52,7 +52,7 @@ import {
   openShellAgentName,
   openShellRevisionName,
 } from "../helpers/openshell-kubernetes-real.mjs";
-import { waitForResult } from "../helpers/wait-for.mjs";
+import { waitForResult } from "../helpers/wait-for.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 type WorkloadPod = Parameters<typeof assertOpenShellHarnessBinding>[3];

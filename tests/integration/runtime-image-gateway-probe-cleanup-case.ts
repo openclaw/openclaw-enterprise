@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { TestContext } from "node:test";
-import { image, runDocker } from "../helpers/runtime-image-startup.mjs";
+import { runDocker } from "../helpers/runtime-image-docker.ts";
+import { image } from "../helpers/runtime-image-startup.ts";
 
 export async function verifyRuntimeGatewayProbeCleanup(
   t: TestContext,

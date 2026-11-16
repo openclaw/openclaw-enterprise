@@ -153,7 +153,7 @@ emits one workspace-entry marker that sets `truncated` if received; later
 invocations still run but emit no installation records. These intervals do not
 establish model execution or whole-file success.
 
-When a measured operation rejects, the [stage helper](../../../tests/helpers/openshell-stage.mjs)
+When a measured operation rejects, the [stage helper](../../../tests/helpers/openshell-stage.ts)
 emits an `openshell-stage-failure` record before fixture cleanup. The CI runner
 shows its fixed category/code and workflow owner in the live log; direct Node
 runs show the structured progress record. The workflow owner is not the throw

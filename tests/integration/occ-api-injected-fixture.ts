@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { Type } from "typebox";
+import { Type, type Static, type TSchema } from "typebox";
 import { Check } from "typebox/value";
 import { AuthAccountRoleNotFoundError } from "../../apps/controller/src/auth/index.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -11,11 +11,26 @@ import {
 } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
+  AgentResponse,
+  ConfigurationResponse,
   InstallationResponse,
+  JsonValue,
   NamespaceResponse,
+  PluginApproversSchema,
+  PluginDesiredSelectionSchema,
+  PluginDesiredStateSchema,
+  PluginDriverIdentitySchema,
+  PluginToolDefaultsSchema,
+  PluginToolPolicySchema,
   RequestId,
+  SecretResponse,
   ServiceAccountResponse,
+  type AgentRuntimeCredentialStatus,
+  type AgentWire,
   type ChatGPTBackendDefinition,
+  type ComputeAgentBinding,
+  type HarnessAuthBinding,
+  type OpenClawConfigurationDocument,
 } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
@@ -25,7 +40,7 @@ import {
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { createReadyComputeDriver } from "../helpers/development.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 type ControllerOptions = NonNullable<ConstructorParameters<typeof OpenClawController>[1]>;
@@ -376,6 +391,128 @@ type InjectedController = {
   readonly fixture: Awaited<ReturnType<typeof createInjectedControllerFixture>>;
   readonly request: FixtureRequest;
 };
+
+const responseSchemas = {
+  SafeJsonValue: JsonValue,
+  PluginApprovers: PluginApproversSchema,
+  PluginDesiredSelection: PluginDesiredSelectionSchema,
+  PluginDesiredState: PluginDesiredStateSchema,
+  PluginDriverIdentity: PluginDriverIdentitySchema,
+  PluginToolDefaults: PluginToolDefaultsSchema,
+  PluginToolPolicy: PluginToolPolicySchema,
+};
+
+export function checkedInjectedBody<Schema extends TSchema>(
+  response: Awaited<ReturnType<FixtureRequest>>,
+  status: number,
+  schema: Schema,
+): Static<Schema, typeof responseSchemas> {
+  const message = JSON.stringify(response.body);
+  assert.equal(response.status, status, message);
+  assert(Check(responseSchemas, schema, response.body), message);
+  return response.body;
+}
+
+export async function createConfiguration(
+  controller: Pick<InjectedController, "request">,
+  namespaceId: string,
+  values: OpenClawConfigurationDocument = {},
+) {
+  const result = await controller.request("POST", `/namespaces/${namespaceId}/configurations`, {
+    body: { kind: "agent", values },
+  });
+  const { data } = checkedInjectedBody(result, 201, ConfigurationResponse);
+  assert.match(data.id, identifier("cfg"));
+  assert.equal(data.namespaceId, namespaceId);
+  assert.deepEqual(data.values, values);
+  return data;
+}
+
+export async function createAgent(
+  controller: Pick<InjectedController, "request">,
+  namespaceId: string,
+  name: string,
+  values: OpenClawConfigurationDocument = {},
+) {
+  const configuration = await createConfiguration(controller, namespaceId, values);
+  const result = await controller.request("POST", `/namespaces/${namespaceId}/agents`, {
+    body: { name, configurationId: configuration.id },
+  });
+  const { data } = checkedInjectedBody(result, 201, AgentResponse);
+  assert.equal(data.name, name);
+  assert.equal(data.namespaceId, namespaceId);
+  assert.match(data.id, identifier("agt"));
+  assert.equal(data.configurationId, configuration.id);
+  assert.equal(Object.hasOwn(data, "installationId"), false);
+  return data;
+}
+
+export function createProvisioningCapableComputeDriver() {
+  const runtimeStatus = new Map<string, AgentRuntimeCredentialStatus>();
+  const keyOf = ({ namespace, agent }: ComputeAgentBinding) => `${namespace.id}:${agent.id}`;
+  return createReadyComputeDriver("compute-provisioning-api", {
+    agentProvisioning: { executionModes: ["dedicated"] },
+    requiresAgentRuntimeCredentials: true,
+    validateHarnessAuth() {},
+    validateAgentProvisioning() {},
+    async provisionAgentRuntimeCredentials(binding) {
+      runtimeStatus.set(keyOf(binding), { transportConfigured: true });
+      return { transportConfigured: true };
+    },
+    async getAgentRuntimeCredentialStatus(binding) {
+      return runtimeStatus.get(keyOf(binding)) ?? { transportConfigured: false };
+    },
+    async stopRevision() {},
+  });
+}
+
+export async function bindHarnessKey(
+  fixture: InjectedController["fixture"],
+  namespaceId: string,
+  agent: Pick<AgentWire, "id" | "configurationId">,
+) {
+  const created = await injectedRequest(fixture.app, "POST", `/namespaces/${namespaceId}/secrets`, {
+    body: { name: `key-${agent.id}`, value: "synthetic-api-contract-key" },
+  });
+  const { data: secret } = checkedInjectedBody(created, 201, SecretResponse);
+  assert(fixture.controller, "bootstrap must create the controller");
+  const internalAgent = await fixture.controller.getAgent(
+    fixture.principal.id,
+    namespaceId,
+    agent.id,
+  );
+  const roleId = `harness-key-${agent.id}`;
+  fixture.state.identities.push({
+    kind: "service_principal",
+    id: internalAgent.servicePrincipalId,
+    namespaceId,
+  });
+  fixture.state.roles.push({
+    id: roleId,
+    namespaceId,
+    permissions: [{ action: "operate", resourceKind: "secret" }],
+  });
+  fixture.state.bindings.push({
+    id: roleId,
+    namespaceId,
+    subjectKind: "identity",
+    subjectId: internalAgent.servicePrincipalId,
+    roleId,
+    resourceKind: "secret",
+    resourceId: secret.id,
+  });
+  const binding = { method: "api_key", source: secret.ref } satisfies HarnessAuthBinding;
+  const updated = await injectedRequest(
+    fixture.app,
+    "PATCH",
+    `/namespaces/${namespaceId}/agents/${agent.id}`,
+    {
+      body: { configurationId: agent.configurationId, harnessAuth: binding },
+    },
+  );
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  return binding;
+}
 
 export async function bootstrapInstallation(
   { request }: Pick<InjectedController, "request">,
