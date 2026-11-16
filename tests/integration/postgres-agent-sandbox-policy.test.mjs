@@ -1,8 +1,12 @@
 import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.mjs";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import pg from "pg";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -23,6 +27,7 @@ import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
 import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 async function createPolicyApp(t, recordOperations = false, { laxDriver = false } = {}) {
   const grant = {
@@ -824,9 +829,16 @@ test(
   "live apply saves edits and enqueues their exact snapshot atomically",
   requiresPostgres,
   async (t) => {
-    const { state, pool, inject, deployAgent, grant, principal } = await createPolicyApp(t, true);
+    const { app, state, pool, inject, deployAgent, grant, providerRefusalGrant } =
+      await createPolicyApp(t, true);
+    const directory = await temporaryDirectory(t, "oce-policy-cli-");
+    const cli = join(directory, "occ");
+    const execute = promisify(execFile);
+    await execute("go", ["build", "-trimpath", "-o", cli, "./cmd/occ"]);
+    const origin = await app.listen({ host: "127.0.0.1", port: 0 });
+    const replacement = { ...providerRefusalGrant, id: "ports-demo", ports: grant.ports };
     for (const { name, additions, incompatibleDefaults } of [
-      { name: "add a grant", additions: [grant] },
+      { name: "replace saved grants", additions: [replacement] },
       { name: "clear saved grants", additions: [] },
       {
         name: "roll back edits refused by frozen defaults",
@@ -834,59 +846,80 @@ test(
         incompatibleDefaults: true,
       },
     ]) {
-      await t.test(name, async () => {
-        const { namespace, agent, revision } = await deployAgent("Atomic policy application");
-        const targetRevision = await state.transact(async (unit) => {
+      await t.test(name, async (t) => {
+        const {
+          namespace,
+          agent,
+          revision: previous,
+        } = await deployAgent("Atomic policy application");
+        await state.transact(async (unit) => {
           await unit.namespaces.lockNamespace(namespace.id);
-          // Model a persisted revision whose frozen rule name the current OpenShell Driver reserves.
-          const target = incompatibleDefaults
-            ? await unit.revisions.createRevision({
-                ...revision,
-                id: `rev_${randomUUID()}`,
-                revision: revision.revision + 1,
-                sandboxPolicy: {
-                  ...revision.sandboxPolicy,
-                  defaults: {
-                    "oce-agent-legacy": revision.sandboxPolicy.defaults["python-default"],
-                  },
-                },
-              })
-            : revision;
-          const active = await unit.agents.compareAndSetActiveRevision(
+          const selected = await unit.agents.compareAndSetActiveRevision(
             namespace.id,
             agent.id,
             undefined,
+            previous.id,
+          );
+          assert.equal(selected?.activeRevisionId, previous.id);
+        });
+        const revision = await state.transact(async (unit) => {
+          await unit.namespaces.lockNamespace(namespace.id);
+          const target = await unit.revisions.createRevision({
+            ...previous,
+            id: `rev_${randomUUID()}`,
+            revision: previous.revision + 1,
+            // The rollback case models a persisted rule name the current Driver reserves.
+            sandboxPolicy: incompatibleDefaults
+              ? {
+                  ...previous.sandboxPolicy,
+                  defaults: {
+                    "oce-agent-legacy": previous.sandboxPolicy.defaults["python-default"],
+                  },
+                }
+              : previous.sandboxPolicy,
+          });
+          const selected = await unit.agents.compareAndSetActiveRevision(
+            namespace.id,
+            agent.id,
+            previous.id,
             target.id,
           );
-          assert.equal(active?.activeRevisionId, target.id);
+          assert.equal(selected?.activeRevisionId, target.id);
           return target;
         });
-        const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+        const namespacePath = `/namespaces/${namespace.id}`;
+        const path = `${namespacePath}/agents/${agent.id}/sandbox-policy/networking`;
         const enabled = await inject("PATCH", `${path}/editing`, { enabled: true });
         assert.equal(enabled.statusCode, 200, enabled.body);
-        if (additions.length === 0) {
-          const saved = await inject("PUT", path, { expectedVersion: 1, additions: [grant] });
-          assert.equal(saved.statusCode, 200, saved.body);
-        }
+        const seeded = await inject("PUT", path, { expectedVersion: 1, additions: [grant] });
+        assert.equal(seeded.statusCode, 200, seeded.body);
         const readPolicy = () =>
           state.read((view) => view.sandboxPolicies.find(namespace.id, agent.id));
         const before = await readPolicy();
-        const work = () =>
-          pool.query(
-            "SELECT state, actor_id FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=$2 AND agent_target='sandbox_policy'",
-            [namespace.id, agent.id],
-          );
+        assert.deepEqual(before.additions, [grant]);
+        const work = async () =>
+          (
+            await pool.query(
+              `SELECT idempotency_key, work_kind, namespace_id, agent_id, revision_id,
+                      namespace_target, agent_target, actor_id, state, attempt_count,
+                      encode(sha256(convert_to(to_jsonb(work)::text, 'UTF8')), 'hex') AS row_digest
+               FROM occ.controller_work AS work WHERE namespace_id=$1
+               ORDER BY idempotency_key`,
+              [namespace.id],
+            )
+          ).rows;
         const audits = () =>
           pool.query(
             "SELECT id FROM occ.audit_events WHERE kind='mutation' AND outcome='success' AND resource_id=$1 ORDER BY id",
             [before.id],
           );
-        const auditBefore = (await audits()).rows;
         if (incompatibleDefaults) {
+          const workBefore = await work();
+          const auditBefore = (await audits()).rows;
           const body = { expectedVersion: before.version, additions };
           const refused = await inject("POST", `${path}/apply`, {
             ...body,
-            revisionId: targetRevision.id,
+            revisionId: revision.id,
           });
           assert.equal(refused.statusCode, 409, refused.body);
           assert.equal(
@@ -894,7 +927,7 @@ test(
             "The Sandbox Driver cannot enforce the complete requested policy.",
           );
           assert.deepEqual(await readPolicy(), before);
-          assert.deepEqual((await work()).rows, []);
+          assert.deepEqual(await work(), workBefore);
           assert.deepEqual((await audits()).rows, auditBefore);
           // The same edit commits through ordinary save, which admits against current defaults.
           const saved = await inject("PUT", path, body);
@@ -903,40 +936,121 @@ test(
           assert.deepEqual(saved.json().data.additions, additions);
           return;
         }
-        for (const target of [
-          { expectedVersion: before.version, revisionId: `rev_${randomUUID()}` },
-          { expectedVersion: before.version + 1, revisionId: revision.id },
+        const iamPath = `${namespacePath}/iam`;
+        const caller = await inject("POST", `${iamPath}/service-principals`, {});
+        assert.equal(caller.statusCode, 201, caller.body);
+        const callerId = caller.json().data.id;
+        const role = await inject("POST", `${iamPath}/roles`, {
+          permissions: [
+            { action: "manage_policy", resourceKind: "agent" },
+            { action: "read", resourceKind: "sandbox_policy" },
+            { action: "update", resourceKind: "sandbox_policy" },
+          ],
+        });
+        assert.equal(role.statusCode, 201, role.body);
+        for (const [resourceKind, resourceId] of [
+          ["agent", agent.id],
+          ["sandbox_policy", before.id],
         ]) {
-          const refused = await inject("POST", `${path}/apply`, { ...target, additions });
-          assert.equal(refused.statusCode, 409, refused.body);
+          const binding = await inject("POST", `${iamPath}/access-bindings`, {
+            subjectKind: "identity",
+            subjectId: callerId,
+            roleId: role.json().data.id,
+            resourceKind,
+            resourceId,
+          });
+          assert.equal(binding.statusCode, 201, binding.body);
+        }
+        const issued = await inject("POST", "/api/auth/service-keys", {
+          servicePrincipalId: callerId,
+          namespaceId: namespace.id,
+          name: "policy-cli",
+          expiresIn: 86_400,
+        });
+        assert.equal(issued.statusCode, 201, "issue the Namespace service key");
+        const keyId = issued.json().data.id;
+        t.after(async () => {
+          const revoked = await inject("DELETE", `/api/auth/service-keys/${keyId}`);
+          assert.equal(revoked.statusCode, 200, "revoke the Namespace service key");
+        });
+        const keyFile = join(directory, `${namespace.id}-key.json`);
+        const policyFile = join(directory, `${namespace.id}-policy.json`);
+        await writeFile(keyFile, issued.body, { mode: 0o600 });
+        const applyFromFile = async (target) => {
+          await writeFile(policyFile, JSON.stringify({ ...target, additions }), { mode: 0o600 });
+          return execute(cli, [
+            "--url",
+            origin,
+            "--namespace",
+            namespace.id,
+            "--service-key-file",
+            keyFile,
+            "--output",
+            "json",
+            "agent",
+            "policy",
+            "apply",
+            agent.id,
+            "--file",
+            policyFile,
+          ]);
+        };
+        const workBefore = await work();
+        const auditBefore = (await audits()).rows;
+        for (const target of [
+          { expectedVersion: before.version, revisionId: previous.id },
+          { expectedVersion: before.version - 1, revisionId: revision.id },
+        ]) {
+          await assert.rejects(applyFromFile(target), {
+            code: 1,
+            stderr: /HTTP 409.*The Agent, revision, editing setting, or policy changed/,
+          });
           assert.deepEqual(await readPolicy(), before);
-          assert.deepEqual((await work()).rows, []);
+          assert.deepEqual(await work(), workBefore);
           assert.deepEqual((await audits()).rows, auditBefore);
         }
-        const accepted = await inject("POST", `${path}/apply`, {
+        const { stdout } = await applyFromFile({
           expectedVersion: before.version,
           revisionId: revision.id,
-          additions,
         });
-        assert.equal(accepted.statusCode, 202, accepted.body);
-        const returned = accepted.json().data;
+        const returned = JSON.parse(stdout);
         const version = before.version + 1;
         assert.equal(returned.version, version);
         assert.deepEqual(returned.additions, additions);
         assert.equal(returned.application.state, "pending");
         assert.equal(returned.application.revisionId, revision.id);
         assert.equal(returned.application.policyVersion, version);
-        assert.equal(returned.application.requestedBy, principal.id);
+        assert.equal(returned.application.requestedBy, callerId);
         const stored = await readPolicy();
-        assert.equal(stored.application.id, returned.application.id);
+        const { snapshot, ...application } = stored.application;
+        assert.deepEqual(application, returned.application);
         assert.equal(stored.version, version);
         assert.deepEqual(stored.additions, additions);
-        assert.deepEqual(stored.application.snapshot, {
+        assert.deepEqual(snapshot, {
           ...revision.sandboxPolicy,
           version,
           additions,
         });
-        assert.deepEqual((await work()).rows, [{ state: "queued", actor_id: principal.id }]);
+        const key = `agent:${agent.id}:reconcile:sandbox_policy:${application.id}`;
+        const queued = await work();
+        assert.deepEqual(
+          queued.filter((row) => row.idempotency_key !== key),
+          workBefore,
+        );
+        const added = queued.filter((row) => row.idempotency_key === key);
+        assert.equal(added.length, 1);
+        assert.partialDeepStrictEqual(added[0], {
+          idempotency_key: key,
+          work_kind: "lifecycle",
+          namespace_id: namespace.id,
+          agent_id: agent.id,
+          revision_id: null,
+          namespace_target: null,
+          agent_target: "sandbox_policy",
+          actor_id: callerId,
+          state: "queued",
+          attempt_count: 0,
+        });
       });
     }
   },

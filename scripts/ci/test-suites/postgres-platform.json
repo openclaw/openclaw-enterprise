@@ -601,6 +601,7 @@
         "policy admission cannot acquire grants from a Driver snapshot",
         "deployment cannot acquire grants from an empty Driver request",
         "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
+        "live apply saves edits and enqueues their exact snapshot atomically",
         "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it"
       ]
     },
