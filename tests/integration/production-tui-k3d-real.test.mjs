@@ -8,11 +8,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { Type } from "typebox";
+import { Check } from "typebox/value";
 import { ownPortForward } from "../helpers/port-forward-cleanup.ts";
-import { availablePort } from "../helpers/available-port.mjs";
+import { availablePort } from "../helpers/available-port.ts";
 import { createProductionTuiRequest } from "../helpers/production-tui-request.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { installProductionHelmControlPlane } from "../helpers/production-helm-real.mjs";
+import { installProductionHelmControlPlane } from "../helpers/production-helm-real.ts";
 import {
   createKubernetesClient,
   createKubernetesInstallationConfiguration,
@@ -53,6 +55,16 @@ const protectedTuiSelection = {
   kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
   kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
 };
+
+const fixtureObject = Type.Object({
+  kind: Type.String(),
+  metadata: Type.Object({
+    name: Type.String(),
+    namespace: Type.Optional(Type.String()),
+    labels: Type.Optional(Type.Record(Type.String(), Type.String())),
+  }),
+  immutable: Type.Optional(Type.Boolean()),
+});
 
 function selectedTestTitle() {
   if (signinSelected) {
@@ -126,32 +138,36 @@ test(
       ));
     const support = stagedSignin ? await import("../helpers/signin/support-images.ts") : undefined;
     const supportReferences = support && (await support.signinSupportReferences());
-    const images = Object.fromEntries(
-      [
-        ["controller", "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE"],
-        ["runtime", "OCC_TEST_KUBERNETES_RUNTIME_IMAGE"],
-        ["postgres", "OCC_TEST_PRODUCTION_POSTGRES_IMAGE"],
-        ["node", "OCC_TEST_PRODUCTION_NODE_IMAGE"],
-      ].map(([name, variable]) => {
-        const staged =
-          stagedSignin &&
-          (name === "controller"
-            ? stagedSignin.previous.reference
-            : name === "runtime"
-              ? stagedSignin.fixedRuntime.reference
-              : supportReferences[name]);
-        if (staged && process.env[variable]) {
-          assert.equal(process.env[variable], staged);
-        }
-        const value = staged ?? process.env[variable];
-        assert.match(
-          value ?? "",
-          /^\S+@sha256:[a-f0-9]{64}$/,
-          `${variable} must select a real immutable image`,
-        );
-        return [name, value];
-      }),
-    );
+    /**
+     * @param {"controller" | "runtime" | "postgres" | "node"} name
+     * @param {string} variable
+     */
+    function importedImage(name, variable) {
+      const staged =
+        stagedSignin &&
+        (name === "controller"
+          ? stagedSignin.previous.reference
+          : name === "runtime"
+            ? stagedSignin.fixedRuntime.reference
+            : supportReferences[name]);
+      if (staged && process.env[variable]) {
+        assert.equal(process.env[variable], staged);
+      }
+      const value = staged ?? process.env[variable];
+      assert.match(
+        value ?? "",
+        /^\S+@sha256:[a-f0-9]{64}$/,
+        `${variable} must select a real immutable image`,
+      );
+      assert.ok(value);
+      return value;
+    }
+    const images = {
+      controller: importedImage("controller", "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE"),
+      runtime: importedImage("runtime", "OCC_TEST_KUBERNETES_RUNTIME_IMAGE"),
+      postgres: importedImage("postgres", "OCC_TEST_PRODUCTION_POSTGRES_IMAGE"),
+      node: importedImage("node", "OCC_TEST_PRODUCTION_NODE_IMAGE"),
+    };
     const upgradeImageVariables = {
       controller: "OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE",
       runtime: "OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE",
@@ -237,6 +253,7 @@ test(
     let operatorForwarder;
     let providerForwarder;
     let rehearsalComplete = false;
+    /** @type {import("../helpers/production-rehearsal-custody.ts").FixtureRun} */
     const run = (command, args, options) =>
       runFixtureCommand(command, args, options, redact, rehearsalSelected);
     if (stagedSignin) {
@@ -251,6 +268,7 @@ test(
         "staging harness checkout must be clean",
       );
     }
+    /** @type {string | undefined} */
     let chartDirectory;
     if (stagedSignin) {
       const { stageSigninChart } = await import("../helpers/production-worker-chart.ts");
@@ -275,7 +293,9 @@ test(
           rehearsalKubeconfig,
         )
       : undefined;
-    const selection = localCluster?.selection ?? protectedTuiSelection;
+    const { kubeconfigPath, kubernetesContext } = localCluster?.selection ?? protectedTuiSelection;
+    assert.ok(kubeconfigPath && kubernetesContext);
+    const selection = { kubeconfigPath, kubernetesContext };
     const rehearsal =
       stagedSignin ??
       (localCluster ? await selectRehearsalControllers(run, process.env) : undefined);
@@ -289,6 +309,10 @@ test(
       ...(supportIdentities && { supportIdentities }),
       rows: [],
     };
+    /**
+     * @param {string} row
+     * @param {Record<string, unknown>} details
+     */
     const record = async (row, details = {}) => {
       evidence.rows.push({ row, ...details });
       await writeFile(join(directory, "proof.json"), JSON.stringify(evidence, null, 2) + "\n", {
@@ -350,6 +374,7 @@ test(
       const pods = JSON.parse(await kubectl("get", "pods", "-A", "-o", "json")).items;
       assert(pods.every((p) => p.metadata.namespace === "kube-system"));
     }
+    /** @type {Awaited<ReturnType<typeof import("../helpers/signin/materialization.mjs").prepareMaterialization>> | undefined} */
     let materialization;
     let providerMaterial;
     let signinSetup;
@@ -358,9 +383,12 @@ test(
     let dns;
     const apply = (object) =>
       custody ? custody.create(object) : writeFixtureObject(run, kubeArgs, "apply", object);
+    /** @type {import("../helpers/production-rehearsal-custody.ts").FixtureRun} */
     const fixtureRun = async (command, args, options = {}) => {
       if (command === "kubectl" && options.input && args.slice(-3).join(" ") === "apply -f -") {
+        /** @type {unknown} */
         const object = protectedJSON(options.input);
+        assert.ok(Check(fixtureObject, object), "Expected a protected Kubernetes fixture object");
         if (
           (rehearsalSelected || upgradeSelected) &&
           object.kind === "Secret" &&
@@ -380,6 +408,7 @@ test(
       if (custody && command === "helm" && args[0] === "upgrade" && args[1] === "--install") {
         await custody.assertPostgres(true);
         if (signinSelected) {
+          assert.ok(materialization);
           await materialization.assertDatabaseImage();
         }
         // This fixture owns a newly created namespace and starts revision 1.
@@ -559,7 +588,7 @@ test(
       }
       if (signinSelected) {
         const { prepareMaterialization } = await import("../helpers/signin/materialization.mjs");
-        const { providerDns } = await import("../helpers/signin/dns.mjs");
+        const { providerDns } = await import("../helpers/signin/dns.ts");
         dns = providerDns({ system, suffix, custody, localCluster, kubectl, kubeArgs, run });
         const { createOidcProviderMaterial } =
           await import("../helpers/oidc-provider-material.mjs");
@@ -605,6 +634,13 @@ test(
       });
       const port = await availablePort();
       const baseURL = `https://localhost:${port}`;
+      const databaseTLS = materialization?.helmOptions.databaseTLS;
+      const imagePullPolicy = databaseTLS?.imagePullPolicy;
+      assert.ok(
+        imagePullPolicy === undefined ||
+          imagePullPolicy === "Never" ||
+          imagePullPolicy === "IfNotPresent",
+      );
       const { adminEmail } = await installProductionHelmControlPlane({
         selection,
         images,
@@ -613,7 +649,7 @@ test(
         directory,
         suffix,
         configuration,
-        ...materialization?.helmOptions,
+        databaseTLS: databaseTLS && { ...databaseTLS, imagePullPolicy },
         chartDirectory,
         authBaseURL: signinSelected
           ? "https://console.signin-rehearsal.test"
@@ -737,7 +773,7 @@ test(
       });
       await waitPod("operator");
       if (signinSelected) {
-        const { operatorExecutor } = await import("../helpers/signin/operator.mjs");
+        const { operatorExecutor } = await import("../helpers/signin/operator.ts");
         signinOperator = await operatorExecutor({
           custody,
           localCluster,
@@ -2026,7 +2062,7 @@ test(
       await custody.assertRelease();
       const { namespace, tenant } = await provisionNamespace({ api, externalRequest, runGuideOcc });
       if (signinSelected) {
-        const { rehearseSignin } = await import("../helpers/signin/scenario.mjs");
+        const { rehearseSignin } = await import("../helpers/signin/scenario.ts");
         try {
           await rehearseSignin({
             rehearsal,

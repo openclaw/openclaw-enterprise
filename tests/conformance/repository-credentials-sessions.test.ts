@@ -15,7 +15,7 @@ import { createCredentialService } from "../fixtures/repository-credentials/serv
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.ts";
 import type { AlternateDriverObservation } from "../fixtures/repository-credentials/alternate/driver.ts";
-import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
+import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
 import { requestHead } from "../fixtures/repository-credentials/request-head.ts";
 
 const config = () => {

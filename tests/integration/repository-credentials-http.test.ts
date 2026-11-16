@@ -12,13 +12,13 @@ import type {
 import type { ExchangeOutcome } from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
 import type { JsonValue } from "../../apps/controller/src/drivers/repo/access/json-value.ts";
 import { appModule } from "../fixtures/repository-credentials/runtime.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
 import {
   gatewayRequest as untypedGatewayRequest,
   startCredentialServiceFixture,
-} from "../fixtures/repository-credentials/service.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+} from "../fixtures/repository-credentials/service-fixture.ts";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 type RuntimeExports = Pick<
   typeof import("../../apps/controller/src/drivers/repo/access/transport/request.ts"),
@@ -208,15 +208,13 @@ test(
     assert.equal(pull.status, 201);
     const number = numericField(pull.body, "number");
     assert.equal(jsonObject(fixture.github.pulls.get(number)).title, "Contributor change");
-    assert.equal(
-      (
-        await gatewayRequest(fixture, `${path}/pulls/${number}`, {
-          method: "PATCH",
-          body: { title: "Updated change" },
-        })
-      ).status,
-      200,
-    );
+    const updated = await gatewayRequest(fixture, `${path}/pulls/${number}`, {
+      method: "PATCH",
+      body: { title: "Updated change", base: "release" },
+    });
+    assert.equal(updated.status, 200);
+    assert.equal(jsonObject(JSON.parse(updated.body)).base, "release");
+    assert.equal(fixture.github.pulls.get(number)?.base, "release");
     const discussion = await gatewayRequest(fixture, `${path}/issues/${number}/comments`, {
       method: "POST",
       body: { body: "PR discussion" },

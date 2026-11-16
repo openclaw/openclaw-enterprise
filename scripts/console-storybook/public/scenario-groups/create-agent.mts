@@ -2876,7 +2876,7 @@ export const createAgentOutcomeScenarios = {
       "At 360-390 px, confirm the focused refusal is on screen with no Secret or Configuration saved line and no sideways scroll.",
       "Open Configuration JSON under Advanced settings and confirm it is editable, then select Create Agent again; the Agent is created.",
     ],
-    gap: "The refusal is simulated; the in-memory API's preflight is covered by tests/browser/console-agent-plugin-refusals.test.mjs and tests/integration/agent-create-validate-api.test.mjs.",
+    gap: "The refusal is simulated; the in-memory API's preflight is covered by tests/browser/console-agent-plugin-refusals.test.ts and tests/integration/agent-create-validate-api.test.ts.",
   },
   createPluginRefusal: {
     group: "Pages/Create Agent",
@@ -2907,7 +2907,7 @@ export const createAgentOutcomeScenarios = {
       "At 360-390 px, confirm the focused refusal is on screen above the Secret and Configuration saved line, with no sideways scroll.",
       "Clear Plugin selections JSON to {} and select Create Agent again; the Agent is created.",
     ],
-    gap: "The refusal is simulated; the in-memory API's plugin check is covered by tests/browser/console-agent-plugin-refusals.test.mjs.",
+    gap: "The refusal is simulated; the in-memory API's plugin check is covered by tests/browser/console-agent-plugin-refusals.test.ts.",
   },
   createUnknown: {
     group: "Pages/Create Agent",

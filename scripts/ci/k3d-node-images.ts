@@ -1,21 +1,8 @@
-import type { ChildProcessByStdio } from "node:child_process";
-import type { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
+import type { execFile as prepareCommand, PreparationChild } from "./prepare-command.ts";
 
 type CommandResult = { stdout: string; stderr: string };
-type StreamedCommand = ChildProcessByStdio<null, Readable, Readable>;
-
-export type K3dCommand = (
-  command: string,
-  args: string[],
-  options?: {
-    timeoutMs: number;
-    processGroup?: boolean;
-    streamStdout?: boolean;
-    input?: Readable;
-    onSpawn?: (child: StreamedCommand) => void;
-  },
-) => Promise<CommandResult>;
+export type K3dCommand = typeof prepareCommand;
 
 export type PreparationTiming = <Result>(
   lane: string,
@@ -220,7 +207,7 @@ export function createK3dNodeImages({
   async function streamImageIntoK3dNodes(cluster: NodeImageCluster, saveArgs: string[]) {
     const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
     // The executor calls onSpawn synchronously with the streamed child.
-    let save!: StreamedCommand;
+    let save!: PreparationChild;
     const saved = execFile(containerEngine, saveArgs, {
       timeoutMs: 600_000,
       streamStdout: true,

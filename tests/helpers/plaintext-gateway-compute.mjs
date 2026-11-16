@@ -3,6 +3,11 @@ import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 
 // Construction/admission only: no Engine, SSH host or Kubernetes API is accessed.
+/** @returns {[
+ *   ["kubernetes", ReturnType<typeof createTestKubernetesComputeDriver>],
+ *   ["docker", DockerComputeDriver],
+ *   ["ssh", SshComputeDriver]
+ * ]} */
 export function plaintextGatewayComputeDrivers() {
   return [
     ["kubernetes", createTestKubernetesComputeDriver("compute-native-http")],

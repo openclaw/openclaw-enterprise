@@ -4,7 +4,7 @@ import { readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { gatewayRoutingPins } from "../../scripts/ci/routing.ts";
 import { loadYaml, dumpYaml, waitFor, yamlDocuments } from "./qa-utils.mjs";
-import { registerQaSecret } from "./qa-secrets.mjs";
+import { registerQaSecret } from "./qa-secrets.ts";
 
 export async function verifyNetworkPolicy(f) {
   const namespace = `qa-policy-${f.suffix}`;

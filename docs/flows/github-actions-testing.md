@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-14 16:26"
-last_updated_session: "authoring-run/a666c2a4-38f8-44f8-ba0a-ab21c9a1610d"
+updated: "2026-11-14 20:09"
+last_updated_session: "authoring-run/58978de1-4b4d-4b2a-837b-1213bb8a2abb"
 ---
 
 # GitHub Actions testing flow
@@ -63,14 +63,14 @@ graph TD
 
 `loadTestSuites` reads ordered test, input, and preparation definitions.
 `scripts/ci/run-tests.ts:main` rejects noncanonical manifests before [complete attempts](../testing/ci/run-lanes.md#run-a-complete-local-attempt).
-`runner-inputs.ts:parseArgs` rejects unknown options and repeated
-`--test-name` before starting work. `selectLane` validates paths and names.
+`runner-inputs.ts:parseArgs` rejects unknown options and duplicate
+`--test-name`. `selectLane` validates paths and names.
 `runFile` uses an anchored, escaped pattern for one required standalone case.
 `runner-aggregate.ts:validateLaneEvidence` rejects focused results.
 
-`CI Impact` selects coverage; `Suite Audit and Static Checks` verifies checkout identity.
+`CI Impact` selects coverage. `Suite Audit and Static Checks` verifies checkout identity.
 [Ordinary CI](../testing/ci/required-checks.md#scenarios) uses the event checkout without external service credentials.
-Workflows select runners. Kubernetes requires NetworkPolicy enforcement in the kernel.
+Kubernetes runners require kernel NetworkPolicy enforcement.
 
 Pull requests compare the verified merge to its first parent using that parent’s policy.
 The second parent must match the event head. Main pushes use `before` policy for the
@@ -127,18 +127,18 @@ and Docker Model Runtime, and First Agent Smoke. Aggregates check producer and c
 
 [run-ci-lane](../../.github/actions/run-ci-lane/action.yml) prepares and cleans resources, runs tests, and uploads sanitized results. Callers set source, credentials, environment and timeout; tests stop five minutes early.
 
-Dependency caches stay scoped to GitHub PR merge-refs or main. Results and credential-bearing state are never cached; protected jobs never promote PR artifacts.
+Dependency caches for PR merge-refs and main exclude results and credential-bearing state. Protected jobs never promote PR artifacts.
 
 ### 2. Prepare resources under the job owner
 
-`scripts/ci/prepare.mjs:main` and `scripts/ci/prepare.mjs:ensureK3dCluster`
+`scripts/ci/prepare.mjs:main` and `scripts/ci/k3d-preparation.ts:ensureK3dCluster`
 
-[Preparation](github-actions-testing/preparation.md) covers tools, images, clusters, credentials and ownership.
+See [resource preparation](github-actions-testing/preparation.md).
 
 `scripts/ci/prepare.mjs:prepareLane` pre-pulls `logging-collector`’s configured
 Collector and Node images and the shared Prometheus and Grafana pins.
-`ensureDockerSourceImage` reuses verified local digests or verifies downloads from
-`scripts/ci/image-pull.ts:pullImage` before publishing inputs. Registry 5xx/rate
+`scripts/ci/k3d-image-admission.ts:ensureDockerSourceImage` verifies local digests or calls
+`scripts/ci/image-pull.ts:pullImage` and checks the downloaded digest. Registry 5xx/rate
 limits retry within the shared budget; missing manifests/authorization refusals
 fail immediately. Unpinned Node overrides retain test-owned pulls.
 
@@ -282,7 +282,7 @@ awaits an approved resource ledger.
 ## Debugging and Verification
 
 - `node scripts/ci/run-tests.ts audit` checks checkout inventory against the suite map.
-- `node --test tests/integration/ci-runner.test.mjs 'tests/integration/ci-runner-{case-enforcement,file-outcomes,deadline,cleanup-allowance,preparation,failure-output,aggregate,scheduling,redaction,first-agent-startup,openshell-progress}.test.ts'` checks runner outcomes, preparation, redaction, startup, and OpenShell reporting.
+- `node --test tests/integration/ci-runner.test.mjs 'tests/integration/ci-runner-*.test.ts'` checks runner outcomes, process cleanup, preparation, redaction, startup, and OpenShell reporting.
 - After measured local VM disk/network instability, serialize Kubernetes lanes; GitHub Actions keeps its matrix.
 - Missing prerequisites fail setup; supply approved resources without skipping required tests or substituting fixtures.
 - Retain sanitized results for seven days; exclude private state and credentials from uploads. Recover local teardown using run-owned state on its original host and path.
@@ -299,6 +299,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 20:09: Trace image receipt and binary validation in Repository Credentials preparation. (authoring-run/58978de1-4b4d-4b2a-837b-1213bb8a2abb - a411a7eba68705e57330acfd2057083c367cbd9d)
 
 - 2026-11-14 16:26: Run the CI test runner directly from TypeScript and identify the subprocess, reporter, and lifecycle owners. (authoring-run/a666c2a4-38f8-44f8-ba0a-ab21c9a1610d - 5e9510884b5aabf79ed6a73d4362cb245eec8b05)
 

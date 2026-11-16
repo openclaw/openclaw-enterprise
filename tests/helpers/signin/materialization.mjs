@@ -5,10 +5,10 @@ import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { availablePort } from "../available-port.mjs";
+import { availablePort } from "../available-port.ts";
 import { caAndLeaf } from "../certificates.mjs";
 import { ownPortForward } from "../port-forward-cleanup.ts";
-import { fixtureFetch } from "./custody-probes.mjs";
+import { fixtureFetch } from "./custody-probes.ts";
 
 const modules = ["oidc-provider-server.mjs", "oidc-provider.mjs", "id-token.mjs"];
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");

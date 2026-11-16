@@ -1,5 +1,6 @@
 import { execFile, spawn, type ExecFileOptions, type SpawnOptions } from "node:child_process";
 import { join } from "node:path";
+import type { TestContext } from "node:test";
 import { promisify } from "node:util";
 import { withoutShellStartup } from "./environment.ts";
 
@@ -42,6 +43,14 @@ async function commandPath(name: "helm" | "sleep" | "setsid", fallback: string) 
     `command -v ${name}`,
   ]).catch(() => ({ stdout: "" }));
   return stdout.trim() || fallback;
+}
+
+export function skipWithoutHelm(t: TestContext, realHelm: string | null): boolean {
+  if (realHelm) {
+    return false;
+  }
+  t.skip("helm is unavailable to render the real chart");
+  return true;
 }
 
 export async function createRecoveryTools(repository: string) {

@@ -25,13 +25,13 @@ import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/d
 import { sessionAttempt } from "../conformance/repository-sessions.contract.mjs";
 import { disposeBrokerSession, fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import {
   createLoopbackServiceConfiguration,
   gatewayRequest,
-} from "../fixtures/repository-credentials/service.mjs";
-import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+} from "../fixtures/repository-credentials/service-fixture.ts";
+import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.ts";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import { relaySockets } from "../helpers/socket-relay.ts";
 
 type Resources = ReturnType<typeof createTestResourceScope>;

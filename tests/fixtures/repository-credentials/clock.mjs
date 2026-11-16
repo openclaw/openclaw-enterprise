@@ -1,3 +1,13 @@
+/**
+ * @returns {{
+ *   wallNow(): number,
+ *   monotonicNow(): number,
+ *   schedule(delayMs: number, callback: () => void): () => boolean,
+ *   advance(milliseconds: number, wallDelta?: number): Promise<void>,
+ *   pendingTimers(): number,
+ *   deadlines(): number[],
+ * }}
+ */
 export function createControlledClock(wallMs = Date.now()) {
   let wall = wallMs;
   let mono = 0;

@@ -12,7 +12,7 @@ import {
   temporaryDirectory,
 } from "../../repository-credentials/process.mjs";
 import { startGitSmartHttpFixture } from "../../repository-credentials/git.mjs";
-import { createRepositoryResources } from "../../repository-credentials/github/repository-resources.mjs";
+import { createRepositoryResources } from "../../repository-credentials/github/repository-resources.ts";
 import { sharedRsaKeyPair } from "../../repository-credentials/shared-keys.mjs";
 
 export async function installationOrigin(
@@ -113,9 +113,19 @@ export async function installationOrigin(
             Buffer.from(signature, "base64url"),
           ),
         );
-        const jwt = JSON.parse(Buffer.from(claims, "base64url").toString());
+        const jwt: unknown = JSON.parse(Buffer.from(claims, "base64url").toString());
         assert.ok(
-          String(jwt.iss) === appId && jwt.iat <= Date.now() / 1000 && Date.now() / 1000 < jwt.exp,
+          jwt &&
+            typeof jwt === "object" &&
+            "iss" in jwt &&
+            (jwt.iss === appId || jwt.iss === Number(appId)) &&
+            "iat" in jwt &&
+            typeof jwt.iat === "number" &&
+            "exp" in jwt &&
+            typeof jwt.exp === "number" &&
+            jwt.iat <= Date.now() / 1000 &&
+            Date.now() / 1000 < jwt.exp,
+          "expected the installation issuer and valid JWT times",
         );
         assert.ok(++issueCount <= options.maximumIssues, "unexpected additional token issue");
         token = "fixture_installation_" + randomBytes(24).toString("hex");
@@ -148,13 +158,14 @@ export async function installationOrigin(
       const name = path === "/graphql" ? repository : url.pathname.split("/").slice(2, 4).join("/");
       const resource = repositories.find(({ repo }) => repo.full_name === name);
       const selected = !!resource && installationRepositoryIds.has(resource.repo.id);
+      const requestBody: unknown = authenticated && selected ? JSON.parse(body || "{}") : undefined;
       const result = !authenticated
         ? { status: 401, body: { message: "Requires an installation token" } }
         : selected
           ? resource.dispatch({
               method: req.method,
               url,
-              body: JSON.parse(body || "{}"),
+              body: requestBody,
               accept: "",
               permissions,
             })

@@ -6,8 +6,8 @@ import type { TestContext } from "node:test";
 import { promisify } from "node:util";
 
 import { asRecord } from "../../packages/utils/src/objects.ts";
-import { createDevUpModelProvider } from "../helpers/dev-up-model-provider.mjs";
-import type { CommandOptions, RunCommand } from "../helpers/dev-up-model-provider.mjs";
+import { createDevUpModelProvider } from "../helpers/dev-up-model-provider.ts";
+import type { CommandOptions, RunCommand } from "../helpers/dev-up-model-provider.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const execute = promisify(execFile);

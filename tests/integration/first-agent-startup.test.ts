@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer, type RequestListener } from "node:http";
-import { cp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import test, { type TestContext } from "node:test";
@@ -24,6 +24,8 @@ import {
 import { listen } from "../helpers/listen.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { servedAs } from "../helpers/agent-identity.mjs";
+import { withEnvironment } from "../helpers/environment.ts";
+import { localFirstAgentStack } from "../helpers/local-first-agent-stack.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import type {
   RuntimeLogRecord,
@@ -141,6 +143,7 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
     "scripts/first-agent-database.ts",
     "scripts/first-agent-diagnostics.ts",
     "scripts/first-agent-model.ts",
+    "scripts/lib/podman-compose-provider.ts",
     "scripts/lib/private-owned-path.ts",
   ]) {
     const target = join(directory, path);
@@ -216,6 +219,60 @@ test("first-Agent accepts current Compose-backed Kubernetes development state", 
   assert.match(invocation, /^DOCKER_TLS=unset$/m);
   assert.match(invocation, /^DOCKER_TLS_VERIFY=unset$/m);
   assert.match(invocation, /^DOCKER_CERT_PATH=unset$/m);
+});
+
+test("existing Local Setup uses the same Compose provider for first-Agent and QA", async (t) => {
+  const { directory, engineLog, env } = await fixture(t, "none");
+  const tools = join(directory, "tools");
+  const state = await developmentState(directory);
+  const provider = await writeCommand(tools, "docker-compose");
+  const portLookup = [
+    'printf "%s\\n" "$*" "${PODMAN_COMPOSE_PROVIDER-unset}" > "$FIRST_AGENT_TEST_ENGINE_LOG"',
+    "echo 127.0.0.1:18443",
+  ].join("\n");
+  await writeCommand(tools, "podman", portLookup);
+  await writeCommand(tools, "docker", portLookup);
+
+  async function check(engine: string, override: string | undefined, expected: string) {
+    await writeFile(
+      join(directory, "state.json"),
+      JSON.stringify({ ...state, containerEngine: engine }),
+    );
+    const lookupEnv = {
+      FIRST_AGENT_TEST_ENGINE_LOG: engineLog,
+      OCC_DEVELOPMENT_STATE_DIRECTORY: directory,
+      OCC_TEST_LOCAL_FIRST_AGENT_REAL: "1",
+      OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER: "none",
+      OCC_URL: undefined,
+      PATH: tools,
+      PODMAN_COMPOSE_PROVIDER: override,
+    };
+    const args = `compose --project-directory ${repository} --project-name first-agent-startup-test -f ${join(directory, "compose.yaml")} port controller 3000`;
+    async function expectLookup(caller: string) {
+      assert.equal(await readFile(engineLog, "utf8"), `${args}\n${expected}\n`, caller);
+      await rm(engineLog);
+    }
+    // A mismatched URL stops the operator after resolving the disposable controller port.
+    assert.match(
+      runFirstAgent({ ...env, ...lookupEnv, OCC_URL: "http://127.0.0.1:18444" }),
+      /OCC_URL does not match the controller port/,
+    );
+    await expectLookup("first-Agent");
+    const stack = await withEnvironment(lookupEnv, () => localFirstAgentStack(t));
+    assert.equal(stack.environment.OCC_URL, "http://127.0.0.1:18443");
+    await expectLookup("existing-stack QA");
+  }
+
+  await check("podman", undefined, "docker-compose");
+  await check("podman", "", "docker-compose");
+  await check("podman", "custom-provider", "custom-provider");
+  await chmod(provider, 0o600);
+  await check("podman", undefined, "podman-compose");
+  await rm(provider);
+  await mkdir(provider);
+  await check("podman", undefined, "podman-compose");
+  await check("docker", undefined, "unset");
+  await check("docker", "custom-provider", "custom-provider");
 });
 
 test("first-Agent requires dedicated Codex for OpenShell before external calls", async (t) => {
