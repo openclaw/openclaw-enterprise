@@ -298,6 +298,16 @@ function engineCommand(fake, { args, env }, { stdout, exit }) {
   if (args[0] === "build") {
     exit(0);
   }
+  if (args[0] === "inspect") {
+    stdout(JSON.stringify({ image: "bootstrap-image", user: "1000:1000" }));
+    exit(0);
+  }
+  if (args[0] === "run") {
+    if (args.includes("-p")) {
+      stdout("[1000,1000]");
+    }
+    exit(0);
+  }
   if (args[0] !== "compose") {
     exit(99, "unexpected " + engine + " command: " + args.join(" "));
   }
@@ -322,6 +332,10 @@ function engineCommand(fake, { args, env }, { stdout, exit }) {
     exit(0);
   }
   if (command === "ps") {
+    if (args.includes("--quiet")) {
+      stdout("bootstrap-container");
+      exit(0);
+    }
     const serviceNames = ["migrate", "bootstrap", "controller", "worker"];
     const requested = serviceNames.includes(args[args.length - 1])
       ? [args[args.length - 1]]
@@ -554,6 +568,8 @@ function lifecycleCommand(fake, invocation, io) {
       args.includes("label=com.docker.compose.service=browser-proxy")
     ) {
       output("browser-proxy-container-id");
+    } else if (args[0] === "compose" && args.includes("--quiet") && args.at(-1) === "bootstrap") {
+      output("bootstrap-container-id");
     } else if (args[0] === "run" && args.includes("-p")) {
       output("[1000,1000]");
     } else if (args[0] === "run" && args.includes("CHOWN")) {
@@ -573,7 +589,7 @@ function lifecycleCommand(fake, invocation, io) {
         output("exited");
       } else if (args.includes("{{.State.ExitCode}}")) {
         output("0");
-      } else if (args.at(-1) === "browser-proxy-container-id") {
+      } else if (["browser-proxy-container-id", "bootstrap-container-id"].includes(args.at(-1))) {
         output(JSON.stringify({ image: "sha256:" + "a".repeat(64), user: "node" }));
       } else {
         fail("unexpected inspect: " + args.join(" "));

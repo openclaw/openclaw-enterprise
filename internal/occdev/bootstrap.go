@@ -36,6 +36,15 @@ func (r *runner) prepareBootstrapCredentials(state *developmentState) error {
 	if err := exclusiveWrite(filepath.Join(state.directory, "bootstrap-client-key.json"), data, 0600); err != nil {
 		return err
 	}
+	if state.DeploymentMode != "k3d" {
+		for name, value := range map[string]string{"mount-admin-password": password, "mount-admin-service-key": key} {
+			if err := exclusiveWrite(filepath.Join(state.directory, name), []byte(value), 0600); err != nil {
+				return err
+			}
+		}
+		passwordPath = filepath.Join(state.directory, "mount-admin-password")
+		keyPath = filepath.Join(state.directory, "mount-admin-service-key")
+	}
 	r.env["OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE"] = passwordPath
 	r.env["OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE"] = keyPath
 	return nil

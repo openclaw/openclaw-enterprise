@@ -68,6 +68,7 @@
     {
       "path": "tests/integration/production-image-startup.test.mjs",
       "expectedTests": [
+        "development bootstrap mount copies support a different reader UID",
         "production image server startup loads bundled Kubernetes, OpenShell, and ChatGPT modules",
         "production image startup rejects an invalid gateway StorageClass before persistence",
         "production image worker startup loads the shared runtime graph",

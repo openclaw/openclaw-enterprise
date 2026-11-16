@@ -475,8 +475,8 @@ fi
 # Retain private source files outside the checkout, including after a failed attempt.
 credential_directory="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-bootstrap-inputs.XXXXXXXXXX")"
 chmod 700 "$credential_directory"
-export OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE="$credential_directory/admin-password"
-export OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE="$credential_directory/admin-service-key"
+export OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE="$credential_directory/mount-admin-password"
+export OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE="$credential_directory/mount-admin-service-key"
 python3 - "$credential_directory" <<'PY'
 import json
 import os
@@ -488,6 +488,8 @@ key = "occ_" + secrets.token_urlsafe(32)
 for name, value in {
     "admin-password": os.environ.get("OPENCLAW_DEV_PASSWORD", "openclaw-development-password"),
     "admin-service-key": key,
+    "mount-admin-password": os.environ.get("OPENCLAW_DEV_PASSWORD", "openclaw-development-password"),
+    "mount-admin-service-key": key,
     "client-key.json": json.dumps({"data": {"key": key}}),
 }.items():
     with os.fdopen(os.open(root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as output:
@@ -578,6 +580,10 @@ fi
 
 if ! compose config --quiet >"$temporary_directory/compose-validated" 2>"$temporary_directory/compose-validate.err"; then
   fail "configuration" "$container_engine_label Compose config validation failed" "${compose_diagnostic[@]}" config --quiet
+fi
+
+if ! OCC_DEVELOPMENT_CONTAINER_ENGINE="$container_engine" "$occ_cli" dev prepare-bootstrap-mounts --directory "$credential_directory" -- "${compose_args[@]}"; then
+  fail "configuration" "could not prepare private bootstrap mount copies"
 fi
 
 if [ "$container_engine" = "podman" ]; then

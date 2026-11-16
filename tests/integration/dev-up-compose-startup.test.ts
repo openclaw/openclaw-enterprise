@@ -1228,7 +1228,10 @@ test("explicit Docker Compute keeps the Compose profile through both entry point
     assert.match(result.stdout, /Container engine: Docker/);
   }
   const starts = (await readEngineInvocations(fixture.dockerLog)).filter(
-    (entry) => entry.args[0] === "compose" && entry.args.includes("up"),
+    (entry) =>
+      entry.args[0] === "compose" &&
+      entry.args.includes("up") &&
+      !entry.args.includes("--no-start"),
   );
   assert.equal(starts.length, 2);
 });

@@ -21,7 +21,7 @@ func TestBootstrapCredentialsArePrivateAndNotOverwritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	inputs := map[string][]byte{}
-	for _, name := range []string{"initial-admin-password", "initial-admin-service-key", "bootstrap-client-key.json"} {
+	for _, name := range []string{"initial-admin-password", "initial-admin-service-key", "bootstrap-client-key.json", "mount-admin-password", "mount-admin-service-key"} {
 		path := filepath.Join(state.directory, name)
 		info, err := os.Stat(path)
 		if err != nil {
@@ -50,7 +50,7 @@ func TestBootstrapCredentialsArePrivateAndNotOverwritten(t *testing.T) {
 	if len(clientKey) != 1 || clientKey["data"].(map[string]any)["key"] != key {
 		t.Fatal("client key must contain only the precreated data.key, not invented issuance metadata")
 	}
-	for name, file := range map[string]string{"OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE": "initial-admin-password", "OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE": "initial-admin-service-key"} {
+	for name, file := range map[string]string{"OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE": "mount-admin-password", "OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE": "mount-admin-service-key"} {
 		if r.env[name] != filepath.Join(state.directory, file) {
 			t.Fatalf("%s does not identify its retained input", name)
 		}

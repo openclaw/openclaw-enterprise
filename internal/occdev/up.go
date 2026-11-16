@@ -169,8 +169,8 @@ func Up(ctx context.Context, opts Options) (result error) {
 	}
 	// Compose interpolation needs paths before the exclusive state-directory claim;
 	// materialize credentials only after that ownership boundary is established.
-	r.env["OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE"] = filepath.Join(directory, "initial-admin-password")
-	r.env["OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE"] = filepath.Join(directory, "initial-admin-service-key")
+	r.env["OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE"] = filepath.Join(directory, "mount-admin-password")
+	r.env["OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE"] = filepath.Join(directory, "mount-admin-service-key")
 	r.env["KUBECONFIG"] = filepath.Join(directory, "kubeconfig")
 	r.env["OCC_DEVELOPMENT_INSTALLATION_CONFIG"] = filepath.Join(directory, "installation.yaml")
 	r.env["OCC_DEVELOPMENT_KUBECONFIG"] = filepath.Join(directory, "container-kubeconfig")
@@ -311,6 +311,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 		}
 	}()
 	startDatabase := func(ctx context.Context, r *runner) error {
+		if err := r.prepareBootstrapMounts(ctx, state.directory, state.composeCommand()); err != nil {
+			return err
+		}
 		fmt.Fprintln(r.opts.Out, "Starting the Compose database, migration, and bootstrap services...")
 		if err := r.compose(ctx, state, "up", "--build", "-d", "postgres", "migrate", "bootstrap"); err != nil {
 			return err

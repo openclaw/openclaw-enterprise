@@ -116,14 +116,17 @@ or PostgreSQL administrator URL.
 
 `compose.yaml:services.bootstrap`, `scripts/bootstrap-installation.mjs`
 
-After migration exits `0`, bootstrap creates administrators, Installation, native
-IAM, audit evidence, service key, and a `provisioning` default Namespace. The
-worker provisions its Docker boundary. Existing Installation state is preserved;
-missing, expired, or revoked keys never trigger reissue.
+After migration succeeds, bootstrap creates administrators, Installation, IAM,
+audit evidence, service key, and a `provisioning` default Namespace. The worker
+provisions its Docker boundary. Reruns preserve state; missing, expired, or revoked
+keys never trigger reissue.
 
 `scripts/dev-up` and `internal/occdev/bootstrap.go:prepareBootstrapCredentials`
-prepare private inputs outside the checkout. Compose projects bootstrap-only
-secrets; Kubernetes setup precreates the Secret before Helm. Migration, API and
+prepare private inputs outside the checkout. `prepareBootstrapMounts` inspects the
+actual Compose bootstrap image and user before startup, then changes ownership
+of private mount copies only. Originals remain host-owned `0600` recovery inputs.
+Compose projects those copies as bootstrap-only secrets; Kubernetes setup
+precreates the Secret before Helm. Migration, API and
 worker receive neither credential. API and worker load committed state after
 initializer success. The
 [bootstrap flow](../local-password-authentication.md) owns credentials, concurrent
@@ -301,19 +304,14 @@ Before importing a source-built runtime, `importRuntime` passes the optional
 [build CA file](../../reference/settings/development.md) to the engine as
 a build secret. Selecting an existing runtime image skips this build.
 
-`internal/occdev/kubernetes.go:engineImageReference` resolves engine-recorded names,
-including Podman `localhost/` and Docker Hub, defaults omitted tags to `:latest`,
-and rejects missing or ambiguous matches. Digest-pinned sources are usually
-multi-arch lists that Docker's containerd image store (Docker 29) can neither
-save with `--platform` nor export completely, so
-`internal/occdev/k3d_import.go:stageDevelopmentPlatformChild` re-points the
-staging tag at the registry's platform child so the importer can save a complete
-single-platform archive. Unlisted sources and a failed child pull keep
-the pinned reference and filter.
-`importDevelopmentImage` resolves
-cluster digests. Both paths call
+`internal/occdev/kubernetes.go:engineImageReference` resolves engine names,
+defaults tags to `:latest`, and rejects missing or ambiguous matches.
+`internal/occdev/k3d_import.go:stageDevelopmentPlatformChild` stages a registry
+platform child for complete single-platform export of digest-pinned multi-arch
+images. Unlisted sources or failed pulls keep the original reference and filter.
+`importDevelopmentImage` resolves cluster digests. Both paths call
 `internal/occdev/status_proxy_k3d.go:developmentStatusProxySource` before
-`writeInstallation`; node inventory retains caller context outside polling.
+`writeInstallation`, retaining caller context for node inventory.
 
 `internal/occdev/up.go:poll` bounds route queries to two minutes through
 `exec.CommandContext`; deadline or cancellation stops blocked queries.
@@ -426,6 +424,8 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 - 2026-11-17 01:37: Remove duplicate full-access probe; retain real Agent qualification. (authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a - 8d3f95dd5)
 
 - 2026-11-16 22:56: Add explicit container-boundary development verification without changing workspace-write defaults. (authoring-run/e151ca6f-93f3-4976-bad1-585c8dde1264 - ac72edfbf884219d7392f32fd245173dffccf922)
+
+- 2026-11-16 15:50: Prepare private mount copies for the effective Compose bootstrap UID without changing recovery-file ownership. (authoring-run/a92d5e93-e5c6-44c1-acf1-b4d08ee54a70 - 8d64b41e408e3d3f093d3547beb3a71fec3f4f88)
 
 - 2026-11-16 09:42: Replace output-volume extraction with private credential preparation and authenticated Installation discovery in the accompanying uncommitted implementation. (authoring-run/e8039d10-1e3b-41aa-82f2-0d2c709b421f - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
 
