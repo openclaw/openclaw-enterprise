@@ -395,18 +395,22 @@ export async function checkCandidateGatewayReplacement(t: TestContext) {
     scaled.spec = { ...scaled.spec, replicas: 2 };
     save(scaled);
     try {
-      // An external scale must defer candidate workloads even when the serving Gateway is owned.
+      const { volumes } = gatewayPod(scaled);
+      const configurationVolumeIndex = volumes.findIndex(
+        (volume) => asRecord(volume)?.name === "openclaw-configuration",
+      );
+      assert.ok(configurationVolumeIndex >= 0);
+      const configMap = asRecord(asRecord(volumes[configurationVolumeIndex])?.configMap);
+      assert.ok(configMap && typeof configMap.name === "string");
+
+      // An external scale must defer candidate workloads for an owned, ConfigMap-backed Gateway.
       assert.equal((await prepare()).ready, false);
       assert.equal(objects.has(key("Deployment", agentName)), false);
+      assert.equal(candidateGatewayStarted, false);
       assert.deepEqual(readGateway(), scaled);
 
-      // A malformed template must be refused before the same external scale can make it pending.
-      const { pod, volumes } = gatewayPod(scaled);
-      const unconfiguredVolumes = volumes.filter(
-        (volume) => asRecord(volume)?.name !== "openclaw-configuration",
-      );
-      assert.equal(unconfiguredVolumes.length, volumes.length - 1);
-      pod.volumes = unconfiguredVolumes;
+      // Keep the mount valid while giving the predecessor a source the Driver must refuse.
+      volumes[configurationVolumeIndex] = { name: "openclaw-configuration", emptyDir: {} };
       save(scaled);
       await assert.rejects(prepare, (error: unknown) => {
         assert.deepEqual(driver.describePrepareRevisionFailure(error), {
@@ -418,6 +422,7 @@ export async function checkCandidateGatewayReplacement(t: TestContext) {
         return true;
       });
       assert.equal(objects.has(key("Deployment", agentName)), false);
+      assert.equal(candidateGatewayStarted, false);
       assert.deepEqual(readGateway(), scaled);
     } finally {
       save(original);
