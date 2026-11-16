@@ -53,6 +53,9 @@ unattributed owner requires operator confirmation.
 OpenClaw normalizes newly created owner-only Linux directories that inherit
 setgid and reports invalid plugin settings during startup. The build runs the
 upstream private-store regressions.
+`openclaw-native-turn-settlement.patch` carries [upstream #185180](https://github.com/openclaw/openclaw/pull/185180).
+When Codex releases a long-running turn, the Gateway gives final delivery its normal progress window.
+
 `openclaw-node-setup-renewal.patch` adds `--pair-or-reconnect` for first enrollment
 or renewal under the same binding. Fresh setup comes first; a typed bootstrap rejection
 allows one validated saved-token retry. See [node enrollment](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)

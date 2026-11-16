@@ -344,6 +344,9 @@ Previously running provider Harnesses must stay running. Failure retains
 observations without `completed`. Reconcile failed writes. Resume rechecks
 without repeating successful Helm. `completed` blocks resume.
 Verify routing, models, channels, credentials, workspaces and restores.
+For a long Codex turn, verify the final reply on the original run. The packaged
+[Gateway watchdog](../../deploy/runtime/openclaw-native-turn-settlement.patch) starts its progress
+window when Codex releases the turn. Explicit stop and execution deadlines still apply.
 The [served Console check](../release/container-promotion.md#verify-the-served-console)
 accepts an optional image-bound entry digest.
 

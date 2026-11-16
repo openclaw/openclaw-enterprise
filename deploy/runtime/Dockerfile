@@ -246,6 +246,11 @@ COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-r
 RUN echo 'b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
+# Remove this backport when the pinned core includes upstream openclaw/openclaw#185180.
+COPY deploy/runtime/openclaw-native-turn-settlement.patch /tmp/openclaw-native-turn-settlement.patch
+RUN echo '5f2127b46a4a92d24469e43d67301ee0b99d99eb2582c4e690b81b12fd8b7da6  /tmp/openclaw-native-turn-settlement.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-native-turn-settlement.patch
+
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
@@ -258,6 +263,7 @@ FROM openclaw-patched-source AS openclaw-bridge-tests
 RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
+    src/sessions/session-controller.watchdog.test.ts src/agents/embedded-agent-runner/runs.liveness.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     src/infra/private-store-file.test.ts \
     src/node-host/runner.test.ts \
