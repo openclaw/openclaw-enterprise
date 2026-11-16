@@ -24,6 +24,7 @@ import type { Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { createInterface } from "node:readline";
+import { connect as tlsConnect, createServer as tlsServer } from "node:tls";
 import { text } from "node:stream/consumers";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -1385,6 +1386,126 @@ test(
       }
     } finally {
       rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+function signedLeaf(directory: string, ca: string, name: string, san: string): string {
+  const key = join(directory, `${name}.key`);
+  const csr = join(directory, `${name}.csr`);
+  const out = join(directory, `${name}.pem`);
+  const extensions = join(directory, `${name}.ext`);
+  writeFileSync(extensions, `basicConstraints=critical,CA:FALSE\nsubjectAltName=${san}\n`);
+  execFileSync(
+    "openssl",
+    [
+      "req",
+      "-new",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-nodes",
+      "-subj",
+      `/CN=${name}`,
+      "-keyout",
+      key,
+      "-out",
+      csr,
+    ],
+    { stdio: "ignore" },
+  );
+  execFileSync(
+    "openssl",
+    [
+      "x509",
+      "-req",
+      "-in",
+      csr,
+      "-CA",
+      ca,
+      "-CAkey",
+      ca.replace(/\.pem$/, ".key"),
+      "-CAcreateserial",
+      "-days",
+      "1",
+      "-extfile",
+      extensions,
+      "-out",
+      out,
+    ],
+    { stdio: "ignore" },
+  );
+  return out;
+}
+
+async function handshake(port: number, servername: string, ca?: string): Promise<string> {
+  return new Promise((resolve) => {
+    const socket = tlsConnect({
+      host: "127.0.0.1",
+      port,
+      servername,
+      ...(ca === undefined ? {} : { ca }),
+    });
+    socket.once("secureConnect", () => {
+      socket.end();
+      resolve("trusted");
+    });
+    socket.once("error", (error: NodeJS.ErrnoException) => resolve(error.code ?? error.message));
+  });
+}
+
+test(
+  "the trust bundle the host hands Box validates the route CA's leaf for the pinned name only",
+  { skip: unsupported },
+  async (t) => {
+    const directory = temporary();
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const caFile = certificate(directory, "route-ca", true);
+    const route = parseRoute(
+      {
+        url: "https://model.pilot.example:8444/v1",
+        address: "10.0.0.9",
+        ca: { file: caFile, sha256: sha256File(caFile) },
+      },
+      "controlled-inference",
+    );
+    const bundle = upstreamCaPem([route]);
+    assert.ok(bundle);
+    const leaves = {
+      named: signedLeaf(directory, caFile, "model", "DNS:model.pilot.example"),
+      other: signedLeaf(directory, caFile, "other", "DNS:other.pilot.example"),
+    };
+    for (const [kind, leaf] of Object.entries(leaves)) {
+      const server = tlsServer({
+        cert: readFileSync(leaf),
+        key: readFileSync(leaf.replace(/\.pem$/, ".key")),
+      });
+      server.on("tlsClientError", () => undefined);
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const address = server.address();
+      assert(address !== null && typeof address !== "string");
+      try {
+        const result = await handshake(address.port, "model.pilot.example", bundle);
+        if (kind === "named") {
+          assert.equal(result, "trusted");
+          // Without the route CA only public roots apply, as in stock Box.
+          assert.notEqual(await handshake(address.port, "model.pilot.example"), "trusted");
+          assert.notEqual(
+            await handshake(
+              address.port,
+              "model.pilot.example",
+              readFileSync(leaves.other, "utf8"),
+            ),
+            "trusted",
+          );
+        } else {
+          assert.equal(result, "ERR_TLS_CERT_ALTNAME_INVALID");
+        }
+      } finally {
+        server.close();
+      }
     }
   },
 );
