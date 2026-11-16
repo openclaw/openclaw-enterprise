@@ -472,7 +472,7 @@ test("failed native Gateway turns capture private bounded logs for the original 
             ],
           };
         },
-        recordRuntimeLogs: (record) => {
+        recordRuntimeLogs: async (record) => {
           cleanup.push("record");
           if (mode === "write-unavailable") {
             throw new Error(credential);
