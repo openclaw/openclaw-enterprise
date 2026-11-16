@@ -3,8 +3,9 @@ import { randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
 import { createConsoleFixtureTransport } from "./console-fixture-transport.ts";
+import { parseNativeRolloutProvenance } from "./native-rollout-provenance.ts";
 import { verifyQaHttpChatIsolation } from "./qa-http-chat-isolation.ts";
-import { registerQaSecret } from "./qa-secrets.ts";
+import { redactedQaTail, registerQaSecret } from "./qa-secrets.ts";
 import { createQaAgent, type createQaInstallation } from "./qa-installation.mjs";
 
 type Fixture = Awaited<ReturnType<typeof createQaInstallation>>;
@@ -33,10 +34,10 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
     resourceKind: "agent",
     resourceId: agent.id,
   });
-  const issue = async () => {
+  const issue = async (principalId = principal.id) => {
     const key = await f.api("POST", "/api/auth/service-keys", {
       namespaceId: agent.namespaceId,
-      servicePrincipalId: principal.id,
+      servicePrincipalId: principalId,
       name: `http-${randomUUID().slice(0, 8)}`,
     });
     registerQaSecret(key.key);
@@ -103,6 +104,27 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
       }
       interrupted = true;
     }
+    if (response.statusCode === 500) {
+      try {
+        const logs = await f.api(
+          "GET",
+          `${base}/agents/${agent.id}/deployments/${agent.revision.id}/runtime/logs?source=gateway&minLevel=warn`,
+        );
+        await f.record(`http-chat-${agent.id}-native-error`, {
+          messages: logs.records
+            .slice(-6)
+            .map((record: { message?: string; fields?: unknown }) =>
+              redactedQaTail(
+                `${record.message ?? ""} ${JSON.stringify(record.fields ?? {})}`,
+                f.env,
+                { lines: 3, lineChars: 600 },
+              ).join(" "),
+            ),
+        });
+      } catch {
+        // Preserve the HTTP failure if bounded diagnostic collection is unavailable.
+      }
+    }
     return {
       status: response.statusCode,
       text,
@@ -118,7 +140,18 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
     ...(user === undefined ? {} : { user }),
   });
   const completion = (result: Awaited<ReturnType<typeof send>>) => {
-    assert.equal(result.status, 200, "native completion must succeed");
+    let diagnostic = "";
+    if (result.status !== 200) {
+      try {
+        const nativeMessage = JSON.parse(result.text)?.error?.message;
+        if (typeof nativeMessage === "string") {
+          diagnostic = redactedQaTail(nativeMessage, f.env, { lines: 3, lineChars: 400 }).join(" ");
+        }
+      } catch {
+        // Do not expose unstructured upstream response bodies.
+      }
+    }
+    assert.equal(result.status, 200, `native completion must succeed: ${diagnostic}`);
     assert.equal(result.interrupted, false, "native completion must finish");
     const json = JSON.parse(result.text);
     assert.equal(json.object, "chat.completion");
@@ -128,7 +161,32 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
   };
   try {
     await verifyQaHttpChatIsolation(f, agent);
+    const reader = await f.api("POST", `${base}/iam/service-principals`, {});
+    const readRole = await f.api("POST", `${base}/iam/roles`, {
+      name: `http-reader-${randomUUID()}`,
+      permissions: [{ action: "read", resourceKind: "agent" }],
+    });
+    await f.api("POST", `${base}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: reader.id,
+      roleId: readRole.id,
+      resourceKind: "agent",
+      resourceId: agent.id,
+    });
+    const readerKey = await issue(reader.id);
+    issuedKeys.push(readerKey.id);
+    assert.equal(
+      (
+        await send(
+          { "x-api-key": readerKey.key, "x-forwarded-user": "administrator" },
+          message("Do not execute this denied request."),
+        )
+      ).status,
+      403,
+    );
+
     // A valid credential with an incomplete JSON body must not retain a socket indefinitely.
+    evidence.httpRequests += 1;
     const bodyDeadline = await new Promise<number | undefined>((resolve, reject) => {
       const request = httpRequest(
         f.apiUrl + path,
@@ -179,6 +237,58 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
         "the selected Harness must execute the HTTP turn's tool action",
       );
       evidence.verifiedToolActions += 1;
+      if (
+        agent.preset === "Codex" &&
+        process.env.OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE === "danger-full-access"
+      ) {
+        // Match the unique tool marker to one real native turn; export policy fields only.
+        const script = `
+          const fs = require('node:fs'); const path = require('node:path');
+          const parse = ${parseNativeRolloutProvenance.toString()};
+          const marker = process.argv[1]; const observations = [];
+          function visit(directory, depth = 0) {
+            if (depth > 5 || !fs.existsSync(directory)) return;
+            for (const entry of fs.readdirSync(directory, {withFileTypes:true})) {
+              const name = path.join(directory, entry.name);
+              if (entry.isDirectory()) { visit(name, depth + 1); continue; }
+              if (!entry.isFile() || !name.endsWith('.jsonl') || fs.statSync(name).size > 8388608) continue;
+              const text = fs.readFileSync(name, 'utf8');
+              if (!text.includes(marker)) continue;
+              const rows = text.trim().split('\\n').map(line => JSON.parse(line));
+              const session = rows.find(row => row.type === 'session_meta')?.payload;
+              const turns = rows.filter(row => row.type === 'turn_context').map(row => row.payload);
+              if (!session || new Set(turns.map(turn => turn.turn_id)).size !== 1) continue;
+              const turn = turns[0];
+              const result = parse({text, expectedThreadId:session.id, expectedTurnId:turn.turn_id, expectedCwd:turn.cwd});
+              observations.push({status:result.status, sandboxPolicy:result.sandboxPolicy, approvalPolicy:result.approvalPolicy,
+                permissionProfileType:result.permissionProfileType, activeProfileKind:result.activeProfileKind});
+            }
+          }
+          visit(path.join(process.env.CODEX_HOME, 'sessions'));
+          console.log(JSON.stringify(observations));
+        `;
+        const policies = await f.waitFor(
+          "native HTTP turn policy evidence",
+          async () => {
+            const raw = await f.execRole(agent, "agent", ["node", "-e", script, marker]);
+            const rows = JSON.parse(raw.stdout);
+            return rows.length > 0 ? rows : false;
+          },
+          15_000,
+        );
+        await f.record(
+          `http-chat-${agent.id}-permissions-${evidence.verifiedToolActions}`,
+          policies,
+        );
+        assert.equal(
+          policies.length,
+          1,
+          "the HTTP tool turn must have unambiguous native policy evidence",
+        );
+        assert.equal(policies[0].status, "available");
+        assert.equal(policies[0].sandboxPolicy, "danger-full-access");
+        assert.equal(policies[0].approvalPolicy, "on-request");
+      }
       const streamed = await send(
         headers,
         message(
@@ -329,7 +439,12 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
       ).status,
       404,
     );
-    for (const header of ["x-openclaw-agent", "x-openclaw-session-key", "x-openclaw-scopes"]) {
+    for (const header of [
+      "x-openclaw-agent",
+      "x-openclaw-user",
+      "x-openclaw-session-key",
+      "x-openclaw-scopes",
+    ]) {
       assert.equal(
         (
           await send(

@@ -42,7 +42,9 @@ graph TD
   H --> I["<b>Gateway and Harness</b><br/>Run turn and emit response"]
   I --> J["<b>OCC relay</b><br/>Forward JSON or SSE<br/>Apply backpressure"]
   J --> K{"Response completed?"}
-  K -->|yes| L["Audit terminal outcome"]
+  K -->|yes| N["Recheck caller and revision"]
+  N -->|current| L["Audit terminal outcome"]
+  N -->|changed or unavailable| M
   K -->|deadline, disconnect<br/>or failed recheck| M["Abort upstream<br/>Audit uncertain execution"]
   classDef gate fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   classDef process fill:#E9F4F1,stroke:#83A99E,color:#29443D,stroke-width:1px
@@ -87,6 +89,8 @@ request. No retry or redirect follows.
 
 `apps/controller/src/http/agent-chat.ts:relayAgentChat` streams bytes with
 backpressure. A timer reauthenticates and reauthorizes the pinned revision.
+A final bounded check repeats this before releasing terminal bytes, so a fast
+stop or revocation cannot finish between the timer and response completion.
 Failure, revision change, client disconnect or deadline aborts the upstream
 connection. Before headers, OCC can return its error envelope; after headers,
 it closes the response. The final audit identifies the principal and revision
@@ -112,5 +116,7 @@ without message content. An audit-write failure emits `http.audit_append_failed`
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-16 23:42: Recheck authority before terminal delivery after the real stop-during-stream regression. (authoring-run/e151ca6f-93f3-4976-bad1-585c8dde1264 - 9f342c940)
 
 - 2026-11-16 19:13: Document the accompanying HTTP chat implementation; runtime proof remains pending (authoring-run/e151ca6f-93f3-4976-bad1-585c8dde1264 - 292afc4c5)

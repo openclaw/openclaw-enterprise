@@ -874,6 +874,9 @@ export async function createQaAgent(
     assert.ok(httpChat, "Container-only verification requires the explicit HTTP chat scenario.");
     if (codex) {
       values.plugins.entries.codex.config.appServer.sandbox = "danger-full-access";
+      // A named workspace network profile supersedes the legacy sandbox selector.
+      // Kubernetes NetworkPolicies remain the network boundary for this explicit test mode.
+      values.plugins.entries.codex.config.appServer.networkProxy = { enabled: false };
     }
   }
   if (httpChat) {

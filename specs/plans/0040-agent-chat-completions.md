@@ -131,8 +131,26 @@ requested harmless marker. A separate credential-free startup probe passed
 with container networking disabled. These are smoke results, not HTTP API proof.
 
 The development verification selector and explicit QA Agent configuration keep
-startup and runtime modes coherent. Standard presets remain unchanged. The full
-HTTP acceptance matrix is still pending the retry.
+startup and runtime modes coherent. Standard presets remain unchanged. The first two native smoke variants (explicit profile and legacy sandbox selector)
+each completed one genuine model/tool turn with the same approval controls.
+
+The regular Compose/Kubernetes retry at `9f342c940` reached both Harnesses.
+Embedded OpenClaw completed 10 JSON responses, two incremental SSE responses and
+two independently verified tool actions, including principal/Agent conversation
+separation and service-key rotation. A later stop-during-stream assertion failed;
+terminal delivery now rechecks admission. Dedicated Codex returned native HTTP
+500 on its first completion. This is not evidence that full-access was refused:
+both pinned-runtime selector smokes passed. The pinned plugin source shows that
+Standard Codex's named network proxy profile overrides the sandbox selector.
+The authorized test configuration now disables that inner profile while preserving
+Kubernetes NetworkPolicies and the Agent's approval controls. Bounded redacted native diagnostics
+will identify that failure on retry. Internal provider call counts are unobserved;
+normal provisioning also runs model probes. The run reported seven passing test
+nodes, ten failed nodes (including parent aggregates), and no skips.
+
+Independent review retried with the existing route and CLI 0.171.0-alpha.9.
+The helper planned two passes and failed authentication on pass 1 without a report.
+The HTTP acceptance matrix remains incomplete.
 
 ## Manual Notes
 

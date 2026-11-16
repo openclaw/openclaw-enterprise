@@ -40,7 +40,9 @@ and makes no model calls. Its `Container` result explicitly leaves workspace-wri
 isolation unverified; it does not install a node seccomp profile.
 
 Configure each intended Codex Agent explicitly with
-`plugins.entries.codex.config.appServer.sandbox: danger-full-access`. Retain its
+`plugins.entries.codex.config.appServer.sandbox: danger-full-access` and disable
+that Agent's inner Codex network proxy profile, which otherwise selects a workspace
+permission profile. Keep Kubernetes NetworkPolicies in force. Retain its
 approval policy and reviewer. Verify the authenticated runtime's effective grant
 before model execution: managed requirements can refuse this mode. The container
 is the containment boundary for this run. Do not describe it as workspace-write

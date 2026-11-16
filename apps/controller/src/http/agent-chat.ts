@@ -172,27 +172,33 @@ export async function relayAgentChat(options: AgentChatOptions): Promise<void> {
       options.auditFailure(error);
       throw dependencyUnavailable();
     }
+    const verifyCurrentAdmission = async () => {
+      const deadline = setTimeout(() => abort.abort(), 5_000);
+      try {
+        await current(options.reauthenticate());
+        const latest = await current(
+          controller.resolveAgentChat(
+            context.actorId,
+            agent.id,
+            admission.admittedScope.namespaceId,
+          ),
+        );
+        if (latest.endpoint.status !== "available" || latest.revision?.id !== revision.id) {
+          throw dependencyUnavailable();
+        }
+      } finally {
+        clearTimeout(deadline);
+      }
+    };
     let checking = false;
     const recheck = setInterval(() => {
       if (checking || abort.signal.aborted) {
         return;
       }
       checking = true;
-      const deadline = setTimeout(() => abort.abort(), 5_000);
-      void (async () => {
-        await options.reauthenticate();
-        const current = await controller.resolveAgentChat(
-          context.actorId,
-          agent.id,
-          admission.admittedScope.namespaceId,
-        );
-        if (current.endpoint.status !== "available" || current.revision?.id !== revision.id) {
-          abort.abort();
-        }
-      })()
+      void verifyCurrentAdmission()
         .catch(() => abort.abort())
         .finally(() => {
-          clearTimeout(deadline);
           checking = false;
         });
     }, 25_000);
@@ -280,10 +286,13 @@ export async function relayAgentChat(options: AgentChatOptions): Promise<void> {
       }
       if (
         abort.signal.aborted ||
-        (streaming && !pending.toString("utf8").includes("data: [DONE]"))
+        (streaming && !/^data:\s*\[DONE\]\r?$/mu.test(pending.toString("utf8")))
       ) {
         throw dependencyUnavailable();
       }
+      // A stop or revocation can finish upstream before the periodic check runs.
+      // Verify delivery authority before releasing the retained terminal bytes.
+      await verifyCurrentAdmission();
       finished = true;
       result = response.statusCode === 200 && !nativeStreamError ? "completed" : "failed";
       reply.raw.end(pending);

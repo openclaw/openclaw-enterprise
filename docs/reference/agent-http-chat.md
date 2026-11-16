@@ -58,7 +58,7 @@ uses backpressure. After response headers are sent, an interruption closes the
 connection rather than replacing it with an OCC error body.
 
 OCC rechecks credential validity, principal status, permission and the selected
-revision every 25 seconds, with a 5-second deadline. Revocation, dependency
+revision every 25 seconds and before final delivery, with a 5-second deadline. Revocation, dependency
 failure, stop, deletion, replacement or client disconnect aborts the upstream
 connection. Aborting does not prove execution stopped or undo tool effects.
 

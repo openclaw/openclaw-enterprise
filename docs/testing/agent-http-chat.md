@@ -34,7 +34,9 @@ When explicitly authorized for the test Agents, set
 `http-chat` scenario. The launcher verifies the
 [container boundary](../guides/deploy/codex-sandbox.md#explicit-container-only-development-verification).
 The QA helper sets only the selected Codex Agents' native sandbox configuration
-to `danger-full-access`; it retains their approval policy and reviewer. It does
+to `danger-full-access` and disables their inner named workspace network profile,
+which otherwise overrides that selector. Kubernetes NetworkPolicies remain in
+force. The helper retains each Agent's approval policy and reviewer. It does
 not edit standard Presets, host security controls or the development agent.
 
 First qualify the existing model credential and pinned runtime with a bounded
@@ -52,7 +54,8 @@ Each Agent also disables browser chat and omits the HTTP endpoint opt-in. It che
 - Fresh requests, explicit continuation, principal/Agent separation and service-key rotation.
 - Private-route method/path restrictions, direct Gateway authority rejection,
   and NetworkPolicy rejection of a Pod without Agent identity.
-- Authentication, exact-Agent access, reserved headers/model, request size and body deadline,
+- Authentication, exact-Agent access, read-only credentials with forged identity,
+  reserved headers/model, request size and body deadline,
   explicit opt-out and stopped-Agent status.
 - Service-key revocation, replacement and stop during a native SSE response,
   with no success terminator after interruption. Tool rollback is not claimed.
