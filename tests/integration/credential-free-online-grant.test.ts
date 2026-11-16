@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { credentialFreeOnlineGrantFixture } from "../helpers/credential-free-online-grant.mjs";
-import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import {
+  credentialFreeOnlineGrantFixture,
+  undeployedStockGrantFixture,
+} from "../helpers/credential-free-online-grant.ts";
 
 // The signed RPC and OCC policy are real. The association with a sandbox is test-owned;
 // this does not qualify a stock release, authenticate a supervisor instance, or permit dispatch.
@@ -47,23 +49,28 @@ test("a signed stock request loses a credential-free grant when OCC IAM access i
 });
 
 test("OCC cannot observe a live credential grant as credential-free metadata", async (t) => {
-  const f = await staticEgressFixture(t, { admitRevision: false });
-  const { namespace, agent, controller } = f;
-  const { id } = await f.deployAgent(namespace.id, agent.id);
-  await f.activateRevision(namespace.id, agent.id, id);
+  const { controller, namespaceId, agentId, deploy, activate } =
+    await undeployedStockGrantFixture(t);
+  const id = await deploy();
+  await activate(id);
   const revision = await controller.transact((unit) =>
-    unit.revisions.findRevision(namespace.id, agent.id, id),
+    unit.revisions.findRevision(namespaceId, agentId, id),
   );
-  const { binding, method, origin, path } = revision.egressPlan.routes[0];
+  const route = revision?.egressPlan?.routes[0];
+  assert.ok(route, "expected the admitted inference route");
+  const { binding, method, origin, path } = route;
+  assert.equal(method, "POST", "use the admitted inference operation");
   assert.equal(
     binding.grant.kind,
     "inference",
     "exercise a real admitted credential-bearing source",
   );
-  assert.equal(
-    // Supply its actual operation, even bypassing the typed GET input, so a target mismatch
-    // cannot be the reason this credential-bearing source was refused.
-    await controller.observeCredentialFreeMetadataGrant(binding, { method, origin, path }),
-    "not_current",
+  // Exercise the JavaScript boundary with the admitted POST and exact target.
+  // The stock observation must refuse the actual inference plan, which has multiple routes.
+  const verdict: unknown = await Reflect.apply(
+    controller.observeCredentialFreeMetadataGrant,
+    controller,
+    [binding, { method, origin, path }],
   );
+  assert.equal(verdict, "not_current");
 });
