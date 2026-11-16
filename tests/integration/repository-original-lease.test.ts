@@ -19,19 +19,19 @@ import { startListeners } from "../../apps/controller/src/drivers/repo/access/se
 import type { DispatchGate } from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
 import { within } from "../helpers/wait-for.ts";
 import type { GitHubStaticTokenOwner } from "../../apps/controller/src/drivers/repo/github/access/types.ts";
-import { githubTokenConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
+import { githubTokenConfigurationData } from "../fixtures/repository-credentials/builders.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import { appModule } from "../fixtures/repository-credentials/runtime.mjs";
 import {
   createLoopbackServiceConfiguration,
   gatewayRequest,
-} from "../fixtures/repository-credentials/service.mjs";
+} from "../fixtures/repository-credentials/service-fixture.ts";
 import {
   createGitHubTokenServiceFactory,
   startServiceListeners,
-} from "../fixtures/repository-credentials/service-resources.mjs";
+} from "../fixtures/repository-credentials/service-resources.ts";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 

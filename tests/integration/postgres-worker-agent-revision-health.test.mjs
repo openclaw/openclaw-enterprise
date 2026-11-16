@@ -128,10 +128,10 @@ test(
     ] = await Promise.all([
       import("../../apps/controller/src/drivers/repo/github/policy.ts"),
       import("../../apps/controller/src/backends/repository-credentials/control-client.ts"),
-      import("../fixtures/repository-credentials/registry.mjs"),
+      import("../fixtures/repository-credentials/registry.ts"),
       import("../../apps/controller/src/backends/repository-credentials/receipt-server.ts"),
       import("../fixtures/repository-credentials/control-relay.ts"),
-      import("../fixtures/repository-credentials/resources.mjs"),
+      import("../fixtures/repository-credentials/resources.ts"),
       import("node:path"),
     ]);
     const credentials = await startRegistryCredentialServiceFixture(context, {

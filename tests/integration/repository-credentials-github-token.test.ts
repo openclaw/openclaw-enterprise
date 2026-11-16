@@ -28,8 +28,8 @@ import type { GitHubFixture as RegistryGitHubFixture } from "../fixtures/reposit
 import {
   gatewayRequest,
   startTokenServiceScope,
-} from "../fixtures/repository-credentials/service.mjs";
-import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.mjs";
+} from "../fixtures/repository-credentials/service-fixture.ts";
+import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.ts";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { listen } from "../helpers/listen.ts";
 import { waitFor } from "../helpers/wait-for.ts";

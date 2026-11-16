@@ -12,15 +12,25 @@ export function createTokenAuthority({
   additionalPermissions = [],
   installationAccess = false,
 }) {
+  /** @type {Map<string, {
+   * index: number, expires: number, revoked: boolean, uses: number, attempts: number,
+   * permissions: Record<string, string>, repositoryIds?: string[] | "installation", static?: true
+   * }>} */
   const tokens = new Map();
+  /** @type {{index: number, jwtDigest: string, claims: Record<string, unknown>,
+   * permissions: Record<string, string>, repositoryIds: import("../../../../apps/controller/src/drivers/repo/access/json-value.ts").JsonValue[] | "installation",
+   * expires: number}[]} */
   const issuesOfTokens = [];
+  /** @type {{tokenIndex: number | undefined, boundary: string}[]} */
   const authenticationAttempts = [];
+  /** @param {string | undefined} authorization */
   function tokenFrom(authorization) {
     if (authorization?.startsWith("Basic ")) {
       return Buffer.from(authorization.slice(6), "base64").toString().split(":").slice(1).join(":");
     }
     return authorization?.replace(/^(Bearer|token) /, "");
   }
+  /** @param {string | undefined} authorization */
   function authorize(authorization, boundary = "api") {
     const token = tokens.get(tokenFrom(authorization));
     authenticationAttempts.push({ tokenIndex: token?.index, boundary });
@@ -118,6 +128,7 @@ export function createTokenAuthority({
   }
   // A preloaded personal or OAuth token: GitHub never issued it to the service,
   // it does not expire on the fixture clock, and it carries its owner's access.
+  /** @param {string} token */
   function acceptStatic(token) {
     const index = tokens.size + 1;
     tokens.set(token, {
@@ -155,6 +166,7 @@ export function createTokenAuthority({
     permitsRepository,
     issue,
     authorize,
+    /** @param {string | undefined} authorization @param {string | number} repositoryId */
     authorizeRepository(authorization, repositoryId) {
       if (!authorize(authorization, `repository:${repositoryId}`)) {
         return false;

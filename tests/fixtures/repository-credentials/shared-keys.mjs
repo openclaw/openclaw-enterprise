@@ -1,5 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 
+/** @type {Map<string, {publicKey: import("node:crypto").KeyObject, privateKey: import("node:crypto").KeyObject}>} */
 const keyPairs = new Map();
 
 // An RSA-2048 key costs 50-300 ms of CPU to generate, and fixtures made one for every

@@ -25,6 +25,11 @@ export async function listenOnNewOrigin(t, createIssuer) {
   return origin;
 }
 
+/**
+ * @param {import("./resources.ts").FixtureOwner} t
+ * @param {Partial<import("./github/protocol.mjs").GitHubProtocolOptions> &
+ *   {tls?: Awaited<ReturnType<typeof createTlsMaterial>>}} [options]
+ */
 export async function startGitHubFixture(
   t,
   { clock = createControlledClock(), tls, ...options } = {},

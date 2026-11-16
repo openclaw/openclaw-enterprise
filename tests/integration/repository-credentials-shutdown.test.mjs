@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { appRoot } from "../fixtures/repository-credentials/runtime.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
-import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
+import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service-fixture.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { waitUntil } from "../helpers/wait-for.ts";
 

@@ -522,12 +522,7 @@ test(
     const key = join(directory, "custody.key");
     const custodyKey = randomBytes(32);
     await writeFile(key, custodyKey, { mode: 0o600 });
-    // The JavaScript fixture forwards these issuer options to its protocol implementation.
-    const startIssuer: (
-      context: TestContext,
-      options: object,
-    ) => ReturnType<typeof startGitHubFixture> = startGitHubFixture;
-    const gh = await startIssuer(t, {
+    const gh = await startGitHubFixture(t, {
       tokenLifetimeMs: 45 * 60_000,
     });
     let lifecycle!: PostgresPreparedGitHubLifecycle;
@@ -747,7 +742,9 @@ test(
     // against the same durable family even though the rejected token is still fresh.
     await due();
     // Revocations of the rejected token: the test's own revocation of `late`, then retirement.
-    const [{ index: rejected }] = gh.issuesOfTokens;
+    const [issued] = gh.issuesOfTokens;
+    assert.ok(issued);
+    const { index: rejected } = issued;
     const revocations = (index = rejected) =>
       gh.trace.filter(
         ({ method, target, tokenIndex }) =>

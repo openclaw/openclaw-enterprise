@@ -10,10 +10,11 @@ import { within } from "../../helpers/wait-for.ts";
 import { appModule, appRoot } from "./runtime.mjs";
 import { createControlledClock } from "./clock.mjs";
 import { cleanEnvironment, createTlsMaterial } from "./process.mjs";
-import { createResourceScope } from "./resources.mjs";
-import { createServiceConfiguration } from "./service.mjs";
+import { createResourceScope } from "./resources.ts";
+import { createServiceConfiguration } from "./service-fixture.ts";
 import { startGitHubFixture, fixtureRepository, fixtureRepositoryId } from "./github.mjs";
-import { createRegistryMaterial, type FixtureOwner } from "./registry/material.ts";
+import { createRegistryMaterial } from "./registry/material.ts";
+import type { FixtureOwner } from "./resources.ts";
 import type { GitHubFixture } from "./registry/provider.ts";
 import type { ServiceProcessRequest, ServiceProcessGeneration } from "./service-process-child.ts";
 

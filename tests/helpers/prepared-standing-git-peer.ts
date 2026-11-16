@@ -50,9 +50,7 @@ export async function standingGitOrigin(
 ) {
   const clock = createSystemClock();
   // Keep the prepared owner's real 60 s clock margin and 60 s minimum validity.
-  const github: (t: TestContext, options: object) => ReturnType<typeof startGitHubFixture> =
-    startGitHubFixture;
-  const gh = await github(t, {
+  const gh = await startGitHubFixture(t, {
     clock,
     tokenLifetimeMs,
     beforeIssue,
@@ -122,11 +120,7 @@ export async function standingGitOrigin(
   });
   await writeFile(custodyKeyPath, randomBytes(32), { mode: 0o600 });
 
-  const gitOrigin: (
-    t: TestContext,
-    options: object,
-  ) => ReturnType<typeof startGitSmartHttpFixture> = startGitSmartHttpFixture;
-  const origin = await gitOrigin(t, {
+  const origin = await startGitSmartHttpFixture(t, {
     repository: fixtureRepository,
     tls,
     authorize: gh.authorize,

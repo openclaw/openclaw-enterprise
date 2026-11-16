@@ -15,7 +15,7 @@ import { callControl } from "../../apps/controller/src/drivers/repo/github/acces
 import type { OperationReceipt } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import { request as requestHttps } from "node:https";
 import { syncBuiltinESMExports } from "node:module";
-import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
+import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service-fixture.ts";
 import {
   appendFile,
   cp,

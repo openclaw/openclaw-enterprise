@@ -18,13 +18,13 @@ import { createCredentialService } from "../fixtures/repository-credentials/serv
 import { createAgentHandler } from "../../apps/controller/src/drivers/repo/access/transport/agent.ts";
 import { createGatewayAuthentication } from "../../apps/controller/src/drivers/repo/github/access/gateway-authentication.ts";
 import { planDraftPull } from "../../apps/controller/src/drivers/repo/github/access/prepared-draft-pull.ts";
-import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
+import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
 import {
   createTlsMaterial,
   listen as listenOrigin,
 } from "../fixtures/repository-credentials/process.mjs";
 import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.ts";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import { socketDirectory } from "../helpers/socket-directory.ts";
 
 async function listen(server: Server, path: string) {
@@ -399,7 +399,9 @@ for (const stage of ["reserved", "authorizing", "dispatch"] as const) {
     });
     assert.deepEqual(opened.session.binding, binding);
     assert.equal(opened.session.deadlineWallMs, startWall + 30_000);
-    resources.after(() => service.close(opened.session.sessionId));
+    resources.after(() => {
+      service.close(opened.session.sessionId);
+    });
     if (stage === "dispatch") {
       // Invalid digest syntax must stop before either owner authorization or sender entry.
       let senderEntries = 0;
