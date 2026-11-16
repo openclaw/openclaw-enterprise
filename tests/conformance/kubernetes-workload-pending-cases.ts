@@ -632,12 +632,12 @@ async function checkDeploymentObservationRefusals(fixture: ReturnType<CreateFixt
         if (!status.reached() || request.name !== agentName) {
           return read(request);
         }
-        refused = true;
         if (failure === "forbidden") {
+          refused = true;
           throw forbiddenRead();
         }
         const object = await read(request);
-        return {
+        const foreign = {
           ...object,
           metadata: {
             ...object.metadata,
@@ -647,6 +647,8 @@ async function checkDeploymentObservationRefusals(fixture: ReturnType<CreateFixt
             },
           },
         };
+        refused = true;
+        return foreign;
       },
     });
     setConditions(fixture, gatewayName, refusedPod(gatewayName));
