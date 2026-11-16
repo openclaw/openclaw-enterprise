@@ -461,10 +461,12 @@ function violatingPodSecurityManifest(namespace: string, privileged: boolean): s
     "        - -c",
     "        - 'true'",
     "      securityContext:",
-    "        allowPrivilegeEscalation: false",
+    // A privileged container cannot also forbid privilege escalation: core
+    // validation would reject it before the PSA check this probe exercises.
+    ...(privileged ? ["        privileged: true"] : ["        allowPrivilegeEscalation: false"]),
     "        capabilities:",
     "          drop: [ALL]",
-    ...(privileged ? ["        privileged: true"] : ["          add: [NET_ADMIN]"]),
+    ...(privileged ? [] : ["          add: [NET_ADMIN]"]),
     "",
   ].join("\n");
 }

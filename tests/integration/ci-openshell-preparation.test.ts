@@ -6,6 +6,10 @@ import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import {
+  loadYaml,
+  type V1Pod,
+} from "../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   agentSandboxControllerForNodes,
@@ -478,6 +482,7 @@ test("prepareOpenShell fails before downloads when the default runtime smoke Pod
   const cluster = ownedCluster(root, clusterName);
   const agentImage =
     "localhost/openclaw-k8s-openshell-test/agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const admissionProbes: V1Pod[] = [];
 
   async function execFile(command: string, args: string[]) {
     calls.push([command, args]);
@@ -486,8 +491,22 @@ test("prepareOpenShell fails before downloads when the default runtime smoke Pod
       args.includes("--dry-run=server") &&
       args.some((arg) => arg.endsWith("openshell-psa-restricted-rejection.yaml"))
     ) {
+      const manifestPath = args[args.indexOf("-f") + 1];
+      assert.ok(manifestPath);
+      const pod = loadYaml<V1Pod>(await readFile(manifestPath, "utf8"));
+      const securityContext = pod.spec?.containers[0]?.securityContext;
+      assert.ok(securityContext);
+      // Kubernetes rejects this combination before PSA. The mock below proves
+      // orchestration only; the generated input must independently be valid.
+      if (securityContext.privileged) {
+        assert.notEqual(securityContext.allowPrivilegeEscalation, false);
+      } else {
+        assert.equal(securityContext.allowPrivilegeEscalation, false);
+        assert.deepEqual(securityContext.capabilities?.add, ["NET_ADMIN"]);
+      }
+      admissionProbes.push(pod);
       throw new Error(
-        'Error from server (Forbidden): pods "openshell-psa-violation" is forbidden: violates PodSecurity "restricted:latest": privileged',
+        `Error from server (Forbidden): pods "openshell-psa-violation" is forbidden: violates PodSecurity "restricted:latest": ${securityContext.privileged ? "privileged" : "unrestricted capabilities"}`,
       );
     }
     if (command === "kubectl" && args.includes("--for=jsonpath={.status.phase}=Succeeded")) {
@@ -534,6 +553,11 @@ test("prepareOpenShell fails before downloads when the default runtime smoke Pod
     ),
   );
 
+  assert.deepEqual(
+    admissionProbes.map((pod) => pod.spec?.containers[0]?.securityContext?.privileged === true),
+    [true, false],
+    "both admission probes must complete before the runtime smoke",
+  );
   const manifest = await readFile(join(root, "openshell", "openshell-runtime-smoke.yaml"), "utf8");
   assert.doesNotMatch(manifest, /runtimeClassName:/);
   assert.match(manifest, new RegExp(`image: "${agentImage}"`));

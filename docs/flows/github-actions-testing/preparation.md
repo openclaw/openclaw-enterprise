@@ -246,8 +246,10 @@ and Agent Sandbox resources, obtains the OpenShell CLI and chart, and imports
 gateway, sandbox, and supervisor images. `prepareOpenShellClusterBootstrap` returns
 only the pinned node image and kubectl selection; `createK3dPreparation` creates
 the cluster without an OCE admission file or API server admission override.
-`prepareOpenShell` requires PSA to reject a violating Pod in a restricted namespace
-and runs a smoke Pod on the default node runtime. OCE creates no RuntimeClass or
+`prepareOpenShell` requires PSA to reject privileged and forbidden-capability Pods
+in a restricted probe namespace, then runs a default-runtime smoke Pod. The
+privileged probe omits `allowPrivilegeEscalation: false` so core validation does
+not reject it before PSA. OCE creates no RuntimeClass or
 PSA exemption. The full lane checks filesystem, privilege, and binary-scoped Layer 7
 network policy enforcement by the supervisor. The Harness and supervisor receive
 neither `SYS_PTRACE` nor `DAC_READ_SEARCH`.
