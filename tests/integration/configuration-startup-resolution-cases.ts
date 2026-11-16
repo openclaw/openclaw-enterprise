@@ -11,6 +11,7 @@ import {
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
 import type { BackendConfiguration, ErrorDetail } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { settled as waitForSiblings } from "../helpers/child-processes.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 type StartupFixture = (
@@ -22,9 +23,6 @@ type StartupProcessFixtures = {
   boot: (script: string, environment: NodeJS.ProcessEnv) => Promise<StartupResult>;
   fixture: StartupFixture;
   productionServer: NodeJS.ProcessEnv;
-  settled: <const T extends readonly unknown[]>(promises: {
-    [K in keyof T]: Promise<T[K]>;
-  }) => Promise<T>;
 };
 
 type InstallationInput = Readonly<Record<string, unknown>> & {
@@ -118,6 +116,13 @@ export function checkedStartupCapture(
   assert.ok(typeof stdout === "string", "startup child must capture stdout as text");
   assert.ok(typeof stderr === "string", "startup child must capture stderr as text");
   return { status, signal, stdout, stderr };
+}
+
+async function settled<const T extends readonly Promise<unknown>[]>(promises: T) {
+  // Wait even when a sibling fails, then read the fulfilled values in their original tuple order.
+  const wait: (siblings: T) => Promise<unknown> = waitForSiblings;
+  await wait(promises);
+  return Promise.all(promises);
 }
 
 function productionEnvironment(configPath: string): NodeJS.ProcessEnv {
@@ -327,7 +332,7 @@ export function registerChatGPTStartupRefusals(
 }
 
 export function registerStartupProcessResolutionCases(
-  { boot, fixture, productionServer, settled }: StartupProcessFixtures,
+  { boot, fixture, productionServer }: StartupProcessFixtures,
   {
     installation,
     isDevelopmentBrowserOrigin,
@@ -519,7 +524,7 @@ export function registerStartupProcessResolutionCases(
 }
 
 export function registerStartupDriverResolutionCases(
-  { boot, fixture, productionServer, settled }: StartupProcessFixtures,
+  { boot, fixture, productionServer }: StartupProcessFixtures,
   {
     installation,
     credentialProxyInstallation,
@@ -606,7 +611,7 @@ export function registerStartupDriverResolutionCases(
 
 export async function checkNativeRepositoryStartup(
   t: TestContext,
-  { boot, fixture, productionServer, settled }: StartupProcessFixtures,
+  { boot, fixture, productionServer }: StartupProcessFixtures,
   repositoryInstallation: RepositoryFixture,
 ): Promise<void> {
   // Finding 2227: like finding 2226, the refusal was a plain Error, so API and worker logged
@@ -671,7 +676,7 @@ export async function checkNativeRepositoryStartup(
 
 export async function checkCountedQuotaStartup(
   t: TestContext,
-  { boot, fixture, productionServer }: Omit<StartupProcessFixtures, "settled">,
+  { boot, fixture, productionServer }: StartupProcessFixtures,
   installation: InstallationFactory,
 ): Promise<void> {
   const quotas: readonly [Record<string, string>, string][] = [

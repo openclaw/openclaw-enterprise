@@ -94,15 +94,14 @@ const productionServer = {
 // on an idle machine, and on a loaded runner the same boot took more than 10 s.
 const limit = concurrencyLimit();
 async function boot(script, env, timeout = 30_000, nodeArguments = []) {
-  const { signal, ...result } = checkedStartupCapture(
-    await limit(() =>
-      captureChild(process.execPath, [...nodeArguments, script], {
-        cwd: process.cwd(),
-        env: { ...env, NODE_COMPILE_CACHE: compileCache },
-        timeout,
-      }),
-    ),
+  const capture = await limit(() =>
+    captureChild(process.execPath, [...nodeArguments, script], {
+      cwd: process.cwd(),
+      env: { ...env, NODE_COMPILE_CACHE: compileCache },
+      timeout,
+    }),
   );
+  const { signal, ...result } = checkedStartupCapture(capture);
   if (signal) {
     throw new Error(`${script} ended by ${signal} (timeout ${timeout} ms): ${result.stderr}`);
   }
@@ -1057,7 +1056,7 @@ test("production embedded replacements preserve their active Service across fail
 registerStartupYamlInputCases(startupInputs);
 
 registerStartupProcessResolutionCases(
-  { boot, fixture, productionServer, settled },
+  { boot, fixture, productionServer },
   {
     installation,
     isDevelopmentBrowserOrigin,
@@ -1078,14 +1077,14 @@ registerStartupPresetCases({
 registerStartupCredentialProxyCases({ boot, fixture, productionServer, settled });
 
 registerStartupDriverResolutionCases(
-  { boot, fixture, productionServer, settled },
+  { boot, fixture, productionServer },
   { installation, credentialProxyInstallation, repositoryInstallation },
 );
 
 test("native repository delivery names a missing or misplaced broker peer in startup logs", async (t) => {
   await checkNativeRepositoryStartup(
     t,
-    { boot, fixture, productionServer, settled },
+    { boot, fixture, productionServer },
     repositoryInstallation,
   );
 });
