@@ -198,6 +198,7 @@
     "fixtures/oidc-ca-postgres-consumer.ts",
     "fixtures/postgres-commit-ack-fault.ts",
     "fixtures/kubernetes/*.mts",
+    "helpers/production-network-probe.ts",
     "fixtures/ci-runner-finite-conversation.ts",
     "fixtures/ci-runner-repository-setup-diagnostics.ts",
     "helpers/ci-runner-fixture.ts",
