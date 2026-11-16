@@ -1246,6 +1246,7 @@ const WORKLOAD_TERMINATION_TIMEOUT_MS = 120_000;
 const WORKLOAD_TERMINATION_POLL_MS = 100;
 // A yielding stop asks the queue whether other Work waits at most once a second.
 const WORKLOAD_TERMINATION_YIELD_CHECK_MS = 1_000;
+const IMMUTABLE_IMAGE_DIGEST = /@sha256:[a-f0-9]{64}$/;
 const AGENT_TRANSPORT_PORT = 18_790;
 const NATIVE_WORKER_PROFILE = "dedicated-native";
 const DEFAULT_NATIVE_OPENCLAW_SESSION_CAPACITY = 8;
@@ -3708,7 +3709,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       ] as const) {
         const path = description === "Gateway" ? "/images/gateway" : "/images/agent";
         required(image, `${description} image`, path);
-        if (options.images.requireImmutableDigest && !/@sha256:[a-f0-9]{64}$/.test(image)) {
+        if (options.images.requireImmutableDigest && !IMMUTABLE_IMAGE_DIGEST.test(image)) {
           throw configurationConstraintFailure(
             `${description} image must use an immutable SHA-256 digest.`,
             path,
@@ -6374,7 +6375,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
     context?: ComputeRevisionContext,
   ): void {
     const provider = this.providerAdmission(revision);
-    this.replacementRuntime(revision);
+    const saved = this.replacementRuntime(revision);
+    if (
+      saved &&
+      this.options.images.requireImmutableDigest &&
+      (!IMMUTABLE_IMAGE_DIGEST.test(saved.gateway) || !IMMUTABLE_IMAGE_DIGEST.test(saved.agent))
+    ) {
+      throw new ConfigurationFailure(
+        "Saved runtime images must use immutable SHA-256 digests; deploy a new Agent revision.",
+      );
+    }
     const admission = this.scratchAdmission(revision).runtime;
     if (admission?.startsWith("model-provider:v1:")) {
       if (provider === undefined || !admission.startsWith(`model-provider:v1:${provider}:`)) {

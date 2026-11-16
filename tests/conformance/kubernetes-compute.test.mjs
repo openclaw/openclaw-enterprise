@@ -973,6 +973,26 @@ test("admitted dedicated runtimes keep their images across maintenance and activ
   assert.equal(fixture.templates.length, starts, "maintenance must not restart either workload");
 });
 
+test("an enforced digest policy rejects previously admitted tags before reconciliation", async () => {
+  const fixture = dedicatedFirstDeployFixture();
+  const pinned = "registry.example.test/runtime@sha256:" + "a".repeat(64);
+  const reloaded = new KubernetesComputeDriver(
+    {
+      ...fixture.driver.options,
+      images: { gateway: pinned, agent: pinned, requireImmutableDigest: true },
+    },
+    { nodeEnrollment: fixture.driver.nodeEnrollment },
+  );
+  reloaded.apiClients = Promise.resolve(fixture.clients);
+  for (const operation of ["prepareRevision", "activateRevision"]) {
+    await assert.rejects(
+      reloaded[operation](fixture.revision, authContext(fixture.revision)),
+      /saved runtime images.*digest.*new Agent revision/i,
+    );
+    assert.equal(fixture.templates.length, 0);
+  }
+});
+
 test("admitted workspace initialization retains the Gateway image after defaults change", async () => {
   const fixture = workspaceSetupFixture(false);
   fixture.state.ready = true;
