@@ -112,6 +112,7 @@
     "integration/occ-api-resource-route-cases.ts",
     "integration/occ-api-compute-admission-cases.ts",
     "integration/occ-api-plugin-policy-cases.ts",
+    "integration/occ-api-authorization-evidence-cases.ts",
     "integration/repository-credentials-deployment-admission-cases.ts",
     "integration/repository-credentials-agent-access-cases.ts",
     "integration/configuration-startup-input-cases.ts",
