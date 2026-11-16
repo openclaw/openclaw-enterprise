@@ -5,12 +5,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
-const command = new URL("../../scripts/strands-fast.ts", import.meta.url);
+const command = fileURLToPath(new URL("../../scripts/strands-fast.ts", import.meta.url));
 function run(args: string[]) {
   const env = { ...process.env };
   delete env.OCC_TEST_STANDING_GIT_CODEX;
-  return spawnSync(process.execPath, [command.pathname, ...args], {
+  return spawnSync(process.execPath, [command, ...args], {
     env,
     encoding: "utf8",
     timeout: 10_000,
