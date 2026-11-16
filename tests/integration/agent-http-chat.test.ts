@@ -93,3 +93,37 @@ test("SSH Compute reports absent HTTP capability for an undeployed embedded Agen
     501,
   );
 });
+
+test("HTTP chat conceals and audits an Agent outside a service key's Namespace", async (t) => {
+  // Load API-created IAM identities when issuing the real Namespace-scoped key.
+  const f = await createConsoleAppFixture(t, { provisionedPeople: [] });
+  await f.bootstrap();
+  const home = await f.createNamespace("HTTP key home");
+  const other = await f.createNamespace("HTTP key outside");
+  const agent = await f.createAgent(other.id, "Outside Agent");
+  const principal = await f.request("POST", `/namespaces/${home.id}/iam/service-principals`, {
+    body: {},
+  });
+  assert.equal(principal.status, 201);
+  const issued = await f.request("POST", "/api/auth/service-keys", {
+    body: { servicePrincipalId: principal.data.id, namespaceId: home.id, name: "http-scope" },
+  });
+  assert.equal(issued.status, 201, JSON.stringify(issued.body.error));
+  const before = f.auditSink.events.length;
+  const result = await f.request("POST", `/agents/${agent.id}/chat`, {
+    session: null,
+    headers: { "x-api-key": issued.data.key },
+    body: { messages: [{ role: "user", content: "Must not execute." }] },
+  });
+  assert.equal(result.status, 404);
+  const denial = f.auditSink.events
+    .slice(before)
+    .find((event) => event.kind === "authorization_denial");
+  assert.ok(denial, "credential-scope denials must retain attributable audit evidence");
+  assert.deepEqual(denial.authorization, {
+    principalId: principal.data.id,
+    action: "operate",
+    resource: { kind: "agent", id: agent.id, namespaceId: other.id },
+  });
+  assert.ok(!JSON.stringify(denial).includes(issued.data.key));
+});

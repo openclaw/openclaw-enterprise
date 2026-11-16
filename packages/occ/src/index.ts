@@ -3380,16 +3380,27 @@ export class OpenClawController {
     readonly endpoint: AgentChatCompletionsResolution;
   }> {
     const reference = await this.resolveAgentReference((candidate) => candidate.id === agentId);
-    if (!reference || (namespaceScope !== undefined && reference.namespaceId !== namespaceScope)) {
+    if (!reference) {
       throw new ScopeViolationError("The requested Agent was not found.");
     }
     const resource = { kind: "agent", id: agentId, namespaceId: reference.namespaceId } as const;
+    const outsideCredentialScope =
+      namespaceScope !== undefined && reference.namespaceId !== namespaceScope;
     try {
-      await this.authorize(principalId, "operate", resource);
+      const authorization = await this.authorize(principalId, "operate", resource);
+      if (outsideCredentialScope) {
+        throw new AuthorizationDeniedError(
+          "The Agent is outside the service credential's Namespace.",
+          authorization.decision.evidence,
+          { action: "operate", resource },
+          principalId,
+        );
+      }
     } catch (error) {
       if (
         error instanceof AuthorizationDeniedError &&
-        !(await this.authorizationDecision(principalId, "read", resource)).decision.allowed
+        (outsideCredentialScope ||
+          !(await this.authorizationDecision(principalId, "read", resource)).decision.allowed)
       ) {
         throw new HiddenResourceAuthorizationDeniedError(error);
       }

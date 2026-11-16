@@ -70,12 +70,12 @@ and [database](../../docs/testing/postgresql.md) procedures.
 
 | Required outcome | Real check | Result or remaining proof |
 | --- | --- | --- |
-| AC-1 intake | Normal provisioning through Fastify/PostgreSQL/IAM; human and service JSON/SSE; harmless tool action; OCC outside Kubernetes | Not run |
-| AC-2 authority | Denied credentials/grants/routing inputs cause no turn; direct Gateway and other private-route paths fail closed | Not run |
-| AC-3 conversations | Fresh defaults, same-principal continuation, cross-principal/Agent separation, service-key rotation | Not run |
-| AC-4 failures | Live revocation/revision/stop/disconnect/deadline/body-size cases; ordered statuses with no forwarding or retries | Not run |
-| AC-5 deployment | Each supported Harness mode, default/explicit auth, opt-out, isolation and content-free audit outcomes; Docker/SSH unsupported | Not run |
-| Static and generated contracts | Build/typecheck, lint, format, workspace, OpenAPI generation/check, CI selection audit, docs/link/length checks | Passed on the working candidate; rerun after final changes |
+| AC-1 intake | Normal provisioning through Fastify/PostgreSQL/IAM; human and service JSON/SSE; harmless tool action; OCC outside Kubernetes | Unverified: real QA stopped during sandbox setup |
+| AC-2 authority | Denied credentials/grants/routing inputs cause no turn; direct Gateway and other private-route paths fail closed | Unverified: real QA stopped during sandbox setup |
+| AC-3 conversations | Fresh defaults, same-principal continuation, cross-principal/Agent separation, service-key rotation | Unverified: real QA stopped during sandbox setup |
+| AC-4 failures | Live revocation/revision/stop/disconnect/deadline/body-size cases; ordered statuses with no forwarding or retries | Unverified: real QA stopped during sandbox setup |
+| AC-5 deployment | Each supported Harness mode, default/explicit auth, opt-out, isolation and content-free audit outcomes; Docker/SSH unsupported | Unverified: real QA stopped during sandbox setup |
+| Static and generated contracts | Build/typecheck, lint, format, workspace, OpenAPI generation/check, CI selection audit, docs/link/length checks | Passed: build, typecheck, lint, format, workspace, OpenAPI, CI registration and documentation checks |
 | Independent review | Shared autoreview against the final scoped diff | Blocked: reviewer authentication failed before pass 1 produced a report |
 
 ## Delivery record
@@ -88,13 +88,32 @@ and [database](../../docs/testing/postgresql.md) procedures.
   inspection does not establish live HTTP authority or model execution.
 - The API, Compute resolution, revision-specific Kubernetes routes, relay and
   source-backed documentation are implemented in the working candidate.
-- The focused admission and Kubernetes conformance run passed 415 tests with
-  no failures or skips. This does not prove real runtime behavior.
+- The final focused admission and Kubernetes conformance run passed 455 tests
+  with no failures or skips. This does not prove real runtime behavior.
 - Shared autoreview passed isolation preflight but failed reviewer authentication
   on pass 1 and produced no report. Independent implementation review is blocked.
-- Native runtime assembly uses the recorded source pin. The first build compiled
-  Node, then failed a dependency TLS check. Its retry uses the existing host CA
-  through the supported build-secret mount and retains the compiled cache.
+- Native runtime assembly completed using the recorded pin and supported host CA
+  build secret. The scoped public npm approval added only pinned `ts-pattern@5.9.2`
+  to the lockfile; frozen installation passed and global registry settings stayed unchanged.
+- The real Compose OCC / Kubernetes Compute / OpenClaw QA attempt used commit
+  `30dd5bff0a89ef82a2e25199b0fcaddc554caf19`, Node 24.22.1 and k3s 1.36.4.
+  PostgreSQL bootstrap and cluster creation ran. Before Agent provisioning, the
+  shipped sandbox check failed with `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`.
+  Its Localhost seccomp profile and pinned Codex 0.164.0 verification passed;
+  sandbox entry failed. The exact denying host layer remains undetermined.
+- Tested runtime digest: `sha256:6082f0b5c6cb3a319ac63d150898655c5b8d9dd23472494519e47e79d745475b`.
+  Controller digest: `sha256:a3c54d993edcae0243207b02963b452f0acd96d0f5eeaf9ee0e4508d067e4d72`.
+  The model-call count is zero. The QA runner reported 9 failed test nodes caused
+  by setup failure and blocked dependent cases, with zero passes and zero skips.
+- The launcher rolled back its owned cluster and database. A compatible host or
+  an operator-reviewed sandbox policy fix is required to continue real QA; see
+  [sandbox diagnostics](../../docs/guides/deploy/codex-sandbox.md#identify-the-restriction).
+- A subsequent Fastify/native-IAM regression reproduced missing audit evidence
+  for a concealed cross-Namespace service-key denial. The fix preserves 404 and
+  records the exact authorization denial; all four admission tests pass.
+- Cleanup removed both run-owned clusters, the failed QA database/network and
+  the temporary credential copy. The default kubeconfig is unchanged. Local
+  images, build caches and diagnostic artifacts remain available for resumption.
 - No runtime acceptance criterion is complete.
 
 ## Manual Notes
