@@ -238,7 +238,7 @@
     "tests/integration/json-body-depth.test.mjs": 1100,
     "tests/integration/k3d-launcher.test.ts": 2200,
     "tests/integration/known-device-cookie.test.ts": 1800,
-    "tests/integration/kubernetes-peer-status.test.mjs": 500,
+    "tests/integration/kubernetes-peer-status.test.ts": 500,
     "tests/integration/list-summaries.test.ts": 3000,
     "tests/integration/logging-packaging.test.ts": 1500,
     "tests/integration/metrics-monitoring-readiness.test.mjs": 5300,
