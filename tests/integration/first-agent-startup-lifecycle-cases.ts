@@ -244,10 +244,10 @@ export function registerFirstAgentFailureAdviceCases({
             );
           },
         );
-        const keyPath = join(directory, "initial-admin-service-key.json");
-        const key = record(JSON.parse(await readFile(keyPath, "utf8")));
-        record(key.meta).installationId = installationId;
-        await writeFile(keyPath, JSON.stringify(key));
+        const statePath = join(directory, "state.json");
+        const state = record(JSON.parse(await readFile(statePath, "utf8")));
+        state.installationId = installationId;
+        await writeFile(statePath, JSON.stringify(state));
         // Resume an interrupted run after it saved its Secret. No model credential
         // is needed or read, and the real helper creates the remaining resources.
         const recordPath = join(

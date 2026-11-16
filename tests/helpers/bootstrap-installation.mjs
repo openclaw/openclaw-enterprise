@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, writeFileSync } from "node:fs";
 import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,14 +13,24 @@ const repository = fileURLToPath(new URL("../..", import.meta.url));
 function credentialInputs(directory, password = "openclaw-development-password") {
   const passwordPath = join(directory, "admin-password-input");
   const keyPath = join(directory, "admin-service-key-input");
-  if (!existsSync(passwordPath)) {
-    writeFileSync(passwordPath, password, { mode: 0o600, flag: "wx" });
-  }
-  if (!existsSync(keyPath)) {
-    writeFileSync(keyPath, `occ_${randomBytes(32).toString("base64url")}`, {
-      mode: 0o600,
-      flag: "wx",
-    });
+  for (const [path, value] of [
+    [passwordPath, password],
+    [keyPath, `occ_${randomBytes(32).toString("base64url")}`],
+  ]) {
+    let descriptor;
+    try {
+      descriptor = openSync(path, "wx", 0o600);
+    } catch (error) {
+      if (error.code === "EEXIST") {
+        continue;
+      }
+      throw error;
+    }
+    try {
+      writeFileSync(descriptor, value);
+    } finally {
+      closeSync(descriptor);
+    }
   }
   return {
     OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: passwordPath,

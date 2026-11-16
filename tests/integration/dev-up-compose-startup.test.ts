@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 
@@ -117,8 +117,15 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
   assert.ok(result.stdout.includes(`${fixture.occCli} installation get`));
   assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
 
-  const outputMode = (await stat(keyOutput)).mode & 0o777;
-  assert.equal(outputMode & 0o077, 0);
+  const output = await open(keyOutput, "r");
+  let keyDocument: string;
+  try {
+    const outputMode = (await output.stat()).mode & 0o777;
+    assert.equal(outputMode & 0o077, 0);
+    keyDocument = await output.readFile("utf8");
+  } finally {
+    await output.close();
+  }
 
   const dockerLogs = await readEngineInvocations(fixture.dockerLog);
   const config = dockerLogs.find(
@@ -132,7 +139,7 @@ test("dev-up builds the default runtime only when real Compose leaves runtime im
   const key = await readFile(keyPath, "utf8");
   assert.equal(password, "openclaw-development-password");
   assert.match(key, /^occ_[A-Za-z0-9_-]{43}$/);
-  assert.deepEqual(JSON.parse(await readFile(keyOutput, "utf8")), { data: { key } });
+  assert.deepEqual(JSON.parse(keyDocument), { data: { key } });
   for (const path of [passwordPath, keyPath]) {
     assert.equal((await stat(path)).mode & 0o777, 0o600);
   }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -413,10 +413,6 @@ async function markNamespaceReady(namespaceId: string) {
   });
 }
 
-function sha256(value: string) {
-  return createHash("sha256").update(value).digest("hex");
-}
-
 function passiveComputeDriver(): ComputeDriver {
   const harnessAuthDriver = createTestKubernetesComputeDriver(
     "compute-bootstrap-failure-passive-auth",
@@ -598,7 +594,6 @@ test(
     assert.ok(winnerEnvironment && loserEnvironment);
     const winnerPath = winnerEnvironment.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE;
     const apiKey = await readFile(winnerPath, "utf8");
-    const winnerInputDigest = sha256(apiKey);
     await assertStoredAttempt(winnerEvent);
 
     const counts = await rowCounts();
@@ -622,7 +617,12 @@ test(
       await passiveDrivers(),
     );
     apps.push(reloaded);
-    assert.equal(sha256(await readFile(winnerPath, "utf8")), winnerInputDigest);
+    // Report only the comparison result, never either credential value on failure.
+    assert.equal(
+      (await readFile(winnerPath, "utf8")) === apiKey,
+      true,
+      "bootstrap key input changed",
+    );
     const installation = await request(reloaded, "GET", "/installation", apiKey, 200);
     assert.equal(installation.id, winnerEvent.installationId);
     const namespace = await request(reloaded, "POST", "/namespaces", apiKey, 201, {

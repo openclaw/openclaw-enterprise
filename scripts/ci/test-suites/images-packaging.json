@@ -131,7 +131,7 @@
     {
       "path": "tests/integration/development-packaging.test.mjs",
       "expectedTests": [
-        "development packaging isolates bootstrap service key output to the bootstrap service"
+        "development packaging isolates precreated credential inputs to the bootstrap service"
       ]
     },
     {

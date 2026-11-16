@@ -111,10 +111,21 @@ func TestBootstrapExportsOnlyAfterInstallationVerification(t *testing.T) {
 				if _, err := os.Stat(state.KeyPath); !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("unverified key was exported: %v", err)
 				}
+				if state.InstallationID != "" {
+					t.Fatal("unverified Installation identity was saved")
+				}
 				return
 			}
 			if err != nil || id != "ins_00000000-0000-4000-8000-000000000001" {
 				t.Fatalf("Installation verification: id=%q err=%v", id, err)
+			}
+			persisted, err := os.ReadFile(filepath.Join(state.directory, "state.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var saved developmentState
+			if err := json.Unmarshal(persisted, &saved); err != nil || saved.InstallationID != id {
+				t.Fatal("confirmed Installation identity was not saved for later helpers")
 			}
 			exported, err := os.ReadFile(state.KeyPath)
 			if err != nil {

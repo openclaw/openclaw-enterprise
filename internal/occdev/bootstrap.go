@@ -59,6 +59,11 @@ func (r *runner) verifyBootstrapKey(ctx context.Context, state *developmentState
 	if !ok || id == "" {
 		return "", nil, fmt.Errorf("invalid Installation ID")
 	}
+	// Bind later helpers to the Installation confirmed with this exact credential.
+	state.InstallationID = id
+	if err := rewriteState(state); err != nil {
+		return "", nil, err
+	}
 	data, err := os.ReadFile(source)
 	if err != nil {
 		return "", nil, err
