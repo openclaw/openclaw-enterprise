@@ -160,7 +160,9 @@ without Git, has a held runtime failure. Under
 [exclusive replacement](../reference/drivers/compute.md#production-revision-stages),
 the [shared stop boundary](../reference/agents/planned-replacement.md) controls
 native access and predecessor maintenance. Later admissions cannot reopen a
-stopped predecessor. Superseded inactive versions stop with
+stopped predecessor, including after an explicit Stop or a change in replacement mode.
+A worker whose predecessor was retargeted releases its claim for the newer deployment.
+Superseded inactive versions stop with
 `SUPERSEDED_STOP_YIELDED`; recovery deploys a new version.
 
 Agent-stop work rechecks current exact-Agent `operate`; superseded desired state

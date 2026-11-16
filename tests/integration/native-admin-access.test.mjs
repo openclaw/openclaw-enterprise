@@ -79,7 +79,12 @@ function nativeAdminHarnessConfiguration(nativeOrigin) {
 function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}) {
   return createReadyComputeDriver("native-admin-compute", {
     // Kubernetes dedicated revisions stop their predecessors before they start.
-    ...(exclusiveReplacement ? { requiresStoppedPredecessors: () => true } : {}),
+    ...(exclusiveReplacement
+      ? {
+          requiresStoppedPredecessors:
+            typeof exclusiveReplacement === "function" ? exclusiveReplacement : () => true,
+        }
+      : {}),
     implementation: "native-admin-test-upstream",
     // The HTTPS upstream is no OC Gateway, so this Compute applies no managed mode.
     supportsGatewayManagedMode: undefined,
@@ -323,7 +328,7 @@ async function startNativeHttpsUpstream(t, { captureWire = false } = {}) {
  *   nativeAdminEnabled?: boolean,
  *   nativeDomain?: string,
  *   configure?: (origin: string) => object,
- *   exclusiveReplacement?: boolean,
+ *   exclusiveReplacement?: boolean | ((revision: import("../../packages/contracts/src/index.ts").AgentRevision) => boolean),
  * }} [options]
  */
 async function createNativeAdminFixture(t, options = {}) {
@@ -716,7 +721,9 @@ test("native admin stays available before the shared stop boundary, then becomes
   assert.equal(stillServing.data.status, "available");
   assert.equal(stillServing.data.activeRevisionId, shared.revision.id);
 
-  const context = await createNativeAdminFixture(t, { exclusiveReplacement: true });
+  const context = await createNativeAdminFixture(t, {
+    exclusiveReplacement: (revision) => revision.revision === 2,
+  });
   const available = await nativeStatus(context);
   assert.equal(available.data.status, "available");
   const replacement = await context.fixture.deployAgent(context.namespace.id, context.agent.id);
@@ -752,6 +759,17 @@ test("native admin stays available before the shared stop boundary, then becomes
   const restored = await nativeStatus(context);
   assert.equal(restored.data.status, "available");
   assert.equal(restored.data.activeRevisionId, nextReplacement.id);
+});
+
+test("redeploy after explicit Stop keeps the old native endpoint closed", async (t) => {
+  const context = await createNativeAdminFixture(t, { exclusiveReplacement: true });
+  const stop = await context.fixture.request(
+    "POST",
+    `/namespaces/${context.namespace.id}/agents/${context.agent.id}/stop`,
+  );
+  assert.equal(stop.status, 202);
+  await context.fixture.deployAgent(context.namespace.id, context.agent.id);
+  assert.deepEqual((await nativeStatus(context)).data, { status: "unavailable" });
 });
 
 test("native browser disabled status still requires exact Agent authority", async (t) => {

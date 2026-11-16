@@ -1282,7 +1282,7 @@ export interface ActiveAgentRevisionSelection {
   readonly revision: Readonly<AgentRevision>;
   /** Administering reads only: the newest admitted revision after the active one, if any. */
   readonly successor?: Readonly<AgentRevision>;
-  readonly servingBeforeStop?: boolean;
+  readonly predecessorPhase?: "pre-stop" | "stopping";
 }
 
 export type ReconciliationOperation = PlatformOperation;
@@ -6510,8 +6510,9 @@ export class OpenClawController {
         agent,
         revision,
         ...(successor === undefined ? {} : { successor }),
-        servingBeforeStop:
-          replacement?.predecessorRevisionId === revision.id && replacement.phase === "pre-stop",
+        ...(replacement?.predecessorRevisionId === revision.id
+          ? { predecessorPhase: replacement.phase }
+          : {}),
       });
       const mode = action === "administer" ? "admin" : "chat";
       return browserAccess ? { ...selection, mode } : selection;
@@ -13907,7 +13908,8 @@ export class OpenClawController {
       );
       if (
         lockedAgent.activeRevisionId &&
-        compute.requiresStoppedPredecessors?.(revision) === true
+        (lockedAgent.desiredRuntimeState === "stopped" ||
+          compute.requiresStoppedPredecessors?.(revision) === true)
       ) {
         const replacement = await state.agents.findPredecessorReplacement(
           namespace.id,
@@ -13920,11 +13922,11 @@ export class OpenClawController {
         const firstReplacement =
           predecessor !== undefined &&
           !previous.some(({ revision: number }) => number > predecessor.revision);
-        if (knownBoundary || firstReplacement) {
+        if (lockedAgent.desiredRuntimeState === "stopped" || knownBoundary || firstReplacement) {
           await state.agents.recordPredecessorReplacement(namespace.id, lockedAgent.id, {
             predecessorRevisionId: lockedAgent.activeRevisionId,
             candidateRevisionId: revision.id,
-            phase: "pre-stop",
+            phase: lockedAgent.desiredRuntimeState === "stopped" ? "stopping" : "pre-stop",
           });
         }
       }
