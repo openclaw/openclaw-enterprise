@@ -15155,9 +15155,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         );
       }
     }
-    const workspace = isProtectedWorkspaceRevision(revision)
-      ? protectedWorkspaceDriver(revision, this.sandboxDriverForRevision(revision))
-      : undefined;
+    // Like the OpenShell launch above, only this Compute's own SandboxDriver selects a
+    // protected workspace. Admission for an unavailable or foreign driver stays unprefixed,
+    // and execution then refuses it as needing a fresh admission.
+    const workspace =
+      isProtectedWorkspaceRevision(revision) &&
+      revision.sandboxDriverId !== undefined &&
+      revision.sandboxDriverId === this.sandboxDriver?.id
+        ? protectedWorkspaceDriver(revision, this.sandboxDriver)
+        : undefined;
     if (workspace === undefined) {
       return selected;
     }
