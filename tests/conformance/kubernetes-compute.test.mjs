@@ -32,7 +32,6 @@ import {
   SandboxGatewayUnavailableError,
   SandboxWorkspaceSetupRefusedError,
   TransientDependencyError,
-  resolveConfiguredHarnessId,
 } from "../../packages/occ/src/index.ts";
 import { normalizeSecretBindings } from "../../packages/contracts/src/index.ts";
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
@@ -90,6 +89,12 @@ import {
   checkFullNamespacePodQuota,
   checkQuotaWorkloadTopology,
 } from "./kubernetes-workload-pending-cases.ts";
+import {
+  checkAccountLoginProviderIsolation,
+  checkExplicitCodexProviderProjection,
+  checkNonPrimaryModelQualification,
+  checkStandaloneSearchOptIn,
+} from "./kubernetes-codex-endpoint-preparation-cases.ts";
 import { checkGatewayRetirement } from "./kubernetes-gateway-retirement-case.ts";
 import {
   checkStartupPluginInitialization,
@@ -968,189 +973,14 @@ test("prepared direct-Secret workloads retain their provider across default chan
   }
 });
 
-test("custom Codex endpoints compile explicit providers without changing the admitted model IDs", async () => {
-  for (const sourceProvider of ["codex", "openai"]) {
-    const fixture = dedicatedFirstDeployFixture({
-      modelEndpoint: "https://MODELS.example.test:443/api/v1/",
-    });
-    const primary = `${sourceProvider}/vendor/organization/model`;
-    const fallback = `${sourceProvider}/codex/native`;
-    const plain = `${sourceProvider}/plain-model`;
-    const child = `${sourceProvider}/vendor/organization/child`;
-    const childFallback = `${sourceProvider}/codex/child-fallback`;
-    const childSelection = { primary: child, fallbacks: [childFallback, "primary"] };
-    const settings = {
-      model: { primary, fallbacks: [fallback, plain] },
-      models: {
-        [primary]: { agentRuntime: { id: "codex" }, alias: "primary" },
-        [fallback]: { agentRuntime: { id: "codex" }, alias: sourceProvider },
-        [plain]: { agentRuntime: { id: "codex" } },
-        [`${sourceProvider}/*`]: { agentRuntime: { id: "codex" } },
-      },
-    };
-    fixture.revision.configuration = admitLoggingConfiguration(
-      {
-        ...fixture.revision.configuration,
-        // OpenAI-prefixed native selections require the explicit Codex WebSocket bridge.
-        plugins: createHarnessConfiguration("codex", "vendor/organization/model").plugins,
-        agents: {
-          ownership: "explicit",
-          defaults: {
-            ...structuredClone(settings),
-            model: sourceProvider === "openai" ? primary : structuredClone(settings.model),
-            subagents: {
-              model: sourceProvider === "codex" ? child : structuredClone(childSelection),
-            },
-          },
-          entries: {
-            main: {
-              ...structuredClone(settings),
-              subagents: {
-                model: sourceProvider === "codex" ? structuredClone(childSelection) : child,
-              },
-            },
-            alias: { subagents: { model: "primary" } },
-            providerAlias: { subagents: { model: sourceProvider } },
-            inherited: {},
-          },
-        },
-        models: {
-          providers: {
-            [sourceProvider]: {
-              agentRuntime: { id: "codex" },
-              api: "openai-responses",
-              baseUrl: "http://127.0.0.1:9",
-              models: [
-                { id: "vendor/organization/model", name: "Primary model", contextWindow: 32000 },
-                // Full OCE catalog refs must not strip the native "codex/" namespace.
-                { id: fallback, name: "Fallback model" },
-                { id: "plain-model", name: "Plain model" },
-              ],
-            },
-          },
-        },
-      },
-      "info",
-    );
-    const admitted = structuredClone(fixture.revision.configuration);
-    assert.equal(resolveConfiguredHarnessId(admitted), "codex");
-    await fixture.prepare();
-    const snapshot = [...fixture.objects.values()].find(
-      (object) => object.kind === "ConfigMap" && object.data?.["openclaw.json"] !== undefined,
-    );
-    assert.ok(snapshot);
-    const rendered = JSON.parse(snapshot.data["openclaw.json"]);
-    const qualified = "codex/openai-compatible/";
-    const expectedSelection = {
-      primary: `${qualified}vendor/organization/model`,
-      fallbacks: [`${qualified}codex/native`, `${qualified}plain-model`],
-    };
-    assert.deepEqual(
-      rendered.agents.defaults.model,
-      sourceProvider === "openai" ? expectedSelection.primary : expectedSelection,
-    );
-    assert.deepEqual(rendered.agents.entries.main.model, expectedSelection);
-    const expectedChild = `${qualified}vendor/organization/child`;
-    const expectedChildSelection = {
-      primary: expectedChild,
-      fallbacks: [`${qualified}codex/child-fallback`, "primary"],
-    };
-    assert.deepEqual(
-      rendered.agents.defaults.subagents.model,
-      sourceProvider === "codex" ? expectedChild : expectedChildSelection,
-    );
-    assert.deepEqual(
-      rendered.agents.entries.main.subagents.model,
-      sourceProvider === "codex" ? expectedChildSelection : expectedChild,
-    );
-    assert.equal(rendered.agents.entries.alias.subagents.model, "primary");
-    assert.equal(rendered.agents.entries.providerAlias.subagents.model, sourceProvider);
-    assert.equal(rendered.agents.entries.inherited.subagents, undefined);
-    for (const actual of [rendered.agents.defaults, rendered.agents.entries.main]) {
-      assert.deepEqual(Object.keys(actual.models), [
-        `${qualified}vendor/organization/model`,
-        `${qualified}codex/native`,
-        `${qualified}plain-model`,
-        `${qualified}*`,
-      ]);
-      assert.equal(actual.models[`${qualified}vendor/organization/model`].alias, "primary");
-    }
-    const byModelId = (left, right) => left.id.localeCompare(right.id);
-    assert.deepEqual(
-      rendered.models.providers.codex.models.toSorted(byModelId),
-      [
-        {
-          id: "openai-compatible/vendor/organization/model",
-          name: "Primary model",
-          contextWindow: 32000,
-        },
-        { id: "openai-compatible/codex/native", name: "Fallback model" },
-        { id: "openai-compatible/plain-model", name: "Plain model" },
-        {
-          id: "openai-compatible/vendor/organization/child",
-          name: "vendor/organization/child",
-        },
-        { id: "openai-compatible/codex/child-fallback", name: "codex/child-fallback" },
-      ].toSorted(byModelId),
-    );
-    assert.deepEqual(fixture.revision.configuration, admitted);
-    const runtime = [...fixture.objects.values()].find(
-      (object) => object.kind === "ConfigMap" && object.data?.["runtime.json"] !== undefined,
-    );
-    assert.ok(runtime);
-    assert.deepEqual(JSON.parse(runtime.data["runtime.json"]).modelEndpoint, {
-      baseUrl: "https://models.example.test/api/v1",
-      modelProvider: "openai-compatible",
-    });
-  }
-});
+test("custom Codex endpoints compile explicit providers without changing the admitted model IDs", () =>
+  checkExplicitCodexProviderProjection(dedicatedFirstDeployFixture));
 
-test("custom Codex standalone search is opt-in and preserves provider identity and session policy", async () => {
-  for (const standaloneWebSearch of [undefined, false, true]) {
-    const fixture = dedicatedFirstDeployFixture({
-      modelEndpoint: "https://models.example.test/v1",
-      standaloneWebSearch,
-    });
-    await fixture.prepare();
-    const runtime = [...fixture.objects.values()].find(
-      (object) => object.kind === "ConfigMap" && object.data?.["runtime.json"] !== undefined,
-    );
-    const manifest = JSON.parse(runtime.data["runtime.json"]);
-    assert.deepEqual(manifest.modelEndpoint, {
-      baseUrl: "https://models.example.test/v1",
-      modelProvider: "openai-compatible",
-      ...(standaloneWebSearch === true ? { supportsStandaloneWebSearch: true } : {}),
-    });
-    const config = runtime.data["config.toml"];
-    assert.match(config, /model_provider = "openai-compatible"/);
-    assert.match(config, /\[model_providers\.openai-compatible\]/);
-    assert.match(config, /requires_openai_auth = true/);
-    assert.equal(
-      config.includes("supports_standalone_web_search = true"),
-      standaloneWebSearch === true,
-    );
-    assert.equal(config.includes('web_search = "disabled"'), false);
-    const admitted = structuredClone(fixture.revision.configuration);
-    await fixture.prepare();
-    assert.deepEqual(fixture.revision.configuration, admitted);
-    assert.deepEqual(fixture.read("ConfigMap", runtime.metadata.name).data, runtime.data);
-  }
-});
+test("custom Codex standalone search is opt-in and preserves provider identity and session policy", () =>
+  checkStandaloneSearchOptIn(dedicatedFirstDeployFixture));
 
-test("custom endpoint search declarations do not change Codex account-login providers", async () => {
-  const fixture = dedicatedFirstDeployFixture({
-    modelEndpoint: "https://models.example.test/v1",
-    standaloneWebSearch: true,
-    revision: { harnessAuth: { ...apiKeyAuth, method: "codex_pat" } },
-  });
-  await fixture.prepare();
-  const runtime = [...fixture.objects.values()].find(
-    (object) => object.kind === "ConfigMap" && object.data?.["runtime.json"] !== undefined,
-  );
-  assert.equal(JSON.parse(runtime.data["runtime.json"]).modelEndpoint, undefined);
-  assert.equal(runtime.data["config.toml"].includes("supports_standalone_web_search"), false);
-  assert.equal(runtime.data["config.toml"].includes("model_provider"), false);
-});
+test("custom endpoint search declarations do not change Codex account-login providers", () =>
+  checkAccountLoginProviderIsolation(dedicatedFirstDeployFixture));
 
 test(
   "shared provider rejects removed Codex options and malformed declarations",
@@ -2394,125 +2224,8 @@ test("Kubernetes Compute withdraws a native Harness exposure outside a preparati
   clients.core.readNamespace = readNamespace;
 });
 
-// Finding 1297: the projection covers every setting the Harness model rule checks, not only
-// model and subagents.model. An openai source's provider block is dropped, so no selection
-// may be left on it.
-test("custom Codex endpoints qualify every non-primary model selection before dropping the source provider", async () => {
-  for (const sourceProvider of ["codex", "openai"]) {
-    const fixture = dedicatedFirstDeployFixture({
-      modelEndpoint: "https://models.example.test/v1",
-    });
-    const ref = (id) => `${sourceProvider}/${id}`;
-    const nonPrimary = {
-      imageModel: { primary: ref("image"), fallbacks: [ref("image-fallback"), "small"] },
-      pdfModel: ref("pdf"),
-      utilityModel: ref("utility"),
-      heartbeat: { model: ref("small") },
-      compaction: { model: ref("small") },
-      tts: { summaryModel: ref("summary") },
-      // Finding 1306: the /model allowlist, which OpenClaw honors over the models keys.
-      modelPolicy: { allow: [ref("gpt-5"), ref("small"), ref("allow-only")] },
-    };
-    fixture.revision.configuration = admitLoggingConfiguration(
-      {
-        ...fixture.revision.configuration,
-        plugins: createHarnessConfiguration("codex", "gpt-5").plugins,
-        agents: {
-          ownership: "explicit",
-          defaults: {
-            model: ref("gpt-5"),
-            models: { [ref("small")]: { alias: "small" } },
-            ...structuredClone(nonPrimary),
-          },
-          entries: {
-            main: {
-              heartbeat: { model: ref("entry-heartbeat") },
-              models: { [ref("entry-policy")]: {}, [ref("small")]: { alias: "entry-small" } },
-              modelPolicy: { allow: [ref("gpt-5"), ref("entry-allow/*")] },
-            },
-            // An entry whose only model setting is its policy map.
-            helper: { models: { [ref("helper-policy")]: {} } },
-          },
-        },
-        tools: { exec: { reviewer: { model: ref("reviewer") } } },
-        hooks: { gmail: { model: ref("gmail") }, mappings: [{ model: ref("hook") }] },
-        channels: { modelByChannel: { slack: { C1: ref("channel") } } },
-        models: {
-          providers: {
-            [sourceProvider]: {
-              agentRuntime: { id: "codex" },
-              api: "openai-responses",
-              baseUrl: "http://127.0.0.1:9",
-              models: [
-                { id: "gpt-5", name: "Primary model" },
-                { id: "small", name: "Small model", contextWindow: 16000 },
-              ],
-            },
-          },
-        },
-      },
-      "info",
-    );
-    const admitted = structuredClone(fixture.revision.configuration);
-    await fixture.prepare();
-    const snapshot = [...fixture.objects.values()].find(
-      (object) => object.kind === "ConfigMap" && object.data?.["openclaw.json"] !== undefined,
-    );
-    assert.ok(snapshot);
-    const rendered = JSON.parse(snapshot.data["openclaw.json"]);
-    const qualified = (id) => `codex/openai-compatible/${id}`;
-    const { defaults } = rendered.agents;
-    assert.equal(defaults.model, qualified("gpt-5"));
-    assert.deepEqual(defaults.imageModel, {
-      primary: qualified("image"),
-      fallbacks: [qualified("image-fallback"), "small"],
-    });
-    assert.equal(defaults.pdfModel, qualified("pdf"));
-    assert.equal(defaults.utilityModel, qualified("utility"));
-    assert.deepEqual(defaults.heartbeat, { model: qualified("small") });
-    assert.deepEqual(defaults.compaction, { model: qualified("small") });
-    assert.deepEqual(defaults.tts, { summaryModel: qualified("summary") });
-    // An allowlist entry is qualified like a policy key, so /model back to the projected
-    // primary is allowed; one with no catalog row adds none.
-    assert.deepEqual(defaults.modelPolicy, {
-      allow: [qualified("gpt-5"), qualified("small"), qualified("allow-only")],
-    });
-    assert.deepEqual(rendered.agents.entries.main.modelPolicy, {
-      allow: [qualified("gpt-5"), qualified("entry-allow/*")],
-    });
-    assert.deepEqual(Object.keys(defaults.models), [qualified("small")]);
-    assert.deepEqual(rendered.agents.entries.main.heartbeat, {
-      model: qualified("entry-heartbeat"),
-    });
-    assert.deepEqual(rendered.agents.entries.main.models, {
-      [qualified("entry-policy")]: {},
-      [qualified("small")]: { alias: "entry-small" },
-    });
-    assert.deepEqual(rendered.agents.entries.helper.models, { [qualified("helper-policy")]: {} });
-    assert.equal(rendered.tools.exec.reviewer.model, qualified("reviewer"));
-    assert.equal(rendered.hooks.gmail.model, qualified("gmail"));
-    assert.equal(rendered.hooks.mappings[0].model, qualified("hook"));
-    assert.deepEqual(rendered.channels.modelByChannel, { slack: { C1: qualified("channel") } });
-    assert.deepEqual(Object.keys(rendered.models.providers), ["codex"]);
-    const byModelId = (left, right) => left.id.localeCompare(right.id);
-    assert.deepEqual(
-      rendered.models.providers.codex.models.toSorted(byModelId),
-      [
-        { id: "openai-compatible/gpt-5", name: "Primary model" },
-        { id: "openai-compatible/small", name: "Small model", contextWindow: 16000 },
-        ...["image", "image-fallback", "pdf", "utility", "summary", "gmail", "hook", "channel"].map(
-          (id) => ({
-            id: `openai-compatible/${id}`,
-            name: id,
-          }),
-        ),
-        { id: "openai-compatible/entry-heartbeat", name: "entry-heartbeat" },
-        { id: "openai-compatible/reviewer", name: "reviewer" },
-      ].toSorted(byModelId),
-    );
-    assert.deepEqual(fixture.revision.configuration, admitted);
-  }
-});
+test("custom Codex endpoints qualify every non-primary model selection before dropping the source provider", () =>
+  checkNonPrimaryModelQualification(dedicatedFirstDeployFixture));
 
 test("dedicated startup initializes Harness plugins before enrolling its workspace node", () =>
   checkStartupPluginInitialization(dedicatedFirstDeployFixture));
