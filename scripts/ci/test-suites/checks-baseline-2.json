@@ -7,15 +7,17 @@
     "tests/integration/prepared-refresh-enrollment.test.ts",
     "tests/integration/staging-upgrade-return.test.ts",
     "tests/integration/controlled-tls-origin.test.ts",
-    "tests/integration/ci-prepare-k3d.test.mjs",
+    "tests/integration/ci-prepare-k3d.test.ts",
+    "tests/integration/ci-prepare-image-cache.test.ts",
     "tests/integration/ci-prepare.test.mjs",
-    "tests/conformance/repository-credentials-source-boundary.test.mjs",
+    "tests/integration/ci-prepare-lane-action.test.ts",
+    "tests/conformance/repository-credentials-source-boundary.test.ts",
     "tests/conformance/startup-environment-boundary.test.ts",
     "tests/integration/repository-credentials-admission.test.mjs",
     "tests/integration/repository-native-cutover.test.ts",
-    "tests/conformance/ssh-compute.test.mjs",
-    "tests/conformance/module-boundaries.test.mjs",
-    "tests/integration/repository-credentials-router.test.mjs",
+    "tests/conformance/ssh-compute.test.ts",
+    "tests/conformance/module-boundaries.test.ts",
+    "tests/integration/repository-credentials-router.test.ts",
     "tests/conformance/module-policy.test.mjs",
     "tests/integration/native-admin-access.test.mjs",
     "tests/integration/repository-credentials-transport-bounds.test.ts",
@@ -27,17 +29,19 @@
     "tests/integration/repository-receipt-observation.test.ts",
     "tests/integration/codex-plugin-startup-reads.test.mjs",
     "tests/integration/codex-plugin-preparation.test.ts",
-    "tests/integration/container-release.test.mjs",
+    "tests/integration/container-release.test.ts",
     "tests/integration/password-sign-in-audit.test.ts",
     "tests/integration/ci-impact-gate.test.ts",
     "tests/integration/console-provisioning-request.test.ts",
     "tests/integration/console-theme.test.ts",
     "tests/integration/console-storybook-workflow.test.ts",
     "tests/integration/workspace-setup-api.test.mjs",
-    "tests/integration/agent-create-validate-api.test.mjs",
+    "tests/integration/agent-create-validate-api.test.ts",
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner-native-child.test.ts",
+    "tests/integration/ci-runner-process-ownership.test.ts",
     "tests/integration/ci-runner-openshell-progress.test.ts",
     "tests/integration/ci-runner-case-enforcement.test.ts",
     "tests/integration/ci-runner-file-outcomes.test.ts",
@@ -52,22 +56,22 @@
     "tests/integration/ci-runner-first-agent-startup.test.ts",
     "tests/integration/k3d-quickstart-diagnostics.test.ts",
     "tests/integration/local-first-agent-session-identity.test.ts",
-    "tests/integration/k3d-launcher.test.mjs",
+    "tests/integration/k3d-launcher.test.ts",
     "tests/integration/password-sign-in-admission.test.ts",
     "tests/integration/google-login-transport.test.ts",
-    "tests/conformance/slack-channel-directory.test.mjs",
+    "tests/conformance/slack-channel-directory.test.ts",
     "tests/conformance/bounded-response-reads.test.ts",
-    "tests/conformance/repository-credentials-github.test.mjs",
-    "tests/integration/repository-credentials-driver.test.mjs",
+    "tests/conformance/repository-credentials-github.test.ts",
+    "tests/integration/repository-credentials-driver.test.ts",
     "tests/integration/repository-credentials-sender-recovery.test.ts",
     "tests/integration/known-device-cookie.test.ts",
-    "tests/conformance/postgres-controller-auth-binding.test.mjs",
+    "tests/conformance/postgres-controller-auth-binding.test.ts",
     "tests/integration/repository-credentials-package.test.ts",
     "tests/integration/package-prepack.test.ts",
     "tests/integration/repository-credentials-restart.test.ts",
-    "tests/conformance/plugin-driver.test.mjs",
+    "tests/conformance/plugin-driver.test.ts",
     "tests/integration/ci-image-reconciliation.test.ts",
-    "tests/conformance/repository-runtime-material.test.mjs",
+    "tests/conformance/repository-runtime-material.test.ts",
     "tests/integration/repository-credentials-server-timeout.test.ts",
     "tests/integration/protected-repository-metadata-read.test.mjs",
     "tests/integration/repository-credentials-http.test.ts",
@@ -79,69 +83,78 @@
     "tests/integration/ci-download-pinned.test.ts",
     "tests/integration/ci-registry-transport.test.ts",
     "tests/conformance/slack-proxy-tunnel.test.mjs",
-    "tests/conformance/native-admin-websocket-relay.test.mjs",
+    "tests/conformance/slack-proxy-backpressure.test.ts",
+    "tests/conformance/native-admin-websocket-relay.test.ts",
     "tests/integration/qa-fixture-inputs.test.mjs",
     "tests/integration/compose-network.test.ts",
     "tests/integration/qa-repository-installation.test.ts",
+    "tests/integration/qa-failure-diagnostics.test.ts",
     "tests/integration/repository-runtime-materialization.test.ts",
     "tests/conformance/repository-credentials-contracts.test.ts",
     "tests/integration/plugin-driver-startup.test.ts",
-    "tests/integration/repository-credentials-config.test.mjs",
-    "tests/integration/kubernetes-peer-status.test.mjs",
+    "tests/integration/repository-credentials-config.test.ts",
+    "tests/integration/qa-repository-remote-cleanup.test.ts",
+    "tests/integration/kubernetes-peer-status.test.ts",
     "tests/conformance/repository-credentials-lifecycle.test.ts",
-    "tests/integration/ssh-compute-startup.test.mjs",
+    "tests/integration/ssh-compute-startup.test.ts",
     "tests/integration/oidc-login-transport.test.ts",
     "tests/conformance/repository-credentials-ownership-boundaries.test.ts",
-    "tests/integration/ci-cleanup.test.mjs",
+    "tests/integration/ci-cleanup.test.ts",
     "tests/integration/ci-prepare-postgres.test.ts",
+    "tests/integration/ci-prepare-postgres-diagnostics.test.ts",
     "tests/integration/runtime-image-failure-output.test.ts",
-    "tests/conformance/runtime-model-probe-settlement.test.mjs",
+    "tests/conformance/runtime-model-probe-settlement.test.ts",
     "tests/conformance/hosted-plugin-discovery.test.ts",
     "tests/integration/plugin-driver-real-preflight.test.ts",
     "tests/conformance/postgres-transaction-commit.test.mjs",
-    "tests/conformance/plugin-runtime-policy.test.mjs",
+    "tests/conformance/plugin-runtime-policy.test.ts",
     "tests/integration/password-sign-in-policy.test.ts",
     "tests/integration/compute-singleton-worker.test.mjs",
     "tests/integration/worker-shutdown.test.ts",
-    "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
-    "tests/integration/oidc-id-token.test.mjs",
-    "tests/integration/repository-credentials-shutdown.test.mjs",
-    "tests/conformance/repository-transactions.test.mjs",
-    "tests/integration/google-id-token.test.mjs",
-    "tests/integration/first-agent-startup.test.mjs",
+    "tests/conformance/postgres-transaction-unknown-commit.test.ts",
+    "tests/integration/oidc-id-token.test.ts",
+    "tests/integration/repository-credentials-shutdown.test.ts",
+    "tests/conformance/repository-transactions.test.ts",
+    "tests/integration/google-id-token.test.ts",
+    "tests/integration/first-agent-startup.test.ts",
     "tests/conformance/repository-sessions-memory.test.ts",
     "tests/conformance/repository-credentials-github-token.test.ts",
-    "tests/conformance/repository-credentials-registry.test.mjs",
-    "tests/integration/ci-openshell.test.mjs",
+    "tests/conformance/repository-credentials-registry.test.ts",
+    "tests/integration/ci-openshell-preparation.test.ts",
+    "tests/integration/ci-openshell.test.ts",
     "tests/conformance/repository-credentials-sessions.test.ts",
     "tests/conformance/repository-credentials-admission.test.ts",
-    "tests/integration/dev-codex-seccomp-failure.test.mjs",
+    "tests/integration/dev-codex-seccomp-failure.test.ts",
     "tests/conformance/runtime-probe-cpu-counter.test.ts",
-    "tests/conformance/runtime-gateway-state-migration.test.mjs",
+    "tests/conformance/runtime-gateway-state-migration.test.ts",
     "tests/conformance/node-test-summary.test.ts",
-    "tests/conformance/repository-material-store.test.mjs",
+    "tests/conformance/repository-material-store.test.ts",
     "tests/conformance/plugin-runtime-templates.test.ts",
     "tests/integration/ci-logging.test.ts",
     "tests/integration/ci-go-test.test.ts",
     "tests/conformance/slack-proxy-reset.test.mjs",
     "tests/conformance/native-admin-upgrade-reset.test.mjs",
     "tests/conformance/repository-credentials-custody.test.ts",
-    "tests/conformance/repository-credentials-receive-pack.test.mjs",
-    "tests/integration/runtime-assets.test.mjs",
+    "tests/conformance/repository-credentials-receive-pack.test.ts",
+    "tests/integration/runtime-assets.test.ts",
     "tests/integration/runtime-ai-package-relocation.test.ts",
     "tests/integration/runtime-node-build-jobs.test.ts",
     "tests/integration/openclaw-source.test.ts",
-    "tests/conformance/repository-client-environment.test.mjs",
-    "tests/conformance/repository-credentials-tool-evidence.test.mjs",
-    "tests/integration/client-address.test.mjs",
-    "tests/integration/full-integration-preflight.test.mjs",
+    "tests/conformance/repository-credentials-tool-evidence.test.ts",
+    "tests/integration/client-address.test.ts",
+    "tests/integration/full-integration-preflight.test.ts",
+    "tests/integration/full-integration-schedule.test.ts",
+    "tests/integration/full-integration-reuse.test.ts",
+    "tests/integration/full-integration-coverage.test.ts",
+    "tests/integration/full-integration-workflow.test.ts",
+    "tests/integration/qa-repository-materialization.test.ts",
     "tests/integration/container-promote.test.ts",
     "tests/conformance/controller-stop-yields.test.ts",
-    "tests/integration/dev-up-model-provider.test.mjs",
+    "tests/integration/dev-up-model-provider.test.ts",
     "tests/integration/egress-connected-preflight.test.mjs",
     "tests/integration/egress-connected-lifecycle-preflight.test.ts",
     "tests/integration/credential-proxy-configuration.test.ts",
-    "tests/helpers/socket-relay.test.mjs",
+    "tests/helpers/socket-relay.test.ts",
     "tests/integration/gateway-workspace-readiness.test.ts",
     "tests/integration/oidc-provider.test.ts",
     "tests/integration/signin-network-probe.test.ts",
@@ -185,10 +198,10 @@
       "path": "tests/integration/controlled-tls-origin.test.ts"
     },
     {
-      "path": "tests/integration/tls-peer-certificate.test.mjs"
+      "path": "tests/integration/tls-peer-certificate.test.ts"
     },
     {
-      "path": "tests/helpers/socket-relay.test.mjs"
+      "path": "tests/helpers/socket-relay.test.ts"
     },
     {
       "path": "tests/integration/qa-fixture-inputs.test.mjs"
@@ -200,13 +213,25 @@
       "path": "tests/integration/qa-repository-installation.test.ts"
     },
     {
+      "path": "tests/integration/qa-failure-diagnostics.test.ts"
+    },
+    {
       "path": "tests/integration/github-app-observer.test.ts"
     },
     {
-      "path": "tests/integration/dev-codex-seccomp-failure.test.mjs"
+      "path": "tests/integration/dev-codex-seccomp-failure.test.ts"
     },
     {
-      "path": "tests/integration/first-agent-startup.test.mjs",
+      "path": "tests/integration/qa-repository-remote-cleanup.test.ts",
+      "expectedTests": [
+        "repository cleanup reconciles an unknown write and removes only the owned ref",
+        "repository cleanup retains the ref and PR on ownership mismatch",
+        "repository cleanup rejects a malformed PR number before mutation",
+        "repository cleanup preserves a concurrent ref update when Git refuses its stale lease"
+      ]
+    },
+    {
+      "path": "tests/integration/first-agent-startup.test.ts",
       "expectedTests": [
         "first-Agent starts without installed workspace dependencies",
         "first-Agent accepts current Compose-backed Kubernetes development state",
@@ -263,6 +288,26 @@
       ]
     },
     {
+      "path": "tests/integration/ci-runner-native-child.test.ts",
+      "expectedTests": [
+        "native child query retains only an observed stage from its own failed exec",
+        "runner reports a native child stage only on the canonical failed topology case"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-runner-process-ownership.test.ts",
+      "expectedTests": [
+        "run records timeout cancellation without leaking child output",
+        "run kills what a passing file left in its process group",
+        "run kills every live test group on SIGTERM and exits by that signal",
+        "run kills every live test group on SIGINT and exits by that signal",
+        "run kills every live test group on SIGHUP and exits by that signal",
+        "run reports a cleanup that fails once a cancelled job's shell is gone as cancelled",
+        "run kills a timed-out file's whole process group after the timeout record",
+        "run records a timed-out file's interrupted test and output tail in the diagnostics report"
+      ]
+    },
+    {
       "path": "tests/integration/ci-runner-openshell-progress.test.ts",
       "expectedTests": [
         "CI streams safe OpenShell failures before cleanup and retains the original error",
@@ -273,6 +318,7 @@
     {
       "path": "tests/integration/ci-runner-case-enforcement.test.ts",
       "expectedTests": [
+        "unknown selection options fail before running tests or writing receipts",
         "focused runs retain case enforcement and cleanup but cannot complete a full lane",
         "run fails missing expected tests, skipped expected tests, skips, todos, and missing required env"
       ]
@@ -335,13 +381,31 @@
       ]
     },
     {
-      "path": "tests/integration/full-integration-preflight.test.mjs"
+      "path": "tests/integration/full-integration-preflight.test.ts"
     },
     {
-      "path": "tests/integration/ci-cleanup.test.mjs"
+      "path": "tests/integration/full-integration-schedule.test.ts"
+    },
+    {
+      "path": "tests/integration/full-integration-reuse.test.ts"
+    },
+    {
+      "path": "tests/integration/full-integration-coverage.test.ts"
+    },
+    {
+      "path": "tests/integration/full-integration-workflow.test.ts"
+    },
+    {
+      "path": "tests/integration/qa-repository-materialization.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-cleanup.test.ts"
     },
     {
       "path": "tests/integration/ci-prepare-postgres.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-prepare-postgres-diagnostics.test.ts"
     },
     {
       "path": "tests/integration/runtime-image-failure-output.test.ts"
@@ -350,22 +414,32 @@
       "path": "tests/integration/ci-image-reconciliation.test.ts"
     },
     {
+      "path": "tests/integration/ci-prepare-image-cache.test.ts"
+    },
+    {
       "path": "tests/integration/ci-prepare.test.mjs"
     },
     {
-      "path": "tests/integration/ci-prepare-k3d.test.mjs"
+      "path": "tests/integration/ci-prepare-lane-action.test.ts",
+      "expectedTests": [
+        "focused CI selection fails before tool setup or lane preparation",
+        "installer cache selection covers whole lanes and preserves focused image selection"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-prepare-k3d.test.ts"
     },
     {
       "path": "tests/integration/ci-image-pull.test.ts"
     },
     {
-      "path": "tests/integration/ci-image-config-digest.test.mjs"
+      "path": "tests/integration/ci-image-config-digest.test.ts"
     },
     {
       "path": "tests/integration/skipper-release.test.ts"
     },
     {
-      "path": "tests/integration/repository-credentials-draft-pr-cli.test.mjs"
+      "path": "tests/integration/repository-credentials-draft-pr-cli.test.ts"
     },
     {
       "path": "tests/integration/ci-keycloak.test.ts"
@@ -377,10 +451,13 @@
       "path": "tests/integration/ci-registry-transport.test.ts"
     },
     {
-      "path": "tests/integration/k3d-launcher.test.mjs"
+      "path": "tests/integration/k3d-launcher.test.ts"
     },
     {
-      "path": "tests/integration/ci-openshell.test.mjs"
+      "path": "tests/integration/ci-openshell-preparation.test.ts"
+    },
+    {
+      "path": "tests/integration/ci-openshell.test.ts"
     },
     {
       "path": "tests/integration/ci-logging.test.ts"
@@ -389,7 +466,7 @@
       "path": "tests/integration/ci-go-test.test.ts"
     },
     {
-      "path": "tests/integration/container-release.test.mjs"
+      "path": "tests/integration/container-release.test.ts"
     },
     {
       "path": "tests/integration/cli-release.test.ts",
@@ -404,31 +481,31 @@
       "path": "tests/integration/container-promote.test.ts"
     },
     {
-      "path": "tests/conformance/ssh-compute.test.mjs"
+      "path": "tests/conformance/ssh-compute.test.ts"
     },
     {
-      "path": "tests/integration/ssh-compute-startup.test.mjs"
+      "path": "tests/integration/ssh-compute-startup.test.ts"
     },
     {
       "path": "tests/conformance/runtime-probe-cpu-counter.test.ts"
     },
     {
-      "path": "tests/conformance/runtime-gateway-state-migration.test.mjs"
+      "path": "tests/conformance/runtime-gateway-state-migration.test.ts"
     },
     {
       "path": "tests/conformance/node-test-summary.test.ts"
     },
     {
-      "path": "tests/conformance/runtime-model-probe-settlement.test.mjs"
+      "path": "tests/conformance/runtime-model-probe-settlement.test.ts"
     },
     {
-      "path": "tests/conformance/plugin-runtime-policy.test.mjs"
+      "path": "tests/conformance/plugin-runtime-policy.test.ts"
     },
     {
-      "path": "tests/conformance/plugin-driver.test.mjs"
+      "path": "tests/conformance/plugin-driver.test.ts"
     },
     {
-      "path": "tests/conformance/slack-channel-directory.test.mjs"
+      "path": "tests/conformance/slack-channel-directory.test.ts"
     },
     {
       "path": "tests/conformance/bounded-response-reads.test.ts"
@@ -443,7 +520,10 @@
       "path": "tests/conformance/slack-proxy-tunnel.test.mjs"
     },
     {
-      "path": "tests/conformance/native-admin-websocket-relay.test.mjs"
+      "path": "tests/conformance/slack-proxy-backpressure.test.ts"
+    },
+    {
+      "path": "tests/conformance/native-admin-websocket-relay.test.ts"
     },
     {
       "path": "tests/conformance/hosted-plugin-discovery.test.ts"
@@ -458,14 +538,21 @@
       "path": "tests/integration/plugin-driver-real-preflight.test.ts"
     },
     {
-      "path": "tests/conformance/repository-transactions.test.mjs"
+      "path": "tests/conformance/repository-transactions.test.ts"
     },
     {
       "path": "tests/conformance/postgres-transaction-commit.test.mjs"
     },
     {
-      "path": "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
-      "expectedTests": ["lost COMMIT response returns unknown without waiting for a hung rollback"]
+      "path": "tests/conformance/postgres-transaction-unknown-commit.test.ts",
+      "expectedTests": [
+        "lost COMMIT response returns unknown without waiting for a hung rollback",
+        "IAM work escaped from a commit transaction cannot acquire another client",
+        "IAM work escaped from a rollback transaction cannot acquire another client",
+        "IAM work escaped from a unknown transaction cannot acquire another client",
+        "a BEGIN abandoned by the client query timeout discards the connection",
+        "a SELECT abandoned by the client query timeout discards the connection"
+      ]
     },
     {
       "path": "tests/integration/native-admin-access.test.mjs",
@@ -489,13 +576,13 @@
       "path": "tests/integration/workspace-setup-api.test.mjs"
     },
     {
-      "path": "tests/integration/agent-create-validate-api.test.mjs"
+      "path": "tests/integration/agent-create-validate-api.test.ts"
     },
     {
       "path": "tests/integration/model-provider.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-source-boundary.test.mjs"
+      "path": "tests/conformance/repository-credentials-source-boundary.test.ts"
     },
     {
       "path": "tests/conformance/startup-environment-boundary.test.ts"
@@ -504,13 +591,13 @@
       "path": "tests/conformance/repository-credentials-contracts.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-github.test.mjs"
+      "path": "tests/conformance/repository-credentials-github.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-github-token.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-receive-pack.test.mjs"
+      "path": "tests/conformance/repository-credentials-receive-pack.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-sessions.test.ts"
@@ -528,7 +615,7 @@
       "path": "tests/conformance/repository-credentials-ownership-boundaries.test.ts"
     },
     {
-      "path": "tests/conformance/repository-credentials-tool-evidence.test.mjs"
+      "path": "tests/conformance/repository-credentials-tool-evidence.test.ts"
     },
     {
       "path": "tests/conformance/repository-credentials-fixture-ownership.test.ts",
@@ -542,7 +629,7 @@
       ]
     },
     {
-      "path": "tests/integration/repository-credentials-config.test.mjs"
+      "path": "tests/integration/repository-credentials-config.test.ts"
     },
     {
       "path": "tests/integration/protected-repository-metadata-read.test.mjs"
@@ -579,10 +666,10 @@
       "path": "tests/integration/repository-receipt-observation.test.ts"
     },
     {
-      "path": "tests/integration/repository-credentials-shutdown.test.mjs"
+      "path": "tests/integration/repository-credentials-shutdown.test.ts"
     },
     {
-      "path": "tests/integration/repository-credentials-router.test.mjs"
+      "path": "tests/integration/repository-credentials-router.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-package.test.ts"
@@ -595,13 +682,10 @@
       "expectedTests": ["a broker restart cannot accept bound admissions without durable fencing"]
     },
     {
-      "path": "tests/conformance/repository-credentials-registry.test.mjs"
+      "path": "tests/conformance/repository-credentials-registry.test.ts"
     },
     {
-      "path": "tests/conformance/repository-client-environment.test.mjs"
-    },
-    {
-      "path": "tests/conformance/repository-material-store.test.mjs",
+      "path": "tests/conformance/repository-material-store.test.ts",
       "expectedTests": [
         "expiry during Secret read refuses to create material",
         "earliest expiry during first creation prevents the next creation and leaves cleanup possible",
@@ -611,7 +695,7 @@
       ]
     },
     {
-      "path": "tests/conformance/repository-runtime-material.test.mjs"
+      "path": "tests/conformance/repository-runtime-material.test.ts"
     },
     {
       "path": "tests/conformance/repository-sessions-memory.test.ts"
@@ -626,7 +710,7 @@
       ]
     },
     {
-      "path": "tests/integration/repository-credentials-driver.test.mjs"
+      "path": "tests/integration/repository-credentials-driver.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-sender-recovery.test.ts"
@@ -650,13 +734,13 @@
       ]
     },
     {
-      "path": "tests/integration/kubernetes-peer-status.test.mjs",
+      "path": "tests/integration/kubernetes-peer-status.test.ts",
       "expectedTests": [
         "real peer-status HTTPS transport authenticates its revision and verifies server trust"
       ]
     },
     {
-      "path": "tests/integration/runtime-assets.test.mjs"
+      "path": "tests/integration/runtime-assets.test.ts"
     },
     {
       "path": "tests/integration/runtime-ai-package-relocation.test.ts",
@@ -676,7 +760,7 @@
       "path": "tests/integration/openclaw-source.test.ts"
     },
     {
-      "path": "tests/conformance/module-boundaries.test.mjs"
+      "path": "tests/conformance/module-boundaries.test.ts"
     },
     {
       "path": "tests/conformance/module-policy.test.mjs",
@@ -686,13 +770,13 @@
       ]
     },
     {
-      "path": "tests/integration/google-id-token.test.mjs"
+      "path": "tests/integration/google-id-token.test.ts"
     },
     {
       "path": "tests/integration/google-login-transport.test.ts"
     },
     {
-      "path": "tests/integration/oidc-id-token.test.mjs"
+      "path": "tests/integration/oidc-id-token.test.ts"
     },
     {
       "path": "tests/integration/oidc-login-transport.test.ts"
@@ -701,7 +785,7 @@
       "path": "tests/integration/password-sign-in-policy.test.ts"
     },
     {
-      "path": "tests/integration/client-address.test.mjs"
+      "path": "tests/integration/client-address.test.ts"
     },
     {
       "path": "tests/integration/password-sign-in-admission.test.ts"
@@ -716,7 +800,7 @@
       "path": "tests/conformance/postgres-auth-binding.test.ts"
     },
     {
-      "path": "tests/conformance/postgres-controller-auth-binding.test.mjs"
+      "path": "tests/conformance/postgres-controller-auth-binding.test.ts"
     },
     {
       "path": "tests/conformance/schema-auth-boundary-v1.test.ts"
@@ -725,7 +809,7 @@
       "path": "tests/conformance/controller-stop-yields.test.ts"
     },
     {
-      "path": "tests/integration/dev-up-model-provider.test.mjs"
+      "path": "tests/integration/dev-up-model-provider.test.ts"
     },
     {
       "path": "tests/integration/egress-connected-preflight.test.mjs",
@@ -809,7 +893,8 @@
       "path": "tests/integration/workspace-gateway-host-route.test.ts",
       "expectedTests": [
         "Linux Gateway routes reuse distinct bound ports and preserve the HTTPS Service target",
-        "Gateway Service mapping failure retains forwarder cleanup and reports shutdown failure"
+        "Gateway Service mapping failure retains forwarder cleanup and reports shutdown failure",
+        "Gateway relay rejects a malformed HTTPS Service target before starting a forwarder"
       ]
     }
   ]

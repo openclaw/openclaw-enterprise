@@ -19,7 +19,7 @@ import {
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { createServer } from "node:net";
-import { startApi } from "../../apps/controller/src/api-startup.mjs";
+import { startApi } from "../../apps/controller/src/api-startup.ts";
 import { listen } from "../helpers/listen.ts";
 import { setEnvironment } from "../helpers/environment.ts";
 import { fileURLToPath } from "node:url";
@@ -41,7 +41,7 @@ import {
   authenticatedHeaders,
   signInWithEmailPassword as signInThroughTransport,
 } from "../helpers/auth-session.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.mjs";
@@ -54,7 +54,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { readPrivateBootstrapOutput } from "../helpers/bootstrap-output.ts";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 import { createDriver as createProtectedFixture } from "../fixtures/driver-packages/protected-execution-driver/index.ts";
 
 const databaseUrl = process.env.OCC_PRODUCTION_WIREUP_DATABASE_URL;

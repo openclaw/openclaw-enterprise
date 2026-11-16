@@ -8,7 +8,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { API_REQUEST_AUDIT_ACTIONS } from "../../packages/contracts/src/index.ts";
 import type { AuditEvent, ResourceRef } from "../../packages/contracts/src/index.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   createDeviceCredentialDrivers,
@@ -16,7 +16,7 @@ import {
   DEVICE_ACCOUNT_ID,
 } from "../helpers/device-credential-gateway.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { bindRole, grantRole } from "../helpers/iam-grants.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 
@@ -127,7 +127,7 @@ async function createFixture(t: TestContext, { requestAudit = false } = {}) {
   controller.selectDriver("credential_refresh", refresh.id);
   const basePath = `/namespaces/${namespace.id}/agents`;
   const unsaved: Target = { path: `${basePath}/device-authorizations` };
-  async function savedTarget(name: string): Promise<Target> {
+  async function savedTarget(name: string) {
     const agent = await fixture.createAgent(
       namespace.id,
       name,
@@ -204,7 +204,6 @@ test("device login binding denials retain generic 404 and attributable fail-clos
 
   const other = await fixture.createAccountWithPolicy("device-denial-caller", () => {});
   const otherSession = await fixture.signIn(other.credentials);
-  const targets = [fixture.unsaved, saved, otherAgent];
   const role = grantRole(fixture.policy, other.principal.id, {
     id: "device-denial-exact-operations",
     namespaceId: undefined,
@@ -215,7 +214,7 @@ test("device login binding denials retain generic 404 and attributable fail-clos
     },
     resource: { kind: "agent", id: fixture.namespace.id },
   });
-  for (const target of targets.slice(1)) {
+  for (const target of [saved, otherAgent]) {
     bindRole(fixture.policy, other.principal.id, {
       id: `device-denial-agent-${target.agentId}`,
       roleId: role.role.id,
@@ -228,7 +227,7 @@ test("device login binding denials retain generic 404 and attributable fail-clos
     for (const resource of [
       { kind: "secret", id: login.id },
       { kind: "credential_source", id: string(stored.session.sourceId) },
-    ]) {
+    ] as const) {
       bindRole(fixture.policy, other.principal.id, {
         id: `device-denial-${resource.id}`,
         roleId: role.role.id,

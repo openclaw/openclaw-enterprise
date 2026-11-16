@@ -7,16 +7,12 @@ import {
   isOpenShellGatewayEligible,
   validateOpenShellRepositoryTransport,
 } from "../drivers/egress-proxy/openshell-configuration.ts";
-import { createOpenShellCapabilities } from "../drivers/egress-proxy/openshell-registration.ts";
 import { openAiStaticProviderRef } from "../drivers/egress-proxy/openai-provider.ts";
 import type { RepositoryTransportBinding } from "./repository-credentials/contracts.ts";
 import type { OpenShellSandboxDriverSelection } from "../drivers/sandbox/openshell.ts";
 import type { OpenShellSandboxDriverOptions } from "../drivers/sandbox/openshell.ts";
 import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
-import {
-  OpenShellCredentialProxyDriver,
-  type OpenShellProxyOptions,
-} from "../drivers/egress-proxy/openshell.ts";
+import type { OpenShellProxyOptions } from "../drivers/egress-proxy/openshell.ts";
 import type { EgressAuthorityConfiguration } from "./egress-authority.ts";
 import {
   chartListeners,
@@ -945,6 +941,8 @@ export async function loadInstallationConfiguration(options: {
           await readPublicCaBundle(configuredProxy.prepared.issuerCaPath),
         );
       }
+      const { OpenShellCredentialProxyDriver } =
+        await import("../drivers/egress-proxy/openshell.ts");
       proxySelection = selected(
         { ...selection, configuration: configuredProxy.policy },
         "credential_proxy",
@@ -1395,6 +1393,8 @@ export async function loadInstallationConfiguration(options: {
       });
       return { sandboxDriver: owner.require("sandbox"), protectedDriver: owner };
     }
+    const { createOpenShellCapabilities } =
+      await import("../drivers/egress-proxy/openshell-registration.ts");
     const capabilities = createOpenShellCapabilities({
       sandbox,
       backend: openShell!,

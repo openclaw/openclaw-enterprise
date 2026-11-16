@@ -22,7 +22,7 @@ import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
   WORKSPACE_DEFAULTS_VERSION,
-} from "../../packages/contracts/src/workspace-defaults.mjs";
+} from "../../packages/contracts/src/index.ts";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
 const executable = process.env.OCC_TEST_WORKSPACE_OPENCLAW_PATH;

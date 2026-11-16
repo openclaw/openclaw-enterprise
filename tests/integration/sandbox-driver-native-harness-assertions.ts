@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { inflateRawSync } from "node:zlib";
-import type {
-  KubernetesComputeDriver as ComputeDriver,
-  KubernetesComputeDriverOptions,
-} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import {
+  MANAGED_BY,
+  MANAGED_BY_LABEL,
+  OpenShellGateway,
+  openShellProviderName,
+  SOURCE_ID_LABEL,
+} from "../../apps/controller/src/backends/openshell.ts";
 import {
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
@@ -13,26 +16,36 @@ import {
   nodeProgramArguments,
   withoutLineComments,
 } from "../../apps/controller/src/drivers/compute/node-program.ts";
-import type {
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { CODEX_ACCOUNT_CONFIG } from "../../apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts";
+import {
   OpenShellSandboxDriver,
-  OpenShellSandboxDriverOptions,
+  type OpenShellSandboxDriverOptions,
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import type {
   OpenShellGatewayClient,
   OpenShellSandboxCreateRequest,
   OpenShellSandboxResponse,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import type {
-  AgentRevision,
-  HarnessWorkloadRequirements,
-  SandboxNamespaceContext,
+import {
+  admitLoggingConfiguration,
+  type AgentRevision,
+  type CredentialSource,
+  type HarnessWorkloadRequirements,
+  type SandboxNamespaceContext,
 } from "../../packages/contracts/src/index.ts";
+import { asRecord, type WorkspaceNodeSetupEnvelope } from "../../packages/utils/src/index.ts";
+import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
 import {
   completeSandboxRevision,
   type SandboxFixtureRevision,
 } from "./sandbox-driver-revision-fixture.ts";
-import { asRecord } from "../../packages/utils/src/index.ts";
-import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
+import {
+  completeOpenShellGatewayClient,
+  workspaceGatewayClient,
+} from "./sandbox-workspace-gateway-fixture.ts";
 
 type Gateway = Omit<
   ReturnType<typeof workspaceGatewayClient>,
@@ -41,17 +54,7 @@ type Gateway = Omit<
   Pick<OpenShellGatewayClient, "createSandbox" | "getSandbox" | "getService">;
 type Dependencies = {
   t: TestContext;
-  sandboxInstallation: () => {
-    drivers: {
-      sandbox: {
-        configuration: OpenShellSandboxDriverOptions;
-      };
-    };
-  };
-  openShellDriver: (
-    gateway: Gateway,
-    options: OpenShellSandboxDriverOptions,
-  ) => OpenShellSandboxDriver;
+  sandboxPolicy: OpenShellSandboxDriverOptions["policy"];
   runtimeSandboxFixture: (
     driver: OpenShellSandboxDriver,
     options: { nodeSetupUrl: (target: SandboxFixtureRevision) => string },
@@ -61,13 +64,8 @@ type Dependencies = {
     requirements: HarnessWorkloadRequirements;
     runtimeManifest: string;
     codexConfig: string;
-    nodeSetup: { url: string; bootstrapToken: string; expiresAtMs: number; tlsFingerprint: string };
+    nodeSetup: WorkspaceNodeSetupEnvelope;
   };
-  conformanceKubernetesOptions: (options: {
-    gatewayTrustedProxyCidrs: string[];
-    runtime: { transportSecretPrefix: string; gatewayStorageClassName: string };
-  }) => KubernetesComputeDriverOptions;
-  KubernetesComputeDriver: typeof ComputeDriver;
 };
 
 function record(value: unknown): Record<string, unknown> {
@@ -121,11 +119,8 @@ function withProtobufKinds(value: unknown): unknown {
 
 export async function verifyDedicatedCodexStartup({
   t,
-  sandboxInstallation,
-  openShellDriver,
+  sandboxPolicy,
   runtimeSandboxFixture,
-  conformanceKubernetesOptions,
-  KubernetesComputeDriver,
 }: Dependencies) {
   const requests: OpenShellSandboxCreateRequest[] = [];
   let getServiceCalls = 0;
@@ -136,6 +131,7 @@ export async function verifyDedicatedCodexStartup({
     const template = record(request.spec.template);
     storedSandbox = {
       name: request.name,
+      id: "7b620136-6184-4fba-ae3e-62352e892d12",
       workspace: request.workspace,
       labels: structuredClone(request.labels),
       annotations: {
@@ -167,11 +163,16 @@ export async function verifyDedicatedCodexStartup({
       url: "http://codex.example.test",
     };
   };
-  const installationOptions = sandboxInstallation().drivers.sandbox.configuration;
+  const installation = buildSandboxInstallation();
+  const { sandbox, credential_gateway: selectedGateway } = installation.drivers;
+  const [selectedBackend] = installation.backend;
+  assert.ok(selectedBackend);
+  const installationOptions = sandbox.configuration;
   // The advertised workspace, Harness environment, and writable mount must agree even
   // when an operator chooses a path other than the development default.
   const options: OpenShellSandboxDriverOptions = {
     ...installationOptions,
+    policy: sandboxPolicy,
     kubernetes: {
       ...installationOptions.kubernetes,
       sandboxDataMount: {
@@ -180,29 +181,32 @@ export async function verifyDedicatedCodexStartup({
       },
     },
   };
-  const driver = openShellDriver(gatewayClient, options);
+  const backend = {
+    id: selectedBackend.id,
+    // OpenShell exposes Codex OAuth only when this Backend owns credential refresh.
+    drivers: { ...selectedBackend.drivers, credential_refresh: "openshell-refresh" },
+    client: new OpenShellGateway(selectedBackend.configuration, {
+      gatewayClient: completeOpenShellGatewayClient(gatewayClient),
+    }),
+  };
+  const credentialGateway = new OpenShellCredentialGatewayDriver(selectedGateway.configuration, {
+    id: selectedGateway.id,
+    backend,
+  });
+  const driver = new OpenShellSandboxDriver(options, {
+    id: sandbox.id,
+    implementation: "openshell",
+    backend,
+  });
   // Exercise Sandbox delivery with a supported scoped node URL on the in-cluster
   // Envoy hostname used by the k3d profile. Live first-Agent proof covers enrollment.
   const routeHost = "occ-gateway-0123456789ab.envoy-gateway-system.svc.cluster.local";
-  const computeOptions = conformanceKubernetesOptions({
-    gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
-    runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
-  });
-  // Routing derives the Gateway client peer from the Envoy namespace.
-  const { gatewayClients: _gatewayClients, ...network } = computeOptions.network;
-  const compute = new KubernetesComputeDriver(
-    {
-      ...computeOptions,
-      network,
-      gatewayRouting: {
-        hostname: routeHost,
-        gatewayName: "oce-agent-gateways",
-        gatewayNamespace: "openclaw-system",
-        envoyNamespace: "envoy-gateway-system",
-      },
-    },
-    { sandboxDriver: driver },
-  );
+  const gatewayRouting = {
+    hostname: routeHost,
+    gatewayName: "oce-agent-gateways",
+    gatewayNamespace: "openclaw-system",
+    envoyNamespace: "envoy-gateway-system",
+  };
   const {
     context,
     revision: fixtureRevision,
@@ -211,7 +215,8 @@ export async function verifyDedicatedCodexStartup({
     codexConfig,
     nodeSetup,
   } = runtimeSandboxFixture(driver, {
-    nodeSetupUrl: (target) => `${compute.getGatewayEndpoint(completeSandboxRevision(target))}/node`,
+    nodeSetupUrl: ({ namespaceId, agentId }) =>
+      `wss://${routeHost}/namespaces/${namespaceId}/agents/${agentId}/node`,
   });
   // Account fields are opaque claims, even when their text resembles a Harness path.
   const account = {
@@ -222,28 +227,78 @@ export async function verifyDedicatedCodexStartup({
     email: "dev/home/node/alice@example.test",
     isFedramp: false,
   };
-  const accountJson = JSON.stringify(account);
   const harnessAuth = {
     method: "credential_source",
     sourceId: "cs_00000000-0000-4000-8000-000000000001",
-    credentialGatewayId: "openshell-credentials",
+    credentialGatewayId: credentialGateway.id,
     sourceType: "codex-oauth",
     loginMode: "chatgptAuthTokens",
   } satisfies AgentRevision["harnessAuth"];
-  const revision = completeSandboxRevision(fixtureRevision, harnessAuth);
-  const [attachment, ...remainingAttachments] = fixtureRequirements.credentialAttachments;
-  assert.ok(attachment);
-  const credentialAttachments = [
-    {
-      ...attachment,
-      sourceId: harnessAuth.sourceId,
-      externalChatgptAuth: {
-        accessTokenPlaceholder: `openshell:resolve:env:s${"1".repeat(64)}_CODEX_ACCESS_TOKEN`,
-        ...account,
-      },
+  const {
+    compute: _compute,
+    gatewayManagedMode: _gatewayManagedMode,
+    ...original
+  } = completeSandboxRevision(fixtureRevision, harnessAuth);
+  const configuration = admitLoggingConfiguration(
+    driver.configureAgent(createHarnessConfiguration("codex", "gpt-5"), original.harness),
+    "info",
+  );
+  const gateway = providerEndpointFixture({
+    gatewayRouting,
+    sandboxDriver: driver,
+    credentialGatewayDriver: credentialGateway,
+    servicePrincipalCredentials: { mode: "disabled" },
+    revisionOverrides: {
+      ...original,
+      configuration,
+      credentialSources: [
+        {
+          sourceId: harnessAuth.sourceId,
+          sourceType: harnessAuth.sourceType,
+          credentialGatewayId: harnessAuth.credentialGatewayId,
+        },
+      ],
     },
-    ...remainingAttachments,
-  ];
+  });
+  const { driver: compute, revision } = gateway;
+  const source: CredentialSource = {
+    id: harnessAuth.sourceId,
+    namespaceId: revision.namespaceId,
+    type: harnessAuth.sourceType,
+    name: "fixture Codex OAuth source",
+    config: {},
+    secrets: {},
+    ownerCapability: credentialGateway.capability,
+    driverId: credentialGateway.id,
+    state: "ready",
+    createdAt: revision.createdAt,
+  };
+  // Seed the stored OpenShell provider returned after OAuth has completed.
+  const providerName = openShellProviderName(source.id);
+  gatewayClient.providers.set(providerName, {
+    name: providerName,
+    type: providerName,
+    labels: { [MANAGED_BY_LABEL]: MANAGED_BY, [SOURCE_ID_LABEL]: source.id },
+    config: { [CODEX_ACCOUNT_CONFIG]: JSON.stringify(account) },
+    resourceVersion: "1",
+  });
+  // The Worker resolves this source through harnessAuth, separately from non-model sources.
+  // Compute's first pass renders the mounted Gateway configuration before provisioning the Sandbox.
+  const prepared = await compute.prepareRevision(revision, {
+    harnessAuth: { ...harnessAuth, source },
+    secretEnvironment: [],
+  });
+  assert.equal(prepared.ready, false);
+  assert.equal(requests.length, 0, "Gateway bootstrap must precede Harness provisioning");
+
+  await driver.ensureNamespace(context);
+  const sourceContext = { namespace: context.namespace, source, signal: context.signal };
+  const credentialAttachments = await credentialGateway.attachForRevision({
+    namespace: context.namespace,
+    revision,
+    sources: [source],
+    signal: context.signal,
+  });
   const requirements: HarnessWorkloadRequirements = {
     ...fixtureRequirements,
     credentialAttachments,
@@ -255,12 +310,11 @@ export async function verifyDedicatedCodexStartup({
     environment: [
       ...fixtureRequirements.environment,
       { name: "CODEX_LOGIN_MODE", value: harnessAuth.loginMode },
-      ...compute["credentialSourceEnvironment"](revision, credentialAttachments),
+      ...compute["credentialSourceEnvironment"](revision, credentialAttachments, source),
     ],
   };
-  assert.match(nodeSetup.url, new RegExp(`^wss://${routeHost.replaceAll(".", "\\.")}/`));
+  assert.equal(nodeSetup.url, `${compute.getGatewayEndpoint(revision)}/node`);
 
-  await driver.ensureNamespace(context);
   await driver.provisionHarness({ ...context, revision, requirements });
   await driver.provisionHarness({ ...context, revision, requirements });
   assert.deepEqual(await driver.harnessEndpoint({ ...context, revision, requirements }), {
@@ -291,7 +345,7 @@ export async function verifyDedicatedCodexStartup({
   assert.equal(environment.TMPDIR, "/tmp");
   assert.equal(environment.CODEX_HOME, "/sandbox/.openclaw-runtime/home/.codex");
   assert.equal(environment.NODE_PATH, "/home/node_modules");
-  assert.equal(environment.OCE_CODEX_CHATGPT_ACCOUNT, accountJson);
+  assert.equal(environment.OCE_CODEX_CHATGPT_ACCOUNT, JSON.stringify(account));
   const nodeStateDirectory = string(environment.OPENCLAW_NODE_STATE_DIR);
   assert.match(nodeStateDirectory, /^\/sandbox\/\.openclaw-mounts\/[a-f0-9]{16}\/state$/u);
   assert.equal(environment.OPENCLAW_WORKSPACE_DIR, "/sandbox/custom-workspace");
@@ -367,10 +421,36 @@ export async function verifyDedicatedCodexStartup({
     "/var/log",
     "/app",
   ]);
+  const deployment = record(gateway.gateway());
+  const annotations = record(record(deployment.metadata).annotations);
+  assert.equal(annotations["openclaw.dev/agent-revision-id"], revision.id);
+  const pod = record(record(record(deployment.spec).template).spec);
+  const volumes = pod.volumes;
+  assert.ok(Array.isArray(volumes));
+  const mountedConfig = volumes
+    .map((volume: unknown) => record(volume))
+    .find((volume) => volume.name === "openclaw-configuration");
+  assert.ok(mountedConfig);
+  const containers = pod.containers;
+  assert.ok(Array.isArray(containers));
+  const [gatewayContainer] = containers;
+  const gatewayMounts = record(gatewayContainer).volumeMounts;
+  assert.ok(Array.isArray(gatewayMounts));
+  assert.ok(gatewayMounts.some((mount: unknown) => record(mount).name === mountedConfig.name));
+  const configName = string(record(mountedConfig.configMap).name);
+  const config = record(gateway.read("ConfigMap", configName, gateway.gatewayNamespace));
+  const document: unknown = JSON.parse(string(record(config.data)["openclaw.json"]));
+  const plugins = asRecord(record(document).plugins);
+  const codex = asRecord(asRecord(plugins?.entries)?.codex);
+  const appServer = asRecord(asRecord(codex?.config)?.appServer);
+  const relay = asRecord(appServer?.nativeHookRelay);
+  assert.ok(relay, "the mounted Gateway ConfigMap must configure the native hook relay");
   return {
     driver,
     gatewayClient,
-    compute,
+    credentialGateway,
+    sourceContext,
+    relay: { url: string(relay.url), credentialDirectory: string(relay.credentialDirectory) },
     context,
     revision,
     runtimeManifest,

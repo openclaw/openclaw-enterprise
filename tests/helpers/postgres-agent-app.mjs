@@ -8,6 +8,7 @@ import { createPostgresControllerAuth } from "./password-hasher.mjs";
 import { postgresAgentAuditState } from "../../apps/controller/src/composition/control-plane-audit.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
+import { AgentResponse, SecretResponse } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, cookieHeaderFromSetCookie } from "./auth-session.mjs";
@@ -15,9 +16,10 @@ import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "./bootstrap-installation.mjs";
+import { createFixtureResponse } from "./console-fixture-response.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
-import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
+import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
 import { databaseUrl } from "./postgres-database.mjs";
 import { createRuntimeLogComputeDriver } from "./runtime-logs.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
@@ -147,6 +149,7 @@ export async function createPostgresAgentApp(
     return created;
   }
   const app = createApp();
+  const fixtureResponse = createFixtureResponse(app.getSchemas());
 
   const signIn = await app.inject({
     method: "POST",
@@ -195,17 +198,26 @@ export async function createPostgresAgentApp(
       name: `${name} key ${randomUUID()}`,
       value: `test-key-${randomUUID()}`,
     });
-    assert.equal(secret.statusCode, 201, secret.body);
-    const secretRef = secret.json().data.ref;
+    const {
+      data: { ref: secretRef },
+    } = fixtureResponse(
+      { status: secret.statusCode, body: /** @type {unknown} */ (secret.json()) },
+      201,
+      SecretResponse,
+      "create harness Secret",
+    );
     const createdAgent = await inject("POST", `/namespaces/${namespace.id}/agents`, {
       name: `${name} ${randomUUID()}`,
       ...(sandboxDriver === undefined ? {} : { executionMode: "dedicated" }),
       configurationId: configuration.json().data.id,
       harnessAuth: { method: "api_key", source: secretRef },
     });
-    assert.equal(createdAgent.statusCode, 201, createdAgent.body);
-    const agent = createdAgent.json().data;
-    // The Agent's ServicePrincipal is the subject of this Secret binding.
+    const { data: agent } = fixtureResponse(
+      { status: createdAgent.statusCode, body: /** @type {unknown} */ (createdAgent.json()) },
+      201,
+      AgentResponse,
+      "create Agent",
+    );
     await grantAgentSecretOperate(pool, agent, secretRef.id);
     const revision = await controller.deployAgent(
       principal.id,

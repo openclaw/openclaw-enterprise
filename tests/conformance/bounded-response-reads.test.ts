@@ -106,12 +106,6 @@ function serverPort(server: Server): number {
   return address.port;
 }
 
-async function listenPort(t: TestContext, server: Server): Promise<number> {
-  const port: unknown = await listen(t, server);
-  assert.ok(typeof port === "number");
-  return port;
-}
-
 function errorProperty(error: unknown, property: string): unknown {
   return typeof error === "object" && error !== null ? Reflect.get(error, property) : undefined;
 }
@@ -423,7 +417,7 @@ test("Slack stops reading a response past its size limit (finding 1329)", async 
   assert.ok(performance.now() - started < 4_000, "rejected at the limit, not the timeout");
 });
 
-function statusReadback(port: number) {
+function statusReadback(port: number): Promise<unknown> {
   const options = conformanceKubernetesOptions({
     gatewayTrustedProxyCidrs: ["10.42.0.0/16"],
     runtime: undefined,
@@ -524,7 +518,7 @@ for (const status of [200, 299]) {
       response.writeHead(status, { "content-type": "application/json" });
       response.end(JSON.stringify({ revisionId: "revision-1", container: "agent" }));
     });
-    assert.deepEqual(await statusReadback(await listenPort(t, server)), {
+    assert.deepEqual(await statusReadback(await listen(t, server)), {
       status: { revisionId: "revision-1", container: "agent" },
       podUid: "agent-uid",
       containerId: undefined,
@@ -541,7 +535,7 @@ test("runtime status readback refuses a redirect even on a client built elsewher
     response.writeHead(302, { location: "../../../../../../../api/v1/namespaces/x/secrets/y" });
     response.end();
   });
-  const outcome = await settled(statusReadback(await listenPort(t, server)), 8_000);
+  const outcome = await settled(statusReadback(await listen(t, server)), 8_000);
   assert.equal(errorProperty(outcome.error, "message"), "Runtime status answered with a redirect.");
   assert.equal(requests.length, 1);
 });
@@ -566,7 +560,7 @@ test("runtime status readback reports a 400 as the client's error, not a redirec
     response.writeHead(400, { "content-type": "application/json" });
     response.end("{}");
   });
-  const refused = await settled(statusReadback(await listenPort(t, server)), 8_000);
+  const refused = await settled(statusReadback(await listen(t, server)), 8_000);
   assert.equal(refused.pending, undefined, "the readback settles");
   assert.equal(errorProperty(refused.error, "code"), 400);
 });

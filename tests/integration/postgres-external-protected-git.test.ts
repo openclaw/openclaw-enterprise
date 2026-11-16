@@ -35,21 +35,21 @@ import {
   listen,
   run,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 import { registerCoreDrivers } from "../helpers/postgres-backend-state.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { injectJson } from "../helpers/inject-json.mjs";
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
 import { standingGitOrigin } from "../helpers/prepared-standing-git-peer.ts";
 import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import {
   advanceCleanupRetries,
   deferWork,
@@ -2670,7 +2670,7 @@ function externalGitJourney(
         await startWorker();
         await f.work(replacementWork, "failed_permanent");
         assert.equal(
-          (await f.workResult(replacementWork)).rows[0].reason_code,
+          (await f.workResult(replacementWork)).rows[0]?.reason_code,
           "AUTHORIZATION_DENIED",
         );
         await waitFor("original removal resumes after denied replacement", async () => {
@@ -2699,7 +2699,7 @@ function externalGitJourney(
         const maintenance = { id: agentId, idempotencyKey: resumedWork.idempotency_key };
         await f.work(maintenance, "succeeded");
         assert.equal(
-          (await f.workResult(maintenance)).rows[0].reason_code,
+          (await f.workResult(maintenance)).rows[0]?.reason_code,
           "REPOSITORY_ACCESS_WITHDRAWN",
         );
         await f.stop();

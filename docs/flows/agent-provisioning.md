@@ -227,7 +227,7 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 - Status checks caller authority, saved resources and Driver ownership. It skips admission checks for repository selections, plugin policy, image support, the Compute plan and Harness authentication. For source-backed authentication, it checks the ready source, original Gateway, Sandbox and current grants without a Gateway catalog lookup.
 - Retry revalidates admission. Missing accepted sources give `409`. A changed Driver or Sandbox requirement can give `503`. The worker records `PROVISIONING_REJECTED` after inspecting earlier writes. An unobserved write keeps its pending record.
 - Inspect `worker.completed`, `worker.error` and the `agent_provisioning` work metric. PostgreSQL job state lives in `occ.controller_work` and `occ.agent_provisioning_work`.
-- Use `tests/integration/postgres-agent-provisioning.test.mjs` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
+- Use `tests/integration/postgres-agent-provisioning.test.ts` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
 - Use Console browser coverage for channel Secret creation before provisioning, reference reuse after failure and job-to-deployment navigation. The disposable Kubernetes fixture proves actual Driver handoff, not native enrollment, model execution or Slack replies.
 
 ## Related docs

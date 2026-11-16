@@ -138,13 +138,13 @@ the variable. For a custom Codex Responses endpoint, use:
   --base-url https://openrouter.ai/api/v1 --model-id z-ai/glm-5.3-flash
 ```
 
-`./scripts/k3d info` shows connections; `reset` retains images.
-Fresh preparation pins images against kubelet collection. Recreate older
-environments with `./scripts/k3d down --harness codex`, then reprepare (`openclaw`
-for that harness). This deletes that environment; use before image changes or
-after preparation failures. Default kubeconfig/context and unrelated resources
-stay unchanged. `OCC_K3D_CONTAINER_ENGINE` selects `docker`/`podman`;
-`OCC_K3D_STATE_DIR` sets its directory.
+`./scripts/k3d info` shows connections. Reset retains images. After namespace
+removal, duplicate journal IDs stop database cleanup and preserve the journal.
+Preparation pins images against kubelet collection. To replace older environments, change images,
+or recover from failed preparation, delete the environment with
+`./scripts/k3d down --harness codex` (or `openclaw`), then prepare again.
+Default kubeconfig, context and unrelated resources stay intact.
+`OCC_K3D_CONTAINER_ENGINE` selects `docker`/`podman`; `OCC_K3D_STATE_DIR` selects its directory.
 See [local k3d image upgrades](../guides/deploy/local-k3d-image-upgrade.md).
 
 ### Run the real-runtime suite directly
@@ -227,8 +227,8 @@ and a free, bindable `127.0.0.1:443`. Run only one Keycloak lane per host.
 ```sh
 state="$PWD/.ci-state/keycloak-oidc.json"
 node scripts/ci/prepare.mjs --lane keycloak-oidc --state "$state" &&
-  node scripts/ci/run-tests.mjs run keycloak-oidc --state "$state" --results "$PWD/.ci-state/results.json"
-node scripts/ci/cleanup.mjs --state "$state"
+  node scripts/ci/run-tests.ts run keycloak-oidc --state "$state" --results "$PWD/.ci-state/results.json"
+node scripts/ci/cleanup.ts --state "$state"
 ```
 
 Preparation creates a private CA, fixture credentials and a Keycloak container.
@@ -282,12 +282,12 @@ node scripts/ci/prepare.mjs \
   --lane gateway-routing \
   --state "$RUNNER_TEMP/state/gateway-routing.json" \
   --github-env "$GITHUB_ENV" &&
-node scripts/ci/run-tests.mjs run gateway-routing \
+node scripts/ci/run-tests.ts run gateway-routing \
   --state "$RUNNER_TEMP/state/gateway-routing.json" \
   --results "$RUNNER_TEMP/results/gateway-routing.json"
 ```
 
-Use `scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/gateway-routing.json"`
+Use `scripts/ci/cleanup.ts --state "$RUNNER_TEMP/state/gateway-routing.json"`
 to remove the lane's resources.
 
 ### Native workspace identity
@@ -313,9 +313,8 @@ enrollment, Git, or OpenShell.
 
 ## Production TUI tests
 
-The opt-in Helm test exercises production API and native TUI revision cutover
-with a real model on disposable k3d. Allow 4 GiB or more per gateway container.
-Missing prerequisites fail a selected test.
+This Helm test exercises production API and native TUI revision cutover with a real
+model on disposable k3d. Each gateway container needs at least 4 GiB.
 
 ### Production TUI Helm test environment
 
@@ -329,8 +328,7 @@ In a [private environment file](README.md#requirements-and-credentials), set:
 - `OPENAI_API_KEY`: existing authorized credential; optionally set
   `OCC_TEST_OPENAI_MODEL` (default `gpt-6-astra`).
 
-Ordinary teardown requests Helm uninstall and namespace deletion. It suppresses
-command errors and returns without waiting for namespace deletion. Verify resource absence separately.
+Teardown requests Helm uninstall and asynchronous namespace deletion, suppressing errors. Verify resource removal.
 `OCC_TEST_PRODUCTION_TUI_KEEP=1` retains the setup for rehearsal with
 `attach.sh` and `proof.json`. Require a completed run for proof.
 
@@ -341,20 +339,20 @@ OCC_TEST_PRODUCTION_TUI_REAL=1 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/production-tui-k3d-real.test.mjs
 ```
 
-Select both `OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE` and
-`OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE` for independent upgrades.
-One input fails. Omitting both skips upgrades.
+For independent upgrades, set both `OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE`
+and `OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE`. One input fails. Omit both to skip upgrades.
 
 ### Run an isolated upgrade qualification lane
 
-This lane requires an explicit `OCC_TEST_OPENAI_MODEL`. Select compatible prior
-controller and runtime digests and distinct reviewed candidate digests. Verify
-provenance separately. Install Docker, k3d, kubectl, Helm, yq, and Go to build OCC.
+Set `OCC_TEST_OPENAI_MODEL`. Verify provenance for compatible prior and distinct
+reviewed candidate controller and runtime digests. A disposable Pod selects the
+incumbent image’s worker probe for installation. The upgrade uses the candidate
+chart. Install Docker, k3d, kubectl, Helm, yq, and Go.
 
 ```sh
 run_dir="$(mktemp -d)"
 node --env-file="$TEST_ENV_FILE" scripts/ci/prepare.mjs --lane production-tui --state "$run_dir/state.json" && \
-  TMPDIR="$run_dir" node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.mjs run production-tui \
+  TMPDIR="$run_dir" node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.ts run production-tui \
     --state "$run_dir/state.json" --results "$run_dir/results.json"
 ```
 
@@ -364,7 +362,7 @@ After success or failure, save the private image mapping if needed and clean up:
 
 ```sh
 install -m 600 "$run_dir/state.json" "$run_dir/state-before-cleanup.json"
-node scripts/ci/cleanup.mjs --state "$run_dir/state.json"
+node scripts/ci/cleanup.ts --state "$run_dir/state.json"
 ```
 
 Retain the state if cleanup fails. Do not publish the state or environment file.

@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import type {
-  ComputeDriver,
-  ConfigurationDriver,
-  SecretDriver,
-  RepositoryApprovalScope,
-  RepositoryRevisionState,
-  RepositoryPolicyDriver,
-  GitHubRepositoryCredentialBackendDefinition,
+import {
+  AgentResponse,
+  SecretResponse,
+  type ComputeDriver,
+  type ConfigurationDriver,
+  type SecretDriver,
+  type RepositoryApprovalScope,
+  type RepositoryRevisionState,
+  type RepositoryPolicyDriver,
+  type GitHubRepositoryCredentialBackendDefinition,
 } from "../../packages/contracts/src/index.ts";
 import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
@@ -25,9 +27,10 @@ import {
   OpenClawController,
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
-import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
+import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
+import { createFixtureResponse } from "../helpers/console-fixture-response.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
@@ -35,7 +38,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { cookieHeaderFromSetCookie, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { injectJson } from "../helpers/inject-json.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import {
   STANDING_APPROVAL_BINDING_LOCKED,
   STANDING_APPROVAL_NOT_PERMITTED,
@@ -204,6 +207,15 @@ test(
       return { controller, options, repositoryAdmission };
     }
     await selectRepo(registry);
+    const fixtureResponse = createFixtureResponse(app.getSchemas());
+    function createdAgent(response: Awaited<ReturnType<typeof app.inject>>) {
+      return fixtureResponse(
+        { status: response.statusCode, body: response.json<unknown>() },
+        201,
+        AgentResponse,
+        "create Agent",
+      ).data;
+    }
     t.after(() => app.close());
     const login = await injectJson(app, "POST", "/api/auth/sign-in/email", {
       body: {
@@ -222,7 +234,8 @@ test(
       url: string,
       payload?: unknown,
       actorSession = session,
-    ) => injectJson(app, method, url, { body: payload, session: actorSession });
+    ): ReturnType<typeof app.inject> =>
+      injectJson(app, method, url, { body: payload, session: actorSession });
     // The ready Namespace fixture does not grant standing approval.
     await state.transact((unit) =>
       unit.namespaces.createNamespace({
@@ -242,8 +255,14 @@ test(
       name: "Standing fixture key",
       value: "synthetic-not-a-provider-key",
     });
-    assert.equal(secret.statusCode, 201, secret.body);
-    const secretRef = secret.json().data.ref;
+    const {
+      data: { ref: secretRef },
+    } = fixtureResponse(
+      { status: secret.statusCode, body: secret.json<unknown>() },
+      201,
+      SecretResponse,
+      "create harness Secret",
+    );
 
     await t.test(
       "selected repository approval persists exact permissions and fences withdrawal",
@@ -270,8 +289,7 @@ test(
             harnessAuth: { method: "api_key", source: secretRef },
             repositoryBindings: [{ repositoryRef: "project", profile: "github-repository" }],
           });
-          assert.equal(created.statusCode, 201, created.body);
-          const agent = created.json().data;
+          const agent = createdAgent(created);
           await grantAgentSecretOperate(pool, agent, secretRef.id);
           const path = `/namespaces/${namespaceId}/agents/${agent.id}`;
           const preview = await request("GET", path + "/repository-approval-scopes");
@@ -607,8 +625,7 @@ test(
             configurationId,
             repositoryBindings: [{ repositoryRef: "project", profile: "git-write" }],
           });
-          assert.equal(created.statusCode, 201, created.body);
-          const finiteAgent = created.json().data;
+          const finiteAgent = createdAgent(created);
           await grantAgentSecretOperate(pool, finiteAgent, secretRef.id);
           const finitePath = `/namespaces/${namespaceId}/agents/${finiteAgent.id}`;
           assert.deepEqual(
@@ -810,8 +827,7 @@ test(
       configurationId,
       repositoryBindings: [{ repositoryRef: "project", profile: "git-write" }],
     });
-    assert.equal(created.statusCode, 201, created.body);
-    const agent = created.json().data;
+    const agent = createdAgent(created);
     await grantAgentSecretOperate(pool, agent, secretRef.id);
     const path = `/namespaces/${namespaceId}/agents/${agent.id}`;
     const read = async () => {
@@ -1151,6 +1167,7 @@ test(
       "lost ACK retry preserves approval",
     );
     assert.deepEqual(await read(), [first]);
+    assert.ok(agent.repositoryBindings, "the finite Agent retains its saved repository binding");
     const secondBinding = { repositoryRef: "project-two", profile: "git-write" };
     const addBinding = await request("PATCH", path, {
       configurationId,
@@ -1270,8 +1287,7 @@ test(
         configurationId,
         repositoryBindings: [{ repositoryRef: "project", profile: "git-write" }],
       });
-      assert.equal(positive.statusCode, 201, positive.body);
-      const finiteAgent = positive.json().data;
+      const finiteAgent = createdAgent(positive);
       await grantAgentSecretOperate(pool, finiteAgent, secretRef.id);
       unconfiguredAgentId = finiteAgent.id;
       statusCalls.length = 0;

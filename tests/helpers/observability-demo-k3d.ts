@@ -6,15 +6,14 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import type { Browser } from "playwright";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
+import { run as runCommand } from "../fixtures/repository-credentials/process.ts";
 import {
   createKubernetesClient,
   createRealKubernetesFixture,
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
 
-type CommandResult = { code: number | null; stdout: string; stderr: string };
 type CommandOptions = { timeout?: number; input?: string };
 type PortForward = { url: unknown; stop: () => Promise<void> };
 type HttpResult = { status: number; text: string | undefined };
@@ -27,13 +26,6 @@ const severityNumbers: Readonly<Record<string, number>> = {
   ERROR: 17,
   FATAL: 21,
 };
-
-// The JavaScript helper infers its default environment's exact allowlist.
-const runCommand = runProcess as (
-  command: string,
-  args: string[],
-  options: CommandOptions & { env: NodeJS.ProcessEnv; allowFailure: boolean },
-) => Promise<CommandResult>;
 
 export type DemoLogOptions = {
   service?: string | undefined;
