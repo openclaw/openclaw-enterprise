@@ -110,6 +110,7 @@
     "integration/qa-codex-policy-thread-case.ts",
     "integration/qa-native-tool-evidence-case.ts",
     "integration/kubernetes-compute-provisioning-api-case.ts",
+    "integration/kubernetes-plugin-status-observation-cases.ts",
     "integration/postgres-agent-provisioning-channel-currentness-cases.ts",
     "integration/postgres-agent-provisioning-configuration-resend-cases.ts",
     "integration/postgres-agent-provisioning-dependency-cases.ts",
