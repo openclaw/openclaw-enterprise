@@ -677,9 +677,10 @@ DECLARE
   v_service_principal_id text;
   v_actor_id text;
   v_attempt_count integer;
+  v_audit_attempt_id uuid;
 BEGIN
-  SELECT work.actor_id, work.attempt_count
-    INTO v_actor_id, v_attempt_count
+  SELECT work.actor_id, work.attempt_count, work.audit_attempt_id
+    INTO v_actor_id, v_attempt_count, v_audit_attempt_id
   FROM occ.controller_work AS work
   WHERE work.idempotency_key = p_idempotency_key
     AND work.namespace_id = p_namespace_id
@@ -854,7 +855,12 @@ BEGIN
     pg_catalog.jsonb_build_object(
       'reasonCode', 'AGENT_DELETED',
       'attemptCount', v_attempt_count
-    )
+    ) || CASE WHEN v_audit_attempt_id IS NULL THEN '{}'::jsonb ELSE
+      pg_catalog.jsonb_build_object(
+        'workId', p_idempotency_key,
+        'attemptId', 'aud_' || v_audit_attempt_id::text
+      )
+    END
   );
 
   DELETE FROM occ.controller_work
