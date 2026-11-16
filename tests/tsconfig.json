@@ -36,6 +36,7 @@
     "integration/sandbox-driver-adoption-cases.ts",
     "integration/sandbox-driver-hook-probe-cases.ts",
     "**/*.test.ts",
+    "helpers/kubernetes-two-cluster-inputs.ts",
     "conformance/openshell-harness-codex-readiness-cases.ts",
     "conformance/openshell-harness-service-transport-cases.ts",
     "conformance/platform-state-access-binding-contract.ts",
