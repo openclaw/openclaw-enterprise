@@ -63,7 +63,7 @@
     "tests/docs/generated-api-reference.test.ts",
     "tests/integration/service-api-keys.test.ts",
     "tests/integration/driver-plugin-installation.test.ts",
-    "tests/conformance/workspace-files-configuration.test.mjs",
+    "tests/conformance/workspace-files-configuration.test.ts",
     "tests/integration/common-logging.test.ts",
     "tests/docs/docs-length.test.mjs",
     "tests/integration/production-image-upgrade.test.ts",
@@ -111,7 +111,7 @@
     "tests/integration/console-build-metadata.test.ts",
     "tests/conformance/console-design-tokens.test.ts",
     "tests/conformance/audit.test.ts",
-    "tests/conformance/compute-lifecycle-hooks.test.mjs",
+    "tests/conformance/compute-lifecycle-hooks.test.ts",
     "tests/conformance/model-discovery.test.ts",
     "tests/conformance/utils.test.ts",
     "tests/conformance/workspace-node-setup.test.ts",
@@ -161,7 +161,7 @@
       "path": "tests/conformance/audit.test.ts"
     },
     {
-      "path": "tests/conformance/compute-lifecycle-hooks.test.mjs"
+      "path": "tests/conformance/compute-lifecycle-hooks.test.ts"
     },
     {
       "path": "tests/conformance/model-discovery.test.ts"
@@ -408,7 +408,7 @@
       "path": "tests/conformance/workspace-node-setup.test.ts"
     },
     {
-      "path": "tests/conformance/workspace-files-configuration.test.mjs"
+      "path": "tests/conformance/workspace-files-configuration.test.ts"
     },
     {
       "path": "tests/conformance/workspace-files.test.ts"
