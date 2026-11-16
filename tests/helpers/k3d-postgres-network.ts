@@ -57,6 +57,7 @@ function readyResource(
   matches?: (resource: Resource) => boolean,
 ): Resource | undefined {
   for (const value of state.resources) {
+    assert.notEqual(value, null, "invalid prepared state resource");
     const resource = asRecord(value);
     if (
       resource?.kind === kind &&
