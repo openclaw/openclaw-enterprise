@@ -100,6 +100,7 @@ import {
   keycloakUserClient,
   startKeycloak,
 } from "../helpers/keycloak-real.mjs";
+import { pollReplacementActivation } from "./openshell-replacement-activation.ts";
 
 /** @param {unknown} turn */
 function turnMessages(turn) {
@@ -8336,6 +8337,16 @@ async function assertOpenShellGatewayOutage(topology) {
   }
 }
 
+/**
+ * @param {Parameters<typeof pollReplacementActivation>[0] & {
+ *   replacementNode?: Pick<ReturnType<typeof createReplacementNodeObservation>, "begin" | "finish">,
+ *   diagnoseRevision: (revisionId: string) => Promise<unknown>
+ * }} topology
+ * @param {{ data: { id: string } }} redeployed
+ * @param {import("node:test").TestContext} testContext
+ * @param {typeof waitFor} [poll]
+ * @param {typeof replacementActivationDiagnostic} [diagnose]
+ */
 export async function waitForReplacementActivation(
   topology,
   redeployed,
@@ -8343,34 +8354,9 @@ export async function waitForReplacementActivation(
   poll = waitFor,
   diagnose = replacementActivationDiagnostic,
 ) {
-  const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
-  const deploymentPath = `${agentPath}/deployments/${redeployed.data.id}`;
   topology.replacementNode?.begin(redeployed.data.id);
   try {
-    await poll(`replacement OpenShell revision ${redeployed.data.id} activation`, async () => {
-      const observed = await topology.request("GET", agentPath);
-      assert.equal(observed.status, 200, JSON.stringify(observed.error));
-      if (observed.data.activeRevisionId === redeployed.data.id) {
-        return observed.data;
-      }
-      // Finding 1532: a Harness holding a failed startup model probe fails the deployment for
-      // good on its first attempt. Stop then: the error names the probe's classified cause, and
-      // the diagnostic is captured near the failure, not after 240 s of Gateway reconnect noise.
-      const deployment = await topology.request("GET", deploymentPath);
-      // A temporary failure to read that diagnostic is not a failed replacement. Keep the
-      // original activation deadline; only the Agent naming this revision can satisfy the wait.
-      const { status } = deployment;
-      if (status === 408 || status === 429 || (status >= 500 && status < 600)) {
-        return undefined;
-      }
-      assert.equal(status, 200, JSON.stringify(deployment.error));
-      assert.notEqual(
-        deployment.data.status,
-        "failed",
-        `Replacement OpenShell revision ${redeployed.data.id} failed: ${JSON.stringify(deployment.data)}`,
-      );
-      return undefined;
-    });
+    await pollReplacementActivation(topology, redeployed.data.id, poll);
   } catch (error) {
     const observation = topology.replacementNode?.finish();
     if (observation !== undefined) {
