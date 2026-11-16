@@ -386,7 +386,10 @@ class StrandsBoxDriver implements SandboxDriver {
       requirements,
       ...(volume === undefined ? {} : { workspaceVolume: volume }),
     };
-    let execution = await this.readExecution(context.signal);
+    let execution = await this.readExecution(
+      context.signal,
+      this.options.workspaceNodeMode === "file-only-v1" ? "initial-provision" : undefined,
+    );
     if (execution === undefined) {
       if (
         (await requestAdmission(
@@ -695,8 +698,12 @@ class StrandsBoxDriver implements SandboxDriver {
     }
   }
 
-  private async readExecution(signal: AbortSignal) {
-    const execution = await control(this.options.controlSocket, { method: "GET" }, signal);
+  private async readExecution(signal: AbortSignal, phase?: "initial-provision") {
+    const execution = await control(
+      this.options.controlSocket,
+      phase === undefined ? { method: "GET" } : { method: "GET", phase },
+      signal,
+    );
     if (execution !== undefined && execution.workspaceNodeMode !== this.options.workspaceNodeMode) {
       throw new DependencyUnavailableError("The Strands Box host workspace node mode changed.");
     }

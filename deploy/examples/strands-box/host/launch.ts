@@ -454,7 +454,8 @@ export function start(
   config: HostConfig,
   input: StartInput,
   standaloneCapability?: string,
-): Execution {
+  beforeBoxExec?: () => string | void,
+): Execution & { readonly spawned: Promise<void> } {
   const abort = new AbortController();
   let readyResolve!: (value: OwnerReady) => void;
   let readyReject!: (reason: Error) => void;
@@ -464,9 +465,17 @@ export function start(
   });
   // A control request receives 'starting' without waiting on this promise.
   void ready.catch(() => {});
+  let spawnedResolve!: () => void;
+  let spawnedReject!: (reason: Error) => void;
+  const spawned = new Promise<void>((resolve, reject) => {
+    spawnedResolve = resolve;
+    spawnedReject = reject;
+  });
+  void spawned.catch(() => {});
   const done = run();
   return {
     ready,
+    spawned,
     done,
     stop: () => {
       abort.abort();
@@ -475,6 +484,7 @@ export function start(
   };
 
   async function run(): Promise<number> {
+    let verifiedBootId: string | void;
     const run = config.runtimeDir;
     const authority = join(run, "authority");
     const bridgeDir = join(run, "bridge");
@@ -641,6 +651,7 @@ export function start(
         await listen(handoff, projection);
       }
       stage = "start-box";
+      verifiedBootId = beforeBoxExec?.();
       report("box", "exec", "entered");
       child = spawn(config.boxBin, ["run", "--config", boxFile], {
         cwd: config.workspace,
@@ -663,6 +674,7 @@ export function start(
       });
       if (child.pid === undefined) throw new Error("box_start_failed");
       owner = processIdentity(child.pid);
+      spawnedResolve();
       stage = "wait-original-native";
       report("box", "listener", "entered");
       pinnedIdentity = await waitFor(() => {
@@ -708,7 +720,7 @@ export function start(
         version: 1,
         pid: process.pid,
         uid: process.getuid!(),
-        bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
+        bootId: verifiedBootId ?? readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
         startTicks: processIdentity(process.pid).startTicks,
         socketDev: publicIdentity.dev,
         socketIno: publicIdentity.ino,
@@ -727,7 +739,9 @@ export function start(
       if (stage === "wait-original-native")
         report("box", "listener", safeReason(error, abort.signal.aborted ? "stopped" : "refused"));
       process.stderr.write(`strands-box-host: startup refused at ${stage}\n`);
-      readyReject(new Error(`startup_refused:${stage}`));
+      const refusal = new Error(`startup_refused:${stage}`);
+      spawnedReject(refusal);
+      readyReject(refusal);
     } finally {
       relay?.close();
       handoff?.close();

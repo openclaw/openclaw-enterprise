@@ -2,7 +2,8 @@
 
 Start with the [production installation](../../../../docs/guides/deploy/production-installation.md)
 and [build and select the example Driver](../driver/README.md#build-and-select).
-Use the same checkout to build the Controller, Worker, Gateway, and Box helper.
+Use a compatible pinned chart and Controller image. The API and Worker must
+load the same selected example Driver package and configuration.
 Use a dedicated Codex Agent with the normal Gateway authentication and a scoped
 operator. Leave connectors, Git, repository access, and protected credentials
 disabled. The installed chat and file checks below are pending.
@@ -22,16 +23,42 @@ the empty owner-only export directory on that Node. This control claim
 carries the Unix socket. The Worker will create a separate workspace claim
 after deployment starts.
 
-Prepare the pinned Controller, Gateway and relay images, host helpers, and
-[fixed workspace verifier](../workspace-verifier/README.md) before rollout.
-Stage the unpacked root filesystem of the exact selected public runtime image
-in a fresh mode-`0700` directory outside the Box grants. Use the image's
-canonical digest and check its source labels before unpacking. The nonroot
-runtime owner needs read and execute access to the shipped Node and OpenClaw
-files. The host mounts that image read-only for the file node. The host needs
-stock Bubblewrap with `--bind-fd`, unprivileged user namespaces, and network
-namespaces enabled. Compile the helpers with the
-[host build command](../README.md#prepare-the-host-and-verify-box).
+Before rollout, set the image references under
+`drivers.compute.configuration.images` in the Installation. Merge this
+fragment into the existing Compute configuration and replace both placeholders
+with the exact image references approved for the target:
+
+```yaml
+drivers:
+  compute:
+    configuration:
+      images:
+        gateway: "<gateway-image>@sha256:<gateway-manifest-digest>"
+        agent: "<harness-image>@sha256:<harness-manifest-digest>"
+        requireImmutableDigest: true
+```
+
+`gateway` selects the Kubernetes Gateway workload image. Compute forwards
+`agent` as the Box Harness image in `requirements.image`; use that same
+reference in the installed host's `image` field. A combined image can fill both
+slots if it supplies both runtimes. Never use a Gateway-only image for `agent`.
+To run Box from the selected Harness filesystem, follow
+[the prepared Harness image profile](../README.md#select-a-prepared-harness-image-for-an-installed-host).
+
+Prepare the pinned relay image and build the separate Box host helpers from
+this demo checkout using the
+[host build command](../README.md#prepare-the-host-and-verify-box). Prepare the
+[fixed workspace verifier](../workspace-verifier/README.md). For the original
+file-only Workspace Node, stage a separate unpacked root from an independently
+selected, compatible pinned file-node image (the selected Harness image can be
+reused if it also supplies the file-node runtime) in a fresh mode-`0700`
+directory outside the Box grants. Check
+its canonical digest and source labels before unpacking, and pin the installed
+file-node helper as described below. The nonroot runtime owner needs read and
+execute access to the shipped Node and OpenClaw files. The host mounts that
+root read-only for the file node, which will use the original workspace volume.
+The host needs stock Bubblewrap with `--bind-fd`, unprivileged user namespaces,
+and network namespaces enabled.
 
 In that Agent Namespace, use steps 1–2 in
 [Connect one Agent Gateway to the Box host](../ingress/README.md) to allocate
@@ -52,12 +79,30 @@ workspace file staging.
 
 ## Prepare the original volume
 
+For this local Box setup, have the storage operator prepare two compatible
+local PersistentVolumes (PVs) once the stopped Agent and its execution
+namespace are known, before the first deployment. Compute creates the claims
+below; `<agent>` is the first 12 hex digits of the SHA-256 of the Agent ID.
+
+| Claim                   | Requested storage                     | Storage class                                               |
+| ----------------------- | ------------------------------------- | ----------------------------------------------------------- |
+| `gateway-state-<agent>` | `10Gi`, `Filesystem`, `ReadWriteOnce` | Explicit `runtime.gatewayStorageClassName`                  |
+| `workspace-<agent>`     | `40Gi`, `ReadWriteOnce`               | Omitted; Kubernetes uses the cluster default if configured. |
+
+The Box host runs the Harness directly, so no Kubernetes Pod consumes its
+claim to trigger `WaitForFirstConsumer`. For static local storage,
+[reserve each PV by claim name and namespace](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#reserving-a-persistentvolume)
+without a UID. Check the backing filesystem capacity and the PV's
+`kubernetes.io/hostname` affinity: the Harness volume must be on the original
+Box host, and the Gateway volume must match Gateway placement. Keep both
+volumes separate from the existing Worker control and bootstrap output claims
+that Helm references.
+
 After the empty export checks pass, [mount it read-only in one Worker](../driver/README.md#mount-the-empty-control-directory).
 Verify the actual Worker mount, then submit the stopped Agent's first
 deployment once through [the guarded OCE workflow](../../../../docs/guides/deploy/production-agents.md#prepare-transport-credentials-and-deploy). The Worker creates the
-Harness claim before it calls the Box host. Use a workspace volume that the
-original Box host can mount directly, such as a statically bound local
-volume on that host. A copy cannot serve the Agent's live file operations.
+Harness claim before it calls the Box host. A copy of the workspace volume
+cannot serve the Agent's live file operations.
 
 Track that deployment and revision through OCE. Continue only while the
 original deployment is still in progress, within its normal deadline. If
@@ -65,11 +110,12 @@ it fails or its outcome is unknown, stop and reconcile that exact revision.
 Do not submit another deployment, create a replacement revision, or assume
 the Worker will retry a terminal operation.
 
-Read the original Harness claim in the Agent's execution namespace.
-Match the Namespace and Agent to the original revision, then verify the
-Bound claim's UID and `spec.volumeName`. Check the original PV's UID,
-`claimRef`, and placement on the Box host. Record the claim and PV before
-binding the four subpaths of that volume as the nonroot runtime owner:
+After Compute creates the claims, let Kubernetes bind them. Match the Namespace
+and Agent to the original revision and check that both claims are `Bound`. For
+each, record the actual claim UID and `spec.volumeName`, then verify the named
+PV's UID, `claimRef` (including the claim UID), and node placement. Use the
+verified original Harness volume on the Box host to bind its four subpaths as
+the nonroot runtime owner:
 
 | Volume subpath                     | Host mount                           |
 | ---------------------------------- | ------------------------------------ |
