@@ -780,7 +780,10 @@ function applyOpenClawPluginConfiguration(runtime, failures = [], options = {}) 
 
 `;
 
-function pluginRuntimeHelpers(includeOpenClawInstaller: boolean): string {
+function pluginRuntimeHelpers(
+  includeOpenClawInstaller: boolean,
+  preserveOpenShellCommand = false,
+): string {
   return String.raw`
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
@@ -1582,7 +1585,7 @@ function samePluginFailures(left, right) {
     JSON.stringify([...(right ?? [])].sort((a, b) => a.pluginId.localeCompare(b.pluginId)));
 }
 
-${includeOpenClawInstaller ? OPENCLAW_PLUGIN_CONFIGURATION_APPLICATION_HELPERS : ""}function assertConfigContainsOverlay(base, overlay, path) {
+${includeOpenClawInstaller || preserveOpenShellCommand ? OPENCLAW_PLUGIN_CONFIGURATION_APPLICATION_HELPERS : ""}function assertConfigContainsOverlay(base, overlay, path) {
   if (isPlainObject(overlay)) {
     if (!isPlainObject(base)) throw new Error("OpenClaw plugin effective config is missing an object.");
     for (const [key, value] of Object.entries(overlay)) {
@@ -4105,6 +4108,7 @@ function agentRuntimeEntrypoint({
   computeOwned = false,
   withNode = false,
   patRecovery = false,
+  preserveOpenShellCommand = false,
 } = {}): string {
   const processFailed = patRecovery ? "!cleanExit" : "result.status !== 0 || result.error";
   return String.raw`
@@ -4113,7 +4117,7 @@ const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
 const { spawn, spawnSync } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
 
-${pluginRuntimeHelpers(!withNode)}
+${pluginRuntimeHelpers(!withNode, preserveOpenShellCommand)}
 ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
@@ -5353,9 +5357,17 @@ for (const slot of [...processes].reverse()) start(slot);
 `;
 }
 
-// The provider-owned child omits the native installer; the stock program is the same child.
-const providerCodexChild = PROVIDER_CODEX_ONLY_ENTRYPOINT;
-const protectedProviderCodexChild = agentRuntimeEntrypoint({ withNode: true, protected: true });
+// OpenShell compares the entire immutable command when adopting a Sandbox. Keep
+// the historical unused declarations in its versioned node-supervisor children.
+const providerCodexChild = agentRuntimeEntrypoint({
+  withNode: true,
+  preserveOpenShellCommand: true,
+});
+const protectedProviderCodexChild = agentRuntimeEntrypoint({
+  withNode: true,
+  protected: true,
+  preserveOpenShellCommand: true,
+});
 export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   nodeProgramArguments(providerCodexChild),
 );
@@ -5408,7 +5420,11 @@ export function codexLaunchEntrypoint(
   if (!protectedLaunch && openShellProgram === "pat") {
     if (withNode) {
       return (compactPatLaunch ??= compactWorkspaceNodeLaunch(
-        agentRuntimeEntrypoint({ withNode: true, patRecovery: true }),
+        agentRuntimeEntrypoint({
+          withNode: true,
+          patRecovery: true,
+          preserveOpenShellCommand: true,
+        }),
       ));
     }
     return (patEntrypoint ??= agentRuntimeEntrypoint({ patRecovery: true }));

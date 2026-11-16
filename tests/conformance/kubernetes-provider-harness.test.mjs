@@ -1514,10 +1514,10 @@ test("provider Harness protected execution is released only on current signed in
       observation = installed;
       current = true;
       try {
-        for (const [target, disabled] of [
-          [admitted, true],
-          [alreadyAdmitted, true],
-          [protectedRevision, false],
+        for (const [target, disabled, scenario] of [
+          [alreadyAdmitted, true, "stored protected revision"],
+          [admitted, true, "newly admitted protected revision without workspace setup"],
+          [protectedRevision, false, "stored revision without protected launch admission"],
         ]) {
           const hashes = [];
           const captureCommand = async ({ requirements }) => {
@@ -1534,7 +1534,8 @@ test("provider Harness protected execution is released only on current signed in
               (error) => error === released,
             );
           }
-          // SHA-256 of prepare and activate argv at 61c73c99 with Node 24.22.1.
+          // Prepare and activate argv at 61c73c99 with Node 24.22.1. The newly
+          // admitted revision uses the same argv because no setup files are pending.
           assert.deepEqual(
             hashes,
             disabled
@@ -1546,6 +1547,7 @@ test("provider Harness protected execution is released only on current signed in
                   "6942ea770ee801ef98c53015a64532abf094af8f295821268e178c09000631bf",
                   "a14ebffa8503ba2ca4f78872b2784d70576b308563ecb01cbb69d34999874402",
                 ],
+            scenario,
           );
         }
       } finally {
@@ -1625,6 +1627,12 @@ test("provider Harness protected execution is released only on current signed in
       });
       assert.match(loader, /\.oce-workspace-setup\.json/);
       assert.match(supervisor, new RegExp(workspaceSetup.id));
+      // The v1 compact command can already belong to an admitted Sandbox. Pin
+      // its child from b63f1138a independently of the fixture's workspace setup ID.
+      assert.equal(
+        createHash("sha256").update(codex).digest("hex"),
+        "f4b1a1e499437b4e5c30f598b2da615a0d362ea27f73669a4704608f4ccdee04",
+      );
       // Use the exact nested program delivered by CreateSandbox. The fixture
       // verifies the signature gate and both native invocations' no-retry flags.
       const answered = probe([
