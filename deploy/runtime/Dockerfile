@@ -255,6 +255,11 @@ COPY deploy/runtime/openclaw-node-only-setup.patch /tmp/openclaw-node-only-setup
 RUN echo '279b270ad09f2ef7d5ea24e3de733b1856b7bc9150eb5e8854e2b0523aac42f2  /tmp/openclaw-node-only-setup.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-only-setup.patch
 
+# Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
+COPY deploy/runtime/openclaw-planned-completion.patch /tmp/openclaw-planned-completion.patch
+RUN echo 'c4d00ea11a5c65495225f5164397a7251b7acd43bf73d8df888578bc7a7548e4  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-planned-completion.patch
+
 # Remove this backport when the pinned core includes upstream openclaw/openclaw#185180.
 COPY deploy/runtime/openclaw-native-turn-settlement.patch /tmp/openclaw-native-turn-settlement.patch
 RUN echo '5f2127b46a4a92d24469e43d67301ee0b99d99eb2582c4e690b81b12fd8b7da6  /tmp/openclaw-native-turn-settlement.patch' | sha256sum --check --strict \
@@ -272,6 +277,10 @@ FROM openclaw-patched-source AS openclaw-bridge-tests
 RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
+    packages/gateway-protocol/src/gateway-suspend.test.ts src/infra/gateway-suspend-coordinator.test.ts \
+    src/gateway/server-methods/suspend.integration.test.ts src/cli/gateway-cli/host-lifecycle.test.ts \
+    src/cli/update-cli/update-command-service-drain.native.test.ts \
+    src/gateway/server-methods.suspension-admission.test.ts \
     src/sessions/session-controller.watchdog.test.ts src/agents/embedded-agent-runner/runs.liveness.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     src/infra/private-store-file.test.ts \
@@ -316,6 +325,9 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     extensions/codex/src/app-server/provider-box-owner.test.ts \
     extensions/codex/src/app-server/turn-params.test.ts \
     src/daemon/program-args.test.ts \
+    && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
+    -t "keeps the fenced process alive until the supervisor sends SIGTERM" \
     && rm -rf .artifacts
 # These CUA lifecycle cases use the supported SDK adapter boundary. The two
 # native SDK import cases need desktop libraries absent from this build image.
