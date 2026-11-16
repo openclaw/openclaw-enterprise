@@ -41,6 +41,7 @@ actor, credential, Driver-instance, payload, raw URL, or user-defined labels.
 | `occ_reconciliation_attempt_duration_seconds` | Histogram | `work_kind`                       | Processing seconds, including Driver calls and finalization.                             |
 | `occ_work_pending`                            | Gauge     | None                              | Shared PostgreSQL count of queued/claimed work, including delayed retries.               |
 | `occ_agents`                                  | Gauge     | `lifecycle_state`                 | Persisted Agent reconciliation lifecycle; see below.                                     |
+| `occ_agents_by_deployment_state`              | Gauge     | `deployment_state`                | Persisted Agents by selected revision presence; see below.                               |
 | `occ_agent_operation_duration_seconds`        | Histogram | `operation`                       | Admission to successful deployment or stop completion, including queue wait and retries. |
 | `occ_work_oldest_pending_age_seconds`         | Gauge     | None                              | Age since admission of the oldest queued/claimed item; zero when no work is pending.     |
 | `occ_sign_in_unmatched_callbacks_total`       | Counter   | `provider`                        | API sign-in callbacks refused before matching a pending attempt; see below.              |
@@ -88,6 +89,13 @@ saved version, and deployment/stop/delete work:
 | `failed`    | The latest operation for the desired state failed permanently. Includes retained Agents whose deletion cleanup failed.                  |
 
 Successful deletion removes the Agent from inventory.
+
+`occ_agents_by_deployment_state` counts the same Agents by whether they have a
+selected revision. It always reports both values of `deployment_state`, including
+zero counts. A first deployment awaiting selection counts as `draft`. A
+replacement with its predecessor still selected counts as `active`. Both have
+lifecycle `deploying`. Stopping an Agent clears its selection, so it counts as
+`draft` in this metric and can be `stopped` in the lifecycle metric.
 
 Maintenance work does not change these lifecycle categories. Collection never
 polls Compute or updates resource state. Queue depth and oldest age include
@@ -142,18 +150,18 @@ For `R` observed registered route/method pairs, HTTP has at most `20R` series
 eight pairs. Sign-in callbacks add three API series.
 
 In one worker registry with a successful six-state snapshot, application metrics
-expose exactly `54 + 14K + P` series. `K` is the number of observed work kinds;
+expose exactly `56 + 14K + P` series. `K` is the number of observed work kinds;
 `P` is the number of distinct observed `(work_kind, outcome)` pairs. The fixed
-54 comprises 46 operation-duration series (two initialized operations, each with
-20 finite buckets, `+Inf`, count, and sum) and eight gauges (six lifecycle states,
-pending work, and oldest pending age). Each observed work kind adds 14
+56 comprises 46 operation-duration series (two initialized operations, each with
+20 finite buckets, `+Inf`, count, and sum) and ten gauges (six lifecycle states,
+two deployment states, pending work, and oldest pending age). Each observed work kind adds 14
 pass-duration series: 11 finite buckets, `+Inf`, count, and sum. Each observed
 kind/outcome pair adds one counter series.
 
-With `K <= 8` and `P <= 6K`, use 214 application series per worker registry as a
+With `K <= 8` and `P <= 6K`, use 216 application series per worker registry as a
 conservative label-domain budget. This budget does not imply that every kind can
-produce all six outcomes or that 214 is a reachable maximum. For example, one
-success per kind exposes `54 + 14 × 8 + 8 = 174` application series, without
+produce all six outcomes or that 216 is a reachable maximum. For example, one
+success per kind exposes `56 + 14 × 8 + 8 = 176` application series, without
 process collectors.
 
 Process collectors add at most 53 series per process. Do not preallocate the route/status Cartesian product.
@@ -163,8 +171,10 @@ Process collectors add at most 53 series per process. Do not preallocate the rou
 Prometheus scrapes every Pod directly and assigns instance/deployment labels.
 Sum `rate()` of counters; sum histogram buckets before `histogram_quantile()`.
 Use `max` for duplicated shared gauges, filtering targets by `up == 1` and
-retaining deployment identity. Independent snapshot times can temporarily
-overestimate decreasing values; missing/failed targets mean unknown, not zero.
+retaining deployment identity. For Agent inventory, also retain the family's
+`lifecycle_state` or `deployment_state` label. Independent snapshot times can
+temporarily overestimate decreasing values. Missing or failed targets mean
+unknown, not zero.
 Memory can be summed for fleet use or maximized for the largest process.
 Inspect event-loop percentiles per process; do not average them.
 

@@ -102,13 +102,14 @@ test(
   requiresPostgres,
   async (t) => {
     const fixture = await setup(t);
-    const pool = await createPostgresPool(process.env.OCC_TEST_DATABASE_URL, {
+    const poolOptions = {
       max: 1,
       connectionTimeoutMillis: 500,
       statement_timeout: 1500,
       query_timeout: 1500,
       options: "-c default_transaction_read_only=on",
-    });
+    };
+    const pool = await createPostgresPool(process.env.OCC_TEST_DATABASE_URL, poolOptions);
     let poolClosed = false;
     t.after(() => (poolClosed ? undefined : pool.end()));
     assert.equal(
@@ -118,7 +119,61 @@ test(
     );
     const snapshot = new PostgresMetricsSnapshot(pool);
     const a = createOccMetrics("worker", () => snapshot.collect());
+    const otherPool = await createPostgresPool(process.env.OCC_TEST_DATABASE_URL, poolOptions);
+    t.after(() => otherPool.end());
+    assert.equal(
+      (await otherPool.query("SHOW default_transaction_read_only")).rows[0]
+        .default_transaction_read_only,
+      "on",
+    );
+    const otherSnapshot = new PostgresMetricsSnapshot(otherPool);
+    const b = createOccMetrics("worker", () => otherSnapshot.collect());
+    const listener = await startMetricsListener(a, { host: "127.0.0.1", port: 0 });
+    t.after(() => listener.close());
+    const otherListener = await startMetricsListener(b, { host: "127.0.0.1", port: 0 });
+    t.after(() => otherListener.close());
+    // Each real HTTP endpoint collects independently through its own read-only pool.
+    // Capture status as data too: assertions in Compute would be swallowed by retries.
+    const scrapeBoth = () =>
+      Promise.all(
+        [listener, otherListener].map(async (endpoint) => {
+          const response = await fetch(`${endpoint.url}/metrics`);
+          return { status: response.status, body: await response.text() };
+        }),
+      );
+    const lifecycleStates = ["draft", "deploying", "running", "stopping", "stopped", "failed"];
+    const inventory = (body) =>
+      body.split("\n").filter((line) => /^occ_agents(?:_by_deployment_state)?\{/.test(line));
+    const assertLifecycle = (scrapes, expected) => {
+      for (const { status, body } of scrapes) {
+        assert.equal(status, 200);
+        const samples = body.split("\n").filter((line) => line.startsWith("occ_agents{"));
+        assert.equal(samples.length, 6, "all lifecycle buckets must exist, including zeros");
+        for (const state of lifecycleStates) {
+          const sample = samples.find((line) => line.includes(`lifecycle_state="${state}"`));
+          assert.ok(sample, `missing ${state} lifecycle bucket`);
+          assert.equal(Number(sample.slice(sample.lastIndexOf(" ") + 1)), expected[state]);
+        }
+      }
+      assert.deepEqual(inventory(scrapes[0].body), inventory(scrapes[1].body));
+    };
+    const assertDeploymentInventory = (scrapes, expected) => {
+      for (const { body } of scrapes) {
+        const samples = body
+          .split("\n")
+          .filter((line) => line.startsWith("occ_agents_by_deployment_state{"));
+        assert.equal(samples.length, 2, "both deployment buckets must exist, including zeros");
+        for (const state of ["draft", "active"]) {
+          const sample = samples.find((line) => line.includes(`deployment_state="${state}"`));
+          assert.ok(sample, `missing ${state} bucket`);
+          assert.equal(Number(sample.slice(sample.lastIndexOf(" ") + 1)), expected[state]);
+          assert.equal(sample.match(/="/g)?.length, 2, "only deployment state and service labels");
+        }
+      }
+    };
     const before = await snapshot.collect();
+    const empty = await scrapeBoth();
+    assertLifecycle(empty, Object.fromEntries(lifecycleStates.map((state) => [state, 0])));
     assert.match(
       await a.exposition(),
       /occ_agent_operation_duration_seconds_count\{[^\n]*operation="deploy"[^\n]*\} 0(?:\n|$)/,
@@ -135,6 +190,7 @@ test(
     assert.equal(queued.agents.deploying, before.agents.deploying + 1);
     assert.ok(queued.oldestPendingAgeSeconds >= 0.05);
     let preparations = 0;
+    const pending = new Map();
     // This existing deterministic Driver proves persistence/worker metrics, not
     // live runtime readiness. Production dedicated execution requires activation.
     await fixture.start(
@@ -147,6 +203,11 @@ test(
           if (++preparations === 1) {
             throw new Error("Temporary compute outage");
           }
+          // Observe both actual preparation calls before selection can change.
+          pending.set(revision.revision, {
+            pointer: await fixture.activeRevision(agent),
+            scrapes: await scrapeBoth(),
+          });
           return fixture.compute.prepareRevision(revision, context);
         },
         async preflight() {},
@@ -159,6 +220,12 @@ test(
       a,
     );
     await fixture.work(first);
+    assert.ok(pending.has(1), "first deployment must be observed after the induced retry");
+    assert.equal(pending.get(1).pointer, null);
+    assertLifecycle(pending.get(1).scrapes, { ...before.agents, deploying: 1 });
+    assert.equal(await fixture.activeRevision(agent), first.id);
+    const firstCompleted = await scrapeBoth();
+    assertLifecycle(firstCompleted, { ...before.agents, running: 1 });
     assert.equal((await snapshot.collect()).agents.running, before.agents.running + 1);
     const firstMetrics = await a.exposition();
     assert.match(
@@ -173,6 +240,17 @@ test(
     assert.ok(duration >= 0.05, "completion duration must include pre-claim queue time");
     const second = await fixture.revision(agent, 2);
     await fixture.work(second);
+    assert.ok(pending.has(2), "replacement must be observed before preparation completes");
+    assert.equal(pending.get(2).pointer, first.id);
+    assertLifecycle(pending.get(2).scrapes, { ...before.agents, deploying: 1 });
+    assert.equal(await fixture.activeRevision(agent), second.id);
+
+    // Keep candidate-family assertions after both lifecycle observations so the
+    // same test on main reaches both preparations before failing on the missing family.
+    assertDeploymentInventory(empty, { draft: 0, active: 0 });
+    assertDeploymentInventory(pending.get(1).scrapes, { draft: 1, active: 0 });
+    assertDeploymentInventory(firstCompleted, { draft: 0, active: 1 });
+    assertDeploymentInventory(pending.get(2).scrapes, { draft: 0, active: 1 });
     assert.equal((await snapshot.collect()).agents.running, before.agents.running + 1);
 
     assert.match(
@@ -181,11 +259,14 @@ test(
     );
 
     // Both workers see the same shared state; it must never be summed across replicas.
-    const b = createOccMetrics("worker", () => snapshot.collect());
-    const inventory = (body) => body.split("\n").filter((line) => line.startsWith("occ_agents{"));
-    assert.deepEqual(inventory(await a.exposition()), inventory(await b.exposition()));
-    const listener = await startMetricsListener(a, { host: "127.0.0.1", port: 0 });
-    t.after(() => listener.close());
+    const completed = await scrapeBoth();
+    assertLifecycle(completed, { ...before.agents, running: 1 });
+    assertDeploymentInventory(completed, { draft: 0, active: 1 });
+    // Sequential completed scrapes must set counts, never increment them.
+    const repeated = await scrapeBoth();
+    assertLifecycle(repeated, { ...before.agents, running: 1 });
+    assertDeploymentInventory(repeated, { draft: 0, active: 1 });
+    assert.deepEqual(inventory(repeated[0].body), inventory(completed[0].body));
     assert.match(
       await a.exposition(),
       /occ_reconciliation_attempts_total\{[^\n]*work_kind="agent_revision"[^\n]*outcome="success"/,
@@ -283,6 +364,7 @@ function controlledMetricsPool() {
 
 const controlledMetricsRow = Object.freeze({
   agents: { draft: 0, deploying: 0, running: 1, stopping: 0, stopped: 0, failed: 0 },
+  agentsByDeploymentState: { draft: 0, active: 1 },
   pending: 0,
   oldestPendingAgeSeconds: 0,
 });

@@ -70,12 +70,10 @@ production requires explicit configuration.
 to Compute, and composes Namespace hooks for OCC. Unsupported selections stop
 startup. Compute preflight precedes `worker.started` and `run()`.
 
-Metrics scrapes read lifecycle and backlog state through
-`packages/occ/src/state/postgres-metrics.ts:PostgresMetricsSnapshot.collect`
-without runtime probes; the
-[metrics contract](../reference/metrics.md#shared-snapshots-and-outages) owns
+Scrapes read lifecycle, revision selection, and backlog in one read-only snapshot.
+The [metrics contract](../reference/metrics.md#shared-snapshots-and-outages) owns
 connection and outage handling. Transport loss during release rejects the
-snapshot; the error listener stays attached until release returns. Metrics
+snapshot. The error listener stays attached until release returns. Metrics
 follow finalization independently of logging.
 
 <span id="2-commit-api-admission-and-the-durable-work-record" class="anchor-alias"></span>
