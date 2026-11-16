@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
@@ -363,3 +363,42 @@ test("the push command list admits exactly one update of the selected head", asy
     assert.equal(exactPushCommands(refused, repository), false);
   }
 });
+
+test(
+  "a push larger than http.postBuffer passes Git's flush-only probe without a provider write",
+  { timeout: 20_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const route = await f.install();
+    const copy = join(f.root, "client");
+    await route.remoteGit(["clone", route.remote, copy]);
+    // Incompressible content: the pack exceeds the 1 KiB post buffer, so Git first POSTs "0000".
+    await writeFile(join(copy, "large.bin"), randomBytes(64 * 1024));
+    await f.git(["add", "large.bin"], copy);
+    await f.commit("large change", copy);
+    const expected = (await f.git(["rev-parse", "HEAD"], copy)).stdout.trim();
+    const before = f.authorizations.length;
+    await route.remoteGit(
+      ["-c", "http.postBuffer=1024", "push", "origin", "HEAD:refs/heads/review"],
+      copy,
+    );
+    assert.equal(
+      (await f.git(["--git-dir", f.repoPath, "rev-parse", "refs/heads/review"])).stdout.trim(),
+      expected,
+    );
+    // Only the real push was authorized and sent; the probe never reached material or origin.
+    assert.equal(
+      f.authorizations.slice(before).filter(({ operation }) => operation === "receive-pack").length,
+      1,
+    );
+    assert.ok(f.receipts.some(({ stage }) => stage === "probe-answered"));
+    // A second large push still works: the probe never takes a journal slot.
+    await writeFile(join(copy, "large.bin"), randomBytes(64 * 1024));
+    await f.git(["add", "large.bin"], copy);
+    await f.commit("second large change", copy);
+    await route.remoteGit(
+      ["-c", "http.postBuffer=1024", "push", "origin", "HEAD:refs/heads/review"],
+      copy,
+    );
+  },
+);

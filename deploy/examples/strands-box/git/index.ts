@@ -34,6 +34,7 @@ type OnlineAuthority = NonNullable<ProtectedRepositoryGitAuthority["online"]["gi
 type Operation = PlannedRequest["operation"];
 type Stage =
   | "received"
+  | "probe-answered"
   | "execution-refused"
   | "request-refused"
   | "material-refused"
@@ -408,7 +409,13 @@ export function createRepositorySender(options: RepositorySenderOptions): {
         }
         const snapshot = structuredClone(initial);
         phase = "request-refused";
-        plan = await planRequest(req, repo, signal);
+        const planned = await planRequest(req, repo, signal);
+        if (planned !== undefined && "probe" in planned) {
+          emit("probe-answered");
+          reply(res, 200, Buffer.alloc(0), planned.probe);
+          return;
+        }
+        plan = planned;
         if (!plan) {
           emit(phase);
           reply(res, 403);

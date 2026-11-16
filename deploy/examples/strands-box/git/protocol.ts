@@ -96,11 +96,21 @@ function githubHeaders(origin: string, type?: string, size?: number, gitProtocol
   });
 }
 
+/**
+ * Git's smart-HTTP client POSTs a bare flush packet to probe the service before it streams a
+ * request larger than `http.postBuffer` (remote-curl `probe_rpc`). It reads only the status.
+ */
+export interface GitProbe {
+  readonly probe: `application/x-git-${"upload" | "receive"}-pack-result`;
+}
+
+const FLUSH = Buffer.from("0000");
+
 export async function planRequest(
   message: IncomingMessage,
   repository: RepositorySelection,
   signal: AbortSignal,
-): Promise<Plan | undefined> {
+): Promise<Plan | GitProbe | undefined> {
   // The handler authenticated and consumed the one execution bearer before planning. No
   // caller header is forwarded: every outbound header below is constructed by the sender.
   if (message.httpVersion !== "1.1" || header(message, "content-encoding") !== undefined) {
@@ -182,6 +192,11 @@ export async function planRequest(
   const body = await boundedBody(message, discover ? 0 : BODY_LIMIT, signal);
   if (!discover && body.length === 0) {
     return;
+  }
+  if (!discover && body.equals(FLUSH)) {
+    // Answered by the sender: a flush-only request carries no command, so it needs neither
+    // material nor a provider connection, and it never takes a push journal slot.
+    return { probe: `application/x-${service}-result` };
   }
   if (!upload && !discover && !exactPushCommands(body, repository)) {
     return;
@@ -270,7 +285,7 @@ export function exactPushCommands(body: Buffer, repository: RepositorySelection)
   return false;
 }
 
-export type PlannedRequest = NonNullable<Awaited<ReturnType<typeof planRequest>>>;
+export type PlannedRequest = Plan;
 
 export function requestDigest(plan: PlannedRequest): string {
   // Authorize the exact normalized request. The injected credential is bound
