@@ -1683,9 +1683,9 @@ revisionTest(
     const idle = await fixture.agent("completion-idle", { executionMode: "dedicated" });
     let completed = false;
     let candidateReady = false;
-    let candidateId: string | undefined;
     const driver = countingExclusiveCompute(fixture, {
-      ready: (revision) => revision.id !== candidateId || candidateReady,
+      ready: (revision) =>
+        revision.agentId !== owner.id || revision.revision !== 3 || candidateReady,
     });
     const deadlines: number[] = [];
     const events: WorkerEvent[] = [];
@@ -1735,7 +1735,6 @@ revisionTest(
     assert.equal(driver.preparations(second), 0);
     await fixture.stop();
     const third = await fixture.revision(owner, 3);
-    candidateId = third.id;
     const kept = await recordPlannedReplacement(fixture, owner, first, third);
     assert.equal(
       Date.parse(required(kept?.completionStartedAt, "original wait start")) + 30 * 60_000,
