@@ -7153,23 +7153,17 @@ test("Agent provisioning API validates inline configuration with existing Secret
   await bootstrap(controller, "Provisioning validation installation");
   const namespace = await createNamespace(controller, "provisioning-validation");
 
-  const provision = (options) =>
-    injectedRequest(fixture.app, "POST", `/namespaces/${namespace.id}/agents/provision`, options);
+  const provisionPath = `/namespaces/${namespace.id}/agents/provision`;
+  const provision = (body) => controller.request("POST", provisionPath, { body });
 
   await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const modelApiKey = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.id}/secrets`,
-    { body: { name: "model-api-key", value: `model-key-${randomUUID()}` } },
-  );
+  const modelApiKey = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "model-api-key", value: `model-key-${randomUUID()}` },
+  });
   assert.equal(modelApiKey.status, 201, JSON.stringify(modelApiKey.body));
-  const toolApiKey = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.id}/secrets`,
-    { body: { name: "tool-api-key", value: `tool-key-${randomUUID()}` } },
-  );
+  const toolApiKey = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "tool-api-key", value: `tool-key-${randomUUID()}` },
+  });
   assert.equal(toolApiKey.status, 201, JSON.stringify(toolApiKey.body));
   const secrets = { modelApiKey: modelApiKey.data, toolApiKey: toolApiKey.data };
   const requestBody = (overrides) => provisioningRequestBody(namespace.id, secrets, overrides);
@@ -7232,6 +7226,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
       "Harness authentication of the wrong type",
       requestBody({ harnessAuth: "api_key" }),
       "The request does not match the operation contract: body /harnessAuth has the wrong type (expected one of object, null).",
+      [{ path: "/harnessAuth", code: "INVALID_TYPE" }],
     ],
     [
       // The method selects the api_key shape, so only its missing source is reported, not
@@ -7239,6 +7234,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
       "Harness authentication method without its source",
       requestBody({ harnessAuth: { method: "api_key" } }),
       "The request does not match the operation contract: body /harnessAuth/source is required.",
+      [{ path: "/harnessAuth/source", code: "REQUIRED" }],
     ],
     [
       "too many binding destinations",
@@ -7298,12 +7294,14 @@ test("Agent provisioning API validates inline configuration with existing Secret
         },
       }),
       "A secret binding destination uses the reserved prefix OPENCLAW_*: OPENCLAW_TOKEN.",
+      // The reserved destination is named by its pointer under the inline Configuration.
+      [{ path: "/configuration/secretBindings/OPENCLAW_TOKEN", code: "INVALID_VALUE" }],
     ],
   ];
 
   // Each case must fail on its own rule (the exact message), not on an unrelated one.
   for (const [description, body, message] of invalidBodies) {
-    const result = await provision({ body });
+    const result = await provision(body);
     assertApiError(result, 400, "INVALID_REQUEST", description);
     if (message instanceof RegExp) {
       assert.match(result.body.error.message, message, description);
@@ -7327,11 +7325,11 @@ test("Agent provisioning API validates inline configuration with existing Secret
       "Configuration setting gateway.trustedProxies must be omitted or match the Installation's network.gatewayTrustedProxyCidrs.",
     ],
   ]) {
-    const refused = await provision({
-      body: requestBody({
+    const refused = await provision(
+      requestBody({
         configuration: { values: { ...model, gateway } },
       }),
-    });
+    );
     assert.equal(refused.status, 409, JSON.stringify(refused.body));
     assert.deepEqual(
       { code: refused.body.error.code, message: refused.body.error.message },
@@ -7340,8 +7338,8 @@ test("Agent provisioning API validates inline configuration with existing Secret
     assert.doesNotMatch(JSON.stringify(refused.body), /10\.99\./);
   }
   // The retired Codex untrusted approval policy is one of those gateway settings (finding 987).
-  const untrustedPolicy = await provision({
-    body: requestBody({
+  const untrustedPolicy = await provision(
+    requestBody({
       configuration: {
         values: {
           ...model,
@@ -7351,7 +7349,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
         },
       },
     }),
-  });
+  );
   assert.equal(untrustedPolicy.status, 409, JSON.stringify(untrustedPolicy.body));
   assert.deepEqual(
     { code: untrustedPolicy.body.error.code, message: untrustedPolicy.body.error.message },
@@ -7368,7 +7366,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   // Kubernetes Compute, as on every other Compute; the filled name is checked at provisioning.
   configurationDriver.validateValues = async () => {};
   const placeholder = "{{ vars.header }}";
-  const preset = await injectedRequest(fixture.app, "POST", `/namespaces/${namespace.id}/presets`, {
+  const preset = await controller.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: {
       name: "Header variable",
       template: {
@@ -7423,9 +7421,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
       'The OpenClaw Gateway needs agents.ownership "explicit" for more than one agents.entries entry: set it, or keep one entry.',
     ],
   ]) {
-    const refused = await provision({
-      body: requestBody({ configuration: { values } }),
-    });
+    const refused = await provision(requestBody({ configuration: { values } }));
     assert.equal(refused.status, 400, JSON.stringify(refused.body));
     assert.deepEqual(
       { code: refused.body.error.code, message: refused.body.error.message },
@@ -7436,8 +7432,8 @@ test("Agent provisioning API validates inline configuration with existing Secret
   // never its value, whatever word the rule matched.
   const sentinel = `synthetic-filled-header-${randomUUID()}`;
   for (const name of ["X-Upstream-Pwd", "X-Signature-Sha256"]) {
-    const filled = await provision({
-      body: requestBody({
+    const filled = await provision(
+      requestBody({
         configuration: {
           values: {
             ...model,
@@ -7445,7 +7441,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
           },
         },
       }),
-    });
+    );
     assert.equal(filled.status, 400, JSON.stringify(filled.body));
     assert.deepEqual(
       { code: filled.body.error.code, message: filled.body.error.message },
@@ -7469,9 +7465,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     routed: false,
   });
   computeDriver.validateAgentProvisioning = (input) => unrouted.validateAgentProvisioning(input);
-  const computeRefused = await provision({
-    body: requestBody(),
-  });
+  const computeRefused = await provision(requestBody());
   assert.equal(computeRefused.status, 409, JSON.stringify(computeRefused.body));
   const refusals = logLines.filter((line) => line.event === "agent_provisioning.compute_refused");
   assert.equal(refusals.length, 1, JSON.stringify(refusals));
@@ -7502,9 +7496,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     action: "create",
     effect: "deny",
   });
-  const refusedUnauthorized = await provision({
-    body: requestBody(),
-  });
+  const refusedUnauthorized = await provision(requestBody());
   assert.equal(refusedUnauthorized.status, 403, JSON.stringify(refusedUnauthorized.body));
   // Authorization also precedes OCC's own plan checks. Each body below draws a 400 from
   // an authorized caller; without the grant it is the same 403, so a caller learns nothing about
@@ -7528,7 +7520,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   ];
   const assertPlanRefusalsDenied = async (grant) => {
     for (const [description, body] of planRefusals) {
-      const denied = await provision({ body });
+      const denied = await provision(body);
       assertApiError(denied, 403, "FORBIDDEN", `${grant}, ${description}`);
     }
   };
@@ -7544,7 +7536,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   await assertPlanRefusalsDenied("without Installation administer");
   fixture.state.restrictions.pop();
   for (const [description, body, status, message] of planRefusals) {
-    const refused = await provision({ body });
+    const refused = await provision(body);
     assert.equal(refused.status, status, `${description}: ${JSON.stringify(refused.body)}`);
     if (message !== undefined) {
       assert.deepEqual(
@@ -7563,7 +7555,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
       throw thrown;
     };
     const logged = logLines.length;
-    const refused = await provision({ body: requestBody() });
+    const refused = await provision(requestBody());
     assert.equal(refused.status, 409, JSON.stringify(refused.body));
     assert.doesNotMatch(JSON.stringify(refused.body), /internal driver detail|r{512}/);
     assert.deepEqual(
@@ -7578,35 +7570,16 @@ test("Agent provisioning API validates inline configuration with existing Secret
   computeDriver.validateAgentProvisioning = () => {
     throw new DependencyUnavailableError("The Compute Driver is unavailable.");
   };
-  const computeUnavailable = await provision({
-    body: requestBody(),
-  });
+  const computeUnavailable = await provision(requestBody());
   computeDriver.validateAgentProvisioning = () => {};
   assert.equal(computeUnavailable.status, 503, JSON.stringify(computeUnavailable.body));
   assert.equal(computeUnavailable.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  const wrongTypeHarnessAuth = await provision({
-    body: invalidBodies.find(([description]) =>
-      description.startsWith("Harness authentication"),
-    )[1],
-  });
-  assert.deepEqual(wrongTypeHarnessAuth.body.error.details, [
-    { path: "/harnessAuth", code: "INVALID_TYPE" },
-  ]);
-  const methodWithoutSource = await provision({
-    body: invalidBodies.find(([description]) =>
-      description.startsWith("Harness authentication method"),
-    )[1],
-  });
-  assert.deepEqual(methodWithoutSource.body.error.details, [
-    { path: "/harnessAuth/source", code: "REQUIRED" },
-  ]);
-  // The reserved destination is named by its pointer under the inline Configuration.
-  const reservedProvisioning = await provision({
-    body: invalidBodies.find(([description]) => description.startsWith("reserved"))[1],
-  });
-  assert.deepEqual(reservedProvisioning.body.error.details, [
-    { path: "/configuration/secretBindings/OPENCLAW_TOKEN", code: "INVALID_VALUE" },
-  ]);
+  for (const [, body, , details] of invalidBodies) {
+    if (details) {
+      const refused = await provision(body);
+      assert.deepEqual(refused.body.error.details, details);
+    }
+  }
 
   // A model provider baseUrl the runtime cannot use is refused at admission with the field
   // named, instead of surfacing later as an unexplained startup model check failure.
@@ -7615,7 +7588,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     ...badBaseUrl.configuration.values,
     models: { providers: { codex: { baseUrl: "not a url", api: "openai-responses" } } },
   };
-  const refusedBaseUrl = await provision({ body: badBaseUrl });
+  const refusedBaseUrl = await provision(badBaseUrl);
   assert.equal(refusedBaseUrl.status, 400, JSON.stringify(refusedBaseUrl.body));
   assert.equal(
     refusedBaseUrl.body.error.message,
@@ -7627,14 +7600,14 @@ test("Agent provisioning API validates inline configuration with existing Secret
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
   // Driver-specific validation must precede durable provisioning and resource creation.
-  const invalidPolicy = await provision({
-    body: requestBody({
+  const invalidPolicy = await provision(
+    requestBody({
       configuration: { values: createHarnessConfiguration("codex", "gpt-6-astra") },
       plugins: {
         [linearPluginId]: { enabled: true, tools: { "app/search": { reviewer: "auto" } } },
       },
     }),
-  });
+  );
   assertApiError(invalidPolicy, 400, "INVALID_REQUEST");
   assert.equal(
     invalidPolicy.body.error.message,
@@ -7650,7 +7623,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     ...createHarnessConfiguration("codex", "gpt-6-astra"),
     plugins: { entries: { codex: { config: { appServer: { approvalPolicy: "never" } } } } },
   };
-  const refusedReviewer = await provision({ body: automaticReviewer });
+  const refusedReviewer = await provision(automaticReviewer);
   assertApiError(refusedReviewer, 400, "INVALID_REQUEST");
   assert.equal(
     refusedReviewer.body.error.message,
@@ -7669,7 +7642,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     ...createHarnessConfiguration("openclaw", "gpt-5.1"),
     tools: { deny: ["*"] },
   };
-  const refusedDenial = await provision({ body: deniedTools });
+  const refusedDenial = await provision(deniedTools);
   assertApiError(refusedDenial, 400, "INVALID_REQUEST");
   assert.equal(
     refusedDenial.body.error.message,
@@ -7678,12 +7651,12 @@ test("Agent provisioning API validates inline configuration with existing Secret
   await assertNoAgentsInNamespace(fixture, namespace.id);
   // Its plugins run only in an OpenClaw Harness, and this request provisions dedicated Codex
   // (finding 2348).
-  const codexPlugins = await provision({
-    body: requestBody({
+  const codexPlugins = await provision(
+    requestBody({
       configuration: { values: createHarnessConfiguration("codex", "gpt-6-astra") },
       plugins: { [diffsPluginId]: pluginPolicy() },
     }),
-  });
+  );
   assert.equal(codexPlugins.status, 400, JSON.stringify(codexPlugins.body));
   assert.deepEqual(
     { code: codexPlugins.body.error.code, message: codexPlugins.body.error.message },
@@ -7696,9 +7669,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   await assertNoAgentsInNamespace(fixture, namespace.id);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
 
-  const durableOnly = await provision({
-    body: requestBody(),
-  });
+  const durableOnly = await provision(requestBody());
   assert.equal(durableOnly.status, 503, JSON.stringify(durableOnly.body));
   assert.equal(durableOnly.body.error.code, "DEPENDENCY_UNAVAILABLE");
   await assertNoAgentsInNamespace(
@@ -7719,11 +7690,11 @@ test("Agent provisioning API validates inline configuration with existing Secret
   );
   const managedSource = { kind: "service_account", namespaceId: namespace.id, id: account.id };
   const provisionWithAccount = (source) =>
-    provision({
-      body: requestBody({
+    provision(
+      requestBody({
         harnessAuth: { method: "codex_pat", source },
       }),
-    });
+    );
   fixture.state.restrictions.push({
     id: "deny-provisioning-account-read",
     namespaceId: namespace.id,
@@ -7749,13 +7720,12 @@ test("Agent provisioning API validates inline configuration with existing Secret
   assert.equal(acceptedAccount.status, 503, JSON.stringify(acceptedAccount.body));
   assert.equal(acceptedAccount.body.error.code, "DEPENDENCY_UNAVAILABLE");
 
-  const oversized = await provision({
-    rawBody: JSON.stringify(
-      requestBody({
-        configuration: { values: { payload: "x".repeat(448 * 1024) } },
-      }),
-    ),
-  });
+  const rawBody = JSON.stringify(
+    requestBody({
+      configuration: { values: { payload: "x".repeat(448 * 1024) } },
+    }),
+  );
+  const oversized = await controller.request("POST", provisionPath, { rawBody });
   assertApiError(oversized, 413, "PAYLOAD_TOO_LARGE");
 });
 
