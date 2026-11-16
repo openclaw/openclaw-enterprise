@@ -220,6 +220,7 @@
     "fixtures/dev-up-installation-http.ts",
     "helpers/dev-up-installation.ts",
     "integration/dev-up-kubernetes-recovery-cases.ts",
+    "integration/dev-up-stack-custody-cases.ts",
     "fixtures/ci-runner-replacement-readiness-child.ts",
     "fixtures/ci-runner-openshell-failure-child.ts",
     "fixtures/ci-runner-openshell-progress-child.ts",
