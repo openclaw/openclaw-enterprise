@@ -224,6 +224,7 @@
     "integration/first-agent-startup-lifecycle-cases.ts",
     "helpers/fixture-command-server.ts",
     "helpers/keycloak-enrollment-wait.ts",
+    "helpers/keycloak-issuer-material.ts",
     "integration/keycloak-session-lifecycle-cases.ts",
     "integration/skipper-private-git-replacement-cases.ts",
     "helpers/node-test-summary.ts",
