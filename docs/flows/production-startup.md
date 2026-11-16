@@ -145,19 +145,18 @@ Database/API ports accept 1–65535 without leading zeros; worker metrics/reposi
 ports must differ. The Compute Driver rejects malformed IPv4 hostnames and
 numeric/hexadecimal sandbox suffixes. See [refused values](../guides/deploy/production-upgrade-recovery.md#correct-values-the-candidate-refuses).
 
-On install and upgrade, `deploy/helm/openclaw-enterprise/files/check-installation.mjs`
-validates Installation offline before migration, bootstrap and API rollout.
-It uses `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure`
-and the API/worker filter `apps/controller/src/logging.ts:configurationLogDetails`: at most 32 field
-diagnostics, without submitted values, except
-`apps/controller/src/composition/installation-fields.ts:requireChartListener`:
-`CHART_LISTENER_MISMATCH` names ports, hosts or paths refused when
-`OCC_EGRESS_AUTHORITY_PORT`/`OCC_OPENSHELL_GIT_PORT` is set.
+On install and upgrade, Helm runs the generated
+`deploy/helm/openclaw-enterprise/files/check-installation.mjs` from
+`deploy/helm/src/check-installation.ts` before migration, bootstrap and API rollout.
+`formatStartupConfigurationFailure` uses the API and worker's
+`configurationLogDetails` to report up to 32 fields without submitted values.
+`requireChartListener` reports refused ports, hosts or paths as
+`CHART_LISTENER_MISMATCH` when `OCC_EGRESS_AUTHORITY_PORT` or
+`OCC_OPENSHELL_GIT_PORT` is set.
 
-For chart-managed routing, `openclaw.listenerEnv` passes `OCC_CHART_GATEWAY_ROUTING`
-to the hook, API and worker. `requireChartGatewayRouting` compares the Kubernetes
-Compute Gateway name, Gateway and Envoy namespaces, and effective hostname.
-A mismatch reports the field without its value.
+`openclaw.listenerEnv` passes `OCC_CHART_GATEWAY_ROUTING` to the hook, API and
+worker. `requireChartGatewayRouting` checks the Gateway name, Gateway and Envoy
+namespaces, and hostname. It reports a mismatched field without its value.
 
 The hook keeps the release name and bounds its suffix to 63 characters. Both
 database containers optionally mount the CA. Helm validates distinct application and
