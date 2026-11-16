@@ -51,7 +51,7 @@ function entrySlugs(entry: unknown): string[] {
 }
 
 // Exercise the shipped CLI against the authored corpus and generated API.
-test("docs build renders every authored page and preserves repository ownership", async () => {
+test("docs build renders every authored page and preserves repository ownership", async (t) => {
   // `docs:build` indexes the site with the docs-site package's Pagefind, which only
   // `pnpm docs:install` provides (the CI docs step runs it before this lane).
   assert.ok(
@@ -96,6 +96,45 @@ test("docs build renders every authored page and preserves repository ownership"
   }
   const index = await readFile(join(root, "dist/docs/index.html"), "utf8");
   assert.match(index, /href="\/guides\/deploy\/local-setup\//);
+  // Existing bookmarks and the rendered guide links must resolve to executable downloads.
+  const quickstart = "snippets/openshell-quickstart";
+  const guides = [
+    ["deploy/local-setup", "configure-installation"],
+    ["integrations/codex-plugins", "inspect-linear-transcript"],
+  ] as const;
+  for (const [guide, script] of guides) {
+    const html = await readFile(join(root, "dist/docs/guides", guide, "index.html"), "utf8");
+    assert.ok(html.includes(`href="/${quickstart}/${script}.mjs"`));
+  }
+  for (const script of [
+    "configure-installation",
+    "inspect-linear-transcript",
+    "request",
+    "kubernetes/owner-listener",
+    "kubernetes/git-revision-audit",
+  ]) {
+    const download = join(root, "dist/docs", quickstart, script);
+    execFileSync(process.execPath, ["--check", download + ".mjs"], { encoding: "utf8" });
+    assert.equal(existsSync(download + ".mts"), false, "Do not publish a second typed download");
+  }
+  for (const script of ["chat.mjs", "verify-github-installation.mjs"]) {
+    const asset = join("assets/openshell-quickstart", script);
+    assert.deepEqual(
+      await readFile(join(root, "dist/docs", asset)),
+      await readFile(join(root, "docs", asset)),
+    );
+  }
+  // Stage from the published tree so a checkout-only filename fails the download test.
+  const staged = await temporaryDirectory(t, "enterprise-quickstart-downloads-");
+  execFileSync("bash", ["-eu", join("docs", quickstart, "stage-session.sh")], {
+    cwd: join(root, "dist"),
+    env: { ...process.env, RUN_DIR: staged },
+  });
+  // The published listener manifest and ConfigMap example must use the downloadable payload.
+  for (const caller of ["kubernetes/owner-listener.jq", "cluster-browser-access.md"]) {
+    const source = await readFile(join(root, "dist/docs", quickstart, caller), "utf8");
+    assert.ok(source.includes("/owner-listener.mjs"), caller);
+  }
   // A link out of docs/ points at the repository on GitHub.
   const specifications = await readFile(
     join(root, "dist/docs/contributing/specifications/index.html"),

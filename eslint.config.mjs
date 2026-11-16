@@ -76,6 +76,7 @@ export default defineConfig(
     files: [
       "{apps,packages,scripts,tests}/**/*.{js,mjs,cjs,ts,mts}",
       "deploy/helm/src/*.ts",
+      "docs/snippets/openshell-quickstart/**/*.mts",
       "*.{js,mjs,cjs,ts}",
     ],
     extends: [js.configs.recommended],

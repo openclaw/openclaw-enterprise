@@ -9,7 +9,7 @@ umask 077
 mkdir -p -m 700 "$RUN_DIR"
 [[ -O $RUN_DIR && ! -L $RUN_DIR && ! -e $RUN_DIR/session.sh && ! -e $RUN_DIR/k3d-state ]]
 install -m 600 docs/snippets/openshell-quickstart/plugin-network-policy.yaml "$RUN_DIR/artifacts.yaml"
-install -m 600 docs/snippets/openshell-quickstart/configure-installation.mjs "$RUN_DIR/configure-installation.mjs"
+install -m 600 docs/snippets/openshell-quickstart/configure-installation.mts "$RUN_DIR/configure-installation.mts"
 source docs/snippets/openshell-quickstart/stage-session.sh
 node scripts/ci/k3d-quickstart/setup-blocks.ts "$RUN_DIR"
 source "$RUN_DIR/setup-before-browser.sh"
