@@ -18,7 +18,36 @@ import {
   parseRuntimeDownloadClientSelection,
   readRuntimeDownloadClients,
 } from "../../scripts/lib/runtime-download-clients.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+
+type RuntimeAsset =
+  { path: string; link: string } | { path: string; size: number; mode: number; sha256: string };
+
+function assertRecord(value: unknown): asserts value is Record<string, unknown> {
+  assert.ok(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function parseInventory(contents: string): ReadonlyMap<string, RuntimeAsset> {
+  const inventory: unknown = JSON.parse(contents);
+  assert.ok(Array.isArray(inventory), "Expected a runtime asset inventory");
+  const entries: readonly unknown[] = inventory;
+  const assets = new Map<string, RuntimeAsset>();
+  for (const entry of entries) {
+    assertRecord(entry);
+    const { path, link, size, mode, sha256 } = entry;
+    assert.ok(typeof path === "string" && !assets.has(path), "Expected a unique inventory path");
+    if (typeof link === "string") {
+      assets.set(path, { path, link });
+    } else {
+      assert.ok(
+        typeof size === "number" && typeof mode === "number" && typeof sha256 === "string",
+        `Expected file metadata for ${path}`,
+      );
+      assets.set(path, { path, size, mode, sha256 });
+    }
+  }
+  return assets;
+}
 
 test("final image inventory measures selected native download clients and rejects invalid executables", async (t) => {
   const directory = await temporaryDirectory(t, "runtime-clients-");
@@ -99,13 +128,16 @@ test("Google packaging refuses substituted ClawHub skill bytes before installing
   await writeFile(upstream, "Changed instructions under the same ClawHub version.\n");
   const google = new URL("../../apps/controller/plugins/oce-google-workspace/", import.meta.url);
   await symlink(new URL("skills/", google), join(directory, "skills"), "dir");
-  const manifest = JSON.parse(
+  const manifest: unknown = JSON.parse(
     await readFile(new URL("ai.openclaw.oce/release.json", google), "utf8"),
   );
+  assertRecord(manifest);
+  assertRecord(manifest.clawhub);
+  assertRecord(manifest.artifacts);
+  const artifact = manifest.artifacts["linux-amd64"];
+  assertRecord(artifact);
   manifest.clawhub.sourceUrl = pathToFileURL(upstream).href;
-  manifest.artifacts["linux-amd64"].url = pathToFileURL(
-    join(directory, "unreachable-archive"),
-  ).href;
+  artifact.url = pathToFileURL(join(directory, "unreachable-archive")).href;
   await writeFile(join(directory, "release.json"), JSON.stringify(manifest));
   const result = spawnSync(
     process.execPath,
@@ -153,17 +185,23 @@ packages:
     "qa/scenario.json": "{}",
     "src/server.ts": "development source",
     "dist/extensions/codex/package.json": '{"dependencies":{"@openai/codex":"0.158.0"}}',
-    "node_modules/codex/bin.js": "#!/usr/bin/env node\n",
+    "node_modules/codex/bin.js": { bytes: "#!/usr/bin/env node\n", mode: 0o755 },
     "node_modules/.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex/package.json":
       '{"name":"@openai/codex","version":"0.158.0","optionalDependencies":{"@openai/codex-linux-x64":"0.158.0"}}',
     "node_modules/.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex-linux-arm64/package.json":
       '{"name":"@openai/codex-linux-arm64","version":"0.158.0"}',
     "node_modules/.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex":
-      "#!/usr/bin/env node\nconsole.log('codex-cli 0.158.0');\n",
+      {
+        bytes: "#!/usr/bin/env node\nconsole.log('codex-cli 0.158.0');\n",
+        mode: 0o755,
+      },
     "node_modules/.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex-linux-x64/package.json":
       '{"name":"@openai/codex-linux-x64","version":"0.158.0"}',
     "node_modules/.pnpm/@openai+codex@0.158.0/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex":
-      "#!/usr/bin/env node\nconsole.log('codex-cli 0.158.0');\n",
+      {
+        bytes: "#!/usr/bin/env node\nconsole.log('codex-cli 0.158.0');\n",
+        mode: 0o755,
+      },
     LICENSE: "license notice",
     "node_modules/.pnpm/dep@1.0.0/node_modules/dep/package.json":
       '{"name":"dep","version":"1.0.0"}',
@@ -176,12 +214,13 @@ packages:
     "extensions/slack/package.json": '{"dependencies":{"dep":"2.0.0"}}',
     "extensions/.npmignore": "*.test.ts",
   };
-  for (const [name, bytes] of Object.entries(files)) {
-    await mkdir(join(root, name, ".."), { recursive: true });
+  for (const [name, file] of Object.entries(files)) {
     const path = join(root, name);
-    await writeFile(path, bytes, { mode: 0o644 });
-    if (name.endsWith("bin.js") || name.endsWith("/codex")) {
-      await chmod(path, 0o755);
+    await mkdir(join(path, ".."), { recursive: true });
+    await writeFile(path, typeof file === "string" ? file : file.bytes, { mode: 0o644 });
+    // The executable mode must survive a restrictive umask in the test runner.
+    if (typeof file !== "string") {
+      await chmod(path, file.mode);
     }
   }
   await mkdir(join(root, "node_modules/.bin"));
@@ -246,12 +285,13 @@ packages:
     await assert.rejects(readFile(join(root, name)), { code: "ENOENT" });
   }
   const contents = await readFile(join(output, "contents.json"));
+  const provenancePath = join(output, "provenance.json");
   // The launcher must retain transitive root-level imports before loading dist.
   assert.equal(
     execFileSync(process.execPath, [join(root, "openclaw.mjs")], { encoding: "utf8" }),
     "runtime-ready",
   );
-  const manifest = JSON.parse(contents);
+  const inventory = parseInventory(contents.toString("utf8"));
   for (const name of [
     "node_modules/.pnpm/dep@1.0.0/node_modules/dep/package.json",
     "node_modules/.pnpm/dep@2.0.0/node_modules/dep/package.json",
@@ -260,20 +300,25 @@ packages:
     "docs/help.md",
     "extensions/slack/skills/slack/SKILL.md",
     "LICENSE",
-  ]) {
+  ] as const) {
     assert.equal(await readFile(join(root, name), "utf8"), files[name]);
-    assert.equal(
-      manifest.find((entry) => entry.path === name).sha256,
-      createHash("sha256").update(files[name]).digest("hex"),
-    );
+    const entry = inventory.get(name);
+    assert.ok(entry && "sha256" in entry, `Missing file entry for ${name}`);
+    assert.equal(entry.sha256, createHash("sha256").update(files[name]).digest("hex"));
   }
-  assert.equal(manifest.find((entry) => entry.path === "node_modules/codex/bin.js").mode, 0o755);
-  assert.equal(await readlink(join(root, "node_modules/.bin/codex")), "../codex/bin.js");
-  assert.equal(
-    manifest.find((entry) => entry.path === "node_modules/.bin/codex").link,
-    "../codex/bin.js",
-  );
-  const provenance = JSON.parse(await readFile(join(output, "provenance.json"), "utf8"));
+  const executable = inventory.get("node_modules/codex/bin.js");
+  assert.ok(executable && "mode" in executable, "Missing Codex executable entry");
+  assert.equal(executable.mode, 0o755);
+  const launcher = inventory.get("node_modules/.bin/codex");
+  assert.ok(launcher && "link" in launcher, "Missing Codex launcher symlink entry");
+  assert.equal(await readlink(join(root, launcher.path)), "../codex/bin.js");
+  assert.equal(launcher.link, "../codex/bin.js");
+
+  const provenance: unknown = JSON.parse(await readFile(provenancePath, "utf8"));
+  assertRecord(provenance);
+  assertRecord(provenance.codex);
+  const patches = provenance.patches;
+  assertRecord(patches);
   assert.equal(provenance.commit, sourceIdentity.commit);
   assert.equal(provenance.sourceArchiveSha256, sourceIdentity.sourceArchiveSha256);
   assert.equal(
@@ -301,7 +346,8 @@ packages:
   );
   assert.notEqual(unselected.status, 0);
   assert.match(unselected.stderr, /Runtime inventory requires the download client selection path/);
-  assert.deepEqual(JSON.parse(await readFile(join(output, "provenance.json"), "utf8")), provenance);
+  const unchangedProvenance: unknown = JSON.parse(await readFile(provenancePath, "utf8"));
+  assert.deepEqual(unchangedProvenance, provenance);
   assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
   assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
   // Provenance must name every patch the image build applies, in order, so images with and
@@ -311,7 +357,10 @@ packages:
     ...dockerfile.matchAll(
       /^COPY deploy\/runtime\/(\S+\.patch) \/tmp\/\1\nRUN echo '([a-f0-9]{64}) {2}\/tmp\/\1' \| sha256sum --check --strict \\\n\s+&& git apply /gm,
     ),
-  ].map(([, file, sha256]) => [file, sha256]);
+  ].map(([, file, sha256]): [string, string] => {
+    assert.ok(file && sha256, "Expected an applied patch path and digest");
+    return [file, sha256];
+  });
   // Every patch kept beside the Dockerfile is copied, verified and applied in that form, and
   // each pinned hash is the file's own (a format the pattern misses fails here, not silently).
   const patchFiles = (await readdir("deploy/runtime")).filter((name) => name.endsWith(".patch"));
@@ -321,7 +370,7 @@ packages:
     const bytes = await readFile(join("deploy/runtime", file));
     assert.equal(createHash("sha256").update(bytes).digest("hex"), sha256, file);
   }
-  assert.deepEqual(Object.entries(provenance.patches), applied);
+  assert.deepEqual(Object.entries(patches), applied);
   assert.equal(Object.hasOwn(provenance, "codexDependencyPinPatchSha256"), false);
   // The remaining per-patch fields keep their names and values.
   for (const [field, file] of [
@@ -330,7 +379,7 @@ packages:
       "openclawRequiredWorkerAuthorityRegressionPatchSha256",
       "openclaw-required-worker-authority-regression.patch",
     ],
-  ]) {
-    assert.equal(provenance[field], provenance.patches[file], field);
+  ] as const) {
+    assert.equal(provenance[field], patches[file], field);
   }
 });

@@ -132,7 +132,7 @@
     "tests/conformance/native-admin-upgrade-reset.test.mjs",
     "tests/conformance/repository-credentials-custody.test.ts",
     "tests/conformance/repository-credentials-receive-pack.test.ts",
-    "tests/integration/runtime-assets.test.mjs",
+    "tests/integration/runtime-assets.test.ts",
     "tests/integration/runtime-ai-package-relocation.test.ts",
     "tests/integration/runtime-node-build-jobs.test.ts",
     "tests/integration/openclaw-source.test.ts",
@@ -710,7 +710,7 @@
       ]
     },
     {
-      "path": "tests/integration/runtime-assets.test.mjs"
+      "path": "tests/integration/runtime-assets.test.ts"
     },
     {
       "path": "tests/integration/runtime-ai-package-relocation.test.ts",
