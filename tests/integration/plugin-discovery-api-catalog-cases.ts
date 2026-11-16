@@ -13,7 +13,7 @@ import {
 } from "../../packages/contracts/src/api/resources.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import {
   accessToken,

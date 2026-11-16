@@ -30,7 +30,7 @@ import {
 import { socketDirectory } from "../helpers/socket-directory.ts";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
-import { authorizedPrincipal } from "../helpers/postgres-backend-state.mjs";
+import { authorizedPrincipal } from "../helpers/development-iam-state.ts";
 
 // This exercises the production use service over real PostgreSQL and a synthetic
 // HTTPS GitHub App issuer. It does not prove a Git subprocess or live GitHub push.

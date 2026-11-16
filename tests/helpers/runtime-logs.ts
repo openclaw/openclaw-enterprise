@@ -41,7 +41,7 @@ import {
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createReadyComputeDriver } from "./development.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
-import { grantRole } from "./iam-grants.mjs";
+import { grantRole } from "./iam-grants.ts";
 import { jsonRequestInit } from "./inject-json.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 

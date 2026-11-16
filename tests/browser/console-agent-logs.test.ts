@@ -27,7 +27,7 @@ import {
   createConsoleAppFixture,
   fileConsoleApp,
 } from "../helpers/console-app.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import {
   LOG_TEXT_DENIED,
   RUNTIME_STATUS_DENIED,

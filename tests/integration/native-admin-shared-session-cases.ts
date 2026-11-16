@@ -22,7 +22,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { denialsDuring } from "../helpers/console-audit-denials.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";
 import type { sharedSessionDependencies } from "./native-admin-access.test.mjs";
 
