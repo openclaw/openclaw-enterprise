@@ -24,8 +24,8 @@ import {
   PUBLIC_GITHUB_READ_AGENT_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { createPublicGithubReadServer } from "../../apps/controller/src/drivers/repo/github/public-read/server.ts";
-import { selfSigned } from "../helpers/certificates.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
+import { listen } from "../helpers/listen.ts";
 import {
   startPublicGithubProvider,
   publicProviderGit,

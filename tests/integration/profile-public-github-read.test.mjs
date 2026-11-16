@@ -9,8 +9,8 @@ import { createRequire } from "node:module";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { chartTooling, helmTemplate } from "../helpers/production-chart.mjs";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { chartTooling, helmTemplate } from "../helpers/production-chart.ts";
+import { selfSigned } from "../helpers/certificates.ts";
 import { createHash, createPrivateKey, X509Certificate } from "node:crypto";
 import { createServer } from "node:http";
 import { promisify } from "node:util";
@@ -85,29 +85,15 @@ function codexInput(overrides = {}) {
   };
 }
 
-function render(
-  profile,
-  input,
-  directory = fileTemporaryDirectory(`oce-profile-${profile}-`),
-  root = repository,
-  dnsServer,
-) {
+function render(profile, input, directory = fileTemporaryDirectory(`oce-profile-${profile}-`)) {
   const inputPath = join(directory, "input.json");
   writeFileSync(inputPath, `${JSON.stringify(input, null, 2)}\n`);
-  const dnsPreload = join(directory, "dns-preload.mjs");
-  if (dnsServer !== undefined) {
-    writeFileSync(
-      dnsPreload,
-      `import dns from "node:dns/promises"; dns.setServers([${JSON.stringify(dnsServer)}]);\n`,
-    );
-  }
   let summary;
   try {
     summary = execFileSync(
       process.execPath,
       [
-        ...(dnsServer === undefined ? [] : ["--import", dnsPreload]),
-        "scripts/render-installation-profile.mjs",
+        "scripts/render-installation-profile.ts",
         "--profile",
         profile,
         "--input",
@@ -115,7 +101,7 @@ function render(
         "--out-dir",
         directory,
       ],
-      { cwd: root, encoding: "utf8" },
+      { cwd: repository, encoding: "utf8" },
     );
   } catch (error) {
     error.profileRendererOutput = `${error.stdout ?? ""}${error.stderr ?? ""}`;
@@ -665,7 +651,7 @@ test("native reader material serves a verified leaf and receipts expose only bou
   const { publicReaderTls, publicReadReceipts, readPublicReadReceipts } =
     await import("../helpers/public-github-read-fixture.mjs");
   const { createServer, get } = await import("node:https");
-  const { listen } = await import("../helpers/listen.mjs");
+  const { listen } = await import("../helpers/listen.ts");
   const tls = await publicReaderTls("127.0.0.1", "api.github.com");
   const leaf = new X509Certificate(tls.cert);
   const issuer = new X509Certificate(tls.ca);

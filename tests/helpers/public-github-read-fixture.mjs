@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { caAndLeaf } from "./certificates.mjs";
+import { caAndLeaf } from "./certificates.ts";
 
 // Both reader fixtures serve an end entity, never their trusted issuer. Only the
 // public issuer and serving key/leaf escape this temporary signing directory.

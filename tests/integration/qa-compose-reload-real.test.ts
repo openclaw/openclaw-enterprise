@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { tmpdir } from "node:os";
-import { dumpYaml } from "../helpers/qa-utils.mjs";
+import { dumpYaml } from "../helpers/kubernetes-yaml.ts";
 
 const execute = promisify(execFile);
 const selected =

@@ -1051,15 +1051,15 @@ func (app *application) agentCommand() *cobra.Command {
 				return err
 			}
 			if idle {
-				fmt.Fprintf(command.ErrOrStderr(), "notice: No version is running, so there is nothing to stop. Run \"occ --namespace %s agent deploy %s\" to start the Agent.\n", namespace, args[0])
-				return nil
+				_, err := fmt.Fprintf(command.ErrOrStderr(), "notice: No version is running, so there is nothing to stop. Run \"occ --namespace %s agent deploy %s\" to start the Agent.\n", namespace, args[0])
+				return err
 			}
 			if stopping {
-				fmt.Fprintf(command.ErrOrStderr(), "notice: a stop of Agent %s was already requested and has not finished; run \"occ --namespace %s agent get %s\" to see its state, or \"occ --namespace %s agent deploy %s\" to start it again\n", args[0], namespace, args[0], namespace, args[0])
-				return nil
+				_, err := fmt.Fprintf(command.ErrOrStderr(), "notice: a stop of Agent %s was already requested and has not finished; run \"occ --namespace %s agent get %s\" to see its state, or \"occ --namespace %s agent deploy %s\" to start it again\n", args[0], namespace, args[0], namespace, args[0])
+				return err
 			}
-			fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ --namespace %s agent deploy %s\" to start the Agent again\n", namespace, args[0])
-			return nil
+			_, err = fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ --namespace %s agent deploy %s\" to start the Agent again\n", namespace, args[0])
+			return err
 		},
 	}
 	deleteAgent := &cobra.Command{

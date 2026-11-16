@@ -15,7 +15,7 @@ import {
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { bootstrapInstallation } from "../../scripts/bootstrap-installation.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const origin = "https://console.oce.localhost";

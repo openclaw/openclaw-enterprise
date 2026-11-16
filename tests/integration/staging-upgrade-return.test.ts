@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:https";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
 import { createProductionTuiRequest } from "../helpers/production-tui-request.ts";
 import { delimiter, join } from "node:path";

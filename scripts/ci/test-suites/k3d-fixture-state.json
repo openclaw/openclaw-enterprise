@@ -17,7 +17,7 @@
   "parallelFiles": [
     "tests/integration/postgres-platform-state-kubernetes.test.ts",
     "tests/integration/kubernetes-compute-provisioning-real.test.mjs",
-    "tests/integration/production-install-retained-job-k3d.test.mjs",
+    "tests/integration/production-install-retained-job-k3d.test.ts",
     "tests/integration/public-github-read-kubernetes.test.mjs"
   ],
   "files": [
@@ -38,7 +38,7 @@
       ]
     },
     {
-      "path": "tests/integration/production-install-retained-job-k3d.test.mjs",
+      "path": "tests/integration/production-install-retained-job-k3d.test.ts",
       "expectedTests": [
         "Helm install preserves the initialization Job when release history is absent"
       ]

@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
-updated: "2026-11-12"
-last_updated_session: authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb
+updated: 2026-11-14
+last_updated_session: authoring-run/b8058a93-be93-46c4-a823-6c9397935811
 ---
 
 # Public GitHub read flow
@@ -9,11 +9,11 @@ last_updated_session: authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb
 ## Overview
 
 Dedicated Codex Agents clone/fetch public repositories alongside protected bindings.
-Compute freezes Installation/Agent scope and authorizes the reader. Installed qualification requires separate proof.
+Compute freezes Installation/Agent scope and authorizes the reader. Installed qualification requires proof.
 
 ## Entry Points
 
-- `scripts/render-installation-profile.mjs:buildRendered` pairs Helm and Compute inputs.
+- `scripts/render-installation-profile.ts:buildRendered` pairs Helm and Compute inputs.
 - `packages/occ/src/index.ts` freezes selected Compute services during authorized Agent deployment.
 - `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision` prepares the selected runtime and reader authorization.
 
@@ -253,8 +253,8 @@ checks protect foreign policies; failed shutdown prevents withdrawal completion.
 For legacy `v1` reader revisions, `revokeUnavailablePublicGithubRead` removes the
 revision policy, foreground-deletes the owned Compute Deployment and waits for
 its Pods before reporting withdrawal. Policy deletion alone does not close
-existing connections. The active claim uses `rejectedExecutionWithdrawal`
-to fence a rejected saved execution admission. Current Sandbox failure can leave
+existing connections. The active claim fences rejected saved execution admission through
+`rejectedExecutionWithdrawal`. Current Sandbox failure can leave
 ancillary cleanup pending; it does not prove runtime shutdown.
 
 Selecting a Credential Proxy alone preserves an unprotected revision and reader
@@ -265,7 +265,7 @@ revisions retain their admitted public service.
 
 - Compare the saved service descriptor, reader policy, public trust and exact peer before checking runtime files. Never print capability Secrets or provider values.
 - `/healthz` proves readable input; the revision digest proves the mounted authorization row. Neither proves GitHub reachability or a successful Agent clone.
-- Controlled Git/TLS tests prove clone, fetch, scope denial, withdrawal and operation-time trust composition, including consecutive TLS roots and cleanup. They do not prove Codex interception; the stock Linux image and installed Agent gates remain separate. Kubernetes store tests prove Secret ownership, restart and permanent withdrawal.
+- Controlled Git/TLS tests prove clone, fetch, scope denial, withdrawal and changing trust roots with cleanup. Image and installed-Agent gates own Codex interception. Kubernetes tests prove Secret ownership, restart and permanent withdrawal.
 - PostgreSQL worker tests prove independent maintenance after Git expiry and refusal after IAM loss. Installed Podman/k3d/OpenShell Agent proof remains required before deployment qualification.
 
 ## Related docs
@@ -278,6 +278,8 @@ revisions retain their admitted public service.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-14 13:26: Point profile rendering to its strict TypeScript owner in the accompanying change. (authoring-run/b8058a93-be93-46c4-a823-6c9397935811 - cc06a6ec22b7071dc7913086a0d891da53d8f8be)
 
 - 2026-11-12 10:58: Preserve unprotected admission when a Credential Proxy is selected. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb511)
 

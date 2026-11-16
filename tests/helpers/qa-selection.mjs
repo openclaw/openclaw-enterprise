@@ -13,6 +13,7 @@ const scenarioPresets = {
   "codex-search-config": ["Codex"],
   "harness-overrides": ["OpenClaw", "Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
+  "agent-audit": ["Codex"],
   "git-write": ["Codex"],
   "git-push-denied": ["Codex"],
   slack: ["Codex"],
@@ -69,10 +70,16 @@ export function selectQaMatrix(env = process.env) {
   }
   const presets = preset === "all" ? ["OpenClaw", "Codex"] : [preset];
   const installations = installation === "all" ? ["compose", "kubernetes"] : [installation];
+  const applies = (scenario, installation, preset) =>
+    scenarioPresets[scenario].includes(preset) &&
+    (scenario !== "agent-audit" || installation === "compose");
   for (const name of scenarios) {
     assert.ok(
-      input === "all" || scenarioPresets[name].some((value) => presets.includes(value)),
-      `${name} is not applicable to selected QA presets`,
+      input === "all" ||
+        installations.some((installation) =>
+          presets.some((preset) => applies(name, installation, preset)),
+        ),
+      `${name} is not applicable to selected QA installations and presets`,
     );
   }
   const cells = installations.flatMap((value) =>
@@ -92,7 +99,7 @@ export function selectQaMatrix(env = process.env) {
             "harness-overrides",
             "oidc-agent-chat",
             "public-github-git",
-          ].includes(scenario) && scenarioPresets[scenario].includes(name),
+          ].includes(scenario) && applies(scenario, value, name),
       ),
       unselected: allScenarios.filter(
         (scenario) =>
@@ -107,7 +114,7 @@ export function selectQaMatrix(env = process.env) {
             "oidc-agent-chat",
             "public-github-git",
           ].includes(scenario) &&
-          scenarioPresets[scenario].includes(name) &&
+          applies(scenario, value, name) &&
           !scenarios.includes(scenario),
       ),
       notApplicable: allScenarios.filter(
@@ -122,7 +129,7 @@ export function selectQaMatrix(env = process.env) {
             "harness-overrides",
             "oidc-agent-chat",
             "public-github-git",
-          ].includes(scenario) && !scenarioPresets[scenario].includes(name),
+          ].includes(scenario) && !applies(scenario, value, name),
       ),
     })),
   );

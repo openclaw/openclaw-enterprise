@@ -111,7 +111,8 @@ test("startup refuses unknown OpenShell settings and invalid Agent resource quan
     // Quantities are strings: without the type check 512 would parse as a quantity (5 does not).
     { requests: { memory: 512 } },
     { limits: { cpu: "1", "example.com/gpu": "1 Gi" } },
-    { requests: { cpu: "-500m" } },
+    // A negative sub-Nano request rounds to a negative quantity.
+    { requests: { cpu: "-0.00000000001" } },
   ]) {
     const [section] = Object.keys(agentResources);
     await rejectsAtStartup(
@@ -170,13 +171,13 @@ test("startup refuses unknown OpenShell settings and invalid Agent resource quan
   // Control: every known key, and quantities in each spelling the API server accepts, load.
   const accepted = sandboxInstallation();
   Object.assign(sandboxOf(accepted).kubernetes, {
-    // Zero is a valid quantity, and a request needs no limit.
+    // Signed zero is a valid quantity, and a request needs no limit.
     agentResources: {
       requests: {
         cpu: "500m",
         memory: "1Gi",
         "example.com/gpu": "1",
-        "ephemeral-storage": "0",
+        "ephemeral-storage": "-0",
       },
       limits: { cpu: "0.5", memory: "4e9", "example.com/gpu": "1" },
     },

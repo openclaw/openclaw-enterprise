@@ -9,15 +9,17 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { runDocker } from "../helpers/runtime-image-docker.ts";
 import {
   containerLogTail,
-  createAdmittedRuntimeImageConfiguration,
   gatewayReadinessReport,
+} from "../helpers/runtime-image-gateway-observations.ts";
+import {
+  createAdmittedRuntimeImageConfiguration,
   image,
-  runDocker,
   runGatewaySmoke,
-} from "../helpers/runtime-image-startup.mjs";
-import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
+} from "../helpers/runtime-image-startup.ts";
+import { waitFor, waitUntil } from "../helpers/wait-for.ts";
 
 interface GatewayState {
   ready: boolean;
@@ -311,7 +313,7 @@ export async function runWritableGatewayRestart(t: TestContext) {
       volumes: [`${volume}:/home/node`, `${sourcePath}:/etc/openclaw-managed/openclaw.json:ro`],
       extraEnvironment: [
         "OPENCLAW_DEBUG=1",
-        // No Gateway cron, as in runtime-image-gateway-peer.test.mjs (finding 1875): cron work
+        // No Gateway cron, as in runtime-image-gateway-peer.test.ts (finding 1875): cron work
         // in flight at a peer change holds the old process's stop drain.
         "OPENCLAW_SKIP_CRON=1",
         `APP_SERVER_URL=ws://${peerName}:4500`,

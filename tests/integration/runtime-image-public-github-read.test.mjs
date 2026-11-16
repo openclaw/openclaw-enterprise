@@ -14,13 +14,12 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { readPublicReadReceipts } from "../helpers/public-github-read-fixture.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
+import { runDocker, waitForDockerLog } from "../helpers/runtime-image-docker.ts";
 import {
   image,
   imageTestOptions,
   reviewedCodexSeccompSecurityOptions,
-  runDocker,
-  waitForDockerLog,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 
 // Exercise the exact setup inserted by the admitted production launcher, including
 // its hash-bound projected helper bytes. No extra native permission grant.

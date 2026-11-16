@@ -52,7 +52,6 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
-        {{- if .Release.IsUpgrade }}
         # The installation-check container reads what API startup reads from these.
         - name: installation-startup
           secret:
@@ -89,7 +88,6 @@ spec:
             items:
               - {key: ca.crt, path: ca.crt}
         {{- end }}
-        {{- end }}
         - name: bootstrap-password-output
           persistentVolumeClaim:
             claimName: {{ .Values.bootstrap.password.claimName | quote }}
@@ -102,9 +100,7 @@ spec:
                 path: {{ .Values.database.caKey | quote }}
         {{- end }}
       initContainers:
-        {{- if .Release.IsUpgrade }}
-        # Refuses an Installation the API would refuse at startup, before migration and
-        # before Helm replaces the API Pod, so a bad change leaves the old Pods serving.
+        # Validate the mounted Installation before the migration or bootstrap can write.
         - name: installation-check
           image: {{ .Values.images.controller | quote }}
           command: ["node"]
@@ -150,7 +146,6 @@ spec:
               mountPath: /etc/openclaw/prepared-github-issuer
               readOnly: true
             {{- end }}
-        {{- end }}
         - name: migration
           image: {{ .Values.images.controller | quote }}
           args:

@@ -10,8 +10,8 @@ import { fileURLToPath } from "node:url";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import test from "node:test";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
+import { waitFor } from "../helpers/wait-for.ts";
 import {
   observationGateway,
   setupStandingWorkerAuthority,

@@ -17,24 +17,27 @@ import {
   type SandboxDriver,
   type WorkspaceSetup,
 } from "../../packages/contracts/src/index.ts";
-import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
+import type { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import { CODEX_PLACEMENT_REFUSAL, EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type RequestOptions = Parameters<ConsoleFixture["request"]>[2];
-type Response = Omit<Awaited<ReturnType<ConsoleFixture["request"]>>, "body" | "data"> & {
+type Response = {
+  status: number;
   body: unknown;
 };
 type WorkspaceView = Awaited<ReturnType<ConsoleFixture["createNamespace"]>>;
 type CreateFields = Record<string, unknown>;
 
-type WorkspaceFixture = Omit<ConsoleFixture, "request"> & {
+type WorkspaceFixture = Omit<ConsoleFixture, "request" | "controller"> & {
+  controller: OpenClawController;
   request: (method: string, path: string, options?: RequestOptions) => Promise<Response>;
   state: InMemoryPlatformState;
   audit: InMemoryAuditSink;
@@ -487,6 +490,67 @@ export function registerWorkspaceSetupAdmissionCases({
       assert.equal(agent.desiredRuntimeState, "stopped");
       assert.deepEqual((await stagedSetup(f, agent.id)).files, files);
       assert.equal(JSON.stringify(created.body).includes(files["USER.md"]), false);
+    }
+  });
+}
+
+export function registerProjectedIdentityAdmissionCase({ setup }: Pick<Fixtures, "setup">): void {
+  test("Agent admission refuses projected identity only for OpenShell-owned Harnesses", async (t) => {
+    for (const selected of [true, false]) {
+      const sandbox = selected ? openShellSandbox(t) : undefined;
+      const computeDriver = createTestKubernetesComputeDriver("identity-admission", {
+        ...(sandbox === undefined ? {} : { sandboxDriver: sandbox.sandboxDriver }),
+        servicePrincipalCredentials: {
+          mode: "projectedServiceAccountToken",
+          audience: "occ",
+          expirationSeconds: 600,
+        },
+      });
+      const f = await setup(t, sandbox);
+      // Namespace setup uses the fixture lifecycle. Agent admission then uses the real
+      // Compute validator without provisioning Kubernetes resources or contacting OpenShell.
+      f.controller.registerDriver(computeDriver);
+      f.controller.selectDriver("compute", computeDriver.id);
+      const key = await f.createSecret(f.namespace.id, "model-key", "test-api-key");
+      for (const { runtime, providerModel } of [
+        { runtime: "openclaw", providerModel: "gpt-4.1" },
+        { runtime: "codex", providerModel: "gpt-5.1" },
+      ]) {
+        // Native dedicated OpenClaw requires a provider. The no-provider control uses Codex.
+        if (!selected && runtime === "openclaw") {
+          continue;
+        }
+        const configuration = await f.createConfiguration(
+          f.namespace.id,
+          createHarnessConfiguration(runtime, providerModel),
+        );
+        const result = await f.create(`Projected ${runtime}`, {
+          configurationId: configuration.id,
+          executionMode: "dedicated",
+          harnessAuth: { method: "api_key", source: key.ref },
+        });
+        if (selected) {
+          const { error } = f.fixtureResponse(
+            result,
+            400,
+            ErrorResponse,
+            `refuse ${runtime} Agent`,
+          );
+          assert.equal(error.code, "INVALID_REQUEST");
+          assert.match(error.message, /OpenShell cannot preserve an Agent ServiceAccount/);
+          assert.match(error.message, /servicePrincipalCredentials\.mode to disabled/);
+          // Refuse before creating an Agent or staging a revision that can stop a predecessor.
+          assert.deepEqual(await listAgents(f), []);
+        } else {
+          const { data: agent } = f.fixtureResponse(
+            result,
+            201,
+            AgentResponse,
+            `save ${runtime} Agent`,
+          );
+          assert.equal(agent.name, "Projected codex");
+        }
+      }
     }
   });
 }

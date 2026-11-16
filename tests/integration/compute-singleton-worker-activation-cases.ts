@@ -7,7 +7,7 @@ import type { Agent, AgentRevision, ComputeDriver } from "../../packages/contrac
 import { PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
 import { requiresPostgres, setup } from "../helpers/compute-singleton-worker.mjs";
 import { deferred } from "../helpers/deferred.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 type QueuedRevision = Pick<AgentRevision, "id"> & { idempotencyKey: string };
 type WorkerEvent = Parameters<NonNullable<ControllerWorkerOptions["emit"]>>[0];

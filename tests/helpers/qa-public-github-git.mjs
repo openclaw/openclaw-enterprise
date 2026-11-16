@@ -8,10 +8,10 @@ import {
   createQaAgent,
 } from "./qa-installation.mjs";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
-import { assertGatewayModelTurn } from "./kubernetes-real.mjs";
+import { assertGatewayModelTurn } from "./kubernetes-real.ts";
 import { stopQaAgent } from "./qa-repository.mjs";
-import { loadYaml } from "./qa-utils.mjs";
-import { protectedModelApiKey, redactQaError } from "./qa-secrets.mjs";
+import { loadYaml } from "./kubernetes-yaml.ts";
+import { protectedModelApiKey, redactQaError } from "./qa-secrets.ts";
 
 const url = "https://github.com/octocat/Hello-World.git";
 

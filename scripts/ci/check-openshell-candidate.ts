@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { validateOpenShellSelection } from "./openshell.mjs";
+import { validateOpenShellSelection } from "./openshell.ts";
 
 const started = performance.now();
 let message = "Usage: node scripts/ci/check-openshell-candidate.ts (no arguments).";

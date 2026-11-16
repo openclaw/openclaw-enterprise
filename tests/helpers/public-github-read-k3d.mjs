@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { publicReaderTls } from "./public-github-read-fixture.mjs";
-import { parseProductionChart, renderProductionChart } from "./production-chart.mjs";
+import { parseProductionChart, renderProductionChart } from "./production-chart.ts";
 
 /** Install the chart reader in this journey's disposable namespace. Replace only GitHub. */
 export async function installPublicGithubReadFixture({

@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 
 import type { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { buildSandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
+import type {
+  kubernetesObjectClient as makeKubernetesObjectClient,
+  KubernetesMutation,
+} from "./sandbox-driver-startup-orchestration.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
 type GatewayEvent = Parameters<
   NonNullable<Parameters<typeof workspaceGatewayClient>[1]>["push"]
 >[0];
-type OperatorEvent =
-  GatewayEvent | ["kubernetes", "patch" | "delete", "ServiceAccount", "openshell-sandbox", string];
+type OperatorEvent = GatewayEvent | KubernetesMutation;
 type NamespaceContext = Parameters<OpenShellSandboxDriver["ensureNamespace"]>[0];
 type OperatorFixture = ReturnType<typeof operatorWorkspaceChartFixture>;
 
@@ -40,7 +43,7 @@ export async function verifyOperatorWorkspaceChart({
   namespaceContext: () => Omit<NamespaceContext, "kubernetes"> & {
     kubernetes: NamespaceContext["kubernetes"];
   };
-  kubernetesObjectClient: (events: OperatorFixture["events"]) => NamespaceContext["kubernetes"];
+  kubernetesObjectClient: typeof makeKubernetesObjectClient;
 }): Promise<void> {
   const fixture = operatorWorkspaceChartFixture();
   const driver = openShellDriver(fixture.gatewayClient, fixture.configuration);

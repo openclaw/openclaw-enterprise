@@ -9,9 +9,8 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-QA uses disposable installations for Console Secrets on Compose/Kubernetes,
-OpenShell security and lifecycle, local installation, public Git, and OIDC Agent
-chat. Results do not gate merge or publication.
+Disposable installations check Console Secrets, OpenShell security/lifecycle,
+local setup, public Git and OIDC Agent chat. Results do not gate merge or publication.
 
 <a id="when-it-runs"></a>
 
@@ -29,7 +28,9 @@ chat. Results do not gate merge or publication.
 
 Maintainers label reviewed same-repository PRs. Dependabot authors and triggers
 are ineligible. Narrow labels select their union. `full-qa` overrides them and
-runs the default Codex/`console-secrets` cells. Compose checks native redeployment and required-worker execution on Kubernetes.
+runs `console-secrets` in both Codex cells and `agent-audit` in the Compose cell.
+The focused Compose job checks
+native redeployment and required-worker execution on Kubernetes workloads.
 
 PR runs test the merge commit. New commits replace opted-in runs; unrelated
 labels cannot restart or cancel them. Remove labels before pushing unreviewed
@@ -63,13 +64,14 @@ for Codex.
 | `scratch-volume`        | Yes — OpenShell job          | Codex           | Admitted scratch and workspace access through real tools, frozen selection, and missing/wrong-UID claim refusal.                                                                 |
 | `oidc-agent-chat`       | Yes, separate job            | OpenClaw        | First-login Default user enrollment, returning Keycloak sign-in, signed admission claims, owner creation and deployment, browser reply, administrative and sibling-Agent denial. |
 | `console-secrets`       | Yes (Codex)                  | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls.                       |
+| `agent-audit`           | Yes (Compose)                | Codex           | Check the exact Agent grant and link the deployed Agent's queue, claim, and result records. Check the record for a successful Agent read.                                        |
 | `git-write`             | No                           | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                                      |
 | `git-push-denied`       | No                           | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                                       |
 | `slack`                 | No                           | Codex           | Threaded reply and new root message.                                                                                                                                             |
 | `openshell-linear-read` | No                           | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                                                    |
 | `codex-search-config`   | No                           | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                                                  |
 | `openshell-git-model`   | No                           | Codex           | Register after enabling Git; verify model turns with and without repositories, Git expiry, and worker restart.                                                                   |
-| `public-github-git`     | Yes (separate OpenShell job) | Codex           | OpenShell clone/fetch, scope denial, real model turn, replacement, controller recovery and scoped withdrawal.                                                                    |
+| `public-github-git`     | Yes (separate OpenShell job) | Codex           | OpenShell clone/fetch, scope denial, model turn, replacement, controller recovery and withdrawal.                                                                                |
 
 [QA matrix](../../../tests/integration/qa-matrix-real.test.mjs) and
 [scenario selection](../../../tests/helpers/qa-selection.mjs) own these checks.
@@ -186,6 +188,10 @@ Local instructions run the **QA matrix only**. For other suites, follow
 Invalid or wholly inapplicable selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
 
+Select `agent-audit` with `compose` and `Codex`. It uses the standard Codex
+deployment fixture and development audit settings. It requires the usual Codex
+credential file for Agent startup.
+
 Select `oidc-agent-chat` alone with `kubernetes` and `OpenClaw`. It uses the
 `gateway-routing` lane to prepare Keycloak, PostgreSQL, native routing and
 runtime images. Follow the [native browser proof](../native-agent-browser.md)
@@ -203,7 +209,7 @@ launcher children; key files must be private regular files, not symlinks. This
 scenario checks configuration persistence and native startup, not live web-search
 results. Its API-key setup differs from the scheduled account-login tests.
 
-For `public-github-git` setup, inputs and proof limits, use
+For `public-github-git` inputs and limits, see
 [Public GitHub read tests](../public-github-reads.md#installed-openshell-scenario).
 
 Ordinary matrix cells check startup and authenticated console login. Only the `git-write` and
@@ -273,7 +279,7 @@ qa_status="$(git status --porcelain --untracked-files=all)"
 qa_metadata="$(mktemp -d)"
 qa_prefix="localhost/oce-qa-$(date +%s)-$$"
 qa_node_base="$(node -p 'require("./scripts/ci/test-suites/images-packaging.json").prepare.defaultEnv.NODE_BASE_IMAGE')"
-qa_source="$(node scripts/lib/openclaw-source.mjs build-args)"
+qa_source="$(node scripts/lib/openclaw-source.ts build-args)"
 qa_runtime_args=()
 while IFS= read -r argument; do
   qa_runtime_args+=(--build-arg "$argument")
@@ -342,12 +348,9 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 
 ## Results and limits
 
-Check the tested commit, selected scenarios, failed or skipped tests, and cleanup.
-Missing, filtered, or interrupted tests are not passes. The selection summary
-records the run, attempt and tested SHA. Focused PR runs also verify and record
-the merge ref and ordered base/head parents before starting jobs. Compare the
-leaf result's `sourceSha` with that merge SHA; a passing earlier head is not proof
-of the current composition.
+Verify selected tests and cleanup for the tested commit. The selection summary
+records run, attempt and SHA. For PRs, match `sourceSha` to the recorded merge
+and its base/head.
 
 For focused Keycloak, require both manifest cases and their cleanup to pass.
 For OpenClaw, inspect `matrix.json`: one `kubernetes/OpenClaw` cell with only
@@ -367,25 +370,21 @@ exit code or signal. `timed out` identifies deadline expiry. A later `SIGPIPE`
 can follow teardown closing output pipes. Failure detail is redacted and
 command arguments and protected output stay private.
 
-The optional `startup timings` JSON retains 64 recognized completed CLI stages,
-elapsed milliseconds, failure status and an omitted-record count. Unknown or
-malformed records, protected output and unfinished commands are excluded.
-Durations can overlap; do not sum them as wall time.
+The `startup timings` JSON contains at most 64 recognized CLI timings and an
+omitted-record count. Each reports stage, elapsed milliseconds and failure status
+for a finished command. Durations can overlap. Protected output, unknown records
+and other stdout stay private.
 
 Artifacts expire after seven days. Each OpenShell job reports `scope: focused`
 because it runs one file; complete advisory OpenShell coverage requires every
 manifest file to pass.
-
-The `QA advisory (public Git OpenShell)` job runs only `public-github-git`. See
-[public-reader diagnostics](../public-github-reads.md#failure-diagnostics) for failure receipts.
 
 In `matrix.json`, `scope: full` covers both installations and presets with
 `all` scenarios. Advisory QA covers less; [scenario selection](#select-scenarios)
 lists the exclusions from `all`.
 
 [First-Agent timing results](openshell-execution.md#interpret-timing-and-proof)
-include overlapping stages; do not sum them as elapsed time. A Codex timeout
-alone does not permit a retry: the client must report model capacity exhaustion
+can overlap. A Codex timeout alone does not permit a retry: the client must report model capacity exhaustion
 before any action started.
 
 Cleanup stops the Agents and installations created by the run. If credential disposal is uncertain, cleanup keeps the installation and reports the required recovery.
@@ -400,6 +399,6 @@ complete disposal, then recreate only this run's installation.
 - [Advisory workflow](../../../.github/workflows/qa-advisory.yml): eligibility, parallel OpenShell runners, and artifact names.
 - [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json) and [OpenShell manifest](../../../scripts/ci/test-suites/openshell.json): exact files and requirements.
 - [QA matrix test](../../../tests/integration/qa-matrix-real.test.mjs): Agent scenarios.
-- [Public Git scenario](../../../tests/helpers/qa-public-github-git.mjs): ordinary OpenShell public-reader workflow; protected coexistence requires separate proof.
+- [Public Git scenario](../../../tests/helpers/qa-public-github-git.mjs): ordinary OpenShell workflow; protected coexistence is unqualified.
 - [Scenario selection](../../../tests/helpers/qa-selection.mjs): presets, selectors, and required inputs.
 - [Hosted credentials](../../../scripts/ci/qa-matrix-credentials.mjs): environment preparation.

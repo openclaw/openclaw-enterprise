@@ -4,8 +4,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import https from "node:https";
 import path from "node:path";
 import { promisify } from "node:util";
-import { selfSigned } from "./certificates.mjs";
-import { listen } from "./listen.mjs";
+import { selfSigned } from "./certificates.ts";
+import { listen } from "./listen.ts";
 
 const execute = promisify(execFile);
 

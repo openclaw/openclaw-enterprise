@@ -11,7 +11,7 @@
   },
   "files": [
     {
-      "path": "tests/integration/logging-collector.test.mjs",
+      "path": "tests/integration/logging-collector.test.ts",
       "expectedTests": [
         "native Collector preserves Kubernetes identity after a dropped record sharing Pod metadata",
         "native Collector keeps bounded runtime wrapper diagnostics from Gateway and Codex Pods",
@@ -32,7 +32,7 @@
       "expectedTests": ["prepareLogging backend receives real OTLP/HTTP logs and writes JSONL"]
     },
     {
-      "path": "tests/integration/occ-metrics-monitoring.test.mjs",
+      "path": "tests/integration/occ-metrics-monitoring.test.ts",
       "expectedTests": [
         "Prometheus remote write records real OCC traffic and Grafana provisions its dashboard"
       ]

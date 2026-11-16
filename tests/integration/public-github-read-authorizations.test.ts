@@ -8,7 +8,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/public-github-read-authorizations.ts";
 import { createPublicGithubReadServer } from "../../apps/controller/src/drivers/repo/github/public-read/server.ts";
 import { publicGithubReadAuthorizationDigest } from "../../apps/controller/src/drivers/repo/github/public-read/access.ts";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 
 type Core = PublicGithubReadAuthorizationStoreOptions["core"];
 type ConfigMap = Awaited<ReturnType<Core["readNamespacedConfigMap"]>>;

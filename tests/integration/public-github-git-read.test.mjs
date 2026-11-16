@@ -11,7 +11,7 @@ import {
   publicProviderGit as git,
   startPublicGithubProvider,
 } from "../helpers/public-github-provider.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const capability = "revision-git." + Buffer.alloc(32, 9).toString("base64url");

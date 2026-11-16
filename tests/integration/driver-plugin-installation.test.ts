@@ -28,9 +28,12 @@ import { cookieHeaderFromSetCookie, createTestAuthPrincipal } from "../helpers/a
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
   createInstallationDriverConfiguration,
-} from "../helpers/installation-driver-configuration.mjs";
+} from "../helpers/installation-driver-configuration.ts";
 import { injectJson as injectUntypedJson } from "../helpers/inject-json.mjs";
-import { AUTHORIZATION_HEADER_REFUSED, CREDENTIAL_REQUIRED } from "../helpers/refusal-text.mjs";
+import {
+  AUTHORIZATION_HEADER_REFUSED,
+  CREDENTIAL_REQUIRED,
+} from "../helpers/request-admission-expectations.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 type DriverSelection = {

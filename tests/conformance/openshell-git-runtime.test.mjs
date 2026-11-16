@@ -21,7 +21,7 @@ import {
   registry,
   takeUnloggedRuntimeFields,
 } from "../helpers/openshell-git-runtime.ts";
-import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
+import { routeStore } from "../fixtures/openshell-git-route-store.ts";
 
 // Every field the runtime emits reaches the worker log: the production logger drops what it
 // does not allowlist, so an event asserted only before the logger can be lost (finding 2244).

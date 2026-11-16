@@ -14,7 +14,7 @@ import {
 } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { openShellProtectedCodexArtifacts } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { openShellGitRuntimeFixture } from "../helpers/openshell-git-runtime.ts";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
