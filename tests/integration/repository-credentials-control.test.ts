@@ -51,8 +51,8 @@ import {
   startServiceListeners,
   startStaticTokenService,
 } from "../fixtures/repository-credentials/service-resources.ts";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
+import { waitUntil } from "../helpers/wait-for.ts";
 import type { RepositoryBackendFactory } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type { ControlRequest } from "../../apps/controller/src/drivers/repo/access/control-contracts.ts";
 import type {

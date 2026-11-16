@@ -15,7 +15,7 @@ import {
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.ts";
 import { kubectlGetJson } from "../helpers/kubernetes-api-read.ts";
-import { waitForResult } from "../helpers/wait-for.mjs";
+import { waitForResult } from "../helpers/wait-for.ts";
 
 export const execute = promisify(execFile);
 export const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;

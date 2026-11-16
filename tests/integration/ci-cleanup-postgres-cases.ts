@@ -10,7 +10,7 @@ import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { startFakePostgres, type FakePostgresQuery } from "../helpers/fake-postgres-server.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { cleanupPath, fixture, repositoryRoot, writeState } from "./ci-cleanup-fixture.ts";
 
 const resetK3dModelPath = join(repositoryRoot, "scripts/ci/reset-k3d-model.mjs");

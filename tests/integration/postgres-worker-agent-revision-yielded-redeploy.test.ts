@@ -16,7 +16,7 @@ import {
   computeWorkWaiting,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { completedPasses } from "../helpers/postgres-worker-revision-support.mjs";
 import type { WorkResultRow } from "../helpers/postgres-worker-revision-scenarios.ts";

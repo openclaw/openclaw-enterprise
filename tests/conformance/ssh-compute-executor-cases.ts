@@ -12,7 +12,7 @@ import { withComputeAbortSignal } from "../../apps/controller/src/drivers/comput
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { setEnvironment } from "../helpers/environment.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { fixtureBin, json, missing, stopFixtureUnits } from "./ssh-compute-fixture.ts";
 
 const command: SshCommand = {

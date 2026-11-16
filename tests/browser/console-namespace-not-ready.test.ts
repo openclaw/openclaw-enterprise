@@ -16,7 +16,7 @@ import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { CONSOLE_NAMESPACE_NOT_READY, NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 import { settledFetches, trackSettledFetches } from "./console-fetch-accounting.ts";
 import {
   AGENT_READ,

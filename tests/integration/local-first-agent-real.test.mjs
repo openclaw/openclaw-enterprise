@@ -36,7 +36,7 @@ import {
   sampleFirstAgentCapacity,
 } from "../helpers/local-first-agent-profile.mjs";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { availablePort } from "../helpers/available-port.mjs";
+import { availablePort } from "../helpers/available-port.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));

@@ -9,7 +9,7 @@ import { appFunction } from "./app-functions.ts";
 import { validateFixtureServiceConfiguration } from "./service-fixture.ts";
 import { createTlsMaterial } from "./process.mjs";
 import { createResourceScope, type FixtureOwner } from "./resources.ts";
-import { socketDirectory } from "../../helpers/socket-directory.mjs";
+import { socketDirectory } from "../../helpers/socket-directory.ts";
 import { writeSessionClientConfiguration } from "./service-resources.ts";
 import { createRegistryMaterial, type RegistryFixtureDefinition } from "./registry/material.ts";
 import { startRegistryProviderFixtures } from "./registry/provider.ts";

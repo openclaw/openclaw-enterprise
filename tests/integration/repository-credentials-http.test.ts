@@ -18,7 +18,7 @@ import {
   gatewayRequest as untypedGatewayRequest,
   startCredentialServiceFixture,
 } from "../fixtures/repository-credentials/service-fixture.ts";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 type RuntimeExports = Pick<
   typeof import("../../apps/controller/src/drivers/repo/access/transport/request.ts"),

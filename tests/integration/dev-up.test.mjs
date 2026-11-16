@@ -11,7 +11,7 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
 import { composeConfiguration } from "../helpers/compose.ts";
 import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 import {
   createFixture,
   matchingInstallationId,

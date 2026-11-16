@@ -37,7 +37,7 @@ import { createNativeClientMaterial } from "../fixtures/repository-credentials/c
 import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service-fixture.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import { relaySockets } from "../helpers/socket-relay.ts";
 import {
   cleanEnvironment,

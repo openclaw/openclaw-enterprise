@@ -11,8 +11,8 @@ import { createTlsMaterial } from "./process.mjs";
 import { startGitHubFixture } from "./github.ts";
 import { startGitSmartHttpFixture } from "./git.mjs";
 import { createResourceScope, createTestResourceScope, type FixtureOwner } from "./resources.ts";
-import { socketDirectory } from "../../helpers/socket-directory.mjs";
-import { waitFor } from "../../helpers/wait-for.mjs";
+import { socketDirectory } from "../../helpers/socket-directory.ts";
+import { waitFor } from "../../helpers/wait-for.ts";
 import { serviceConfigurationData } from "./builders.ts";
 import { startStaticTokenService, writeSessionClientConfiguration } from "./service-resources.ts";
 

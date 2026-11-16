@@ -31,7 +31,7 @@ import {
   requiresPostgres,
   seedBackendBinding,
 } from "../helpers/postgres-backend-state.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { withNamespaceLockHeld } from "../helpers/postgres-locks.ts";
 import {
   assertFailedDeployment,

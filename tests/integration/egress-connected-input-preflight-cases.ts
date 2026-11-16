@@ -52,7 +52,7 @@ import {
   openShellAgentName,
   openShellRevisionName,
 } from "../helpers/openshell-kubernetes-real.mjs";
-import { waitForResult } from "../helpers/wait-for.mjs";
+import { waitForResult } from "../helpers/wait-for.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 type WorkloadPod = Parameters<typeof assertOpenShellHarnessBinding>[3];

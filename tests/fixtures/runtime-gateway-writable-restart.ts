@@ -19,7 +19,7 @@ import {
   image,
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.ts";
-import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
+import { waitFor, waitUntil } from "../helpers/wait-for.ts";
 
 interface GatewayState {
   ready: boolean;

@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { createServer, type RequestListener } from "node:http";
 import test, { type TestContext } from "node:test";
 import { waitForControllerSignIn } from "../helpers/postgres-platform-state.ts";
-import { within } from "../helpers/wait-for.mjs";
+import { within } from "../helpers/wait-for.ts";
 
 const runningChild = { exitCode: null, signalCode: null };
 const childOutput = "fixture controller is starting";

@@ -28,7 +28,7 @@ import {
   trustLocalUpstreamCertificate,
 } from "../helpers/native-admin-postgres.ts";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
-import { waitUntil, within } from "../helpers/wait-for.mjs";
+import { waitUntil, within } from "../helpers/wait-for.ts";
 
 type NativeApi = Awaited<ReturnType<typeof createApi>>;
 type NativeSession = Awaited<ReturnType<typeof signIn>>;

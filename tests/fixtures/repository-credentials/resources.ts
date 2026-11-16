@@ -1,4 +1,4 @@
-import { within } from "../../helpers/wait-for.mjs";
+import { within } from "../../helpers/wait-for.ts";
 
 type Cleanup = () => void | Promise<void>;
 export type FixtureOwner = { after(cleanup: Cleanup): void };

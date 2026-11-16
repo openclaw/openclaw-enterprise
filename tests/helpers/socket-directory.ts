@@ -1,6 +1,7 @@
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CleanupRegistrar } from "./console-file-app.ts";
 
 // The longest Unix socket path that binds everywhere: sun_path holds 104 bytes on macOS
 // and 108 on Linux, including the trailing NUL.
@@ -18,10 +19,10 @@ const shortTemporaryRoot = "/tmp";
 // It prefers tmpdir() and falls back to /tmp. Keep other files in an ordinary temporary
 // directory: the fallback exists for sockets only. `owner.after` removes the directory.
 export async function socketDirectory(
-  owner,
+  owner: CleanupRegistrar,
   prefix = "socket-",
-  { longest = "control-relay.sock" } = {},
-) {
+  { longest = "control-relay.sock" }: { longest?: string } = {},
+): Promise<string> {
   for (const root of new Set([tmpdir(), shortTemporaryRoot])) {
     const directory = await realpath(await mkdtemp(join(root, prefix)));
     if (Buffer.byteLength(join(directory, longest)) <= socketPathLimit) {

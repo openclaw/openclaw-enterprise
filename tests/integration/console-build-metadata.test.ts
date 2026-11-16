@@ -15,7 +15,7 @@ import { renderConsoleThemeShell } from "../../apps/controller/src/console-theme
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { caAndLeaf } from "../helpers/certificates.mjs";
 import { captureChild } from "../helpers/child-processes.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);

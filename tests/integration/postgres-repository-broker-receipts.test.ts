@@ -32,7 +32,7 @@ import { createTestResourceScope } from "../fixtures/repository-credentials/reso
 import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { registerBrokerReceiptFencingCase } from "./postgres-repository-broker-receipt-fencing-cases.ts";
 import { registerBrokerReceiptShutdownCase } from "./postgres-repository-broker-receipt-shutdown-cases.ts";
 

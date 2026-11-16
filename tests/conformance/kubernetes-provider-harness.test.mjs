@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { waitFor } from "../helpers/qa-utils.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
