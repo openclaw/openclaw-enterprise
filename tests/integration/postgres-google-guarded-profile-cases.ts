@@ -25,7 +25,7 @@ import {
   type SessionHeaders,
   type SignInApp,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
-import type { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import type { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 
 export type GoogleAuthorization = {
   subject: string;
@@ -44,7 +44,7 @@ export type GoogleSignIn = {
 type GuardedProfileContext = {
   app: SignInApp;
   pool: Pool;
-  state: Awaited<ReturnType<typeof preparePostgresSignInInstallation>>["state"];
+  state: PostgresPlatformState;
   google: ReturnType<typeof fakeGoogle>;
   admin: FixtureAccount;
   member: FixtureAccount;

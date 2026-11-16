@@ -19,7 +19,10 @@ import {
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import {
+  preparePostgresSignInInstallation,
+  type SignInApp,
+} from "../helpers/postgres-sign-in-installation.ts";
 
 // Only upstream HTTP and passive Compute are fixtures. The callback, account
 // transaction, native IAM, audit, session and Agent operations are production code.
@@ -27,9 +30,7 @@ test(
   "OIDC enrollment creates scoped accounts and preserves explicit identity links",
   requiresPostgres,
   async (t) => {
-    let app: Awaited<
-      ReturnType<Awaited<ReturnType<typeof preparePostgresSignInInstallation>>["composeApp"]>
-    >;
+    let app: SignInApp;
     const clientId = "enrollment-client";
     const clientSecret = "enrollment-client-secret";
     const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
@@ -48,13 +49,10 @@ test(
     );
     const idp = fakeOidc(t, { clientId, clientSecret });
     const address = clientAddresses("198.19");
-    const { admin, roles, accounts } = (await onboard({
+    const { admin, roles, accounts } = await onboard({
       accounts: { existing: { email: "existing-enrollment@example.test" } },
       remoteAddress: address(),
-    })) as Awaited<ReturnType<typeof onboard>> & {
-      admin: { id: string; email: string; password: string };
-      accounts: { existing: { id: string; email: string } };
-    };
+    });
     const settings = oidcUpgradeSettings(admin.id);
     app = await composeApp(settings);
     let adminHeaders = await signedInHeaders(app, origin, admin, address());
