@@ -39,7 +39,7 @@
     "tests/integration/postgres-connection-auth.test.ts",
     "tests/integration/postgres-pool-options.test.ts",
     "tests/integration/postgres-repository-transactions.test.ts",
-    "tests/integration/postgres-controller-work-targets.test.mjs",
+    "tests/integration/postgres-controller-work-targets.test.ts",
     "tests/integration/postgres-transaction-commit.test.mjs",
     "tests/integration/postgres-agent-sandbox-policy.test.mjs",
     "tests/integration/postgres-static-egress.test.mjs",
@@ -171,7 +171,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-controller-work-targets.test.mjs",
+      "path": "tests/integration/postgres-controller-work-targets.test.ts",
       "expectedTests": ["PostgreSQL controller work requires exactly one complete target shape"]
     },
     {
