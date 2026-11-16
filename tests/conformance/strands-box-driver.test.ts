@@ -35,7 +35,10 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 const driverSource = join(root, "deploy/examples/strands-box/driver");
 const packageName = "@openclaw-enterprise/example-strands-box-driver";
 const id = "strands-box-demo";
-const implementation = `${packageName}@0.1.0`;
+const { version: packageVersion } = JSON.parse(
+  await readFile(join(driverSource, "package.json"), "utf8"),
+) as { version: string };
+const implementation = `${packageName}@${packageVersion}`;
 const endpoint = {
   url: "wss://box-harness.pilot.svc.cluster.local:8443/",
   workspaceRoot: "/home/node/workspace",
@@ -185,7 +188,7 @@ async function fixture(t: TestContext) {
   await cp(join(driverSource, "package.json"), join(installed, "package.json"));
   await writeFile(
     join(packageRoot, "package.json"),
-    JSON.stringify({ dependencies: { [packageName]: "0.1.0" } }),
+    JSON.stringify({ dependencies: { [packageName]: packageVersion } }),
   );
   for (const peer of ["occ", "utils", "contracts"]) {
     await symlink(join(root, "packages", peer), join(scope, peer), "dir");

@@ -68,7 +68,7 @@ Issue the receipt from the same boot and mount view that will start the
 control server. Place it under root-owned directories that the operator account
 cannot modify. Keep the released Box and its helpers outside the image
 runtime paths granted to the workload. The supported carrier uses the pinned
-ARM64 Box 0.2.1 binaries and their pinned Debian loader and libraries. Keep
+ARM64 Box v0.2.2 binaries and their pinned Debian loader and libraries. Keep
 `/tmp` on a separate writable filesystem for Box's mount setup, and supply the
 existing private owner state, workspace mounts, and separate file-node root
 through the normal installation procedure. Mounts must leave the image
@@ -99,9 +99,11 @@ verifier opens the files itself inside that namespace. The original boot
 and PID 1 custody still come from the operator.
 
 For a separate file node, commit to the exact combined-to-standalone command
-pair before accepting a Worker admission. This profile recognizes the pair from
-the [OCE Compute draft at `84106ae9`](https://github.com/openclaw/openclaw-enterprise/commit/84106ae99484dec818f15c896c65fb1b24247071).
-In a separate checkout of that draft commit, generate the standalone argv:
+pair before accepting a Worker admission. This profile recognizes only the pair
+that the Compute in this checkout renders. `host/installed-harness-image.ts`
+pins both digests, and `tests/conformance/strands-box-harness-image.test.ts`
+fails when Compute changes either program, so a Compute change needs a reviewed
+re-pin. In this checkout, generate the standalone argv:
 
 ```ts
 [...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(PROVIDER_CODEX_ONLY_ENTRYPOINT)]

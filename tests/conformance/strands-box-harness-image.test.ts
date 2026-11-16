@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import {
+  AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -23,6 +24,7 @@ import {
   withoutLineComments,
 } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
+  digest,
   splitSelectedHarnessImageCommand,
   stockHarnessCommand,
 } from "../../deploy/examples/strands-box/host/control.ts";
@@ -31,6 +33,8 @@ import {
   assertHarnessImageExecutables,
   assertHarnessImageMounts,
   assertHarnessImageView,
+  HARNESS_SPLIT_COMBINED_SHA256,
+  HARNESS_SPLIT_COMMAND_SHA256,
   readHarnessImageSplit,
   verifyHarnessImageFile,
 } from "../../deploy/examples/strands-box/host/installed-harness-image.ts";
@@ -157,12 +161,26 @@ test("image admission requires the executed standalone argv and unmodified stock
     () => assertHarnessImageCommand(installation, actual, "/tmp/codex:" + stockPath),
     /requires_stock_path/,
   );
-  assert.throws(() => splitSelectedHarnessImageCommand(program, actual), /split_argv_changed/);
+  // The pins track this checkout's Compute programs; a Compute change must re-pin them.
+  assert.equal(createHash("sha256").update(program).digest("hex"), HARNESS_SPLIT_COMBINED_SHA256);
+  assert.equal(digest(actual), HARNESS_SPLIT_COMMAND_SHA256);
+  assert.deepEqual(splitSelectedHarnessImageCommand(program, actual), actual);
+  assert.throws(
+    () =>
+      splitSelectedHarnessImageCommand(program, [
+        ...RUNTIME_WRAPPER_COMMAND,
+        ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT),
+      ]),
+    /split_argv_changed/,
+  );
   assert.throws(
     () => splitSelectedHarnessImageCommand(Buffer.concat([program, Buffer.from("\n")]), actual),
     /unrecognized_combined_workspace_node_command/,
   );
-  assert.throws(() => readHarnessImageSplit("/absent", installation), /split_not_approved/);
+  assert.throws(
+    () => readHarnessImageSplit("/absent", { ...installation, commandSha256: "0".repeat(64) }),
+    /split_not_approved/,
+  );
 });
 
 test("the existing image PATH alias chooses the selected executable and refuses substitution", (t) => {

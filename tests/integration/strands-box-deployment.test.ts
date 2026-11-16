@@ -365,8 +365,11 @@ async function heldHostPeer(
   t.after(
     () =>
       new Promise<void>((resolve) => {
-        if (listening) server.close(() => resolve());
-        else resolve();
+        if (listening) {
+          server.close(() => resolve());
+        } else {
+          resolve();
+        }
       }),
   );
   return { path, calls, admissions, listen };
