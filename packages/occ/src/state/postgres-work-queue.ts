@@ -1161,7 +1161,10 @@ export class PostgresWorkQueue {
    * could take it. Neither does Work named in `except`.
    */
   async claimableWorkWaiting(
-    options: { readonly except?: readonly string[] } = {},
+    options: {
+      readonly except?: readonly string[];
+      readonly predecessorCompletionOnly?: boolean;
+    } = {},
   ): Promise<boolean> {
     const except = options.except ?? [];
     if (!Array.isArray(except) || except.some((key) => typeof key !== "string")) {
@@ -1173,8 +1176,18 @@ export class PostgresWorkQueue {
          FROM occ.controller_work AS work
          WHERE ${this.claimablePredicate("$1")}
            AND work.idempotency_key <> ALL($2::text[])
+           AND (NOT $3::boolean OR EXISTS (
+             SELECT 1 FROM occ.agents AS agent
+             WHERE agent.id = work.agent_id AND agent.namespace_id = work.namespace_id
+               AND agent.desired_runtime_state = 'running'
+               AND agent.active_revision_id = agent.predecessor_replacement->>'predecessorRevisionId'
+               AND agent.predecessor_replacement->>'phase' = 'pre-stop'
+               AND agent.predecessor_replacement ? 'completionStartedAt'
+               AND work.revision_id = agent.predecessor_replacement->>'candidateRevisionId'
+               AND work.idempotency_key = 'agent_revision:' || work.revision_id || ':reconcile'
+           ))
        ) AS waiting`,
-      [this.maxAttempts, except],
+      [this.maxAttempts, except, options.predecessorCompletionOnly ?? false],
     );
     const value = (waiting.rows[0] as { waiting?: unknown } | undefined)?.waiting;
     if (typeof value !== "boolean") {
