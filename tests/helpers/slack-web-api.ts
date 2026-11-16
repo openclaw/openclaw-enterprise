@@ -121,11 +121,10 @@ function isTransient(error: unknown): boolean {
   );
 }
 
-export async function slackApi<Call extends SlackCall>(
-  ...call: Call
-): Promise<SlackResult<Call[0]>> {
-  const method: Call[0] = call[0];
-  const [, token, body = {}] = call;
+// Infer the result from the method while checking the complete request against its tuple.
+export async function slackApi<Method extends SlackMethod>(
+  ...[method, token, body = {}]: SlackCall & { readonly 0: Method }
+): Promise<SlackResult<Method>> {
   assert.ok(Object.hasOwn(validate, method), "unsupported Slack proof operation");
   const writesMessage = method === "chat.postMessage";
   const url = new URL(`https://slack.com/api/${method}`);
