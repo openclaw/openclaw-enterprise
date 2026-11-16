@@ -10,16 +10,15 @@ import {
   clientAddresses,
   consoleOrigin as origin,
   currentSession,
-  fakeGoogle,
   fakeOidc,
   fixtureOidcIssuer,
-  googleSignIn as googleSignInFixture,
   googleUpgradeSettings,
   loginDenialCount,
   memoryLogger,
   oidcSignIn as oidcSignInFixture,
   oidcUpgradeSettings,
 } from "../helpers/production-sign-in.mjs";
+import { fakeGoogle, googleSignIn as googleSignInFixture } from "../helpers/google-sign-in.ts";
 import {
   accountPrincipalId,
   authOperation,

@@ -6,10 +6,8 @@ import {
   clientAddresses,
   consoleOrigin as origin,
   currentSession,
-  fakeGoogle,
   fakeOidc,
   fixtureOidcIssuer,
-  googleSignIn,
   googleUpgradeSettings,
   oidcSignIn,
   oidcUpgradeSettings,
@@ -17,6 +15,7 @@ import {
   readAccount,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
+import { fakeGoogle, googleSignIn } from "../helpers/google-sign-in.ts";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { providerInstanceId } from "../helpers/human-login-transport.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";

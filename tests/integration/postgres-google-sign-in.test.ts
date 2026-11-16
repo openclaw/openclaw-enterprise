@@ -9,14 +9,13 @@ import {
   clientAddresses,
   consoleOrigin as origin,
   currentSession,
-  fakeGoogle,
   oidcUpgradeSettings,
-  googleSignIn,
   googleUpgradeSettings,
   loginDenialCount,
   fakeOidc,
   fixtureOidcIssuer,
 } from "../helpers/production-sign-in.mjs";
+import { fakeGoogle, googleSignIn, type GoogleAuthorization } from "../helpers/google-sign-in.ts";
 import {
   authOperation,
   changeAccount,
@@ -33,7 +32,6 @@ import {
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
 import {
   runGoogleGuardedProfileCases,
-  type GoogleAuthorization,
   type GoogleSignIn,
 } from "./postgres-google-guarded-profile-cases.ts";
 import { providerInstanceId } from "../helpers/human-login-transport.mjs";
@@ -173,10 +171,10 @@ test(
       return {
         callback,
         cookie,
-        attemptId: text(signIn.attemptId),
-        url: text(signIn.url),
-        state: text(signIn.state),
-        bindingCookie: text(signIn.bindingCookie),
+        attemptId: signIn.attemptId,
+        url: signIn.url,
+        state: signIn.state,
+        bindingCookie: signIn.bindingCookie,
       };
     }
 
