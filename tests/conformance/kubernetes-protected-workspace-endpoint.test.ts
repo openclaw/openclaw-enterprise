@@ -53,15 +53,15 @@ test("Compute binds the reserved original before enrollment and activates only a
     capability: "sandbox",
     supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
-    cleanup: assert.fail,
+    cleanup: async () => assert.fail("cleanup is not part of this scenario"),
     validateWorkspaceSetup() {},
     provisionHarness: fixture.sandbox.provisionHarness!.bind(fixture.sandbox),
     repositoryAccess: {
       routeReadiness: () => "ready",
       materialSettledAt: () => undefined,
       isRouteBlockedError: () => false,
-      verifyExecution: assert.fail,
-      retireExpired: assert.fail,
+      verifyExecution: async () => assert.fail("repository execution is not verified here"),
+      retireExpired: async () => assert.fail("repository material does not expire here"),
     },
     async protectedWorkspaceEndpoint(context) {
       events.push("endpoint");

@@ -52,7 +52,7 @@ test(
         };
       };
     };
-    const documents: Manifest[] = await parseProductionChart(selected);
+    const documents = (await parseProductionChart(selected)) as Manifest[];
     const worker = documents.find(
       (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-worker",
     );
