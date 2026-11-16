@@ -218,6 +218,7 @@
     "integration/first-agent-startup-lifecycle-cases.ts",
     "helpers/fixture-command-server.ts",
     "helpers/keycloak-enrollment-wait.ts",
+    "integration/keycloak-session-lifecycle-cases.ts",
     "helpers/node-test-summary.ts",
     "helpers/reuse-port-preload.ts",
     "helpers/released-controller-process.mts",
