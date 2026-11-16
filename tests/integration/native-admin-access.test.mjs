@@ -772,7 +772,7 @@ test("native browser disabled status still requires exact Agent authority", asyn
   assert.equal(missingStatus.body.error.code, "NOT_FOUND");
 });
 
-const sharedSessionDependencies = {
+export const sharedSessionDependencies = {
   publicOrigin,
   authBaseURL,
   createNativeAdminFixture,

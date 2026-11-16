@@ -24,12 +24,15 @@ import { denialsDuring } from "../helpers/console-audit-denials.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { callerDenied } from "../helpers/refusal-text.mjs";
+import type { sharedSessionDependencies } from "./native-admin-access.test.mjs";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type FixtureResponse = { status: number; body: unknown };
 type ServiceKeyContext = {
   fixture: {
-    request(...args: Parameters<ConsoleFixture["request"]>): Promise<FixtureResponse>;
+    request(
+      ...args: Parameters<ConsoleFixture["request"]>
+    ): Promise<FixtureResponse & { headers: Headers; data: unknown }>;
     fixtureResponse: ConsoleFixture["fixtureResponse"];
     policy: Pick<ConsoleFixture["policy"], "roles" | "bindings"> & { identities: Identity[] };
   };
@@ -38,9 +41,10 @@ type ServiceKeyContext = {
 };
 
 type SharedSessionFixture = ServiceKeyContext & {
-  fixture: NativeAdminApp & {
-    memoryDatabase: Pick<ConsoleFixture["memoryDatabase"], "session">;
-  };
+  fixture: NativeAdminApp &
+    Pick<ConsoleFixture, "createAgent"> & {
+      memoryDatabase: Pick<ConsoleFixture["memoryDatabase"], "session">;
+    };
   agent: Pick<Agent, "id" | "namespaceId">;
   session: Pick<Awaited<ReturnType<ConsoleFixture["signIn"]>>, "cookie" | "setCookie">;
   upstream: {
@@ -71,6 +75,12 @@ interface SharedSessionDependencies {
   createSiblingAgent(context: SharedSessionFixture): Promise<Pick<Agent, "id">>;
   trustLocalUpstreamCertificate(t: TestContext, cert: string): void;
 }
+
+// Check the JavaScript entry's real fixture and callbacks wherever it registers these cases.
+type RegisterSharedSessionCases = (
+  test: typeof nodeTest,
+  dependencies: typeof sharedSessionDependencies,
+) => void;
 
 // These controller-local routes have no shared TypeBox response schema.
 // Validate the fields this case family consumes at the JSON boundary.
@@ -166,7 +176,7 @@ export async function issueServiceKeyForNativeAgent(context: ServiceKeyContext) 
   return { key: data.key, role };
 }
 
-export function registerNativeAdminSharedCookieCases(
+export const registerNativeAdminSharedCookieCases: RegisterSharedSessionCases = (
   test: typeof nodeTest,
   {
     publicOrigin,
@@ -176,7 +186,7 @@ export function registerNativeAdminSharedCookieCases(
     injectJson,
     nativeAuthority,
   }: SharedSessionDependencies,
-): void {
+): void => {
   // Retained installation settings must not take ordinary Console and API access down.
   test("native admin retained domains preserve controller access and refuse unusable targets", async (t) => {
     const longest: string = `${"a.".repeat(99)}oce.example.test`;
@@ -308,9 +318,9 @@ export function registerNativeAdminSharedCookieCases(
       assert.equal(denied.headers["set-cookie"], undefined);
     }
   });
-}
+};
 
-export function registerNativeAdminSessionRecoveryCase(
+export const registerNativeAdminSessionRecoveryCase: RegisterSharedSessionCases = (
   test: typeof nodeTest,
   {
     createNativeAdminFixture,
@@ -319,7 +329,7 @@ export function registerNativeAdminSessionRecoveryCase(
     nativeAuthority,
     trustLocalUpstreamCertificate,
   }: SharedSessionDependencies,
-): void {
+): void => {
   test("native browser admission reports a failed session lookup and accepts the same session after recovery", async (t) => {
     const logLines: string[] = [];
     const context = await createNativeAdminFixture(t, {
@@ -410,9 +420,9 @@ export function registerNativeAdminSessionRecoveryCase(
     assert.equal(recovered.headers["x-native-upstream"], "reached");
     assert.equal(context.upstream.requests.length, 1);
   });
-}
+};
 
-export function registerNativeAdminSessionOriginCases(
+export const registerNativeAdminSessionOriginCases: RegisterSharedSessionCases = (
   test: typeof nodeTest,
   {
     publicOrigin,
@@ -423,7 +433,7 @@ export function registerNativeAdminSessionOriginCases(
     trustLocalUpstreamCertificate,
     createSiblingAgent,
   }: SharedSessionDependencies,
-): void {
+): void => {
   test("native Agent requests retain their own origin boundary", async (t) => {
     const context = await createNativeAdminFixture(t);
     const origin = availableNativeOrigin(context.fixture, await nativeStatus(context));
@@ -597,4 +607,4 @@ export function registerNativeAdminSessionOriginCases(
     );
     assert.equal(data, null);
   });
-}
+};
