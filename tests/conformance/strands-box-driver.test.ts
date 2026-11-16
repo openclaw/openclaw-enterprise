@@ -1388,10 +1388,10 @@ test(
       const x = await fixture(t);
       assert.ok(x.driver.provisionHarness);
       x.setHostRoute(hostRoute);
-      await assert.rejects(
-        x.driver.provisionHarness(x.context),
-        /did not confirm the exact pending workload/,
-      );
+      await assert.rejects(x.driver.provisionHarness(x.context), {
+        name: "DependencyUnavailableError",
+        message: /different controlled inference route/,
+      });
       assert.deepEqual(
         x.requests.map(({ method }) => method),
         ["GET", "POST"],
@@ -1412,7 +1412,7 @@ test(
     });
     assert.ok(x.driver.provisionHarness && x.driver.harnessEndpoint);
     // Approval was for a host without the CA: the digest mismatch refuses.
-    await assert.rejects(x.driver.provisionHarness(x.context), /exact pending workload/);
+    await assert.rejects(x.driver.provisionHarness(x.context), /different controlled inference/);
     x.setHostRoute({ ...modelRoute, caSha256 });
     const ref = await x.driver.provisionHarness(x.context);
     const put = x.requests.find(({ method }) => method === "PUT")?.body;

@@ -264,6 +264,8 @@ export async function requestAdmission(
   workspaceNodeMode?: WorkspaceNodeMode,
   controlledInference?: ControlledInferenceRoute,
 ): Promise<"held" | "approved"> {
+  let route: ControlledInferenceRoute | undefined;
+  let state: "held" | "approved";
   try {
     const reply = await send(socketPath, "POST", ADMISSION_PATH, input, signal);
     if (reply.status !== 200) throw new Error("Refused admission request");
@@ -279,19 +281,25 @@ export async function requestAdmission(
       !sameWorkspaceVolume(workspaceVolume(value.workspaceVolume), input.workspaceVolume) ||
       (value.controlledInference !== undefined &&
         inferenceRouteEvidence(value.controlledInference) === undefined) ||
-      // The host must hold, and the operator approve, the same route this Driver was given.
-      !sameInferenceRoute(inferenceRouteEvidence(value.controlledInference), controlledInference) ||
       (value.state !== "held" && value.state !== "approved")
     ) {
       throw new Error("Mismatched admission receipt");
     }
-    return value.state;
+    route = inferenceRouteEvidence(value.controlledInference);
+    state = value.state;
   } catch {
     signal.throwIfAborted();
     throw new DependencyUnavailableError(
       "The Strands Box host did not confirm the exact pending workload.",
     );
   }
+  // The host must hold, and the operator approve, the same route this Driver was given.
+  if (!sameInferenceRoute(route, controlledInference)) {
+    throw new DependencyUnavailableError(
+      "The Strands Box host holds a different controlled inference route than this Driver's configuration.",
+    );
+  }
+  return state;
 }
 
 async function send(

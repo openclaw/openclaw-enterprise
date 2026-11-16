@@ -62,7 +62,8 @@ drivers:
           podLabels:
             app.kubernetes.io/name: occ-worker
       controlledInference:
-        modelBaseUrl: https://model.pilot.svc.cluster.local/v1
+        modelBaseUrl: https://model.pilot.example.com:8444/v1
+        address: 10.0.0.9
 ```
 
 Use an existing ready OCE Agent Namespace. On a fresh control plane,
@@ -88,12 +89,62 @@ The socket and its parent directory must be owner-only and share the same
 owner. Do not mount the control socket into the relay or the workload.
 
 For a controlled inference fixture, set Compute's model provider to the same
-private HTTPS `/v1` endpoint. Save an ordinary API-key binding with the public
+HTTPS `/v1` origin. Save an ordinary API-key binding with the public
 marker `openclaw-strands-controlled-inference-v1`. The fixture origin must not
 require or authorize any real credential. The Driver checks the exact
-revision-owned projection and the admitted runtime manifest, and sends only a
-Boolean to the host. It never passes a model key or PAT to Box. Without the
-fixture selection it refuses model Secret projections.
+revision-owned projection and the admitted runtime manifest, and sends only the
+nonsecret route described below to the host. It never passes a model key or PAT
+to Box. Without the fixture selection it refuses model Secret projections.
+
+### Controlled inference route
+
+Box dials the model endpoint itself and verifies its certificate. Stock Box
+v0.2.2 trusts only the public roots compiled into it, so a private IPv4 or a
+`.svc.cluster.local` name cannot complete TLS. Give the endpoint an operator
+DNS name and pin the one private address Box may dial:
+
+| Field | Value |
+|---|---|
+| `modelBaseUrl` | `https://<name or private IPv4>[:<port>]/v1`, spelled exactly as Compute normalizes it: lowercase, no trailing slash, no `:443`, no path before `/v1` |
+| `address` | The one private IPv4 address (10/8, 172.16/12 or 192.168/16) that the name resolves to on the Box host. Required for a DNS name. For an IPv4 origin it may be omitted and must otherwise equal it |
+| `caSha256` | Optional. The SHA-256 of the route CA file the host installs, only when the host configuration names one |
+
+The Driver refuses public, loopback, link-local and shared addresses, single-label
+names, `localhost` names, IPv6 origins, and a DNS name without `address`.
+
+Set the same values in three places: this Driver configuration, Compute's model
+provider `baseUrl`, and the host's `controlledInference` (`url`, `address`, and
+`ca.sha256` when present). They are compared at each step:
+
+- The host reports its route on admission. The route is part of `pending.json`, so
+  an approval admits it. The Driver refuses a different or missing route before
+  approval, Secret reads or relay creation.
+- The Driver states its route when it starts the execution. The host refuses any
+  difference before Box starts.
+- The Driver refuses a host execution that later reports a different route.
+- The host resolves the name with the system resolver at admission and again
+  just before start, and refuses unless every answer is the pinned IPv4 address.
+  Box resolves the name again in its trusted process. Its policy permits the name
+  and port before DNS, then only the pinned `ip4`, and never an IPv6 address.
+
+Choose one trust path for the endpoint certificate:
+
+- **A publicly trusted certificate** for the DNS name (for example through a DNS-01
+  challenge). The name may resolve publicly or only on the Box host. Make the Box
+  host resolve it to the pinned address, through a private zone or a root-owned
+  `/etc/hosts` entry. Stock Box needs no change. Publicly trusted certificates
+  appear in Certificate Transparency logs, so the name becomes public.
+- **A route CA.** Set the host's `controlledInference.ca` to
+  `{ "file": "<absolute path>", "sha256": "<hex>" }` and the Driver's `caSha256` to the
+  same digest. The file must contain only CA certificates, stay owned by the host
+  owner or root, and not be group- or world-writable. The host loads it once at
+  startup and later writes those bytes into Box's own configuration directory,
+  which no grant covers. It names them with the top-level `upstream_ca_files` key.
+  Stock Box v0.2.2 refuses that key at load, so the execution fails before any
+  egress. This path needs a Box build that adds those files to its upstream
+  trust, on top of its public roots. A route CA is trusted for every destination
+  that the Box policy permits, so use a dedicated CA that signs only these
+  endpoints.
 
 ### Before enabling the Worker control claim
 
