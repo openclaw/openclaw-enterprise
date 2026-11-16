@@ -12,6 +12,7 @@ import {
   assertLegacyAgentMigrationRefusal,
   assertLegacyControllerWorkBackfill,
 } from "./postgres-historical-agent-migration-cases.ts";
+import { registerPostgresMigrationSchemaAdmissionCases } from "./postgres-migration-schema-admission-cases.ts";
 import pg from "pg";
 import {
   assertCredentialSchemaPrivileges,
@@ -551,6 +552,7 @@ after(async () => {
     () => {},
   );
 });
+/** @returns {Promise<HistoryFixture>} */
 function migrationHistoryFixture() {
   historyFixture ??= resolveMigrationHistoryFixture();
   return historyFixture;
@@ -606,6 +608,11 @@ async function resolveMigrationHistoryFixture() {
 
 // One simple-protocol query, so a multi-statement string runs in one implicit
 // transaction exactly as `psql -c` ran it.
+/**
+ * @param {Pick<HistoryFixture, "admin" | "adminUrl">} fixture
+ * @param {string} database
+ * @param {string} sql
+ */
 async function historyAdmin(fixture, database, sql) {
   if (database === "postgres") {
     await fixture.admin.query(sql);
@@ -622,6 +629,22 @@ async function historyAdmin(fixture, database, sql) {
   }
 }
 
+/**
+ * @typedef {object} HistoryFixture
+ * @property {string} migrationUrl
+ * @property {string} container
+ * @property {number} port
+ * @property {string} databasePrefix
+ * @property {string} adminUrl
+ * @property {pg.Pool} admin
+ */
+
+/**
+ * @param {import("node:test").TestContext} context
+ * @param {HistoryFixture} fixture
+ * @param {string} label
+ * @param {{ schemas?: boolean, prefix?: number }} [options]
+ */
 async function historyDatabase(context, fixture, label, { schemas = true, prefix = 0 } = {}) {
   const suffix = randomUUID().replaceAll("-", "").slice(0, 8);
   const labelLength = 63 - fixture.databasePrefix.length - suffix.length - 2;
@@ -790,6 +813,17 @@ async function runHistoryCommand(db, mode = "development", flag, refusal) {
 // command's outcome codes. The mode only selects the script (and its NODE_ENV logging),
 // never the migration; `runHistoryCommand` covers the process contract. flag and refusal
 // are as for runHistoryCommand: the command prints this same error.message on refusal.
+/**
+ * @param {{ migrationUrl: string }} db
+ * @param {"development" | "production"} [mode]
+ * @param {"--check" | "--expect-empty"} [flag]
+ * @param {RegExp} [refusal]
+ * @param {(error: unknown) => void} [assertFailure]
+ * @returns {Promise<
+ *   { ok: true, history: Awaited<ReturnType<typeof migrateWithHistory>> } |
+ *   { ok: false, code: "MIGRATION_HISTORY_UNSUPPORTED" | "MIGRATION_HISTORY_NOT_EMPTY" | "MIGRATION_FAILED" }
+ * >}
+ */
 async function runHistoryMigration(db, mode = "development", flag, refusal, assertFailure) {
   assert.ok(["development", "production"].includes(mode));
   assert.ok([undefined, "--check", "--expect-empty"].includes(flag));
@@ -859,6 +893,10 @@ async function historySnapshot(db) {
   };
 }
 
+/**
+ * @param {Pick<Awaited<ReturnType<typeof historyDatabase>>, "migrationUrl" | "migrator">} db
+ * @param {RegExp} [refusal]
+ */
 async function assertHistoryRefused(db, refusal) {
   const before = await historySnapshot(db);
   for (const [mode, checkOnly] of [
@@ -877,6 +915,10 @@ async function assertHistoryRefused(db, refusal) {
   }
 }
 
+/**
+ * @param {Pick<Awaited<ReturnType<typeof historyDatabase>>, "app" | "migrator">} db
+ * @param {readonly { hash: string, created_at: string | number }[]} [previous]
+ */
 async function assertCompletedHistory(db, previous = []) {
   const manifest = JSON.parse(
     await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
@@ -1029,6 +1071,10 @@ async function seedCanonicalAgent(
   return { agent, revision };
 }
 
+/**
+ * @param {Pick<Awaited<ReturnType<typeof historyDatabase>>, "app">} db
+ * @param {{ preset?: boolean, computeAdmission?: boolean, executionAdmission?: boolean, harnessSettings?: boolean }} [options]
+ */
 async function seedCanonicalData(
   db,
   {
@@ -1480,6 +1526,10 @@ async function assertUpgradedRevisionReadable(db) {
   );
 }
 
+/**
+ * @param {Pick<Awaited<ReturnType<typeof historyDatabase>>, "app">} db
+ * @returns {Promise<unknown>}
+ */
 async function canonicalData(db) {
   const result = { presets: [] };
   const migrationOwnedColumns = {
@@ -3114,143 +3164,17 @@ test(
   },
 );
 
-test(
-  "Canonical migration refuses empty default ACLs on installed histories",
+registerPostgresMigrationSchemaAdmissionCases({
   concurrentHistoryPostgres,
-  async (context) => {
-    const fixture = await migrationHistoryFixture();
-    for (const history of ["main", "completed"]) {
-      for (const [kind, objectType] of [
-        ["SCHEMAS", "n"],
-        ["TYPES", "T"],
-        ["TABLES", "r"],
-        ["SEQUENCES", "S"],
-      ]) {
-        void context.test(`${history} ${kind}`, async (child) => {
-          const db = await historyDatabase(child, fixture, "defaults", { prefix: 25 });
-          await seedCanonicalData(db, { preset: true });
-          if (history === "completed") {
-            assert.deepEqual(await runHistoryMigration(db, "production"), {
-              ok: true,
-              history: "main",
-            });
-            await assertCompletedHistory(db);
-          }
-          const data = await canonicalData(db);
-          assert.deepEqual(await runHistoryMigration(db, "development", "--check"), {
-            ok: true,
-            history,
-          });
-          // An empty global ACL still changes future objects created by the
-          // migrator. Both installed histories must reject it before any DDL.
-          await db.migrator.query(
-            `ALTER DEFAULT PRIVILEGES REVOKE ALL ON ${kind} FROM PUBLIC; ALTER DEFAULT PRIVILEGES REVOKE ALL ON ${kind} FROM occ_migrator`,
-          );
-          assert.deepEqual(
-            (
-              await db.migrator.query(
-                "SELECT defaclacl::text AS acl FROM pg_catalog.pg_default_acl WHERE defaclrole=current_user::regrole AND defaclnamespace=0 AND defaclobjtype=$1",
-                [objectType],
-              )
-            ).rows,
-            [{ acl: "{}" }],
-          );
-          await assertHistoryRefused(db);
-          assert.deepEqual(await canonicalData(db), data);
-        });
-      }
-    }
-  },
-);
-
-test(
-  "Canonical initial schemas admit only finite owner ACL states",
-  concurrentHistoryPostgres,
-  async (context) => {
-    const fixture = await migrationHistoryFixture();
-    for (const [label, setup] of [
-      ["occ-only", "CREATE SCHEMA occ AUTHORIZATION occ_migrator"],
-      ["drizzle-only", "CREATE SCHEMA drizzle AUTHORIZATION occ_migrator"],
-      [
-        "explicit-owner",
-        "CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; GRANT CREATE,USAGE ON SCHEMA occ,drizzle TO occ_migrator",
-      ],
-    ]) {
-      void context.test(label, async (child) => {
-        const db = await historyDatabase(child, fixture, "initial", { schemas: false });
-        await db.migrator.query(setup);
-        assert.deepEqual(await runHistoryMigration(db, "production"), {
-          ok: true,
-          history: "empty",
-        });
-        await assertCompletedHistory(db);
-        assert.deepEqual(await runHistoryMigration(db), { ok: true, history: "completed" });
-        await assert.rejects(db.app.query("CREATE TABLE occ.unexpected(id integer)"), {
-          code: "42501",
-        });
-        await assert.rejects(db.app.query("SELECT * FROM drizzle.__drizzle_migrations"), {
-          code: "42501",
-        });
-      });
-    }
-    for (const schema of ["occ", "drizzle"]) {
-      for (const [label, setup] of [
-        ["app-usage", `GRANT USAGE ON SCHEMA ${schema} TO occ_app`],
-        ["public-usage", `GRANT USAGE ON SCHEMA ${schema} TO PUBLIC`],
-        ["foreign-usage", `GRANT USAGE ON SCHEMA ${schema} TO postgres`],
-        ["public-create", `GRANT CREATE ON SCHEMA ${schema} TO PUBLIC`],
-        ["app-create", `GRANT CREATE ON SCHEMA ${schema} TO occ_app`],
-        ["owner-create", `REVOKE CREATE ON SCHEMA ${schema} FROM occ_migrator`],
-        ["owner-usage", `REVOKE USAGE ON SCHEMA ${schema} FROM occ_migrator`],
-        ["owner-grant-option", `GRANT USAGE ON SCHEMA ${schema} TO occ_migrator WITH GRANT OPTION`],
-        ["app-grant-option", `GRANT USAGE ON SCHEMA ${schema} TO occ_app WITH GRANT OPTION`],
-        [
-          "foreign-grantor",
-          `GRANT USAGE ON SCHEMA ${schema} TO occ_app WITH GRANT OPTION; SET ROLE occ_app; GRANT USAGE ON SCHEMA ${schema} TO postgres; RESET ROLE`,
-        ],
-        ["owner-mismatch", `ALTER SCHEMA ${schema} OWNER TO postgres`],
-        [
-          "defaults",
-          `ALTER DEFAULT PRIVILEGES FOR ROLE occ_migrator IN SCHEMA ${schema} GRANT SELECT ON TABLES TO occ_app`,
-        ],
-        [
-          "foreign-defaults",
-          `ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA ${schema} GRANT SELECT ON TABLES TO occ_app`,
-        ],
-        ["object", `CREATE TABLE ${schema}.unexpected(id integer)`],
-        [
-          "other-object",
-          `CREATE TEXT SEARCH DICTIONARY ${schema}.unexpected (TEMPLATE=pg_catalog.simple)`,
-        ],
-      ]) {
-        void context.test(`${schema} ${label}`, async (child) => {
-          const db = await historyDatabase(child, fixture, "acl");
-          await historyAdmin(db, db.name, setup);
-          await assertHistoryRefused(db);
-        });
-      }
-    }
-    for (const [label, setup] of [
-      [
-        "global-defaults",
-        () => "ALTER DEFAULT PRIVILEGES FOR ROLE occ_migrator GRANT SELECT ON TABLES TO occ_app",
-      ],
-      [
-        "empty-defaults",
-        () =>
-          "ALTER DEFAULT PRIVILEGES FOR ROLE occ_migrator REVOKE ALL ON FUNCTIONS FROM PUBLIC; ALTER DEFAULT PRIVILEGES FOR ROLE occ_migrator REVOKE ALL ON FUNCTIONS FROM occ_migrator",
-      ],
-      ["database-create", (name) => `REVOKE CREATE ON DATABASE ${name} FROM occ_migrator`],
-      ["application-create", (name) => `GRANT CREATE ON DATABASE ${name} TO occ_app`],
-    ]) {
-      void context.test(label, async (child) => {
-        const db = await historyDatabase(child, fixture, "roles");
-        await historyAdmin(db, db.name, setup(db.name));
-        await assertHistoryRefused(db);
-      });
-    }
-  },
-);
+  migrationHistoryFixture,
+  historyDatabase,
+  historyAdmin,
+  runHistoryMigration,
+  assertHistoryRefused,
+  assertCompletedHistory,
+  canonicalData,
+  seedCanonicalData,
+});
 
 test(
   "Canonical forward migration closes the real application temporary-domain exploit",
