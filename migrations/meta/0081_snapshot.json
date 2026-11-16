@@ -143,8 +143,12 @@
           "tableFrom": "account",
           "tableTo": "user",
           "schemaTo": "occ",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -232,8 +236,14 @@
           "tableFrom": "agent_credential_sources",
           "tableTo": "agents",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "agent_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "agent_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -242,8 +252,14 @@
           "tableFrom": "agent_credential_sources",
           "tableTo": "credential_sources",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "credential_source_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "credential_source_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -251,7 +267,11 @@
       "compositePrimaryKeys": {
         "agent_credential_sources_pkey": {
           "name": "agent_credential_sources_pkey",
-          "columns": ["namespace_id", "agent_id", "credential_source_id"]
+          "columns": [
+            "namespace_id",
+            "agent_id",
+            "credential_source_id"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -355,8 +375,12 @@
           "tableFrom": "agent_provisioning_work",
           "tableTo": "controller_work",
           "schemaTo": "occ",
-          "columnsFrom": ["work_id"],
-          "columnsTo": ["idempotency_key"],
+          "columnsFrom": [
+            "work_id"
+          ],
+          "columnsTo": [
+            "idempotency_key"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -365,8 +389,14 @@
           "tableFrom": "agent_provisioning_work",
           "tableTo": "agents",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "agent_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "agent_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -375,8 +405,14 @@
           "tableFrom": "agent_provisioning_work",
           "tableTo": "configurations",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "configuration_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "configuration_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -385,8 +421,16 @@
           "tableFrom": "agent_provisioning_work",
           "tableTo": "agent_revisions",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "agent_id", "revision_id"],
-          "columnsTo": ["namespace_id", "agent_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "agent_id",
+            "revision_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "agent_id",
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "restrict"
         }
@@ -396,17 +440,27 @@
         "agent_provisioning_request_unique": {
           "name": "agent_provisioning_request_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "actor_id", "request_id"]
+          "columns": [
+            "namespace_id",
+            "actor_id",
+            "request_id"
+          ]
         },
         "agent_provisioning_agent_unique": {
           "name": "agent_provisioning_agent_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "agent_id"]
+          "columns": [
+            "namespace_id",
+            "agent_id"
+          ]
         },
         "agent_provisioning_configuration_unique": {
           "name": "agent_provisioning_configuration_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "configuration_id"]
+          "columns": [
+            "namespace_id",
+            "configuration_id"
+          ]
         }
       },
       "policies": {},
@@ -509,8 +563,14 @@
           "tableFrom": "agent_revisions",
           "tableTo": "agents",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "agent_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "agent_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -520,12 +580,20 @@
         "agent_revisions_namespace_id_agent_id_id_unique": {
           "name": "agent_revisions_namespace_id_agent_id_id_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "agent_id", "id"]
+          "columns": [
+            "namespace_id",
+            "agent_id",
+            "id"
+          ]
         },
         "agent_revisions_namespace_id_agent_id_revision_number_unique": {
           "name": "agent_revisions_namespace_id_agent_id_revision_number_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "agent_id", "revision_number"]
+          "columns": [
+            "namespace_id",
+            "agent_id",
+            "revision_number"
+          ]
         }
       },
       "policies": {},
@@ -560,7 +628,7 @@
         },
         "agent_revisions_admitted_snapshot": {
           "name": "agent_revisions_admitted_snapshot",
-          "value": "(\"occ\".\"agent_revisions\".\"admitted_spec\" ?& ARRAY[\n          'configuration_id', 'configuration_kind', 'configuration_generation',\n          'draft_spec', 'harness', 'compute', 'harness_auth'\n        ])\n        AND (\"occ\".\"agent_revisions\".\"admitted_spec\"\n          - 'configuration_id' - 'configuration_kind' - 'configuration_generation'\n          - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id' - 'sandbox_policy'\n          - 'secret_driver_id' - 'secret_bindings' - 'harness_auth' - 'credential_sources' - 'plugins'\n          - 'plugin_approvers' - 'repository_credentials' - 'egress_plan' - 'execution_admission') = '{}'::jsonb\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'configuration_id') = 'string'\n        AND (\"occ\".\"agent_revisions\".\"admitted_spec\"->>'configuration_id') ~ '^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'configuration_kind') = 'string'\n        AND (\"occ\".\"agent_revisions\".\"admitted_spec\"->>'configuration_kind') = 'agent'\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'configuration_generation') = 'number'\n        AND (\"occ\".\"agent_revisions\".\"admitted_spec\"->>'configuration_generation')::numeric\n          BETWEEN 1 AND 9007199254740991\n        AND mod((\"occ\".\"agent_revisions\".\"admitted_spec\"->>'configuration_generation')::numeric, 1) = 0\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'draft_spec') = 'object'\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'harness') = 'object'\n        AND ((\"occ\".\"agent_revisions\".\"admitted_spec\"->'harness') ?& ARRAY['id', 'version', 'mode', 'overrides', 'configuration'])\n        AND ((\"occ\".\"agent_revisions\".\"admitted_spec\"->'harness') - 'id' - 'version' - 'mode' - 'overrides' - 'configuration') = '{}'::jsonb\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{harness,overrides}') = 'object'\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{harness,configuration}') = 'object'\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{harness,id}') = 'string'\n        AND COALESCE(btrim(\"occ\".\"agent_revisions\".\"admitted_spec\" #>> '{harness,id}'), '') <> ''\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{harness,version}') = 'string'\n        AND COALESCE(btrim(\"occ\".\"agent_revisions\".\"admitted_spec\" #>> '{harness,version}'), '') <> ''\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{harness,mode}') = 'string'\n        AND (\"occ\".\"agent_revisions\".\"admitted_spec\" #>> '{harness,mode}') IN ('embedded', 'dedicated')\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'compute') = 'object'\n        AND ((\"occ\".\"agent_revisions\".\"admitted_spec\"->'compute') ?& ARRAY['id', 'implementation'])\n        AND ((\"occ\".\"agent_revisions\".\"admitted_spec\"->'compute') - 'id' - 'implementation' - 'admission') = '{}'::jsonb\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{compute,id}') = 'string'\n        AND COALESCE(btrim(\"occ\".\"agent_revisions\".\"admitted_spec\" #>> '{compute,id}'), '') <> ''\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{compute,implementation}') = 'string'\n        AND COALESCE(btrim(\"occ\".\"agent_revisions\".\"admitted_spec\" #>> '{compute,implementation}'), '') <> ''\n        AND (\n          NOT ((\"occ\".\"agent_revisions\".\"admitted_spec\"->'compute') ? 'admission')\n          OR (jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{compute,admission}') = 'string'\n              AND char_length(\"occ\".\"agent_revisions\".\"admitted_spec\" #>> '{compute,admission}') BETWEEN 1 AND 1024\n              AND (\"occ\".\"agent_revisions\".\"admitted_spec\" #>> '{compute,admission}') ~ '^[ -~]+$')\n        )\n        AND (\n          NOT (\"occ\".\"agent_revisions\".\"admitted_spec\" ? 'sandbox_driver_id')\n          OR (\n            jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'sandbox_driver_id') = 'string'\n            AND COALESCE(btrim(\"occ\".\"agent_revisions\".\"admitted_spec\"->>'sandbox_driver_id'), '') <> ''\n          )\n        )\n        AND (\n          NOT (\"occ\".\"agent_revisions\".\"admitted_spec\" ? 'secret_driver_id')\n          OR (\n            jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'secret_driver_id') = 'string'\n            AND COALESCE(btrim(\"occ\".\"agent_revisions\".\"admitted_spec\"->>'secret_driver_id'), '') <> ''\n          )\n        )\n        AND (\n          NOT (\"occ\".\"agent_revisions\".\"admitted_spec\" ? 'secret_bindings')\n          OR occ.secret_bindings_are_valid(\"occ\".\"agent_revisions\".\"admitted_spec\"->'secret_bindings', \"occ\".\"agent_revisions\".\"namespace_id\")\n        )\n        AND CASE WHEN jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'harness_auth') = 'object' THEN\n          occ.harness_auth_is_valid((\"occ\".\"agent_revisions\".\"admitted_spec\"->'harness_auth') - 'protectedExecutionVersion', \"occ\".\"agent_revisions\".\"namespace_id\", true)\n        ELSE false END\n        AND (\n          NOT (\"occ\".\"agent_revisions\".\"admitted_spec\" ? 'repository_credentials')\n          OR occ.repository_credentials_are_valid(\"occ\".\"agent_revisions\".\"admitted_spec\"->'repository_credentials')\n        )\n        AND (\n          NOT (\"occ\".\"agent_revisions\".\"admitted_spec\" ? 'plugins')\n          OR jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'plugins') = 'object'\n        )\n        AND (\n          NOT (\"occ\".\"agent_revisions\".\"admitted_spec\" ? 'plugin_approvers')\n          OR (jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'plugin_approvers') = 'array'\n            AND jsonb_array_length(\"occ\".\"agent_revisions\".\"admitted_spec\"->'plugin_approvers') <= 64)\n        )\n        AND (\n          NOT (\"occ\".\"agent_revisions\".\"admitted_spec\" ? 'credential_sources')\n          OR occ.credential_source_snapshots_are_valid(\"occ\".\"agent_revisions\".\"admitted_spec\"->'credential_sources')\n        )"
+          "value": "(\"occ\".\"agent_revisions\".\"admitted_spec\" ?& ARRAY[\n          'configuration_id', 'configuration_kind', 'configuration_generation',\n          'draft_spec', 'harness', 'compute', 'harness_auth'\n        ])\n        AND (\"occ\".\"agent_revisions\".\"admitted_spec\"\n          - 'configuration_id' - 'configuration_kind' - 'configuration_generation'\n          - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id' - 'sandbox_policy'\n          - 'secret_driver_id' - 'secret_bindings' - 'harness_auth' - 'credential_sources' - 'plugins'\n          - 'plugin_approvers' - 'repository_credentials' - 'egress_plan' - 'execution_admission') = '{}'::jsonb\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'configuration_id') = 'string'\n        AND (\"occ\".\"agent_revisions\".\"admitted_spec\"->>'configuration_id') ~ '^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'configuration_kind') = 'string'\n        AND (\"occ\".\"agent_revisions\".\"admitted_spec\"->>'configuration_kind') = 'agent'\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'configuration_generation') = 'number'\n        AND (\"occ\".\"agent_revisions\".\"admitted_spec\"->>'configuration_generation')::numeric\n          BETWEEN 1 AND 9007199254740991\n        AND mod((\"occ\".\"agent_revisions\".\"admitted_spec\"->>'configuration_generation')::numeric, 1) = 0\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'draft_spec') = 'object'\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'harness') = 'object'\n        AND ((\"occ\".\"agent_revisions\".\"admitted_spec\"->'harness') ?& ARRAY['id', 'version', 'mode', 'overrides', 'configuration'])\n        AND ((\"occ\".\"agent_revisions\".\"admitted_spec\"->'harness') - 'id' - 'version' - 'mode' - 'overrides' - 'configuration') = '{}'::jsonb\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{harness,overrides}') = 'object'\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{harness,configuration}') = 'object'\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{harness,id}') = 'string'\n        AND COALESCE(btrim(\"occ\".\"agent_revisions\".\"admitted_spec\" #>> '{harness,id}'), '') <> ''\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{harness,version}') = 'string'\n        AND COALESCE(btrim(\"occ\".\"agent_revisions\".\"admitted_spec\" #>> '{harness,version}'), '') <> ''\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{harness,mode}') = 'string'\n        AND (\"occ\".\"agent_revisions\".\"admitted_spec\" #>> '{harness,mode}') IN ('embedded', 'dedicated')\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'compute') = 'object'\n        AND ((\"occ\".\"agent_revisions\".\"admitted_spec\"->'compute') ?& ARRAY['id', 'implementation'])\n        AND ((\"occ\".\"agent_revisions\".\"admitted_spec\"->'compute') - 'id' - 'implementation' - 'admission' - 'runtimeInputs') = '{}'::jsonb\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{compute,id}') = 'string'\n        AND COALESCE(btrim(\"occ\".\"agent_revisions\".\"admitted_spec\" #>> '{compute,id}'), '') <> ''\n        AND jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{compute,implementation}') = 'string'\n        AND COALESCE(btrim(\"occ\".\"agent_revisions\".\"admitted_spec\" #>> '{compute,implementation}'), '') <> ''\n        AND (\n          NOT ((\"occ\".\"agent_revisions\".\"admitted_spec\"->'compute') ? 'admission')\n          OR (jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{compute,admission}') = 'string'\n              AND char_length(\"occ\".\"agent_revisions\".\"admitted_spec\" #>> '{compute,admission}') BETWEEN 1 AND 1024\n              AND (\"occ\".\"agent_revisions\".\"admitted_spec\" #>> '{compute,admission}') ~ '^[ -~]+$')\n        )\n        AND (\n          NOT ((\"occ\".\"agent_revisions\".\"admitted_spec\"->'compute') ? 'runtimeInputs')\n          OR (jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\" #> '{compute,runtimeInputs}') = 'string'\n              AND char_length(\"occ\".\"agent_revisions\".\"admitted_spec\" #>> '{compute,runtimeInputs}') BETWEEN 1 AND 4096\n              AND (\"occ\".\"agent_revisions\".\"admitted_spec\" #>> '{compute,runtimeInputs}') ~ '^[ -~]+$')\n        )\n        AND (\n          NOT (\"occ\".\"agent_revisions\".\"admitted_spec\" ? 'sandbox_driver_id')\n          OR (\n            jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'sandbox_driver_id') = 'string'\n            AND COALESCE(btrim(\"occ\".\"agent_revisions\".\"admitted_spec\"->>'sandbox_driver_id'), '') <> ''\n          )\n        )\n        AND (\n          NOT (\"occ\".\"agent_revisions\".\"admitted_spec\" ? 'secret_driver_id')\n          OR (\n            jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'secret_driver_id') = 'string'\n            AND COALESCE(btrim(\"occ\".\"agent_revisions\".\"admitted_spec\"->>'secret_driver_id'), '') <> ''\n          )\n        )\n        AND (\n          NOT (\"occ\".\"agent_revisions\".\"admitted_spec\" ? 'secret_bindings')\n          OR occ.secret_bindings_are_valid(\"occ\".\"agent_revisions\".\"admitted_spec\"->'secret_bindings', \"occ\".\"agent_revisions\".\"namespace_id\")\n        )\n        AND CASE WHEN jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'harness_auth') = 'object' THEN\n          occ.harness_auth_is_valid((\"occ\".\"agent_revisions\".\"admitted_spec\"->'harness_auth') - 'protectedExecutionVersion', \"occ\".\"agent_revisions\".\"namespace_id\", true)\n        ELSE false END\n        AND (\n          NOT (\"occ\".\"agent_revisions\".\"admitted_spec\" ? 'repository_credentials')\n          OR occ.repository_credentials_are_valid(\"occ\".\"agent_revisions\".\"admitted_spec\"->'repository_credentials')\n        )\n        AND (\n          NOT (\"occ\".\"agent_revisions\".\"admitted_spec\" ? 'plugins')\n          OR jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'plugins') = 'object'\n        )\n        AND (\n          NOT (\"occ\".\"agent_revisions\".\"admitted_spec\" ? 'plugin_approvers')\n          OR (jsonb_typeof(\"occ\".\"agent_revisions\".\"admitted_spec\"->'plugin_approvers') = 'array'\n            AND jsonb_array_length(\"occ\".\"agent_revisions\".\"admitted_spec\"->'plugin_approvers') <= 64)\n        )\n        AND (\n          NOT (\"occ\".\"agent_revisions\".\"admitted_spec\" ? 'credential_sources')\n          OR occ.credential_source_snapshots_are_valid(\"occ\".\"agent_revisions\".\"admitted_spec\"->'credential_sources')\n        )"
         }
       },
       "isRLSEnabled": false
@@ -703,6 +771,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "predecessor_replacement": {
+          "name": "predecessor_replacement",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "desired_runtime_state": {
           "name": "desired_runtime_state",
           "type": "text",
@@ -731,8 +805,12 @@
           "tableFrom": "agents",
           "tableTo": "namespaces",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -741,8 +819,14 @@
           "tableFrom": "agents",
           "tableTo": "configurations",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "configuration_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "configuration_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -751,8 +835,14 @@
           "tableFrom": "agents",
           "tableTo": "secrets",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "harness_auth_secret_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "harness_auth_secret_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -761,8 +851,14 @@
           "tableFrom": "agents",
           "tableTo": "service_accounts",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "harness_auth_service_account_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "harness_auth_service_account_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -771,8 +867,14 @@
           "tableFrom": "agents",
           "tableTo": "credential_sources",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "harness_auth_credential_source_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "harness_auth_credential_source_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -781,8 +883,16 @@
           "tableFrom": "agents",
           "tableTo": "agent_revisions",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "id", "active_revision_id"],
-          "columnsTo": ["namespace_id", "agent_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "id",
+            "active_revision_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "agent_id",
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -791,8 +901,16 @@
           "tableFrom": "agents",
           "tableTo": "iam_identities",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "id", "service_principal_id"],
-          "columnsTo": ["namespace_id", "agent_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "id",
+            "service_principal_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "agent_id",
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "restrict"
         }
@@ -802,17 +920,27 @@
         "agents_namespace_id_id_unique": {
           "name": "agents_namespace_id_id_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "id"]
+          "columns": [
+            "namespace_id",
+            "id"
+          ]
         },
         "agents_namespace_id_name_unique": {
           "name": "agents_namespace_id_name_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "name"]
+          "columns": [
+            "namespace_id",
+            "name"
+          ]
         },
         "agents_namespace_id_id_service_principal_id_unique": {
           "name": "agents_namespace_id_id_service_principal_id_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "id", "service_principal_id"]
+          "columns": [
+            "namespace_id",
+            "id",
+            "service_principal_id"
+          ]
         }
       },
       "policies": {},
@@ -828,6 +956,10 @@
         "agents_execution_mode_valid": {
           "name": "agents_execution_mode_valid",
           "value": "\"occ\".\"agents\".\"execution_mode\" IN ('embedded', 'dedicated')"
+        },
+        "agents_predecessor_replacement_valid": {
+          "name": "agents_predecessor_replacement_valid",
+          "value": "\"occ\".\"agents\".\"predecessor_replacement\" IS NULL OR (\n      jsonb_typeof(\"occ\".\"agents\".\"predecessor_replacement\") = 'object'\n      AND \"occ\".\"agents\".\"predecessor_replacement\" ?& ARRAY['predecessorRevisionId', 'candidateRevisionId', 'phase', 'startedAt']\n      AND \"occ\".\"agents\".\"predecessor_replacement\"->>'phase' IN ('pre-stop', 'stopping')\n      AND (\"occ\".\"agents\".\"predecessor_replacement\"->>'phase' <> 'stopping' OR \"occ\".\"agents\".\"predecessor_replacement\" ? 'stoppingAt')\n    ) IS TRUE"
         },
         "agents_desired_runtime_state_valid": {
           "name": "agents_desired_runtime_state_valid",
@@ -1054,7 +1186,9 @@
         "apikey_key_unique": {
           "name": "apikey_key_unique",
           "nullsNotDistinct": false,
-          "columns": ["key"]
+          "columns": [
+            "key"
+          ]
         }
       },
       "policies": {},
@@ -1258,8 +1392,12 @@
           "tableFrom": "configurations",
           "tableTo": "namespaces",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -1269,7 +1407,10 @@
         "configurations_namespace_id_id_unique": {
           "name": "configurations_namespace_id_id_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "id"]
+          "columns": [
+            "namespace_id",
+            "id"
+          ]
         }
       },
       "policies": {},
@@ -1399,8 +1540,14 @@
           "tableFrom": "connection_sessions",
           "tableTo": "credential_sources",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "credential_source_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "credential_source_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -1409,8 +1556,14 @@
           "tableFrom": "connection_sessions",
           "tableTo": "oauth_connection_template_versions",
           "schemaTo": "occ",
-          "columnsFrom": ["connection_template_id", "connection_template_version"],
-          "columnsTo": ["template_id", "version"],
+          "columnsFrom": [
+            "connection_template_id",
+            "connection_template_version"
+          ],
+          "columnsTo": [
+            "template_id",
+            "version"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -1476,8 +1629,12 @@
           "tableFrom": "connection_templates",
           "tableTo": "namespaces",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -1486,8 +1643,14 @@
           "tableFrom": "connection_templates",
           "tableTo": "oauth_connection_template_versions",
           "schemaTo": "occ",
-          "columnsFrom": ["id", "current_version"],
-          "columnsTo": ["template_id", "version"],
+          "columnsFrom": [
+            "id",
+            "current_version"
+          ],
+          "columnsTo": [
+            "template_id",
+            "version"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1570,8 +1733,14 @@
           "tableFrom": "connection_token_custody",
           "tableTo": "credential_sources",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "credential_source_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "credential_source_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -1579,7 +1748,10 @@
       "compositePrimaryKeys": {
         "connection_token_custody_namespace_id_credential_source_id_pk": {
           "name": "connection_token_custody_namespace_id_credential_source_id_pk",
-          "columns": ["namespace_id", "credential_source_id"]
+          "columns": [
+            "namespace_id",
+            "credential_source_id"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -1783,8 +1955,12 @@
           "tableFrom": "controller_work",
           "tableTo": "namespaces",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -1793,8 +1969,14 @@
           "tableFrom": "controller_work",
           "tableTo": "agents",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "agent_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "agent_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "restrict"
         },
@@ -1803,8 +1985,16 @@
           "tableFrom": "controller_work",
           "tableTo": "agent_revisions",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "agent_id", "revision_id"],
-          "columnsTo": ["namespace_id", "agent_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "agent_id",
+            "revision_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "agent_id",
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "restrict"
         }
@@ -2014,8 +2204,12 @@
           "tableFrom": "credential_deliveries",
           "tableTo": "agent_revisions",
           "schemaTo": "occ",
-          "columnsFrom": ["live_revision_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "live_revision_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -2024,8 +2218,16 @@
           "tableFrom": "credential_deliveries",
           "tableTo": "agent_revisions",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "agent_id", "live_revision_id"],
-          "columnsTo": ["namespace_id", "agent_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "agent_id",
+            "live_revision_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "agent_id",
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -2033,14 +2235,20 @@
       "compositePrimaryKeys": {
         "credential_deliveries_revision_id_binding_id_pk": {
           "name": "credential_deliveries_revision_id_binding_id_pk",
-          "columns": ["revision_id", "binding_id"]
+          "columns": [
+            "revision_id",
+            "binding_id"
+          ]
         }
       },
       "uniqueConstraints": {
         "credential_deliveries_revision_id_target_key": {
           "name": "credential_deliveries_revision_id_target_key",
           "nullsNotDistinct": false,
-          "columns": ["revision_id", "target"]
+          "columns": [
+            "revision_id",
+            "target"
+          ]
         }
       },
       "policies": {},
@@ -2188,8 +2396,14 @@
           "tableFrom": "credential_delivery_reductions",
           "tableTo": "credential_deliveries",
           "schemaTo": "occ",
-          "columnsFrom": ["revision_id", "delivery_binding_id"],
-          "columnsTo": ["revision_id", "binding_id"],
+          "columnsFrom": [
+            "revision_id",
+            "delivery_binding_id"
+          ],
+          "columnsTo": [
+            "revision_id",
+            "binding_id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -2197,7 +2411,10 @@
       "compositePrimaryKeys": {
         "credential_delivery_reductions_revision_id_binding_id_pk": {
           "name": "credential_delivery_reductions_revision_id_binding_id_pk",
-          "columns": ["revision_id", "binding_id"]
+          "columns": [
+            "revision_id",
+            "binding_id"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -2300,8 +2517,14 @@
           "tableFrom": "credential_source_secrets",
           "tableTo": "credential_sources",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "credential_source_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "credential_source_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -2310,8 +2533,14 @@
           "tableFrom": "credential_source_secrets",
           "tableTo": "secrets",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "secret_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "secret_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -2319,7 +2548,10 @@
       "compositePrimaryKeys": {
         "credential_source_secrets_pkey": {
           "name": "credential_source_secrets_pkey",
-          "columns": ["credential_source_id", "field"]
+          "columns": [
+            "credential_source_id",
+            "field"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -2404,8 +2636,12 @@
           "tableFrom": "credential_sources",
           "tableTo": "namespaces",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -2415,12 +2651,18 @@
         "credential_sources_namespace_id_id_unique": {
           "name": "credential_sources_namespace_id_id_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "id"]
+          "columns": [
+            "namespace_id",
+            "id"
+          ]
         },
         "credential_sources_namespace_id_name_unique": {
           "name": "credential_sources_namespace_id_name_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "name"]
+          "columns": [
+            "namespace_id",
+            "name"
+          ]
         }
       },
       "policies": {},
@@ -2558,8 +2800,16 @@
           "tableFrom": "credential_withdrawals",
           "tableTo": "agent_revisions",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "agent_id", "revision_id"],
-          "columnsTo": ["namespace_id", "agent_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "agent_id",
+            "revision_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "agent_id",
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -2568,8 +2818,14 @@
           "tableFrom": "credential_withdrawals",
           "tableTo": "credential_sources",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "credential_source_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "credential_source_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -2577,7 +2833,11 @@
       "compositePrimaryKeys": {
         "credential_withdrawals_pkey": {
           "name": "credential_withdrawals_pkey",
-          "columns": ["namespace_id", "revision_id", "credential_source_id"]
+          "columns": [
+            "namespace_id",
+            "revision_id",
+            "credential_source_id"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -2650,8 +2910,16 @@
           "tableFrom": "egress_installations",
           "tableTo": "agent_revisions",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "agent_id", "revision_id"],
-          "columnsTo": ["namespace_id", "agent_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "agent_id",
+            "revision_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "agent_id",
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -2659,14 +2927,20 @@
       "compositePrimaryKeys": {
         "egress_installations_sender_id_sandbox_id_pk": {
           "name": "egress_installations_sender_id_sandbox_id_pk",
-          "columns": ["sender_id", "sandbox_id"]
+          "columns": [
+            "sender_id",
+            "sandbox_id"
+          ]
         }
       },
       "uniqueConstraints": {
         "egress_installations_namespace_id_revision_id_unique": {
           "name": "egress_installations_namespace_id_revision_id_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "revision_id"]
+          "columns": [
+            "namespace_id",
+            "revision_id"
+          ]
         }
       },
       "policies": {},
@@ -2718,8 +2992,12 @@
           "tableFrom": "egress_rejected_material",
           "tableTo": "namespaces",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -2727,7 +3005,12 @@
       "compositePrimaryKeys": {
         "egress_rejected_material_namespace_id_secret_driver_id_material_id_material_version_pk": {
           "name": "egress_rejected_material_namespace_id_secret_driver_id_material_id_material_version_pk",
-          "columns": ["namespace_id", "secret_driver_id", "material_id", "material_version"]
+          "columns": [
+            "namespace_id",
+            "secret_driver_id",
+            "material_id",
+            "material_version"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -2817,7 +3100,13 @@
       "compositePrimaryKeys": {
         "egress_send_receipts_sender_id_sender_generation_instance_id_use_id_attempt_id_pk": {
           "name": "egress_send_receipts_sender_id_sender_generation_instance_id_use_id_attempt_id_pk",
-          "columns": ["sender_id", "sender_generation", "instance_id", "use_id", "attempt_id"]
+          "columns": [
+            "sender_id",
+            "sender_generation",
+            "instance_id",
+            "use_id",
+            "attempt_id"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -2949,8 +3238,12 @@
           "tableFrom": "human_authentication_accounts",
           "tableTo": "user",
           "schemaTo": "occ",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -2959,8 +3252,12 @@
           "tableFrom": "human_authentication_accounts",
           "tableTo": "installation",
           "schemaTo": "occ",
-          "columnsFrom": ["installation_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "installation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -2969,8 +3266,12 @@
           "tableFrom": "human_authentication_accounts",
           "tableTo": "iam_identities",
           "schemaTo": "occ",
-          "columnsFrom": ["principal_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -2980,7 +3281,9 @@
         "human_authentication_principal_unique": {
           "name": "human_authentication_principal_unique",
           "nullsNotDistinct": false,
-          "columns": ["principal_id"]
+          "columns": [
+            "principal_id"
+          ]
         }
       },
       "policies": {},
@@ -3069,8 +3372,12 @@
           "tableFrom": "human_authentication_attempts",
           "tableTo": "installation",
           "schemaTo": "occ",
-          "columnsFrom": ["installation_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "installation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -3142,8 +3449,12 @@
           "tableFrom": "human_authentication_recovery",
           "tableTo": "installation",
           "schemaTo": "occ",
-          "columnsFrom": ["installation_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "installation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -3152,8 +3463,12 @@
           "tableFrom": "human_authentication_recovery",
           "tableTo": "human_authentication_accounts",
           "schemaTo": "occ",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["user_id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "user_id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -3162,8 +3477,12 @@
           "tableFrom": "human_authentication_recovery",
           "tableTo": "iam_identities",
           "schemaTo": "occ",
-          "columnsFrom": ["principal_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -3172,8 +3491,12 @@
           "tableFrom": "human_authentication_recovery",
           "tableTo": "account",
           "schemaTo": "occ",
-          "columnsFrom": ["method_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "method_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -3183,7 +3506,9 @@
         "human_authentication_recovery_user_id_unique": {
           "name": "human_authentication_recovery_user_id_unique",
           "nullsNotDistinct": false,
-          "columns": ["user_id"]
+          "columns": [
+            "user_id"
+          ]
         }
       },
       "policies": {},
@@ -3254,8 +3579,12 @@
           "tableFrom": "human_authentication_results",
           "tableTo": "installation",
           "schemaTo": "occ",
-          "columnsFrom": ["installation_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "installation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -3264,8 +3593,12 @@
           "tableFrom": "human_authentication_results",
           "tableTo": "human_authentication_sessions",
           "schemaTo": "occ",
-          "columnsFrom": ["session_id"],
-          "columnsTo": ["session_id"],
+          "columnsFrom": [
+            "session_id"
+          ],
+          "columnsTo": [
+            "session_id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -3273,7 +3606,10 @@
       "compositePrimaryKeys": {
         "human_authentication_results_installation_id_attempt_id_pk": {
           "name": "human_authentication_results_installation_id_attempt_id_pk",
-          "columns": ["installation_id", "attempt_id"]
+          "columns": [
+            "installation_id",
+            "attempt_id"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -3332,8 +3668,12 @@
           "tableFrom": "human_authentication_sessions",
           "tableTo": "session",
           "schemaTo": "occ",
-          "columnsFrom": ["session_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -3342,8 +3682,12 @@
           "tableFrom": "human_authentication_sessions",
           "tableTo": "human_authentication_accounts",
           "schemaTo": "occ",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["user_id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "user_id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -3352,8 +3696,12 @@
           "tableFrom": "human_authentication_sessions",
           "tableTo": "account",
           "schemaTo": "occ",
-          "columnsFrom": ["method_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "method_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -3427,8 +3775,12 @@
           "tableFrom": "iam_access_bindings",
           "tableTo": "namespaces",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -3437,8 +3789,12 @@
           "tableFrom": "iam_access_bindings",
           "tableTo": "iam_identities",
           "schemaTo": "occ",
-          "columnsFrom": ["identity_subject_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "identity_subject_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -3447,8 +3803,12 @@
           "tableFrom": "iam_access_bindings",
           "tableTo": "iam_groups",
           "schemaTo": "occ",
-          "columnsFrom": ["group_subject_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "group_subject_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -3457,8 +3817,12 @@
           "tableFrom": "iam_access_bindings",
           "tableTo": "iam_roles",
           "schemaTo": "occ",
-          "columnsFrom": ["role_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "role_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -3508,8 +3872,12 @@
           "tableFrom": "iam_group_memberships",
           "tableTo": "namespaces",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -3518,8 +3886,12 @@
           "tableFrom": "iam_group_memberships",
           "tableTo": "iam_groups",
           "schemaTo": "occ",
-          "columnsFrom": ["group_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "group_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -3528,8 +3900,12 @@
           "tableFrom": "iam_group_memberships",
           "tableTo": "iam_identities",
           "schemaTo": "occ",
-          "columnsFrom": ["principal_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -3539,7 +3915,10 @@
         "iam_group_memberships_group_principal_unique": {
           "name": "iam_group_memberships_group_principal_unique",
           "nullsNotDistinct": false,
-          "columns": ["group_id", "principal_id"]
+          "columns": [
+            "group_id",
+            "principal_id"
+          ]
         }
       },
       "policies": {},
@@ -3576,8 +3955,12 @@
           "tableFrom": "iam_groups",
           "tableTo": "namespaces",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -3587,12 +3970,18 @@
         "iam_groups_namespace_id_id_unique": {
           "name": "iam_groups_namespace_id_id_unique",
           "nullsNotDistinct": true,
-          "columns": ["namespace_id", "id"]
+          "columns": [
+            "namespace_id",
+            "id"
+          ]
         },
         "iam_groups_namespace_id_name_unique": {
           "name": "iam_groups_namespace_id_name_unique",
           "nullsNotDistinct": true,
-          "columns": ["namespace_id", "name"]
+          "columns": [
+            "namespace_id",
+            "name"
+          ]
         }
       },
       "policies": {},
@@ -3701,8 +4090,12 @@
           "tableFrom": "iam_identities",
           "tableTo": "namespaces",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -3711,8 +4104,14 @@
           "tableFrom": "iam_identities",
           "tableTo": "agents",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "agent_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "agent_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "restrict"
         }
@@ -3722,7 +4121,11 @@
         "iam_identities_namespace_id_agent_id_id_unique": {
           "name": "iam_identities_namespace_id_agent_id_id_unique",
           "nullsNotDistinct": true,
-          "columns": ["namespace_id", "agent_id", "id"]
+          "columns": [
+            "namespace_id",
+            "agent_id",
+            "id"
+          ]
         }
       },
       "policies": {},
@@ -3787,8 +4190,12 @@
           "tableFrom": "iam_restrictions",
           "tableTo": "namespaces",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -3852,8 +4259,12 @@
           "tableFrom": "iam_roles",
           "tableTo": "namespaces",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -3863,7 +4274,10 @@
         "iam_roles_namespace_id_id_unique": {
           "name": "iam_roles_namespace_id_id_unique",
           "nullsNotDistinct": true,
-          "columns": ["namespace_id", "id"]
+          "columns": [
+            "namespace_id",
+            "id"
+          ]
         }
       },
       "policies": {},
@@ -3993,8 +4407,12 @@
           "tableFrom": "installation_network_policy_ceiling",
           "tableTo": "installation",
           "schemaTo": "occ",
-          "columnsFrom": ["installation_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "installation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -4084,7 +4502,9 @@
         "namespaces_name_unique": {
           "name": "namespaces_name_unique",
           "nullsNotDistinct": false,
-          "columns": ["name"]
+          "columns": [
+            "name"
+          ]
         }
       },
       "policies": {},
@@ -4226,8 +4646,12 @@
           "tableFrom": "native_browser_handles",
           "tableTo": "installation",
           "schemaTo": "occ",
-          "columnsFrom": ["installation_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "installation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -4236,8 +4660,12 @@
           "tableFrom": "native_browser_handles",
           "tableTo": "human_authentication_sessions",
           "schemaTo": "occ",
-          "columnsFrom": ["parent_session_id"],
-          "columnsTo": ["session_id"],
+          "columnsFrom": [
+            "parent_session_id"
+          ],
+          "columnsTo": [
+            "session_id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -4246,8 +4674,12 @@
           "tableFrom": "native_browser_handles",
           "tableTo": "iam_identities",
           "schemaTo": "occ",
-          "columnsFrom": ["principal_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -4256,8 +4688,16 @@
           "tableFrom": "native_browser_handles",
           "tableTo": "agent_revisions",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "agent_id", "revision_id"],
-          "columnsTo": ["namespace_id", "agent_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "agent_id",
+            "revision_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "agent_id",
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -4403,8 +4843,12 @@
           "tableFrom": "native_browser_intents",
           "tableTo": "installation",
           "schemaTo": "occ",
-          "columnsFrom": ["installation_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "installation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -4413,8 +4857,12 @@
           "tableFrom": "native_browser_intents",
           "tableTo": "human_authentication_sessions",
           "schemaTo": "occ",
-          "columnsFrom": ["parent_session_id"],
-          "columnsTo": ["session_id"],
+          "columnsFrom": [
+            "parent_session_id"
+          ],
+          "columnsTo": [
+            "session_id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -4423,8 +4871,12 @@
           "tableFrom": "native_browser_intents",
           "tableTo": "iam_identities",
           "schemaTo": "occ",
-          "columnsFrom": ["principal_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -4433,8 +4885,16 @@
           "tableFrom": "native_browser_intents",
           "tableTo": "agent_revisions",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "agent_id", "revision_id"],
-          "columnsTo": ["namespace_id", "agent_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "agent_id",
+            "revision_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "agent_id",
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -4444,7 +4904,9 @@
         "native_browser_intents_exchange_hash_unique": {
           "name": "native_browser_intents_exchange_hash_unique",
           "nullsNotDistinct": false,
-          "columns": ["exchange_hash"]
+          "columns": [
+            "exchange_hash"
+          ]
         }
       },
       "policies": {},
@@ -4550,8 +5012,12 @@
           "tableFrom": "oauth_clients",
           "tableTo": "namespaces",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -4561,12 +5027,20 @@
         "oauth_clients_pair_unique": {
           "name": "oauth_clients_pair_unique",
           "nullsNotDistinct": true,
-          "columns": ["namespace_id", "issuer", "client_id"]
+          "columns": [
+            "namespace_id",
+            "issuer",
+            "client_id"
+          ]
         },
         "oauth_clients_identity": {
           "name": "oauth_clients_identity",
           "nullsNotDistinct": false,
-          "columns": ["id", "issuer", "token_url"]
+          "columns": [
+            "id",
+            "issuer",
+            "token_url"
+          ]
         }
       },
       "policies": {},
@@ -4700,8 +5174,12 @@
           "tableFrom": "oauth_connection_template_versions",
           "tableTo": "connection_templates",
           "schemaTo": "occ",
-          "columnsFrom": ["template_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "template_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -4710,8 +5188,12 @@
           "tableFrom": "oauth_connection_template_versions",
           "tableTo": "oauth_clients",
           "schemaTo": "occ",
-          "columnsFrom": ["oauth_client_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "oauth_client_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -4720,8 +5202,16 @@
           "tableFrom": "oauth_connection_template_versions",
           "tableTo": "oauth_clients",
           "schemaTo": "occ",
-          "columnsFrom": ["oauth_client_id", "issuer", "token_url"],
-          "columnsTo": ["id", "issuer", "token_url"],
+          "columnsFrom": [
+            "oauth_client_id",
+            "issuer",
+            "token_url"
+          ],
+          "columnsTo": [
+            "id",
+            "issuer",
+            "token_url"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -4729,7 +5219,10 @@
       "compositePrimaryKeys": {
         "oauth_connection_template_versions_template_id_version_pk": {
           "name": "oauth_connection_template_versions_template_id_version_pk",
-          "columns": ["template_id", "version"]
+          "columns": [
+            "template_id",
+            "version"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -4872,8 +5365,12 @@
           "tableFrom": "prepared_github_attempts",
           "tableTo": "prepared_github_families",
           "schemaTo": "occ",
-          "columnsFrom": ["source_id"],
-          "columnsTo": ["source_id"],
+          "columnsFrom": [
+            "source_id"
+          ],
+          "columnsTo": [
+            "source_id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -4883,12 +5380,17 @@
         "prepared_github_attempts_material_version_unique": {
           "name": "prepared_github_attempts_material_version_unique",
           "nullsNotDistinct": false,
-          "columns": ["material_version"]
+          "columns": [
+            "material_version"
+          ]
         },
         "prepared_github_attempt_version": {
           "name": "prepared_github_attempt_version",
           "nullsNotDistinct": false,
-          "columns": ["id", "material_version"]
+          "columns": [
+            "id",
+            "material_version"
+          ]
         }
       },
       "policies": {},
@@ -5097,8 +5599,12 @@
           "tableFrom": "prepared_repository_draft_pulls",
           "tableTo": "repository_session_attempts",
           "schemaTo": "occ",
-          "columnsFrom": ["admission_id"],
-          "columnsTo": ["admission_id"],
+          "columnsFrom": [
+            "admission_id"
+          ],
+          "columnsTo": [
+            "admission_id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -5107,8 +5613,14 @@
           "tableFrom": "prepared_repository_draft_pulls",
           "tableTo": "prepared_github_attempts",
           "schemaTo": "occ",
-          "columnsFrom": ["attempt_id", "material_version"],
-          "columnsTo": ["id", "material_version"],
+          "columnsFrom": [
+            "attempt_id",
+            "material_version"
+          ],
+          "columnsTo": [
+            "id",
+            "material_version"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -5118,7 +5630,9 @@
         "prepared_repository_draft_pulls_receipt_id_unique": {
           "name": "prepared_repository_draft_pulls_receipt_id_unique",
           "nullsNotDistinct": false,
-          "columns": ["receipt_id"]
+          "columns": [
+            "receipt_id"
+          ]
         }
       },
       "policies": {},
@@ -5212,8 +5726,12 @@
           "tableFrom": "prepared_repository_git_uses",
           "tableTo": "repository_session_attempts",
           "schemaTo": "occ",
-          "columnsFrom": ["admission_id"],
-          "columnsTo": ["admission_id"],
+          "columnsFrom": [
+            "admission_id"
+          ],
+          "columnsTo": [
+            "admission_id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -5222,8 +5740,14 @@
           "tableFrom": "prepared_repository_git_uses",
           "tableTo": "prepared_github_attempts",
           "schemaTo": "occ",
-          "columnsFrom": ["attempt_id", "material_version"],
-          "columnsTo": ["id", "material_version"],
+          "columnsFrom": [
+            "attempt_id",
+            "material_version"
+          ],
+          "columnsTo": [
+            "id",
+            "material_version"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -5289,8 +5813,12 @@
           "tableFrom": "presets",
           "tableTo": "namespaces",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -5300,7 +5828,10 @@
         "presets_namespace_id_name_unique": {
           "name": "presets_namespace_id_name_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "name"]
+          "columns": [
+            "namespace_id",
+            "name"
+          ]
         }
       },
       "policies": {},
@@ -5378,8 +5909,12 @@
           "tableFrom": "repository_broker_receipts",
           "tableTo": "repository_session_attempts",
           "schemaTo": "occ",
-          "columnsFrom": ["admission_id"],
-          "columnsTo": ["admission_id"],
+          "columnsFrom": [
+            "admission_id"
+          ],
+          "columnsTo": [
+            "admission_id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "no action"
         }
@@ -5389,7 +5924,9 @@
         "repository_broker_receipts_session_id_unique": {
           "name": "repository_broker_receipts_session_id_unique",
           "nullsNotDistinct": false,
-          "columns": ["session_id"]
+          "columns": [
+            "session_id"
+          ]
         }
       },
       "policies": {},
@@ -5596,8 +6133,16 @@
           "tableFrom": "repository_session_attempts",
           "tableTo": "agent_revisions",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "agent_id", "live_revision_id"],
-          "columnsTo": ["namespace_id", "agent_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "agent_id",
+            "live_revision_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "agent_id",
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -5892,8 +6437,12 @@
           "tableFrom": "repository_standing_executions",
           "tableTo": "repository_standing_approvals",
           "schemaTo": "occ",
-          "columnsFrom": ["approval_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "approval_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -5955,8 +6504,14 @@
           "tableFrom": "sandbox_policies",
           "tableTo": "agents",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "agent_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "agent_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -5966,7 +6521,10 @@
         "sandbox_policies_agent_unique": {
           "name": "sandbox_policies_agent_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "agent_id"]
+          "columns": [
+            "namespace_id",
+            "agent_id"
+          ]
         }
       },
       "policies": {},
@@ -6151,8 +6709,12 @@
           "tableFrom": "saved_connections",
           "tableTo": "oauth_clients",
           "schemaTo": "occ",
-          "columnsFrom": ["oauth_client_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "oauth_client_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
@@ -6161,8 +6723,12 @@
           "tableFrom": "saved_connections",
           "tableTo": "iam_identities",
           "schemaTo": "occ",
-          "columnsFrom": ["owner_principal_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "owner_principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         },
@@ -6171,8 +6737,14 @@
           "tableFrom": "saved_connections",
           "tableTo": "credential_sources",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "credential_source_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "credential_source_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         },
@@ -6181,8 +6753,14 @@
           "tableFrom": "saved_connections",
           "tableTo": "oauth_connection_template_versions",
           "schemaTo": "occ",
-          "columnsFrom": ["connection_template_id", "connection_template_version"],
-          "columnsTo": ["template_id", "version"],
+          "columnsFrom": [
+            "connection_template_id",
+            "connection_template_version"
+          ],
+          "columnsTo": [
+            "template_id",
+            "version"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -6190,7 +6768,10 @@
       "compositePrimaryKeys": {
         "saved_connections_namespace_id_credential_source_id_pk": {
           "name": "saved_connections_namespace_id_credential_source_id_pk",
-          "columns": ["namespace_id", "credential_source_id"]
+          "columns": [
+            "namespace_id",
+            "credential_source_id"
+          ]
         }
       },
       "uniqueConstraints": {},
@@ -6281,8 +6862,12 @@
           "tableFrom": "secrets",
           "tableTo": "namespaces",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -6292,12 +6877,18 @@
         "secrets_namespace_id_id_unique": {
           "name": "secrets_namespace_id_id_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "id"]
+          "columns": [
+            "namespace_id",
+            "id"
+          ]
         },
         "secrets_namespace_id_name_unique": {
           "name": "secrets_namespace_id_name_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "name"]
+          "columns": [
+            "namespace_id",
+            "name"
+          ]
         }
       },
       "policies": {},
@@ -6391,8 +6982,14 @@
           "tableFrom": "service_account_driver_bindings",
           "tableTo": "service_accounts",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "service_account_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "service_account_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -6402,7 +6999,11 @@
         "service_account_driver_bindings_external_account_unique": {
           "name": "service_account_driver_bindings_external_account_unique",
           "nullsNotDistinct": false,
-          "columns": ["driver_id", "workspace_id", "external_account_id"]
+          "columns": [
+            "driver_id",
+            "workspace_id",
+            "external_account_id"
+          ]
         }
       },
       "policies": {},
@@ -6466,8 +7067,12 @@
           "tableFrom": "service_accounts",
           "tableTo": "namespaces",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "restrict",
           "onUpdate": "restrict"
         }
@@ -6477,12 +7082,18 @@
         "service_accounts_namespace_id_id_unique": {
           "name": "service_accounts_namespace_id_id_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "id"]
+          "columns": [
+            "namespace_id",
+            "id"
+          ]
         },
         "service_accounts_namespace_id_name_unique": {
           "name": "service_accounts_namespace_id_name_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "name"]
+          "columns": [
+            "namespace_id",
+            "name"
+          ]
         }
       },
       "policies": {},
@@ -6582,8 +7193,12 @@
           "tableFrom": "session",
           "tableTo": "user",
           "schemaTo": "occ",
-          "columnsFrom": ["user_id"],
-          "columnsTo": ["id"],
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -6593,7 +7208,9 @@
         "session_token_unique": {
           "name": "session_token_unique",
           "nullsNotDistinct": false,
-          "columns": ["token"]
+          "columns": [
+            "token"
+          ]
         }
       },
       "policies": {},
@@ -6668,7 +7285,9 @@
         "user_email_unique": {
           "name": "user_email_unique",
           "nullsNotDistinct": false,
-          "columns": ["email"]
+          "columns": [
+            "email"
+          ]
         }
       },
       "policies": {},
@@ -6827,8 +7446,14 @@
           "tableFrom": "workspace_setups",
           "tableTo": "agents",
           "schemaTo": "occ",
-          "columnsFrom": ["namespace_id", "agent_id"],
-          "columnsTo": ["namespace_id", "id"],
+          "columnsFrom": [
+            "namespace_id",
+            "agent_id"
+          ],
+          "columnsTo": [
+            "namespace_id",
+            "id"
+          ],
           "onDelete": "cascade",
           "onUpdate": "restrict"
         }
@@ -6838,7 +7463,10 @@
         "workspace_setups_agent_unique": {
           "name": "workspace_setups_agent_unique",
           "nullsNotDistinct": false,
-          "columns": ["namespace_id", "agent_id"]
+          "columns": [
+            "namespace_id",
+            "agent_id"
+          ]
         }
       },
       "policies": {},

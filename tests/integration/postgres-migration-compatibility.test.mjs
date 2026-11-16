@@ -1276,6 +1276,9 @@ const legacyExecutionAdmission = { version: 2, mode: "unprotected" };
 function upgradedCanonicalData(data) {
   return {
     ...data,
+    agents: data.agents.map(({ value }) => ({
+      value: { ...value, predecessor_replacement: value.predecessor_replacement ?? null },
+    })),
     agent_revisions: data.agent_revisions.map(({ value }) => ({
       value: {
         ...value,
@@ -1452,6 +1455,8 @@ test(
     for (const [prefix, history] of [
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
+      [78, "prePredecessorReplacement"],
+      [79, "preRevisionRuntimeInputs"],
     ]) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
@@ -1753,7 +1758,9 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
-      [78, "preInstallationNetworkPolicyCeiling"],
+      [78, "prePredecessorReplacement"],
+      [79, "preRevisionRuntimeInputs"],
+      [80, "preInstallationNetworkPolicyCeiling"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2053,7 +2060,9 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
-      [78, "preInstallationNetworkPolicyCeiling"],
+      [78, "prePredecessorReplacement"],
+      [79, "preRevisionRuntimeInputs"],
+      [80, "preInstallationNetworkPolicyCeiling"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2251,7 +2260,9 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
-      [78, "preInstallationNetworkPolicyCeiling"],
+      [78, "prePredecessorReplacement"],
+      [79, "preRevisionRuntimeInputs"],
+      [80, "preInstallationNetworkPolicyCeiling"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2263,9 +2274,6 @@ test(
         ok: true,
         history,
       });
-      context.diagnostic(
-        `Upgraded restore prefix ${prefix}: ${catalogDigest(await migrationCatalog(restored.migrator))}`,
-      );
       assert.deepEqual(await runHistoryMigration(restored, "production", "--check"), {
         ok: true,
         history: "completed",
@@ -2328,7 +2336,9 @@ test(
       [75, "preNativeBrowserAccess"],
       [76, "preControlPlaneAudit"],
       [77, "prePendingSandboxPolicyApplication"],
-      [78, "preInstallationNetworkPolicyCeiling"],
+      [78, "prePredecessorReplacement"],
+      [79, "preRevisionRuntimeInputs"],
+      [80, "preInstallationNetworkPolicyCeiling"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2352,8 +2362,10 @@ test(
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
-        // 0079 grants access after creating the ceiling table; abort that final GRANT.
+        // 0081 grants access after creating the ceiling table; abort that final GRANT.
         const rollbackTag = [
+          [80, "GRANT"],
+          [79, "ALTER TABLE"],
           [78, "GRANT"],
           [77, "CREATE FUNCTION"],
           [76, "CREATE INDEX"],

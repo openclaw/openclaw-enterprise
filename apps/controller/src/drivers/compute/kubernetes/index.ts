@@ -24,6 +24,11 @@ import {
 } from "../egress-enrollment.ts";
 import { forwardMethod } from "../../../backends/token-service/forward-method.ts";
 import { ProtectedExecutionDriver } from "../protected-execution-driver.ts";
+import {
+  decodeReplacementRuntime,
+  encodeReplacementRuntime,
+  replacementCompatibility,
+} from "./replacement-runtime.ts";
 import type { InstalledDriver } from "@openclaw-enterprise/occ";
 import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { rewrittenIpv4Hostname } from "../../../auth/configuration.ts";
@@ -291,6 +296,8 @@ import {
 } from "../embedded-gateway-owner.ts";
 import {
   codexLaunchEntrypoint,
+  COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
+  COMPUTE_AGENT_WITH_NODE_ENTRYPOINT,
   type CodexLaunch,
   GATEWAY_STOP_TIMEOUT_MS,
   MANAGED_PLUGIN_ENVIRONMENT,
@@ -1239,6 +1246,7 @@ const WORKLOAD_TERMINATION_TIMEOUT_MS = 120_000;
 const WORKLOAD_TERMINATION_POLL_MS = 100;
 // A yielding stop asks the queue whether other Work waits at most once a second.
 const WORKLOAD_TERMINATION_YIELD_CHECK_MS = 1_000;
+const IMMUTABLE_IMAGE_DIGEST = /@sha256:[a-f0-9]{64}$/;
 const AGENT_TRANSPORT_PORT = 18_790;
 const NATIVE_WORKER_PROFILE = "dedicated-native";
 const DEFAULT_NATIVE_OPENCLAW_SESSION_CAPACITY = 8;
@@ -1415,6 +1423,70 @@ const WORKLOAD_PEER_SCHEMA = Object.freeze({
     podLabels: POD_LABELS_SCHEMA,
   },
 });
+
+function gatewayRevision(
+  gatewayName: string,
+  annotations: Readonly<Record<string, string>>,
+): { revision: number; revisionId: string } {
+  const revision = Number(annotations[AGENT_REVISION_ANNOTATION]);
+  const revisionId = annotations[AGENT_REVISION_ID_ANNOTATION];
+  if (!Number.isSafeInteger(revision) || revision < 1 || !isNonEmptyString(revisionId)) {
+    throw new OwnershipFailure(`Refusing invalid Agent gateway revision ${gatewayName}.`);
+  }
+  return { revision, revisionId };
+}
+
+function observeGatewayPreparation(
+  gateway: ManagedKubernetesObject<"Deployment">,
+  {
+    requested,
+    configuration,
+    allowScaledDownPredecessor,
+  }: {
+    requested: Pick<AgentRevision, "id" | "revision">;
+    configuration: Pick<GatewayConfigurationSnapshot, "name" | "workspaceNodeId">;
+    allowScaledDownPredecessor: boolean;
+  },
+): { kind: "pending" } | { kind: "predecessor" | "current"; revisionId: string } {
+  const { revision: currentRevision, revisionId } = gatewayRevision(
+    gateway.metadata.name,
+    gateway.metadata.annotations ?? {},
+  );
+  const template = asRecord(gateway.spec?.template);
+  const pod = asRecord(template?.spec);
+  const volumes = Array.isArray(pod?.volumes) ? pod.volumes : [];
+  const volume = volumes.find((candidate) => asRecord(candidate)?.name === CONFIGURATION_VOLUME);
+  const currentConfiguration = asRecord(asRecord(volume)?.configMap)?.name;
+  if (typeof currentConfiguration !== "string") {
+    throw new OwnershipFailure(`Refusing unconfigured Agent gateway ${gateway.metadata.name}.`);
+  }
+  const replicas = gateway.spec?.replicas;
+  if (
+    replicas !== 1 &&
+    !(allowScaledDownPredecessor && replicas === 0 && requested.revision > currentRevision)
+  ) {
+    return { kind: "pending" };
+  }
+  if (requested.revision < currentRevision) {
+    return { kind: "pending" };
+  }
+  if (requested.revision !== currentRevision) {
+    return { kind: "predecessor", revisionId };
+  }
+  if (requested.id !== revisionId || currentConfiguration !== configuration.name) {
+    throw new ConfigurationFailure("Immutable AgentRevision gateway configuration cannot change.");
+  }
+  const containers = Array.isArray(pod?.containers) ? pod.containers : [];
+  const environment = asRecord(containers[0])?.env;
+  const binding = Array.isArray(environment)
+    ? environment.find((entry) => asRecord(entry)?.name === "OPENCLAW_WORKSPACE_NODE_ID")
+    : undefined;
+  const currentNodeId = asRecord(binding)?.value;
+  if (currentNodeId !== undefined && currentNodeId !== configuration.workspaceNodeId) {
+    throw new ConfigurationFailure("The active revision's workspace node binding cannot change.");
+  }
+  return { kind: "current", revisionId };
+}
 
 function required(value: unknown, description: string, path?: string): string {
   if (!isNonEmptyString(value)) {
@@ -3637,7 +3709,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       ] as const) {
         const path = description === "Gateway" ? "/images/gateway" : "/images/agent";
         required(image, `${description} image`, path);
-        if (options.images.requireImmutableDigest && !/@sha256:[a-f0-9]{64}$/.test(image)) {
+        if (options.images.requireImmutableDigest && !IMMUTABLE_IMAGE_DIGEST.test(image)) {
           throw configurationConstraintFailure(
             `${description} image must use an immutable SHA-256 digest.`,
             path,
@@ -6303,6 +6375,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
     context?: ComputeRevisionContext,
   ): void {
     const provider = this.providerAdmission(revision);
+    const saved = this.replacementRuntime(revision);
+    if (
+      saved &&
+      this.options.images.requireImmutableDigest &&
+      (!IMMUTABLE_IMAGE_DIGEST.test(saved.gateway) || !IMMUTABLE_IMAGE_DIGEST.test(saved.agent))
+    ) {
+      throw new ConfigurationFailure(
+        "Saved runtime images must use immutable SHA-256 digests; deploy a new Agent revision.",
+      );
+    }
     const admission = this.scratchAdmission(revision).runtime;
     if (admission?.startsWith("model-provider:v1:")) {
       if (provider === undefined || !admission.startsWith(`model-provider:v1:${provider}:`)) {
@@ -6754,59 +6836,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
       this.getOwned("Deployment", gatewayName, gatewayNamespace, gatewayOwnership),
     );
     if (existingGateway !== undefined) {
-      const annotations = existingGateway.metadata.annotations ?? {};
-      const currentRevision = Number(annotations[AGENT_REVISION_ANNOTATION]);
-      const currentRevisionId = annotations[AGENT_REVISION_ID_ANNOTATION];
-      existingGatewayRevisionId = currentRevisionId;
-      if (
-        !Number.isSafeInteger(currentRevision) ||
-        currentRevision < 1 ||
-        typeof currentRevisionId !== "string" ||
-        currentRevisionId.trim().length === 0
-      ) {
-        throw new OwnershipFailure(`Refusing invalid Agent gateway revision ${gatewayName}.`);
-      }
-      const template = asRecord(existingGateway.spec?.template);
-      const pod = asRecord(template?.spec);
-      const volumes = Array.isArray(pod?.volumes) ? pod.volumes : [];
-      const volume = volumes.find(
-        (candidate) => asRecord(candidate)?.name === CONFIGURATION_VOLUME,
-      );
-      const currentConfiguration = asRecord(asRecord(volume)?.configMap)?.name;
-      if (typeof currentConfiguration !== "string") {
-        throw new OwnershipFailure(`Refusing unconfigured Agent gateway ${gatewayName}.`);
-      }
-      if (
-        existingGateway.spec?.replicas !== 1 &&
-        !(
-          embedded &&
-          this.options.runtime !== undefined &&
-          existingGateway.spec?.replicas === 0 &&
-          revision.revision > currentRevision
-        )
-      ) {
+      const observed = observeGatewayPreparation(existingGateway, {
+        requested: revision,
+        configuration,
+        allowScaledDownPredecessor: embedded && this.options.runtime !== undefined,
+      });
+      if (observed.kind === "pending") {
         return incomplete();
       }
-      if (revision.revision < currentRevision) {
-        return incomplete();
-      }
-      if (revision.revision === currentRevision) {
-        if (revision.id !== currentRevisionId || currentConfiguration !== configuration.name) {
-          throw new ConfigurationFailure(
-            "Immutable AgentRevision gateway configuration cannot change.",
-          );
-        }
-        const containers = Array.isArray(pod?.containers) ? pod.containers : [];
-        const environment = asRecord(containers[0])?.env;
-        const binding = Array.isArray(environment)
-          ? environment.find((entry) => asRecord(entry)?.name === "OPENCLAW_WORKSPACE_NODE_ID")
-          : undefined;
-        const currentNodeId = asRecord(binding)?.value;
-        if (currentNodeId !== undefined && currentNodeId !== configuration.workspaceNodeId) {
-          throw new ConfigurationFailure(
-            "The active revision's workspace node binding cannot change.",
-          );
-        }
+      existingGatewayRevisionId = observed.revisionId;
+      if (observed.kind === "current") {
         const delivered = await this.deliveredWorkspaceNodeBinding(
           configuration,
           gatewayNamespace,
@@ -7073,7 +7112,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               gatewayName,
               gatewayOwnership,
               gatewayNamespace,
-              this.options.images.gateway,
+              this.workloadImages(revision, "gateway"),
               gatewayAccountName,
               "gateway",
               environment,
@@ -7238,7 +7277,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         revisionName,
         revisionOwnership,
         namespace,
-        nativeRuntime === undefined ? this.options.images.agent : this.options.images.gateway,
+        this.workloadImages(revision, "agent"),
         agentName,
         "agent",
         launch.environment,
@@ -7908,16 +7947,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
         throw new Error("The Agent gateway workload is unavailable.");
       }
       const annotations = gateway.metadata.annotations ?? {};
-      const currentRevision = Number(annotations[AGENT_REVISION_ANNOTATION]);
-      const currentRevisionId = annotations[AGENT_REVISION_ID_ANNOTATION];
-      if (
-        !Number.isSafeInteger(currentRevision) ||
-        currentRevision < 1 ||
-        typeof currentRevisionId !== "string" ||
-        currentRevisionId.trim().length === 0
-      ) {
-        throw new OwnershipFailure(`Refusing invalid Agent gateway revision ${gatewayName}.`);
-      }
+      const { revision: currentRevision, revisionId: currentRevisionId } = gatewayRevision(
+        gatewayName,
+        annotations,
+      );
       if (
         currentRevision > revision.revision ||
         (currentRevision === revision.revision && currentRevisionId !== revision.id)
@@ -7967,7 +8000,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               gatewayName,
               gatewayOwnership,
               namespace,
-              this.options.images.gateway,
+              this.workloadImages(revision, "gateway"),
               agentName,
               "gateway",
               launch.environment,
@@ -8081,7 +8114,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         revisionName,
         { ...ownership, revisionId: revision.id },
         namespace,
-        nativeRuntime === undefined ? this.options.images.agent : this.options.images.gateway,
+        this.workloadImages(revision, "agent"),
         agentName,
         "agent",
         environment,
@@ -8235,7 +8268,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         gatewayName,
         gatewayOwnership,
         gatewayNamespace,
-        this.options.images.gateway,
+        this.workloadImages(revision, "gateway"),
         gatewayName,
         "gateway",
         {},
@@ -14857,6 +14890,67 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return selected;
   }
 
+  snapshotRuntimeInputs(revision: Readonly<AgentRevision>): string | undefined {
+    // Optional completion metadata must not introduce a new admission failure
+    // when this Compute cannot identify the selected Sandbox execution contract.
+    const sandbox = revision.sandboxDriverId === undefined ? undefined : this.sandboxDriver;
+    if (revision.sandboxDriverId !== undefined && sandbox?.id !== revision.sandboxDriverId) {
+      return undefined;
+    }
+    if (
+      this.options.runtime === undefined ||
+      revision.harness.id !== "codex" ||
+      revision.harness.mode !== "dedicated" ||
+      revision.egressPlan !== undefined ||
+      sandbox?.provisionHarness !== undefined
+    ) {
+      return undefined;
+    }
+    return encodeReplacementRuntime({
+      gateway: this.options.images.gateway,
+      agent: this.options.images.agent,
+      compatibility: this.runtimeCompatibility(revision, revision.compute.admission),
+    });
+  }
+
+  private replacementRuntime(revision: Readonly<AgentRevision>) {
+    const saved = decodeReplacementRuntime(revision.compute.runtimeInputs);
+    if (saved === null) {
+      throw new ConfigurationFailure("AgentRevision runtime admission is invalid.");
+    }
+    return saved;
+  }
+
+  private runtimeCompatibility(
+    revision: Readonly<AgentRevision>,
+    policyAdmission: string | undefined,
+  ) {
+    const { images, ...settings } = this.options;
+    return replacementCompatibility(
+      revision,
+      {
+        settings,
+        requireImmutableDigest: images.requireImmutableDigest,
+        gatewayEntrypoint: gatewayRuntimeEntrypoint(revision.gatewayManagedMode === true),
+        harnessEntrypoint: COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
+        harnessWithNodeEntrypoint: COMPUTE_AGENT_WITH_NODE_ENTRYPOINT,
+        runtimeWrapper: RUNTIME_WRAPPER_COMMAND,
+        setupWrapper: SETUP_WRAPPER_COMMAND,
+        workspaceSetup: WORKSPACE_SETUP_RUNTIME,
+      },
+      policyAdmission,
+    );
+  }
+
+  private workloadImages(revision: Readonly<AgentRevision>, role: "gateway" | "agent") {
+    const images = this.replacementRuntime(revision) ?? this.options.images;
+    return {
+      runtime:
+        role === "gateway" || revision.harness.id === "openclaw" ? images.gateway : images.agent,
+      workspaceSetup: images.gateway,
+    };
+  }
+
   private publicGithubReadForRevision(revision: AgentRevision) {
     if (
       this.runtimeAdmission(revision) !== undefined &&
@@ -16576,7 +16670,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     name: string,
     ownership: Ownership,
     namespace: KubernetesNamespaceAddress,
-    image: string,
+    images: { readonly runtime: string; readonly workspaceSetup: string },
     serviceAccountName: string,
     role: "gateway" | "agent",
     environment: Readonly<Record<string, string>>,
@@ -16596,6 +16690,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     codexLaunch?: CodexLaunch,
     scratch?: KubernetesScratchVolume,
   ): ManagedKubernetesObject {
+    const image = images.runtime;
     const providerOwnsHarness = codexLaunch?.providerOwned === true;
     const harnessSetupWorkspace = providerOwnsHarness
       ? { environment: "OPENCLAW_WORKSPACE_DIR" as const }
@@ -17183,7 +17278,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       });
       initContainers.push({
         name: "initialize-workspace",
-        image: this.options.images.gateway,
+        image: images.workspaceSetup,
         imagePullPolicy: "IfNotPresent",
         // Native setup loads the Gateway CLI and needs its configured resource budget.
         resources: this.options.resources.gateway,

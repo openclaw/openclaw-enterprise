@@ -211,6 +211,24 @@ prerequisite failures do not establish a passing suite. Hosted verification,
 external review disclosure approval, live runtime qualification and native media
 attachments remain required.
 
+## Main refresh, 2026-11-16
+
+Main at `b63f1138a` owns migrations 0079 and 0080. The ceiling migration and
+snapshot now use 0081, with unchanged ceiling SQL. The merge preserves main's
+predecessor replacement state, revision runtime inputs and historical migration
+records. The PostgreSQL catalog and logical restore aliases are measured again
+through 0081; the compatibility scenarios include the completed 0080 predecessor.
+RFC decision status remains Proposed. The earlier verification records above
+refer to their original revisions.
+
+The combined PostgreSQL restore and rollback scenarios pass 44/44, and the
+startup/owner and Agent policy suites pass 13/13 and 45/45, all without skips.
+The singleton suites use separate fresh databases; an initial parallel run
+shared one database and failed during competing fixture bootstrap, before the
+owner assertions. Typecheck, formatting, workspace, OpenAPI, CI inventory and
+documentation checks pass. Current-head hosted CI is required after publication;
+the external review, live runtime and native media requirements remain open.
+
 ## Manual Notes
 
 ## Changelog
