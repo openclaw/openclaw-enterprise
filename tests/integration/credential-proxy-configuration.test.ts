@@ -22,6 +22,7 @@ import {
 } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import * as releaseFixture from "../fixtures/driver-packages/protected-execution-driver/index.ts";
 import * as repositoryFixture from "../fixtures/driver-packages/protected-execution-driver/repository-git.ts";
+import { createExternalProtectedDriver } from "../../apps/controller/src/composition/driver-packages.ts";
 
 const sensitive = "SECRET-DO-NOT-LEAK";
 const releaseConfiguration = {
@@ -223,6 +224,56 @@ for (const owner of owners) {
     }
   });
 }
+
+test("protected repository startup closes an external registration it refuses", async () => {
+  const selection = {
+    id: "external-protected",
+    implementation: "external-release-fixture",
+    configuration: releaseConfiguration,
+    definition: releaseFixture,
+  };
+  const { calls } = releaseFixture;
+  const closed = calls.close;
+  // The release fixture has Sandbox and Credential Proxy, but no repository Git transport.
+  await assert.rejects(
+    createExternalProtectedDriver(releaseFixture, selection, "authority", true),
+    {
+      name: "DriverSelectionError",
+      message:
+        "Protected repository Git requires the selected Driver's Sandbox access and Credential Proxy transport.",
+    },
+  );
+  assert.equal(calls.close, closed + 1, "the refused registration is closed");
+  const accepted = await createExternalProtectedDriver(releaseFixture, selection);
+  assert.equal(calls.close, closed + 1, "an accepted registration stays open");
+  await accepted.close();
+  assert.equal(calls.close, closed + 2);
+
+  // A registration missing a capability is closed too, and a failing close keeps the refusal.
+  let closes = 0;
+  const partial = (close: () => void) => ({
+    ...releaseFixture,
+    createDriver(options: Parameters<typeof releaseFixture.createDriver>[0]) {
+      const { capabilities } = releaseFixture.createDriver(options);
+      return { capabilities: { sandbox: capabilities.sandbox }, close };
+    },
+  });
+  await assert.rejects(
+    createExternalProtectedDriver(partial(() => void closes++), selection),
+    { name: "DriverSelectionError" },
+  );
+  await assert.rejects(
+    createExternalProtectedDriver(
+      partial(() => {
+        closes++;
+        throw new Error("close failed");
+      }),
+      selection,
+    ),
+    { name: "DriverSelectionError" },
+  );
+  assert.equal(closes, 2);
+});
 
 test("OpenShell direct construction and policy rendering still enforce configuration validation", () => {
   for (const options of [

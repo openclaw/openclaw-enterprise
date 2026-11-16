@@ -1464,10 +1464,11 @@ export async function loadInstallationConfiguration(options: {
           ) as SandboxDriver,
         };
       }
-      const owner = createExternalProtectedDriver(
+      const owner = await createExternalProtectedDriver(
         sandboxPackage.module,
         sandbox,
         repositoryDeliveryMode === "protected" ? repositoryRuntime?.authorityIdentity : undefined,
+        repositoryDeliveryMode === "protected",
       );
       return { sandboxDriver: owner.require("sandbox"), protectedDriver: owner };
     }

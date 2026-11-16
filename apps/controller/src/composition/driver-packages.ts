@@ -451,29 +451,46 @@ export function createExternalDriver(
   return created as unknown as ConfigurationDriver | IAMDriver | ComputeDriver | SandboxDriver;
 }
 
-/** Load one package instance for the selected capabilities; the sandbox selection owns its configuration. */
-export function createExternalProtectedDriver(
+/** Load one package instance for the selected capabilities; the sandbox selection owns its configuration.
+ * A registration this refuses is closed before the refusal returns, so a refused startup can exit. */
+export async function createExternalProtectedDriver(
   implementation: ExternalDriverModule,
   selection: SelectedDriverConfiguration,
   // Composition that changes the installed authority must also change its durable identity.
   repositoryAuthorityIdentity?: string,
-): InstalledDriver {
+  // Protected repository delivery selected this package as its repository Git sender.
+  repositoryGit = false,
+): Promise<InstalledDriver> {
   const { id, configuration } = selection;
   const registration = asRecord(
     implementation.createDriver({ id, configuration, implementation: selection.implementation }),
   );
-  if (!registration || !asRecord(registration.capabilities)) {
-    throw new Error(
-      "The selected package must return one Driver registration for Sandbox and Credential Proxy.",
+  try {
+    if (!registration || !asRecord(registration.capabilities)) {
+      throw new Error(
+        "The selected package must return one Driver registration for Sandbox and Credential Proxy.",
+      );
+    }
+    const owner = new InstalledDriver(
+      repositoryAuthorityIdentity === undefined
+        ? selection
+        : { ...selection, configuration: { sandbox: configuration, repositoryAuthorityIdentity } },
+      registration as unknown as DriverRegistration,
     );
+    owner.require("sandbox");
+    owner.require("credential_proxy");
+    if (repositoryGit) {
+      owner.requireRepositoryGitTransport();
+    }
+    return owner;
+  } catch (error) {
+    try {
+      if (typeof registration?.close === "function") {
+        await registration.close();
+      }
+    } catch {
+      // The refusal above is the startup error; a failed close does not replace it.
+    }
+    throw error;
   }
-  const owner = new InstalledDriver(
-    repositoryAuthorityIdentity === undefined
-      ? selection
-      : { ...selection, configuration: { sandbox: configuration, repositoryAuthorityIdentity } },
-    registration as unknown as DriverRegistration,
-  );
-  owner.require("sandbox");
-  owner.require("credential_proxy");
-  return owner;
 }
