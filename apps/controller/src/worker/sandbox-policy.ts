@@ -240,6 +240,7 @@ export async function reconcileSandboxPolicy(
     let placement: Awaited<ReturnType<NonNullable<typeof options.compute.resolveSandboxNamespace>>>;
     const context = () => ({ namespace: placement, revision, signal: signal() });
     let writeSent = false;
+    let staleBeforeWrite = false;
     // Only provider operations are retried here. Database/audit failures roll back the pass.
     try {
       placement = await options.compute.resolveSandboxNamespace(namespace);
@@ -247,15 +248,19 @@ export async function reconcileSandboxPolicy(
       observation = await driver.observeNetworkPolicy(context(), policy.application.snapshot);
       await renew();
       if (policy.application.expectedProviderVersion !== undefined && !observation.matches) {
-        writeSent = true;
-        await driver.applyNetworkPolicy(context(), {
-          snapshot: policy.application.snapshot,
-          expectedProviderVersion: policy.application.expectedProviderVersion,
-          operationId: policy.application.id,
-        });
-        await renew();
-        observation = await driver.observeNetworkPolicy(context(), policy.application.snapshot);
-        await renew();
+        if (observation.resourceVersion !== policy.application.expectedProviderVersion) {
+          staleBeforeWrite = true;
+        } else {
+          writeSent = true;
+          await driver.applyNetworkPolicy(context(), {
+            snapshot: policy.application.snapshot,
+            expectedProviderVersion: policy.application.expectedProviderVersion,
+            operationId: policy.application.id,
+          });
+          await renew();
+          observation = await driver.observeNetworkPolicy(context(), policy.application.snapshot);
+          await renew();
+        }
       }
     } catch (error) {
       if (options.signal.aborted || error instanceof WorkClaimLostError) {
@@ -279,6 +284,11 @@ export async function reconcileSandboxPolicy(
               throw readError;
             }
           });
+        if (current !== undefined) {
+          options.signal.throwIfAborted();
+          await renew();
+          options.signal.throwIfAborted();
+        }
       }
       if (current?.matches) {
         observation = current;
@@ -295,6 +305,10 @@ export async function reconcileSandboxPolicy(
         await queue.retry(claim, { code: "DEPENDENCY_UNAVAILABLE" });
         return "retry";
       }
+    }
+    if (staleBeforeWrite) {
+      await fail("SANDBOX_POLICY_PROVIDER_FAILED");
+      return "permanent";
     }
     if (observation.matches && observation.state === "applied") {
       const applied = {
