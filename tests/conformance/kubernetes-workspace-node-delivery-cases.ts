@@ -41,6 +41,7 @@ type DedicatedDeployFixture = DeployTransport & {
 export type DedicatedDeployFixtureFactory = (options?: {
   statusProxy?: boolean;
   clock?: { now: number };
+  delay?: (ms: number) => Promise<void>;
   revision?: Pick<AgentRevision, "id" | "agentId">;
 }) => DedicatedDeployFixture;
 

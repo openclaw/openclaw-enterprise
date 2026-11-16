@@ -17,18 +17,26 @@ function activationContext(revision: AgentRevision): ComputeRevisionContext {
   return { ...authContext(revision), secretEnvironment: [] };
 }
 
-async function workspaceNodeAwaitingAckFixture(createFixture: DedicatedDeployFixtureFactory) {
+function activationFixture(createFixture: DedicatedDeployFixtureFactory) {
+  // Activation polls and enrollment observations share one clock.
   const clock = { now: 0 };
-  const fixture = createFixture({ clock });
-  const { state, driver, prepare } = fixture;
-  driver["delay"] = async (ms: number) => {
-    clock.now += ms;
-  };
+  const fixture = createFixture({
+    clock,
+    delay: async (ms) => {
+      clock.now += ms;
+    },
+  });
+  return { ...fixture, clock };
+}
+
+async function workspaceNodeAwaitingAckFixture(createFixture: DedicatedDeployFixtureFactory) {
+  const fixture = activationFixture(createFixture);
+  const { state, prepare } = fixture;
   await prepareAndMarkWorkloadsReady(fixture);
   state.connected = true;
   state.gatewayAppliesBinding = false;
   assert.equal((await prepare()).ready, true);
-  return { ...fixture, clock };
+  return fixture;
 }
 
 // Ratchet for deploy time: every workload start of a first dedicated deploy
@@ -36,7 +44,6 @@ async function workspaceNodeAwaitingAckFixture(createFixture: DedicatedDeployFix
 // wait on a start. Lower these counts when a change removes a start or a pass;
 // never raise them silently.
 export async function checkFirstDeployWorkloadStarts(createFixture: DedicatedDeployFixtureFactory) {
-  const clock = { now: 0 };
   const {
     state,
     driver,
@@ -49,11 +56,7 @@ export async function checkFirstDeployWorkloadStarts(createFixture: DedicatedDep
     read,
     prepare,
     markWorkloadsReady,
-  } = createFixture({ clock });
-  // Activation's ack poll waits on the same clock, so a missing ack fails instead of spinning.
-  driver["delay"] = async (ms: number) => {
-    clock.now += ms;
-  };
+  } = activationFixture(createFixture);
   // Workloads become ready as soon as the controller waits on them, so every
   // pending pass below is a wait on a workload start, not on test timing.
   let pendingPasses = 0;

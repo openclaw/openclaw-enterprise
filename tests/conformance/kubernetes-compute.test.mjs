@@ -560,6 +560,7 @@ function dedicatedFirstDeployFixture({
   statusProxy = true,
   namespace = kubernetesNamespaceName(tenant.id),
   clock,
+  delay,
   modelEndpoint,
   modelProtocol = "openai-responses",
   standaloneWebSearch,
@@ -698,6 +699,9 @@ function dedicatedFirstDeployFixture({
     driver.workspaceNodePairingWaitMs = 60;
   } else {
     driver.now = () => clock.now;
+  }
+  if (delay !== undefined) {
+    driver.delay = delay;
   }
   const revision = routedRevision(driver, {
     plugins: {
