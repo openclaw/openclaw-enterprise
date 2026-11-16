@@ -53,6 +53,7 @@ import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
 import { ownedName, randomSuffix, slug } from "./resource-names.ts";
 import { registryImage } from "./fixture-support-images.ts";
 import {
+  assertNodeBaseImage,
   imageBuildArgs,
   imageBuildBudgetMs,
   imageBuildDeadlineMs,
@@ -177,13 +178,13 @@ function parseArgs(argv) {
     if (!arg.startsWith("--")) {
       throw new Error(`Unexpected argument: ${arg}`);
     }
-    if (arg.startsWith("--require-cache-export=")) {
-      throw new Error("--require-cache-export is a flag and takes no value.");
-    }
     const name = arg.slice(2);
-    if (name === "require-cache-export") {
-      args[name] = true;
-      continue;
+    if (
+      /^(?:warm-image-cache|require-cache-export|node-base-image|validate-node-base-image)(?:=|$)/u.test(
+        name,
+      )
+    ) {
+      throw new Error("Image cache warming uses scripts/ci/warm-image-cache.ts.");
     }
     const value = argv[index + 1];
     if (value === undefined || value.startsWith("--")) {
@@ -540,14 +541,6 @@ function repositoryCredentialsImageJournal(statePath, state) {
   };
 }
 
-/** @param {string | undefined} image */
-function assertNodeBaseImage(image) {
-  assertImmutableImageReference(image, "NODE_BASE_IMAGE");
-  if (!/(?:^|[/:])node:24[.-]/.test(image)) {
-    throw new Error("NODE_BASE_IMAGE must select an approved Node 24 image.");
-  }
-}
-
 function assertImmutableEnvImages(names, env = process.env) {
   for (const name of names) {
     assertImmutableImageReference(env[name], name);
@@ -659,6 +652,24 @@ async function validateLaneInputsBeforeSideEffects(lane, { file, modelSelectors 
   }
 }
 
+/**
+ * @param {string} statePath
+ * @param {CiState} state
+ * @param {{
+ *   controller?: boolean,
+ *   runtime?: boolean,
+ *   nodeBaseImage?: string | undefined,
+ *   localStore?: boolean,
+ *   cacheWarm?: boolean,
+ *   requireCacheExport?: boolean,
+ *   reuseEngineImages?: boolean,
+ *   revision?: string,
+ *   controllerTarget?: "runtime" | "development",
+ *   buildConcurrency?: number,
+ *   registryOutput?: string,
+ *   runtimeArtifact?: ReturnType<typeof runtimeArtifactSelection>,
+ * }} [options]
+ */
 async function buildRuntimeImages(
   statePath,
   state,
@@ -718,6 +729,7 @@ async function buildRuntimeImages(
     ["version", "--format", "{{.Server.Version}}"],
     { timeoutMs: importBudgetMs },
   );
+  /** @type {Environment} */
   const env = {};
   const resources = [];
   const label =
@@ -2279,7 +2291,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
       env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE = database.name;
       env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
-    if (relativeFile.endsWith("occ-metrics.test.mjs")) {
+    if (relativeFile === "tests/integration/occ-metrics.test.ts") {
       env.OCC_METRICS_TEST_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
     if (relativeFile === "tests/integration/postgres-api-request-audit.test.ts") {
@@ -2356,28 +2368,10 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
   };
 }
 
-// Repository of main's runtime images left tagged in the runners' shared image
-// cache (see warmImageCache). It is outside cleanup's owned names and is never pushed.
-const warmRuntimeImageRepository = "localhost/openclaw-ci-main/runtime";
-
-// Builds the Images and Packaging controller and runtime images only to write
-// main's hosted BuildKit cache (ci-image-cache.yml). It uses that lane's state,
-// inputs and build arguments, so the cache keys are the ones the CI image lanes
-// restore. GitHub scopes cache writes to the run's ref; only main may warm.
-async function warmImageCache({ statePath, requireCacheExport = false, nodeBaseImage }) {
-  if (
-    process.env.GITHUB_REF !== "refs/heads/main" ||
-    !["push", "schedule", "workflow_dispatch"].includes(process.env.GITHUB_EVENT_NAME)
-  ) {
-    throw new Error("Only a push, schedule or dispatch on main may warm the image cache.");
-  }
-  if (requireCacheExport) {
-    if (process.env.GITHUB_REPOSITORY !== "openclaw/openclaw-enterprise") {
-      throw new Error("Required cache exports run only in the canonical repository.");
-    }
-    // The protected caller resolves this input once for both producer and consumers.
-    assertNodeBaseImage(nodeBaseImage);
-  }
+// Both builds share the images-packaging recipe and cleanup journal with the
+// image lanes, so the cache writer produces the same inputs the lanes restore.
+/** @param {string | undefined} statePath */
+export async function prepareImageCacheBuilds(statePath) {
   const lane = "images-packaging";
   await validateLaneInputsBeforeSideEffects(lane);
   const resolvedStatePath = normalizeStatePath(statePath);
@@ -2386,72 +2380,35 @@ async function warmImageCache({ statePath, requireCacheExport = false, nodeBaseI
   }
   const state = baseState(lane, resolvedStatePath);
   await writeState(resolvedStatePath, state);
-  const effectiveNodeBaseImage = nodeBaseImage ?? effectiveLaneEnv(lane).NODE_BASE_IMAGE;
-  // The two builds are independent; in parallel their exports land sooner.
-  const [, runtime] = await timedPreparation(
-    "image-cache-warm",
-    "controller-runtime-image-build",
-    () =>
-      prepareTogether([
-        () =>
-          buildRuntimeImages(resolvedStatePath, state, {
-            controller: true,
-            nodeBaseImage: effectiveNodeBaseImage,
-            cacheWarm: true,
-            requireCacheExport,
-          }),
-        () =>
-          buildRuntimeImages(resolvedStatePath, state, {
-            runtime: true,
-            cacheWarm: true,
-            requireCacheExport,
-          }),
-      ]),
-  );
-  // The hosted runners' Docker data comes from a shared image cache, which keeps
-  // the images a job leaves tagged. Cleanup removes this run's owned tag, so also
-  // tag main's runtime image under a local name that no cleanup owns: image lanes
-  // then find the ID their restored cache resolves to (reuseEngineImage) instead
-  // of downloading and loading it. The tag names the image ID, so each new image
-  // gets its own tag instead of moving one; the shared cache evicts images unused
-  // for 8 days. Nothing is pushed.
-  const owned = runtime.env.OCC_TEST_RUNTIME_IMAGE;
-  const id = (
-    await boundedImageCommand(["image", "inspect", "--format", "{{.Id}}", owned])
-  ).stdout.trim();
-  if (!/^sha256:[a-f0-9]{64}$/u.test(id)) {
-    throw new Error("The warm runtime image has no image ID to keep.");
-  }
-  const kept = `${warmRuntimeImageRepository}:${id.slice("sha256:".length, "sha256:".length + 12)}`;
-  await boundedImageCommand(["tag", owned, kept]);
-  progress(
-    "image-cache-warm",
-    JSON.stringify({ stage: "runtime-image-kept", image: id, tag: kept }),
-  );
+  /** @type {string | undefined} */
+  const defaultNodeBaseImage = effectiveLaneEnv(lane).NODE_BASE_IMAGE;
+  return {
+    /** @param {string | undefined} nodeBaseImage @param {boolean} requireCacheExport */
+    async buildController(nodeBaseImage, requireCacheExport) {
+      await buildRuntimeImages(resolvedStatePath, state, {
+        controller: true,
+        nodeBaseImage: nodeBaseImage ?? defaultNodeBaseImage,
+        cacheWarm: true,
+        requireCacheExport,
+      });
+    },
+    /** @param {boolean} requireCacheExport */
+    async buildRuntime(requireCacheExport) {
+      const { env } = await buildRuntimeImages(resolvedStatePath, state, {
+        runtime: true,
+        cacheWarm: true,
+        requireCacheExport,
+      });
+      if (!env.OCC_TEST_RUNTIME_IMAGE) {
+        throw new Error("Image cache preparation did not produce a runtime image tag.");
+      }
+      return env.OCC_TEST_RUNTIME_IMAGE;
+    },
+  };
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const warmImageCacheSelected = Object.hasOwn(args, "warm-image-cache");
-  if (
-    !warmImageCacheSelected &&
-    ["require-cache-export", "node-base-image"].some((name) => Object.hasOwn(args, name))
-  ) {
-    throw new Error("--require-cache-export and --node-base-image require --warm-image-cache.");
-  }
-  if (warmImageCacheSelected) {
-    if (["lane", "file", "selected-file", "github-env"].some((name) => Object.hasOwn(args, name))) {
-      throw new Error(
-        "--warm-image-cache cannot be combined with lane, file, selected-file or github-env.",
-      );
-    }
-    await warmImageCache({
-      statePath: args.state,
-      requireCacheExport: args["require-cache-export"] === true,
-      nodeBaseImage: args["node-base-image"],
-    });
-    return;
-  }
   if (!args.lane) {
     throw new Error("--lane is required.");
   }
@@ -2478,7 +2435,6 @@ async function main() {
 }
 
 export {
-  assertNodeBaseImage,
   devUpUnrelatedImage,
   prepareDevUpImage,
   defaultK3sImage,

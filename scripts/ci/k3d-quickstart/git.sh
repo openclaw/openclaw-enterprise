@@ -60,7 +60,7 @@ helm upgrade openshell-gateway "$OCC_DEVELOPMENT_STATE_DIRECTORY/openshell/chart
   "${helmopts[@]}" -f "$RUN_DIR/openshell-git-values.json" --wait
 kube -n "$PLATFORM_NS" rollout status statefulset/openshell-gateway --timeout=3m
 kube -n "$PLATFORM_NS" exec -i deployment/openclaw-enterprise-worker -c worker -- \
-  node --input-type=module - "$namespace" "$ref" < docs/assets/openshell-quickstart/verify-github-installation.mjs \
+  node --input-type=module-typescript - "$namespace" "$ref" < docs/snippets/openshell-quickstart/verify-github-installation.mts \
   > "$RUN_DIR/github-worker-check.json"
 jq -e '.success==true' "$RUN_DIR/github-worker-check.json" >/dev/null
 request GET "$base/agents/$agent/repository-options" |

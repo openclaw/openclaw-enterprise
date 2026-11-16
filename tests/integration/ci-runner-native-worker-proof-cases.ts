@@ -10,9 +10,11 @@ import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.ts";
 import {
   collectNativeWorkerFailure,
   nativePlacementReadRetryable,
+} from "../helpers/local-first-agent-native.mjs";
+import {
   nativeWorkerHistoryEvidence,
   nativeWorkerProofProgram,
-} from "../helpers/local-first-agent-native.mjs";
+} from "../helpers/native-worker-history-proof.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 function modelHistoryDiagnostic(

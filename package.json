@@ -79,9 +79,9 @@
     "eslint": "10.14.0",
     "globals": "17.14.0",
     "pg": "8.23.1",
-    "playwright": "1.64.1",
+    "playwright": "1.65.0",
     "prettier": "3.9.10",
-    "typebox": "1.4.4",
+    "typebox": "1.4.6",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "typescript-compiler-api": "npm:typescript@6.0.3",
     "typescript-eslint": "8.72.1"

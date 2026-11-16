@@ -10,16 +10,15 @@ import {
   clientAddresses,
   consoleOrigin as origin,
   currentSession,
-  fakeGoogle,
   fakeOidc,
   fixtureOidcIssuer,
-  googleSignIn as googleSignInFixture,
   googleUpgradeSettings,
   loginDenialCount,
   memoryLogger,
   oidcSignIn as oidcSignInFixture,
   oidcUpgradeSettings,
 } from "../helpers/production-sign-in.mjs";
+import { fakeGoogle, googleSignIn as googleSignInFixture } from "../helpers/google-sign-in.ts";
 import {
   accountPrincipalId,
   authOperation,
@@ -40,7 +39,7 @@ import {
   type SessionHeaders,
   type SignInApp,
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
-import { providerInstanceId } from "../helpers/human-login-transport.mjs";
+import { providerInstanceId } from "../helpers/human-login-transport.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";
 

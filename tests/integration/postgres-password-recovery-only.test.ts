@@ -9,17 +9,16 @@ import {
   clientAddresses,
   consoleOrigin as origin,
   createAccount,
-  fakeGoogle,
   oidcSignIn,
   oidcUpgradeSettings,
   fixtureOidcIssuer,
-  googleSignIn,
   googleUpgradeSettings,
   loginDenialCount,
   memoryLogger,
   readAccount,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
+import { fakeGoogle, googleSignIn } from "../helpers/google-sign-in.ts";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import {
   responseData,

@@ -36,7 +36,7 @@ type DeleteRequest = Address & { body: { preconditions: { uid: string } } };
 type PodRequest = { namespace: string; labelSelector?: string };
 // This view exposes only the existing transport seam used by the fixture.
 export type FixtureDriver = Omit<KubernetesComputeDriver, never> & {
-  options: KubernetesComputeDriver["options"];
+  options: ConstructorParameters<typeof KubernetesComputeDriver>[0];
   manifest: KubernetesComputeDriver["manifest"];
   gatewayNamespaceManifest: KubernetesComputeDriver["gatewayNamespaceManifest"];
   networkPolicies: KubernetesComputeDriver["networkPolicies"];

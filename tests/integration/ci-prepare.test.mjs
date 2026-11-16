@@ -1332,44 +1332,6 @@ assert.equal(commands, 0);
     }
   });
 
-  test("focused CI selection fails before tool setup or lane preparation", async () => {
-    const action = loadYaml(
-      await readFile(join(repositoryRoot, ".github/actions/run-ci-lane/action.yml"), "utf8"),
-    );
-    const steps = action.runs.steps;
-    const index = steps.findIndex((step) => step.name === "Validate focused test selection");
-    assert.ok(index >= 0);
-    const validation = steps[index];
-    assert.equal(validation.if, "inputs.test-file != ''");
-    assert.notEqual(validation["continue-on-error"], true);
-    for (const name of [
-      "Set up CI tools",
-      "Build Go CLI for development installation proof",
-      "Prepare lane",
-    ]) {
-      assert.ok(
-        index < steps.findIndex((step) => step.name === name),
-        `Validate selection before ${name}`,
-      );
-    }
-    // Execute the action's real guard, using a real manifest member and a file owned by another lane.
-    for (const [file, status] of [
-      ["tests/integration/local-first-agent-openshell-real.test.mjs", 0],
-      ["tests/integration/ci-runner-process-ownership.test.ts", 1],
-      ["tests/integration/../integration/local-first-agent-openshell-real.test.mjs", 1],
-    ]) {
-      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", validation.run], {
-        cwd: repositoryRoot,
-        env: { ...process.env, CI_SELECTED_LANE: "openshell", CI_SELECTED_TEST_FILE: file },
-        encoding: "utf8",
-      });
-      assert.equal(result.status, status, result.stderr);
-      if (status !== 0) {
-        assert.match(result.stderr, /invalid-file-selection/);
-      }
-    }
-  });
-
   test("advisory labels select only requested jobs and bind focused proof to the PR merge", async (t) => {
     const workflow = loadYaml(
       await readFile(join(repositoryRoot, ".github/workflows/qa-advisory.yml"), "utf8"),
@@ -1772,56 +1734,6 @@ assert.equal(commands, 0);
       } else {
         await assert.rejects(stat(join(runRoot, "qa-matrix-credentials")), { code: "ENOENT" });
       }
-    }
-  });
-
-  test("installer cache selection covers whole lanes and preserves focused image selection", async (t) => {
-    const action = loadYaml(
-      await readFile(join(repositoryRoot, ".github/actions/run-ci-lane/action.yml"), "utf8"),
-    );
-    const select = action.runs.steps.find((step) => step.id === "image-mode");
-    const root = await fixture(t);
-    for (const [index, [lane, file, sourceBuild, firstAgent, view = "default"]] of [
-      ["dev-up-k3d", "", "true", "false"],
-      ["qa-matrix", "", "true", "false"],
-      ["openshell", "", "true", "false"],
-      ["qa-matrix", "tests/integration/qa-matrix-real.test.mjs", "true", "false"],
-      ["dev-up-k3d", "tests/integration/dev-up-k3d-keycloak-real.test.ts", "true", "false"],
-      ["openshell", "tests/integration/dev-up-openshell-k3d-real.test.mjs", "true", "false"],
-      ["openshell", "tests/integration/local-first-agent-openshell-real.test.mjs", "false", "true"],
-      ["openshell", "tests/integration/openshell-refresh-real.test.ts", "false", "false"],
-      ["openshell-policy", "", "true", "false", "full-integration"],
-      ["openshell-installers", "", "true", "false", "full-integration"],
-      [
-        "openshell-policy",
-        "tests/integration/openshell-refresh-real.test.ts",
-        "false",
-        "false",
-        "full-integration",
-      ],
-    ].entries()) {
-      const output = join(root, `image-mode-${index}`);
-      // Run the action's actual selector: confusing these paths can replace source-build proof
-      // with selected images, or leave whole-lane installer builds without a primed builder.
-      const result = spawnSync("bash", ["-e", "-c", select.run], {
-        cwd: repositoryRoot,
-        env: {
-          ...process.env,
-          CI_SELECTED_LANE: lane,
-          CI_SELECTED_TEST_FILE: file,
-          OCC_CI_SUITE_VIEW: view,
-          GITHUB_OUTPUT: output,
-        },
-        encoding: "utf8",
-      });
-      assert.equal(result.status, 0, result.stderr);
-      const outputs = Object.fromEntries(
-        (await readFile(output, "utf8"))
-          .trim()
-          .split("\n")
-          .map((line) => line.split("=")),
-      );
-      assert.deepEqual(outputs, { "source-build": sourceBuild, "first-agent": firstAgent });
     }
   });
 

@@ -4,20 +4,13 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isIP } from "node:net";
-import { checkServerIdentity } from "node:tls";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import {
-  createKubernetesComputeDriver,
-  PLUGIN_RUNTIME_STATUS_PORT,
-} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
-import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
 import {
   renderProductionChart,
@@ -26,11 +19,10 @@ import {
   productionCollectorValues,
   goToolEnvironment,
   renderExecutionChart,
-} from "../helpers/production-chart.mjs";
+} from "../helpers/production-chart.ts";
 import { productionChartRendererRefusalCases } from "../helpers/production-chart-renderer-refusal-cases.ts";
 import {
   gatewayRoutingValues,
-  gatewaySandboxValues,
   protectedRepositoryValues,
   render,
   repositoryCredentialValues,
@@ -51,6 +43,12 @@ import { RecordingContext } from "../conformance/kubernetes-teardown-cases.ts";
 import { withBoundedTeardown } from "../helpers/bounded-teardown.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 
+import {
+  registerExecutionGatewayHostnameCase,
+  registerExternalGatewayTrustCase,
+  registerProductionGatewayHostnameCase,
+  registerTenantGatewayPortCase,
+} from "./production-kubernetes-gateway-contract-cases.ts";
 import {
   registerNativeAdminAndRuntimeLogCases,
   registerSandboxIngressCase,
@@ -468,85 +466,7 @@ function chartAllowsIngress(objects, destination, source, port, protocol = "TCP"
   );
 }
 
-test(
-  "the chart refuses tenant Gateway ports Compute refuses for the runtime status port",
-  tooling,
-  async () => {
-    const compute = (gatewayPort, sandbox) => {
-      const options = conformanceKubernetesOptions({
-        gatewayTrustedProxyCidrs: ["10.0.0.0/8"],
-        runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
-      });
-      // Routed Compute takes no direct gateway clients.
-      const { gatewayClients, ...network } = options.network;
-      return createKubernetesComputeDriver({
-        ...options,
-        network: { ...network, gatewayPort },
-        gatewayRouting: {
-          gatewayName: "oce-agent-gateways",
-          gatewayNamespace: "openclaw-system",
-          envoyNamespace: "envoy-gateway-system",
-          ...(sandbox ? { sandbox: { domain: "previews.example.test" } } : {}),
-        },
-      });
-    };
-    // tenantGatewayPort must equal Compute's network.gatewayPort, so Helm refuses exactly
-    // what controller startup refuses instead of installing a controller that cannot start.
-    for (const [gatewayPort, sandbox, refused, message] of [
-      [
-        PLUGIN_RUNTIME_STATUS_PORT,
-        false,
-        true,
-        `Gateway port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
-      ],
-      [
-        PLUGIN_RUNTIME_STATUS_PORT,
-        true,
-        true,
-        `Gateway port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
-      ],
-      [
-        PLUGIN_RUNTIME_STATUS_PORT - 1,
-        true,
-        true,
-        `Gateway sandbox port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
-      ],
-      [PLUGIN_RUNTIME_STATUS_PORT - 1, false, false],
-      [PLUGIN_RUNTIME_STATUS_PORT + 1, true, false],
-      [8080, true, false],
-    ]) {
-      const row = JSON.stringify({ gatewayPort, sandbox });
-      const chartValues = {
-        ...(sandbox ? gatewaySandboxValues : gatewayRoutingValues),
-        "gatewayRouting.tenantGatewayPort": String(gatewayPort),
-      };
-      if (refused) {
-        assert.throws(
-          () => compute(gatewayPort, sandbox),
-          (error) => {
-            assert.ok(error instanceof ConfigurationValidationError);
-            assert.deepEqual(error.error.details, [
-              { path: "/network/gatewayPort", code: "INVALID_VALUE", message },
-            ]);
-            return true;
-          },
-          row,
-        );
-        await assert.rejects(
-          render(chartValues),
-          ({ code, stderr }) =>
-            code !== 0 &&
-            stderr.includes("gatewayRouting.tenantGatewayPort") &&
-            stderr.includes(`reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}`),
-          row,
-        );
-      } else {
-        assert.doesNotThrow(() => compute(gatewayPort, sandbox), row);
-        await render(chartValues);
-      }
-    }
-  },
-);
+registerTenantGatewayPortCase();
 
 registerExecutionClusterSecretCases({
   render,
@@ -750,161 +670,7 @@ test("production native examples satisfy the current Helm, Installation, and PVC
   assert.equal(bootstrapClaim.spec.resources.requests.storage, "1Gi");
 });
 
-test(
-  "production Helm custom Gateway hostname follows the loaded Compute contract",
-  tooling,
-  async (t) => {
-    const { loadInstallationConfiguration } =
-      await import("../../apps/controller/src/composition/installation-config.ts");
-    const directory = await temporaryDirectory(t, "occ-control-hostname-");
-    const example = loadYaml(
-      (await readFile(new URL("installation.yaml", productionExamples), "utf8")).replace(
-        "<actual-proxy-source-cidr>",
-        "192.0.2.10/32",
-      ),
-    );
-    const installationPath = join(directory, "installation.yaml");
-    const load = () =>
-      loadInstallationConfiguration({
-        mode: "production",
-        environment: { OCC_CONFIG_PATH: installationPath },
-      });
-    const invalid = [
-      "192.168.1",
-      "2130706433",
-      "127.1",
-      "0177.0.0.1",
-      "0x7f000001",
-      "0x7f.0.0.1",
-      "0x",
-      "0x.0.0.1",
-      "1.2.3.4.5",
-      "0.0.0.08",
-      "api.0x10",
-      "api.123",
-      "999.1.2.3",
-      "example.0x10",
-      "Bad_Host",
-      "proxy.example.test:443",
-      "https://proxy.example.test",
-      "proxy..example.test",
-      `${"a".repeat(64)}.test`,
-      `${"a".repeat(63)}.${"a".repeat(63)}.${"a".repeat(63)}.${"a".repeat(62)}`,
-    ];
-    const valid = [
-      "192.168.1.1",
-      "192.0.2.1",
-      "0.0.0.0",
-      "255.255.255.255",
-      "0xdead.gateway.example.test",
-      "proxy.example.test",
-      `${"a".repeat(63)}.test`,
-      `${"a".repeat(63)}.${"a".repeat(63)}.${"a".repeat(63)}.${"a".repeat(61)}`,
-      "",
-      undefined,
-    ];
-    for (const hostname of [...invalid, ...valid]) {
-      const configuration = structuredClone(example);
-      if (hostname === undefined) {
-        delete configuration.drivers.compute.configuration.gatewayRouting.hostname;
-      } else {
-        configuration.drivers.compute.configuration.gatewayRouting.hostname = hostname;
-      }
-      await writeFile(installationPath, JSON.stringify(configuration));
-      // Helm --set reads a bare integer or 0x hex as a number. Pass those spellings
-      // with --set-string so the chart sees the hostname the Installation stores.
-      const numericHostname =
-        typeof hostname === "string" && /^(?:0x[0-9a-f]*|\d+)$/.test(hostname);
-      const helmValues =
-        hostname === undefined || numericHostname
-          ? gatewayRoutingValues
-          : { ...gatewayRoutingValues, "gatewayRouting.hostname": hostname };
-      const renderHostname = () =>
-        numericHostname
-          ? render(helmValues, { strings: { "gatewayRouting.hostname": hostname } })
-          : render(helmValues);
-      if (invalid.includes(hostname)) {
-        await assert.rejects(load(), (error) => {
-          assert.ok(error instanceof ConfigurationValidationError);
-          assert.equal(error.error.details[0].path, "/gatewayRouting/hostname");
-          assert.equal(error.error.details[0].code, "INVALID_FORMAT");
-          assert.match(
-            error.error.details[0].message,
-            hostname === "api.123"
-              ? /Gateway routing hostname must be .*numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers/
-              : /Gateway routing hostname must be a DNS hostname without a port or path/,
-          );
-          assert.doesNotMatch(JSON.stringify(error.error.details), /Bad_Host/);
-          return true;
-        });
-        await assert.rejects(
-          renderHostname(),
-          ({ stderr }) =>
-            stderr.includes(
-              hostname === "api.123"
-                ? "gatewayRouting.hostname must be a DNS hostname without a port or path. A numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers"
-                : "gatewayRouting.hostname must be a DNS hostname without a port or path",
-            ),
-          hostname,
-        );
-        continue;
-      }
-      const loaded = await load();
-      const objects = await resources((await renderHostname()).stdout);
-      const gateway = objects.find((object) => object.kind === "Gateway");
-      const envoy = objects.find((object) => object.kind === "EnvoyProxy");
-      const certificate = objects.find(
-        (object) => object.kind === "Certificate" && !object.spec.isCA,
-      );
-      const routing = loaded.installation.drivers.compute.configuration.gatewayRouting;
-      const expected =
-        hostname ||
-        `${envoy.spec.provider.kubernetes.envoyService.name}.${routing.envoyNamespace}.svc`;
-      assert.equal(
-        gateway.spec.listeners.find((listener) => listener.name === "https").hostname,
-        expected,
-      );
-      assert.deepEqual(certificate.spec.dnsNames, [expected]);
-      // Admission preserves canonical IPv4 syntax, but the standard chart requests
-      // DNS SANs, not IP SANs. A rendered address is not a usable TLS endpoint.
-      const identityError = checkServerIdentity(expected, {
-        subjectaltname: certificate.spec.dnsNames.map((name) => `DNS:${name}`).join(", "),
-      });
-      if (isIP(expected) === 4) {
-        assert.equal(identityError?.code, "ERR_TLS_CERT_ALTNAME_INVALID");
-      } else {
-        assert.equal(identityError, undefined);
-      }
-      assert.equal(routing.hostname, hostname);
-    }
-    // Direct IPv4 passes address admission only; an Agent-prefixed suffix cannot be a URL host.
-    for (const domain of ["192.0.2.1", "previews.example.test", "0xdead.previews.example.test"]) {
-      const configuration = structuredClone(example);
-      configuration.drivers.compute.configuration.gatewayRouting.sandbox = { domain };
-      await writeFile(installationPath, JSON.stringify(configuration));
-      const rendered = () => render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain });
-      if (domain === "192.0.2.1") {
-        await assert.rejects(load(), (error) => {
-          assert.ok(error instanceof ConfigurationValidationError);
-          assert.equal(error.error.details[0].path, "/gatewayRouting/sandbox/domain");
-          assert.equal(error.error.details[0].code, "INVALID_FORMAT");
-          assert.match(
-            error.error.details[0].message,
-            /Sandbox domain must be a DNS hostname.*Agent label/,
-          );
-          return true;
-        });
-        await assert.rejects(
-          rendered(),
-          /gatewayRouting\.sandbox\.domain must be a DNS hostname.*Agent label/,
-        );
-      } else {
-        await load();
-        await rendered();
-      }
-    }
-  },
-);
+registerProductionGatewayHostnameCase(sandboxValues);
 
 function renderProductionValuesExample(extraArgs, options = {}) {
   return execute(
@@ -4102,73 +3868,11 @@ test(
   },
 );
 
-test(
-  "private Envoy Gateway routing preserves explicit hostnames and external CA trust",
-  tooling,
-  async () => {
-    const configured = await renderObjects({
-      ...externalGatewayRoutingValues,
-      "gatewayRouting.caSecretName": "occ-private-ca",
-      "gatewayRouting.caSecretKey": "ca.crt",
-    });
-    const gatewayName = "oce-agent-gateways";
-    const gatewayNamespace = "openclaw-system";
-    const serviceName = gatewayServiceName(gatewayNamespace, gatewayName);
-    const apiPod = deploymentPodSpec(configured, "api");
-    const workerPod = deploymentPodSpec(configured, "worker");
-
-    assert.deepEqual(apiPod.volumes.find(({ name }) => name === "gateway-ca").secret, {
-      secretName: "occ-private-ca",
-      items: [{ key: "ca.crt", path: "ca.crt" }],
-    });
-    assert.equal(
-      apiPod.containers[0].env.find(({ name }) => name === "NODE_EXTRA_CA_CERTS").value,
-      "/etc/openclaw/gateway-ca/ca.crt",
-    );
-    assert.deepEqual(
-      workerPod.volumes.find(({ name }) => name === "gateway-ca").secret,
-      apiPod.volumes.find(({ name }) => name === "gateway-ca").secret,
-    );
-    assert.equal(
-      workerPod.containers[0].env.find(({ name }) => name === "NODE_EXTRA_CA_CERTS").value,
-      "/etc/openclaw/gateway-ca/ca.crt",
-    );
-    assert.equal(
-      configured.some(
-        ({ kind, metadata }) =>
-          kind === "Certificate" && metadata.name === rootSecretName(gatewayNamespace, gatewayName),
-      ),
-      false,
-    );
-    assert.equal(
-      configured.some(
-        ({ kind, metadata }) => kind === "Issuer" && metadata.name === `${serviceName}-ca`,
-      ),
-      false,
-    );
-
-    const gateway = configured.find(({ kind }) => kind === "Gateway");
-    assert.equal(gateway.spec.listeners[0].hostname, "agents.example.internal");
-    const leafCertificate = findResource(configured, "Certificate", `${gatewayName}-tls`);
-    assert.deepEqual(leafCertificate.spec, {
-      secretName: `${gatewayName}-tls`,
-      duration: "2160h",
-      renewBefore: "720h",
-      dnsNames: ["agents.example.internal"],
-      issuerRef: {
-        name: "occ-private-issuer",
-        kind: "ClusterIssuer",
-        group: "cert-manager.io",
-      },
-    });
-    const envoyProxy = configured.find(({ kind }) => kind === "EnvoyProxy");
-    assert.equal(envoyProxy.spec.provider.kubernetes.envoyDeployment, undefined);
-    assert.deepEqual(envoyProxy.spec.provider.kubernetes.envoyService, {
-      name: serviceName,
-      type: "ClusterIP",
-    });
-  },
-);
+registerExternalGatewayTrustCase({
+  externalGatewayRoutingValues,
+  serviceName: gatewayServiceName("openclaw-system", "oce-agent-gateways"),
+  rootSecret: rootSecretName("openclaw-system", "oce-agent-gateways"),
+});
 
 test("Collector exporter ports preserve decimal meaning in Kubernetes YAML", tooling, async () => {
   const field = "logging.collector.exporter.port";
@@ -4250,44 +3954,7 @@ test(
   },
 );
 
-test("execution chart refuses a harness hostname Compute refuses", tooling, async () => {
-  // A later --set or --set-string replaces the helper's routing.hostname.
-  const template = renderExecutionChart;
-  await assert.rejects(
-    template("--set", "routing.hostname=Bad_Host"),
-    /routing\.hostname must be a DNS hostname without a port or path/,
-  );
-  // --set reads these as a number and a boolean; the chart names the field instead of failing in len.
-  for (const hostname of ["123", "true"]) {
-    await assert.rejects(
-      template("--set", `routing.hostname=${hostname}`),
-      /routing\.hostname must be a string: quote a value YAML reads as a number or boolean, or pass it with --set-string/,
-      hostname,
-    );
-  }
-  for (const hostname of [
-    "123",
-    "127.1",
-    "0x",
-    "0x.0.0.1",
-    "1.2.3.4.5",
-    "api.0x10",
-    "api.123",
-    "999.1.2.3",
-    "example.0x10",
-  ]) {
-    await assert.rejects(
-      template("--set-string", `routing.hostname=${hostname}`),
-      /routing\.hostname must be .*numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers/,
-      hostname,
-    );
-  }
-  for (const hostname of ["agents.example.invalid", "0xdead.gateway.example.test"]) {
-    const { stdout } = await template("--set-string", `routing.hostname=${hostname}`);
-    const gateway = (await resources(stdout)).find((object) => object.kind === "Gateway");
-    assert.equal(gateway?.spec.listeners[0].hostname, hostname);
-  }
-});
+registerExecutionGatewayHostnameCase();
 
 test(
   "execution chart refuses an Envoy HTTPS port or DNS namespace the cluster refuses",

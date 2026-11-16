@@ -4,7 +4,7 @@ import test from "node:test";
 import Type, { type Static, type TSchema } from "typebox";
 import { Check } from "typebox/value";
 
-import { parseProductionChart, renderExecutionChart } from "../helpers/production-chart.mjs";
+import { parseProductionChart, renderExecutionChart } from "../helpers/production-chart.ts";
 import { render, tooling, type ChartValues } from "../helpers/production-chart-network-fixture.ts";
 import { findResource } from "../helpers/production-chart-resource.ts";
 
