@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import {
+  GrpcOpenShellGatewayClient,
+  type OpenShellSandboxLogLine,
+} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { createOpenShellGitDenial } from "../helpers/openshell-git-denial.ts";
 import {
   addWireService,
@@ -30,7 +33,9 @@ export function registerGitDenialPolicyCases() {
     const requests: WireRequest<"GetSandboxLogs">[] = [];
     // Use the real decoder for the receipt that shares a millisecond with the
     // attempt's end. The wire peer returns log batches, and the observer decides.
-    const wireLine = (entry: typeof denial): WireSandboxLogLine => ({
+    const wireLine = (
+      entry: OpenShellSandboxLogLine & { readonly time: string },
+    ): WireSandboxLogLine => ({
       sandbox_id: entry.sandboxId,
       event_time: {
         seconds: String(Math.floor(Date.parse(entry.time) / 1000)),
