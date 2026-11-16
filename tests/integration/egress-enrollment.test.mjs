@@ -280,9 +280,9 @@ test(
     assert.notEqual(currentChallenge.startupId, oldChallenge.startupId);
     // The real generated listeners report correlatable startup hashes, never the signed
     // challenge identity itself. A restart remains a new release owner.
-    for (const [runtime, challenge] of [
-      [first, oldChallenge],
-      [second, currentChallenge],
+    for (const { runtime, challenge } of [
+      { runtime: first, challenge: oldChallenge },
+      { runtime: second, challenge: currentChallenge },
     ]) {
       const observed = await waitFor(
         "hashed startup diagnostic",

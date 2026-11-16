@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { dumpYaml, loadYaml, yamlDocuments } from "./kubernetes-yaml.ts";
+import { asRecord } from "../../packages/utils/src/objects.ts";
+import { dumpYaml, loadYaml, yamlDocuments, yamlMapping } from "./kubernetes-yaml.ts";
 import { waitFor } from "./qa-wait.ts";
 import { protectedText, grantQaSecret } from "./qa-secrets.ts";
 import { slackApi } from "./slack-web-api.ts";
@@ -16,7 +17,8 @@ export async function prepareQaSlack(f) {
   if (f.controlPlane === "compose") {
     const path = join(f.stateDirectory, "compose.yaml");
     const compose = loadYaml(await readFile(path, "utf8"));
-    compose.services["slack-proxy"] = {
+    const services = yamlMapping(compose, "services");
+    services["slack-proxy"] = {
       image: f.controllerDockerImage,
       entrypoint: ["node", "apps/controller/src/slack-proxy.mjs"],
       environment: { NODE_ENV: "production", OCC_SLACK_PROXY_PORT: "3128" },
@@ -34,7 +36,7 @@ export async function prepareQaSlack(f) {
     ].IPAddress;
     const proxyUrl = `http://${ip}:3128`;
     configuration.runtime.channels = { proxyUrl };
-    compose.services.controller.environment.OCC_CHANNEL_DIRECTORY_PROXY_URL = proxyUrl;
+    yamlMapping(services, "controller", "environment").OCC_CHANNEL_DIRECTORY_PROXY_URL = proxyUrl;
     await writeFile(path, dumpYaml(compose), { mode: 0o600 });
   } else {
     const hostname = `openclaw-enterprise-slack-proxy.${f.state.platformNamespace}.svc`;
@@ -66,11 +68,12 @@ export async function prepareQaSlack(f) {
     ]);
     const selected = yamlDocuments(manifests)
       .filter((doc) => {
-        const object = loadYaml(doc);
+        const object = asRecord(loadYaml(doc));
+        const name = asRecord(object?.metadata)?.name;
         return (
-          object?.metadata?.name?.includes("slack-proxy") ||
-          (["Deployment", "NetworkPolicy"].includes(object?.kind) &&
-            object?.metadata?.name === "openclaw-enterprise-api")
+          (typeof name === "string" && name.includes("slack-proxy")) ||
+          ((object?.kind === "Deployment" || object?.kind === "NetworkPolicy") &&
+            name === "openclaw-enterprise-api")
         );
       })
       .join("\n---\n");
