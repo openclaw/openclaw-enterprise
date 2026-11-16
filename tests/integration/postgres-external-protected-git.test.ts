@@ -1659,7 +1659,10 @@ function externalGitJourney(
         await git(["-c", auth, "push", "--quiet", remote, "HEAD:refs/heads/review"]);
         assert.equal(await origin.ref("refs/heads/review"), commit, "the granted ref was updated");
         assert.equal(receivePacks(), 1);
-        const elsewhere = await git(["-c", auth, "push", remote, "HEAD:refs/heads/elsewhere"], true);
+        const elsewhere = await git(
+          ["-c", auth, "push", remote, "HEAD:refs/heads/elsewhere"],
+          true,
+        );
         assert.notEqual(elsewhere.code, 0);
         assert.match(elsewhere.stderr, /403/);
         assert.equal(receivePacks(), 1, "a refused ref update never reaches the origin");
@@ -1678,10 +1681,7 @@ function externalGitJourney(
         assert.equal(created.status, 201);
         assert.equal(created.data.draft, true);
         assert.deepEqual(
-          [
-            (created.data.head as { ref: string }).ref,
-            (created.data.base as { ref: string }).ref,
-          ],
+          [(created.data.head as { ref: string }).ref, (created.data.base as { ref: string }).ref],
           ["review", "main"],
         );
         assert.equal((await draft("main")).status, 403, "the grant allows one draft");
@@ -1733,7 +1733,12 @@ function externalGitJourney(
         assert.deepEqual(
           { ...spent, scope: pullScope },
           {
-            scope: { apiOrigin: gh.origin, repository: origin.repository, head: "review", base: "main" },
+            scope: {
+              apiOrigin: gh.origin,
+              repository: origin.repository,
+              head: "review",
+              base: "main",
+            },
             outcome: "outcome_unknown",
             online: true,
           },
@@ -1784,7 +1789,8 @@ function externalGitJourney(
           JSON.stringify({
             allowed: uses.map((use) => use.operation),
             draftAllowance: spent.outcome,
-            deliveredMaterial: delivered.material_version === first.materialVersion ? "first" : "rotated",
+            deliveredMaterial:
+              delivered.material_version === first.materialVersion ? "first" : "rotated",
             refusedAfterWithdrawal: refusals.length,
             tokensIssued: before.issues,
           }),

@@ -205,7 +205,7 @@ export function validateConfiguration(config: Readonly<Config>): readonly ErrorD
 /** Ref names of a receive-pack command list, or undefined for anything else. */
 function pushedRefs(body: Buffer): string[] | undefined {
   const refs: string[] = [];
-  for (let at = 0; at + 4 <= body.length; ) {
+  for (let at = 0; at + 4 <= body.length;) {
     const length = body.subarray(at, at + 4).toString("latin1");
     if (!/^[0-9a-f]{4}$/.test(length)) {
       return undefined;
@@ -222,9 +222,8 @@ function pushedRefs(body: Buffer): string[] | undefined {
       .toString("latin1")
       .split("\0")[0]!
       .replace(/\n$/, "");
-    const command = /^(?:[0-9a-f]{40}|[0-9a-f]{64}) (?:[0-9a-f]{40}|[0-9a-f]{64}) (refs\/\S+)$/.exec(
-      line,
-    );
+    const command =
+      /^(?:[0-9a-f]{40}|[0-9a-f]{64}) (?:[0-9a-f]{40}|[0-9a-f]{64}) (refs\/\S+)$/.exec(line);
     if (!command) {
       return undefined;
     }
