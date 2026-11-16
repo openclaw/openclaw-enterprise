@@ -1674,6 +1674,63 @@ export function createOpenShellKubernetesFixture({
     assert.equal(claims.sub, `system:serviceaccount:${namespace}:${pod.spec.serviceAccountName}`);
   }
 
+  async function assertRestrictedPodSecurity(namespace) {
+    const tenant = await base.resource("namespace", namespace);
+    assert.equal(
+      tenant.metadata.labels?.["pod-security.kubernetes.io/enforce"],
+      "restricted",
+      "admission proof must use the actual restricted Agent tenant, without relabeling it",
+    );
+    const directory = await mkdtemp(join(tmpdir(), "openshell-tenant-psa-"));
+    try {
+      // Admission must reject valid API input for both forbidden privilege paths
+      // in the same tenant where this journey admits real OpenShell workloads.
+      for (const privileged of [true, false]) {
+        const name = privileged ? "privileged" : "capability";
+        const path = join(directory, `${name}.json`);
+        await writeFile(
+          path,
+          JSON.stringify({
+            apiVersion: "v1",
+            kind: "Pod",
+            metadata: { name: `openshell-psa-${name}`, namespace },
+            spec: {
+              restartPolicy: "Never",
+              securityContext: {
+                runAsNonRoot: true,
+                runAsUser: 10001,
+                seccompProfile: { type: "RuntimeDefault" },
+              },
+              containers: [
+                {
+                  name: "probe",
+                  image: openShellSandboxImage,
+                  command: ["sh", "-c", "true"],
+                  securityContext: privileged
+                    ? { privileged: true, capabilities: { drop: ["ALL"] } }
+                    : {
+                        allowPrivilegeEscalation: false,
+                        capabilities: { drop: ["ALL"], add: ["NET_ADMIN"] },
+                      },
+                },
+              ],
+            },
+          }),
+          { mode: 0o600 },
+        );
+        await assert.rejects(
+          () => kubectl("apply", "--namespace", namespace, "--dry-run=server", "-f", path),
+          (error) =>
+            /violates PodSecurity ["']restricted/.test(`${error.stderr ?? ""}\n${error.message}`),
+          `the Agent tenant must reject the ${name} probe through restricted PSA, not API validation or RBAC`,
+        );
+      }
+    } finally {
+      // Server-side dry runs persist no Pods; only local manifest files need cleanup.
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+
   function assertApprovedOpenShellPrivileges(pod) {
     assert.equal(pod.spec.runtimeClassName, undefined, "OCE must not select a runtime class.");
     const initCapabilities = new Set(
@@ -2246,6 +2303,7 @@ export function createOpenShellKubernetesFixture({
     assertWorkspaceMounts,
     assertServicePrincipalTokenProjection,
     assertApprovedOpenShellPrivileges,
+    assertRestrictedPodSecurity,
     assertGatewayBootstrapPolicies,
     assertNoSecretBytes,
     requestCodexTurnFromGatewayPod,
