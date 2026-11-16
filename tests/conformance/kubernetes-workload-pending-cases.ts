@@ -586,20 +586,25 @@ function observeWorkloadReads(
 
 // Refusals start after preparation has checked the Deployment for reconciliation
 // and readiness. A runtime-status read marks the handoff to the diagnostics.
-function afterRuntimeReadback({ core }: Transport["clients"]) {
+function afterRuntimeReadback({ core }: Transport["clients"], observations: WorkloadRead[]) {
   const proxy = core.connectGetNamespacedPodProxyWithPath;
   assert.ok(proxy);
-  let observed = false;
+  let start: number | undefined;
   core.connectGetNamespacedPodProxyWithPath = (request) => {
     if (request.path === RUNTIME_STATUS_PATH.slice(1)) {
-      observed = true;
+      start ??= observations.length;
     }
     return proxy(request);
   };
   return {
-    reached: () => observed,
+    reached: () => start !== undefined,
+    reads: () => {
+      assert.ok(start !== undefined, "expected a runtime status read before quota diagnostics");
+      return observations.slice(start);
+    },
     reset: () => {
-      observed = false;
+      observations.length = 0;
+      start = undefined;
     },
     restore: () => {
       core.connectGetNamespacedPodProxyWithPath = proxy;
@@ -609,8 +614,8 @@ function afterRuntimeReadback({ core }: Transport["clients"]) {
 
 async function checkDeploymentObservationRefusals(fixture: ReturnType<CreateFixture>) {
   const { namespace, agentName, gatewayName, prepare, clients } = fixture;
-  const status = afterRuntimeReadback(clients);
   const observations: WorkloadRead[] = [];
+  const status = afterRuntimeReadback(clients, observations);
   const agent = { name: agentName, namespace };
   const gateway = { name: gatewayName, namespace };
   const gatewayQuota = { name: quotaName, namespace };
@@ -648,28 +653,21 @@ async function checkDeploymentObservationRefusals(fixture: ReturnType<CreateFixt
     const pending = await prepare();
     assert.equal(refused, true, failure);
     assert.equal(pending.pendingReason, quotaExceeded, failure);
-    assert.deepEqual(observations.slice(-3), [
+    assert.deepEqual(status.reads(), [
       { kind: "deployment", request: agent },
       { kind: "deployment", request: gateway },
       { kind: "quota", request: gatewayQuota },
     ]);
-    assert.deepEqual(
-      observations.filter(({ kind }) => kind === "quota"),
-      [{ kind: "quota", request: gatewayQuota }],
-    );
 
-    observations.length = 0;
     status.reset();
     refused = false;
     setConditions(fixture, gatewayName, []);
     assert.equal((await prepare()).pendingReason, undefined, failure);
     assert.equal(refused, true, failure);
-    assert.deepEqual(observations.slice(-2), [
+    assert.deepEqual(status.reads(), [
       { kind: "deployment", request: agent },
       { kind: "deployment", request: gateway },
     ]);
-    assert.ok(observations.every(({ kind }) => kind !== "quota"));
-    observations.length = 0;
     status.reset();
     restore();
   }
@@ -679,7 +677,8 @@ async function checkDeploymentObservationRefusals(fixture: ReturnType<CreateFixt
 
 async function checkQuotaCancellation(fixture: ReturnType<CreateFixture>) {
   const { namespace, agentName, gatewayName, prepare, clients } = fixture;
-  const status = afterRuntimeReadback(clients);
+  const observations: WorkloadRead[] = [];
+  const status = afterRuntimeReadback(clients, observations);
   const agent = { kind: "deployment", request: { name: agentName, namespace } };
   const gateway = { kind: "deployment", request: { name: gatewayName, namespace } };
   const quota = { kind: "quota", request: { name: quotaName, namespace } };
@@ -691,7 +690,6 @@ async function checkQuotaCancellation(fixture: ReturnType<CreateFixture>) {
       owner.abort(cancellation);
       throw forbiddenRead();
     };
-    const observations: WorkloadRead[] = [];
     const restore = observeWorkloadReads(clients, observations, {
       async deployment(request, read) {
         if (location === "deployment" && status.reached() && request.name === agentName) {
@@ -710,15 +708,7 @@ async function checkQuotaCancellation(fixture: ReturnType<CreateFixture>) {
       withComputeAbortSignal(owner.signal, prepare),
       (error) => error === cancellation,
     );
-    assert.equal(status.reached(), true);
-    assert.deepEqual(
-      observations.slice(location === "deployment" ? -1 : -3),
-      location === "deployment" ? [agent] : [agent, gateway, quota],
-    );
-    assert.deepEqual(
-      observations.filter(({ kind }) => kind === "quota"),
-      location === "deployment" ? [] : [quota],
-    );
+    assert.deepEqual(status.reads(), location === "deployment" ? [agent] : [agent, gateway, quota]);
     status.reset();
     restore();
   }
@@ -799,6 +789,7 @@ export async function checkQuotaWorkloadTopology(createFixture: CreateFixture) {
     }
 
     const observations: WorkloadRead[] = [];
+    const status = afterRuntimeReadback(clients, observations);
     const restore = observeWorkloadReads(clients, observations);
     const pending = await prepare();
     assert.equal(pending.ready, false, label);
@@ -807,13 +798,14 @@ export async function checkQuotaWorkloadTopology(createFixture: CreateFixture) {
       { kind: "deployment", request: { name: names[role], namespace } },
       { kind: "quota", request: { name: `${role}-pods`, namespace } },
     ]);
-    assert.deepEqual(observations.slice(-expected.length), expected, label);
+    assert.deepEqual(status.reads(), expected, label);
     if (!roles.some((role: WorkloadRole) => role === "agent")) {
       assert.ok(
         observations.every(({ request }) => request.name !== agentName),
         label,
       );
     }
+    status.restore();
     restore();
   }
 }
