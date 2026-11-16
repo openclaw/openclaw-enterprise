@@ -96,6 +96,34 @@ test("docs build renders every authored page and preserves repository ownership"
   }
   const index = await readFile(join(root, "dist/docs/index.html"), "utf8");
   assert.match(index, /href="\/guides\/deploy\/local-setup\//);
+  // Existing bookmarks and the rendered guide links must resolve to executable downloads.
+  const quickstart = "snippets/openshell-quickstart";
+  const guides = [
+    ["deploy/local-setup", "configure-installation"],
+    ["integrations/codex-plugins", "inspect-linear-transcript"],
+  ] as const;
+  for (const [guide, script] of guides) {
+    const html = await readFile(join(root, "dist/docs/guides", guide, "index.html"), "utf8");
+    assert.ok(html.includes(`href="/${quickstart}/${script}.mjs"`));
+  }
+  for (const script of [
+    "configure-installation",
+    "inspect-linear-transcript",
+    "request",
+    "kubernetes/owner-listener",
+    "kubernetes/git-revision-audit",
+  ]) {
+    const download = join(root, "dist/docs", quickstart, script);
+    execFileSync(process.execPath, ["--check", download + ".mjs"], { encoding: "utf8" });
+    assert.equal(existsSync(download + ".mts"), false, "Do not publish a second typed download");
+  }
+  for (const script of ["chat.mjs", "verify-github-installation.mjs"]) {
+    const asset = join("assets/openshell-quickstart", script);
+    assert.deepEqual(
+      await readFile(join(root, "dist/docs", asset)),
+      await readFile(join(root, "docs", asset)),
+    );
+  }
   // A link out of docs/ points at the repository on GitHub.
   const specifications = await readFile(
     join(root, "dist/docs/contributing/specifications/index.html"),

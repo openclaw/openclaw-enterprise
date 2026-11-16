@@ -86,6 +86,21 @@ const { values } = parseArgs({
 const checkOnly = values.check;
 const root = process.cwd();
 const docs = path.join(root, "docs");
+// The checked-out programs run with Node type stripping. Keep the published
+// JavaScript URLs available to readers of earlier versions of the guides.
+const quickstartDirectory = "snippets/openshell-quickstart";
+const quickstartDownloads = new Map(
+  [
+    "configure-installation.mts",
+    "inspect-linear-transcript.mts",
+    "request.mts",
+    "kubernetes/owner-listener.mts",
+    "kubernetes/git-revision-audit.mts",
+  ].map((file) => {
+    const source = quickstartDirectory + "/" + file;
+    return [source, source.replace(/\.mts$/, ".mjs")];
+  }),
+);
 const output = path.resolve(root, values.output ?? "dist/docs");
 if (values.output !== undefined) {
   const previewPath = path.relative(path.join(root, "dist"), output).split(path.sep).join("/");
@@ -434,7 +449,8 @@ function resolveLink(page: PageSource, href: string): string {
     return linked.route + url.search + url.hash;
   }
   if (/^(?:assets|snippets)\//.test(docSource)) {
-    return "/" + docSource.split("/").map(encodeURIComponent).join("/") + url.search + url.hash;
+    const download = quickstartDownloads.get(docSource) ?? docSource;
+    return "/" + download.split("/").map(encodeURIComponent).join("/") + url.search + url.hash;
   }
   if (url.hash && target.endsWith(".md") && !resolveDocsFragment(url.hash, githubAnchors(target))) {
     throw new Error(page.source + ": missing heading in " + href);
@@ -516,6 +532,12 @@ for (const page of pages.values()) {
       '<p><a href="/assets/occ-api.openapi.json" download="occ-api.openapi.json">Download OpenAPI JSON</a></p><div id="occ-api-explorer"></div>';
   }
 }
+const quickstartScripts = fs.existsSync(path.join(docs, quickstartDirectory))
+  ? [...quickstartDownloads].map(([source, download]) => ({
+      download,
+      javascript: stripTypeScriptTypes(fs.readFileSync(path.join(docs, source), "utf8")),
+    }))
+  : [];
 if (checkOnly) {
   console.log("Validated " + pages.size + " pages and " + linkCount + " links.");
   process.exit(0);
@@ -532,7 +554,14 @@ if (fs.existsSync(path.join(docs, "assets"))) {
   fs.cpSync(path.join(docs, "assets"), path.join(output, "assets"), { recursive: true });
 }
 if (fs.existsSync(path.join(docs, "snippets"))) {
-  fs.cpSync(path.join(docs, "snippets"), path.join(output, "snippets"), { recursive: true });
+  fs.cpSync(path.join(docs, "snippets"), path.join(output, "snippets"), {
+    recursive: true,
+    filter: (source) =>
+      !quickstartDownloads.has(path.relative(docs, source).split(path.sep).join("/")),
+  });
+}
+for (const { download, javascript } of quickstartScripts) {
+  fs.writeFileSync(path.join(output, download), javascript);
 }
 fs.cpSync(path.join(assets, "fonts"), path.join(output, "assets/fonts"), { recursive: true });
 const carapaceCss = [
