@@ -10,6 +10,7 @@
     "tests/integration/ci-prepare-k3d.test.ts",
     "tests/integration/ci-prepare-image-cache.test.ts",
     "tests/integration/ci-prepare.test.mjs",
+    "tests/integration/ci-prepare-lane-action.test.ts",
     "tests/conformance/repository-credentials-source-boundary.test.ts",
     "tests/conformance/startup-environment-boundary.test.ts",
     "tests/integration/repository-credentials-admission.test.mjs",
@@ -395,6 +396,13 @@
     },
     {
       "path": "tests/integration/ci-prepare.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-prepare-lane-action.test.ts",
+      "expectedTests": [
+        "focused CI selection fails before tool setup or lane preparation",
+        "installer cache selection covers whole lanes and preserves focused image selection"
+      ]
     },
     {
       "path": "tests/integration/ci-prepare-k3d.test.ts"
