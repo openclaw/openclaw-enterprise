@@ -40,10 +40,11 @@ var developmentCodexProfile = regexp.MustCompile(`^openclaw/codex-[0-9]+\.[0-9]+
 // validDevelopmentCodexSeccompResult reports whether the preparation script
 // returned a result the lifecycle can act on: either the node's RuntimeDefault
 // profile already confines the Codex sandbox and no profile was installed, or a
-// localhost profile was installed and named.
+// localhost profile was installed and named. Container is the explicit full-access
+// development proof and makes no workspace-write isolation claim.
 func validDevelopmentCodexSeccompResult(mode, profileName string) bool {
 	switch mode {
-	case "RuntimeDefault":
+	case "RuntimeDefault", "Container":
 		return profileName == ""
 	case "Localhost":
 		return developmentCodexProfile.MatchString(profileName)

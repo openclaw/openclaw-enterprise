@@ -36,6 +36,7 @@ export function launcherEnvironment() {
   );
   for (const name of [
     "OCC_DEVELOPMENT_K3S_IMAGE",
+    "OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE",
     "OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR",
     "OCC_DEVELOPMENT_K3D_DNS_RESOLVER",
     "OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT",
@@ -869,6 +870,12 @@ export async function createQaAgent(
     f.configuration.drivers.plugin?.some(({ id }) => id === pluginDriverId),
     "prepare the preset before starting parallel Agent scenarios",
   );
+  if (process.env.OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE === "danger-full-access") {
+    assert.ok(httpChat, "Container-only verification requires the explicit HTTP chat scenario.");
+    if (codex) {
+      values.plugins.entries.codex.config.appServer.sandbox = "danger-full-access";
+    }
+  }
   if (httpChat) {
     // Exercise Compute defaults without a native browser launch or endpoint opt-in.
     delete values.gateway.http;

@@ -116,6 +116,24 @@ and [database](../../docs/testing/postgresql.md) procedures.
   images, build caches and diagnostic artifacts remain available for resumption.
 - No runtime acceptance criterion is complete.
 
+## Authorized full-access retry
+
+The user authorized `danger-full-access` only for bounded test Agent runtimes.
+The development agent retains workspace-write and its approval controls. Host
+AppArmor, sysctls and container isolation must remain unchanged. The supplied
+host audit identified AppArmor denials for the bundled Bubblewrap path.
+
+The cached runtime at the digest above authenticated with the existing test API
+credential. Codex 0.164.0 reported no managed requirements and granted
+`:danger-full-access`, `on-request`, and `auto_review`. One genuine model turn
+completed one shell tool action; its independently read output matched the
+requested harmless marker. A separate credential-free startup probe passed
+with container networking disabled. These are smoke results, not HTTP API proof.
+
+The development verification selector and explicit QA Agent configuration keep
+startup and runtime modes coherent. Standard presets remain unchanged. The full
+HTTP acceptance matrix is still pending the retry.
+
 ## Manual Notes
 
 ## Changelog

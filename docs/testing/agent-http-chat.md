@@ -27,6 +27,21 @@ keeping Agent Compute in Kubernetes. Select `Codex` and set
 The matrix owns disposable resources and cleanup; preserve unrelated clusters,
 services and the default kubeconfig. Do not use a shared database.
 
+## Authorized full-access test runtime
+
+When explicitly authorized for the test Agents, set
+`OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE=danger-full-access` with an exclusive
+`http-chat` scenario. The launcher verifies the
+[container boundary](../guides/deploy/codex-sandbox.md#explicit-container-only-development-verification).
+The QA helper sets only the selected Codex Agents' native sandbox configuration
+to `danger-full-access`; it retains their approval policy and reviewer. It does
+not edit standard Presets, host security controls or the development agent.
+
+First qualify the existing model credential and pinned runtime with a bounded
+model/tool smoke. Record the effective permission profile, approval policy and
+reviewer. A refused profile is a blocker, not permission to bypass managed policy.
+Full-access results do not establish workspace-write isolation.
+
 ## Checks and evidence
 
 An exclusive `http-chat` selection disables Installation native browser access.

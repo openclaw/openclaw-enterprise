@@ -1,8 +1,8 @@
 # Enable Codex sandbox execution on Kubernetes
 
 Use a reviewed node-local seccomp profile when the container runtime's
-`RuntimeDefault` profile blocks Codex's bubblewrap sandbox. Keep the Agent's
-`workspace-write` sandbox enabled. The Kubernetes Compute Driver's existing
+`RuntimeDefault` profile blocks Codex's bubblewrap sandbox. This default procedure
+keeps the Agent's `workspace-write` sandbox enabled. The Kubernetes Compute Driver's existing
 `runtime.codexSeccompProfile` setting selects the profile for the dedicated Codex
 container; [security](../../reference/security.md#pod-and-container-hardening) defines
 the remaining containment requirements.
@@ -24,6 +24,27 @@ syscall-policy change before applying it, and use a disposable Pod with the exac
 production runtime digest before enabling it for Agents. The disposable
 [local Kubernetes launcher](local-kubernetes-development.md#start-the-profile)
 separately prepares and verifies a profile inside its own k3d node.
+
+## Explicit container-only development verification
+
+For an authorized disposable development run with Sandbox Driver `none`, set
+`OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE=danger-full-access` before `occ dev up`.
+The default is `workspace-write`. This selector changes startup verification;
+it does not change Agent or Preset configuration.
+
+The alternate probe uses the pinned Codex process with `:danger-full-access`,
+`on-request`, and `auto_review`. It checks command execution as UID 1000 with
+no effective capabilities or privilege escalation, a read-only container root,
+bounded writable volumes and default-deny networking. It receives no credentials
+and makes no model calls. Its `Container` result explicitly leaves workspace-write
+isolation unverified; it does not install a node seccomp profile.
+
+Configure each intended Codex Agent explicitly with
+`plugins.entries.codex.config.appServer.sandbox: danger-full-access`. Retain its
+approval policy and reviewer. Verify the authenticated runtime's effective grant
+before model execution: managed requirements can refuse this mode. The container
+is the containment boundary for this run. Do not describe it as workspace-write
+proof. Standard presets and host security policy remain unchanged.
 
 ## Identify the restriction
 

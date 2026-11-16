@@ -617,7 +617,7 @@ func (r *runner) prepareDevelopmentCodexSandbox(ctx context.Context, state *deve
 	if err := json.Unmarshal(output, &result, json.RejectUnknownMembers(true)); err != nil {
 		return "", fmt.Errorf("invalid dedicated Codex sandbox preparation result: %w", err)
 	}
-	if !validDevelopmentCodexSeccompResult(result.Mode, result.ProfileName) {
+	if (result.Mode == "Container") != (r.env["OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE"] == "danger-full-access") || !validDevelopmentCodexSeccompResult(result.Mode, result.ProfileName) {
 		return "", fmt.Errorf("invalid dedicated Codex sandbox preparation result")
 	}
 	return result.ProfileName, nil

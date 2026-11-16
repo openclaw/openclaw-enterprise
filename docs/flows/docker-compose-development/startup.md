@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-12
-last_updated_session: authoring-run/289927cc-a9eb-477c-8cfa-1f6c9aa9f291
+updated: 2026-11-16
+last_updated_session: authoring-run/e151ca6f-93f3-4976-bad1-585c8dde1264
 ---
 
 # Compose development startup
@@ -211,6 +211,13 @@ Probe Pods use short grace periods and UID-preconditioned deletes. Cleanup waits
 for selector-matching Pods before removing their egress policy; probe or cleanup
 failure fails startup. Checks are point-in-time and single-node.
 
+An explicit `OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE=danger-full-access`
+selects `scripts/lib/codex-container-probe.mjs` through
+`prepareDevelopmentCodexSeccompProfile`. The credential-free probe checks native
+full-access execution and the container boundary, returning `Container` with no
+profile installed. Workspace-write isolation remains unverified. The selector
+does not rewrite presets; see [development verification](../../guides/deploy/codex-sandbox.md#explicit-container-only-development-verification).
+
 Before Installation, `scripts/prepare-development-codex-seccomp.ts` probes
 `RuntimeDefault` in a credential-free Pod. Confirmed denial triggers
 [verified, content-addressed Localhost profile derivation](../../guides/deploy/local-kubernetes-development.md#start-the-profile).
@@ -417,6 +424,8 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 
 ## Changelog
 
+- 2026-11-16 22:56: Add explicit container-boundary development verification without changing workspace-write defaults. (authoring-run/e151ca6f-93f3-4976-bad1-585c8dde1264 - ac72edfbf884219d7392f32fd245173dffccf922)
+
 - 2026-11-12 00:24: Correct readiness ownership. (authoring-run/289927cc-a9eb-477c-8cfa-1f6c9aa9f291 - 6b44940d40419e4cd9889cf4b0316d95a798be56)
 
 - 2026-11-12 00:18: Handle checkout aliases and clean incomplete pre-start state. (authoring-run/40b08b7d-d158-4f4d-8a93-1e53f45a5999 - 2d5cf2bf7138c2d7bd40b3fa630a4c9d8b9dafe4)
@@ -424,17 +433,5 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 - 2026-11-12 00:05: Copy default bootstrap SQL into private owned state with container-readable permissions. (authoring-run/bd5e5418-5167-4b5f-b5bc-b9047ed8b68b - 8cd9b5d944e1c25191c6622cf5b6cf1fe7b33054)
 
 - 2026-11-11 23:56: Report probe readiness. (authoring-run/1189518e-cadf-4a8f-aabe-bcdbff4d434e - c6aad5bf134ae15bb9abea127b978756f843769f)
-
-- 2026-11-10 17:50: Prepare private browser TLS file ownership for Compose without OpenShell. (authoring-run/8d183761-a61e-4f89-b6fa-aaf112a75fc6 - c40baead7e51977b832d0036518b4f613a68935d)
-
-- 2026-11-10 14:26: Classify image-import failures. (authoring-run/b1516512-8ce3-4006-b41c-0989435694a2 - 68319de0899f5de7fe1ed5e9ef800e2dadb88571)
-
-- 2026-11-09 08:16: Identify routing failures. (authoring-run/fc7f0ea3-8581-478c-a11e-63c531a3cd5e - 1b07c3792424a033befb8c97b74fb399daf61af0)
-
-- 2026-11-08 10:46: Retain sibling cleanup failures. (authoring-run/sibling-cleanup - 2dfb98210779ba2be413f4ddf7beaa71dbc2374f)
-
-- 2026-11-08 09:54: Attribute startup failures separately from cleanup. (authoring-run/aa2519c0-24d1-44b0-9725-9bde7e4c2501 - 7db5638975981ec1400f1a4ba52da77d5fd33dce)
-
-- 2026-11-04 23:00: Overlap routing controllers and runtime preparation; preserve rollback. (authoring-run/f21567be-bf0f-4e4e-be99-a937b8cab69b - 381845c12d3694fc19f836786831bb98cbe2c3e1)
 
 [Compose development startup documentation history](startup/history.md) preserves the older dated entries.
