@@ -894,7 +894,7 @@ export async function authorized(namespaceName, actor, verb, kind) {
 }
 
 /**
- * @param {import("node:test").TestContext} context
+ * @param {import("./console-file-app.ts").CleanupRegistrar} context
  * @param {string} installationId
  * @param {string} platformNamespace
  * @returns {Promise<{authentication: Extract<import("../../apps/controller/src/drivers/kubernetes/authentication.ts").KubernetesAuthentication, {mode: "kubeconfig"}>, account: string, tenantRole: string}>}

@@ -4,6 +4,7 @@ import type { TestContext } from "node:test";
 import pg from "pg";
 import type { Static, TSchema } from "typebox";
 import { Check } from "typebox/value";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
 import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
@@ -72,7 +73,7 @@ export function provisioningRequestBody({
   authMethod?: "api_key" | "codex_pat";
   gatewayAuth: Readonly<Record<string, unknown>>;
 }) {
-  const model = "codex/gpt-5";
+  const model = `codex/${defaultAgentModel}`;
   return {
     requestId: `req_${randomUUID()}`,
     name: `Kubernetes provisioned ${randomUUID().slice(0, 8)}`,
