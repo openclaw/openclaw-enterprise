@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-11-11
-last_updated_session: authoring-run/1e3b3e18-4b6f-4cdb-b1a6-c99b3336bb19
+updated: 2026-11-16
+last_updated_session: authoring-run/eb646ce1-a9f5-4a43-ad6f-c204d4c11561
 ---
 
 # Agent Workspace Files Flow
@@ -104,6 +104,11 @@ and durable volumes; SSH uses the protected Agent directory. Provider-owned
 Harnesses require the Sandbox's `validateWorkspaceSetup(harness, configuration)`:
 Compute delegates validation of the relocated workspace, or returns `409` before
 staging inputs. Preparation repeats this check.
+
+The [ordinary Box example](../../deploy/examples/strands-box/ordinary-chat/installed.md)
+binds the native Harness and a separate file-only node to one workspace claim.
+The provider retains that node's identity outside the Box workload. Compute
+waits for the Gateway to observe enrollment before activating the revision.
 
 OpenShell separately prepares native OpenClaw's private writable PVC subpaths,
 preserving retained entries. Ownership/mode checks, UID-fenced deletion and writer
@@ -376,6 +381,8 @@ replays it. Cleanup closes the native client.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-16 23:00: Trace enrollment for the ordinary external file-only node. (authoring-run/eb646ce1-a9f5-4a43-ad6f-c204d4c11561 - 36e161d06f5b5a1f816ebca5be7686a5b15cf2fb)
 
 - 2026-11-11 23:39: Preserve safe initializer error codes and earlier setup errors. (authoring-run/1e3b3e18-4b6f-4cdb-b1a6-c99b3336bb19 - 707390bb16f132b70addcf3079a81bf493387712)
 

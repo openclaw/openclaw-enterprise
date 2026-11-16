@@ -71,6 +71,8 @@ validate their effective native configuration before starting. The required
 Gateway tool policy covers core dispatch, automation authority and Codex
 dynamic tools. Older or unknown source images remain unready; source checks
 and configuration validation do not replace runtime qualification.
+The [ordinary Box setup](../examples/strands-box/ordinary-chat/README.md#bind-a-standalone-gateway-to-one-box-execution)
+uses the runtime overlay to verify the selected provider generation on the TLS upgrade.
 
 The Codex adapter preserves namespaced IDs with an explicit native
 provider. For a custom endpoint, OCE compiles its private Gateway model references

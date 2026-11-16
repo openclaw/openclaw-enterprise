@@ -101,6 +101,12 @@ export interface SandboxHarnessEndpoint {
   };
   /** Provider-local workspace root served by the Harness workspace node. */
   readonly workspaceRoot?: string;
+  /**
+   * An ordinary dedicated Codex workspace enforced by this exact provider generation.
+   * Compute must pin this generation with the endpoint's TLS trust before allowing the
+   * Gateway to select the externally enforced, network-restricted workspace policy.
+   */
+  readonly externalWorkspaceOwner?: { readonly generationSha256: string };
   /** Request this native Codex profile when the provider supplies the sandbox boundary. */
   readonly codexPermissionProfile?: ":danger-full-access";
 }
@@ -252,6 +258,9 @@ export interface SandboxDriver extends Driver {
    * hook credential directory, under it. Defaults to the Compute-owned Harness Pod's HOME.
    */
   readonly harnessHome?: string;
+  /** Consume only the native app-server transport verifier, never the Gateway's raw bearer.
+   * Applies to dedicated Harnesses whose endpoint the provider owns. */
+  readonly harnessTransportCredential?: "verifier";
   /**
    * Side-effect-free validation for initial workspace files this provider-owned Harness can
    * initialize. Compute delegates only when this Driver also provisions the Harness; omission

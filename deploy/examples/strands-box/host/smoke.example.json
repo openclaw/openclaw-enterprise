@@ -1,0 +1,11 @@
+{
+  "linuxPreview": true,
+  "boxBin": "/opt/oce-box/box/box",
+  "nodeBin": "/opt/oce-box/node/bin/node",
+  "codexBin": "/opt/oce-box/codex/codex",
+  "agentBuildDir": "/opt/oce-box/compiled-agent",
+  "runtimeDir": "/run/oce-box/smoke",
+  "workspace": "/srv/oce-box/smoke-workspace",
+  "read": [],
+  "exec": []
+}

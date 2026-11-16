@@ -993,7 +993,8 @@
               "testing/repository-credentials",
               "testing/static-egress",
               "testing/static-egress-upgrade",
-              "testing/protected-repository-custody"
+              "testing/protected-repository-custody",
+              "testing/strands-box"
             ]
           },
           {

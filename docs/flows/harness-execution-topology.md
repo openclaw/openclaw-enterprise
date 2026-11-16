@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-11
-last_updated_session: authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792
+updated: 2026-11-16
+last_updated_session: authoring-run/eb646ce1-a9f5-4a43-ad6f-c204d4c11561
 ---
 
 # Harness Execution Topology Flow
@@ -144,6 +144,14 @@ errors identify the setting.
 `runtime-entrypoints.ts:agentRuntimeReady` and the Docker healthcheck require
 Codex initialization for Compute-owned launches; provider commands remain
 unchanged. See the [readiness contract](../reference/drivers/kubernetes-compute.md#troubleshooting).
+
+For a provider-owned ordinary dedicated Codex Harness, an opted-in Sandbox receives
+the transport verifier. The Gateway keeps the bearer. When the provider returns
+an external workspace owner, `KubernetesComputeDriver.reconcileHarnessTrust`
+pins its generation and public CA in revision-owned immutable trust. The
+[Strands Box relay](../../deploy/examples/strands-box/ingress/README.md) preserves
+TLS to the host. The Gateway verifies the pinned generation on the WebSocket
+upgrade before it sends native requests.
 
 After Harness readiness, preparation replaces stopped or unready Gateways. Activation waits for workspace node enrollment; dedicated Codex retains `agent-<agent digest>-workspace`.
 `KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds callbacks; `AGENT_WITH_NODE_ENTRYPOINT` prepares capability storage and TLS for OpenClaw-authorized [native hooks](../reference/gateway-routing.md#native-node-endpoint).
@@ -358,6 +366,8 @@ removal.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-16 23:00: Trace verifier delivery and the ordinary external workspace owner. (authoring-run/eb646ce1-a9f5-4a43-ad6f-c204d4c11561 - 36e161d06f5b5a1f816ebca5be7686a5b15cf2fb)
 
 - 2026-11-11 06:50: Trace configured Gateway claim capacity and mismatch refusal. (authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792 - 036845b2f70f4c5d13b7f180e3642865ca891a8a)
 

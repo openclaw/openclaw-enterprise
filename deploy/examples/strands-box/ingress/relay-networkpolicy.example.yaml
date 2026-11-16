@@ -1,0 +1,39 @@
+# Shape of the provider-owned per-revision policy. Use the trusted requirements
+# and fixed destination at provision; these example values are not defaults.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: box-harness-relay-revision
+  namespace: pilot
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: box-harness-relay
+      box.openclaw.dev/installation: pilot-box
+      openclaw.dev/agent: example-agent
+      openclaw.dev/revision: example-revision
+      openclaw.dev/workload-role: agent
+      openclaw.dev/network-profile: provider-fenced-v1
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: pilot
+          podSelector:
+            matchLabels:
+              openclaw.dev/agent: example-agent
+              openclaw.dev/revision: example-revision
+              openclaw.dev/workload-role: gateway
+      ports:
+        - protocol: TCP
+          port: 8443
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.20.30.40/32
+      ports:
+        - protocol: TCP
+          port: 8443

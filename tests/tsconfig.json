@@ -11,6 +11,8 @@
     "tsBuildInfoFile": "../.build/tests/tsconfig.tsbuildinfo",
     "paths": {
       "@openclaw-enterprise/contracts": ["../packages/contracts/src/index.ts"],
+      "@openclaw-enterprise/occ": ["../packages/occ/src/index.ts"],
+      "@openclaw-enterprise/utils": ["../packages/utils/src/index.ts"],
       "/console/agents/plugin-fields.mjs": [
         "../apps/controller/src/console/agents/plugin-fields.mts"
       ],
@@ -190,6 +192,9 @@
     "browser/console-agent-detail-cases.mts",
     "browser/console-agent-detail-deployment.ts",
     "../scripts/verify-console-release.ts",
+    "../deploy/examples/strands-box/**/*.ts",
+    "../deploy/examples/strands-box/host/workspace-node-runtime.mts",
+    "conformance/strands-box-ordinary-chat.test.ts",
     "../deploy/runtime/google/install-gog.mts",
     "../scripts/console-storybook/*.stories.ts",
     "../scripts/console/record-walkthrough.ts",
@@ -200,6 +205,7 @@
     "helpers/production-chart-renderer-refusal-cases.ts",
     "helpers/production-chart-resource.ts",
     "helpers/bounded-teardown.ts",
+    "helpers/strands-box-shell-probe.ts",
     "helpers/environment.ts",
     "helpers/fake-commands.ts",
     "helpers/ci-prepare-fixture.ts",
