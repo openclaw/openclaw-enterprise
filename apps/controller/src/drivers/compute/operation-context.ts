@@ -8,7 +8,7 @@ import { MAX_TIMER_DELAY_MS } from "@openclaw-enterprise/utils";
  * Which optional wait asks whether other Work is waiting: an ordinary stop's Gateway drain, or any
  * other wait (a refused candidate's stop, the workspace node binding ack or pairing, D221).
  */
-export type ComputeWorkWait = "gateway-drain" | "optional";
+export type ComputeWorkWait = "gateway-drain" | "predecessor-completion" | "optional";
 
 interface ComputeOperationLifetime {
   readonly signal: AbortSignal;
@@ -22,7 +22,7 @@ const workWaitingChecks = new AsyncLocalStorage<(wait: ComputeWorkWait) => Promi
  * How a stop's termination waits may yield: every wait of a refused candidate's stop, or only the
  * Gateway drain of an ordinary stop.
  */
-type YieldingStop = "refused-candidate" | "gateway-drain";
+type YieldingStop = Exclude<ComputeWorkWait, "optional"> | "refused-candidate";
 const yieldingStops = new AsyncLocalStorage<YieldingStop>();
 
 export type NamespaceEnsureHintCode = "KUBERNETES_TENANT_ACCESS_DENIED";
@@ -142,8 +142,9 @@ export async function withYieldingComputeStop<Result>(
  */
 export async function withYieldingGatewayDrain<Result>(
   operation: () => Promise<Result>,
+  wait: "gateway-drain" | "predecessor-completion" = "gateway-drain",
 ): Promise<Result> {
-  return yieldingStops.run("gateway-drain", operation);
+  return yieldingStops.run(wait, operation);
 }
 
 /** Whether this operation is a refused candidate's stop, which deletes the Harness first. */
@@ -157,8 +158,8 @@ export function isYieldingComputeStop(): boolean {
  */
 export async function computeStopShouldYield(role?: "agent" | "gateway"): Promise<boolean> {
   const mode = yieldingStops.getStore();
-  if (mode === "gateway-drain") {
-    return role === "gateway" && (await computeWorkWaiting("gateway-drain"));
+  if (mode === "gateway-drain" || mode === "predecessor-completion") {
+    return role === "gateway" && (await computeWorkWaiting(mode));
   }
   return mode === "refused-candidate" && (await computeWorkWaiting("optional"));
 }

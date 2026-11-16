@@ -3194,12 +3194,10 @@ export class ControllerWorker {
    * Stops a revision whose Gateway drain may yield: a stopped Agent's revision, or a predecessor
    * that exclusive replacement stops before its successor starts. While the work is younger than
    * the convergence deadline, the Gateway drain wait ends once other Work is due
-   * (ComputeStopYieldedError) and the work is deferred to repeat the stop. Older work keeps the
-   * full bounded wait, so a drain that never ends cannot defer it forever (finding 1088). Age
-   * counts from the work's creation: maintenance work is created one interval before it is due,
-   * so a convergence deadline shorter than the maintenance interval leaves its stops without
-   * yielding. Stops that yielded during their own drain do not count as due Work (see
-   * withClaimHeartbeat; finding 1093).
+   * (ComputeStopYieldedError) and the work is deferred to repeat the stop. Older work
+   * yields only to replacement work with a recorded completion wait, so the serial worker can
+   * renew the other Gateway's lease. Age counts from the work's creation. Stops that yielded
+   * during their own drain do not count as due Work (see withClaimHeartbeat; finding 1093).
    */
   private stopYieldingDrain(claim: ClaimedWork, revision: Readonly<AgentRevision>): Promise<void> {
     return this.withClaimHeartbeat(claim, () =>
@@ -6289,7 +6287,10 @@ export class ControllerWorker {
       // run to its own end (findings 1093, 1090, 1108).
       return await withComputeAbortSignal(operation.signal, () =>
         withComputeWorkWaiting(
-          (wait) => this.queue.claimableWorkWaiting({ except: this.stopYields.waiting(wait) }),
+          (wait) =>
+            wait === "predecessor-completion"
+              ? this.queue.claimableWorkWaiting({ predecessorCompletionOnly: true })
+              : this.queue.claimableWorkWaiting({ except: this.stopYields.waiting(wait) }),
           () => effect(operation.signal),
         ),
       );

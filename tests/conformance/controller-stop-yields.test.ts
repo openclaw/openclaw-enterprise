@@ -183,11 +183,11 @@ async function drainingStop(steps: string[]) {
   }
 }
 
-async function stopRun(ageMs: number, deadlineMs: number, workDue = true) {
+async function stopRun(ageMs: number, deadlineMs: number, workDue = true, completionDue = false) {
   const steps: string[] = [];
   try {
     await withComputeWorkWaiting(
-      async () => workDue,
+      async (wait) => (wait === "predecessor-completion" ? completionDue : workDue),
       () => stopWithDrainYield(ageMs, deadlineMs, () => drainingStop(steps)),
     );
     return { yielded: false, steps };
@@ -197,7 +197,7 @@ async function stopRun(ageMs: number, deadlineMs: number, workDue = true) {
   }
 }
 
-test("a stop yields only its Gateway drain, only to due Work, and only before the deadline", async () => {
+test("a stop yields only its Gateway drain, only to due Work, and limits yielding after the deadline", async () => {
   // Before the deadline the Gateway wait ends when other Work is due; the Harness is untouched.
   assert.deepEqual(await stopRun(0, 900_000), { yielded: true, steps: [] });
   assert.deepEqual(await stopRun(899_999, 900_000), { yielded: true, steps: [] });
@@ -206,11 +206,13 @@ test("a stop yields only its Gateway drain, only to due Work, and only before th
     yielded: false,
     steps: ["gateway", "agent"],
   });
-  // From the deadline on the stop keeps its full bounded wait, so it cannot defer forever.
+  // From the deadline on, ordinary work cannot defer the stop.
   assert.deepEqual(await stopRun(900_000, 900_000), {
     yielded: false,
     steps: ["gateway", "agent"],
   });
+  // A due completion still needs a lease refresh after the other stop is overdue.
+  assert.deepEqual(await stopRun(900_000, 900_000, false, true), { yielded: true, steps: [] });
   // The Harness's own wait never yields, even when the Gateway's is already done.
   const harnessOnly: string[] = [];
   await withComputeWorkWaiting(

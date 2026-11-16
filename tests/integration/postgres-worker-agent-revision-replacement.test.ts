@@ -9,7 +9,10 @@ import {
   type DeploymentStatusResult,
 } from "../../packages/occ/src/index.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
-import { ComputeStopYieldedError } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import {
+  ComputeStopYieldedError,
+  computeStopShouldYield,
+} from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
@@ -2078,6 +2081,74 @@ revisionTest(
         },
       },
     ]);
+  },
+);
+
+revisionTest(
+  "one worker renews a completion wait during another Agent's overdue Gateway stop",
+  async (fixture) => {
+    const waiting = await fixture.agent("renewal-waiting", { executionMode: "dedicated" });
+    const stopping = await fixture.agent("renewal-stopping", { executionMode: "dedicated" });
+    const driver = countingExclusiveCompute(fixture);
+    const deadlines: number[] = [];
+    let yielded = false;
+    let renewedAfterYield = false;
+    driver.compute.canWaitForPredecessorCompletion = () => true;
+    driver.compute.waitForPredecessorCompletion = async (_revision, context) => {
+      deadlines.push(context.deadlineAtMs);
+      if (!yielded) {
+        return "waiting";
+      }
+      renewedAfterYield = true;
+      assert.equal(await context.recordExecutionIdentity("waiting-executor"), true);
+      await context.commitStopping("waiting-executor");
+      return "ready";
+    };
+
+    await fixture.start(driver.compute);
+    const original = await fixture.revision(waiting, 1);
+    await fixture.work(original, "succeeded");
+    const other = await fixture.revision(stopping, 1);
+    await fixture.work(other, "succeeded");
+    await fixture.stop();
+
+    const candidate = await fixture.revision(waiting, 2);
+    await recordPlannedReplacement(fixture, waiting, original, candidate);
+    const events: WorkerEvent[] = [];
+    const observe = (event: WorkerEvent) => events.push(event);
+    await fixture.start(driver.compute, { emit: observe });
+    await waitFor(
+      "first completion deferral",
+      () => events.some((event) => event.code === "PREDECESSOR_COMPLETION_WAITING") || undefined,
+    );
+    await fixture.stop();
+
+    const stop = driver.compute.stopRevision.bind(driver.compute);
+    driver.compute.stopRevision = async (revision) => {
+      if (revision.id === other.id && !yielded) {
+        // Keep the simulated Pod terminating until the actual worker exposes due completion work.
+        await waitFor(
+          "the overdue stop yielding to completion work",
+          async () => (await computeStopShouldYield("gateway")) || undefined,
+        );
+        yielded = true;
+        throw new ComputeStopYieldedError("The Gateway Pod is still terminating.");
+      }
+      await stop(revision);
+    };
+
+    const stopped = await fixture.requestStop(stopping);
+    // Work ages on PostgreSQL's clock even while the worker is offline. Give the stop a
+    // shorter ordinary convergence budget without changing the completion cutoff.
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await fixture.start(driver.compute, { convergenceTimeoutMs: 1000, emit: observe });
+    await fixture.work(candidate, "succeeded");
+    await fixture.work(stopped, "succeeded");
+    assert.ok(renewedAfterYield);
+    assert.equal(new Set(deadlines).size, 1);
+    assert.equal(driver.count(original), 1);
+    assert.equal(driver.count(other), 1);
+    assert.equal(await activeRevisionId(fixture, waiting), candidate.id);
   },
 );
 
