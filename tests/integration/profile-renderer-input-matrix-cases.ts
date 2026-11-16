@@ -40,7 +40,7 @@ export function registerInputMatrixCases(): void {
       name: "profiles reject the retired bootstrap password claim setting",
       cases: [
         [
-          "controlPlane.bootstrapCredentialsSecretName",
+          "controlPlane.bootstrapPasswordClaimName",
           ["retired-bootstrap-claim"],
           "is not supported by installation profiles",
         ],
