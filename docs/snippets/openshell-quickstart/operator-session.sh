@@ -42,7 +42,7 @@ turn() {
   read -r pod ip < <(api_pod) || return 1
   kube -n "$PLATFORM_NS" exec -i "$pod" -c api -- \
     env OCE_TEST_NAMESPACE_ID="$namespace" OCE_TEST_AGENT_ID="$agent" OCE_TEST_PROMPT="$prompt" \
-    node --input-type=module < "$RUN_DIR/chat.mjs"
+    node --input-type=module-typescript < "$RUN_DIR/chat.mts"
 }
 wait_deployment() {
   local revision=$1 result status attempt
