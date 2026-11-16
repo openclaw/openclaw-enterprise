@@ -68,7 +68,9 @@ Driver. It returns the selected revision with the endpoint result.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:getChatCompletionsEndpoint`
 checks supported topology and authority, explicit opt-out and route availability
-in that order. `reconcileGatewayRoute` creates a revision-specific Service and HTTPRoute
+in that order. Compute records HTTP-default admission on new revisions; rendering
+and endpoint resolution use that saved decision. A revision without it keeps its
+existing settings until redeployment. `reconcileGatewayRoute` creates a revision-specific Service and HTTPRoute
 for the exact completion POST. The Service selects only that revision. The route
 rewrites the path and supplies the chat scope header. Existing Kubernetes
 retirement removes both resources. Core code does not construct Kubernetes paths.

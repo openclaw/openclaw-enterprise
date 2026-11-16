@@ -920,7 +920,7 @@ test("shared OpenAI provider leaves a roster-selected Anthropic provider unchang
   const providers = JSON.parse(document.data["openclaw.json"]).models.providers;
   assert.equal(providers.anthropic.baseUrl, "https://api.anthropic.com");
   assert.equal(providers.openai.baseUrl, "https://unselected.example.test/v1");
-  assert.equal(fixture.revision.compute.admission, undefined);
+  assert.doesNotMatch(fixture.revision.compute.admission ?? "", /model-provider:/);
 });
 
 test("prepared direct-Secret workloads retain their provider across default changes during activation", async () => {
@@ -3387,10 +3387,17 @@ test("HTTP completion resolution preserves scope, opt-out and revision-specific 
   });
   const driver = createKubernetesComputeDriver(configured);
   const revision = routedRevision(driver);
+  // Auth and HTTP defaults are derived from the saved admission, not required in authored settings.
+  delete revision.configuration.gateway.auth.mode;
+  assert.equal(driver.getChatCompletionsEndpoint(revision).status, "available");
+  const old = structuredClone(revision);
+  delete old.compute.admission;
+  assert.deepEqual(driver.getChatCompletionsEndpoint(old), { status: "unavailable" });
   revision.configuration.gateway.http = { endpoints: { chatCompletions: { enabled: false } } };
-  // A disabled switch cannot qualify a revision whose auth lacks a mandatory scope ceiling.
+  revision.configuration.gateway.auth.mode = "token";
+  // Opt-out cannot qualify an incompatible authentication mode.
   assert.deepEqual(driver.getChatCompletionsEndpoint(revision), { status: "unsupported" });
-  revision.configuration.gateway.auth.trustedProxy.requiredHeaders = ["x-openclaw-scopes"];
+  revision.configuration.gateway.auth.mode = "trusted-proxy";
   assert.deepEqual(driver.getChatCompletionsEndpoint(revision), { status: "disabled" });
   revision.configuration.gateway.http.endpoints.chatCompletions.enabled = true;
   const endpoint = driver.getChatCompletionsEndpoint(revision);

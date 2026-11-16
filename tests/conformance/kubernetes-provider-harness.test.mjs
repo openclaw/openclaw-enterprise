@@ -1488,7 +1488,7 @@ test("provider Harness protected execution is released only on current signed in
       const admission = driver.admitRevision(protectedRevision);
       assert.match(
         admission,
-        /^model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
+        /^http-chat:v1:model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
       );
       const admitted = {
         ...protectedRevision,
@@ -1498,7 +1498,9 @@ test("provider Harness protected execution is released only on current signed in
         ...admitted,
         compute: {
           ...admitted.compute,
-          admission: admission.replace("openshell-codex-launch:v1:", ""),
+          admission: admission
+            .replace("http-chat:v1:", "")
+            .replace("openshell-codex-launch:v1:", ""),
         },
       };
       const pod = fixture.pod("protected-revision");
@@ -1513,12 +1515,28 @@ test("provider Harness protected execution is released only on current signed in
           : originalList(request);
       observation = installed;
       current = true;
+      const baselineObjects = structuredClone(objects);
+      const restoreObjects = () => {
+        objects.clear();
+        for (const [key, resource] of baselineObjects) {
+          objects.set(key, structuredClone(resource));
+        }
+      };
       try {
         for (const [target, disabled] of [
           [admitted, true],
           [alreadyAdmitted, true],
           [protectedRevision, false],
         ]) {
+          // These rows represent separate admission histories. Do not reinterpret a
+          // ConfigMap rendered for new HTTP defaults as an older immutable revision.
+          restoreObjects();
+          const gatewayName = `gateway-${digest(target.agentId)}-rev-${digest(target.id)}`;
+          for (const [key, resource] of objects) {
+            if (resource.kind === "ConfigMap" && resource.metadata.name === gatewayName) {
+              objects.delete(key);
+            }
+          }
           const hashes = [];
           const captureCommand = async ({ requirements }) => {
             hashes.push(
@@ -1549,6 +1567,7 @@ test("provider Harness protected execution is released only on current signed in
           );
         }
       } finally {
+        restoreObjects();
         core.listNamespacedPod = originalList;
         sandbox.enrollHarness = enrollHarness;
         sandbox.harnessEndpoint = harnessEndpoint;
