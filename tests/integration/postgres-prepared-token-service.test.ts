@@ -42,7 +42,7 @@ import {
   EgressSendReceipts,
   type SendAttempt,
 } from "../../packages/occ/src/egress-send-receipts.ts";
-import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.mjs";
+import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.ts";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import {

@@ -143,7 +143,7 @@ synthetic fixtures, not one installed Sandbox.
 With a migrated disposable database selected through `OCC_TEST_DATABASE_URL`, run:
 
 ```sh
-node --test tests/integration/postgres-static-egress.test.mjs
+node --test tests/integration/postgres-static-egress.test.ts
 ```
 
 Follow [database setup](postgresql.md): migrate with `occ_migrator`, run with `occ_app`.

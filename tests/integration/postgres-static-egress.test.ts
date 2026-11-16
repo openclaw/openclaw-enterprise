@@ -1,12 +1,29 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { commitLossScenario } from "../helpers/postgres-protected-scenarios.mjs";
-import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import {
+  commitLossScenario,
+  postgresEgressFixture,
+  readDispatchReceipt,
+  readReceiptMaterial,
+} from "../helpers/postgres-protected-scenarios.ts";
+import { parseJson } from "../helpers/egress-observation-values.ts";
+import type { AgentRevision, AuditEvent } from "../../packages/contracts/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { validHarnessAuthSnapshot } from "../../packages/occ/src/state/platform-state.ts";
+
+type AuditDetailsRow = { details: NonNullable<AuditEvent["details"]> };
+type AuditRow = AuditDetailsRow & {
+  actor_id: AuditEvent["actorId"];
+  resource_id: string;
+  outcome: AuditEvent["outcome"];
+};
+type ProtectedAdmittedSpec = {
+  harness_auth: AgentRevision["harnessAuth"] & { protectedExecutionVersion: number };
+  egress_plan: NonNullable<AgentRevision["egressPlan"]>;
+  execution_admission: AgentRevision["executionAdmission"];
+};
 
 test(
   "losing the exact authorized-dispatch COMMIT reply yields no permit or origin, also after restart",
@@ -15,9 +32,10 @@ test(
     const { f, assertLostDispatch } = await commitLossScenario(t);
     const sibling = f.capture();
     const { ready } = await f.resolve(sibling);
+    assert.ok(ready);
     assert.ok((await f.authorize(f.permitRequest(sibling, ready))).allowed);
     const normal = await f.protect(sibling, await f.send(sibling, ready));
-    assert.equal(normal.response_complete, true);
+    assert.ok("response_complete" in normal && normal.response_complete);
     assert.equal(f.providerRequests.length, 1);
 
     await assertLostDispatch(f.capture());
@@ -28,21 +46,19 @@ test(
   "PostgreSQL egress admission, installation and selected-version fencing persist with fresh native IAM checks",
   requiresPostgres,
   async (t) => {
-    const f = await staticEgressFixture(t, { appFactory: postgresApp });
+    const f = await postgresEgressFixture(t);
     const readsBeforeRefusal = f.secretReads;
     const marker = `schema-private-${randomUUID()}`;
     const valid = { model: "fixture-model", input: "hello", store: false };
     // The real signed TLS exchange must retain an attributable, value-free reason
     // before any credential read. Missing input wins over an invalid store value.
-    const providers =
-      /** @type {import("../../packages/contracts/src/index.ts").CredentialProviderDefinition[]} */ (
-        f.egress.sourceControl.providers
-      );
+    const providers = f.egress.sourceControl.providers;
     const index = providers.findIndex((entry) => entry.sourceType.type === "openai");
     const original = providers[index];
+    assert.ok(original);
     // A registered classifier may mutate its borrowed request. Attribution must
     // still use the original signed ID, never this unvalidated replacement.
-    providers[index] = {
+    const observedProvider: typeof original = {
       ...original,
       classify(route, request, refused) {
         return original.classify(route, request, (rule) => {
@@ -51,18 +67,21 @@ test(
         });
       },
     };
-    t.after(() => {
-      providers[index] = original;
-    });
+    assert.ok(Reflect.set(providers, index, observedProvider));
+    const restoreProvider = () => {
+      assert.ok(Reflect.set(providers, index, original));
+    };
+    t.after(restoreProvider);
     for (const [body, rule] of [
       [{ model: "fixture-model", store: true }, 3],
       [{ ...valid, store: true }, 4],
       [{ ...valid, reasoning: { effort: marker } }, 9],
       [{ ...valid, [marker]: marker }, 1],
-    ]) {
+    ] as const) {
       const rejected = f.capture(body);
-      assert.equal((await f.resolve(rejected)).refused.code, f.refusalCode("DENIED"));
-      const audit = await f.pool.query(
+      const { refused } = await f.resolve(rejected);
+      assert.equal(refused?.code, f.refusalCode("DENIED"));
+      const audit = await f.pool.query<AuditRow>(
         "SELECT * FROM occ.audit_events WHERE namespace_id=$1 AND action='openclaw.egress.authorize' AND details->>'requestId' IN ($2, $3)",
         [f.namespace.id, rejected.request.context.request_id, marker],
       );
@@ -91,15 +110,16 @@ test(
       assert.equal(f.secretReads, readsBeforeRefusal);
       assert.equal(f.providerRequests.length, 0);
     }
-    providers[index] = original;
+    restoreProvider();
     const freshState = new PostgresPlatformState(f.pool);
     const plan = f.revision.egressPlan;
     const installed = await freshState.read((view) =>
       view.credentialSources.findEgressInstallation(
         f.egress.sourceControl.sender.id,
-        f.observed.sandbox.id,
+        f.installation.sandboxId,
       ),
     );
+    assert.ok(installed);
     assert.deepEqual(installed.plan, plan);
     // Reconciliation must not move the recorded installation time or break captured requests.
     await f.controller.transact((unit) =>
@@ -125,14 +145,14 @@ test(
           },
         }),
       ),
-      (error) => error.name === "ResourceStateConflictError",
+      { name: "ResourceStateConflictError" },
     );
     await assert.rejects(
-      f.pool.query(
+      f.pool.query<never>(
         "UPDATE occ.credential_sources SET egress = jsonb_set(egress, '{secret,namespaceId}', '\"other-namespace\"') WHERE id = $1",
         [f.source.id],
       ),
-      (error) => error.code === "23514",
+      { code: "23514" },
     );
     await assert.rejects(
       f.controller.transact((unit) =>
@@ -143,14 +163,15 @@ test(
       ),
       // A second Sandbox for one revision hits UNIQUE (namespace_id, revision_id): the same
       // state conflict the memory store raises, not the generic identity collision.
-      (error) =>
-        error.name === "ResourceStateConflictError" &&
-        error.message === "Egress revision already has an installed execution.",
+      {
+        name: "ResourceStateConflictError",
+        message: "Egress revision already has an installed execution.",
+      },
     );
     const capture = f.capture();
     const ready = (await f.resolve(capture)).ready;
     assert.ok(ready);
-    const acceptedAudit = await f.pool.query(
+    const acceptedAudit = await f.pool.query<Pick<AuditRow, "outcome" | "details">>(
       "SELECT outcome, details FROM occ.audit_events WHERE namespace_id=$1 AND action='openclaw.egress.authorize' AND details->>'requestId'=$2",
       [f.namespace.id, capture.request.context.request_id],
     );
@@ -170,16 +191,20 @@ test(
       },
     });
     await f.protect(capture, await f.send(capture, ready));
-    const evidence = JSON.parse(ready.evidence.authority_evidence);
+    const { binding } = await readDispatchReceipt(f.pool, capture);
+    const evidence = readReceiptMaterial(binding);
+    assert.ok(evidence?.kind === "static");
+    assert.deepEqual(parseJson(ready.evidence.authority_evidence.toString("utf8")), evidence);
     assert.equal(
       await freshState.read((view) => view.credentialSources.isEgressMaterialRejected(evidence)),
       true,
     );
     const pending = f.capture();
     const next = (await f.resolve(pending)).ready;
+    assert.ok(next);
     await f.revoke();
     assert.ok((await f.authorize(f.permitRequest(pending, next))).refused);
-    const denials = await f.pool.query(
+    const denials = await f.pool.query<AuditDetailsRow>(
       "SELECT details FROM occ.audit_events WHERE action = 'openclaw.egress.authorize' AND namespace_id = $1",
       [f.namespace.id],
     );
@@ -196,11 +221,12 @@ test(
   "PostgreSQL preserves the admitted Driver, rejects draft-only protected v2 and refuses missing or mixed-version custody",
   requiresPostgres,
   async (t) => {
-    const f = await staticEgressFixture(t, { appFactory: postgresApp });
+    const f = await postgresEgressFixture(t);
     const state = new PostgresPlatformState(f.pool);
     const revision = await state.read((view) =>
       view.revisions.findRevision(f.namespace.id, f.agent.id, f.revision.id),
     );
+    assert.ok(revision?.egressPlan);
     assert.deepEqual(revision.executionAdmission, { version: 3, mode: "protected" });
     assert.deepEqual(revision.egressPlan.driver, f.installedDriver.ref);
     for (const executionAdmission of [
@@ -211,6 +237,7 @@ test(
     ]) {
       await assert.rejects(
         state.transact((unit) =>
+          // @ts-expect-error Simulate a writer with no admission or an unsupported/mixed admission.
           unit.revisions.createRevision({ ...revision, executionAdmission }),
         ),
         {
@@ -221,11 +248,13 @@ test(
     }
     const {
       rows: [row],
-    } = await f.pool.query("SELECT admitted_spec FROM occ.agent_revisions WHERE id = $1", [
-      revision.id,
-    ]);
-    const insert = (spec) =>
-      f.pool.query(
+    } = await f.pool.query<{ admitted_spec: ProtectedAdmittedSpec }>(
+      "SELECT admitted_spec FROM occ.agent_revisions WHERE id = $1",
+      [revision.id],
+    );
+    assert.ok(row);
+    const insert = (spec: object) =>
+      f.pool.query<never>(
         `
     INSERT INTO occ.agent_revisions (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
     SELECT id, namespace_id, agent_id, revision_number, backend_id, $2::jsonb, admitted_at
@@ -234,11 +263,18 @@ test(
       );
     // PostgreSQL checks constraints before resolving the duplicate key. The original
     // immutable row stays intact; the attempted old writer must still be rejected.
-    const missing = structuredClone(row.admitted_spec);
-    delete missing.execution_admission;
-    const protectedWithoutPlan = structuredClone(row.admitted_spec);
-    delete protectedWithoutPlan.egress_plan;
-    const fencedAuth = row.admitted_spec.harness_auth;
+    const {
+      execution_admission: admission,
+      egress_plan: plan,
+      harness_auth: fencedAuth,
+      ...savedFields
+    } = row.admitted_spec;
+    const missing = { ...savedFields, egress_plan: plan, harness_auth: fencedAuth };
+    const protectedWithoutPlan = {
+      ...savedFields,
+      execution_admission: admission,
+      harness_auth: fencedAuth,
+    };
     const { protectedExecutionVersion, ...unfencedAuth } = fencedAuth;
     assert.equal(protectedExecutionVersion, revision.executionAdmission.version);
     assert.equal(
