@@ -644,6 +644,24 @@ test("dev-up rejects an Installation response without its server-owned ID", asyn
   await assert.rejects(readFile(keyOutput), { code: "ENOENT" });
 });
 
+test("dev-up resolves Compose env-file password precedence before preparing inputs", async (t) => {
+  for (const override of [undefined, "synthetic-shell-password"]) {
+    const fixture = await createFixture(t);
+    await writeFile(fixture.emptyEnv, 'OPENCLAW_DEV_PASSWORD=" synthetic-env-file-password "\n');
+    delete fixture.env.OPENCLAW_DEV_PASSWORD;
+    if (override !== undefined) {
+      fixture.env.OPENCLAW_DEV_PASSWORD = override;
+    }
+    const result = await runDevUp(["--", ...composeOptions(fixture)], fixture.env);
+    assert.equal(result.status, 0, result.stderr);
+    const bundle = result.stdout.match(/^Bootstrap input files: (.+)$/m)?.[1];
+    assert.ok(bundle);
+    const password = await readFile(join(bundle, "admin-password"), "utf8");
+    assert.equal(password === (override ?? " synthetic-env-file-password "), true);
+    assert.ok(!(result.stdout + result.stderr).includes(password));
+  }
+});
+
 test("dev-up refuses retained PostgreSQL storage before starting Compose", async (t) => {
   const fixture = await createFixture(t, { scenario: "postgres-volume-exists" });
   const keyOutput = join(fixture.directory, "unregistered-key.json");

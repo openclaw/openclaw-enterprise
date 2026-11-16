@@ -1,5 +1,9 @@
 name: openclaw-enterprise-development
 
+# Setup-only metadata: Compose resolves shell and env-file precedence without
+# exposing the password in a container environment.
+x-openclaw-bootstrap-password: ${OPENCLAW_DEV_PASSWORD:-openclaw-development-password}
+
 x-development-build: &development-build
   context: .
   target: development

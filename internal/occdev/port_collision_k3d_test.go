@@ -112,7 +112,7 @@ func composeAPIPortCollision(t *testing.T, shellAPI, renderedAPI, kubernetes str
 // to its rendered configuration, which publishes the controller API on renderedAPI.
 func composeAPIPortCollisionFixture(t *testing.T, shellAPI, renderedAPI, kubernetes string, extraCases ...map[string]string) func() []string {
 	t.Helper()
-	rendered := `{"networks":{"development":{"ipam":{"config":[{"subnet":"172.30.0.0/24"}]}}},"services":{` +
+	rendered := `{"x-openclaw-bootstrap-password":"openclaw-development-password","networks":{"development":{"ipam":{"config":[{"subnet":"172.30.0.0/24"}]}}},"services":{` +
 		`"postgres":{"ports":["127.0.0.1:55432:5432"]},` +
 		`"controller":{"ports":["127.0.0.1:` + renderedAPI + `:3000"]},` +
 		`"worker-kubernetes":{}}}`

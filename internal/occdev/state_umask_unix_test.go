@@ -72,7 +72,7 @@ func TestComposeBootstrapSQLWithRestrictiveUmask(t *testing.T) {
 				}
 				repository = alias
 			}
-			rendered := fmt.Sprintf(`{"networks":{"development":{"ipam":{"config":[{"subnet":"172.30.0.0/24"}]}}},"services":{"postgres":{"volumes":[{"type":"bind","source":%q,"target":"/docker-entrypoint-initdb.d/00-occ-roles.sql","read_only":%t,"bind":{"selinux":"Z"}}]},"controller":{"ports":["127.0.0.1:4000:3000"]},"worker-kubernetes":{}}}`, source, !tc.writable)
+			rendered := fmt.Sprintf(`{"x-openclaw-bootstrap-password":"resolved-compose-admin-password","networks":{"development":{"ipam":{"config":[{"subnet":"172.30.0.0/24"}]}}},"services":{"postgres":{"volumes":[{"type":"bind","source":%q,"target":"/docker-entrypoint-initdb.d/00-occ-roles.sql","read_only":%t,"bind":{"selinux":"Z"}}]},"controller":{"ports":["127.0.0.1:4000:3000"]},"worker-kubernetes":{}}}`, source, !tc.writable)
 			// Record the real launcher's snapshot at the engine boundary, then fail
 			// startup to exercise rollback. This does not simulate PostgreSQL access.
 			commands := fakeProfileCommands(t, map[string]string{
@@ -152,6 +152,13 @@ func TestComposeBootstrapSQLWithRestrictiveUmask(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join(captured, "compose.yaml"))
 			if err != nil {
 				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "resolved-compose-admin-password") || strings.Contains(string(data), "x-openclaw-bootstrap-password") {
+				t.Fatal("setup password leaked into the persisted Compose snapshot")
+			}
+			password, err := os.ReadFile(filepath.Join(captured, "initial-admin-password"))
+			if err != nil || string(password) != "resolved-compose-admin-password" {
+				t.Fatal("setup ignored Compose's resolved password")
 			}
 			if err := yaml.Unmarshal(data, &snapshot); err != nil {
 				t.Fatal(err)

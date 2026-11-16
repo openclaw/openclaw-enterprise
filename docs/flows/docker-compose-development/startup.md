@@ -123,7 +123,7 @@ service key, and a `provisioning` default Namespace. Launchers authenticate and
 validate the Installation before CLI export.
 
 `scripts/dev-up` and `internal/occdev/bootstrap.go:prepareBootstrapCredentials`
-prepare private inputs outside the checkout. `prepareBootstrapMounts` inspects the
+resolve Compose password precedence before preparation. `prepareBootstrapMounts` inspects the
 Compose bootstrap UID before startup, then changes ownership
 of private mount copies only. Originals remain host-owned `0600` recovery inputs.
 Compose projects those copies as bootstrap-only secrets; Kubernetes setup
@@ -426,7 +426,7 @@ Ambiguity, success and cleanup yield none; stdout is unauthenticated.
 
 - 2026-11-16 22:56: Add explicit container-boundary development verification without changing workspace-write defaults. (authoring-run/e151ca6f-93f3-4976-bad1-585c8dde1264 - ac72edfbf884219d7392f32fd245173dffccf922)
 
-- 2026-11-16 15:50: Prepare private bootstrap mounts; refuse retained Docker PostgreSQL storage and authenticate before CLI export. (authoring-run/a92d5e93-e5c6-44c1-acf1-b4d08ee54a70 - 8d64b41e408e3d3f093d3547beb3a71fec3f4f88)
+- 2026-11-16 15:50: Resolve Compose password precedence, prepare private mounts, refuse retained PostgreSQL storage, and verify before export. (authoring-run/a92d5e93-e5c6-44c1-acf1-b4d08ee54a70 - 8d64b41e408e3d3f093d3547beb3a71fec3f4f88)
 
 - 2026-11-16 09:42: Replace output-volume extraction with private credential preparation and authenticated Installation discovery in the accompanying uncommitted implementation. (authoring-run/e8039d10-1e3b-41aa-82f2-0d2c709b421f - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
 

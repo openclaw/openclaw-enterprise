@@ -477,24 +477,6 @@ credential_directory="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-bootstrap-inputs.XXX
 chmod 700 "$credential_directory"
 export OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE="$credential_directory/mount-admin-password"
 export OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE="$credential_directory/mount-admin-service-key"
-python3 - "$credential_directory" <<'PY'
-import json
-import os
-import pathlib
-import secrets
-import sys
-root = pathlib.Path(sys.argv[1])
-key = "occ_" + secrets.token_urlsafe(32)
-for name, value in {
-    "admin-password": os.environ.get("OPENCLAW_DEV_PASSWORD", "openclaw-development-password"),
-    "admin-service-key": key,
-    "mount-admin-password": os.environ.get("OPENCLAW_DEV_PASSWORD", "openclaw-development-password"),
-    "mount-admin-service-key": key,
-    "client-key.json": json.dumps({"data": {"key": key}}),
-}.items():
-    with os.fdopen(os.open(root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as output:
-        output.write(value)
-PY
 printf 'Bootstrap input files: %s\n' "$credential_directory"
 compose_config="$temporary_directory/compose-config.json"
 if [ "$container_engine" = "docker" ]; then
@@ -510,6 +492,31 @@ else
     fail "configuration" "could not convert the resolved Podman Compose configuration to JSON" yq --version
   fi
 fi
+
+python3 - "$credential_directory" "$compose_config" <<'PY'
+import json
+import os
+import pathlib
+import secrets
+import sys
+root = pathlib.Path(sys.argv[1])
+config_path = pathlib.Path(sys.argv[2])
+config = json.loads(config_path.read_text())
+password = config.pop("x-openclaw-bootstrap-password", None)
+if not isinstance(password, str):
+    raise SystemExit("Compose must resolve x-openclaw-bootstrap-password for setup")
+config_path.write_text(json.dumps(config))
+key = "occ_" + secrets.token_urlsafe(32)
+for name, value in {
+    "admin-password": password,
+    "admin-service-key": key,
+    "mount-admin-password": password,
+    "mount-admin-service-key": key,
+    "client-key.json": json.dumps({"data": {"key": key}}),
+}.items():
+    with os.fdopen(os.open(root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as output:
+        output.write(value)
+PY
 
 # Refuse retained PostgreSQL storage rather than minting an unregistered replacement key.
 if ! engine volume ls --format '{{.Name}}' >"$temporary_directory/volume-names"; then

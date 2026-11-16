@@ -189,6 +189,16 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := yaml.Unmarshal(config, &rendered); err != nil {
 		return fmt.Errorf("invalid rendered Compose configuration: %w", err)
 	}
+	configuration, ok := rendered.(map[string]any)
+	if !ok {
+		return fmt.Errorf("invalid rendered Compose mapping")
+	}
+	password, ok := configuration["x-openclaw-bootstrap-password"].(string)
+	if !ok {
+		return fmt.Errorf("Compose must resolve x-openclaw-bootstrap-password for setup")
+	}
+	r.env["OPENCLAW_DEV_PASSWORD"] = password
+	delete(configuration, "x-openclaw-bootstrap-password")
 	if err := setKubernetesBridgeGateway(rendered); err != nil {
 		return err
 	}
