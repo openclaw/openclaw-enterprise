@@ -73,7 +73,12 @@ function assertOpenSession(
 }
 
 function parseResourceId(stdout: string, key: "number" | "id"): number {
-  const value: unknown = JSON.parse(stdout);
+  let value: unknown;
+  try {
+    value = JSON.parse(stdout);
+  } catch {
+    throw new Error("invalid GitHub resource JSON");
+  }
   assert.ok(isRecord(value), "expected a GitHub resource object");
   const id = value[key];
   assert.ok(
@@ -102,7 +107,6 @@ export async function exerciseLiveWorkflow(
   const cleanups: ResourceCleanup[] = [];
   let clientDirectory: string | undefined;
   let cleanupClient: PinnedClients | undefined;
-  let workFailure: { error: unknown } | undefined;
 
   const requireCleanupClient = () => {
     assert.ok(cleanupClient, "cleanup client unavailable");
@@ -198,49 +202,46 @@ export async function exerciseLiveWorkflow(
     const comment = await write("POST", commentsPath, commentInput);
     parseResourceId(comment.stdout, "id");
     await client.gh(["api", "--paginate", commentsPath]);
-  } catch (error) {
-    workFailure = { error };
+  } finally {
+    await reconcileResourcesAndDispose();
   }
 
-  const failures: string[] = [];
-  // Cancellation of the work client must not cancel remote reconciliation.
-  const cleanupSignal = AbortSignal.timeout(60000);
-  if (clientDirectory && cleanups.length > 0) {
-    try {
-      cleanupClient = await runPinnedClients(t, { clientDirectory }, { signal: cleanupSignal });
-    } catch {
-      failures.push("cleanup client unavailable");
+  async function reconcileResourcesAndDispose(): Promise<void> {
+    const failures: string[] = [];
+    // Cancellation of the work client must not cancel remote reconciliation.
+    const cleanupSignal = AbortSignal.timeout(60000);
+    if (clientDirectory && cleanups.length > 0) {
+      try {
+        cleanupClient = await runPinnedClients(t, { clientDirectory }, { signal: cleanupSignal });
+      } catch {
+        failures.push("cleanup client unavailable");
+      }
     }
-  }
-  for (const action of cleanups.reverse()) {
+    for (const action of cleanups.reverse()) {
+      try {
+        await action(cleanupSignal);
+      } catch (error) {
+        failures.push(
+          error instanceof Error && /^unresolved (issues|pulls|comment)/.test(error.message)
+            ? error.message
+            : "live resource reconciliation failed",
+        );
+      }
+    }
+
+    // Always attempt local closure and verify disposal, even after the remote
+    // cleanup budget expires or the cleanup client fails to start.
     try {
-      await action(cleanupSignal);
+      await closeAndDispose(callControl, socket, id);
     } catch (error) {
       failures.push(
-        error instanceof Error && /^unresolved (issues|pulls|comment)/.test(error.message)
+        error instanceof Error && /^session cleanup/.test(error.message)
           ? error.message
-          : "live resource reconciliation failed",
+          : "session cleanup failed",
       );
     }
-  }
-
-  // Always attempt local closure and verify disposal, even after the remote
-  // cleanup budget expires or the cleanup client fails to start.
-  try {
-    await closeAndDispose(callControl, socket, id);
-  } catch (error) {
-    failures.push(
-      error instanceof Error && /^session cleanup/.test(error.message)
-        ? error.message
-        : "session cleanup failed",
-    );
-  }
-  if (failures.length > 0) {
-    throw new Error(`live cleanup requires operator attention: ${failures.join("; ")}`, {
-      cause: workFailure?.error,
-    });
-  }
-  if (workFailure) {
-    throw workFailure.error;
+    if (failures.length > 0) {
+      throw new Error(`live cleanup requires operator attention: ${failures.join("; ")}`);
+    }
   }
 }
