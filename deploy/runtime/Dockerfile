@@ -265,6 +265,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
     packages/gateway-protocol/src/gateway-suspend.test.ts src/infra/gateway-suspend-coordinator.test.ts \
     src/gateway/server-methods/suspend.integration.test.ts src/cli/gateway-cli/host-lifecycle.test.ts \
+    src/gateway/server-methods.suspension-admission.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     src/infra/private-store-file.test.ts \
     src/node-host/runner.test.ts \
@@ -304,6 +305,9 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     test/node-host-launcher.test.ts \
     src/plugins/computer-use-contract.test.ts \
     src/daemon/program-args.test.ts \
+    && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
+    -t "keeps the fenced process alive until the supervisor sends SIGTERM" \
     && rm -rf .artifacts
 # These CUA lifecycle cases use the supported SDK adapter boundary. The two
 # native SDK import cases need desktop libraries absent from this build image.
