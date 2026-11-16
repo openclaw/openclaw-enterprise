@@ -85,8 +85,10 @@ node scripts/strands-fast.ts --codex "$OCC_TEST_STANDING_GIT_CODEX"
 ```
 
 Keep guest timings separate from native-host timings. The rehearsal has its own
-90-second test timeout; a TCG timeout is an inconclusive guest result, and the
-fast CLI has no timeout override. Shut down the guest normally, wait for the
+90-second test timeout and each sender control 20 seconds. Under TCG, use
+`--serial` or set `OCC_TEST_STRANDS_TIMEOUT_MULTIPLIER` to an integer from 1 to
+10 to scale the Strands test and fixture deadlines; a timeout without it is an
+inconclusive guest result. Shut down the guest normally, wait for the
 original QEMU process to exit, retain any needed results, then remove the
 disposable overlay and variable image. This example has not been executed on
 the review host.

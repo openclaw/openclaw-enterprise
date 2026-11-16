@@ -26,6 +26,10 @@ original CI receipts, logs and `summary.json`. Missing inputs, failing checks,
 skips or incomplete cleanup fail the command. No image build or guest boot is
 required. `--output` selects a directory that must not already exist.
 
+On a slow or emulated host, set `OCC_TEST_STRANDS_TIMEOUT_MULTIPLIER` to an
+integer from 1 to 10. It scales the Strands test and fixture deadlines without
+changing any expected outcome; native hosts keep the default of 1.
+
 To measure the same checks repeatedly, including cleanup:
 
 ```sh

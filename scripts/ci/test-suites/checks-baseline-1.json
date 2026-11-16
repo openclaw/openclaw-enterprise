@@ -277,7 +277,15 @@
       "path": "tests/conformance/strands-box-driver.test.ts"
     },
     {
-      "path": "tests/conformance/strands-box-git.test.ts"
+      "path": "tests/conformance/strands-box-git.test.ts",
+      "optionalEnv": ["OCC_TEST_STRANDS_TIMEOUT_MULTIPLIER"],
+      "expectedTests": [
+        "a paired sender forwards real Git and one fixed draft, then stops new sends on withdrawal",
+        "foreign peer, missing authority and a replaced recipient cannot disclose material or write",
+        "a lost draft result survives a sender restart and cannot trigger a replay",
+        "withdrawing one original execution leaves another sender's independent authority intact",
+        "an applied push with a lost reply stays unknown to the sender and cannot be replayed"
+      ]
     },
     {
       "path": "tests/conformance/strands-box-harness-image.test.ts"

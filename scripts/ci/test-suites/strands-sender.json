@@ -1,5 +1,6 @@
 {
   "requiredEnv": ["OCC_TEST_STANDING_GIT_CODEX"],
+  "optionalEnv": ["OCC_TEST_STRANDS_TIMEOUT_MULTIPLIER"],
   "env": { "OCC_TEST_STRANDS_SENDER_REHEARSAL": "1" },
   "prepare": {},
   "files": [

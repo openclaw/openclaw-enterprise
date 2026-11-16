@@ -12,6 +12,7 @@ import { connect } from "node:tls";
 import { promisify } from "node:util";
 import { certificateAuthority, signedLeaf } from "./certificates.ts";
 import { temporaryDirectory } from "./temporary-directory.ts";
+import { strandsTimeoutMs } from "./strands-timeout.ts";
 
 const execute = promisify(execFile);
 const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
@@ -77,7 +78,7 @@ async function gitBackend(
           : undefined,
     },
     stdio: ["pipe", "pipe", "ignore"],
-    timeout: 4_000,
+    timeout: strandsTimeoutMs(4_000),
   });
   const done = once(child, "exit");
   child.stdin.on("error", () => {});
@@ -119,7 +120,7 @@ export async function strandsRepositoryOriginFixture(
     GIT_TERMINAL_PROMPT: "0",
   };
   const git = (args: readonly string[], cwd = checkout) =>
-    execute("/usr/bin/git", args, { cwd, env, timeout: 8_000 });
+    execute("/usr/bin/git", args, { cwd, env, timeout: strandsTimeoutMs(8_000) });
   await git(["init", "--bare", "--initial-branch=main", repoPath]);
   await git(["--git-dir", repoPath, "config", "http.receivepack", "true"]);
   await git(["init", "--initial-branch=main"]);

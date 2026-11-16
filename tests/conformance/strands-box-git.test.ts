@@ -4,12 +4,13 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { strandsRepositorySenderFixture as fixture } from "../helpers/strands-repository-sender.ts";
+import { strandsTimeoutMs } from "../helpers/strands-timeout.ts";
 
 const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 
 test(
   "a paired sender forwards real Git and one fixed draft, then stops new sends on withdrawal",
-  { timeout: 20_000 },
+  { timeout: strandsTimeoutMs(20_000) },
   async (t) => {
     const f = await fixture(t);
     const route = await f.install();
@@ -116,7 +117,7 @@ test(
 
 test(
   "foreign peer, missing authority and a replaced recipient cannot disclose material or write",
-  { timeout: 20_000 },
+  { timeout: strandsTimeoutMs(20_000) },
   async (t) => {
     const f = await fixture(t);
     const path = "/repository.git/info/refs?service=git-upload-pack";
@@ -147,7 +148,7 @@ test(
 
 test(
   "a lost draft result survives a sender restart and cannot trigger a replay",
-  { timeout: 20_000 },
+  { timeout: strandsTimeoutMs(20_000) },
   async (t) => {
     const f = await fixture(t);
     const route = await f.install();
@@ -170,7 +171,7 @@ test(
 
 test(
   "withdrawing one original execution leaves another sender's independent authority intact",
-  { timeout: 20_000 },
+  { timeout: strandsTimeoutMs(20_000) },
   async (t) => {
     const [one, two] = await Promise.all([fixture(t, "first-agent"), fixture(t, "second-agent")]);
     const [a, b] = await Promise.all([one.install(), two.install()]);
@@ -188,7 +189,7 @@ test(
 
 test(
   "an applied push with a lost reply stays unknown to the sender and cannot be replayed",
-  { timeout: 20_000 },
+  { timeout: strandsTimeoutMs(20_000) },
   async (t) => {
     const f = await fixture(t);
     const route = await f.install();

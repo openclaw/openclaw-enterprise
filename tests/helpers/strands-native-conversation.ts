@@ -10,6 +10,7 @@ import {
 } from "../fixtures/repository-credentials/process.ts";
 
 import { strandsRehearsalModel } from "./strands-rehearsal-model.ts";
+import { strandsTimeoutMs } from "./strands-timeout.ts";
 
 interface Turn {
   id: string;
@@ -182,7 +183,7 @@ log_user_prompt = false
                 stderr.replaceAll(credential, "[fixture credential]"),
             ),
           ),
-        30_000,
+        strandsTimeoutMs(30_000),
       );
       waiting.add(waiter);
       if (spawnError || child.exitCode !== null || child.signalCode !== null) {

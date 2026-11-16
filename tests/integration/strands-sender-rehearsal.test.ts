@@ -6,6 +6,7 @@ import test from "node:test";
 import { runAgentGrantRehearsal } from "../helpers/agent-grant-rehearsal.ts";
 import { strandsRepositorySenderFixture } from "../helpers/strands-repository-sender.ts";
 import { strandsNativeConversation } from "../helpers/strands-native-conversation.ts";
+import { strandsTimeoutMs } from "../helpers/strands-timeout.ts";
 
 const selected = process.env.OCC_TEST_STRANDS_SENDER_REHEARSAL === "1";
 
@@ -15,7 +16,7 @@ test(
     skip: selected
       ? false
       : "select OCC_TEST_STRANDS_SENDER_REHEARSAL=1 and the native Codex executable",
-    timeout: 90_000,
+    timeout: strandsTimeoutMs(90_000),
   },
   async (t) => {
     assert.equal(
