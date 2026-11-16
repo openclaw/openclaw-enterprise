@@ -70,6 +70,7 @@ interface InstalledConfig extends HostConfig {
   writableState: string[];
   workspaceNode?: EgressRoute;
   separateWorkspaceNode?: NodeInstallation;
+  ingressLeafSha256?: string;
   controlledInference?: EgressRoute;
 }
 
@@ -82,13 +83,17 @@ interface RecordView {
   workspaceNodeMode?: NodeInstallation["mode"];
   workspaceVolume?: NodeInstallation["workspaceVolume"];
   generationSha256?: string;
+  ingressLeafSha256?: string;
 }
 
 interface LaunchPlan extends StartInput {
   readonly separateNode?: NodeLaunch;
 }
 
-function approvedWorkspaceNode(plan: LaunchPlan): Pending["workspaceNode"] {
+function approvedWorkspaceNode(
+  config: InstalledConfig,
+  plan: LaunchPlan,
+): Pending["workspaceNode"] {
   if (plan.separateNode === undefined) return undefined;
   const { installation, workspace, volumeMounts, route, displayName } = plan.separateNode;
   return {
@@ -101,6 +106,7 @@ function approvedWorkspaceNode(plan: LaunchPlan): Pending["workspaceNode"] {
       volumeMounts,
       route,
       displayName,
+      ingressLeafSha256: config.ingressLeafSha256,
     }),
   };
 }
@@ -282,6 +288,7 @@ function installedConfig(value: unknown): InstalledConfig {
     "writableState",
     "workspaceNode",
     "separateWorkspaceNode",
+    "ingressLeafSha256",
     "controlledInference",
   ]);
   if (config.workspace !== WORKSPACE) throw new Error("unsupported_workspace_path");
@@ -329,6 +336,14 @@ function installedConfig(value: unknown): InstalledConfig {
     data.separateWorkspaceNode === undefined
       ? undefined
       : nodeInstallation(data.separateWorkspaceNode);
+  const ingressLeafSha256 =
+    data.ingressLeafSha256 === undefined ? undefined : string(data.ingressLeafSha256);
+  if (
+    (separateWorkspaceNode === undefined) !== (ingressLeafSha256 === undefined) ||
+    (ingressLeafSha256 !== undefined && !SHA256.test(ingressLeafSha256))
+  ) {
+    throw new Error("invalid_generation_ingress_certificate_pin");
+  }
   if (separateWorkspaceNode !== undefined) {
     // The file node's state and root image may never be present in a Box grant.
     const isolated = [FILE_NODE_STATE, separateWorkspaceNode.rootfs];
@@ -397,6 +412,7 @@ function installedConfig(value: unknown): InstalledConfig {
       : { workspaceSetupId: string(data.workspaceSetupId) }),
     ...(workspaceNode === undefined ? {} : { workspaceNode }),
     ...(separateWorkspaceNode === undefined ? {} : { separateWorkspaceNode }),
+    ...(ingressLeafSha256 === undefined ? {} : { ingressLeafSha256 }),
     ...(data.controlledInference === undefined
       ? {}
       : { controlledInference: parseRoute(data.controlledInference, "controlled-inference") }),
@@ -904,7 +920,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       }
       if (pending === undefined) {
         const plan = admitted(config, supplied, data, "observe");
-        const workspaceNode = approvedWorkspaceNode(plan);
+        const workspaceNode = approvedWorkspaceNode(config, plan);
         const view: Pending = {
           version: 1,
           owner: supplied,
@@ -981,7 +997,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         return;
       }
       const input = admitted(config, supplied, data, "start");
-      const workspaceNode = approvedWorkspaceNode(input);
+      const workspaceNode = approvedWorkspaceNode(config, input);
       if (workspaceNode?.planSha256 !== pending.view.workspaceNode?.planSha256) {
         throw new Error("file_node_admitted_plan_changed");
       }
@@ -1015,6 +1031,8 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         (receipt) => {
           try {
             if (workspaceNode !== undefined) {
+              const ingressLeafSha256 = config.ingressLeafSha256;
+              if (!ingressLeafSha256) throw new Error("missing_generation_ingress_certificate_pin");
               const bytes = readFileSync(join(config.runtimeDir, READY_FILE), {
                 flag: constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
               });
@@ -1022,6 +1040,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
                 throw new Error("original_ready_receipt_changed");
               }
               view.generationSha256 = createHash("sha256").update(bytes).digest("hex");
+              view.ingressLeafSha256 = ingressLeafSha256;
             }
             view.state = "running";
           } catch {

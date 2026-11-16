@@ -439,7 +439,7 @@ class StrandsBoxDriver implements SandboxDriver {
       this.options.nativeCaBundle,
       context.transportToken,
       context.signal,
-      before.generationSha256,
+      endpoint.externalWorkspaceOwner,
     );
     const after = await this.current(context);
     if (!sameExecution(before, after)) {
@@ -744,7 +744,10 @@ class StrandsBoxDriver implements SandboxDriver {
         "The Strands Box endpoint differs from the Installation's exact origin and workspace.",
       );
     }
-    if (execution.workspaceNodeMode !== undefined && execution.generationSha256 === undefined) {
+    if (
+      execution.workspaceNodeMode !== undefined &&
+      (execution.generationSha256 === undefined || execution.ingressLeafSha256 === undefined)
+    ) {
       throw new TransientDependencyError(
         "sandbox_gateway",
         "unavailable",
@@ -754,9 +757,14 @@ class StrandsBoxDriver implements SandboxDriver {
     return {
       ...execution.endpoint,
       tls: { caBundle: this.options.nativeCaBundle },
-      ...(execution.generationSha256 === undefined
+      ...(execution.generationSha256 === undefined || execution.ingressLeafSha256 === undefined
         ? {}
-        : { externalWorkspaceOwner: { generationSha256: execution.generationSha256 } }),
+        : {
+            externalWorkspaceOwner: {
+              generationSha256: execution.generationSha256,
+              ingressLeafSha256: execution.ingressLeafSha256,
+            },
+          }),
     };
   }
 

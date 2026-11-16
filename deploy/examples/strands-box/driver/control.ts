@@ -23,6 +23,7 @@ export interface Execution {
   readonly workspaceNodeMode?: WorkspaceNodeMode;
   readonly workspaceVolume?: WorkspaceVolume;
   readonly generationSha256?: string;
+  readonly ingressLeafSha256?: string;
 }
 
 export type WorkspaceNodeMode = "file-only-v1";
@@ -77,6 +78,7 @@ export function sameExecution(a: Execution, b: Execution): boolean {
     a.workspaceNodeMode === b.workspaceNodeMode &&
     sameWorkspaceVolume(a.workspaceVolume, b.workspaceVolume) &&
     a.generationSha256 === b.generationSha256 &&
+    a.ingressLeafSha256 === b.ingressLeafSha256 &&
     a.endpoint.url === b.endpoint.url &&
     a.endpoint.workspaceRoot === b.endpoint.workspaceRoot
   );
@@ -147,6 +149,10 @@ function parseExecution(value: unknown): Execution {
       (document.workspaceNodeMode === undefined ||
         typeof document.generationSha256 !== "string" ||
         !/^[a-f0-9]{64}$/.test(document.generationSha256))) ||
+    (document.generationSha256 === undefined) !== (document.ingressLeafSha256 === undefined) ||
+    (document.ingressLeafSha256 !== undefined &&
+      (typeof document.ingressLeafSha256 !== "string" ||
+        !/^[a-f0-9]{64}$/.test(document.ingressLeafSha256))) ||
     (document.workspaceNodeMode !== undefined &&
       document.state === "running" &&
       document.generationSha256 === undefined)
@@ -166,6 +172,9 @@ function parseExecution(value: unknown): Execution {
     ...(document.generationSha256 === undefined
       ? {}
       : { generationSha256: document.generationSha256 }),
+    ...(document.ingressLeafSha256 === undefined
+      ? {}
+      : { ingressLeafSha256: document.ingressLeafSha256 }),
   };
 }
 

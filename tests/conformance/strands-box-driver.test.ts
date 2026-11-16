@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, X509Certificate } from "node:crypto";
 import { chmod, cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
@@ -23,8 +23,10 @@ import type {
   AgentRevision,
   HarnessWorkloadRequirements,
   Namespace,
+  SandboxHarnessEndpoint,
   SandboxHarnessContext,
 } from "../../packages/contracts/src/index.ts";
+import { certificateAuthority, signedLeaf } from "../helpers/certificates.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { listen } from "../helpers/listen.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
@@ -946,9 +948,19 @@ async function readinessFixture(t: TestContext) {
     ca: string,
     token: string,
     signal: AbortSignal,
-    generationSha256?: string,
+    owner?: SandboxHarnessEndpoint["externalWorkspaceOwner"],
   ) => Promise<unknown>;
-  return { probe, ca: x.ca, tls: { key: await readFile(x.certKey), cert: x.ca } };
+  const directory = await temporaryDirectory(t, "box-native-tls-");
+  const authority = await certificateAuthority(directory, { caName: "Native readiness CA" });
+  const tls = await signedLeaf(directory, authority, {
+    name: "original",
+    subjectAltName: "IP:127.0.0.1",
+  });
+  const replacementTls = await signedLeaf(directory, authority, {
+    name: "replacement",
+    subjectAltName: "IP:127.0.0.1",
+  });
+  return { probe, ca: await readFile(authority.caPath, "utf8"), tls, replacementTls };
 }
 
 function firstClientFrame(socket: Duplex, receive: (value: Record<string, unknown>) => void) {
@@ -1027,7 +1039,7 @@ test(
   "readiness requires the authenticated native initialize response over the pinned TLS authority",
   { timeout: 30_000 },
   async (t) => {
-    const { probe, ca, tls } = await readinessFixture(t);
+    const { probe, ca, tls, replacementTls } = await readinessFixture(t);
     const signal = new AbortController().signal;
     const expectedFailure = {
       component: "agent",
@@ -1038,8 +1050,15 @@ test(
       "upgrade-only";
     const observations: string[] = [];
     const generation = "a".repeat(64);
+    const owner = {
+      generationSha256: generation,
+      ingressLeafSha256: createHash("sha256")
+        .update(new X509Certificate(tls.cert).raw)
+        .digest("hex"),
+    };
     let ownerHeaders: string[] = [];
     let sawSilentRequest = false;
+    let upgrades = 0;
     const server = createHttpsServer(tls, (request, response) => {
       assert.equal(request.url, "/openclaw/runtime/status");
       assert.equal(request.headers.authorization, `Bearer ${token}`);
@@ -1049,6 +1068,7 @@ test(
         .end(JSON.stringify({ runtimeFailure: expectedFailure }));
     });
     server.on("upgrade", (request, socket) => {
+      upgrades++;
       const current = mode;
       if (request.headers.authorization !== `Bearer ${token}`) {
         observations.push("wrong-auth");
@@ -1117,10 +1137,16 @@ test(
     assert.deepEqual(await probe(url, ca, token, signal), { state: "serving" });
     for (const headers of [[], ["b".repeat(64)], [generation, generation]]) {
       ownerHeaders = headers;
-      await assert.rejects(probe(url, ca, token, signal, generation), /did not confirm readiness/);
+      await assert.rejects(probe(url, ca, token, signal, owner), /did not confirm readiness/);
     }
     ownerHeaders = [generation];
-    assert.deepEqual(await probe(url, ca, token, signal, generation), { state: "serving" });
+    assert.deepEqual(await probe(url, ca, token, signal, owner), { state: "serving" });
+    // A certificate valid for the same CA and IP still cannot receive an HTTP request.
+    const before = { upgrades, nativeFrames: observations.length };
+    server.setSecureContext(replacementTls);
+    await assert.rejects(probe(url, ca, token, signal, owner), /did not confirm readiness/);
+    assert.deepEqual({ upgrades, nativeFrames: observations.length }, before);
+    server.setSecureContext(tls);
     await assert.rejects(
       probe(`wss://localhost:${port}/`, ca, token, signal),
       /did not confirm readiness/,
@@ -1166,16 +1192,12 @@ function bridge(from: Duplex, to: Duplex) {
   to.pipe(from);
 }
 
-test(
+const realNativeTest = realNative === undefined ? undefined : test;
+realNativeTest?.(
   "the pinned TLS readiness probe initializes the original native Codex through a Unix relay",
-  {
-    timeout: 20_000,
-    skip:
-      realNative === undefined &&
-      "Set OCC_TEST_STRANDS_NATIVE_CODEX to a verified native Codex executable.",
-  },
+  { timeout: 20_000 },
   async (t) => {
-    assert.ok(realNative && isAbsolute(realNative));
+    assert.ok(realNative && isAbsolute(realNative), "Supply the verified native Codex executable");
     const { probe, ca, tls } = await readinessFixture(t);
     const directory = await temporaryDirectory(t, "strands-real-native-");
     const path = join(directory, "app-server.sock");

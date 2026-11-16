@@ -56,7 +56,33 @@ trap 'exit 143' TERM
 
 expected_sha=${1:?Provide the exact checked-out source SHA}
 [[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]]
-[[ "$(git rev-parse HEAD)" = "$expected_sha" ]]
+check_source() {
+  local head tracked status
+  if ! head="$(git rev-parse HEAD)" || [[ "$head" != "$expected_sha" ]]; then
+    echo 'strands-box-native-ci: checked-out source SHA does not match the expected SHA' >&2
+    return 1
+  fi
+  if ! tracked="$(git ls-files -v)"; then
+    echo 'strands-box-native-ci: could not check the tracked source index' >&2
+    return 1
+  fi
+  # Lowercase tags mark assume-unchanged paths, and S marks skip-worktree paths.
+  if [[ "$tracked" =~ (^|$'\n')[a-zS]" " ]]; then
+    echo 'strands-box-native-ci: the checkout hides tracked paths from Git checks' >&2
+    return 1
+  fi
+  if ! status="$(git -c core.fsmonitor=false status --porcelain=v1 -uno --ignore-submodules=none)"; then
+    echo 'strands-box-native-ci: could not check the tracked source files' >&2
+    return 1
+  fi
+  if [[ -n "$status" ]]; then
+    echo 'strands-box-native-ci: the checkout has tracked source changes' >&2
+    return 1
+  fi
+}
+phase=source-start
+check_source
+phase=preflight
 [[ "$(uname -s)" = Linux && "$(uname -m)" = aarch64 && "$EUID" != 0 ]]
 [[ "$(node --version)" = v24.22.1 ]]
 grep -Eq '^CapEff:[[:space:]]+0+$' /proc/self/status
@@ -174,5 +200,9 @@ for control in ready.json capability app-server.sock pinned.sock; do
   [[ ! -e "$run_root/run/$control" && ! -L "$run_root/run/$control" ]]
 done
 [[ ! -e "$run_root/run-home" && ! -L "$run_root/run-home" ]]
+rm -rf -- "$run_root"
+run_root=
+phase=source-finish
+check_source
 printf 'strands-box-native-ci: PASS source=%s kernel=%s arch=aarch64 box=0.2.2 codex=0.164.0 scope=standalone\n' \
   "$expected_sha" "$(uname -r)"

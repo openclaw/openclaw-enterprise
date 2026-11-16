@@ -9,6 +9,8 @@ import {
   type BigIntStats,
 } from "node:fs";
 import { request } from "node:https";
+import { checkServerIdentity } from "node:tls";
+
 const ownerDirectory = "openclaw-external-workspace-owner";
 const readOnly = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 
@@ -112,19 +114,23 @@ async function check(files: { binding: Buffer; ca: Buffer; assertCurrent: () => 
     typeof binding !== "object" ||
     Array.isArray(binding) ||
     JSON.stringify(binding) !== raw ||
-    Object.keys(binding).length !== 3 ||
+    Object.keys(binding).length !== 4 ||
     !("url" in binding) ||
     typeof binding.url !== "string" ||
     !("workspaceRoot" in binding) ||
     binding.workspaceRoot !== "/home/node/workspace" ||
     !("generationSha256" in binding) ||
     typeof binding.generationSha256 !== "string" ||
-    !/^[a-f0-9]{64}$/.test(binding.generationSha256)
+    !/^[a-f0-9]{64}$/.test(binding.generationSha256) ||
+    !("ingressLeafSha256" in binding) ||
+    typeof binding.ingressLeafSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(binding.ingressLeafSha256)
   )
     throw Error("OWNER_BINDING_REFUSED");
   if (!/^-----BEGIN CERTIFICATE-----\r?\n/.test(files.ca.toString("utf8")))
     throw Error("OWNER_CA_REFUSED");
   const generation = binding.generationSha256;
+  const pin = binding.ingressLeafSha256;
   const address = new URL(binding.url);
   if (
     address.protocol !== "wss:" ||
@@ -145,6 +151,20 @@ async function check(files: { binding: Buffer; ca: Buffer; assertCurrent: () => 
   await new Promise<void>((resolve, reject) => {
     const q = request(address, {
       ca: files.ca,
+      agent: false,
+      rejectUnauthorized: true,
+      checkServerIdentity(host, certificate) {
+        const error = checkServerIdentity(host, certificate);
+        if (error) return error;
+        if (createHash("sha256").update(certificate.raw).digest("hex") !== pin) {
+          return Error("ORIGINAL_CERTIFICATE_REFUSED");
+        }
+        try {
+          files.assertCurrent();
+        } catch {
+          return Error("OWNER_FILE_REPLACED");
+        }
+      },
       signal: AbortSignal.timeout(5000),
       headers: {
         Connection: "Upgrade",
@@ -177,15 +197,15 @@ async function check(files: { binding: Buffer; ca: Buffer; assertCurrent: () => 
     q.once("error", reject);
     q.end();
   });
-  return generation;
+  return { generationSha256: generation, ingressLeafSha256: pin };
 }
 if (import.meta.main) {
   try {
-    const generation = await withOwnerFiles("/etc", 0n, check);
+    const owner = await withOwnerFiles("/etc", 0n, check);
     process.stdout.write(
       JSON.stringify({
         stage: "original_box_wss",
-        generationSha256: generation,
+        ...owner,
         verifiedTls: true,
       }) + "\n",
     );

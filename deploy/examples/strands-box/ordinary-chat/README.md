@@ -56,7 +56,8 @@ The fresh Codex home is the `codex` directory in the runtime's `-home` sibling.
 
 Start the same source revision's [private host ingress](../ingress/README.md)
 against the original `ready.json` digest. Use an approved private IPv4 listener
-and a certificate with the exact private DNS authority as its SAN. For this
+and a fresh generation-specific certificate and key with the exact private
+DNS authority as its SAN. For this
 standalone repro the trusted Gateway reaches that ingress directly over the
 private route; no Kubernetes Service or relay Pod is required.
 
@@ -72,9 +73,10 @@ read-only at `/etc/openclaw-external-workspace-owner` in the Gateway. Its ancest
 root-owned and neither group- nor world-writable. Use root-owned mode-0444
 regular files with one link each and no symlinks. Its `ca.pem` contains the
 ingress CA. Its compact JSON `binding.json` contains only the canonical
-`wss://HOST[:port]/` URL, the workspace root `/home/node/workspace`, and the
-SHA-256 of the original owner's exact `ready.json` bytes, under the keys `url`,
-`workspaceRoot`, and `generationSha256`. Set the trusted runtime inputs
+`wss://HOST[:port]/` URL, the workspace root `/home/node/workspace`, the
+SHA-256 of the original owner's exact `ready.json` bytes, and the SHA-256 of
+the generation's issued DER leaf, under the keys `url`, `workspaceRoot`,
+`generationSha256`, and `ingressLeafSha256`. Set the trusted runtime inputs
 `APP_SERVER_URL` and `APP_SERVER_TOKEN` to that same URL and the native
 transport bearer. Configure the dedicated Harness app-server as a WebSocket
 with the same endpoint, workspace, and bearer, with no additional headers.
@@ -86,8 +88,9 @@ enabled.
 
 An absent directory leaves ordinary Gateway behavior in place. A selected
 directory with either missing or invalid file refuses the binding. The
-runtime rechecks the mounted file identities and requires the exact generation
-on the CA-verified upgrade before sending native frames. For an ordinary
+runtime rechecks the mounted files and verifies the CA, hostname, and pinned
+leaf before sending the bearer. It requires the exact generation on the
+upgrade before sending native frames. For an ordinary
 workspace-write turn at the bound root, it selects external sandboxing with
 restricted network access and no alternate execution environment. Explicit
 read-only and workspace-restricted policies remain available inside that root.

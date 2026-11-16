@@ -2,6 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { request } from "node:https";
 import { posix } from "node:path";
 import type { Duplex } from "node:stream";
+import { checkServerIdentity } from "node:tls";
+import type { SandboxHarnessEndpoint } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
 import { record } from "./control.ts";
 
@@ -187,7 +189,7 @@ export async function nativeStatus(
   ca: string,
   token: string,
   signal: AbortSignal,
-  generationSha256?: string,
+  owner?: SandboxHarnessEndpoint["externalWorkspaceOwner"],
 ): Promise<
   { state: "starting" } | { state: "serving" } | { state: "failed"; runtimeFailure: unknown }
 > {
@@ -223,6 +225,13 @@ export async function nativeStatus(
     agent: false as const,
     signal: AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT)]),
     headers: { authorization: `Bearer ${token}` },
+    checkServerIdentity(host: string, certificate: Parameters<typeof checkServerIdentity>[1]) {
+      const error = checkServerIdentity(host, certificate);
+      if (error || owner === undefined) return error;
+      if (createHash("sha256").update(certificate.raw).digest("hex") !== owner.ingressLeafSha256) {
+        return new Error("The original Strands Box ingress certificate did not match.");
+      }
+    },
   };
   try {
     const status = await new Promise<number>((resolve, reject) => {
@@ -256,8 +265,8 @@ export async function nativeStatus(
           response.headers["sec-websocket-accept"] !== expected ||
           response.headers["sec-websocket-extensions"] !== undefined ||
           response.headers["sec-websocket-protocol"] !== undefined ||
-          (generationSha256 !== undefined &&
-            (generation.length !== 1 || generation[0] !== generationSha256))
+          (owner !== undefined &&
+            (generation.length !== 1 || generation[0] !== owner.generationSha256))
         ) {
           socket.destroy();
           reject(new Error("Invalid WebSocket upgrade"));
@@ -269,7 +278,7 @@ export async function nativeStatus(
     });
     signal.throwIfAborted();
     if (status === 101) return { state: "serving" };
-    if (status !== 503 || generationSha256 !== undefined) return { state: "starting" };
+    if (status !== 503 || owner !== undefined) return { state: "starting" };
     const failure = await new Promise<unknown>((resolve, reject) => {
       const pending = request(new URL(STATUS_PATH, https), options, (response) => {
         if (response.statusCode !== 200) {

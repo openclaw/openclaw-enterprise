@@ -122,9 +122,12 @@ A dedicated provider that owns the Harness endpoint can set
 `harnessTransportCredential: "verifier"` to receive `APP_TOKEN_SHA` in its
 workload requirements. The Gateway retains the bearer.
 
-For ordinary dedicated Codex with WSS trust, `externalWorkspaceOwner.generationSha256`
-binds `/home/node/workspace` to the live provider. The Driver and Gateway check
-the same generation on native upgrades.
+For ordinary dedicated Codex with WSS trust, `externalWorkspaceOwner` binds
+`/home/node/workspace` to the provider execution. The provider supplies
+`ingressLeafSha256` from the issued generation-specific TLS leaf and
+`generationSha256` from the original execution receipt. The Driver and Gateway
+verify the CA, hostname, and DER leaf digest before sending the bearer, then
+verify the original generation on the upgrade before sending native frames.
 
 `enrollHarness(context, installation, release)` receives a callback from Compute.
 Compute commits and rechecks the verified installation before it signs the startup

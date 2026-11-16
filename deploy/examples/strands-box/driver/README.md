@@ -56,11 +56,13 @@ drivers:
       relay:
         image: registry.example/strands-box-relay@sha256:<relay image digest>
         hostAddress: 10.0.0.7
-        installation: pilot
+        installation: pilot-box
         workerPeer:
           namespace: occ-system
           podLabels:
-            app.kubernetes.io/name: occ-worker
+            app.kubernetes.io/name: openclaw-enterprise
+            app.kubernetes.io/instance: oce
+            app.kubernetes.io/component: worker
       controlledInference:
         modelBaseUrl: https://model.pilot.svc.cluster.local/v1
 ```
@@ -71,8 +73,22 @@ without the Box control mount or an Agent deployment. Return the Worker to
 zero before the checks below. In the assigned Kubernetes namespace, create the [private relay Service](../ingress/service.yaml) and read its ClusterIP.
 Set Compute's `network.providerHarness` to that namespace, the allocated ClusterIP,
 port 8443, and the Service peer labels `app.kubernetes.io/name: box-harness-relay`
-and `box.openclaw.dev/installation: pilot`. Install the relay image at the
-configured digest. Use the [verified Worker control mount](#mount-the-empty-control-directory).
+and `box.openclaw.dev/installation: pilot-box`. Set the Helm values below to the
+same Namespace and installation label. Match `relay.workerPeer` to the actual
+Helm release namespace and all three Worker selector labels. Install the relay
+image at the configured digest. Use the
+[verified Worker control mount](#mount-the-empty-control-directory).
+
+```yaml
+worker:
+  strandsBoxRelay:
+    namespace: pilot
+    installation: pilot-box
+```
+
+The chart grants TCP 8443 egress from that release's Worker to the exact
+Namespace and relay Service selector. The Driver grants ingress to the active
+relay from that Worker and the admitted Gateway.
 To verify each selected Pod belongs to the relay Deployment, the Worker also needs
 permission to read its ReplicaSet. In the Agent's Kubernetes namespace, grant
 that permission to the actual Worker ServiceAccount:

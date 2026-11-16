@@ -7130,7 +7130,12 @@ test("provider Harness public trust rejects invalid material and composes with e
     ]);
     const workspaceRoot = "/home/node/workspace";
     const generationSha256 = "a".repeat(64);
-    const owner = { ...endpoint, workspaceRoot, externalWorkspaceOwner: { generationSha256 } };
+    const ingressLeafSha256 = "b".repeat(64);
+    const owner = {
+      ...endpoint,
+      workspaceRoot,
+      externalWorkspaceOwner: { generationSha256, ingressLeafSha256 },
+    };
     assert.equal(
       pod.containers[0].volumeMounts.some(({ mountPath }) =>
         mountPath.startsWith("/etc/openclaw-external-workspace-owner/"),
@@ -7144,6 +7149,7 @@ test("provider Harness public trust rejects invalid material and composes with e
       url: endpoint.url,
       workspaceRoot,
       generationSha256,
+      ingressLeafSha256,
     });
     const ownerPod = render(owner).spec.template.spec;
     assert.deepEqual(
@@ -7160,7 +7166,12 @@ test("provider Harness public trust rejects invalid material and composes with e
     for (const invalid of [
       { ...owner, tls: undefined },
       { ...owner, workspaceRoot: "/home/node/other" },
-      { ...owner, externalWorkspaceOwner: { generationSha256: "wrong-generation" } },
+      {
+        ...owner,
+        externalWorkspaceOwner: { generationSha256: "wrong-generation", ingressLeafSha256 },
+      },
+      { ...owner, externalWorkspaceOwner: { generationSha256 } },
+      { ...owner, externalWorkspaceOwner: { generationSha256, ingressLeafSha256: "wrong-pin" } },
       { ...owner, codexPermissionProfile: ":danger-full-access" },
     ]) {
       const before = writes.length;

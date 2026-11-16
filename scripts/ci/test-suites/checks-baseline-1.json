@@ -1036,7 +1036,8 @@
       "path": "tests/integration/strands-fast-runner.test.ts",
       "expectedTests": [
         "the Strands fast runner refuses invalid prerequisites before creating results",
-        "the Strands fast runner explains its requirements without a native executable"
+        "the Strands fast runner explains its requirements without a native executable",
+        "the Strands verifiers refuse modified tracked inputs at the same commit"
       ]
     }
   ]

@@ -1,5 +1,5 @@
 diff --git a/extensions/codex/src/app-server/client.ts b/extensions/codex/src/app-server/client.ts
-index 18794d5..a95e6ec 100644
+index 793ec66..f193c7f 100644
 --- a/extensions/codex/src/app-server/client.ts
 +++ b/extensions/codex/src/app-server/client.ts
 @@ -55,6 +55,7 @@ import {
@@ -111,11 +111,12 @@ index a8e7a87..6c62a07 100644
        .toSorted(([left], [right]) => left.localeCompare(right))
 diff --git a/extensions/codex/src/app-server/provider-box-owner.test.ts b/extensions/codex/src/app-server/provider-box-owner.test.ts
 new file mode 100644
-index 0000000..8d5c0f3
+index 0000000..4a4f718
 --- /dev/null
 +++ b/extensions/codex/src/app-server/provider-box-owner.test.ts
-@@ -0,0 +1,349 @@
+@@ -0,0 +1,423 @@
 +import { execFileSync } from "node:child_process";
++import { createHash, X509Certificate } from "node:crypto";
 +import { once } from "node:events";
 +import {
 +  chmod,
@@ -145,10 +146,14 @@ index 0000000..8d5c0f3
 +it("describes a Box refusal with fixed codes without echoing caller data", () => {
 +  const owner = { workspaceRoot };
 +  const privateArgument = "/synthetic/caller-controlled";
-+  expect(providerBoxRequestRefusal(owner, privateArgument, {})).toBe("rpc-not-allowed");
-+  expect(providerBoxRequestRefusal(owner, "thread/inject_items", { input: privateArgument })).toBe(
-+    "rpc-thread-inject-items",
++  expect(providerBoxRequestRefusal(owner, privateArgument, {})).toBe(
++    "rpc-not-allowed",
 +  );
++  expect(
++    providerBoxRequestRefusal(owner, "thread/inject_items", {
++      input: privateArgument,
++    }),
++  ).toBe("rpc-thread-inject-items");
 +  expect(
 +    providerBoxRequestRefusal(owner, "thread/start", {
 +      cwd: privateArgument,
@@ -164,6 +169,7 @@ index 0000000..8d5c0f3
 +});
 +
 +const generationSha256 = "a".repeat(64);
++const ingressLeafSha256 = "b".repeat(64);
 +const authToken = "fixture-native-transport-capability";
 +const header = "X-OpenClaw-External-Workspace-Generation";
 +const owner = { workspaceRoot };
@@ -234,7 +240,9 @@ index 0000000..8d5c0f3
 +});
 +
 +it("uses only the closed provider mount for the exact Compute route and capability", async () => {
-+  const root = await mkdtemp(join(tmpdir(), "openclaw-external-workspace-owner-"));
++  const root = await mkdtemp(
++    join(tmpdir(), "openclaw-external-workspace-owner-"),
++  );
 +  const parent = join(root, "etc");
 +  const directory = join(parent, "owner");
 +  const bindingPath = join(directory, "binding.json");
@@ -261,7 +269,12 @@ index 0000000..8d5c0f3
 +    );
 +    await writeFile(
 +      bindingPath,
-+      JSON.stringify({ url, workspaceRoot, generationSha256 }),
++      JSON.stringify({
++        url,
++        workspaceRoot,
++        generationSha256,
++        ingressLeafSha256,
++      }),
 +      { mode: 0o444 },
 +    );
 +    expect(() => readProviderBoxOwner(input, scope)).toThrow(
@@ -276,6 +289,7 @@ index 0000000..8d5c0f3
 +      url,
 +      workspaceRoot,
 +      generationSha256,
++      ingressLeafSha256,
 +      ca: TEST_TLS_CERT_PEM,
 +    });
 +    expect(() => owner!.assertCurrent()).not.toThrow();
@@ -311,46 +325,89 @@ index 0000000..8d5c0f3
 +  }
 +});
 +
-+it("delivers native frames only on the CA-pinned original generation, including after withdrawal", async () => {
-+  const directory = await mkdtemp(join(tmpdir(), "openclaw-external-workspace-owner-tls-"));
-+  const certPath = join(directory, "cert.pem");
-+  const keyPath = join(directory, "key.pem");
-+  const [cert, key] = await (async () => {
++it("sends the bearer and native frames only after authenticating the original TLS peer", async () => {
++  const directory = await mkdtemp(
++    join(tmpdir(), "openclaw-external-workspace-owner-tls-"),
++  );
++  const openssl = (...args: string[]) =>
++    execFileSync("openssl", args, { cwd: directory, stdio: "ignore" });
++  const { ca, originalTls, replacementTls } = await (async () => {
 +    try {
-+      execFileSync(
-+        "openssl",
-+        [
++      openssl(
++        "req",
++        "-new",
++        "-x509",
++        "-newkey",
++        "rsa:2048",
++        "-nodes",
++        "-days",
++        "1",
++        "-subj",
++        "/CN=Box owner test CA",
++        "-addext",
++        "basicConstraints=critical,CA:TRUE",
++        "-out",
++        "ca.pem",
++        "-keyout",
++        "ca.key",
++      );
++      await writeFile(
++        join(directory, "leaf.ext"),
++        "subjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n",
++      );
++      const issue = async (name: string, serial: string) => {
++        openssl(
 +          "req",
 +          "-new",
-+          "-x509",
 +          "-newkey",
 +          "rsa:2048",
 +          "-nodes",
++          "-subj",
++          "/CN=Box owner test leaf",
++          "-out",
++          name + ".csr",
++          "-keyout",
++          name + ".key",
++        );
++        openssl(
++          "x509",
++          "-req",
++          "-in",
++          name + ".csr",
++          "-CA",
++          "ca.pem",
++          "-CAkey",
++          "ca.key",
++          "-set_serial",
++          serial,
 +          "-days",
 +          "1",
-+          "-subj",
-+          "/CN=Box owner test CA",
-+          "-addext",
-+          "basicConstraints=critical,CA:TRUE",
-+          "-addext",
-+          "subjectAltName=IP:127.0.0.1",
++          "-extfile",
++          "leaf.ext",
 +          "-out",
-+          certPath,
-+          "-keyout",
-+          keyPath,
-+        ],
-+        { stdio: "ignore" },
-+      );
-+      return await Promise.all([
-+        readFile(certPath, "utf8"),
-+        readFile(keyPath, "utf8"),
-+      ]);
++          name + ".pem",
++        );
++        return {
++          cert: await readFile(join(directory, name + ".pem"), "utf8"),
++          key: await readFile(join(directory, name + ".key"), "utf8"),
++        };
++      };
++      return {
++        ca: await readFile(join(directory, "ca.pem"), "utf8"),
++        originalTls: await issue("original", "1"),
++        replacementTls: await issue("replacement", "2"),
++      };
 +    } finally {
 +      await rm(directory, { recursive: true, force: true });
 +    }
 +  })();
-+  const server = createServer({ cert, key });
++  const server = createServer(originalTls);
 +  const peer = new WebSocketServer({ server });
++  const authorizations: string[] = [];
++  server.on("upgrade", (request) => {
++    if (request.headers.authorization)
++      authorizations.push(request.headers.authorization);
++  });
 +  let generation = generationSha256;
 +  const frames: string[] = [];
 +  peer.on("headers", (headers) => headers.push(`${header}: ${generation}`));
@@ -377,7 +434,10 @@ index 0000000..8d5c0f3
 +        url,
 +        workspaceRoot,
 +        generationSha256,
-+        ca: cert,
++        ingressLeafSha256: createHash("sha256")
++          .update(new X509Certificate(originalTls.cert).raw)
++          .digest("hex"),
++        ca,
 +        assertCurrent() {
 +          if (!current) throw new Error("owner binding is invalid");
 +        },
@@ -456,6 +516,20 @@ index 0000000..8d5c0f3
 +      }),
 +    );
 +    expect(frames).toHaveLength(1);
++
++    // Same CA, hostname, and port, but independently issued replacement leaf/key.
++    // Its HTTP upgrade must never see an Authorization header.
++    server.setSecureContext(replacementTls);
++    const before = authorizations.length;
++    expect(before).toBeGreaterThan(0);
++    const wrongPeer = createWebSocketTransport(start);
++    const tlsRefused = new Promise<unknown>((resolve) =>
++      wrongPeer.once("error", resolve),
++    );
++    wrongPeer.stdin.write('{"id":5,"method":"initialize"}\n');
++    await expect(tlsRefused).resolves.toBeInstanceOf(Error);
++    expect(authorizations).toHaveLength(before);
++    expect(frames).toHaveLength(1);
 +  } finally {
 +    for (const socket of peer.clients) {
 +      socket.terminate();
@@ -466,10 +540,10 @@ index 0000000..8d5c0f3
 +});
 diff --git a/extensions/codex/src/app-server/provider-box-owner.ts b/extensions/codex/src/app-server/provider-box-owner.ts
 new file mode 100644
-index 0000000..732a641
+index 0000000..1520ba9
 --- /dev/null
 +++ b/extensions/codex/src/app-server/provider-box-owner.ts
-@@ -0,0 +1,424 @@
+@@ -0,0 +1,428 @@
 +import { X509Certificate } from "node:crypto";
 +import {
 +  closeSync,
@@ -502,6 +576,7 @@ index 0000000..732a641
 +  url: string;
 +  workspaceRoot: string;
 +  generationSha256: string;
++  ingressLeafSha256: string;
 +  ca: string;
 +  assertCurrent: () => void;
 +};
@@ -654,16 +729,18 @@ index 0000000..732a641
 +    ) {
 +      return refusal();
 +    }
-+    const { url, workspaceRoot, generationSha256 } = binding as Record<
++    const { url, workspaceRoot, generationSha256, ingressLeafSha256 } = binding as Record<
 +      string,
 +      unknown
 +    >;
 +    if (
-+      Object.keys(binding).length !== 3 ||
++      Object.keys(binding).length !== 4 ||
 +      typeof url !== "string" ||
 +      workspaceRoot !== "/home/node/workspace" ||
 +      typeof generationSha256 !== "string" ||
 +      !SHA256.test(generationSha256) ||
++      typeof ingressLeafSha256 !== "string" ||
++      !SHA256.test(ingressLeafSha256) ||
 +      input.transport !== "websocket" ||
 +      input.url !== url ||
 +      input.computeUrl !== url ||
@@ -702,6 +779,7 @@ index 0000000..732a641
 +      url,
 +      workspaceRoot,
 +      generationSha256,
++      ingressLeafSha256,
 +      ca,
 +      assertCurrent() {
 +        try {
@@ -895,23 +973,26 @@ index 0000000..732a641
 +  return providerBoxRequestRefusal(owner, method, params) === undefined;
 +}
 diff --git a/extensions/codex/src/app-server/transport-websocket.ts b/extensions/codex/src/app-server/transport-websocket.ts
-index 48945c0..62de0fc 100644
+index 48945c0..81d65d8 100644
 --- a/extensions/codex/src/app-server/transport-websocket.ts
 +++ b/extensions/codex/src/app-server/transport-websocket.ts
-@@ -3,8 +3,18 @@ import net from "node:net";
+@@ -1,10 +1,21 @@
++import { createHash } from "node:crypto";
+ import { EventEmitter } from "node:events";
++import { Agent } from "node:https";
+ import net from "node:net";
  import path from "node:path";
  import { PassThrough, Writable } from "node:stream";
  import { StringDecoder } from "node:string_decoder";
 -import { type ClientOptions, WebSocket } from "openclaw/plugin-sdk/websocket-runtime";
 -import { resolveCodexAppServerUserHomeDir, type CodexAppServerStartOptions } from "./config.js";
++import { checkServerIdentity } from "node:tls";
 +import {
 +  type ClientOptions,
 +  WebSocket,
 +} from "openclaw/plugin-sdk/websocket-runtime";
-+import {
-+  resolveCodexAppServerUserHomeDir,
-+  type CodexAppServerStartOptions,
-+} from "./config.js";
++import { resolveCodexAppServerUserHomeDir } from "./auth-start-options.js";
++import type { CodexAppServerStartOptions } from "./config-contracts.js";
 +import {
 +  allowsProviderBoxRequest,
 +  matchesProviderBoxOwner,
@@ -919,7 +1000,7 @@ index 48945c0..62de0fc 100644
  import type { CodexAppServerTransport } from "./transport.js";
  import { codexWebSocketDataToBuffer } from "./websocket-data.js";
 
-@@ -19,7 +29,10 @@ export function isCodexWebSocketOpenFailure(error: unknown): boolean {
+@@ -19,7 +30,10 @@ export function isCodexWebSocketOpenFailure(error: unknown): boolean {
    let current = error;
    while (current instanceof Error && !seen.has(current)) {
      seen.add(current);
@@ -931,7 +1012,7 @@ index 48945c0..62de0fc 100644
        return true;
      }
      current = current.cause;
-@@ -36,15 +49,31 @@ export function createWebSocketTransport(
+@@ -36,15 +50,53 @@ export function createWebSocketTransport(
        "codex app-server websocket transport requires plugins.entries.codex.config.appServer.url",
      );
    }
@@ -960,11 +1041,33 @@ index 48945c0..62de0fc 100644
    };
    const websocketOptions: ClientOptions = {
      headers,
-+    ...(boxOwner ? { ca: boxOwner.ca, rejectUnauthorized: true } : {}),
++    ...(boxOwner
++      ? {
++          agent: new Agent({
++            ca: boxOwner.ca,
++            keepAlive: false,
++            maxCachedSessions: 0,
++            rejectUnauthorized: true,
++            checkServerIdentity(host, certificate) {
++              const error = checkServerIdentity(host, certificate);
++              if (error) return error;
++              const fingerprint = createHash("sha256").update(certificate.raw).digest("hex");
++              if (fingerprint !== boxOwner.ingressLeafSha256) {
++                return new Error("The original Codex provider Box certificate did not match.");
++              }
++              try {
++                boxOwner.assertCurrent();
++              } catch {
++                return new Error("The dedicated Codex provider Box owner binding is invalid.");
++              }
++            },
++          }),
++        }
++      : {}),
      // Codex app-server closes Unix upgrade handshakes that offer compression.
      perMessageDeflate: false,
      ...(options.transport === "websocket"
-@@ -69,6 +98,12 @@ export function createWebSocketTransport(
+@@ -69,6 +121,12 @@ export function createWebSocketTransport(
    let expectedPong: Buffer | undefined;
    let consecutiveMissedPongs = 0;
    let heartbeatSequence = 0;
@@ -977,7 +1080,7 @@ index 48945c0..62de0fc 100644
 
    const clearConnectionHealthTimers = () => {
      clearTimeout(pingTimeout);
-@@ -127,12 +162,48 @@ export function createWebSocketTransport(
+@@ -127,12 +185,48 @@ export function createWebSocketTransport(
      scheduleHeartbeatPing();
    };
 
@@ -1027,7 +1130,7 @@ index 48945c0..62de0fc 100644
        socket.send(trimmed);
        return;
      }
-@@ -142,9 +213,21 @@ export function createWebSocketTransport(
+@@ -142,9 +236,21 @@ export function createWebSocketTransport(
    // `initialize` can be written before the WebSocket open event fires. Buffer
    // whole JSON-RPC frames so stdio and websocket transports share call timing.
    socket.once("open", () => {
@@ -1050,7 +1153,7 @@ index 48945c0..62de0fc 100644
      }
      scheduleHeartbeatPing();
    });
-@@ -181,6 +264,9 @@ export function createWebSocketTransport(
+@@ -181,6 +287,9 @@ export function createWebSocketTransport(
      events.emit("exit", code, reason.toString("utf8"));
    });
    socket.on("message", (data) => {
@@ -1060,7 +1163,7 @@ index 48945c0..62de0fc 100644
      if (options.transport === "websocket") {
        recordConnectionActivity();
      }
-@@ -215,7 +301,10 @@ export function createWebSocketTransport(
+@@ -215,7 +324,10 @@ export function createWebSocketTransport(
      },
    });
    const closeSocket = () => {
@@ -1073,10 +1176,10 @@ index 48945c0..62de0fc 100644
      }
      socket.close();
 diff --git a/extensions/codex/src/app-server/turn-params.test.ts b/extensions/codex/src/app-server/turn-params.test.ts
-index eac14a6..d7105d2 100644
+index eac14a6..8485f92 100644
 --- a/extensions/codex/src/app-server/turn-params.test.ts
 +++ b/extensions/codex/src/app-server/turn-params.test.ts
-@@ -55,6 +55,49 @@ it("keeps required-root native environments disabled on warm native turns", asyn
+@@ -55,6 +55,50 @@ it("keeps required-root native environments disabled on warm native turns", asyn
    });
    expect(turn.environments).toEqual([]);
  });
@@ -1096,6 +1199,7 @@ index eac14a6..d7105d2 100644
 +        url,
 +        workspaceRoot: cwd,
 +        generationSha256: "a".repeat(64),
++        ingressLeafSha256: "b".repeat(64),
 +        ca: "fixture",
 +        assertCurrent() {},
 +      },

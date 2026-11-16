@@ -105,6 +105,33 @@ exercises one narrowly permitted read through the Box broker. It is a separate
 check from the native startup verifier above. The [ordinary chat reproduction](ordinary-chat/README.md)
 joins that declared tool to one authenticated Gateway turn using a local synthetic model.
 
+### Run the optional native conformance cases
+
+The standard conformance run includes the source cases. Select the native cases
+by supplying their fixture settings explicitly. Use the verified native Codex
+binary, the host helper build from above, and, for the last case, the verified
+stock ARM64 Box bundle and the reviewed workspace verifier SHA. Run the host cases
+as a nonroot user on Linux, with ARM64 for the Shell Calls case.
+
+```bash
+OCC_TEST_STRANDS_NATIVE_CODEX=/absolute/path/to/codex \
+  node --test \
+  --test-name-pattern='^the pinned TLS readiness probe initializes the original native Codex through a Unix relay$' \
+  tests/conformance/strands-box-driver.test.ts
+
+STRANDS_HOST_TEST_CODEX=/absolute/path/to/codex \
+STRANDS_HOST_TEST_AGENT_BUILD=/absolute/path/to/compiled-agent \
+  node --test \
+  --test-name-pattern='^owned launcher reaches actual native Codex and retires it without carrying auth material$' \
+  tests/conformance/strands-box-host.test.ts
+
+OCC_TEST_STRANDS_BOX_SHELL_BOX=/absolute/path/to/stock-box/box \
+OCC_TEST_STRANDS_BOX_SHELL_VERIFIER_SHA256="${WORKSPACE_VERIFIER_SHA256:?}" \
+  node --test \
+  --test-name-pattern='^stock Box Shell Calls admit only the fixed read-only workspace verifier$' \
+  tests/conformance/strands-box-host.test.ts
+```
+
 ## Connect the installation
 
 For the file-only workspace node, follow the [installed ordinary chat and workspace procedure](ordinary-chat/installed.md)

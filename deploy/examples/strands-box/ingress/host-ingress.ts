@@ -26,6 +26,7 @@ const CONFIG_FIELDS = [
   "authority",
   "bindAddress",
   "certFile",
+  "ingressLeafSha256",
   "keyFile",
   "readySha256",
   "runtimeDir",
@@ -35,6 +36,7 @@ interface Config {
   readonly authority: string;
   readonly bindAddress: string;
   readonly certFile: string;
+  readonly ingressLeafSha256: string;
   readonly keyFile: string;
   readonly readySha256: string;
   readonly runtimeDir: string;
@@ -97,6 +99,7 @@ async function load(path: string): Promise<{ config: Config; cert: Buffer; key: 
     authority: dnsAuthority(stringField(value, "authority")),
     bindAddress: privateIPv4(stringField(value, "bindAddress")),
     certFile: stringField(value, "certFile"),
+    ingressLeafSha256: stringField(value, "ingressLeafSha256"),
     keyFile: stringField(value, "keyFile"),
     readySha256: stringField(value, "readySha256"),
     runtimeDir: stringField(value, "runtimeDir"),
@@ -108,10 +111,11 @@ async function load(path: string): Promise<{ config: Config; cert: Buffer; key: 
   return { config, cert, key };
 }
 
-function validateTls(authority: string, cert: Buffer, key: Buffer): void {
+function validateTls(authority: string, pin: string, cert: Buffer, key: Buffer): void {
   const leaf = new X509Certificate(cert);
   if (
     leaf.ca ||
+    createHash("sha256").update(leaf.raw).digest("hex") !== pin ||
     !leaf.checkHost(authority, { subject: "never", wildcards: false }) ||
     !leaf.checkPrivateKey(createPrivateKey(key)) ||
     Date.now() < Date.parse(leaf.validFrom) ||
@@ -314,10 +318,10 @@ function forward(
 
 /** Build the one-generation TLS handler; the executable owns the private bind. */
 export async function createFixedIngress(
-  config: Pick<Config, "authority" | "runtimeDir" | "readySha256">,
+  config: Pick<Config, "authority" | "ingressLeafSha256" | "runtimeDir" | "readySha256">,
   { cert, key }: { readonly cert: Buffer; readonly key: Buffer },
 ): Promise<{ readonly server: Server; stop(): void }> {
-  validateTls(dnsAuthority(config.authority), cert, key);
+  validateTls(dnsAuthority(config.authority), config.ingressLeafSha256, cert, key);
   const original = await openOriginalSocket(config.runtimeDir, config.readySha256);
   const clients = new Set<Socket>();
   const server = createServer(

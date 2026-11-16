@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
 updated: 2026-11-16
-last_updated_session: authoring-run/eb646ce1-a9f5-4a43-ad6f-c204d4c11561
+last_updated_session: authoring-run/ad6e3cb4-99a5-4fdd-b60d-682cb7f8eac3
 ---
 
 # Harness Execution Topology Flow
@@ -142,8 +142,15 @@ Gateways and private-state initializers. Compute-owned launches require
 [Codex initialization](../reference/drivers/kubernetes-compute.md#troubleshooting).
 An opted-in ordinary provider receives the verifier and the Gateway keeps the
 bearer. `KubernetesComputeDriver.reconcileHarnessTrust` pins the provider's
-workspace generation and CA. The Gateway checks the generation on the
-[Box relay](../../deploy/examples/strands-box/ingress/README.md) upgrade before sending native requests.
+workspace generation, CA, and leaf digest from the trusted provider admission.
+The Gateway and Worker verify the CA, hostname, and leaf digest before sending
+the bearer through the [Box relay](../../deploy/examples/strands-box/ingress/README.md).
+They check the generation on the upgrade before sending native requests.
+For the installed Box example, the chart's Worker policy permits TCP 8443 to
+the relay Service's exact Namespace and Pod selector. The Driver's per-revision
+relay policy admits the selected Worker and Gateway. The relay forwards
+to the Box host. The host's file-only node connects to the Gateway through Envoy. The
+operator admits its observed source address with `gatewayRouting.remoteNodeCidrs`.
 
 After Harness readiness, preparation replaces stopped or unready Gateways. Activation waits for workspace node enrollment; dedicated Codex retains `agent-<agent digest>-workspace`.
 `KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds callbacks; `AGENT_WITH_NODE_ENTRYPOINT` prepares capability storage and TLS for OpenClaw-authorized [native hooks](../reference/gateway-routing.md#native-node-endpoint).
@@ -358,6 +365,8 @@ removal.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-16 23:21: Trace pre-HTTP provider identity and the exact installed network paths. (authoring-run/ad6e3cb4-99a5-4fdd-b60d-682cb7f8eac3 - a36079b7921d04df303a65062da6e45287653205)
 
 - 2026-11-16 23:00: Trace verifier delivery and the ordinary external workspace owner. (authoring-run/eb646ce1-a9f5-4a43-ad6f-c204d4c11561 - 36e161d06f5b5a1f816ebca5be7686a5b15cf2fb)
 

@@ -19,6 +19,7 @@
   },
   "image": "example.invalid/agent@sha256:0000000000000000000000000000000000000000000000000000000000000000",
   "approvalDir": "/run/oce-box/operator-approval",
+  "ingressLeafSha256": "0000000000000000000000000000000000000000000000000000000000000000",
   "endpoint": {
     "url": "wss://box-harness.agent-example.svc.cluster.local:8443/",
     "workspaceRoot": "/home/node/workspace"

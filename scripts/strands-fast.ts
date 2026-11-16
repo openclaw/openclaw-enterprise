@@ -153,12 +153,15 @@ async function main() {
       }
     }
   }
+  const source = sourceEvidence(root, { requireCleanTracked: true });
+  assert(
+    source.sha && source.issues.length === 0,
+    source.issues[0]?.message ?? "Missing source SHA",
+  );
   const codex = await realpath(resolve(config.codex!));
   assert((await stat(codex)).isFile(), "Codex must be a regular executable file");
   await access(codex, constants.X_OK);
   const version = await nativeCodexVersion(codex);
-  const source = sourceEvidence(root);
-  assert(source.sha && source.issues.length === 0, "the checked-out source SHA is unavailable");
   // Fingerprint the selected runtime once; the benchmark never builds or downloads it.
   const digest = createHash("sha256");
   for await (const chunk of createReadStream(codex)) {
@@ -306,13 +309,25 @@ async function main() {
     .filter((run) => run.passed)
     .map((run) => run.elapsedMs)
     .sort((a, b) => a - b);
-  const passed = !interrupted && runs.length === config.repeat && runs.every((run) => run.passed);
+  const finishedSource = sourceEvidence(root, { requireCleanTracked: true });
+  const sourceProblem =
+    finishedSource.issues[0]?.message ??
+    (finishedSource.sha === source.sha
+      ? null
+      : "the checked-out source SHA changed during the run");
+  if (sourceProblem) console.error(sourceProblem);
+  const passed =
+    sourceProblem === null &&
+    !interrupted &&
+    runs.length === config.repeat &&
+    runs.every((run) => run.passed);
   const summary = {
     schema: "strands-fast-v1",
     passed,
     interrupted,
     mode: config.serial ? "serial" : "parallel",
     sourceSha: source.sha,
+    ...(sourceProblem ? { sourceProblem } : {}),
     executable: { path: codex, version, sha256: digest.digest("hex") },
     totalElapsedMs: Math.round(performance.now() - start),
     samples: runs.length,

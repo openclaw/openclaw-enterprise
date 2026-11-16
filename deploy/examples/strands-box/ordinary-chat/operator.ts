@@ -174,7 +174,7 @@ function executable(value: string | undefined) {
     throw Error("PINNED_GATEWAY_CLI_REQUIRED");
   return value;
 }
-function ownerReceipt(root: string, fresh: boolean): string {
+function ownerReceipt(root: string, fresh: boolean) {
   const path = join(root, "owner-wss.json");
   const row = obj(JSON.parse(privateRead(path, 2048)) as unknown);
   if (
@@ -182,10 +182,12 @@ function ownerReceipt(root: string, fresh: boolean): string {
     row.verifiedTls !== true ||
     typeof row.generationSha256 !== "string" ||
     !/^[a-f0-9]{64}$/.test(row.generationSha256) ||
+    typeof row.ingressLeafSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(row.ingressLeafSha256) ||
     (fresh && Math.abs(Date.now() - lstatSync(path).mtimeMs) > 90000)
   )
     throw Error("LIVE_OWNER_RECEIPT_REQUIRED");
-  return row.generationSha256;
+  return { generationSha256: row.generationSha256, ingressLeafSha256: row.ingressLeafSha256 };
 }
 export function gatewayChatCall(
   method: "chat.send" | "chat.history" | "agent.wait",
@@ -289,12 +291,12 @@ function main() {
     throw Error("ORIGINAL_MARKER_CHANGED");
   if (mode === "submit") {
     const cli = executable(arg);
-    const generationSha256 = ownerReceipt(root, true);
+    const owner = ownerReceipt(root, true);
     const runId = randomUUID();
     save(join(root, "intent.json"), {
       stage: "one_chat_intent",
       sessionKey: key,
-      generationSha256,
+      ...owner,
       runId,
       nonce,
       prompt: promptFor(nonce),
@@ -310,13 +312,15 @@ function main() {
   } else if (mode === "verify") {
     const cli = executable(arg);
     const intent = obj(JSON.parse(privateRead(join(root, "intent.json"), 4096)) as unknown);
+    const owner = ownerReceipt(root, false);
     if (
       intent.stage !== "one_chat_intent" ||
       intent.sessionKey !== key ||
       intent.nonce !== nonce ||
       intent.prompt !== promptFor(nonce) ||
       (intent.gatewayUrl ?? gatewayUrl) !== expectedUrl ||
-      intent.generationSha256 !== ownerReceipt(root, false) ||
+      intent.generationSha256 !== owner.generationSha256 ||
+      intent.ingressLeafSha256 !== owner.ingressLeafSha256 ||
       typeof intent.runId !== "string" ||
       !/^[a-f0-9-]{36}$/.test(intent.runId)
     )

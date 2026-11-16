@@ -106,7 +106,11 @@ export interface SandboxHarnessEndpoint {
    * Compute must pin this generation with the endpoint's TLS trust before allowing the
    * Gateway to select the externally enforced, network-restricted workspace policy.
    */
-  readonly externalWorkspaceOwner?: { readonly generationSha256: string };
+  readonly externalWorkspaceOwner?: {
+    readonly generationSha256: string;
+    /** SHA-256 of the provider's generation-specific DER leaf, via trusted admission. */
+    readonly ingressLeafSha256: string;
+  };
   /** Request this native Codex profile when the provider supplies the sandbox boundary. */
   readonly codexPermissionProfile?: ":danger-full-access";
 }

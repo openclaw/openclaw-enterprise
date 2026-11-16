@@ -36,10 +36,23 @@ namespaces enabled. Compile the helpers with the
 In that Agent Namespace, use steps 1–2 in
 [Connect one Agent Gateway to the Box host](../ingress/README.md) to allocate
 the private relay Service, set `network.providerHarness`, and prepare TLS.
-Keep the private key with the ingress owner. Start ingress later, after the
-original Box writes `ready.json`. Configure the Gateway listener above
-port 1023 and set the Installation's `gatewayRouting.endpointPort` to that
-port before the first deployment.
+Issue a fresh leaf and key for this admission. Give the key to the original
+ingress owner and put the leaf's DER SHA-256 in `ingressLeafSha256` in both
+the private host control and ingress configurations before approval. Start
+ingress after the original Box writes `ready.json`.
+
+Configure the chart's `worker.strandsBoxRelay` with the same Agent Namespace
+and relay installation label as the Service. Set `gatewayRouting.remoteNodeCidrs`
+to the exact `/32` for the assigned Box host's source address as seen by Envoy.
+Publish the normal Gateway HTTPS listener privately on a port above 1023 for
+the file node. Set the Installation's `gatewayRouting.endpointPort` to that
+published port and configure the listener mapping separately. Keep the Envoy
+policy's target port aligned with the Envoy Pod listener. On the selected
+Container Network Interface (CNI), verify the Worker can reach the relay on
+TCP 8443 and the Box host can reach the private Gateway origin. Check that an
+unselected Pod cannot use the relay and an unrelated source cannot reach Envoy.
+If source NAT or a node-traffic exemption admits the denied source, use a
+placement that preserves these network boundaries before continuing.
 
 Opt in to `workspaceNodeMode: file-only-v1` in the Box Driver configuration on
 the API and Worker. Keep the [controlled inference settings](../driver/README.md#build-and-select).
@@ -173,15 +186,20 @@ accepts the stock Compute command. The host gives Box the original Codex
 program. Only the separate file node receives its state subpath and the
 one-shot setup code. Kubernetes Compute observes that node through normal
 enrollment. `KubernetesComputeDriver.reconcileHarnessTrust` installs the
-original Box digest and ingress CA. The Driver and Gateway each require the
-digest on the TLS upgrade. That check identifies the native endpoint; it does
-not identify the host directory mounted in the Worker. If the control volume, directory, Worker or socket changes, hold admission
+original Box digest, ingress CA, and generation-specific TLS leaf digest. The
+Driver and Gateway verify the leaf before sending the bearer and check the
+generation on the upgrade before sending native frames. This verifies the
+native route. Separately, if the control volume, directory, Worker or socket changes, hold admission
 and reconcile the original revision. Recheck the live identities before
 admitting work. Do not treat a restart as the first empty-export rollout.
 
-If you have operator access to the selected Gateway Pod, run the existing
-owner check in the Gateway container. It reads the original binding and uses
-that container's normal Harness environment without printing the credential.
+Prepare an authenticated operator CLI context for the installed Agent Gateway.
+Save its exact WSS origin and path as `{"url":"..."}` in a private
+`gateway.json` in the same run directory. Submit requires an original-owner
+receipt no more than 90 seconds old. An approved operator with `pods/exec`
+access to the selected final Gateway Pod must run the owner check in its
+Gateway container and write the receipt into the private run directory.
+The check uses the container's bound Harness environment and prints no credential.
 
 ```sh
 umask 077
@@ -191,9 +209,8 @@ kubectl exec -i -n "$GATEWAY_NAMESPACE" "$GATEWAY_POD" -c gateway -- \
   > "$RUN/owner-wss.json"
 ```
 
-Use an operator CLI context already authenticated to the installed Agent
-Gateway. Save its exact WSS origin and path as `{"url":"..."}` in a private
-`gateway.json` in the same run directory.
+After a successful owner check, immediately submit and retain that receipt
+for verification.
 
 ```sh
 node deploy/examples/strands-box/ordinary-chat/operator.ts submit "$RUN" "$GATEWAY_CLI"

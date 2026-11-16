@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, X509Certificate } from "node:crypto";
 import { once } from "node:events";
 import { chmod, lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -79,7 +79,10 @@ async function materials(t: TestContext) {
   });
   const caBundle = await readFile(ca.caPath);
   const tls = { cert: Buffer.from(leaf.cert), key: Buffer.from(leaf.key) };
-  return { runtimeDir, socketPath, tls, leaf, caBundle };
+  const ingressLeafSha256 = createHash("sha256")
+    .update(new X509Certificate(leaf.cert).raw)
+    .digest("hex");
+  return { runtimeDir, socketPath, tls, leaf, caBundle, ingressLeafSha256 };
 }
 
 async function fixture(t: TestContext) {
@@ -133,6 +136,7 @@ async function startTls(
   const ingress = await createFixedIngress(
     {
       authority,
+      ingressLeafSha256: f.ingressLeafSha256,
       runtimeDir: f.runtimeDir,
       readySha256: f.readySha256,
     },
@@ -290,6 +294,7 @@ test(
       createFixedIngress(
         {
           authority,
+          ingressLeafSha256: f.ingressLeafSha256,
           runtimeDir: f.runtimeDir,
           readySha256: f.readySha256,
         },
@@ -322,6 +327,7 @@ test(
       createFixedIngress(
         {
           authority,
+          ingressLeafSha256: f.ingressLeafSha256,
           runtimeDir: f.runtimeDir,
           readySha256: unrelatedPin,
         },
@@ -337,6 +343,7 @@ test(
         authority,
         bindAddress: "127.0.0.1",
         certFile: f.leaf.certPath,
+        ingressLeafSha256: f.ingressLeafSha256,
         keyFile: f.leaf.keyPath,
         readySha256,
         runtimeDir: f.runtimeDir,

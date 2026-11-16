@@ -340,6 +340,8 @@ worker:
   # Experimental same-node Strands Box pilot. Name an existing dedicated control directory PVC.
   # Empty leaves the mount absent. Set controlPlane.nodeSelector[kubernetes.io/hostname].
   strandsBoxControlClaimName: ""
+  # Set namespace and installation to the exact Box relay Service peer to allow TCP 8443.
+  strandsBoxRelay: {}
   # pollIntervalMs and leaseDurationMs are timer delays: at most 2147483647 ms.
   pollIntervalMs: 250
   leaseDurationMs: 5000

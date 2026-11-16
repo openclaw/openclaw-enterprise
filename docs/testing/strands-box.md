@@ -13,7 +13,9 @@ and the architecture-specific native Codex ELF executable from the version pinne
 Set `OCC_TEST_STANDING_GIT_CODEX` to that executable's absolute path. The test
 does not download binaries, use account credentials, or call public providers.
 
-From the repository root, run all six sender and native-conversation checks:
+Use a checkout with no staged or unstaged changes to tracked files. The runner
+checks the tracked files and commit before starting and after cleanup. From the
+repository root, run all six sender and native-conversation checks:
 
 ```sh
 node scripts/strands-fast.ts --codex "$OCC_TEST_STANDING_GIT_CODEX"

@@ -1376,7 +1376,7 @@ function isManagedOpenClawPluginEntry(value, pluginId) {
   );
 }
 
-${includeOpenClawInstaller ? OPENCLAW_PLUGIN_CONFIGURATION_HELPERS : ""}function pluginFailureIds(failures) {
+${OPENCLAW_PLUGIN_CONFIGURATION_HELPERS}function pluginFailureIds(failures) {
   return new Set((failures ?? []).map((failure) => failure.pluginId));
 }
 

@@ -66,6 +66,50 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.cluster.port }}
+{{- $relay := .Values.worker.strandsBoxRelay }}
+{{- if and (hasKey .Values.worker "strandsBoxRelay") (not (kindIs "map" $relay)) }}
+{{- fail "worker.strandsBoxRelay must be a map with namespace and installation" }}
+{{- end }}
+{{- if $relay }}
+{{- $label := "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" }}
+{{- range $field := list "namespace" "installation" }}
+{{- $value := get $relay $field }}
+{{- if not (and (kindIs "string" $value) (regexMatch $label (toString $value))) }}
+{{- fail (printf "worker.strandsBoxRelay.%s must be a DNS label of at most 63 characters" $field) }}
+{{- end }}
+{{- end }}
+{{- if ne (len $relay) 2 }}
+{{- fail "worker.strandsBoxRelay accepts only namespace and installation" }}
+{{- end }}
+{{- if eq $relay.namespace .Release.Namespace }}
+{{- fail "worker.strandsBoxRelay.namespace must be outside the control plane namespace" }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openclaw-enterprise-worker-strands-box-relay-egress
+  namespace: {{ .Release.Namespace | quote }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      app.kubernetes.io/component: worker
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $relay.namespace | quote }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: box-harness-relay
+              box.openclaw.dev/installation: {{ $relay.installation | quote }}
+      ports:
+        - protocol: TCP
+          port: 8443
+{{- end }}
 {{- range $name, $setting := dict "model-discovery" "modelDiscoveryCidrs" "plugin-discovery" "pluginDiscoveryCidrs" }}
 {{- $cidrs := index $.Values.api $setting }}
 {{- if not (kindIs "slice" $cidrs) }}

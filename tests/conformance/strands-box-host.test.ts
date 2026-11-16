@@ -4,6 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import {
   chmodSync,
+  copyFileSync,
   lstatSync,
   linkSync,
   mkdirSync,
@@ -78,6 +79,13 @@ const unsupported = process.platform !== "linux" || process.getuid?.() === 0;
 
 function temporary(): string {
   return mkdtempSync(join(realpathSync(tmpdir()), "oce-box-test-"));
+}
+
+function stageNativeNode(directory: string): string {
+  const executable = join(directory, "fixture-node");
+  copyFileSync(process.execPath, executable);
+  chmodSync(executable, 0o700);
+  return executable;
 }
 
 type InstalledControlFixture = Omit<
@@ -380,19 +388,19 @@ test(
     for (const file of ["box-agent.js", "transport.js", "diagnostics.js"]) {
       writeFileSync(join(agentBuildDir, file), "", { mode: 0o600 });
     }
-    const node = realpathSync(process.execPath);
-    const config = hostConfig({
-      boxBin: node,
-      nodeBin: node,
-      codexBin: node,
-      agentBuildDir,
-      runtimeDir,
-      workspace,
-      read: [],
-      exec: [],
-      linuxPreview: true,
-    });
     try {
+      const node = stageNativeNode(root);
+      const config = hostConfig({
+        boxBin: node,
+        nodeBin: node,
+        codexBin: node,
+        agentBuildDir,
+        runtimeDir,
+        workspace,
+        read: [],
+        exec: [],
+        linuxPreview: true,
+      });
       chmodSync(protectedParent, 0o500);
       assert.throws(() => smokeInput(config), { message: "phase=owner-home-create reason=EACCES" });
       assert.throws(() => lstatSync(join(protectedParent, "run-home")), { code: "ENOENT" });
@@ -400,7 +408,9 @@ test(
         new URL("../../deploy/examples/strands-box/host/launch.ts", import.meta.url),
       );
       const missing = join(root, "fixture-sensitive-config.json");
-      const refused = spawnSync(node, [cli, "--preflight", missing], { encoding: "utf8" });
+      const refused = spawnSync(process.execPath, [cli, "--preflight", missing], {
+        encoding: "utf8",
+      });
       assert.equal(refused.status, 1);
       assert.equal(
         refused.stderr,
@@ -474,6 +484,7 @@ test(
   { skip: unsupported },
   async (t) => {
     const directory = temporary();
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
     const runtimeDir = join(directory, "run");
     const workerExport = join(runtimeDir, "worker-control");
     const workspace = join(directory, "workspace");
@@ -499,7 +510,7 @@ test(
         "printf '%s\\n' 'fixture-private-stdout'\nsleep 0.1\nexit 2\n",
       { mode: 0o700 },
     );
-    const node = realpathSync(process.execPath);
+    const node = stageNativeNode(directory);
     const config = hostConfig({
       boxBin,
       nodeBin: node,
@@ -539,7 +550,6 @@ test(
     } finally {
       await execution.done;
       writes.mock.restore();
-      rmSync(directory, { recursive: true, force: true });
     }
     const output = observed.join("");
     assert.match(output, /strands-box-diagnostic source=box stage=policy reason=refused/);
@@ -874,14 +884,14 @@ function initialize(socketPath: string, bearer: string): Promise<unknown> {
 // the emitted agent and deliberately establishes no Box or namespace evidence.
 const codexFixture = process.env.STRANDS_HOST_TEST_CODEX;
 const compiledFixture = process.env.STRANDS_HOST_TEST_AGENT_BUILD;
-test(
+const nativeLauncherTest =
+  codexFixture !== undefined || compiledFixture !== undefined ? test : undefined;
+nativeLauncherTest?.(
   "owned launcher reaches actual native Codex and retires it without carrying auth material",
-  {
-    skip: unsupported || codexFixture === undefined || compiledFixture === undefined,
-    timeout: 30_000,
-  },
+  { timeout: 30_000 },
   async () => {
-    assert(codexFixture && compiledFixture);
+    assert.ok(!unsupported, "The native launcher requires nonroot Linux");
+    assert.ok(codexFixture && compiledFixture, "Supply both native launcher fixture paths");
     const directory = temporary();
     const runtimeDir = join(directory, "run");
     const workspace = join(directory, "work");
@@ -959,17 +969,20 @@ test(
 const stockShellBox = process.env.OCC_TEST_STRANDS_BOX_SHELL_BOX;
 const stockShellVerifierSha = process.env.OCC_TEST_STRANDS_BOX_SHELL_VERIFIER_SHA256;
 
-test(
+const stockShellTest =
+  stockShellBox !== undefined || stockShellVerifierSha !== undefined ? test : undefined;
+stockShellTest?.(
   "stock Box Shell Calls admit only the fixed read-only workspace verifier",
-  {
-    skip:
-      unsupported || process.arch !== "arm64" || !stockShellBox || !stockShellVerifierSha
-        ? "Set the stock ARM64 Box path and reviewed verifier SHA on the dedicated Linux host."
-        : false,
-    timeout: 55_000,
-  },
+  { timeout: 55_000 },
   async () => {
-    assert.ok(stockShellBox && stockShellVerifierSha);
+    assert.ok(
+      !unsupported && process.arch === "arm64",
+      "Stock Box Shell Calls require nonroot ARM64 Linux",
+    );
+    assert.ok(
+      stockShellBox && stockShellVerifierSha,
+      "Supply the stock Box path and reviewed verifier SHA",
+    );
     const box = realpathSync(stockShellBox);
     for (const [name, sha256] of [
       ["box", "ba33afffe5ae54bdc2e6eaa377f96e54f89d3b10cbb35c666d553854a3a2741b"],

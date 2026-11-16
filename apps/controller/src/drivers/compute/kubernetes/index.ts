@@ -16569,9 +16569,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       (endpoint?.tls === undefined ||
         endpoint.workspaceRoot !== "/home/node/workspace" ||
         asRecord(externalOwner) === undefined ||
-        Object.keys(externalOwner).length !== 1 ||
+        Object.keys(externalOwner).length !== 2 ||
         typeof externalOwner.generationSha256 !== "string" ||
         !/^[a-f0-9]{64}$/.test(externalOwner.generationSha256) ||
+        typeof externalOwner.ingressLeafSha256 !== "string" ||
+        !/^[a-f0-9]{64}$/.test(externalOwner.ingressLeafSha256) ||
         revision.harness.id !== "codex" ||
         revision.harness.mode !== "dedicated" ||
         revision.executionAdmission.mode !== "unprotected" ||
@@ -16625,6 +16627,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                   url: url.href,
                   workspaceRoot: endpoint.workspaceRoot,
                   generationSha256: externalOwner.generationSha256,
+                  ingressLeafSha256: externalOwner.ingressLeafSha256,
                 }),
                 [EXTERNAL_WORKSPACE_OWNER_CA]: ca,
               }),
