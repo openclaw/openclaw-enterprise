@@ -629,6 +629,7 @@ export {
   InMemoryPlatformState,
   type AgentReadRepository,
   type AgentRepository,
+  type PredecessorReplacement,
   type AgentRevisionReadRepository,
   type AgentRevisionRepository,
   type InMemoryPlatformStateOptions,
@@ -1281,6 +1282,7 @@ export interface ActiveAgentRevisionSelection {
   readonly revision: Readonly<AgentRevision>;
   /** Administering reads only: the newest admitted revision after the active one, if any. */
   readonly successor?: Readonly<AgentRevision>;
+  readonly predecessorPhase?: "pre-stop" | "stopping";
 }
 
 export type ReconciliationOperation = PlatformOperation;
@@ -6503,10 +6505,14 @@ export class OpenClawController {
         newest === undefined
           ? undefined
           : await state.revisions.findRevision(namespace.id, agent.id, newest.id);
+      const replacement = await state.agents.findPredecessorReplacement(namespace.id, agent.id);
       const selection = Object.freeze({
         agent,
         revision,
         ...(successor === undefined ? {} : { successor }),
+        ...(replacement?.predecessorRevisionId === revision.id
+          ? { predecessorPhase: replacement.phase }
+          : {}),
       });
       const mode = action === "administer" ? "admin" : "chat";
       return browserAccess ? { ...selection, mode } : selection;
@@ -13900,6 +13906,30 @@ export class OpenClawController {
         }),
         first?.digest,
       );
+      if (
+        lockedAgent.activeRevisionId &&
+        (lockedAgent.desiredRuntimeState === "stopped" ||
+          compute.requiresStoppedPredecessors?.(revision) === true)
+      ) {
+        const replacement = await state.agents.findPredecessorReplacement(
+          namespace.id,
+          lockedAgent.id,
+        );
+        const predecessor = previous.find(({ id }) => id === lockedAgent.activeRevisionId);
+        // Legacy replacement attempts may already have stopped the active pointer.
+        // Only the first replacement, or a recorded boundary, proves it may still serve.
+        const knownBoundary = replacement?.predecessorRevisionId === lockedAgent.activeRevisionId;
+        const firstReplacement =
+          predecessor !== undefined &&
+          !previous.some(({ revision: number }) => number > predecessor.revision);
+        if (lockedAgent.desiredRuntimeState === "stopped" || knownBoundary || firstReplacement) {
+          await state.agents.recordPredecessorReplacement(namespace.id, lockedAgent.id, {
+            predecessorRevisionId: lockedAgent.activeRevisionId,
+            candidateRevisionId: revision.id,
+            phase: lockedAgent.desiredRuntimeState === "stopped" ? "stopping" : "pre-stop",
+          });
+        }
+      }
       const running = await state.agents.transitionAgentDesiredRuntimeState(
         namespace.id,
         lockedAgent.id,
