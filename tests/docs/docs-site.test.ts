@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, open, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import test from "node:test";
 
@@ -106,9 +106,7 @@ test("docs build renders every authored page and preserves repository ownership"
     const html = await readFile(join(root, "dist/docs/guides", guide, "index.html"), "utf8");
     assert.ok(html.includes(`href="/${quickstart}/${script}.mjs"`));
     if (guide === "deploy/local-setup") {
-      assert.ok(
-        html.replace(/<[^>]+>/g, "").includes(`install -m 600 docs/${quickstart}/${script}.mts`),
-      );
+      assert.ok(html.includes(`install -m 600 docs/${quickstart}/${script}.mts`));
     }
   }
   for (const script of [
@@ -135,12 +133,9 @@ test("docs build renders every authored page and preserves repository ownership"
   );
   const verifier = `${quickstartAssets}/verify-github-installation.mjs`;
   assert.ok(enrollment.includes(`href="/${verifier}"`));
-  const enrollmentText = enrollment.replace(/<[^>]+>/g, "");
-  assert.ok(enrollmentText.includes(`installation_check=docs/${verifier}`));
+  assert.ok(enrollment.includes(`installation_check=docs/${verifier}`));
   assert.ok(
-    enrollmentText.includes(
-      `installation_check:-docs/${quickstart}/verify-github-installation.mts`,
-    ),
+    enrollment.includes(`installation_check:-docs/${quickstart}/verify-github-installation.mts`),
   );
 
   // Run the shipped staging command from both trees. The published shell must copy
@@ -156,9 +151,13 @@ test("docs build renders every authored page and preserves repository ownership"
   ]) {
     const staged = await temporaryDirectory(t, "enterprise-quickstart-downloads-");
     execFileSync("bash", ["-eu", stage], { cwd, env: { ...process.env, RUN_DIR: staged } });
-    const chat = join(staged, basename);
-    assert.equal((await stat(chat)).mode & 0o777, 0o600);
-    assert.deepEqual(await readFile(chat), await readFile(join(cwd, "docs", source)));
+    const chat = await open(join(staged, basename), "r");
+    try {
+      assert.equal((await chat.stat()).mode & 0o777, 0o600);
+      assert.deepEqual(await chat.readFile(), await readFile(join(cwd, "docs", source)));
+    } finally {
+      await chat.close();
+    }
     const session = await readFile(join(staged, "operator-session.sh"), "utf8");
     assert.ok(session.includes(`< "$RUN_DIR/${basename}"`));
   }
