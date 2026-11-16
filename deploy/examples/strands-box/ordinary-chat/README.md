@@ -68,13 +68,14 @@ outside its admitted policy. A receipt hash identifies that execution. The
 operator and supervisor own this check.
 
 Run the Gateway as a nonroot user. Mount a root-owned mode-0555 directory
-read-only at `/etc/openclaw-box-owner` in the Gateway. Its ancestors must be
+read-only at `/etc/openclaw-external-workspace` in the Gateway. Its ancestors must be
 root-owned and neither group- nor world-writable. Use root-owned mode-0444
 regular files with one link each and no symlinks. Its `ca.pem` contains the
-ingress CA. Its compact JSON `binding.json` contains only the canonical
-`wss://HOST[:port]/` URL, the workspace root `/home/node/workspace`, and the
-SHA-256 of the original owner's exact `ready.json` bytes, under the keys `url`,
-`workspaceRoot`, and `generationSha256`. Set the trusted runtime inputs
+ingress CA. Its compact JSON `binding.json` contains only the format
+`external-workspace-v1`, the canonical `wss://HOST[:port]/` URL, the workspace
+root `/home/node/workspace`, and the SHA-256 of the original owner's exact
+`ready.json` bytes, under the keys `format`, `url`, `workspaceRoot`, and
+`generationSha256`. Set the trusted runtime inputs
 `APP_SERVER_URL` and `APP_SERVER_TOKEN` to that same URL and the native
 transport bearer. Configure the dedicated Harness app-server as a WebSocket
 with the same endpoint, workspace, and bearer, with no additional headers.

@@ -165,10 +165,11 @@ RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp
 COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
 RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-full-access-profile.patch
-# Bind external Codex turn policy to the Compute-owned Box generation and its WSS peer.
-COPY deploy/runtime/openclaw-codex-box-owner.patch /tmp/openclaw-codex-box-owner.patch
-RUN echo 'fab67fe3aa048d3dd152e4e39c00c986888a6d1e64e39358dd36e1f575b36d88  /tmp/openclaw-codex-box-owner.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-codex-box-owner.patch
+# TODO: Remove when the pinned OpenClaw enforces the external workspace binding itself.
+# Bind external Codex turn policy to the Compute-pinned workspace generation and its WSS peer.
+COPY deploy/runtime/openclaw-codex-external-workspace.patch /tmp/openclaw-codex-external-workspace.patch
+RUN echo '22c4205f80814ac5ed6a363facb3c79384672abbe1145e43947ca45b775415fa  /tmp/openclaw-codex-external-workspace.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-codex-external-workspace.patch
 COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 RUN node /tmp/build-runtime-assets.ts inputs /source /inputs \
     && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts
@@ -313,7 +314,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/node-host/codex-node-plugin.integration.test.ts \
     test/node-host-launcher.test.ts \
     src/plugins/computer-use-contract.test.ts \
-    extensions/codex/src/app-server/provider-box-owner.test.ts \
+    extensions/codex/src/app-server/external-workspace-owner.test.ts \
     extensions/codex/src/app-server/turn-params.test.ts \
     src/daemon/program-args.test.ts \
     && rm -rf .artifacts
@@ -337,8 +338,8 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     node scripts/run-tsgo.mjs -p .artifacts/tsconfig.cua-test.json --incremental --tsBuildInfoFile .artifacts/cua-test.tsbuildinfo \
     && rm -rf .artifacts
 RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
-    node -e 'require("node:fs").writeFileSync(".artifacts/tsconfig.codex-box-owner.json", JSON.stringify({extends:"../test/tsconfig/tsconfig.extensions.test.json",include:["../test/types/vitest-codex-attempt-runtime.d.ts","../src/**/*.d.ts","../ui/**/*.d.ts","../extensions/**/*.d.ts","../packages/**/*.d.ts","../extensions/codex/src/app-server/provider-box-owner.test.ts","../extensions/codex/src/app-server/turn-params.test.ts"]}));' && \
-    node scripts/run-tsgo.mjs -p .artifacts/tsconfig.codex-box-owner.json --incremental --tsBuildInfoFile .artifacts/codex-box-owner.tsbuildinfo \
+    node -e 'require("node:fs").writeFileSync(".artifacts/tsconfig.codex-external-workspace.json", JSON.stringify({extends:"../test/tsconfig/tsconfig.extensions.test.json",include:["../test/types/vitest-codex-attempt-runtime.d.ts","../src/**/*.d.ts","../ui/**/*.d.ts","../extensions/**/*.d.ts","../packages/**/*.d.ts","../extensions/codex/src/app-server/external-workspace-owner.test.ts","../extensions/codex/src/app-server/turn-params.test.ts"]}));' && \
+    node scripts/run-tsgo.mjs -p .artifacts/tsconfig.codex-external-workspace.json --incremental --tsBuildInfoFile .artifacts/codex-external-workspace.tsbuildinfo \
     && rm -rf .artifacts
 # Select only the Node projects that own these files: the browser project starts a
 # Vite server on localhost, which Buildah's network-less RUN cannot resolve.

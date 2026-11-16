@@ -45,7 +45,7 @@ drivers:
     package: "@openclaw-enterprise/example-strands-box-driver"
     configuration:
       namespace: pilot
-      controlSocket: /run/strands-box/control.sock
+      controlSocket: /run/openclaw-sandbox-control/control.sock
       nativeEndpoint: wss://box-harness.pilot.svc.cluster.local:8443/
       nativeCaBundle: |
         -----BEGIN CERTIFICATE-----
@@ -102,7 +102,7 @@ filesystem PVC in the trusted Helm release namespace. Prebind it to the
 original Box node and to the canonical `runtimeDir/worker-control` directory.
 Never use the whole runtime directory. Keep Agent and other workload Pods out
 of the release namespace. Leave `worker.replicaCount: 0` and
-`worker.strandsBoxControlClaimName: ""` until the following checks pass.
+`worker.sandboxControlClaimName: ""` until the following checks pass.
 
 1. From the trusted Kubernetes context, compare the live Namespace, Node,
    PVC and PV with their original owner-recorded names and UIDs. Require the
@@ -203,11 +203,11 @@ of the release namespace. Leave `worker.replicaCount: 0` and
 ### Mount the empty control directory
 
 Stop if a check is missing or an identity differs. Only after the checks
-above pass, set `worker.strandsBoxControlClaimName` to the verified claim,
+above pass, set `worker.sandboxControlClaimName` to the verified claim,
 set `controlPlane.nodeSelector["kubernetes.io/hostname"]` to that hostname,
 and start one Worker through the normal chart procedure. Mount only the
 verified empty child. Keep the runtime parent and approval directory on the
-host. The Driver's `controlSocket` is `/run/strands-box/control.sock`.
+host. The Driver's `controlSocket` is `/run/openclaw-sandbox-control/control.sock`.
 
 Verify that this is the only Worker Pod, it runs on the original Node, and
 both the PVC source and the Worker mount are read-only. Set `worker_pod` and
@@ -226,16 +226,16 @@ k -n "$namespace" get pod "$worker_pod" -o json |
   jq -e --arg node "$box_node" --arg uid "$worker_pod_uid" --arg claim "$claim" '
     .metadata.uid == $uid and .spec.nodeName == $node and
     [.spec.volumes[] | select(.persistentVolumeClaim.claimName == $claim)] ==
-      [{name: "strands-box-control", persistentVolumeClaim: {claimName: $claim, readOnly: true}}] and
+      [{name: "sandbox-control", persistentVolumeClaim: {claimName: $claim, readOnly: true}}] and
     [.spec.containers[], .spec.initContainers[]?, .spec.ephemeralContainers[]? |
       .name as $container | .volumeMounts[]? |
-      select(.name == "strands-box-control") | {container: $container, mount: .}] ==
-      [{container: "worker", mount: {name: "strands-box-control",
-        mountPath: "/run/strands-box", readOnly: true}}]
+      select(.name == "sandbox-control") | {container: $container, mount: .}] ==
+      [{container: "worker", mount: {name: "sandbox-control",
+        mountPath: "/run/openclaw-sandbox-control", readOnly: true}}]
   ' >/dev/null
 worker() { k -n "$namespace" exec "$worker_pod" -c worker -- "$@"; }
-test "$(worker stat -c '%F:%u:%a:%d:%i' /run/strands-box)" = "$control_dir_id"
-worker awk '$5 == "/run/strands-box" && $6 ~ /(^|,)ro(,|$)/ { ok++ }
+test "$(worker stat -c '%F:%u:%a:%d:%i' /run/openclaw-sandbox-control)" = "$control_dir_id"
+worker awk '$5 == "/run/openclaw-sandbox-control" && $6 ~ /(^|,)ro(,|$)/ { ok++ }
   END { exit ok != 1 }' /proc/self/mountinfo
 ```
 
@@ -285,10 +285,10 @@ Repeat the Worker Pod and read-only mount checks above. Carry the direct host
 ```bash
 set -euo pipefail
 : "${worker_pod:?}" "${worker_pod_uid:?}" "${socket_id:?}"
-test "$(worker stat -c '%F:%u:%a:%d:%i' /run/strands-box/control.sock)" = "$socket_id"
+test "$(worker stat -c '%F:%u:%a:%d:%i' /run/openclaw-sandbox-control/control.sock)" = "$socket_id"
 status=$(worker node --input-type=module-typescript -e '
   import { request } from "node:http";
-  const req = request({ socketPath: "/run/strands-box/control.sock",
+  const req = request({ socketPath: "/run/openclaw-sandbox-control/control.sock",
     path: "/v1/execution", method: "GET", signal: AbortSignal.timeout(5000) }, (response) => {
     response.on("error", () => { process.exitCode = 1; });
     response.on("end", () => console.log(response.statusCode));
@@ -299,7 +299,7 @@ status=$(worker node --input-type=module-typescript -e '
 ')
 test "$status" = 404
 test "$(k -n "$namespace" get pod "$worker_pod" -o jsonpath='{.metadata.uid}')" = "$worker_pod_uid"
-test "$(worker stat -c '%F:%u:%a:%d:%i' /run/strands-box/control.sock)" = "$socket_id"
+test "$(worker stat -c '%F:%u:%a:%d:%i' /run/openclaw-sandbox-control/control.sock)" = "$socket_id"
 ```
 
 Keep the request held until the exact live socket and Worker mount match the

@@ -1,85 +1,90 @@
 diff --git a/extensions/codex/src/app-server/client.ts b/extensions/codex/src/app-server/client.ts
-index 18794d5..a95e6ec 100644
+index 793ec66..ce8d264 100644
 --- a/extensions/codex/src/app-server/client.ts
 +++ b/extensions/codex/src/app-server/client.ts
-@@ -55,6 +55,7 @@ import {
+@@ -55,6 +55,10 @@ import {
    type RpcMessage,
    type RpcRequest,
  } from "./protocol.js";
-+import { providerBoxRequestRefusal, type ProviderBoxOwner } from "./provider-box-owner.js";
++import {
++  externalWorkspaceRequestRefusal,
++  type ExternalWorkspaceOwner,
++} from "./external-workspace-owner.js";
  import { dispatchCodexRequestAttempt } from "./request-admission.js";
  import { createCodexRequestAttempt, remainingCodexRequestTime } from "./request-attempt.js";
  import type { CodexRequestWaiterFinished } from "./request-observation.js";
-@@ -177,7 +178,10 @@ export class CodexAppServerClient {
+@@ -177,7 +181,10 @@ export class CodexAppServerClient {
    private readonly privateTransportSecrets = new Set<string>();
    private privateStderrPending = "";
-
+ 
 -  private constructor(child: CodexAppServerTransport) {
 +  private constructor(
 +    child: CodexAppServerTransport,
-+    private readonly providerBoxOwner?: ProviderBoxOwner,
++    private readonly externalWorkspaceOwner?: ExternalWorkspaceOwner,
 +  ) {
      this.child = child;
      this.closeMessageReader = listenCodexAppServerLines(
        child.stdout,
-@@ -228,7 +232,10 @@ export class CodexAppServerClient {
+@@ -228,7 +235,10 @@ export class CodexAppServerClient {
      }
      if (startOptions.transport === "websocket" || startOptions.transport === "unix") {
        await assertCurrent?.();
 -      return new CodexAppServerClient(createWebSocketTransport(startOptions));
 +      return new CodexAppServerClient(
 +        createWebSocketTransport(startOptions),
-+        startOptions.providerBoxOwner,
++        startOptions.externalWorkspaceOwner,
 +      );
      }
      // The spawn callback runs synchronously before registration; initialization
      // stays blocked until registration finishes, without losing startup errors.
-@@ -342,6 +349,14 @@ export class CodexAppServerClient {
+@@ -342,6 +352,16 @@ export class CodexAppServerClient {
      optionsInput?: RequestOptions,
    ): Promise<T> {
      const options = optionsInput ?? {};
-+    const boxRefusal = this.providerBoxOwner
-+      ? providerBoxRequestRefusal(this.providerBoxOwner, method, params)
++    const workspaceRefusal = this.externalWorkspaceOwner
++      ? externalWorkspaceRequestRefusal(this.externalWorkspaceOwner, method, params)
 +      : undefined;
-+    if (boxRefusal !== undefined) {
++    if (workspaceRefusal !== undefined) {
 +      return Promise.reject(
-+        new Error(`The provider Box refused a Codex request before dispatch (${boxRefusal}).`),
++        new Error(
++          `The external workspace refused a Codex request before dispatch (${workspaceRefusal}).`,
++        ),
 +      );
 +    }
      if (this.closed) {
        return Promise.reject(this.closeError ?? new Error("codex app-server client is closed"));
      }
 diff --git a/extensions/codex/src/app-server/config-contracts.ts b/extensions/codex/src/app-server/config-contracts.ts
-index 320b5e8..0092d47 100644
+index 320b5e8..6843679 100644
 --- a/extensions/codex/src/app-server/config-contracts.ts
 +++ b/extensions/codex/src/app-server/config-contracts.ts
 @@ -77,6 +77,7 @@ export type CodexAppServerStartOptions = {
    cwd?: string;
    url?: string;
    authToken?: string;
-+  providerBoxOwner?: import("./provider-box-owner.js").ProviderBoxOwner;
++  externalWorkspaceOwner?: import("./external-workspace-owner.js").ExternalWorkspaceOwner;
    headers: Record<string, string>;
    env?: Record<string, string>;
    clearEnv?: string[];
 diff --git a/extensions/codex/src/app-server/config-options.ts b/extensions/codex/src/app-server/config-options.ts
-index a8e7a87..6c62a07 100644
+index a8e7a87..43a8975 100644
 --- a/extensions/codex/src/app-server/config-options.ts
 +++ b/extensions/codex/src/app-server/config-options.ts
 @@ -58,6 +58,7 @@ import {
  } from "./config-utils.js";
  import { readCodexAppServerConfigOptions } from "./launch-args.js";
  import type { CodexSandboxMode, CodexSandboxPolicy } from "./protocol.js";
-+import { readProviderBoxOwner } from "./provider-box-owner.js";
-
++import { readExternalWorkspaceOwner } from "./external-workspace-owner.js";
+ 
  /**
   * Sole owner of the app-server home-scope decision. Ordinary harness connections
 @@ -270,6 +271,18 @@ export function createCodexAppServerConfig({
        authToken,
        headers,
      });
-+    const providerBoxOwner =
++    const externalWorkspaceOwner =
 +      connectionScope === "harness" && params.pluginConfig?.appServer !== undefined
-+        ? readProviderBoxOwner({
++        ? readExternalWorkspaceOwner({
 +            transport,
 +            url,
 +            workspaceRoot: remoteWorkspaceRoot,
@@ -89,32 +94,35 @@ index a8e7a87..6c62a07 100644
 +            headers,
 +          })
 +        : undefined;
-
+ 
      const configApprovalPolicy = config.approvalPolicy;
      const envApprovalPolicy = resolveApprovalPolicy(env.OPENCLAW_CODEX_APP_SERVER_APPROVAL_POLICY);
 @@ -303,6 +316,7 @@ export function createCodexAppServerConfig({
          args: args.length > 0 ? args : ["app-server", "--listen", "stdio://"],
          ...(url ? { url } : {}),
          ...(authToken ? { authToken } : {}),
-+        ...(providerBoxOwner ? { providerBoxOwner } : {}),
++        ...(externalWorkspaceOwner ? { externalWorkspaceOwner } : {}),
          headers,
          ...(transport === "stdio" && clearEnv.length > 0 ? { clearEnv } : {}),
        },
-@@ -490,6 +504,8 @@ export function codexAppServerStartOptionsKey(
+@@ -490,6 +504,11 @@ export function codexAppServerStartOptionsKey(
      args: options.args,
      cwd: options.cwd ?? null,
      url: options.url ?? null,
-+    boxOwnerGeneration: options.providerBoxOwner?.generationSha256 ?? null,
-+    boxOwnerCa: hashSecretForKey(options.providerBoxOwner?.ca, "boxOwnerCa"),
++    externalWorkspaceGeneration: options.externalWorkspaceOwner?.generationSha256 ?? null,
++    externalWorkspaceCa: hashSecretForKey(
++      options.externalWorkspaceOwner?.ca,
++      "externalWorkspaceCa",
++    ),
      authToken: hashSecretForKey(options.authToken, "authToken"),
      headers: Object.entries(options.headers)
        .toSorted(([left], [right]) => left.localeCompare(right))
-diff --git a/extensions/codex/src/app-server/provider-box-owner.test.ts b/extensions/codex/src/app-server/provider-box-owner.test.ts
+diff --git a/extensions/codex/src/app-server/external-workspace-owner.test.ts b/extensions/codex/src/app-server/external-workspace-owner.test.ts
 new file mode 100644
-index 0000000..8d5c0f3
+index 0000000..8d2735f
 --- /dev/null
-+++ b/extensions/codex/src/app-server/provider-box-owner.test.ts
-@@ -0,0 +1,349 @@
++++ b/extensions/codex/src/app-server/external-workspace-owner.test.ts
+@@ -0,0 +1,394 @@
 +import { execFileSync } from "node:child_process";
 +import { once } from "node:events";
 +import {
@@ -134,29 +142,29 @@ index 0000000..8d5c0f3
 +import { WebSocketServer } from "ws";
 +import { TEST_TLS_CERT_PEM } from "../../../../test/helpers/tls-fixture.js";
 +import {
-+  allowsProviderBoxRequest,
-+  matchesProviderBoxOwner,
-+  providerBoxRequestRefusal,
-+  readProviderBoxOwner,
-+} from "./provider-box-owner.js";
++  allowsExternalWorkspaceRequest,
++  externalWorkspaceRequestRefusal,
++  matchesExternalWorkspaceGeneration,
++  readExternalWorkspaceOwner,
++} from "./external-workspace-owner.js";
 +import { createWebSocketTransport } from "./transport-websocket.js";
 +
 +const workspaceRoot = "/home/node/workspace";
-+it("describes a Box refusal with fixed codes without echoing caller data", () => {
++it("describes an external workspace refusal with fixed codes without echoing caller data", () => {
 +  const owner = { workspaceRoot };
 +  const privateArgument = "/synthetic/caller-controlled";
-+  expect(providerBoxRequestRefusal(owner, privateArgument, {})).toBe("rpc-not-allowed");
-+  expect(providerBoxRequestRefusal(owner, "thread/inject_items", { input: privateArgument })).toBe(
-+    "rpc-thread-inject-items",
-+  );
++  expect(externalWorkspaceRequestRefusal(owner, privateArgument, {})).toBe("rpc-not-allowed");
 +  expect(
-+    providerBoxRequestRefusal(owner, "thread/start", {
++    externalWorkspaceRequestRefusal(owner, "thread/inject_items", { input: privateArgument }),
++  ).toBe("rpc-thread-inject-items");
++  expect(
++    externalWorkspaceRequestRefusal(owner, "thread/start", {
 +      cwd: privateArgument,
 +      sandbox: "workspace-write",
 +    }),
 +  ).toBe("thread/start:cwd");
 +  expect(
-+    providerBoxRequestRefusal(owner, "turn/start", {
++    externalWorkspaceRequestRefusal(owner, "turn/start", {
 +      cwd: workspaceRoot,
 +      sandboxPolicy: { type: "externalSandbox", networkAccess: "restricted" },
 +    }),
@@ -165,67 +173,67 @@ index 0000000..8d5c0f3
 +
 +const generationSha256 = "a".repeat(64);
 +const authToken = "fixture-native-transport-capability";
-+const header = "X-OpenClaw-Box-Owner";
++const header = "X-OpenClaw-Workspace-Generation";
 +const owner = { workspaceRoot };
 +
 +it("does not inherit an earlier external policy on an implicit or global-danger turn", () => {
-+  expect(allowsProviderBoxRequest(owner, "turn/start", {})).toBe(false);
++  expect(allowsExternalWorkspaceRequest(owner, "turn/start", {})).toBe(false);
 +  expect(
-+    allowsProviderBoxRequest(owner, "turn/start", {
++    allowsExternalWorkspaceRequest(owner, "turn/start", {
 +      cwd: workspaceRoot,
 +      permissions: ":danger-full-access",
 +    }),
 +  ).toBe(false);
 +  expect(
-+    allowsProviderBoxRequest(owner, "turn/start", {
++    allowsExternalWorkspaceRequest(owner, "turn/start", {
 +      cwd: workspaceRoot,
 +      sandboxPolicy: { type: "dangerFullAccess" },
 +    }),
 +  ).toBe(false);
 +  expect(
-+    allowsProviderBoxRequest(owner, "turn/start", {
++    allowsExternalWorkspaceRequest(owner, "turn/start", {
 +      cwd: workspaceRoot,
 +      sandboxPolicy: { type: "externalSandbox", networkAccess: "enabled" },
 +    }),
 +  ).toBe(false);
 +  expect(
-+    allowsProviderBoxRequest(owner, "turn/start", {
++    allowsExternalWorkspaceRequest(owner, "turn/start", {
 +      cwd: workspaceRoot,
 +      sandboxPolicy: { type: "externalSandbox", networkAccess: "restricted" },
 +    }),
 +  ).toBe(true);
 +  expect(
-+    allowsProviderBoxRequest(owner, "turn/start", {
++    allowsExternalWorkspaceRequest(owner, "turn/start", {
 +      cwd: workspaceRoot + "/nested",
 +      sandboxPolicy: { type: "readOnly", networkAccess: false },
 +    }),
 +  ).toBe(true);
 +  const policy = { type: "externalSandbox", networkAccess: "restricted" };
 +  expect(
-+    allowsProviderBoxRequest(owner, "turn/start", {
++    allowsExternalWorkspaceRequest(owner, "turn/start", {
 +      cwd: "/tmp",
 +      sandboxPolicy: policy,
 +    }),
 +  ).toBe(false);
 +  expect(
-+    allowsProviderBoxRequest(owner, "turn/start", {
++    allowsExternalWorkspaceRequest(owner, "turn/start", {
 +      cwd: workspaceRoot,
 +      sandboxPolicy: policy,
 +      environments: [{ environmentId: "foreign" }],
 +    }),
 +  ).toBe(false);
 +  expect(
-+    allowsProviderBoxRequest(owner, "command/exec", {
++    allowsExternalWorkspaceRequest(owner, "command/exec", {
 +      cwd: workspaceRoot,
 +      sandboxPolicy: policy,
 +    }),
 +  ).toBe(false);
-+  expect(allowsProviderBoxRequest(owner, "thread/shellCommand", {})).toBe(
++  expect(allowsExternalWorkspaceRequest(owner, "thread/shellCommand", {})).toBe(
 +    false,
 +  );
-+  expect(allowsProviderBoxRequest(owner, "thread/read", {})).toBe(true);
++  expect(allowsExternalWorkspaceRequest(owner, "thread/read", {})).toBe(true);
 +  expect(
-+    allowsProviderBoxRequest(owner, "thread/start", {
++    allowsExternalWorkspaceRequest(owner, "thread/start", {
 +      cwd: workspaceRoot,
 +      sandbox: "workspace-write",
 +      environments: [],
@@ -234,14 +242,14 @@ index 0000000..8d5c0f3
 +});
 +
 +it("uses only the closed provider mount for the exact Compute route and capability", async () => {
-+  const root = await mkdtemp(join(tmpdir(), "openclaw-box-owner-"));
++  const root = await mkdtemp(join(tmpdir(), "openclaw-external-workspace-"));
 +  const parent = join(root, "etc");
 +  const directory = join(parent, "owner");
 +  const bindingPath = join(directory, "binding.json");
 +  const caPath = join(directory, "ca.pem");
 +  const scope = { root, ancestry: ["etc", "owner"], uid: process.getuid!() };
 +  try {
-+    const url = "wss://box-harness.pilot.svc.cluster.local:8443/";
++    const url = "wss://workspace-harness.example.svc.cluster.local:8443/";
 +    const input = {
 +      transport: "websocket",
 +      url,
@@ -252,25 +260,25 @@ index 0000000..8d5c0f3
 +      headers: {},
 +    };
 +    await mkdir(parent, { mode: 0o755 });
-+    expect(readProviderBoxOwner(input, scope)).toBeUndefined();
++    expect(readExternalWorkspaceOwner(input, scope)).toBeUndefined();
 +    const unmapped = { ...scope, uid: scope.uid + 1 };
-+    expect(readProviderBoxOwner(input, unmapped)).toBeUndefined();
++    expect(readExternalWorkspaceOwner(input, unmapped)).toBeUndefined();
 +    await mkdir(directory, { mode: 0o755 });
-+    expect(() => readProviderBoxOwner(input, scope)).toThrow(
-+      "owner binding is invalid",
++    expect(() => readExternalWorkspaceOwner(input, scope)).toThrow(
++      "external workspace binding is invalid",
 +    );
 +    await writeFile(
 +      bindingPath,
-+      JSON.stringify({ url, workspaceRoot, generationSha256 }),
++      JSON.stringify({ format: "external-workspace-v1", url, workspaceRoot, generationSha256 }),
 +      { mode: 0o444 },
 +    );
-+    expect(() => readProviderBoxOwner(input, scope)).toThrow(
-+      "owner binding is invalid",
++    expect(() => readExternalWorkspaceOwner(input, scope)).toThrow(
++      "external workspace binding is invalid",
 +    );
 +    await writeFile(caPath, TEST_TLS_CERT_PEM, { mode: 0o444 });
-+    const owner = readProviderBoxOwner(input, scope);
-+    expect(() => readProviderBoxOwner(input, unmapped)).toThrow(
-+      "owner binding is invalid",
++    const owner = readExternalWorkspaceOwner(input, scope);
++    expect(() => readExternalWorkspaceOwner(input, unmapped)).toThrow(
++      "external workspace binding is invalid",
 +    );
 +    expect(owner).toMatchObject({
 +      url,
@@ -286,33 +294,78 @@ index 0000000..8d5c0f3
 +      { workspaceRoot: "/home/node/other" },
 +    ]) {
 +      expect(() =>
-+        readProviderBoxOwner({ ...input, ...invalid }, scope),
-+      ).toThrow("owner binding is invalid");
++        readExternalWorkspaceOwner({ ...input, ...invalid }, scope),
++      ).toThrow("external workspace binding is invalid");
 +    }
 +    expect(
-+      matchesProviderBoxOwner(owner!, {
++      matchesExternalWorkspaceGeneration(owner!, {
 +        rawHeaders: [header, generationSha256, header, generationSha256],
 +      }),
 +    ).toBe(false);
 +    await chmod(parent, 0o777);
-+    expect(() => owner!.assertCurrent()).toThrow("owner binding is invalid");
-+    expect(() => readProviderBoxOwner(input, scope)).toThrow(
-+      "owner binding is invalid",
++    expect(() => owner!.assertCurrent()).toThrow("external workspace binding is invalid");
++    expect(() => readExternalWorkspaceOwner(input, scope)).toThrow(
++      "external workspace binding is invalid",
 +    );
 +    await chmod(parent, 0o755);
 +    await rename(caPath, caPath + ".old");
 +    await symlink("ca.pem.old", caPath);
-+    expect(() => owner!.assertCurrent()).toThrow("owner binding is invalid");
-+    expect(() => readProviderBoxOwner(input, scope)).toThrow(
-+      "owner binding is invalid",
++    expect(() => owner!.assertCurrent()).toThrow("external workspace binding is invalid");
++    expect(() => readExternalWorkspaceOwner(input, scope)).toThrow(
++      "external workspace binding is invalid",
 +    );
 +  } finally {
 +    await rm(root, { recursive: true, force: true });
 +  }
 +});
 +
++it("accepts only the versioned binding with the provider's own normalized root", async () => {
++  const url = "wss://workspace-harness.example.svc.cluster.local:8443/";
++  const format = "external-workspace-v1";
++  const cases: [Record<string, string>, boolean][] = [
++    [{ format, url, workspaceRoot: "/srv/workspace", generationSha256 }, true],
++    [{ url, workspaceRoot, generationSha256 }, false],
++    [{ format: "external-workspace-v2", url, workspaceRoot, generationSha256 }, false],
++    [{ format, url, workspaceRoot: "/", generationSha256 }, false],
++    [{ format, url, workspaceRoot: "/srv/workspace/", generationSha256 }, false],
++    [{ format, url, workspaceRoot: "/srv/../workspace", generationSha256 }, false],
++    [{ format, url, workspaceRoot: "srv/workspace", generationSha256 }, false],
++  ];
++  for (const [binding, accepted] of cases) {
++    const root = await mkdtemp(join(tmpdir(), "openclaw-external-workspace-format-"));
++    try {
++      const directory = join(root, "etc", "owner");
++      await mkdir(directory, { recursive: true, mode: 0o755 });
++      await writeFile(join(directory, "binding.json"), JSON.stringify(binding), { mode: 0o444 });
++      await writeFile(join(directory, "ca.pem"), TEST_TLS_CERT_PEM, { mode: 0o444 });
++      const input = {
++        transport: "websocket",
++        url,
++        workspaceRoot: binding.workspaceRoot,
++        authToken,
++        computeUrl: url,
++        computeToken: authToken,
++        headers: {},
++      };
++      const read = () =>
++        readExternalWorkspaceOwner(input, {
++          root,
++          ancestry: ["etc", "owner"],
++          uid: process.getuid!(),
++        });
++      if (accepted) {
++        expect(read()).toMatchObject({ workspaceRoot: binding.workspaceRoot, generationSha256 });
++      } else {
++        expect(read, JSON.stringify(binding)).toThrow("external workspace binding is invalid");
++      }
++    } finally {
++      await rm(root, { recursive: true, force: true });
++    }
++  }
++});
++
 +it("delivers native frames only on the CA-pinned original generation, including after withdrawal", async () => {
-+  const directory = await mkdtemp(join(tmpdir(), "openclaw-box-owner-tls-"));
++  const directory = await mkdtemp(join(tmpdir(), "openclaw-external-workspace-tls-"));
 +  const certPath = join(directory, "cert.pem");
 +  const keyPath = join(directory, "key.pem");
 +  const [cert, key] = await (async () => {
@@ -329,7 +382,7 @@ index 0000000..8d5c0f3
 +          "-days",
 +          "1",
 +          "-subj",
-+          "/CN=Box owner test CA",
++          "/CN=External workspace test CA",
 +          "-addext",
 +          "basicConstraints=critical,CA:TRUE",
 +          "-addext",
@@ -373,13 +426,13 @@ index 0000000..8d5c0f3
 +      headers: {},
 +      command: "codex",
 +      args: [],
-+      providerBoxOwner: {
++      externalWorkspaceOwner: {
 +        url,
 +        workspaceRoot,
 +        generationSha256,
 +        ca: cert,
 +        assertCurrent() {
-+          if (!current) throw new Error("owner binding is invalid");
++          if (!current) throw new Error("external workspace binding is invalid");
 +        },
 +      },
 +    };
@@ -464,12 +517,12 @@ index 0000000..8d5c0f3
 +    await new Promise<void>((resolve) => server.close(() => resolve()));
 +  }
 +});
-diff --git a/extensions/codex/src/app-server/provider-box-owner.ts b/extensions/codex/src/app-server/provider-box-owner.ts
+diff --git a/extensions/codex/src/app-server/external-workspace-owner.ts b/extensions/codex/src/app-server/external-workspace-owner.ts
 new file mode 100644
-index 0000000..732a641
+index 0000000..3b8d85d
 --- /dev/null
-+++ b/extensions/codex/src/app-server/provider-box-owner.ts
-@@ -0,0 +1,424 @@
++++ b/extensions/codex/src/app-server/external-workspace-owner.ts
+@@ -0,0 +1,435 @@
 +import { X509Certificate } from "node:crypto";
 +import {
 +  closeSync,
@@ -484,7 +537,8 @@ index 0000000..732a641
 +import { posix } from "node:path";
 +import { isDeepStrictEqual, TextDecoder } from "node:util";
 +
-+const OWNER_HEADER = "x-openclaw-box-owner";
++const GENERATION_HEADER = "x-openclaw-workspace-generation";
++const BINDING_FORMAT = "external-workspace-v1";
 +const SHA256 = /^[a-f0-9]{64}$/;
 +const DIRECTORY_FLAGS =
 +  constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
@@ -492,13 +546,25 @@ index 0000000..732a641
 +  constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 +const BINDING_PATH = {
 +  root: "/",
-+  ancestry: ["etc", "openclaw-box-owner"],
++  ancestry: ["etc", "openclaw-external-workspace"],
 +  uid: 0,
 +};
 +const isAbsent = (error: unknown) =>
 +  error instanceof Error && "code" in error && error.code === "ENOENT";
 +
-+export type ProviderBoxOwner = {
++// The provider's own root, as Compute validated it: absolute, normalized, never "/".
++function isWorkspaceRoot(value: unknown): value is string {
++  return (
++    typeof value === "string" &&
++    value !== "/" &&
++    posix.isAbsolute(value) &&
++    posix.normalize(value) === value &&
++    !value.endsWith("/") &&
++    [...value].every((char) => char >= " " && char !== "\u007f")
++  );
++}
++
++export type ExternalWorkspaceOwner = {
 +  url: string;
 +  workspaceRoot: string;
 +  generationSha256: string;
@@ -507,7 +573,7 @@ index 0000000..732a641
 +};
 +
 +function refusal(): never {
-+  throw new Error("The dedicated Codex provider Box owner binding is invalid.");
++  throw new Error("The dedicated Codex external workspace binding is invalid.");
 +}
 +
 +function fileIdentity(stat: BigIntStats) {
@@ -615,7 +681,7 @@ index 0000000..732a641
 +}
 +
 +/** Read only the operator's fixed immutable Gateway mount. Tests supply an isolated anchor. */
-+export function readProviderBoxOwner(
++export function readExternalWorkspaceOwner(
 +  input: {
 +    transport: string;
 +    url?: string;
@@ -626,7 +692,7 @@ index 0000000..732a641
 +    headers: Record<string, string>;
 +  },
 +  path = BINDING_PATH,
-+): ProviderBoxOwner | undefined {
++): ExternalWorkspaceOwner | undefined {
 +  try {
 +    let directory: BigIntStats;
 +    try {
@@ -654,14 +720,12 @@ index 0000000..732a641
 +    ) {
 +      return refusal();
 +    }
-+    const { url, workspaceRoot, generationSha256 } = binding as Record<
-+      string,
-+      unknown
-+    >;
++    const { format, url, workspaceRoot, generationSha256 } = binding as Record<string, unknown>;
 +    if (
-+      Object.keys(binding).length !== 3 ||
++      Object.keys(binding).length !== 4 ||
++      format !== BINDING_FORMAT ||
 +      typeof url !== "string" ||
-+      workspaceRoot !== "/home/node/workspace" ||
++      !isWorkspaceRoot(workspaceRoot) ||
 +      typeof generationSha256 !== "string" ||
 +      !SHA256.test(generationSha256) ||
 +      input.transport !== "websocket" ||
@@ -722,13 +786,13 @@ index 0000000..732a641
 +  }
 +}
 +
-+export function matchesProviderBoxOwner(
-+  owner: ProviderBoxOwner,
++export function matchesExternalWorkspaceGeneration(
++  owner: ExternalWorkspaceOwner,
 +  response: Pick<IncomingMessage, "rawHeaders">,
 +): boolean {
 +  const values: string[] = [];
 +  for (let i = 0; i < response.rawHeaders.length; i += 2) {
-+    if (response.rawHeaders[i]?.toLowerCase() === OWNER_HEADER) {
++    if (response.rawHeaders[i]?.toLowerCase() === GENERATION_HEADER) {
 +      values.push(response.rawHeaders[i + 1] ?? "");
 +    }
 +  }
@@ -786,31 +850,31 @@ index 0000000..732a641
 +  ["thread/shellCommand", "rpc-thread-shell"],
 +] as const;
 +
-+type ProviderBoxKnownDeniedRpc = (typeof knownDeniedRpcEntries)[number][1];
-+const KNOWN_DENIED_RPC_DIAGNOSTICS = new Map<string, ProviderBoxKnownDeniedRpc>(
++type ExternalWorkspaceKnownDeniedRpc = (typeof knownDeniedRpcEntries)[number][1];
++const KNOWN_DENIED_RPC_DIAGNOSTICS = new Map<string, ExternalWorkspaceKnownDeniedRpc>(
 +  knownDeniedRpcEntries,
 +);
 +
-+type ProviderBoxRequestRefusal =
++type ExternalWorkspaceRequestRefusal =
 +  | "rpc-not-allowed"
-+  | ProviderBoxKnownDeniedRpc
++  | ExternalWorkspaceKnownDeniedRpc
 +  | `thread/${"start" | "resume" | "fork"}:${"params" | "cwd" | "permissions" | "environments" | "roots" | "path" | "sandbox-policy" | "sandbox" | "config"}`
 +  | `turn/start:${"params" | "cwd" | "permissions" | "environments" | "roots" | "sandbox" | "sandbox-policy" | "external-policy" | "read-only-policy" | "workspace-write-policy"}`;
 +
-+function isProviderBoxThreadBinding(
++function isExternalWorkspaceThreadBinding(
 +  method: string,
 +): method is "thread/start" | "thread/resume" | "thread/fork" {
 +  return THREAD_BINDING.has(method);
 +}
 +
 +/** Check the fixed RPC set without reflecting method or argument data into failures. */
-+export function providerBoxRequestRefusal(
-+  owner: Pick<ProviderBoxOwner, "workspaceRoot">,
++export function externalWorkspaceRequestRefusal(
++  owner: Pick<ExternalWorkspaceOwner, "workspaceRoot">,
 +  method: string,
 +  params: unknown,
-+): ProviderBoxRequestRefusal | undefined {
++): ExternalWorkspaceRequestRefusal | undefined {
 +  if (CHAT_CONTROL.has(method)) return;
-+  if (method !== "turn/start" && !isProviderBoxThreadBinding(method)) {
++  if (method !== "turn/start" && !isExternalWorkspaceThreadBinding(method)) {
 +    return KNOWN_DENIED_RPC_DIAGNOSTICS.get(method) ?? "rpc-not-allowed";
 +  }
 +  if (!params || typeof params !== "object" || Array.isArray(params)) return `${method}:params`;
@@ -887,121 +951,86 @@ index 0000000..732a641
 +}
 +
 +/** Authorize the fixed chat RPC set before sending it over the selected owner's WSS. */
-+export function allowsProviderBoxRequest(
-+  owner: Pick<ProviderBoxOwner, "workspaceRoot">,
++export function allowsExternalWorkspaceRequest(
++  owner: Pick<ExternalWorkspaceOwner, "workspaceRoot">,
 +  method: string,
 +  params: unknown,
 +): boolean {
-+  return providerBoxRequestRefusal(owner, method, params) === undefined;
++  return externalWorkspaceRequestRefusal(owner, method, params) === undefined;
 +}
 diff --git a/extensions/codex/src/app-server/transport-websocket.ts b/extensions/codex/src/app-server/transport-websocket.ts
-index 48945c0..62de0fc 100644
+index 48945c0..f4f50b6 100644
 --- a/extensions/codex/src/app-server/transport-websocket.ts
 +++ b/extensions/codex/src/app-server/transport-websocket.ts
-@@ -3,8 +3,18 @@ import net from "node:net";
- import path from "node:path";
- import { PassThrough, Writable } from "node:stream";
+@@ -5,6 +5,10 @@ import { PassThrough, Writable } from "node:stream";
  import { StringDecoder } from "node:string_decoder";
--import { type ClientOptions, WebSocket } from "openclaw/plugin-sdk/websocket-runtime";
--import { resolveCodexAppServerUserHomeDir, type CodexAppServerStartOptions } from "./config.js";
+ import { type ClientOptions, WebSocket } from "openclaw/plugin-sdk/websocket-runtime";
+ import { resolveCodexAppServerUserHomeDir, type CodexAppServerStartOptions } from "./config.js";
 +import {
-+  type ClientOptions,
-+  WebSocket,
-+} from "openclaw/plugin-sdk/websocket-runtime";
-+import {
-+  resolveCodexAppServerUserHomeDir,
-+  type CodexAppServerStartOptions,
-+} from "./config.js";
-+import {
-+  allowsProviderBoxRequest,
-+  matchesProviderBoxOwner,
-+} from "./provider-box-owner.js";
++  allowsExternalWorkspaceRequest,
++  matchesExternalWorkspaceGeneration,
++} from "./external-workspace-owner.js";
  import type { CodexAppServerTransport } from "./transport.js";
  import { codexWebSocketDataToBuffer } from "./websocket-data.js";
-
-@@ -19,7 +29,10 @@ export function isCodexWebSocketOpenFailure(error: unknown): boolean {
-   let current = error;
-   while (current instanceof Error && !seen.has(current)) {
-     seen.add(current);
--    if ("code" in current && current.code === "CODEX_APP_SERVER_WEBSOCKET_OPEN_FAILED") {
-+    if (
-+      "code" in current &&
-+      current.code === "CODEX_APP_SERVER_WEBSOCKET_OPEN_FAILED"
-+    ) {
-       return true;
-     }
-     current = current.cause;
-@@ -36,15 +49,31 @@ export function createWebSocketTransport(
+ 
+@@ -36,6 +40,17 @@ export function createWebSocketTransport(
        "codex app-server websocket transport requires plugins.entries.codex.config.appServer.url",
      );
    }
-+  const boxOwner = options.providerBoxOwner;
++  const workspaceOwner = options.externalWorkspaceOwner;
 +  if (
-+    boxOwner &&
++    workspaceOwner &&
 +    (options.transport !== "websocket" ||
-+      options.url !== boxOwner.url ||
++      options.url !== workspaceOwner.url ||
 +      !options.authToken ||
 +      Object.keys(options.headers).length !== 0)
 +  ) {
-+    throw new Error(
-+      "The dedicated Codex transport does not match its provider Box owner binding.",
-+    );
++    throw new Error("The dedicated Codex transport does not match its external workspace binding.");
 +  }
-+  boxOwner?.assertCurrent();
++  workspaceOwner?.assertCurrent();
    const events = new EventEmitter();
    const stdout = new PassThrough();
    const stderr = new PassThrough();
-   const headers = {
-     ...options.headers,
--    ...(options.authToken ? { Authorization: `Bearer ${options.authToken}` } : {}),
-+    ...(options.authToken
-+      ? { Authorization: `Bearer ${options.authToken}` }
-+      : {}),
+@@ -45,6 +60,7 @@ export function createWebSocketTransport(
    };
    const websocketOptions: ClientOptions = {
      headers,
-+    ...(boxOwner ? { ca: boxOwner.ca, rejectUnauthorized: true } : {}),
++    ...(workspaceOwner ? { ca: workspaceOwner.ca, rejectUnauthorized: true } : {}),
      // Codex app-server closes Unix upgrade handshakes that offer compression.
      perMessageDeflate: false,
      ...(options.transport === "websocket"
-@@ -69,6 +98,12 @@ export function createWebSocketTransport(
+@@ -69,6 +85,12 @@ export function createWebSocketTransport(
    let expectedPong: Buffer | undefined;
    let consecutiveMissedPongs = 0;
    let heartbeatSequence = 0;
-+  let boxOwnerVerified = boxOwner === undefined;
-+  if (boxOwner) {
++  let workspaceGenerationVerified = workspaceOwner === undefined;
++  if (workspaceOwner) {
 +    socket.once("upgrade", (response) => {
-+      boxOwnerVerified = matchesProviderBoxOwner(boxOwner, response);
++      workspaceGenerationVerified = matchesExternalWorkspaceGeneration(workspaceOwner, response);
 +    });
 +  }
-
+ 
    const clearConnectionHealthTimers = () => {
      clearTimeout(pingTimeout);
-@@ -127,12 +162,48 @@ export function createWebSocketTransport(
+@@ -127,12 +149,39 @@ export function createWebSocketTransport(
      scheduleHeartbeatPing();
    };
-
+ 
 +  const ownerFrameAllowed = (frame: string): boolean => {
-+    if (!boxOwner) return true;
++    if (!workspaceOwner) return true;
 +    try {
-+      boxOwner.assertCurrent();
++      workspaceOwner.assertCurrent();
 +      const request: unknown = JSON.parse(frame);
-+      if (!request || typeof request !== "object" || Array.isArray(request))
-+        return false;
-+      const { method, params, id, result, error } = request as Record<
-+        string,
-+        unknown
-+      >;
++      if (!request || typeof request !== "object" || Array.isArray(request)) return false;
++      const { method, params, id, result, error } = request as Record<string, unknown>;
 +      if (typeof method === "string")
-+        return allowsProviderBoxRequest(boxOwner, method, params);
++        return allowsExternalWorkspaceRequest(workspaceOwner, method, params);
 +      return (
 +        method === undefined &&
 +        params === undefined &&
 +        id !== undefined &&
 +        (result !== undefined) !== (error !== undefined) &&
-+        Object.keys(request).every((key) =>
-+          ["id", "result", "error", "jsonrpc"].includes(key),
-+        )
++        Object.keys(request).every((key) => ["id", "result", "error", "jsonrpc"].includes(key))
 +      );
 +    } catch {
 +      return false;
@@ -1018,27 +1047,22 @@ index 48945c0..62de0fc 100644
 +        pendingFrames.length = 0;
 +        opened = false;
 +        socket.terminate();
-+        events.emit(
-+          "error",
-+          new Error("The original Codex provider Box request was refused."),
-+        );
++        events.emit("error", new Error("The external workspace refused a Codex request."));
 +        return;
 +      }
        socket.send(trimmed);
        return;
      }
-@@ -142,9 +213,21 @@ export function createWebSocketTransport(
+@@ -142,9 +191,19 @@ export function createWebSocketTransport(
    // `initialize` can be written before the WebSocket open event fires. Buffer
    // whole JSON-RPC frames so stdio and websocket transports share call timing.
    socket.once("open", () => {
-+    if (!boxOwnerVerified) {
++    if (!workspaceGenerationVerified) {
 +      pendingFrames.length = 0;
 +      socket.terminate();
 +      events.emit(
 +        "error",
-+        new Error(
-+          "The original Codex provider Box owner is no longer serving.",
-+        ),
++        new Error("The original external workspace generation is no longer serving."),
 +      );
 +      return;
 +    }
@@ -1050,7 +1074,7 @@ index 48945c0..62de0fc 100644
      }
      scheduleHeartbeatPing();
    });
-@@ -181,6 +264,9 @@ export function createWebSocketTransport(
+@@ -181,6 +240,9 @@ export function createWebSocketTransport(
      events.emit("exit", code, reason.toString("utf8"));
    });
    socket.on("message", (data) => {
@@ -1060,20 +1084,8 @@ index 48945c0..62de0fc 100644
      if (options.transport === "websocket") {
        recordConnectionActivity();
      }
-@@ -215,7 +301,10 @@ export function createWebSocketTransport(
-     },
-   });
-   const closeSocket = () => {
--    if (socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
-+    if (
-+      socket.readyState === WebSocket.CLOSED ||
-+      socket.readyState === WebSocket.CLOSING
-+    ) {
-       return;
-     }
-     socket.close();
 diff --git a/extensions/codex/src/app-server/turn-params.test.ts b/extensions/codex/src/app-server/turn-params.test.ts
-index eac14a6..d7105d2 100644
+index eac14a6..34794f7 100644
 --- a/extensions/codex/src/app-server/turn-params.test.ts
 +++ b/extensions/codex/src/app-server/turn-params.test.ts
 @@ -55,6 +55,49 @@ it("keeps required-root native environments disabled on warm native turns", asyn
@@ -1081,9 +1093,9 @@ index eac14a6..d7105d2 100644
    expect(turn.environments).toEqual([]);
  });
 +
-+it("selects external/restricted only for the exact ordinary Box workspace turn", async () => {
++it("selects external/restricted only for the exact bound workspace turn", async () => {
 +  const cwd = "/home/node/workspace";
-+  const url = "wss://box-harness.pilot.svc.cluster.local:8443/";
++  const url = "wss://workspace-harness.example.svc.cluster.local:8443/";
 +  const baseline = createAppServerOptions();
 +  const appServer: TurnOptions["appServer"] = {
 +    ...baseline,
@@ -1092,7 +1104,7 @@ index eac14a6..d7105d2 100644
 +      ...baseline.start,
 +      transport: "websocket",
 +      url,
-+      providerBoxOwner: {
++      externalWorkspaceOwner: {
 +        url,
 +        workspaceRoot: cwd,
 +        generationSha256: "a".repeat(64),
@@ -1114,7 +1126,7 @@ index eac14a6..d7105d2 100644
 +  expect(other.sandboxPolicy?.type).toBe("workspaceWrite");
 +  const unscoped = await buildTurnStartParams(params, {
 +    ...options,
-+    appServer: { ...appServer, start: { ...appServer.start, providerBoxOwner: undefined } },
++    appServer: { ...appServer, start: { ...appServer.start, externalWorkspaceOwner: undefined } },
 +  });
 +  expect(unscoped.sandboxPolicy?.type).toBe("workspaceWrite");
 +  const restricted = await buildTurnStartParams(params, {
@@ -1127,7 +1139,7 @@ index eac14a6..d7105d2 100644
    const params = paramsForTurn();
    let currentPresence = "active_node=unknown";
 diff --git a/extensions/codex/src/app-server/turn-params.ts b/extensions/codex/src/app-server/turn-params.ts
-index 309c0a6..516be0b 100644
+index 309c0a6..e1ed541 100644
 --- a/extensions/codex/src/app-server/turn-params.ts
 +++ b/extensions/codex/src/app-server/turn-params.ts
 @@ -114,11 +114,21 @@ export async function buildTurnStartParams(
@@ -1135,16 +1147,16 @@ index 309c0a6..516be0b 100644
      collaborationMode.settings.developer_instructions = null;
    }
 -  const threadPermissionProfile = !options.sandboxPolicy
-+  const externalBoxPolicy: CodexSandboxPolicy | undefined =
++  const externalWorkspacePolicy: CodexSandboxPolicy | undefined =
 +    !options.appServer.networkProxy &&
 +    !options.appServer.providerPermissionProfile &&
 +    options.appServer.sandbox === "workspace-write" &&
 +    params.requireWorkspaceOnly !== true &&
 +    options.appServer.sessionRoot === undefined &&
-+    options.appServer.start.providerBoxOwner?.workspaceRoot === options.cwd
++    options.appServer.start.externalWorkspaceOwner?.workspaceRoot === options.cwd
 +      ? { type: "externalSandbox", networkAccess: "restricted" }
 +      : undefined;
-+  const effectiveSandboxPolicy = options.sandboxPolicy ?? externalBoxPolicy;
++  const effectiveSandboxPolicy = options.sandboxPolicy ?? externalWorkspacePolicy;
 +  const threadPermissionProfile = !effectiveSandboxPolicy
      ? options.appServer.networkProxy?.profileName
      : undefined;

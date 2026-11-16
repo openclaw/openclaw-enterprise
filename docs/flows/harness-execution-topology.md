@@ -140,8 +140,7 @@ validates string-or-null DNS and Envoy peer maps and names invalid settings.
 `runtime.gatewayNodeSelector` places Gateways and private-state initializers.
 For Compute-owned launches, `agentRuntimeReady` and the Docker healthcheck require
 [Codex initialization](../reference/drivers/kubernetes-compute.md#troubleshooting).
-Provider commands remain unchanged. The [Strands Box relay](../../deploy/examples/strands-box/README.md)
-carries Gateway traffic to native Codex.
+Provider commands remain unchanged.
 
 Once the Harness is ready, Compute replaces unready or stopped Gateways. Activation requires workspace enrollment; dedicated Codex keeps `agent-<agent digest>-workspace`.
 `KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds callbacks; `AGENT_WITH_NODE_ENTRYPOINT` prepares capability storage and TLS for OpenClaw-authorized [native hooks](../reference/gateway-routing.md#native-node-endpoint).
@@ -358,8 +357,6 @@ removal.
 ## Changelog
 
 - 2026-11-11 06:50: Trace configured Gateway claim capacity and mismatch refusal. (authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792 - 036845b2f70f4c5d13b7f180e3642865ca891a8a)
-
-- 2026-11-06 02:57: Describe the dedicated Box example and its enrollment boundary. (authoring-run/ef63549e-adf5-4ff9-8036-0772ec342a79 - fbe779cff8d8c83502c715e1e462f5734c82b5fb)
 
 - 2026-11-06 01:25: Persist Harness settings. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
 

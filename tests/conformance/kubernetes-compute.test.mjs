@@ -7133,33 +7133,34 @@ test("provider Harness public trust rejects invalid material and composes with e
     const owner = { ...endpoint, workspaceRoot, externalWorkspaceOwner: { generationSha256 } };
     assert.equal(
       pod.containers[0].volumeMounts.some(({ mountPath }) =>
-        mountPath.startsWith("/etc/openclaw-box-owner/"),
+        mountPath.startsWith("/etc/openclaw-external-workspace/"),
       ),
       false,
     );
     await driver.reconcileHarnessTrust(revision, owner, target);
     assert.equal(writes[1].immutable, true);
     assert.equal(writes[1].data["ca.pem"], provider.caBundle);
-    assert.deepEqual(JSON.parse(writes[1].data["binding.json"]), {
-      url: endpoint.url,
-      workspaceRoot,
-      generationSha256,
-    });
+    // The Gateway accepts only this exact canonical document.
+    assert.equal(
+      writes[1].data["binding.json"],
+      JSON.stringify({ format: "external-workspace-v1", url: endpoint.url, workspaceRoot, generationSha256 }),
+    );
     const ownerPod = render(owner).spec.template.spec;
     assert.deepEqual(
       ownerPod.containers[0].volumeMounts.filter(({ mountPath }) =>
-        mountPath.startsWith("/etc/openclaw-box-owner/"),
+        mountPath.startsWith("/etc/openclaw-external-workspace/"),
       ),
       ["binding.json", "ca.pem"].map((name) => ({
         name: "harness-trust",
-        mountPath: `/etc/openclaw-box-owner/${name}`,
+        mountPath: `/etc/openclaw-external-workspace/${name}`,
         subPath: name,
         readOnly: true,
       })),
     );
     for (const invalid of [
       { ...owner, tls: undefined },
-      { ...owner, workspaceRoot: "/home/node/other" },
+      { ...owner, workspaceRoot: undefined },
+      { ...owner, workspaceRoot: "/srv/workspace/../other" },
       { ...owner, externalWorkspaceOwner: { generationSha256: "wrong-generation" } },
       { ...owner, codexPermissionProfile: ":danger-full-access" },
     ]) {
@@ -7170,6 +7171,9 @@ test("provider Harness public trust rejects invalid material and composes with e
       );
       assert.equal(writes.length, before);
     }
+    // The binding carries the validated endpoint's own root, not a fixed path.
+    await driver.reconcileHarnessTrust(revision, { ...owner, workspaceRoot: "/srv/workspace" }, target);
+    assert.equal(JSON.parse(writes.at(-1).data["binding.json"]).workspaceRoot, "/srv/workspace");
     const system = render({ url: endpoint.url }).spec.template.spec;
     assert.equal(
       system.volumes.some(({ name }) => name === "harness-trust"),

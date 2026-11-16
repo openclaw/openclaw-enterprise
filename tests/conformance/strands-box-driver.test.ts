@@ -1072,7 +1072,7 @@ test(
         .digest("base64");
       socket.write(
         `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n` +
-          ownerHeaders.map((value) => `X-OpenClaw-Box-Owner: ${value}\r\n`).join("") +
+          ownerHeaders.map((value) => `X-OpenClaw-Workspace-Generation: ${value}\r\n`).join("") +
           "\r\n",
       );
       firstClientFrame(socket, (rpc) => {

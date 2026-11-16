@@ -93,7 +93,24 @@ export const SETUP_WRAPPER_COMMAND: readonly string[] = Object.freeze([
   "-e",
 ]);
 export const MANAGED_CONFIGURATION_DIRECTORY = "/etc/openclaw-managed";
-export const EXTERNAL_WORKSPACE_OWNER_DIRECTORY = "/etc/openclaw-box-owner";
+// An external Sandbox's ordinary workspace binding: Compute mounts `binding.json` and `ca.pem`
+// here, and the Gateway enforces it on every native connection and turn.
+export const EXTERNAL_WORKSPACE_OWNER_DIRECTORY = "/etc/openclaw-external-workspace";
+export const EXTERNAL_WORKSPACE_BINDING_FORMAT = "external-workspace-v1";
+
+/** The canonical binding document. The Gateway refuses any other key set or format. */
+export function externalWorkspaceBinding(binding: {
+  readonly url: string;
+  readonly workspaceRoot: string;
+  readonly generationSha256: string;
+}): string {
+  return JSON.stringify({
+    format: EXTERNAL_WORKSPACE_BINDING_FORMAT,
+    url: binding.url,
+    workspaceRoot: binding.workspaceRoot,
+    generationSha256: binding.generationSha256,
+  });
+}
 // Under the Harness HOME; Compute renders the same path into the Gateway's relay config.
 export const NATIVE_HOOK_CREDENTIAL_DIRECTORY = ".oce-native-hooks";
 

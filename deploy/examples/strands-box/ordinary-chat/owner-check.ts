@@ -9,7 +9,7 @@ import {
   type BigIntStats,
 } from "node:fs";
 import { request } from "node:https";
-const ownerDirectory = "openclaw-box-owner";
+const ownerDirectory = "openclaw-external-workspace";
 const readOnly = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 
 function unchanged(original: BigIntStats, current: BigIntStats): boolean {
@@ -112,7 +112,9 @@ async function check(files: { binding: Buffer; ca: Buffer; assertCurrent: () => 
     typeof binding !== "object" ||
     Array.isArray(binding) ||
     JSON.stringify(binding) !== raw ||
-    Object.keys(binding).length !== 3 ||
+    Object.keys(binding).length !== 4 ||
+    !("format" in binding) ||
+    binding.format !== "external-workspace-v1" ||
     !("url" in binding) ||
     typeof binding.url !== "string" ||
     !("workspaceRoot" in binding) ||
@@ -162,8 +164,8 @@ async function check(files: { binding: Buffer; ca: Buffer; assertCurrent: () => 
         .digest("base64");
       if (
         res.statusCode === 101 &&
-        headers["x-openclaw-box-owner"]?.length === 1 &&
-        headers["x-openclaw-box-owner"][0] === generation &&
+        headers["x-openclaw-workspace-generation"]?.length === 1 &&
+        headers["x-openclaw-workspace-generation"][0] === generation &&
         headers["sec-websocket-accept"]?.length === 1 &&
         headers["sec-websocket-accept"][0] === accept
       )

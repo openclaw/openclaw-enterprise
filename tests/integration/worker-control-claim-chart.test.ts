@@ -14,14 +14,14 @@ const tooling = await chartTooling();
 const required = process.env.OCC_TEST_WORKER_CONTROL_CLAIM_CHART === "1";
 
 test(
-  "the production chart mounts the optional Strands Box control claim only in Worker",
+  "the production chart mounts the optional Sandbox control claim only in Worker",
   { skip: required ? false : tooling.skip },
   async (t) => {
     assert.equal(tooling.skip, false, "the Images and Packaging lane requires Helm and yq");
-    const directory = await temporaryDirectory(t, "occ-strands-box-worker-chart-");
-    const mountName = "strands-box-control";
-    const claimName = "pilot-box-control";
-    const nodeSelector = { "kubernetes.io/hostname": "pilot-box-node" };
+    const directory = await temporaryDirectory(t, "occ-sandbox-control-chart-");
+    const mountName = "sandbox-control";
+    const claimName = "example-sandbox-control";
+    const nodeSelector = { "kubernetes.io/hostname": "example-sandbox-node" };
     const controlPlane = { nodeSelector };
     const render = async (name: string, values: object) => {
       const path = join(directory, name + ".json");
@@ -30,14 +30,14 @@ test(
     };
 
     const stock = (await renderProductionChart()).stdout;
-    assert.equal(await render("empty", { worker: { strandsBoxControlClaimName: "" } }), stock);
+    assert.equal(await render("empty", { worker: { sandboxControlClaimName: "" } }), stock);
     // Helm coalesces a null override of the string default by dropping the key.
-    assert.equal(await render("null", { worker: { strandsBoxControlClaimName: null } }), stock);
+    assert.equal(await render("null", { worker: { sandboxControlClaimName: null } }), stock);
 
     const baseline = await render("placement", { controlPlane });
     const selected = await render("selected", {
       controlPlane,
-      worker: { strandsBoxControlClaimName: claimName },
+      worker: { sandboxControlClaimName: claimName },
     });
     type Manifest = {
       kind: string;
@@ -67,7 +67,7 @@ test(
     );
     assert.deepEqual(
       container.volumeMounts.filter((mount) => mount.name === mountName),
-      [{ name: mountName, mountPath: "/run/strands-box", readOnly: true }],
+      [{ name: mountName, mountPath: "/run/openclaw-sandbox-control", readOnly: true }],
     );
 
     // Removing exactly the expected Worker changes must restore the whole placed release,
@@ -76,7 +76,7 @@ test(
     container.volumeMounts = container.volumeMounts.filter((mount) => mount.name !== mountName);
     assert.deepEqual(documents, await parseProductionChart(baseline));
 
-    const selectedWorker = { strandsBoxControlClaimName: claimName };
+    const selectedWorker = { sandboxControlClaimName: claimName };
     const cases = [
       ["missing-hostname", { worker: selectedWorker }, /requires controlPlane\.nodeSelector/],
       [
@@ -97,22 +97,22 @@ test(
       ],
       [
         "wrong-claim-type",
-        { controlPlane, worker: { strandsBoxControlClaimName: false } },
-        /worker\.strandsBoxControlClaimName must be a string/,
+        { controlPlane, worker: { sandboxControlClaimName: false } },
+        /worker\.sandboxControlClaimName must be a string/,
       ],
       [
         "unsupported-volume-options",
-        { controlPlane, worker: { strandsBoxControlClaimName: { claimName, readOnly: false } } },
-        /worker\.strandsBoxControlClaimName must be a string/,
+        { controlPlane, worker: { sandboxControlClaimName: { claimName, readOnly: false } } },
+        /worker\.sandboxControlClaimName must be a string/,
       ],
       [
         "invalid-claim",
-        { controlPlane, worker: { strandsBoxControlClaimName: "../pilot" } },
-        /worker\.strandsBoxControlClaimName must be a Kubernetes resource name/,
+        { controlPlane, worker: { sandboxControlClaimName: "../example" } },
+        /worker\.sandboxControlClaimName must be a Kubernetes resource name/,
       ],
       [
         "bootstrap-claim",
-        { controlPlane, worker: { strandsBoxControlClaimName: "occ-bootstrap-admin-password" } },
+        { controlPlane, worker: { sandboxControlClaimName: "occ-bootstrap-admin-password" } },
         /must not reuse the bootstrap password claim/,
       ],
       [
@@ -125,9 +125,9 @@ test(
         {
           controlPlane,
           worker: selectedWorker,
-          database: { caSecretName: "db-ca", caMountPath: "/var/run/strands-box/ca" },
+          database: { caSecretName: "db-ca", caMountPath: "/var/run/openclaw-sandbox-control/ca" },
         },
-        /database\.caMountPath must not overlap the Strands Box Worker control directory/,
+        /database\.caMountPath must not overlap the Worker Sandbox control directory/,
       ],
     ] as const;
     for (const [name, values, failure] of cases) {

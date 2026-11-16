@@ -65,9 +65,10 @@ Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.ts` holds that list, and a test checks it
 against the Dockerfile.
 
-### Bind a standalone Gateway to one Box execution
+### External workspace binding
 
-[Strands Box pilot setup](../examples/strands-box/ordinary-chat/README.md#bind-a-standalone-gateway-to-one-box-execution)
+`openclaw-codex-external-workspace.patch` makes a dedicated Codex Gateway enforce the
+[external workspace binding](../../docs/reference/drivers/sandbox.md#harness-transport) that Compute mounts.
 
 Dedicated Gateways require this recipe's source and validate effective native
 configuration before startup. Required tool policy covers core dispatch,

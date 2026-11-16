@@ -410,21 +410,21 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- $strandsBoxClaim := .Values.worker.strandsBoxControlClaimName -}}
+{{- $sandboxControlClaim := .Values.worker.sandboxControlClaimName -}}
 {{- /* --reuse-values may omit a setting absent from the prior chart defaults. */ -}}
-{{- if hasKey .Values.worker "strandsBoxControlClaimName" -}}
-{{- include "openclaw.requireString" (dict "label" "worker.strandsBoxControlClaimName" "value" $strandsBoxClaim) -}}
+{{- if hasKey .Values.worker "sandboxControlClaimName" -}}
+{{- include "openclaw.requireString" (dict "label" "worker.sandboxControlClaimName" "value" $sandboxControlClaim) -}}
 {{- end -}}
-{{- if $strandsBoxClaim -}}
-{{- include "openclaw.validateResourceName" (dict "label" "worker.strandsBoxControlClaimName" "value" $strandsBoxClaim) -}}
+{{- if $sandboxControlClaim -}}
+{{- include "openclaw.validateResourceName" (dict "label" "worker.sandboxControlClaimName" "value" $sandboxControlClaim) -}}
 {{- if not (and (kindIs "map" .Values.controlPlane.nodeSelector) (get .Values.controlPlane.nodeSelector "kubernetes.io/hostname")) -}}
-{{- fail "worker.strandsBoxControlClaimName requires controlPlane.nodeSelector kubernetes.io/hostname for the original Box node" -}}
+{{- fail "worker.sandboxControlClaimName requires controlPlane.nodeSelector kubernetes.io/hostname for the Sandbox host node" -}}
 {{- end -}}
 {{- if .Values.executionCluster.enabled -}}
-{{- fail "worker.strandsBoxControlClaimName requires same-cluster execution" -}}
+{{- fail "worker.sandboxControlClaimName requires same-cluster execution" -}}
 {{- end -}}
-{{- if eq $strandsBoxClaim .Values.bootstrap.password.claimName -}}
-{{- fail "worker.strandsBoxControlClaimName must not reuse the bootstrap password claim" -}}
+{{- if eq $sandboxControlClaim .Values.bootstrap.password.claimName -}}
+{{- fail "worker.sandboxControlClaimName must not reuse the bootstrap password claim" -}}
 {{- end -}}
 {{- end -}}
 {{- if .Values.controlPlane.installationChecksum -}}{{- include "openclaw.requireString" (dict "label" "controlPlane.installationChecksum" "value" .Values.controlPlane.installationChecksum) -}}{{- end -}}
@@ -496,8 +496,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- /* Linux kubelet makes relative mounts absolute; the runtime resolves dot segments, trailing slashes and image symlinks. Compare destinations without changing the emitted operator path. */ -}}
 {{- $caDestination := include "openclaw.runtimeMountDestination" .Values.database.caMountPath -}}
-{{- if and $strandsBoxClaim (or (eq $caDestination "/run/strands-box") (hasPrefix "/run/strands-box/" $caDestination) (hasPrefix (printf "%s/" (trimSuffix "/" $caDestination)) "/run/strands-box")) -}}
-{{- fail "database.caMountPath must not overlap the Strands Box Worker control directory" -}}
+{{- if and $sandboxControlClaim (or (eq $caDestination "/run/openclaw-sandbox-control") (hasPrefix "/run/openclaw-sandbox-control/" $caDestination) (hasPrefix (printf "%s/" (trimSuffix "/" $caDestination)) "/run/openclaw-sandbox-control")) -}}
+{{- fail "database.caMountPath must not overlap the Worker Sandbox control directory" -}}
 {{- end -}}
 {{- range $mount := $reservedCaMounts -}}
 {{- if eq $caDestination (include "openclaw.runtimeMountDestination" $mount) -}}

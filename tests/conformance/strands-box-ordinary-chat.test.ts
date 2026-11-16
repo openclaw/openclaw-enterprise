@@ -250,8 +250,8 @@ test(
   async () => {
     const uid = process.getuid?.();
     assert.notEqual(uid, undefined);
-    const parent = mkdtempSync(join(tmpdir(), "box-owner-check-"));
-    const directory = join(parent, "openclaw-box-owner");
+    const parent = mkdtempSync(join(tmpdir(), "external-workspace-check-"));
+    const directory = join(parent, "openclaw-external-workspace");
     const binding = join(directory, "binding.json");
     const ca = join(directory, "ca.pem");
     mkdirSync(directory, { mode: 0o700 });

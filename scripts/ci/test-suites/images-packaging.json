@@ -45,7 +45,7 @@
     {
       "path": "tests/integration/worker-control-claim-chart.test.ts",
       "expectedTests": [
-        "the production chart mounts the optional Strands Box control claim only in Worker"
+        "the production chart mounts the optional Sandbox control claim only in Worker"
       ]
     },
     {

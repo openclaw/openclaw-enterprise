@@ -21,7 +21,7 @@ import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 const generationSha256 = "1".repeat(64);
 const startupSha256 = "2".repeat(64);
 const selector = "OPENCLAW_CODEX_REMOTE_WORKSPACE_BINDING";
-const bindingDirectory = "/etc/openclaw-box-owner";
+const bindingDirectory = "/etc/openclaw-external-workspace";
 
 test("Compute binds the reserved original before enrollment and activates only a serving acknowledged original", async (t) => {
   const { caBundle } = await harnessTlsFixture(t);
@@ -409,7 +409,12 @@ test("Compute binds the reserved original before enrollment and activates only a
   const pin = fixture.read("ConfigMap", configMap, fixture.gatewayNamespace);
   assert.equal(pin.immutable, true);
   assert.deepEqual(pin.data, {
-    "binding.json": JSON.stringify({ url, workspaceRoot, generationSha256 }),
+    "binding.json": JSON.stringify({
+      format: "external-workspace-v1",
+      url,
+      workspaceRoot,
+      generationSha256,
+    }),
     "ca.pem": caBundle,
   });
   const retainedAnchor = fixture.read("ConfigMap", anchorName, fixture.gatewayNamespace);

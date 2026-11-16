@@ -304,6 +304,7 @@ import {
   codexLaunchEntrypoint,
   type CodexLaunch,
   EXTERNAL_WORKSPACE_OWNER_DIRECTORY,
+  externalWorkspaceBinding,
   GATEWAY_STOP_TIMEOUT_MS,
   MANAGED_PLUGIN_ENVIRONMENT,
   MANAGED_CONFIGURATION_DIRECTORY,
@@ -17016,7 +17017,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (
       externalOwner !== undefined &&
       (endpoint?.tls === undefined ||
-        endpoint.workspaceRoot !== "/home/node/workspace" ||
+        endpoint.workspaceRoot === undefined ||
+        posix.resolve(endpoint.workspaceRoot) !== endpoint.workspaceRoot ||
         asRecord(externalOwner) === undefined ||
         Object.keys(externalOwner).length !== 1 ||
         typeof externalOwner.generationSha256 !== "string" ||
@@ -17070,9 +17072,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           ...(externalOwner === undefined
             ? {}
             : {
-                [EXTERNAL_WORKSPACE_OWNER_BINDING]: JSON.stringify({
+                [EXTERNAL_WORKSPACE_OWNER_BINDING]: externalWorkspaceBinding({
                   url: url.href,
-                  workspaceRoot: endpoint.workspaceRoot,
+                  workspaceRoot: endpoint.workspaceRoot!,
                   generationSha256: externalOwner.generationSha256,
                 }),
                 [EXTERNAL_WORKSPACE_OWNER_CA]: ca,

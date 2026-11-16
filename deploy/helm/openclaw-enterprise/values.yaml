@@ -337,9 +337,11 @@ resources:
 worker:
   # Set to 0 to install the API and run initialization before starting the worker.
   replicaCount: 1
-  # Experimental same-node Strands Box pilot. Name an existing dedicated control directory PVC.
-  # Empty leaves the mount absent. Set controlPlane.nodeSelector[kubernetes.io/hostname].
-  strandsBoxControlClaimName: ""
+  # Optional, for a Sandbox Driver whose host exposes its control plane on a local socket.
+  # Name an existing prebound PVC; the Worker alone mounts it read-only at
+  # /run/openclaw-sandbox-control. Empty leaves the mount absent. Requires
+  # controlPlane.nodeSelector[kubernetes.io/hostname] and same-cluster execution.
+  sandboxControlClaimName: ""
   # pollIntervalMs and leaseDurationMs are timer delays: at most 2147483647 ms.
   pollIntervalMs: 250
   leaseDurationMs: 5000

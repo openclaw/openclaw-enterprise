@@ -123,8 +123,9 @@ Gateway rollout. TLS verification stays enabled. Compute removes the ConfigMap
 after workloads terminate. Certificate changes require a new revision.
 
 For ordinary dedicated Codex with WSS trust, `externalWorkspaceOwner.generationSha256`
-binds `/home/node/workspace` to the live provider. The Driver and Gateway check
-the same generation on native upgrades.
+binds the endpoint's `workspaceRoot` to that provider generation. Compute mounts
+`binding.json` (`external-workspace-v1`) and `ca.pem` at `/etc/openclaw-external-workspace/`;
+the Gateway requires one matching `x-openclaw-workspace-generation` header on every native upgrade.
 
 `enrollHarness(context, installation, release)` receives a callback from Compute.
 Compute commits and rechecks the verified installation before it signs the startup

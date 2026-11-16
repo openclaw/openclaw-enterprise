@@ -1,9 +1,15 @@
 import type { ProtectedWorkspaceEndpoint } from "@openclaw-enterprise/contracts";
 import { asRecord, hasControlCharacter } from "@openclaw-enterprise/utils";
 import { posix } from "node:path";
+import {
+  EXTERNAL_WORKSPACE_OWNER_DIRECTORY,
+  externalWorkspaceBinding,
+} from "./runtime-entrypoints.ts";
 
 export const PROTECTED_WORKSPACE_BINDING_ENV = "OPENCLAW_CODEX_REMOTE_WORKSPACE_BINDING";
-export const PROTECTED_WORKSPACE_TRUST_DIRECTORY = "/etc/openclaw-box-owner";
+// Prototype: the protected workspace shares the ordinary external-workspace binding, which the
+// Gateway already enforces. The RFC-0023 amendment moves it to its own directory and format.
+export const PROTECTED_WORKSPACE_TRUST_DIRECTORY = EXTERNAL_WORKSPACE_OWNER_DIRECTORY;
 export const PROTECTED_WORKSPACE_BINDING_FILE = "binding.json";
 export const PROTECTED_WORKSPACE_CA_FILE = "ca.pem";
 
@@ -59,7 +65,7 @@ export function protectedWorkspaceTrustData(
   endpoint: ProtectedWorkspaceEndpoint,
 ): Readonly<Record<string, string>> {
   return {
-    [PROTECTED_WORKSPACE_BINDING_FILE]: JSON.stringify({
+    [PROTECTED_WORKSPACE_BINDING_FILE]: externalWorkspaceBinding({
       url: endpoint.url,
       workspaceRoot: endpoint.workspaceRoot,
       generationSha256: endpoint.original.generationSha256,

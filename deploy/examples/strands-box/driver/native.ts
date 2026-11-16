@@ -11,7 +11,7 @@ const MAX_BODY = 16_384;
 const MAX_WIRE = 32_768;
 const MAX_FRAMES = 64;
 const STATUS_PATH = "/openclaw/runtime/status";
-const OWNER_HEADER = "x-openclaw-box-owner";
+const OWNER_HEADER = "x-openclaw-workspace-generation";
 
 function clientFrame(opcode: number, payload: Buffer): Buffer {
   const short = payload.length <= 125;
