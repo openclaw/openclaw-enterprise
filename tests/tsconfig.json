@@ -29,6 +29,7 @@
   },
   "include": [
     "integration/docker-compute-compose-cases.ts",
+    "integration/credential-source-endpoint-cases.ts",
     "integration/local-first-agent-native-failure-cases.ts",
     "integration/static-egress-request-capacity-cases.ts",
     "integration/sandbox-driver-namespace-provider-cases.ts",
