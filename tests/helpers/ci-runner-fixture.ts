@@ -180,6 +180,11 @@ export async function writeFirstAgentCliFixture(root: string, cliBody: string) {
     join(root, "tests/helpers/compose-network.mjs"),
     await readFile(new URL("./compose-network.mjs", import.meta.url)),
   );
+  await mkdir(join(root, "scripts/lib"), { recursive: true });
+  await writeFile(
+    join(root, "scripts/lib/podman-compose-provider.ts"),
+    await readFile(new URL("../../scripts/lib/podman-compose-provider.ts", import.meta.url)),
+  );
   await mkdir(join(root, "scripts/ci"), { recursive: true });
   await writeFile(
     join(root, "scripts/ci/failure-redaction.ts"),
