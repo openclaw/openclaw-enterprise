@@ -12,7 +12,7 @@ import { createControlledClock } from "./clock.mjs";
 import { cleanEnvironment, createTlsMaterial } from "./process.mjs";
 import { createResourceScope } from "./resources.ts";
 import { createServiceConfiguration } from "./service-fixture.ts";
-import { startGitHubFixture, fixtureRepository, fixtureRepositoryId } from "./github.mjs";
+import { startGitHubFixture, fixtureRepository, fixtureRepositoryId } from "./github.ts";
 import { createRegistryMaterial } from "./registry/material.ts";
 import type { FixtureOwner } from "./resources.ts";
 import type { GitHubFixture } from "./registry/provider.ts";

@@ -19,7 +19,7 @@ import { appFunction } from "./app-functions.ts";
 import type { FixtureOwner } from "./resources.ts";
 import { temporaryDirectory, type createTlsMaterial } from "./process.mjs";
 import { githubTokenConfigurationData } from "./builders.ts";
-import { fixtureRepositoryId, fixtureRepository, type startGitHubFixture } from "./github.mjs";
+import { fixtureRepositoryId, fixtureRepository, type startGitHubFixture } from "./github.ts";
 
 type FixtureClock = Clock & { advance?(milliseconds: number): Promise<void> };
 type TlsMaterial = Awaited<ReturnType<typeof createTlsMaterial>>;

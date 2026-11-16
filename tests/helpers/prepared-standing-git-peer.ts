@@ -20,7 +20,7 @@ import {
   fixtureRepositoryId,
   fixtureAppId,
   fixtureInstallationId,
-} from "../fixtures/repository-credentials/github.mjs";
+} from "../fixtures/repository-credentials/github.ts";
 
 /**
  * The system clock with its wall time `behindMs` early: a worker host whose clock runs behind

@@ -22,7 +22,7 @@ import {
   fixtureInstallationId,
   fixtureRepositoryId,
   fixtureRepository,
-} from "./repository-credentials/github.mjs";
+} from "./repository-credentials/github.ts";
 import {
   seedSessionRevision,
   sessionAttempt,

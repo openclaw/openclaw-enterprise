@@ -282,6 +282,7 @@
     "fixtures/repository-credentials/module-guard.ts",
     "fixtures/repository-credentials/installation-module-guard.ts",
     "fixtures/repository-credentials/planning.ts",
+    "helpers/openshell-installation-github-requests.ts",
     "helpers/protected-static-secret-read.ts",
     "../scripts/observe-worker-terminations.ts",
     "helpers/native-admin-postgres.ts",

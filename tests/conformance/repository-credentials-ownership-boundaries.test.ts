@@ -19,7 +19,7 @@ import { createAlternateDriverFactory } from "../fixtures/repository-credentials
 import {
   fixtureRepository,
   startGitHubFixture,
-} from "../fixtures/repository-credentials/github.mjs";
+} from "../fixtures/repository-credentials/github.ts";
 import { requestHead } from "../fixtures/repository-credentials/request-head.ts";
 import { createGitHubTokenServiceFactory } from "../fixtures/repository-credentials/service-resources.ts";
 import {

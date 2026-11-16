@@ -4,7 +4,7 @@ import { buffer } from "node:stream/consumers";
 import type { TestContext } from "node:test";
 import type { preparedStandingGitPeer } from "./prepared-standing-git-peer.ts";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
-import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.ts";
 import { cleanEnvironment } from "../fixtures/repository-credentials/process.mjs";
 
 type Peer = Awaited<ReturnType<typeof preparedStandingGitPeer>>;
