@@ -873,7 +873,8 @@ test("offered OpenShell source values return field-specific HTTP 400 before effe
   const f = await fixture(t, { toolSources: true });
   // Use each offered type through real API/OCC/Driver admission. Only the value is
   // invalid: catalog fields and Secret references are valid, so this must not be a 404.
-  for (const [type, field, value] of [
+  /** @satisfies {[string, string, string][]} */
+  const invalidValues = [
     ["bearer-token", "host", "*.example.test"],
     ["bearer-token", "port", "0"],
     ["bearer-token", "path", "relative"],
@@ -882,7 +883,8 @@ test("offered OpenShell source values return field-specific HTTP 400 before effe
     ["oauth2-client-credentials", "client_id", "not visible"],
     ["oauth2-client-credentials", "scope", "read\twrite"],
     ["oauth2-refresh-token", "env_var", "OPENAI_API_KEY"],
-  ]) {
+  ];
+  for (const [type, field, value] of invalidValues) {
     await t.test(type + ": " + field, async () => {
       const response = await f.saveTool(type, { [field]: value }, "invalid-" + field);
       assert.deepEqual((await f.request("GET", f.path)).data, []);
