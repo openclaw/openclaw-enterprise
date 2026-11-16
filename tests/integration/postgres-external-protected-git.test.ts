@@ -125,6 +125,12 @@ test(
 );
 
 test(
+  "an installed external Driver pushes only the granted ref and opens one draft pull request under git-write until withdrawal",
+  journeyOptions,
+  externalGitJourney("git-write"),
+);
+
+test(
   "built-in repository policy admits authenticated native Git, survives worker restart, and denies withdrawn access",
   journeyOptions,
   externalGitJourney("built-in-installation"),
@@ -528,7 +534,8 @@ function externalGitJourney(
     | "online-installation"
     | "built-in-installation"
     | "reducible-installation"
-    | "lost-rotation",
+    | "lost-rotation"
+    | "git-write",
   artifactAdmissionOnly = false,
   finiteRemoval = false,
   stopDuringRemoval = false,
@@ -634,7 +641,9 @@ function externalGitJourney(
     const namespace = { ...createdNamespace, status: "ready" as const };
     const { id: namespaceId } = namespace;
     const authenticatedJourney = scope === "built-in-installation";
-    const online = scope === "online-installation" || authenticatedJourney;
+    // Repository write access with one draft pull request, authorized per request.
+    const writes = scope === "git-write";
+    const online = scope === "online-installation" || authenticatedJourney || writes;
     const lostRotation = scope === "lost-rotation";
     const reducible = scope === "reducible-installation" || lostRotation;
     const broad =
@@ -646,7 +655,8 @@ function externalGitJourney(
           )
         : undefined;
     const { registry, backendId, origin, gh, tls, privateKeyPath, custodyKeyPath } =
-      broad ?? (await standingGitOrigin(t, namespaceId, 300_000));
+      broad ??
+      (await standingGitOrigin(t, namespaceId, 300_000, undefined, false, undefined, writes));
     const installationApiOrigin = broad?.gh.origin;
     const conversation = modelExecutable
       ? await standingGitConversation(t, modelExecutable)
@@ -1590,6 +1600,197 @@ function externalGitJourney(
       };
       const initialFetch = await transfer(await origin.ref("main"));
       rehearsal?.gitFetched(initialFetch);
+      if (writes) {
+        // The sender reports each request's ref and draft scope; the Worker's owner decides
+        // against the registry grant (push ref, base, one draft) and records every allow.
+        const start = peer.decisions.length;
+        const secret = peer.clientHeader.slice("Authorization: ".length);
+        const receivePacks = () =>
+          origin.trace.filter(
+            (entry) => entry.method === "POST" && entry.path.endsWith("/git-receive-pack"),
+          ).length;
+        const draft = (base: string) =>
+          new Promise<{ status: number; data: Record<string, unknown> }>((resolve, reject) => {
+            request(
+              peer.apiUrl,
+              {
+                ca: tls.ca,
+                agent: false,
+                family: 4,
+                signal: t.signal,
+                path: "/repos/" + origin.repository + "/pulls",
+                method: "POST",
+                headers: { authorization: secret, "content-type": "application/json" },
+              },
+              (res) => {
+                const status = res.statusCode!;
+                if (!res.headers["content-type"]?.startsWith("application/json")) {
+                  res.resume();
+                  resolve({ status, data: {} });
+                  return;
+                }
+                void json(res).then(
+                  (data) => resolve({ status, data: data as Record<string, unknown> }),
+                  reject,
+                );
+              },
+            )
+              .once("error", reject)
+              .end(JSON.stringify({ title: "Review", head: "review", base, draft: true }));
+          });
+        const outcomes = (from: number) =>
+          peer.decisions.slice(from).map(({ operation, decision }) => {
+            const { kind, reason } = decision as { kind: string; reason?: string };
+            return [operation, kind === "denied" ? reason : kind];
+          });
+        await git(["checkout", "--quiet", "-b", "review", "FETCH_HEAD"]);
+        await git([
+          "-c",
+          "user.name=Cedar",
+          "-c",
+          "user.email=cedar@example.test",
+          "commit",
+          "--quiet",
+          "--allow-empty",
+          "-m",
+          "Work for review",
+        ]);
+        const commit = (await git(["rev-parse", "HEAD"])).stdout.trim();
+        await git(["-c", auth, "push", "--quiet", remote, "HEAD:refs/heads/review"]);
+        assert.equal(await origin.ref("refs/heads/review"), commit, "the granted ref was updated");
+        assert.equal(receivePacks(), 1);
+        const elsewhere = await git(["-c", auth, "push", remote, "HEAD:refs/heads/elsewhere"], true);
+        assert.notEqual(elsewhere.code, 0);
+        assert.match(elsewhere.stderr, /403/);
+        assert.equal(receivePacks(), 1, "a refused ref update never reaches the origin");
+        assert.notEqual(
+          (
+            await run("git", ["-C", origin.bare, "rev-parse", "--verify", "refs/heads/elsewhere"], {
+              env,
+              allowFailure: true,
+            })
+          ).code,
+          0,
+        );
+        assert.equal((await draft("elsewhere")).status, 403, "only the granted base");
+        assert.equal(gh.pulls.size, 0, "a refused draft never reaches the provider");
+        const created = await draft("main");
+        assert.equal(created.status, 201);
+        assert.equal(created.data.draft, true);
+        assert.deepEqual(
+          [
+            (created.data.head as { ref: string }).ref,
+            (created.data.base as { ref: string }).ref,
+          ],
+          ["review", "main"],
+        );
+        assert.equal((await draft("main")).status, 403, "the grant allows one draft");
+        assert.equal(gh.pulls.size, 1, "the second draft never reaches the provider");
+        assert.deepEqual(outcomes(start), [
+          ["advertise-receive-pack", "allow"],
+          ["receive-pack", "allow"],
+          ["advertise-receive-pack", "allow"],
+          ["receive-pack", "unavailable"],
+          ["create-draft-pull", "unavailable"],
+          ["create-draft-pull", "allow"],
+          ["create-draft-pull", "draft_already_opened"],
+        ]);
+        // Evidence is OCC's own: one online use row per allow, each joined to the attempt the
+        // owner prepared with the App key, and the grant's spent draft allowance.
+        const allowed = peer.decisions
+          .slice(start)
+          .flatMap(({ operation, decision }) =>
+            (decision as { kind: string }).kind === "allow"
+              ? [{ operation, exchangeId: (decision as { exchangeId: string }).exchangeId }]
+              : [],
+          );
+        const { rows: uses } = await pool.query(
+          `SELECT u.exchange_id::text AS "exchangeId", u.operation,
+                  u.authorization_reply_by IS NOT NULL AS online, u.send_start_by IS NULL AS "noPermit"
+             FROM occ.prepared_repository_git_uses u
+             JOIN occ.prepared_github_attempts a
+               ON a.id = u.attempt_id AND a.material_version = u.material_version
+            WHERE u.exchange_id::text = ANY($1::text[])`,
+          [allowed.map((entry) => entry.exchangeId)],
+        );
+        assert.deepEqual(
+          uses.toSorted((a, b) => a.exchangeId.localeCompare(b.exchangeId)),
+          allowed
+            .map((entry) => ({ ...entry, online: true, noPermit: true }))
+            .toSorted((a, b) => a.exchangeId.localeCompare(b.exchangeId)),
+        );
+        const draftReceipt = allowed.find((entry) => entry.operation === "create-draft-pull")!;
+        const {
+          rows: [spent],
+        } = await pool.query(
+          `SELECT scope, outcome, authorization_reply_by IS NOT NULL AS online
+             FROM occ.prepared_repository_draft_pulls WHERE receipt_id::text = $1`,
+          [draftReceipt.exchangeId],
+        );
+        const { operationId, repositoryId, ...pullScope } = spent.scope;
+        assert.match(operationId, /^[0-9a-f-]{36}$/);
+        assert.equal(typeof repositoryId, "string");
+        assert.deepEqual(
+          { ...spent, scope: pullScope },
+          {
+            scope: { apiOrigin: gh.origin, repository: origin.repository, head: "review", base: "main" },
+            outcome: "outcome_unknown",
+            online: true,
+          },
+        );
+        const {
+          rows: [delivered],
+        } = await pool.query(
+          "SELECT material_version FROM occ.credential_deliveries WHERE revision_id=$1",
+          [revision.id],
+        );
+        assert.ok(
+          peer.delivery.confirmations.some(
+            (entry) => entry.materialVersion === delivered.material_version,
+          ),
+          "the delivery record names material the recipient confirmed",
+        );
+
+        // Withdrawal: every fresh request is refused before the origin or provider.
+        await settleRevisionMaintenance(f, revision);
+        const writeTraffic = () => ({
+          git: traffic(),
+          pulls: gh.pulls.size,
+          issues: gh.issuesOfTokens.length,
+        });
+        const before = writeTraffic();
+        const decisions = peer.decisions.length;
+        preparationsBeforeWithdrawal = preparations;
+        withdrawalStarted = true;
+        await controller.removeAgentStandingApproval(who, {
+          ...key,
+          approvalId,
+          expectedGeneration: 1,
+        });
+        const deniedFetch = await fetch(true);
+        assert.equal(deniedFetch.code, 128);
+        assert.match(deniedFetch.stderr.toString(), /403/);
+        const deniedPush = await git(["-c", auth, "push", remote, "HEAD:refs/heads/review"], true);
+        assert.notEqual(deniedPush.code, 0);
+        assert.equal((await draft("main")).status, 403);
+        assert.deepEqual(writeTraffic(), before, "no Git, API or issuance after withdrawal");
+        const refusals = outcomes(decisions);
+        assert.deepEqual(refusals[0], ["advertise-upload-pack", "access_withdrawn"]);
+        assert.ok(refusals.every(([, outcome]) => outcome === "access_withdrawn"));
+        await nextMaintenancePass(f, revision, completions);
+        assertNoPreparationAfterWithdrawal();
+        assert.deepEqual(writeTraffic(), before, "maintenance after withdrawal prepares nothing");
+        t.diagnostic(
+          JSON.stringify({
+            allowed: uses.map((use) => use.operation),
+            draftAllowance: spent.outcome,
+            deliveredMaterial: delivered.material_version === first.materialVersion ? "first" : "rotated",
+            refusedAfterWithdrawal: refusals.length,
+            tokensIssued: before.issues,
+          }),
+        );
+        return;
+      }
       if (broad) {
         const provider = broad.installation;
         const { repositories, apiRequests } = provider;
