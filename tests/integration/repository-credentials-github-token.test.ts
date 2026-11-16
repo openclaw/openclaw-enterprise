@@ -17,22 +17,22 @@ import type {
 } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import type { GitHubTokenConfiguration } from "../../apps/controller/src/drivers/repo/github/access/types.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
-import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
 import {
   cleanEnvironment,
   type createTlsMaterial,
   run,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 import type { GitHubFixture as RegistryGitHubFixture } from "../fixtures/repository-credentials/registry/provider.ts";
 import {
   gatewayRequest,
   startTokenServiceScope,
-} from "../fixtures/repository-credentials/service.mjs";
-import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.mjs";
+} from "../fixtures/repository-credentials/service-fixture.ts";
+import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.ts";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { listen } from "../helpers/listen.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 // Each case starts its own service, Git and GitHub fixtures and spends most of
 // its time waiting on stock Git children. The cases register here and run two at

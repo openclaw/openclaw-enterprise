@@ -19,6 +19,7 @@ import {
   requireChartListener,
 } from "../../apps/controller/src/composition/installation-fields.ts";
 import { openShellGitChartListener } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
+import { generateInstallationCheck } from "../../deploy/helm/src/generate-installation-check.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // An Installation change restarts the API with the Recreate strategy, so an Installation
@@ -84,6 +85,11 @@ test(
   "install and upgrade hooks load the Installation with the API's files before migration",
   tooling,
   async () => {
+    assert.equal(
+      await generateInstallationCheck(),
+      checkScript,
+      "Regenerate the Installation check with node deploy/helm/src/generate-installation-check.ts",
+    );
     for (const values of [
       {},
       repositoryCredentialValues,

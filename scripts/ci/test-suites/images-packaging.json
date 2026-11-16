@@ -20,11 +20,11 @@
   "fileConcurrency": 3,
   "parallelFiles": [
     "tests/integration/production-upgrade-signal-lock.test.ts",
-    "tests/integration/codex-model-probe.test.mjs",
+    "tests/integration/codex-model-probe.test.ts",
     "tests/integration/production-image-upgrade-recovery.test.ts",
     "tests/integration/production-upgrade-migration-preflight.test.ts",
     "tests/integration/upgrade-preflight-state.test.ts",
-    "tests/integration/docker-compute-token-retry.test.mjs",
+    "tests/integration/docker-compute-token-retry.test.ts",
     "tests/integration/workspace-setup-runtime.test.ts",
     "tests/integration/production-kubernetes-packaging.test.mjs",
     "tests/integration/production-kubernetes-network-policy.test.ts",
@@ -52,7 +52,7 @@
       ]
     },
     {
-      "path": "tests/integration/docker-compute-token-retry.test.mjs",
+      "path": "tests/integration/docker-compute-token-retry.test.ts",
       "expectedTests": [
         "Docker driver keeps dedicated transport coherent and rejects foreign owners across retries",
         "Docker Namespace deletion cleans up owned containers after its network is removed"
@@ -68,6 +68,7 @@
       "path": "tests/integration/production-image-startup.test.mjs",
       "expectedTests": [
         "production image server startup loads bundled Kubernetes, OpenShell, and ChatGPT modules",
+        "production image startup rejects an invalid gateway StorageClass before persistence",
         "production image worker startup loads the shared runtime graph",
         "production image runs the chart's pre-upgrade Installation check",
         "production image includes the OpenShell gRPC proto asset",
@@ -155,7 +156,7 @@
       ]
     },
     {
-      "path": "tests/integration/codex-model-probe.test.mjs",
+      "path": "tests/integration/codex-model-probe.test.ts",
       "expectedTests": [
         "generated Codex launcher bounds model-probe recovery",
         "timeout then success",

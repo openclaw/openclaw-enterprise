@@ -7,7 +7,7 @@ import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { writeCommand } from "../helpers/fake-commands.ts";
-import * as socketFixture from "../helpers/socket-directory.mjs";
+import * as socketFixture from "../helpers/socket-directory.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const execute = promisify(execFile);

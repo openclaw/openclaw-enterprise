@@ -912,9 +912,7 @@ function kubernetesStatusReason(error: unknown): string | undefined {
 
 function initialContainerLogUnavailable(error: unknown, pod: unknown, container: string): boolean {
   const statuses = asRecord(asRecord(pod)?.status)?.containerStatuses;
-  const current = Array.isArray(statuses)
-    ? statuses.map(asRecord).find((status) => status?.name === container)
-    : undefined;
+  const current = findContainerStatus(statuses, container);
   const reason = asRecord(asRecord(current?.state)?.waiting)?.reason;
   if (
     (reason !== "PodInitializing" && reason !== "ContainerCreating") ||
@@ -2158,6 +2156,16 @@ function podWaitsOnImagePull(pod: unknown): boolean {
         IMAGE_PULL_WAITING_REASONS.has(asRecord(asRecord(asRecord(item)?.state)?.waiting)?.reason),
       ),
   );
+}
+
+function findContainerStatus(states: unknown, container: string): KubernetesRecord | undefined {
+  return Array.isArray(states)
+    ? states.map(asRecord).find((state) => state?.name === container)
+    : undefined;
+}
+
+function runtimeImageCommit(value: unknown): string | null {
+  return typeof value === "string" && /^[a-f0-9]{40}$/.test(value) ? value : null;
 }
 
 function observedPodMatchingSelector(
@@ -6192,17 +6200,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
         const spec = asRecord(pod.spec);
         const status = asRecord(pod.status);
-        const commit = asRecord(provenance?.status)?.commit;
-        const openclawCommit = asRecord(provenance?.status)?.openclawCommit;
+        const buildMetadata = asRecord(provenance?.status);
+        const roleStatus = findContainerStatus(status?.containerStatuses, role);
+        const roleContainerId = roleStatus?.containerID;
         const sameContainer =
           provenance?.podUid === metadata.uid &&
-          provenance?.containerId !== undefined &&
-          provenance.containerId === this.podContainerId(pod, role);
-        const runtimeImageId = (
-          Array.isArray(status?.containerStatuses) ? status.containerStatuses : []
-        )
-          .map(asRecord)
-          .find((item) => item?.name === role)?.imageID;
+          isNonEmptyString(roleContainerId) &&
+          provenance?.containerId === roleContainerId;
+        const runtimeImageId = roleStatus?.imageID;
         for (const [containers, states] of [
           [spec?.containers, status?.containerStatuses],
           [spec?.initContainers, status?.initContainerStatuses],
@@ -6218,31 +6223,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 "Kubernetes returned incomplete image identity.",
               );
             }
-            const observed = (Array.isArray(states) ? states : [])
-              .map(asRecord)
-              .find((item) => item?.name === container.name);
+            const observed = findContainerStatus(states, container.name);
             const imageId = isNonEmptyString(observed?.imageID) ? observed.imageID : null;
+            const sameImage = sameContainer && imageId !== null && imageId === runtimeImageId;
             images.push({
               workload: `${targetNamespace.name}/${metadata.name}`,
               container: container.name,
               image: container.image,
               imageId,
-              commit:
-                sameContainer &&
-                imageId !== null &&
-                imageId === runtimeImageId &&
-                typeof commit === "string" &&
-                /^[a-f0-9]{40}$/.test(commit)
-                  ? commit
-                  : null,
-              openclawCommit:
-                sameContainer &&
-                imageId !== null &&
-                imageId === runtimeImageId &&
-                typeof openclawCommit === "string" &&
-                /^[a-f0-9]{40}$/.test(openclawCommit)
-                  ? openclawCommit
-                  : null,
+              commit: sameImage ? runtimeImageCommit(buildMetadata?.commit) : null,
+              openclawCommit: sameImage ? runtimeImageCommit(buildMetadata?.openclawCommit) : null,
             });
           }
         }
@@ -10869,12 +10859,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   private podContainerId(pod: unknown, container: "agent" | "gateway"): string | undefined {
     const status = asRecord(asRecord(pod)?.status);
-    const containerStatuses = Array.isArray(status?.containerStatuses)
-      ? status.containerStatuses
-      : [];
-    const containerStatus = containerStatuses
-      .map((candidate) => asRecord(candidate))
-      .find((candidate) => candidate?.name === container);
+    const containerStatus = findContainerStatus(status?.containerStatuses, container);
     return isNonEmptyString(containerStatus?.containerID) ? containerStatus.containerID : undefined;
   }
 
@@ -11145,11 +11130,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
             continue;
           }
           const status = asRecord(pod.status);
-          const initialized = Array.isArray(status?.initContainerStatuses)
-            ? status.initContainerStatuses
-                .map(asRecord)
-                .find((item) => item?.name === "initialize-workspace")
-            : undefined;
+          const initialized = findContainerStatus(
+            status?.initContainerStatuses,
+            "initialize-workspace",
+          );
           const state = asRecord(initialized?.state);
           const terminated =
             asRecord(state?.terminated) ??
@@ -11223,9 +11207,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             continue;
           }
           const statuses = asRecord(pod.status)?.containerStatuses;
-          const status = Array.isArray(statuses)
-            ? statuses.map(asRecord).find((item) => item?.name === role)
-            : undefined;
+          const status = findContainerStatus(statuses, role);
           const terminated = asRecord(asRecord(status?.lastState)?.terminated);
           const exits =
             (role === "gateway" ? unexplainedExitCount(terminated?.message) : undefined) ??

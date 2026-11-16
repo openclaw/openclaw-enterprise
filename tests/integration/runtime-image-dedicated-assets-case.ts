@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
+import { runDocker } from "../helpers/runtime-image-docker.ts";
+import { jsonLogEntries } from "../helpers/runtime-image-gateway-observations.ts";
 import {
-  jsonLogEntries,
-  runDocker,
   runGatewaySmoke,
   runtimeImageModel,
   temporaryGatewayConfiguration,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 
 type GatewayAssetAssertions = {
   entrypoint: string;

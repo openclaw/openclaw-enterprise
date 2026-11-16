@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { Pool } from "pg";
 import { Check } from "typebox/value";
@@ -32,7 +33,7 @@ import {
 } from "./postgres-platform-kubernetes.ts";
 import { stopProcess } from "./stop-process.mjs";
 import { temporaryDirectory } from "./temporary-directory.ts";
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 
 type Configuration = ConfigurationResponse["data"];
 type Agent = AgentResponse["data"];
@@ -305,29 +306,66 @@ async function startController(
   child.stderr.on("data", (chunk: string) => (output += chunk));
 
   const origin = `http://127.0.0.1:${port}`;
-  const transport = createConsoleFixtureTransport(browserOrigin, origin);
-  const session = await waitFor<Session>(
-    () => `the durable OCC subprocess to become ready:\n${output}`,
-    async () => {
-      assert.equal(child.exitCode, null, `The durable OCC subprocess exited early:\n${output}`);
-      try {
-        return await signInWithEmailPassword({
-          fetch: (input, init) => transport.fetchThroughLoopback(new Request(input, init)),
-          origin: browserOrigin,
-          email: adminEmail,
-          password: adminPassword,
-          rememberMe: undefined,
-        });
-      } catch {
-        return undefined;
-      }
-    },
-    { timeoutMs: 15_000, intervalMs: 40 },
-  );
+  const session = await waitForControllerSignIn(origin, child, () => output);
   // Only the child can sign in, so it has bound the port; the reservation would otherwise
   // keep taking (and resetting) a share of the connections.
   await reservation.release();
   return { child, origin, session, output: () => output };
+}
+
+export async function waitForControllerSignIn(
+  origin: string,
+  child: Pick<ChildProcess, "exitCode" | "signalCode">,
+  output: () => string,
+  signInTimeoutMs = 15_000,
+): Promise<Session> {
+  const transport = createConsoleFixtureTransport(browserOrigin, origin);
+  let lastSignInStatus: number | undefined;
+  const controller = new AbortController();
+  const signInSignal = controller.signal;
+  const timer = setTimeout(() => controller.abort(), signInTimeoutMs);
+  try {
+    for (;;) {
+      assert.equal(
+        child.exitCode ?? child.signalCode,
+        null,
+        `The durable OCC subprocess exited early:\n${output()}`,
+      );
+      if (signInSignal.aborted) {
+        const observation =
+          lastSignInStatus === undefined ? "no HTTP response" : `HTTP ${lastSignInStatus}`;
+        assert.fail(
+          `Timed out waiting for the durable OCC subprocess to become ready:\n${output()}\nLast sign-in attempt: ${observation}.`,
+        );
+      }
+      const session = await signInWithEmailPassword({
+        fetch: async (input, init) => {
+          lastSignInStatus = undefined;
+          const request = new Request(input, { ...init, signal: signInSignal });
+          // Retain the Request until transport settles so its dependent signal stays live.
+          const response = await transport.fetchThroughLoopback(request).finally(() => {
+            request.signal.throwIfAborted();
+          });
+          lastSignInStatus = response.status;
+          return response;
+        },
+        origin: browserOrigin,
+        email: adminEmail,
+        password: adminPassword,
+        rememberMe: undefined,
+      }).catch(() => undefined);
+      if (session && !signInSignal.aborted) {
+        return session;
+      }
+      await delay(40, undefined, { signal: signInSignal }).catch((error: unknown) => {
+        if (!signInSignal.aborted) {
+          throw error;
+        }
+      });
+    }
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function spawnWorker(context: TestContext, { kubernetesDrivers = false } = {}) {

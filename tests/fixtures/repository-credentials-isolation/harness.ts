@@ -9,13 +9,12 @@ import type {
   SessionStatus,
   ShutdownSummary,
 } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
-import type { ClientCommand } from "../repository-credentials/clients.ts";
-import { run as runProcess } from "../repository-credentials/process.mjs";
+import { run as runCommand } from "../repository-credentials/process.ts";
 import { forwardWork, ownedNetwork } from "./ownership.ts";
 import type { AgentSnapshot } from "./probe.ts";
 import type { ProviderReport } from "./provider.ts";
 
-type CommandOptions = Parameters<ClientCommand>[2];
+type CommandOptions = Parameters<typeof runCommand>[2];
 
 type DockerMount = { Type: string; Source: string; Destination: string; RW: boolean };
 type DockerContainer = {
@@ -35,7 +34,6 @@ type DockerState = {
 
 type ServiceOutput = { event: "shutdown" } & ShutdownSummary;
 
-const runCommand = runProcess as ClientCommand;
 const fixtureRoot = fileURLToPath(new URL("../", import.meta.url));
 const gateway = "https://credentials.example.test";
 const repository = "fixture/repository";
@@ -52,7 +50,7 @@ function assertNoSecrets(surface: string, secrets: string[]) {
 }
 
 async function pushFeatureBranch(
-  client: (command: string, args: string[]) => ReturnType<ClientCommand>,
+  client: (command: string, args: string[]) => ReturnType<typeof runCommand>,
 ) {
   const git = (args: string[]) => client("git", ["-C", "/workspace/repository", ...args]);
   await git(["fetch", "origin"]);

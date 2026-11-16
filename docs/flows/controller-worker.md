@@ -388,7 +388,9 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 - `worker.compute-prepare-failed` names the failed Driver stage without the raw
   exception; match its `workId` or `revisionId` to the next `worker.completed`.
 - [Version](../../tests/integration/postgres-worker-agent-revision.test.mjs),
-  [credential-sources](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs),
+  [revision lifecycle](../../tests/integration/postgres-worker-agent-revision-lifecycle.test.ts),
+  [convergence](../../tests/integration/postgres-worker-agent-revision-convergence.test.ts),
+  [credential-sources](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts),
   [health](../../tests/integration/postgres-worker-agent-revision-health.test.mjs),
   [replacement](../../tests/integration/postgres-worker-agent-revision-replacement.test.ts),
   [refused-stop](../../tests/integration/postgres-worker-agent-revision-refused-stop.test.ts),

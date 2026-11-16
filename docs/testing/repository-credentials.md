@@ -88,7 +88,7 @@ node --test tests/integration/repository-credentials-admission.test.mjs \
 For durable session and recovery checks, prepare a migrated disposable database
 with an application role as described in [PostgreSQL testing](postgresql.md).
 Run `postgres-repository-sessions.test.ts`,
-`postgres-repository-broker-receipts.test.mjs`, and the relevant restart and
+`postgres-repository-broker-receipts.test.ts`, and the relevant restart and
 worker version tests with `OCC_TEST_DATABASE_URL` set. The
 `postgres-openshell-standing-selected-repository.test.ts` case follows one
 `github-repository` binding through approval, deployment, its original session
@@ -361,6 +361,6 @@ another. Historical results apply to the artifacts that produced them.
 The native package excludes App signing and token issuance. Its detached package
 checks cover prepared configuration and explicit development-token clients.
 The prepared native workflow is verified in
-`tests/integration/postgres-prepared-repository-git-broker.test.mjs`, including
+`tests/integration/postgres-prepared-repository-git-broker.test.ts`, including
 exact-ref enforcement, draft creation, response loss and no replay. That suite
 requires real PostgreSQL; package checks and simulated providers do not replace it.

@@ -23,7 +23,7 @@ import {
   readInstalledCredentialSession,
 } from "./repository-credentials-installed.mjs";
 import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
-import { protectedText, redactedQaTail, registerQaSecret } from "./qa-secrets.mjs";
+import { protectedText, redactedQaTail, registerQaSecret } from "./qa-secrets.ts";
 
 /** The one run-owned branch that every repository scenario of a QA run may push. */
 export function qaRepositoryBranch(suffix) {

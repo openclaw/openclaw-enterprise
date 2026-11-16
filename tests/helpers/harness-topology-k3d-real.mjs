@@ -19,7 +19,7 @@ import {
   signInWithEmailPassword,
 } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { attachPostgresToK3d, attachKeycloakToK3d } from "./k3d-postgres-network.mjs";
+import { attachPostgresToK3d, attachKeycloakToK3d } from "./k3d-postgres-network.ts";
 import { buildControllerTopologyManifests } from "./topology-controller-manifests.ts";
 import {
   createNativeTopologyConfiguration,
@@ -132,68 +132,6 @@ const {
   codexImage,
   databaseUrl,
 });
-
-async function slackApi(method, token, body = {}) {
-  assert.ok(
-    [
-      "auth.test",
-      "conversations.info",
-      "conversations.history",
-      "conversations.replies",
-      "chat.postMessage",
-    ].includes(method),
-    "unsupported Slack proof operation",
-  );
-  const writesMessage = method === "chat.postMessage";
-  const url = new URL(`https://slack.com/api/${method}`);
-  if (!writesMessage) {
-    for (const [key, value] of Object.entries(body)) {
-      url.searchParams.set(key, String(value));
-    }
-  }
-  let response;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      response = await fetch(url, {
-        // The credential file is an explicitly selected Slack token. Send it
-        // only to Slack's API, never to a redirected credential recipient.
-        redirect: "error",
-        method: writesMessage ? "POST" : "GET",
-        headers: {
-          authorization: `Bearer ${token}`,
-          ...(writesMessage ? { "content-type": "application/json; charset=utf-8" } : {}),
-        },
-        ...(writesMessage ? { body: JSON.stringify(body) } : {}),
-        signal: AbortSignal.timeout(30_000),
-      });
-    } catch (error) {
-      const transient =
-        error?.name === "TimeoutError" ||
-        error?.message === "fetch failed" ||
-        ["UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "ECONNRESET", "EPIPE", "ETIMEDOUT"].includes(
-          error?.cause?.code ?? error?.code,
-        );
-      if (writesMessage || attempt === 2 || !transient) {
-        throw error;
-      }
-      await delay(250 * 2 ** attempt);
-      continue;
-    }
-    if (writesMessage || attempt === 2 || (response.status !== 429 && response.status < 500)) {
-      break;
-    }
-    const retryAfterSeconds = Number(response.headers.get("retry-after"));
-    const retryDelay =
-      Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
-        ? Math.min(retryAfterSeconds * 1_000, 5_000)
-        : 250 * 2 ** attempt;
-    await delay(retryDelay);
-  }
-  assert.equal(response.status, 200, `Slack ${method} returned HTTP ${response.status}.`);
-  const result = await response.json();
-  assert.equal(result.ok, true, `Slack ${method} failed: ${result.error ?? "unknown_error"}.`);
-  return result;
-}
 
 async function validatePrerequisites() {
   assert.ok(
@@ -6240,7 +6178,6 @@ export {
   resources,
   secretRotationProbe,
   storedSecret,
-  slackApi,
   waitFor,
   waitForReadyGatewayPod,
 };

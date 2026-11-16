@@ -4,9 +4,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadYaml, dumpYaml, waitFor, yamlDocuments } from "./qa-utils.mjs";
-import { protectedText, grantQaSecret } from "./qa-secrets.mjs";
-import { slackApi } from "./harness-topology-k3d-real.mjs";
-import { allMessages, assertSlackBotAuthor, verifySingleSlackDelivery } from "./slack-delivery.mjs";
+import { protectedText, grantQaSecret } from "./qa-secrets.ts";
+import { slackApi } from "./slack-web-api.ts";
+import { allMessages, assertSlackBotAuthor, verifySingleSlackDelivery } from "./slack-delivery.ts";
 import { parseGatewayObservation } from "./normal-agent-observation-receipts.ts";
 import { sessionEvidenceScript } from "./normal-agent-gateway-evidence.ts";
 

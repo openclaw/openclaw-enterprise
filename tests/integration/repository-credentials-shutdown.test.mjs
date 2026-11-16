@@ -2,11 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { appRoot } from "../fixtures/repository-credentials/runtime.mjs";
-import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
-import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
+import { appRoot } from "../fixtures/repository-credentials/runtime.ts";
+import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
+import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service-fixture.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 // The child uses the real process composition and common settlement owner. An
 // unresolved alternate-provider callback must never defeat finite process exit.
@@ -58,7 +58,7 @@ test(
     child.stdin.end(
       JSON.stringify({
         config,
-        runtime: new URL("../fixtures/repository-credentials/runtime.mjs", import.meta.url).href,
+        runtime: new URL("../fixtures/repository-credentials/runtime.ts", import.meta.url).href,
         key: tls.keyFile,
         cert: tls.certFile,
         adapter: pathToFileURL(

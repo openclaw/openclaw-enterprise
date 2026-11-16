@@ -22,7 +22,7 @@ import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
 import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
 import { withEnvironment } from "../helpers/environment.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { createOpenShellKubernetesFixture } from "../helpers/openshell-kubernetes-real.mjs";
 import { isArray } from "../helpers/egress-observation-values.ts";
 import { waitFor } from "../helpers/qa-utils.mjs";
@@ -183,12 +183,17 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
         const evidence = await createRunEvidence(t, { input: { images: {} }, controller: {} }, {});
         t.after(() => rm(evidence.directory, { recursive: true, force: true }));
         const abort = new AbortController();
-        const f = createOpenShellKubernetesFixture({
-          kubeconfigPath: marker,
-          kubernetesContext: "fixture",
-          commandTimeoutMs: item.commandTimeoutMs ?? (item.outcome === "deadline" ? 250 : 5000),
-          signal: abort.signal,
-        } as Parameters<typeof createOpenShellKubernetesFixture>[0]);
+        const fixtureWithTimeout = (commandTimeoutMs: number) =>
+          createOpenShellKubernetesFixture({
+            kubeconfigPath: marker,
+            kubernetesContext: "fixture",
+            commandTimeoutMs,
+            signal: abort.signal,
+          } as Parameters<typeof createOpenShellKubernetesFixture>[0]);
+        const custodyFixture = fixtureWithTimeout(item.commandTimeoutMs ?? 5000);
+        // Only the stalled gateway exec should compete with the short deadline.
+        const gatewayFixture =
+          item.outcome === "deadline" ? fixtureWithTimeout(250) : custodyFixture;
         let reads = 0;
         let logReads = 0;
         const custody = createCustodyTransitions({
@@ -229,7 +234,11 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
           sandboxId,
           supervisor,
           readSupervisor: () =>
-            f.resource("pod", ++reads === item.read ? marker : "supervisor", workspace),
+            custodyFixture.resource(
+              "pod",
+              ++reads === item.read ? marker : "supervisor",
+              workspace,
+            ),
         });
         await evidence.checkpoint("turn-start");
         if (item.writeFailure) {
@@ -251,12 +260,12 @@ export function registerConnectedEgressGatewayPreflightCases(): void {
         };
         try {
           const before = await custody.snapshot();
-          const turn = f.requestCodexTurnFromGatewayPod({
+          const turn = gatewayFixture.requestCodexTurnFromGatewayPod({
             namespace: workspace,
             gatewayPod: item.pod ?? "ok",
             providerModel: marker,
             prompt: marker,
-          } as Parameters<typeof f.requestCodexTurnFromGatewayPod>[0]);
+          } as Parameters<typeof gatewayFixture.requestCodexTurnFromGatewayPod>[0]);
           if (item.abort) {
             abort.abort(new DOMException(marker, "TimeoutError"));
           }

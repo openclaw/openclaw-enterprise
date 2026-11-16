@@ -52,6 +52,43 @@ type NetworkingApi = InstanceType<KubernetesSdk["NetworkingV1Api"]>;
 type NetworkPolicy = Awaited<ReturnType<NetworkingApi["readNamespacedNetworkPolicy"]>>;
 type ExecutionCluster = NonNullable<KubernetesComputeDriverOptions["executionCluster"]>;
 
+type TrustedProxyRefusalOptions = {
+  unsupportedField?: boolean;
+  userHeader?: string;
+  allowUsers?: readonly string[];
+  allowLoopback?: boolean | string;
+  identityScopes?: readonly string[];
+  allowRealIpFallback?: boolean;
+  trustedProxies?: readonly string[];
+};
+
+export function trustedProxyRefusalConfiguration({
+  unsupportedField,
+  userHeader = "x-occ-identity",
+  allowUsers = ["occ-workspace-files"],
+  allowLoopback,
+  identityScopes = ["operator.admin"],
+  allowRealIpFallback = true,
+  trustedProxies = ["10.42.0.0/16"],
+}: TrustedProxyRefusalOptions): OpenClawConfigurationDocument {
+  return {
+    gateway: {
+      auth: {
+        mode: "trusted-proxy",
+        ...(unsupportedField === undefined ? {} : { unsupportedField }),
+        trustedProxy: {
+          userHeader,
+          allowUsers: [...allowUsers],
+          ...(allowLoopback === undefined ? {} : { allowLoopback }),
+        },
+        identityScopes: { "occ-workspace-files": [...identityScopes] },
+      },
+      allowRealIpFallback,
+      trustedProxies: [...trustedProxies],
+    },
+  };
+}
+
 function sandboxSettings(document: OpenClawConfigurationDocument) {
   const apps = asRecord(asRecord(document.mcp)?.apps);
   const sandboxOrigin = apps?.sandboxOrigin;
