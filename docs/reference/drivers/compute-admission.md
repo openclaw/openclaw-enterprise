@@ -43,6 +43,29 @@ bundled Kubernetes Compute, Configuration save already checked the channel
 Secret bindings (below). A stored
 Agent that fails a check still reads; its next update must fix the pair.
 
+## Immutable runtime inputs
+
+After `admitRevision`, OCC may call `snapshotRuntimeInputs` on the admitted
+revision. The optional opaque string is stored as `compute.runtimeInputs` in
+the existing revision snapshot (printable ASCII, at most 4096 characters).
+It is private launch metadata; `compute.admission` keeps its existing format
+and authorization checks. SQL migration 0078 permits and validates the new
+optional field without adding a table or column.
+
+Kubernetes captures Gateway and agent images for locally managed dedicated
+Codex revisions without protected egress, including the Gateway image used
+for workspace initialization. Preparing or activating that same revision
+continues to use those images after Installation defaults change. A new
+revision captures the new images. It also records a non-image compatibility
+fingerprint for planned-replacement eligibility; that fingerprint does not
+relax authorization or make ordinary preparation refuse a changed Installation.
+
+Revisions without this metadata keep their existing behavior. A malformed or
+unknown snapshot version fails closed. Older readers retain the original
+admission string and ignore this optional metadata; older controllers do not
+provide the image-preservation guarantee. This capability alone does not enable
+completion waiting, change new-message admission, or extend deployment timeouts.
+
 ## Kubernetes Compute
 
 [Kubernetes Compute](kubernetes-compute.md) keeps these rules in
