@@ -150,14 +150,12 @@ async function cleanupFixture(
         refReads++;
         const sha = await remoteSha(branchRef);
         respond(sha ? 200 : 404, sha ? { object: { sha } } : {});
-      } else if (path.startsWith("commits/")) {
+      } else if (path === `commits/${ownedSha}`) {
         // Derive ownership evidence independently from Git objects on the remote.
-        const sha = path.slice("commits/".length);
-        assert.match(sha, /^[a-f0-9]{40}$/);
-        const parents = (await git(bare, "show", "-s", "--format=%P", sha)).trim();
-        const message = (await git(bare, "show", "-s", "--format=%B", sha)).trimEnd();
+        const parents = (await git(bare, "show", "-s", "--format=%P", ownedSha)).trim();
+        const message = (await git(bare, "show", "-s", "--format=%B", ownedSha)).trimEnd();
         const changes = (
-          await git(bare, "diff-tree", "--no-commit-id", "--name-status", "-r", sha)
+          await git(bare, "diff-tree", "--no-commit-id", "--name-status", "-r", ownedSha)
         ).trim();
         const files = changes.split("\n").map((change) => {
           const [status, filename] = change.split("\t");
@@ -172,9 +170,8 @@ async function cleanupFixture(
           files,
         });
       } else if (path === `contents/${file}`) {
-        const sha = url.searchParams.get("ref");
-        assert.ok(sha && /^[a-f0-9]{40}$/.test(sha));
-        const bytes = await git(bare, "show", `${sha}:${file}`);
+        assert.equal(url.searchParams.get("ref"), ownedSha);
+        const bytes = await git(bare, "show", `${ownedSha}:${file}`);
         respond(200, { content: Buffer.from(bytes, "utf8").toString("base64") });
       } else {
         respond(404, {});
