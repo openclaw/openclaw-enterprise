@@ -54,17 +54,17 @@ Controller build selection is independent.
 `k3d-otel`. `prepareLane` primes selected `sourceBuildFiles`;
 each OpenShell lane builds its stack. Tests inherit builder and epoch,
 not cache credentials; installers still build source.
-`openshell-build-inputs` resolves the `integration-main` controller base for
-`all`/`openshell` builds, including Local Setup. `openshell-image-cache` requires
-caller-source exports and successful cleanup before admission. Strict export
-errors propagate after sibling settlement; standalone exports remain best effort.
-Queued writers remain unordered by commit; mutable caches permit misses.
-`imageCacheObservation` counts steps/imports for Gateway Routing, Slack Live,
-Production TUI, `k3d-otel` and OpenShell, including alternate sources.
-It deduplicates step IDs; import lines do not prove hits. Loads may reuse probes.
+`openshell-build-inputs` resolves the `integration-main` controller base.
+`scripts/ci/warm-image-cache.ts` validates the base before Buildx setup, then
+builds the controller and runtime concurrently. Required export errors propagate
+after both builds settle. Standalone exports are best effort.
+The workflow requires a retained runtime tag and successful cleanup before
+OpenShell admission for the same source SHA. Queued writers can run out of
+commit order. `imageCacheObservation` counts distinct steps and cache imports;
+import lines alone cannot establish cache hits. Loads may reuse probes.
 
-Image lanes, First Agent Smoke, Docker Model Runtime, Gateway Routing and
-Production TUI fetch artifacts by repository/run/artifact IDs with `actions: read`.
+Images, First Agent Smoke, Docker Model Runtime, Gateway Routing and
+Production TUI fetch artifacts by repository/run/artifact ID with `actions: read`.
 
 Docker Model Runtime requires an artifact ID on producer success. Failure or
 skip selects standalone builds. Local import cancels three minutes before the
