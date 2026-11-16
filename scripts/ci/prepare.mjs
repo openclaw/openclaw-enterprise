@@ -7,7 +7,6 @@ import { promisify } from "node:util";
 import {
   appendFile,
   chmod,
-  lstat,
   link,
   mkdir,
   open,
@@ -32,7 +31,7 @@ import {
 } from "./runtime-artifact.ts";
 import { cleanupResourceIds } from "./cleanup.ts";
 import { withStateLock } from "./state-lock.ts";
-import { runPostgresAdmin } from "./postgres-admin.ts";
+import { createPostgresPreparation } from "./prepare-postgres.ts";
 import { createK3dFixtureStorage } from "./k3d-fixture-storage.ts";
 import { createK3dNodeImages } from "./k3d-node-images.ts";
 import {
@@ -84,7 +83,6 @@ import { prepareCodexSeccompProfile } from "../lib/codex-seccomp-k3d.ts";
 import { prepareOpenShell, validateOpenShellSelection } from "./openshell.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
 const runtimeDockerfile = join(repositoryRoot, "deploy/runtime/Dockerfile");
 const fixtureDockerContext = join(repositoryRoot, "tests/fixtures/kubernetes");
 const testSuitesManifestPath = join(repositoryRoot, "scripts/ci/test-suites.json");
@@ -196,12 +194,6 @@ function parseArgs(argv) {
     }
   }
   return args;
-}
-
-function databaseName(kind, label) {
-  const prefix =
-    kind === "failures" ? "openclaw_failures" : kind === "k8s" ? "openclaw_k8s" : "openclaw_ci";
-  return ownedName(prefix, label, { maxLength: 63, separator: "_" });
 }
 
 function laneName(lane) {
@@ -545,319 +537,6 @@ function repositoryCredentialsImageJournal(statePath, state) {
         await markResourceReady(statePath, state, resource);
       };
     },
-  };
-}
-
-function dockerArgsForPostgres(resource, ...args) {
-  return ["compose", "-f", resource.composeFile, "-p", resource.name, ...args];
-}
-
-function postgresUrl(role, password, port, database) {
-  return `postgresql://${role}:${password}@127.0.0.1:${port}/${database}`;
-}
-
-function quoteIdentifier(value) {
-  if (!/^[a-z0-9_]+$/.test(value)) {
-    throw new Error(`Unsafe PostgreSQL identifier: ${value}`);
-  }
-  return `"${value.replaceAll('"', '""')}"`;
-}
-
-function postgresResource(state) {
-  return state.resources.find((resource) => resource.kind === "compose-postgres");
-}
-
-async function ensurePostgresServer(statePath, state) {
-  const existing = postgresResource(state);
-  if (existing) {
-    return existing;
-  }
-  await commandAvailable(process.env.OCC_DOCKER_BIN ?? "docker", [
-    "version",
-    "--format",
-    "{{.Server.Version}}",
-  ]);
-  const project = ownedName("openclaw-ci-pg", state.prefix, { maxLength: 63, separator: "_" });
-  const directory = join(dirname(statePath), `${project}-bootstrap`);
-  try {
-    await lstat(directory);
-    throw new Error(`Refusing existing PostgreSQL bootstrap directory: ${directory}`);
-  } catch (error) {
-    if (error.code !== "ENOENT") {
-      throw error;
-    }
-  }
-  const resource = addResource(state, "compose-postgres", {
-    name: project,
-    directory,
-    directoryCreated: false,
-    initSqlCreated: false,
-    composeFile: composePostgresFile,
-    // Zero asks Docker to allocate in its own host namespace. Keep this pending
-    // value until discovery succeeds so partial startup can still be cleaned.
-    port: 0,
-  });
-  await writeState(statePath, state);
-  try {
-    await mkdir(directory, { mode: 0o700 });
-  } catch (error) {
-    state.resources = state.resources.filter(({ id }) => id !== resource.id);
-    await writeState(statePath, state);
-    throw error;
-  }
-  // Cleanup must not claim a competing directory if creation or this save fails.
-  resource.directoryCreated = true;
-  await writeState(statePath, state);
-  // PostgreSQL reads this public bootstrap as its container user, not the checkout owner.
-  const initSql = join(directory, "init-local.sql");
-  await writeFile(initSql, await readFile(join(repositoryRoot, "migrations/init-local.sql")), {
-    flag: "wx",
-    mode: 0o600,
-  });
-  resource.initSqlCreated = true;
-  await writeState(statePath, state);
-  await chmod(initSql, 0o644);
-  try {
-    await execFile(
-      process.env.OCC_DOCKER_BIN ?? "docker",
-      dockerArgsForPostgres(resource, "up", "-d", "--wait"),
-      { env: { OCC_POSTGRES_PORT: "0", OPENCLAW_CI_POSTGRES_INIT_SQL: initSql } },
-    );
-  } catch (error) {
-    if (
-      /all predefined address pools have been fully subnetted/i.test(
-        `${error.stderr ?? ""}\n${error.stdout ?? ""}`,
-      )
-    ) {
-      const quotedStatePath = `'${statePath.replaceAll("'", "'\\''")}'`;
-      error.message +=
-        `\nDocker subnet pools are exhausted. Clean this run's partial resources with:\n` +
-        `node scripts/ci/cleanup.ts --state ${quotedStatePath}\n` +
-        `Retain the state if cleanup fails. On a shared host, ask the host administrator ` +
-        `to coordinate cleanup of confirmed abandoned projects with their owners; ` +
-        `do not prune shared networks or volumes. See docs/testing/postgresql.md#subnet-pool-exhaustion.`;
-    }
-    throw error;
-  }
-  const docker = process.env.OCC_DOCKER_BIN ?? "docker";
-  // Standalone podman-compose does not accept a service argument to ps.
-  const lookup =
-    basename(docker) === "podman"
-      ? await execFile(docker, [
-          "ps",
-          "--no-trunc",
-          "--filter",
-          `label=com.docker.compose.project=${resource.name}`,
-          "--filter",
-          "label=com.docker.compose.service=postgres",
-          "--format",
-          "{{.ID}}",
-        ])
-      : await execFile(docker, dockerArgsForPostgres(resource, "ps", "-q", "postgres"), {
-          env: { OCC_POSTGRES_PORT: "0", OPENCLAW_CI_POSTGRES_INIT_SQL: initSql },
-        });
-  const container = lookup.stdout.trim();
-  if (!/^[a-f0-9]{64}$/.test(container)) {
-    throw new Error("Expected one owned PostgreSQL container for port discovery.");
-  }
-  const cluster = state.resources.find(
-    (entry) => entry.kind === "k3d-cluster" && entry.status === "ready",
-  );
-  if (cluster) {
-    // Linux Docker can reassign an automatic host port when a network attaches.
-    // Finish this topology before publishing the port or opening test pools.
-    const networks = JSON.parse(
-      (
-        await execFile(docker, [
-          "inspect",
-          "--format",
-          "{{json .NetworkSettings.Networks}}",
-          `k3d-${cluster.name}-server-0`,
-        ])
-      ).stdout,
-    );
-    const network = Object.keys(networks).find((name) => name.startsWith(`k3d-${cluster.name}`));
-    if (!network) {
-      throw new Error("The owned k3d network is unavailable for PostgreSQL.");
-    }
-    await execFile(docker, ["network", "connect", network, container]);
-  }
-  const output = await execFile(docker, [
-    "inspect",
-    "--format",
-    "{{json .NetworkSettings.Ports}}",
-    container,
-  ]);
-  let ports;
-  try {
-    ports = JSON.parse(output.stdout);
-  } catch {
-    throw new Error("Invalid PostgreSQL port discovery response.");
-  }
-  const bindings = ports?.["5432/tcp"];
-  const port = Number(bindings?.[0]?.HostPort);
-  if (
-    !Array.isArray(bindings) ||
-    bindings.length !== 1 ||
-    bindings[0]?.HostIp !== "127.0.0.1" ||
-    typeof bindings[0]?.HostPort !== "string" ||
-    !/^[1-9][0-9]{0,4}$/.test(bindings[0].HostPort) ||
-    port > 65535 ||
-    port === 55432
-  ) {
-    throw new Error("Expected one loopback PostgreSQL port outside developer port 55432.");
-  }
-  resource.port = port;
-  await writeState(statePath, state);
-  await postgresAdmin(resource, { statements: ciPostgresSettings, stage: "postgres-settings" });
-  await markResourceReady(statePath, state, resource);
-  return resource;
-}
-
-// The lane's server is disposable (cleanup removes it with its volume), so it gives up
-// durability: commits stop waiting for WAL flushes, and the checkpoint each test
-// database's DROP DATABASE waits for skips its fsyncs. PostgreSQL containers wrote most
-// of a loaded runner's IO. A host crash could now corrupt the data and a server crash
-// could lose the last few hundred milliseconds of acknowledged commits; nothing kills
-// this server or reads it after a crash. The reload is requested before any test
-// database exists. Developers' compose.postgres.yaml server keeps PostgreSQL's defaults.
-const ciPostgresSettings = Object.freeze([
-  "ALTER SYSTEM SET fsync = off",
-  "ALTER SYSTEM SET synchronous_commit = off",
-  "ALTER SYSTEM SET full_page_writes = off",
-  "SELECT pg_catalog.pg_reload_conf()",
-]);
-
-// Administrative SQL on the lane's server, over its published port (postgres-admin.ts). A
-// failed database step carries the closed diagnostic contract run-tests.ts reports.
-async function postgresAdmin(server, { database, statements, stage }) {
-  try {
-    await runPostgresAdmin({ port: server.port, database, statements });
-  } catch (error) {
-    if (["database-create", "database-schema"].includes(stage)) {
-      error.code = "CI_PREPARATION_COMMAND_FAILED";
-      error.stage = stage;
-    }
-    throw error;
-  }
-}
-
-// A template must be a ready database this state owns on the same server. Nothing may
-// stay connected to it: PostgreSQL refuses to copy a database that has other sessions.
-function templateDatabase(state, server, templateUrl) {
-  let name;
-  try {
-    name = new URL(templateUrl).pathname.slice(1);
-  } catch {
-    throw new Error("The template must be a PostgreSQL URL that prepareFile returned.");
-  }
-  const template = state.resources.find(
-    (resource) =>
-      resource.kind === "postgres-database" &&
-      resource.name === name &&
-      resource.owner === state.prefix &&
-      resource.status === "ready" &&
-      resource.composeProject === server.name &&
-      resource.port === server.port,
-  );
-  if (!template) {
-    throw new Error("The template must be a ready database prepared in this state.");
-  }
-  return template.name;
-}
-
-async function createAndMigrateDatabase(
-  statePath,
-  state,
-  { kind = "ci", label, requireExistingServer = false, template },
-) {
-  const existingServer = postgresResource(state);
-  if (requireExistingServer && !existingServer) {
-    throw new Error(
-      "prepareFile requires prepareLane to create the owned PostgreSQL server first.",
-    );
-  }
-  const server = existingServer ?? (await ensurePostgresServer(statePath, state));
-  if (server.status !== "ready") {
-    throw new Error("PostgreSQL server is not ready; clean up the failed preparation first.");
-  }
-  const source =
-    template === undefined
-      ? await laneTemplateDatabase(statePath, state, server, kind)
-      : templateDatabase(state, server, template);
-  return createDatabase(statePath, state, server, { kind, label, source });
-}
-
-// The server's migrated database, one per kind, that each file's database of that kind
-// copies. Migrating takes a pnpm process and seconds of CPU, and it ran once per file
-// under the CI state lock, where each test's own copy waited behind it: a worker revision
-// file's first test waited for the runner to migrate the files that start with it
-// (finding 2178). A copy is the same database (schemas, their ACLs, every migration).
-// PostgreSQL copies only a database without sessions, and nothing connects to the
-// template: its URL is never handed out. Lane cleanup drops it with the other databases.
-async function laneTemplateDatabase(statePath, state, server, kind) {
-  const existing = state.resources.find(
-    (resource) =>
-      resource.kind === "postgres-database" &&
-      resource.laneTemplate === kind &&
-      resource.owner === state.prefix &&
-      resource.status === "ready" &&
-      resource.composeProject === server.name &&
-      resource.port === server.port,
-  );
-  if (existing) {
-    return existing.name;
-  }
-  const created = await createDatabase(statePath, state, server, {
-    kind,
-    label: "lane_template",
-    laneTemplate: kind,
-  });
-  return created.name;
-}
-
-async function createDatabase(statePath, state, server, { kind, label, source, laneTemplate }) {
-  const name = databaseName(kind, label);
-  const resource = addResource(state, "postgres-database", {
-    name,
-    composeProject: server.name,
-    port: server.port,
-    ...(laneTemplate === undefined ? {} : { laneTemplate }),
-  });
-  await writeState(statePath, state);
-
-  const grant = `GRANT CREATE ON DATABASE ${quoteIdentifier(name)} TO occ_migrator;`;
-  await postgresAdmin(server, {
-    statements: [
-      `CREATE DATABASE ${quoteIdentifier(name)}${source === undefined ? "" : ` TEMPLATE ${quoteIdentifier(source)}`}`,
-      // A copy carries the template's schemas, their ACLs and every migration, but not
-      // the database-level grant, which lives in pg_database, so it is granted from here.
-      // Each statement is its own request (CREATE DATABASE refuses a transaction block)
-      // and the first error stops the rest. Every test's copy runs this.
-      ...(source === undefined ? [] : [grant]),
-    ],
-    stage: "database-create",
-  });
-  const migrationUrl = postgresUrl("occ_migrator", "occ-migrator-local", server.port, name);
-  if (source === undefined) {
-    await postgresAdmin(server, {
-      database: name,
-      statements: [
-        `${grant} CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
-      ],
-      stage: "database-schema",
-    });
-    await execFile(process.env.OPENCLAW_CI_COREPACK_BIN ?? "corepack", ["pnpm", "db:migrate"], {
-      env: { OCC_MIGRATION_DATABASE_URL: migrationUrl },
-      stage: "database-migrate",
-    });
-  }
-  await markResourceReady(statePath, state, resource);
-  return {
-    name,
-    appUrl: postgresUrl("occ_app", "occ-app-local", server.port, name),
-    migrationUrl,
-    resourceId: resource.id,
   };
 }
 
@@ -1343,6 +1022,10 @@ const nodeImages = createK3dNodeImages({
 
 /** @type {import("./k3d-preparation.ts").PreparationJournal} */
 const preparationJournal = { addResource, writeState, markResourceReady };
+const { ensurePostgresServer, createAndMigrateDatabase } = createPostgresPreparation(
+  repositoryRoot,
+  preparationJournal,
+);
 const { ensureK3dCluster, k3dStage } = createK3dPreparation({
   ...preparationJournal,
   progress,

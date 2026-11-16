@@ -116,7 +116,7 @@ reads bounded metadata; results and diagnostics retain only their preparation's 
 Missing metadata records `unavailable`; image policy is unchanged.
 Extraction journals IDs before removal. Cleanup removes containers and anonymous volumes. Journal and cleanup errors fail preparation; unresolved resources retain receipts.
 
-`scripts/ci/prepare.mjs:ensurePostgresServer` journals exclusive bootstrap-directory
+`scripts/ci/prepare-postgres.ts:ensurePostgresServer` journals exclusive bootstrap-directory
 and SQL-copy ownership. It refuses existing paths and retires failed directory
 records. Its container-readable `migrations/init-local.sql` copy is selected by
 `OPENCLAW_CI_POSTGRES_INIT_SQL`.
