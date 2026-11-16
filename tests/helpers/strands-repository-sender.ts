@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, X509Certificate } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, readFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
@@ -88,32 +88,17 @@ export async function strandsRepositorySenderFixture(
   } = origin;
   const journal = join(root, "journal");
   await mkdir(journal, { mode: 0o700 });
-  // OpenSSL uses one serial file per CA, so issue leaves in sequence.
-  const [serverLeaf, clientLeaf, unrelatedLeaf] = [
-    await signedLeaf(root, ca, {
-      name: "sender",
-      commonName: "Sender",
-      subjectAltName: "IP:127.0.0.1",
-      keyPem: undefined,
-    }),
-    await signedLeaf(root, ca, {
-      name: "client",
-      commonName: "Execution",
-      subjectAltName: undefined,
-      usage: "clientAuth",
-      keyPem: undefined,
-    }),
-    await signedLeaf(root, ca, {
-      name: "unrelated",
-      commonName: "Other execution",
-      subjectAltName: undefined,
-      usage: "clientAuth",
-      keyPem: undefined,
-    }),
-  ];
-  const key = sha(
-    new X509Certificate(clientLeaf.cert).publicKey.export({ type: "spki", format: "der" }),
-  );
+  const serverLeaf = await signedLeaf(root, ca, {
+    name: "sender",
+    commonName: "Sender",
+    subjectAltName: "IP:127.0.0.1",
+    keyPem: undefined,
+  });
+  // Box presents no client certificate. The paired Driver mints one bearer per execution and
+  // the host hands it to Box as a phantom credential, so the request carries the real value.
+  const bearer = randomBytes(32).toString("base64url");
+  const unrelatedBearer = randomBytes(32).toString("base64url");
+  const key = sha(bearer);
   const [boot, proc] = await Promise.all([
     readFile("/proc/sys/kernel/random/boot_id", "utf8"),
     readFile(`/proc/${originalPid}/stat`, "utf8"),
@@ -160,7 +145,7 @@ export async function strandsRepositorySenderFixture(
         providerId: "provider",
         attachmentEpoch: "one-attachment",
         processInstanceId: `${original.bootId}:${original.pid}:${original.startTicks}`,
-        networkInstanceId: `mtls-sha256:${key}`,
+        networkInstanceId: `box-phantom-sha256:${key}`,
         authorization: "online-request",
         deliveryProfile: "github_repository",
       },
@@ -171,7 +156,7 @@ export async function strandsRepositorySenderFixture(
     route: { revisionId: execution.revisionId, fence: 3, observed: installation },
     version,
     original,
-    clientKeySha256: key,
+    executionBearerSha256: key,
   };
   const material: ProtectedGitHubRepositoryMaterial = {
     scope: "github-repository",
@@ -239,12 +224,9 @@ export async function strandsRepositorySenderFixture(
       },
     });
     const binding = bind ? await example.bindRepositoryGit(authority) : undefined;
-    const server = createServer(
-      { ...serverLeaf, ca: caBytes, requestCert: true, rejectUnauthorized: true },
-      (req, res) => {
-        void example.handle(req, res);
-      },
-    );
+    const server = createServer({ key: serverLeaf.key, cert: serverLeaf.cert }, (req, res) => {
+      void example.handle(req, res);
+    });
     const port = await listen(t, server);
     t.after(() => binding?.close());
     const remote = `https://127.0.0.1:${port}/repository.git`;
@@ -252,9 +234,7 @@ export async function strandsRepositorySenderFixture(
       git(
         [
           "-c",
-          `http.sslCert=${clientLeaf.certPath}`,
-          "-c",
-          `http.sslKey=${clientLeaf.keyPath}`,
+          `http.extraHeader=Authorization: Bearer ${bearer}`,
           "-c",
           `http.sslCAInfo=${ca.caPath}`,
           "-c",
@@ -266,7 +246,7 @@ export async function strandsRepositorySenderFixture(
     const call = (
       path: string,
       input?: object,
-      leaf = clientLeaf,
+      credential: string | null = bearer,
       gitProtocol?: string,
     ): Promise<{ status: number; body: Buffer }> =>
       new Promise((resolve, reject) => {
@@ -280,21 +260,21 @@ export async function strandsRepositorySenderFixture(
             port,
             path,
             method: body ? "POST" : "GET",
-            ...leaf,
             ca: caBytes,
             agent: false,
             rejectUnauthorized: true,
-            ...(body
-              ? {
-                  headers: {
+            headers: {
+              ...(credential === null ? {} : { authorization: `Bearer ${credential}` }),
+              ...(body
+                ? {
                     "content-type": Buffer.isBuffer(input)
                       ? "application/x-git-receive-pack-request"
                       : "application/json",
                     "content-length": body.length,
                     ...(gitProtocol === undefined ? {} : { "git-protocol": gitProtocol }),
-                  },
-                }
-              : {}),
+                  }
+                : {}),
+            },
           },
           (res) => {
             void readBody(res).then(
@@ -306,12 +286,36 @@ export async function strandsRepositorySenderFixture(
         req.once("error", reject);
         req.end(body);
       });
-    return { remote, remoteGit, call, binding };
+    const raw = (
+      path: string,
+      headers: Record<string, string | string[]>,
+    ): Promise<{ status: number; body: Buffer }> =>
+      new Promise((resolve, reject) => {
+        const req = request(
+          { host: "127.0.0.1", port, path, method: "GET", ca: caBytes, agent: false, headers },
+          (res) => {
+            void readBody(res).then(
+              (bytes) => resolve({ status: res.statusCode ?? 0, body: bytes }),
+              reject,
+            );
+          },
+        );
+        req.once("error", reject);
+        req.end();
+      });
+    return { remote, remoteGit, call, raw, binding };
+  };
+  /** The host reports a new `box run` for this execution; the committed recipient is unchanged. */
+  const replaceExecution = (): string => {
+    const replacement = randomBytes(32).toString("base64url");
+    (snapshot as { executionBearerSha256: string }).executionBearerSha256 = sha(replacement);
+    return replacement;
   };
   return {
     root,
     execution,
     snapshot,
+    replaceExecution,
     connections: origin.connections,
     journal,
     repoPath,
@@ -322,7 +326,8 @@ export async function strandsRepositorySenderFixture(
     authorizations,
     writes: origin.writes,
     install,
-    unrelatedLeaf,
+    bearer,
+    unrelatedBearer,
     material,
     publishCommit: origin.publishCommit,
   };

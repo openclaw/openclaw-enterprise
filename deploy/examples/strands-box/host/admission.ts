@@ -32,6 +32,8 @@ export interface Pending {
     readonly planSha256: string;
     readonly workspaceVolume: { readonly claimUid: string; readonly volumeName: string };
   };
+  /** The operator approves Box egress to the fixed-repository sender with the exact plan. */
+  repositorySender?: { readonly url: string; readonly address: string };
   counts: { environment: number; files: number; mounts: number };
   controller: ControllerIdentity;
 }

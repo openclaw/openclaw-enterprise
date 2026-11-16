@@ -42,11 +42,13 @@ import {
 import {
   canonical,
   digest,
+  observedView,
   profileDigest,
   parseOwner,
   reserveExecution,
   stockHarnessCommand,
   validateInstalledGrants,
+  withRepositorySender,
 } from "../../deploy/examples/strands-box/host/control.ts";
 import type { serveInstalledControl } from "../../deploy/examples/strands-box/host/control.ts";
 import {
@@ -56,7 +58,11 @@ import {
   isApproved,
 } from "../../deploy/examples/strands-box/host/admission.ts";
 import type { Pending } from "../../deploy/examples/strands-box/host/admission.ts";
-import { parseRoute, policy } from "../../deploy/examples/strands-box/host/egress.ts";
+import {
+  parseRoute,
+  policy,
+  repositorySenderCredential,
+} from "../../deploy/examples/strands-box/host/egress.ts";
 import { hostConfig, smokeInput, start } from "../../deploy/examples/strands-box/host/launch.ts";
 import {
   WORKSPACE_MARKER,
@@ -1116,6 +1122,251 @@ test(
       if (canRemove) {
         rmSync(root, { recursive: true, force: true });
       }
+    }
+  },
+);
+
+test("the repository sender route pins one private address and the sender's exact requests", () => {
+  const route = parseRoute(
+    { url: "https://sender.example.test:9443/", address: "10.4.5.6" },
+    "repository-sender",
+  );
+  const rules = policy([route]);
+  assert.match(
+    rules,
+    /context.input.host == "sender.example.test" && context.input.port == 9443 && !\(context.input has ip6\) && \(!\(context.input has ip4\) \|\| \(context.input has ip4 && context.input.ip4 == "10.4.5.6"\)\)/,
+  );
+  const requests = [
+    ...rules.matchAll(/context.input.method == "([A-Z]+)" && context.input.path == "([^"]+)"/g),
+  ].map(([, method, path]) => `${method} ${path}`);
+  assert.deepEqual(requests, [
+    "GET /repository.git/info/refs",
+    "POST /repository.git/git-upload-pack",
+    "POST /repository.git/git-receive-pack",
+    "POST /draft-pull",
+  ]);
+  assert.equal(rules.match(/net:connect/g)?.length, 1);
+  assert.equal(rules.match(/intercepted == true/g)?.length, 4);
+  const credential = repositorySenderCredential(route);
+  assert.equal(
+    credential,
+    [
+      "[egress.repository-sender]",
+      'destinations = ["sender.example.test:9443"]',
+      'secret.ref = "env://OCE_REPOSITORY_SENDER_BEARER"',
+      'secret.placement = "header"',
+      'secret.header = "Authorization"',
+      'secret.prefix = "Bearer "',
+      'secret.inject = "phantom"',
+      "",
+    ].join("\n"),
+  );
+  for (const refused of [
+    { url: "https://sender.example.test:9443/repository.git", address: "10.4.5.6" },
+    { url: "http://sender.example.test:9443/", address: "10.4.5.6" },
+    { url: "https://sender.example.test:9443/", address: "8.8.8.8" },
+    { url: "https://10.4.5.7:9443/", address: "10.4.5.6" },
+    { url: "https://sender.example.test:9443/?x=1", address: "10.4.5.6" },
+    { url: "https://user@sender.example.test:9443/", address: "10.4.5.6" },
+  ]) {
+    assert.throws(() => parseRoute(refused, "repository-sender"), {
+      message: "invalid_fixed_egress",
+    });
+  }
+  assert.throws(() => repositorySenderCredential({ ...route, kind: "controlled-inference" }), {
+    message: "invalid_fixed_egress",
+  });
+});
+
+test("a sender bearer is admitted only with its operator route and only once", () => {
+  const route = parseRoute(
+    { url: "https://sender.example.test:9443/", address: "10.4.5.6" },
+    "repository-sender",
+  );
+  const bearer = randomBytes(32).toString("base64url");
+  const input = { command: [], environment: {}, readOnly: [], writable: [], egress: [] };
+  assert.equal(withRepositorySender(undefined, input, undefined), input);
+  assert.deepEqual(withRepositorySender(route, input, bearer), {
+    ...input,
+    egress: [route],
+    repositorySenderBearer: bearer,
+  });
+  for (const [selected, value, launch] of [
+    [undefined, bearer, input],
+    [route, undefined, input],
+    [route, `${bearer}=`, input],
+    [route, bearer.slice(1), input],
+    [route, 7, input],
+    [route, bearer, { ...input, egress: [route] }],
+  ] as const) {
+    assert.throws(() => withRepositorySender(selected, launch, value), {
+      message: "repository_sender_bearer_unexpected_or_missing",
+    });
+  }
+  const view = {
+    owner: parseOwner({
+      driverId: "box",
+      implementation: "@openclaw-enterprise/example-strands-box-driver@0.1.0",
+      namespaceId: "ns",
+      namespaceName: "ns",
+      agentId: "agent",
+      revisionId: "revision",
+    }),
+    requirementsDigest: "0".repeat(64),
+    executionId: "execution",
+    endpoint: { url: "wss://box.example.invalid/", workspaceRoot: "/home/node/workspace" },
+    repositorySender: { bearerSha256: createHash("sha256").update(bearer).digest("hex") },
+  };
+  const box = { bootId: "boot", pid: 42, startTicks: "99" };
+  assert.deepEqual(
+    observedView({ view: { ...view, state: "running" }, execution: { boxProcess: () => box } }),
+    {
+      ...view,
+      state: "running",
+      repositorySender: { ...view.repositorySender, processInstanceId: "boot:42:99" },
+    },
+  );
+  // A starting, failed or exited run reports no process to bind.
+  for (const [state, current] of [
+    ["starting", box],
+    ["failed", box],
+    ["running", undefined],
+  ] as const) {
+    assert.deepEqual(
+      observedView({ view: { ...view, state }, execution: { boxProcess: () => current } }),
+      { ...view, state },
+    );
+  }
+  assert.ok(
+    !JSON.stringify(observedView({ view: { ...view, state: "running" } })).includes(bearer),
+  );
+});
+
+test(
+  "the host gives the sender bearer only to box run and never writes it to disk",
+  { skip: unsupported },
+  async () => {
+    const directory = temporary();
+    const runtimeDir = join(directory, "run");
+    const workspace = join(directory, "workspace");
+    const agentBuildDir = join(directory, "build");
+    for (const path of [runtimeDir, workspace, agentBuildDir]) {
+      mkdirSync(path, { mode: 0o700 });
+    }
+    for (const file of ["box-agent.js", "transport.js", "diagnostics.js"]) {
+      writeFileSync(join(agentBuildDir, file), "", { mode: 0o600 });
+    }
+    const boxBin = join(directory, "fixture-box");
+    // The fixture records the config, its policy and only a digest of the bearer it received.
+    writeFileSync(
+      boxBin,
+      '#!/bin/sh\ncp -- "$3" ../generated-box.toml || exit 3\n' +
+        'policy=$(sed -n \'s/^policy = "\\(.*\\)"$/\\1/p\' "$3")\n' +
+        'cp -- "$policy" ../generated-policy.dw || exit 4\n' +
+        "printf '%s' \"$OCE_REPOSITORY_SENDER_BEARER\" | sha256sum > ../bearer.sha256\n" +
+        "env | cut -d= -f1 | sort > ../box-env\n" +
+        "sleep 2\nexit 2\n",
+      { mode: 0o700 },
+    );
+    const node = realpathSync(process.execPath);
+    const config = hostConfig({
+      boxBin,
+      nodeBin: node,
+      codexBin: node,
+      agentBuildDir,
+      runtimeDir,
+      workspace,
+      read: [],
+      exec: [],
+      linuxPreview: true,
+    });
+    const route = parseRoute(
+      { url: "https://sender.example.test:9443/", address: "10.4.5.6" },
+      "repository-sender",
+    );
+    const bearer = randomBytes(32).toString("base64url");
+    const { input } = smokeInput(config);
+    try {
+      for (const refused of [
+        { ...input, egress: [route] },
+        { ...input, repositorySenderBearer: bearer },
+        { ...input, egress: [route, route], repositorySenderBearer: bearer },
+        { ...input, egress: [route], repositorySenderBearer: "short" },
+        {
+          ...input,
+          environment: { ...input.environment, OCE_REPOSITORY_SENDER_BEARER: "x" },
+          egress: [route],
+          repositorySenderBearer: bearer,
+        },
+      ]) {
+        const scratch = join(directory, `refused-${randomBytes(4).toString("hex")}`);
+        mkdirSync(scratch, { mode: 0o700 });
+        const refusedExecution = start({ ...config, runtimeDir: scratch }, refused);
+        await assert.rejects(refusedExecution.ready, { message: "startup_refused:stage-inputs" });
+        await refusedExecution.done.catch(() => undefined);
+        assert.equal(refusedExecution.boxProcess(), undefined);
+      }
+      const execution = start(config, {
+        ...input,
+        egress: [route],
+        repositorySenderBearer: bearer,
+      });
+      const deadline = Date.now() + 5_000;
+      let observed: ReturnType<typeof execution.boxProcess>;
+      while ((observed = execution.boxProcess()) === undefined && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.ok(observed);
+      assert.equal(
+        observed.startTicks,
+        readFileSync(`/proc/${observed.pid}/stat`, "utf8")
+          .slice(readFileSync(`/proc/${observed.pid}/stat`, "utf8").lastIndexOf(") ") + 2)
+          .split(/\s+/)[19],
+      );
+      assert.equal(observed.bootId, readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim());
+      await assert.rejects(execution.ready, { message: "startup_refused:wait-original-native" });
+      assert.equal(await execution.done, 2);
+      assert.equal(execution.boxProcess(), undefined, "an exited box run is not a recipient");
+      const generated = readFileSync(join(directory, "generated-box.toml"), "utf8");
+      assert.match(
+        generated,
+        /\n\[egress\.repository-sender\]\ndestinations = \["sender\.example\.test:9443"\]\nsecret\.ref = "env:\/\/OCE_REPOSITORY_SENDER_BEARER"\n/,
+      );
+      assert.doesNotMatch(generated, /\[agent\.env\][^[]*OCE_REPOSITORY_SENDER_BEARER/);
+      assert.match(
+        readFileSync(join(directory, "generated-policy.dw"), "utf8"),
+        /context.input.method == "POST" && context.input.path == "\/repository.git\/git-receive-pack"/,
+      );
+      assert.equal(
+        readFileSync(join(directory, "bearer.sha256"), "utf8").split(" ")[0],
+        createHash("sha256").update(bearer).digest("hex"),
+      );
+      assert.deepEqual(
+        readFileSync(join(directory, "box-env"), "utf8")
+          .trim()
+          .split("\n")
+          .filter((name) => !["PWD", "SHLVL", "_", "OLDPWD"].includes(name)),
+        ["EXPERIMENTAL_LINUX_SUPPORT", "HOME", "LANG", "OCE_REPOSITORY_SENDER_BEARER", "PATH"],
+      );
+      // Nothing the host wrote (runtime records, box.toml, policy, staged inputs) holds it.
+      const files: string[] = [];
+      const walk = (path: string) => {
+        for (const entry of readdirSync(path, { withFileTypes: true })) {
+          const child = join(path, entry.name);
+          if (entry.isDirectory()) {
+            walk(child);
+          } else if (entry.isFile()) {
+            files.push(child);
+          }
+        }
+      };
+      walk(directory);
+      assert.ok(files.length > 3);
+      for (const file of files) {
+        assert.ok(!readFileSync(file).includes(bearer), file);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   },
 );

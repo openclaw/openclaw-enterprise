@@ -101,11 +101,9 @@ export async function planRequest(
   repository: RepositorySelection,
   signal: AbortSignal,
 ): Promise<Plan | undefined> {
-  if (
-    message.httpVersion !== "1.1" ||
-    header(message, "authorization") !== undefined ||
-    header(message, "content-encoding") !== undefined
-  ) {
+  // The handler authenticated and consumed the one execution bearer before planning. No
+  // caller header is forwarded: every outbound header below is constructed by the sender.
+  if (message.httpVersion !== "1.1" || header(message, "content-encoding") !== undefined) {
     return;
   }
   if (message.url === "/draft-pull" && message.method === "POST") {
@@ -185,6 +183,9 @@ export async function planRequest(
   if (!discover && body.length === 0) {
     return;
   }
+  if (!upload && !discover && !exactPushCommands(body, repository)) {
+    return;
+  }
   return {
     operation: upload
       ? discover
@@ -200,6 +201,73 @@ export async function planRequest(
     body,
     expectedContentType: `application/x-${service}-${discover ? "advertisement" : "result"}`,
   };
+}
+
+const ZERO = /^0+$/;
+
+function pktLine(body: Buffer, offset: number): { line?: Buffer; next: number } | undefined {
+  const size = body.subarray(offset, offset + 4).toString("latin1");
+  if (!/^[0-9a-f]{4}$/.test(size)) {
+    return;
+  }
+  const length = Number.parseInt(size, 16);
+  if (length === 0) {
+    return { next: offset + 4 };
+  }
+  if (length < 5 || offset + length > body.length) {
+    return;
+  }
+  const line = body.subarray(offset + 4, offset + length);
+  return { line: line.at(-1) === 0x0a ? line.subarray(0, -1) : line, next: offset + length };
+}
+
+/**
+ * Exact-ref policy for receive-pack: the command list may update only `refs/heads/<head>`,
+ * never create or delete another ref or touch the fixed base. Push certificates and push
+ * options are refused so that nothing after the command list can carry another instruction.
+ */
+export function exactPushCommands(body: Buffer, repository: RepositorySelection): boolean {
+  const target = `refs/heads/${repository.head}`;
+  let offset = 0;
+  let commands = 0;
+  for (let count = 0; count < 64; count++) {
+    const packet = pktLine(body, offset);
+    if (packet === undefined) {
+      return false;
+    }
+    offset = packet.next;
+    if (packet.line === undefined) {
+      return commands === 1;
+    }
+    const text = packet.line.toString("latin1");
+    if (commands === 0 && /^shallow [0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(text)) {
+      continue;
+    }
+    if (commands > 0) {
+      return false;
+    }
+    const nul = text.indexOf("\0");
+    if (nul < 0) {
+      return false;
+    }
+    const capabilities = text.slice(nul + 1).split(" ");
+    const command = /^([0-9a-f]{40}|[0-9a-f]{64}) ([0-9a-f]{40}|[0-9a-f]{64}) (\S+)$/.exec(
+      text.slice(0, nul),
+    );
+    if (
+      command === null ||
+      command[1]!.length !== command[2]!.length ||
+      ZERO.test(command[2]!) ||
+      command[3] !== target ||
+      capabilities.some(
+        (capability) => capability === "push-options" || capability.startsWith("push-cert"),
+      )
+    ) {
+      return false;
+    }
+    commands++;
+  }
+  return false;
 }
 
 export type PlannedRequest = NonNullable<Awaited<ReturnType<typeof planRequest>>>;

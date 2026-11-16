@@ -5,7 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
-import { CONTROLLED_INFERENCE_MARKER, parseRoute } from "./egress.ts";
+import { CONTROLLED_INFERENCE_MARKER, parseRoute, REPOSITORY_SENDER_BEARER } from "./egress.ts";
 import type { EgressRoute } from "./egress.ts";
 import {
   ensureEmpty,
@@ -71,9 +71,11 @@ interface InstalledConfig extends HostConfig {
   workspaceNode?: EgressRoute;
   separateWorkspaceNode?: NodeInstallation;
   controlledInference?: EgressRoute;
+  /** Box egress to the Worker's fixed-repository sender, authenticated by a phantom bearer. */
+  repositorySender?: EgressRoute;
 }
 
-interface RecordView {
+export interface RecordView {
   owner: Owner;
   requirementsDigest: string;
   executionId: string;
@@ -82,6 +84,12 @@ interface RecordView {
   workspaceNodeMode?: NodeInstallation["mode"];
   workspaceVolume?: NodeInstallation["workspaceVolume"];
   generationSha256?: string;
+  /**
+   * Host-observed sender identity of this execution: the digest of the bearer this host gave to
+   * `box run` (never the bearer) and `bootId:pid:startTicks` of that `box run` process while it
+   * is the same live process. The Driver binds both into the recipient it reports.
+   */
+  repositorySender?: { bearerSha256: string; processInstanceId?: string };
 }
 
 interface LaunchPlan extends StartInput {
@@ -133,6 +141,7 @@ function startInstalledExecution(config: InstalledConfig, plan: LaunchPlan): Exe
   return {
     ready: Promise.all([box.ready, node]).then(([ready]) => ready),
     done: Promise.all([boxDone, nodeDone]).then(([code]) => code),
+    boxProcess: () => box.boxProcess(),
     async stop() {
       abort.abort();
       const [code] = await Promise.all([box.stop(), nodeDone]);
@@ -283,6 +292,7 @@ function installedConfig(value: unknown): InstalledConfig {
     "workspaceNode",
     "separateWorkspaceNode",
     "controlledInference",
+    "repositorySender",
   ]);
   if (config.workspace !== WORKSPACE) throw new Error("unsupported_workspace_path");
   const endpoint = object(data.endpoint);
@@ -400,6 +410,9 @@ function installedConfig(value: unknown): InstalledConfig {
     ...(data.controlledInference === undefined
       ? {}
       : { controlledInference: parseRoute(data.controlledInference, "controlled-inference") }),
+    ...(data.repositorySender === undefined
+      ? {}
+      : { repositorySender: parseRoute(data.repositorySender, "repository-sender") }),
   };
 }
 
@@ -814,6 +827,49 @@ function controlSocketPath(config: InstalledConfig): string {
   return join(directory, "control.sock");
 }
 
+/**
+ * Adds the operator-configured sender route and the Driver's per-execution bearer to one
+ * admitted launch. Exactly one of them alone is refused. The bearer stays in memory: it is
+ * passed only to `box run`'s environment and is never part of a digest, record or reply.
+ */
+export function withRepositorySender<T extends StartInput>(
+  route: EgressRoute | undefined,
+  input: T,
+  bearer: unknown,
+): T {
+  if ((route === undefined) !== (bearer === undefined)) {
+    throw new Error("repository_sender_bearer_unexpected_or_missing");
+  }
+  if (route === undefined) return input;
+  if (
+    typeof bearer !== "string" ||
+    !REPOSITORY_SENDER_BEARER.test(bearer) ||
+    route.kind !== "repository-sender" ||
+    (input.egress ?? []).some(({ kind }) => kind === "repository-sender")
+  ) {
+    throw new Error("repository_sender_bearer_unexpected_or_missing");
+  }
+  return { ...input, egress: [...(input.egress ?? []), route], repositorySenderBearer: bearer };
+}
+
+export function observedView(record: {
+  readonly view: RecordView;
+  readonly execution?: Pick<Execution, "boxProcess">;
+}): RecordView {
+  const sender = record.view.repositorySender;
+  if (sender === undefined) return record.view;
+  const box = record.view.state === "running" ? record.execution?.boxProcess() : undefined;
+  return {
+    ...record.view,
+    repositorySender: {
+      bearerSha256: sender.bearerSha256,
+      ...(box === undefined
+        ? {}
+        : { processInstanceId: `${box.bootId}:${box.pid}:${box.startTicks}` }),
+    },
+  };
+}
+
 export async function serveInstalledControl(config: InstalledConfig): Promise<void> {
   const socketPath = controlSocketPath(config);
   if (config.approvalDir !== undefined) ensureEmpty(config.approvalDir);
@@ -867,7 +923,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
     }
     if (request.method === "GET") {
       if (current === undefined) reply(response, 404, { error: "execution_absent" });
-      else reply(response, 200, current.view);
+      else reply(response, 200, observedView(current));
       return;
     }
     if (!observing && request.method !== "PUT" && request.method !== "DELETE") {
@@ -913,6 +969,14 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
           image: config.image,
           commandSha256: digest(plan.command),
           ...(workspaceNode === undefined ? {} : { workspaceNode }),
+          ...(config.repositorySender === undefined
+            ? {}
+            : {
+                repositorySender: {
+                  url: config.repositorySender.url,
+                  address: config.repositorySender.address,
+                },
+              }),
           counts: {
             environment: Object.keys(plan.environment).length,
             files: plan.files?.length ?? 0,
@@ -946,6 +1010,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         "workspaceVolume",
         "workspaceNodeSetupCode",
         "controlledInference",
+        "repositorySenderBearer",
       ]);
       if (digest(data.requirements) !== requirementsDigest)
         throw new Error("requirements_digest_mismatch");
@@ -957,7 +1022,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
           digest(current.view.workspaceVolume ?? null) !== digest(data.workspaceVolume ?? null)
         )
           reply(response, 409, { error: "execution_conflict" });
-        else reply(response, 200, current.view);
+        else reply(response, 200, observedView(current));
         return;
       }
       if (attempted) {
@@ -980,7 +1045,12 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         reply(response, 409, { error: "owner_admission_not_approved" });
         return;
       }
-      const input = admitted(config, supplied, data, "start");
+      const bearer = data.repositorySenderBearer;
+      const input = withRepositorySender(
+        config.repositorySender,
+        admitted(config, supplied, data, "start"),
+        bearer,
+      );
       const workspaceNode = approvedWorkspaceNode(input);
       if (workspaceNode?.planSha256 !== pending.view.workspaceNode?.planSha256) {
         throw new Error("file_node_admitted_plan_changed");
@@ -991,6 +1061,15 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         executionId: randomUUID(),
         state: "starting",
         endpoint: config.endpoint,
+        ...(input.repositorySenderBearer === undefined
+          ? {}
+          : {
+              repositorySender: {
+                bearerSha256: createHash("sha256")
+                  .update(input.repositorySenderBearer)
+                  .digest("hex"),
+              },
+            }),
         ...(workspaceNode === undefined
           ? {}
           : {

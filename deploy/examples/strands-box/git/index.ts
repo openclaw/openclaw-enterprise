@@ -1,4 +1,4 @@
-import { createHash, randomUUID, X509Certificate } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { constants, lstatSync, realpathSync } from "node:fs";
 import { open } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -56,8 +56,20 @@ export interface CurrentGitRecipient {
     readonly pid: number;
     readonly startTicks: string;
   };
-  readonly clientKeySha256: string;
+  /**
+   * SHA-256 (lowercase hex) of the per-execution sender bearer that the host passed to this
+   * execution's `box run` as a phantom credential. The host reports only this digest; the
+   * bearer itself exists only in the Driver's PUT and in Box's trusted process.
+   */
+  readonly executionBearerSha256: string;
 }
+
+/** The recipient network identity of a Box execution that holds the phantom sender bearer. */
+export const BOX_PHANTOM_IDENTITY = "box-phantom-sha256:";
+/** Box injects the real value of this variable; the workload sees only a placeholder. */
+export const SENDER_BEARER_ENV = "OCE_REPOSITORY_SENDER_BEARER";
+/** 32 random bytes in unpadded base64url, minted once per execution by the paired Driver. */
+export const SENDER_BEARER = /^[A-Za-z0-9_-]{43}$/;
 
 export interface GitReceipt {
   readonly requestId: string;
@@ -104,17 +116,29 @@ function privateJournal(path: string): void {
   }
 }
 
-function certificateKey(request: IncomingMessage): string | undefined {
-  if (!(request.socket instanceof TLSSocket) || !request.socket.authorized) {
+/**
+ * Box intercepts every CONNECT and presents no client certificate, so the execution
+ * authenticates with exactly one `Authorization: Bearer` header whose value Box swapped in for
+ * the workload's placeholder. Returns the bearer's SHA-256; the bearer is never retained.
+ */
+export function bearerDigest(request: IncomingMessage): string | undefined {
+  const values = request.headersDistinct.authorization;
+  if (values?.length !== 1 || request.headersDistinct["proxy-authorization"] !== undefined) {
     return;
   }
-  const certificate = request.socket.getPeerCertificate().raw;
-  if (!Buffer.isBuffer(certificate)) {
+  const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(values[0] ?? "");
+  if (match?.[1] === undefined) {
     return;
   }
-  return createHash("sha256")
-    .update(new X509Certificate(certificate).publicKey.export({ type: "spki", format: "der" }))
-    .digest("hex");
+  return createHash("sha256").update(match[1]).digest("hex");
+}
+
+function sameDigest(left: string, right: string): boolean {
+  return (
+    hex.test(left) &&
+    hex.test(right) &&
+    timingSafeEqual(Buffer.from(left, "hex"), Buffer.from(right, "hex"))
+  );
 }
 
 function eligible(
@@ -157,9 +181,8 @@ function eligible(
     original.pid > 1 &&
     /^[1-9][0-9]{0,19}$/.test(original.startTicks) &&
     receiver.processInstanceId === `${original.bootId}:${original.pid}:${original.startTicks}` &&
-    input.clientKeySha256 === key &&
-    hex.test(key) &&
-    receiver.networkInstanceId === `mtls-sha256:${key}` &&
+    sameDigest(input.executionBearerSha256, key) &&
+    receiver.networkInstanceId === `${BOX_PHANTOM_IDENTITY}${key}` &&
     input.route.revisionId === options.execution.revisionId &&
     Number.isSafeInteger(input.route.fence) &&
     input.route.fence > 0 &&
@@ -373,7 +396,7 @@ export function createRepositorySender(options: RepositorySenderOptions): {
       };
       try {
         const selected = authority;
-        const key = certificateKey(req);
+        const key = req.socket instanceof TLSSocket ? bearerDigest(req) : undefined;
         const initial =
           selected !== undefined && key !== undefined && !signal.aborted
             ? await current(signal)

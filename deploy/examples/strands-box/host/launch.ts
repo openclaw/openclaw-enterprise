@@ -20,7 +20,13 @@ import {
 import { createServer } from "node:net";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CONTROLLED_INFERENCE_MARKER, policy } from "./egress.ts";
+import {
+  CONTROLLED_INFERENCE_MARKER,
+  policy,
+  REPOSITORY_SENDER_BEARER,
+  REPOSITORY_SENDER_BEARER_ENV,
+  repositorySenderCredential,
+} from "./egress.ts";
 import {
   collectDiagnostics,
   drainDiagnostics,
@@ -175,6 +181,18 @@ export interface StartInput {
   workspaceNodeSetupCode?: string;
   workspaceNodeSetupExpiresAt?: number;
   egress?: readonly EgressRoute[];
+  /**
+   * The per-execution sender bearer, held only in memory and in the `box run` environment.
+   * Its `repository-sender` route must also be the single such route in `egress`.
+   */
+  repositorySenderBearer?: string;
+}
+
+/** The trusted `box run` process of this execution, read from /proc after spawn. */
+export interface BoxProcess {
+  readonly bootId: string;
+  readonly pid: number;
+  readonly startTicks: string;
 }
 
 export interface OwnerReady {
@@ -190,6 +208,8 @@ export interface OwnerReady {
 export interface Execution {
   readonly ready: Promise<OwnerReady>;
   readonly done: Promise<number>;
+  /** Present once `box run` was spawned; `undefined` before that or after it exited. */
+  boxProcess(): BoxProcess | undefined;
   stop(): Promise<number>;
 }
 
@@ -459,10 +479,14 @@ export function start(
   });
   // A control request receives 'starting' without waiting on this promise.
   void ready.catch(() => {});
+  let boxRun: BoxProcess | undefined;
+  let boxOwner: ProcessIdentity | undefined;
   const done = run();
   return {
     ready,
     done,
+    boxProcess: () =>
+      boxRun !== undefined && boxOwner !== undefined && sameProcess(boxOwner) ? boxRun : undefined,
     stop: () => {
       abort.abort();
       return done;
@@ -513,6 +537,18 @@ export function start(
         writeFileSync(staged, file.content, ownerOnly);
         stagedPaths.push(staged);
         effectiveEnvironment[file.environmentVariable] = staged;
+      }
+      const senderRoutes = (input.egress ?? []).filter(
+        (route) => route.kind === "repository-sender",
+      );
+      const senderBearer = input.repositorySenderBearer;
+      if (
+        senderRoutes.length > 1 ||
+        (senderRoutes.length === 1) !== (senderBearer !== undefined) ||
+        (senderBearer !== undefined && !REPOSITORY_SENDER_BEARER.test(senderBearer)) ||
+        Object.hasOwn(effectiveEnvironment, REPOSITORY_SENDER_BEARER_ENV)
+      ) {
+        throw new Error("repository_sender_unadmitted");
       }
       const environment = safeEnvironment(
         effectiveEnvironment,
@@ -606,9 +642,14 @@ export function start(
         ),
         "",
       ].join("\n");
+      // The credential table names only the variable; the bearer never enters box.toml.
       writeFileSync(
         boxFile,
-        configText + (verifier === undefined ? "" : "\n" + workspaceVerifierTool(config.workspace)),
+        configText +
+          (senderRoutes[0] === undefined
+            ? ""
+            : "\n" + repositorySenderCredential(senderRoutes[0])) +
+          (verifier === undefined ? "" : "\n" + workspaceVerifierTool(config.workspace)),
         ownerOnly,
       );
       if (input.workspaceNodeSetupCode !== undefined) {
@@ -634,7 +675,13 @@ export function start(
       child = spawn(config.boxBin, ["run", "--config", boxFile], {
         cwd: config.workspace,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { HOME: boxHome, PATH, LANG: "C.UTF-8", EXPERIMENTAL_LINUX_SUPPORT: "TRUE" },
+        env: {
+          HOME: boxHome,
+          PATH,
+          LANG: "C.UTF-8",
+          EXPERIMENTAL_LINUX_SUPPORT: "TRUE",
+          ...(senderBearer === undefined ? {} : { [REPOSITORY_SENDER_BEARER_ENV]: senderBearer }),
+        },
       });
       child.stdout?.resume();
       if (child.stderr !== null) diagnosticDone = collectDiagnostics(child.stderr, "box");
@@ -652,6 +699,12 @@ export function start(
       });
       if (child.pid === undefined) throw new Error("box_start_failed");
       owner = processIdentity(child.pid);
+      boxOwner = owner;
+      boxRun = {
+        bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
+        pid: owner.pid,
+        startTicks: owner.startTicks,
+      };
       stage = "wait-original-native";
       report("box", "listener", "entered");
       pinnedIdentity = await waitFor(() => {

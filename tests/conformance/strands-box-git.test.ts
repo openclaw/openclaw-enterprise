@@ -56,12 +56,33 @@ test(
       403,
     );
     assert.equal(f.writes.length, before);
-    // GitHub's selected-repository grant is the permission boundary. This
-    // separate valid Git request proves the sender does not invent a ref policy.
-    await route.remoteGit(["push", "origin", "HEAD:refs/heads/other"], copy);
+    // The sender enforces one exact writable ref before any material read: another branch,
+    // the fixed base and a deletion are refused without a provider connection.
+    // Discovery (GET info/refs) is still served; every refused POST stops before material.
+    const pushes = () => f.writes.filter(({ path }) => path.endsWith("/git-receive-pack")).length;
+    const refused = pushes();
+    const authorized = f.authorizations.filter(({ operation }) => operation === "receive-pack");
+    for (const refspec of ["HEAD:refs/heads/other", "HEAD:refs/heads/main", ":refs/heads/review"]) {
+      await assert.rejects(route.remoteGit(["push", "origin", refspec], copy), /403/);
+      assert.equal(f.receipts.at(-1)?.stage, "request-refused");
+    }
+    await assert.rejects(
+      route.remoteGit(["push", "origin", "HEAD:refs/heads/review", "HEAD:refs/heads/other"], copy),
+      /403/,
+    );
+    assert.equal(pushes(), refused);
+    assert.deepEqual(
+      f.authorizations.filter(({ operation }) => operation === "receive-pack"),
+      authorized,
+    );
     assert.equal(
-      (await f.git(["--git-dir", f.repoPath, "rev-parse", "refs/heads/other"])).stdout.trim(),
-      expected,
+      (await f.git(["--git-dir", f.repoPath, "rev-parse", "refs/heads/main"])).stdout.trim() ===
+        expected,
+      false,
+    );
+    await assert.rejects(
+      f.git(["--git-dir", f.repoPath, "rev-parse", "--verify", "refs/heads/other"]),
+      (error: unknown) => error instanceof Error && "code" in error && error.code === 128,
     );
     const pr = await route.call("/draft-pull", { title: "Review change" });
     assert.equal(pr.status, 201);
@@ -123,7 +144,7 @@ test(
     const unbound = await f.install(false);
     const route = await f.install();
     assert.equal((await unbound.call(path)).status, 403);
-    assert.equal((await route.call(path, undefined, f.unrelatedLeaf)).status, 403);
+    assert.equal((await route.call(path, undefined, f.unrelatedBearer)).status, 403);
     assert.equal(f.state.materialReads, 0);
     f.state.missing = true;
     assert.equal((await route.call(path)).status, 403);
@@ -227,3 +248,118 @@ test(
     assert.equal(f.writes.filter(({ path }) => path.endsWith("/git-receive-pack")).length, 1);
   },
 );
+
+test(
+  "a missing, wrong, ambiguous or replaced execution bearer is refused before any material read or connect",
+  { timeout: 20_000 },
+  async (t) => {
+    const f = await fixture(t);
+    const route = await f.install();
+    const refs = "/repository.git/info/refs?service=git-upload-pack";
+    const quiet = () => ({
+      reads: f.state.materialReads,
+      authorizations: f.authorizations.length,
+      connections: f.connections(),
+      writes: f.writes.length,
+    });
+    const before = quiet();
+    const raw = (headers: Record<string, string | string[]>, path = refs) =>
+      route.raw(path, headers);
+    assert.equal((await route.call(refs, undefined, null)).status, 403);
+    assert.equal((await route.call(refs, undefined, f.unrelatedBearer)).status, 403);
+    assert.equal((await route.call(refs, undefined, `${f.bearer}x`)).status, 403);
+    assert.equal((await route.call(refs, undefined, f.bearer.slice(1))).status, 403);
+    assert.equal((await raw({ authorization: `bearer ${f.bearer}` })).status, 403);
+    assert.equal((await raw({ authorization: `Basic ${f.bearer}` })).status, 403);
+    assert.equal(
+      (await raw({ authorization: [`Bearer ${f.bearer}`, `Bearer ${f.bearer}`] })).status,
+      403,
+    );
+    assert.equal(
+      (
+        await raw({
+          authorization: `Bearer ${f.bearer}`,
+          "proxy-authorization": `Bearer ${f.bearer}`,
+        })
+      ).status,
+      403,
+    );
+    assert.ok(f.receipts.every(({ stage }) => stage === "execution-refused"));
+    assert.deepEqual(quiet(), before);
+
+    // A correct bearer on a path or method outside the fixed endpoints never reaches material.
+    for (const path of [
+      "/repository.git/info/refs?service=git-upload-archive",
+      "/repository.git/HEAD",
+      "/repos/example/review/pulls",
+      "/draft-pull?x=1",
+      "/other.git/info/refs?service=git-upload-pack",
+    ]) {
+      assert.equal((await route.call(path)).status, 403);
+      assert.equal(f.receipts.at(-1)?.stage, "request-refused");
+    }
+    assert.equal((await route.call("/draft-pull")).status, 403);
+    assert.deepEqual(quiet(), before);
+
+    assert.equal((await route.call(refs)).status, 200);
+    const served = quiet();
+
+    // Execution replacement: the host now reports a new run with a different bearer digest.
+    // The old bearer is refused even though the sender, route and material are unchanged.
+    const next = f.replaceExecution();
+    assert.equal((await route.call(refs)).status, 403);
+    assert.equal(f.receipts.at(-1)?.stage, "execution-refused");
+    // The new execution's bearer is not this sender's execution either.
+    assert.equal((await route.call(refs, undefined, next)).status, 403);
+    assert.deepEqual(quiet(), served);
+    assert.ok(!JSON.stringify(f.receipts).includes(f.bearer));
+  },
+);
+
+test("the push command list admits exactly one update of the selected head", async () => {
+  const { exactPushCommands } = await import("../../deploy/examples/strands-box/git/protocol.ts");
+  const repository = {
+    repository: "example/review",
+    repositoryId: "1",
+    installationId: "2",
+    head: "review",
+    base: "main",
+  };
+  const pkt = (line: string) => (line.length + 4).toString(16).padStart(4, "0") + line;
+  const old = "a".repeat(40);
+  const next = "b".repeat(40);
+  const zero = "0".repeat(40);
+  const body = (...lines: string[]) => Buffer.from(lines.join("") + "0000PACK");
+  const caps = "\0report-status side-band-64k agent=git/2\n";
+  assert.equal(
+    exactPushCommands(body(pkt(`${old} ${next} refs/heads/review${caps}`)), repository),
+    true,
+  );
+  assert.equal(
+    exactPushCommands(body(pkt(`${zero} ${next} refs/heads/review${caps}`)), repository),
+    true,
+  );
+  assert.equal(
+    exactPushCommands(
+      body(pkt(`shallow ${old}\n`), pkt(`${old} ${next} refs/heads/review${caps}`)),
+      repository,
+    ),
+    true,
+  );
+  for (const refused of [
+    body(pkt(`${old} ${next} refs/heads/main${caps}`)),
+    body(pkt(`${old} ${zero} refs/heads/review${caps}`)),
+    body(pkt(`${old} ${next} refs/heads/review-2${caps}`)),
+    body(pkt(`${old} ${next} refs/tags/review${caps}`)),
+    body(pkt(`${old} ${next} refs/heads/review${caps}`), pkt(`${old} ${next} refs/heads/other\n`)),
+    body(pkt(`${old} ${next} refs/heads/review\0report-status push-options\n`)),
+    body(pkt(`push-cert\0report-status\n`)),
+    body(pkt(`${old} ${"b".repeat(64)} refs/heads/review${caps}`)),
+    body(pkt(`${old} ${next} refs/heads/review\n`)),
+    Buffer.from("0000PACK"),
+    Buffer.from("zzzz"),
+    Buffer.from(pkt(`${old} ${next} refs/heads/review${caps}`)),
+  ]) {
+    assert.equal(exactPushCommands(refused, repository), false);
+  }
+});
