@@ -215,18 +215,21 @@ function isRecord(value) {
 function parseProviderBody(wire) {
   /** @type {unknown} */
   const body = JSON.parse(wire);
-  assert.ok(isRecord(body) && typeof body.model === "string");
+  // Non-object JSON has no request fields. Keep its redacted observation before
+  // the request-shape checks reject it, just as for a missing model.
+  assert.ok(body !== null);
+  const fields = isRecord(body) ? body : {};
   /** @type {unknown} */
-  const tools = body.tools ?? [];
+  const tools = fields.tools ?? [];
   assert.ok(Array.isArray(tools));
   return {
-    ...body,
-    model: body.model,
-    stream: body.stream,
-    store: body.store,
+    model: fields.model,
+    stream: fields.stream,
+    store: fields.store,
     tools: tools.map((/** @type {unknown} */ tool) => {
-      assert.ok(isRecord(tool));
-      return { type: typeof tool.type === "string" ? tool.type : "unrecognized" };
+      assert.ok(tool !== null);
+      const type = isRecord(tool) ? tool.type : undefined;
+      return { type: typeof type === "string" ? type : "unrecognized" };
     }),
   };
 }
@@ -323,6 +326,7 @@ export async function startSyntheticEgressProvider(t, configuration, credentials
             ),
           ],
         });
+        assert.ok(typeof body.model === "string");
         assert.equal(body.model, configuration.model);
         assert.equal(body.stream, true, "the genuine Codex caller must use HTTP/SSE");
         assert.equal(body.store, false);
