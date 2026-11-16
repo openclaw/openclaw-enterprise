@@ -16,7 +16,7 @@ import { basename, dirname, join, sep } from "node:path";
 import {
   AGENT_WITH_NODE_ENTRYPOINT,
   CODEX_WORKSPACE_NODE_COMMANDS,
-  PROVIDER_CODEX_ONLY_ENTRYPOINT,
+  PROVIDER_CODEX_ONLY_PROGRAM,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
@@ -133,7 +133,7 @@ export function assertStockCombinedCommand(program: Buffer): void {
 
 export function splitStockCommand(program: Buffer): readonly string[] {
   assertStockCombinedCommand(program);
-  return [...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(PROVIDER_CODEX_ONLY_ENTRYPOINT)];
+  return [...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(PROVIDER_CODEX_ONLY_PROGRAM)];
 }
 
 function sha256(value: string | Buffer): string {

@@ -106,7 +106,7 @@ fails when Compute changes either program, so a Compute change needs a reviewed
 re-pin. In this checkout, generate the standalone argv:
 
 ```ts
-[...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(PROVIDER_CODEX_ONLY_ENTRYPOINT)]
+[...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(PROVIDER_CODEX_ONLY_PROGRAM)]
 ```
 
 Put the JSON array in root-owned, read-only `harness-split-argv.json` beside the

@@ -65,12 +65,12 @@ const AGENT_FILES = {
 const PROC_HELPER = "harness-proc";
 const SHA256 = /^[a-f0-9]{64}$/;
 // The combined workspace-node program and its standalone split that this checkout's
-// Compute renders (AGENT_WITH_NODE_ENTRYPOINT, PROVIDER_CODEX_ONLY_ENTRYPOINT). The
+// Compute renders (AGENT_WITH_NODE_ENTRYPOINT, PROVIDER_CODEX_ONLY_PROGRAM). The
 // harness image conformance test recomputes both; re-pin only after reviewing a change.
 export const HARNESS_SPLIT_COMBINED_SHA256 =
-  "5a6a57a99e4fa3c650b3157460caf5872084b34ad20cff0b455a18c78112b14a";
+  "e5af4f41132756ff3cbc9c98d377a632ef619b802cd071dddcb2e3d6073ab103";
 export const HARNESS_SPLIT_COMMAND_SHA256 =
-  "02a8d9e25fdbda5f886522889f242d9c0d4f0fa080edeb7a6cece8412ecb65ad";
+  "45281aa54e51f8bdf687c44cb46da4646e57c40173691641ca470ee64ab669b3";
 const BOOT_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const STOCK_PATH =
   "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
