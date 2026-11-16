@@ -44,7 +44,7 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import { validateSelectedBackendDrivers } from "../../packages/occ/src/index.ts";
 import { spawnSync } from "node:child_process";
-import { reservedPortArgs, reservePort } from "../helpers/available-port.mjs";
+import { reservedPortArgs, reservePort } from "../helpers/available-port.ts";
 import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -53,7 +53,7 @@ import {
   createInstallationDriverConfiguration as installation,
 } from "../helpers/installation-driver-configuration.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 function jsonLines(text) {

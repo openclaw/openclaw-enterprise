@@ -27,7 +27,7 @@ import {
   repositoryGrant as buildRepositoryGrant,
 } from "../fixtures/repository-credentials/session-state.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
-import { waitForLockHolder } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockHolder } from "../helpers/postgres-locks.ts";
 
 type SessionCase = Awaited<ReturnType<RepositorySessionCaseBuilders["seedSessionRevision"]>>;
 type SessionRevision = Pick<

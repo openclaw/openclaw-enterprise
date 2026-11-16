@@ -5,7 +5,6 @@ import type {
   AcceptedEgressAssociation,
   CapturedEgressUse,
   EgressPeer,
-  EgressRequest,
 } from "../../packages/contracts/src/index.ts";
 import {
   CredentialProxy,
@@ -15,13 +14,12 @@ import {
 import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { deferred } from "../helpers/deferred.ts";
-import { syntheticDispatchFixture } from "../helpers/static-egress.mjs";
+import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 
 async function exchange(t: TestContext, key: string | undefined) {
   const receipts = new EgressSendReceipts(new InMemoryPlatformState());
   const f = await syntheticDispatchFixture(t, receipts);
-  // The JavaScript fixture widens its literal fields; the ports retain their real contracts.
-  const ports = f.ports as unknown as EgressAuthorityPorts;
+  const ports = f.ports;
   const original = await ports.exchangeOwner.verify("synthetic-peer");
   assert.ok(original);
   const pinned: EgressPeer = {
@@ -54,10 +52,10 @@ async function exchange(t: TestContext, key: string | undefined) {
     },
   };
   const association: AcceptedEgressAssociation = {
-    ...(f.association as unknown as AcceptedEgressAssociation),
+    ...f.association,
     exchangeId: pinned.exchangeId!,
     installation: {
-      ...(f.association.installation as AcceptedEgressAssociation["installation"]),
+      ...f.association.installation,
       ...(key === undefined ? {} : { peerKeyId: key }),
     },
   };
@@ -96,7 +94,7 @@ async function exchange(t: TestContext, key: string | undefined) {
   const controller = new AbortController();
   t.after(() => controller.abort());
   const sandbox = pinned.sandboxId;
-  const request = f.request as unknown as EgressRequest;
+  const request = f.request;
   const resolve = () => proxy.resolve("synthetic-peer", sandbox, request, controller.signal);
   async function ready() {
     const result = await resolve();

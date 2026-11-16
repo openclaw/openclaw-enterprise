@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { AuthAccountRoleNotFoundError } from "../../apps/controller/src/auth/index.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -10,6 +11,9 @@ import {
 } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
+  InstallationResponse,
+  NamespaceResponse,
+  RequestId,
   ServiceAccountResponse,
   type ChatGPTBackendDefinition,
 } from "../../packages/contracts/src/index.ts";
@@ -317,6 +321,12 @@ export async function createInjectedControllerFixture(
   };
 }
 
+const InjectedResponseEnvelope = Type.Object({
+  // Some responses add pagination fields to the request metadata.
+  meta: Type.Object({ requestId: RequestId }),
+  data: Type.Optional(Type.Unknown()),
+});
+
 export async function injectedRequest(
   app: ControllerApp & Partial<SessionApp>,
   method: string,
@@ -351,8 +361,8 @@ export async function injectedRequest(
   if (response.status === 204) {
     return { status: response.status, headers: response.headers };
   }
-  const body: { meta?: { requestId?: string }; data?: unknown } = await response.json();
-  assert.match(body.meta?.requestId ?? "", identifier("req"));
+  const body: unknown = await response.json();
+  assert(Check(InjectedResponseEnvelope, body), JSON.stringify(body));
   return { status: response.status, headers: response.headers, body, data: body.data };
 }
 
@@ -361,6 +371,56 @@ export type FixtureRequest = (
   pathname: string,
   options?: InjectedRequestOptions,
 ) => ReturnType<typeof injectedRequest>;
+
+type InjectedController = {
+  readonly fixture: Awaited<ReturnType<typeof createInjectedControllerFixture>>;
+  readonly request: FixtureRequest;
+};
+
+export async function bootstrapInstallation(
+  { request }: Pick<InjectedController, "request">,
+  name = "Enterprise development",
+) {
+  const response = await request("POST", "/installation/bootstrap", { body: { name } });
+  const message = JSON.stringify(response.body);
+  assert.equal(response.status, 201, message);
+  assert(Check(InstallationResponse, response.body), message);
+  const { data } = response.body;
+  assert.equal(data.name, name);
+  assert.equal(Number.isNaN(Date.parse(data.createdAt)), false);
+  return data;
+}
+
+export async function createNamespace(
+  { request }: Pick<InjectedController, "request">,
+  name: string,
+) {
+  const response = await request("POST", "/namespaces", { body: { name } });
+  const message = JSON.stringify(response.body);
+  assert.equal(response.status, 201, message);
+  assert(Check(NamespaceResponse, response.body), message);
+  const { data } = response.body;
+  assert.equal(data.name, name);
+  assert.equal(data.status, "provisioning");
+  assert.equal(Object.hasOwn(data, "installationId"), false);
+  return data;
+}
+
+export async function createReadyNamespace(controller: InjectedController, name: string) {
+  const namespace = await createNamespace(controller, name);
+  await controller.fixture.markNamespaceReady(namespace.id);
+  return namespace;
+}
+
+export async function readyNamespaceFixture<Controller extends InjectedController>(
+  controller: Controller,
+  namespaceName: string,
+  bootstrapName?: string,
+) {
+  await bootstrapInstallation(controller, bootstrapName);
+  const namespace = await createReadyNamespace(controller, namespaceName);
+  return { fixture: controller.fixture, controller, namespace };
+}
 
 export async function createServiceAccount(
   request: FixtureRequest,

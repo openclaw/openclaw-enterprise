@@ -9,8 +9,8 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanEnvironment, run } from "./repository-credentials/process.mjs";
-import { createTokenAuthority } from "./repository-credentials/github/token-authority.mjs";
-import { fixtureAppId, fixtureInstallationId } from "./repository-credentials/github/metadata.mjs";
+import { createTokenAuthority } from "./repository-credentials/github/token-authority.ts";
+import { fixtureAppId, fixtureInstallationId } from "./repository-credentials/github/metadata.ts";
 
 // Test-only origin. Callers own close(); no environment credentials or user Git
 // configuration are inherited. Only snapshot() is intended for logged evidence.

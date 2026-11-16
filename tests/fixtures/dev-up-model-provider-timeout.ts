@@ -4,8 +4,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { asRecord } from "../../packages/utils/src/objects.ts";
-import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
-import type { LauncherScope } from "../helpers/dev-up-model-provider.mjs";
+import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.ts";
+import type { LauncherScope } from "../helpers/dev-up-model-provider.ts";
 
 const directory = process.env.OCC_TEST_PROVIDER_TIMEOUT_DIRECTORY;
 assert.ok(directory, "expected the parent's temporary directory");

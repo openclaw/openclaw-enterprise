@@ -156,7 +156,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
 # Record every patch applied here in appliedPatches in scripts/build-runtime-assets.ts,
-# which writes provenance; runtime-assets.test.mjs compares the two.
+# which writes provenance; runtime-assets.test.ts compares the two.
 # TODO: Remove this bridge patch when OpenClaw supports networkProxy.readOnlyPaths.
 COPY deploy/runtime/openclaw-codex-read-only-paths.patch /tmp/openclaw-codex-read-only-paths.patch
 RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp/openclaw-codex-read-only-paths.patch' | sha256sum --check --strict \
@@ -215,11 +215,11 @@ FROM openclaw-dependency-inputs AS openclaw-patched-source
 RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     --mount=type=bind,from=matrix-sdk-crypto,source=/out,target=/tmp/matrix-sdk-crypto \
-    --mount=type=bind,source=deploy/runtime/with-pinned-matrix-sdk-crypto.mjs,target=/tmp/with-pinned-matrix-sdk-crypto.mjs \
+    --mount=type=bind,source=deploy/runtime/with-pinned-matrix-sdk-crypto.mts,target=/tmp/with-pinned-matrix-sdk-crypto.mts \
     --mount=type=bind,source=deploy/runtime/install-attempts.sh,target=/tmp/install-attempts.sh \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
-    COREPACK_ENABLE_NETWORK=0 sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
+    COREPACK_ENABLE_NETWORK=0 sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mts /tmp/matrix-sdk-crypto \
     pnpm install --frozen-lockfile --store-dir=/tmp/pnpm-store \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
@@ -343,7 +343,7 @@ FROM openclaw-dependency-inputs AS openclaw-production-deps
 RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     --mount=type=bind,from=matrix-sdk-crypto,source=/out,target=/tmp/matrix-sdk-crypto \
-    --mount=type=bind,source=deploy/runtime/with-pinned-matrix-sdk-crypto.mjs,target=/tmp/with-pinned-matrix-sdk-crypto.mjs \
+    --mount=type=bind,source=deploy/runtime/with-pinned-matrix-sdk-crypto.mts,target=/tmp/with-pinned-matrix-sdk-crypto.mts \
     --mount=type=bind,source=deploy/runtime/install-attempts.sh,target=/tmp/install-attempts.sh \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
@@ -351,7 +351,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
     while IFS= read -r plugin; do \
       set -- "$@" --filter "./extensions/$plugin"; \
     done < openclaw-workspace-plugin-dirs; \
-    COREPACK_ENABLE_NETWORK=0 sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
+    COREPACK_ENABLE_NETWORK=0 sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mts /tmp/matrix-sdk-crypto \
     pnpm install --frozen-lockfile --prod "$@" --store-dir=/tmp/pnpm-store \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
@@ -464,7 +464,7 @@ RUN --network=none \
     ldd /usr/local/bin/node > /tmp/node-linkage \
     && ! grep 'not found' /tmp/node-linkage \
     && rm /tmp/node-linkage \
-    && node /verification/repair/verify.mjs \
+    && node /verification/repair/verify.mts \
     && sh /verification/repair/test.sh /usr/local/bin/node /verification/node
 # Version checks use throwaway state directories: gh writes a random device ID
 # and Codex a randomly named arg0 directory, which would otherwise ship.

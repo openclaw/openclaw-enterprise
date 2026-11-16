@@ -18,7 +18,7 @@ import { certificateAuthority, signedLeaf } from "../helpers/certificates.mjs";
 import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 const { Client } = pg;
 const execute = promisify(execFile);

@@ -323,15 +323,15 @@ set +a
 OPENCLAW_ENTERPRISE_CI_STATE=/tmp/images-runtime-startup.json \
   node --test tests/integration/runtime-image-startup.test.ts \
     tests/integration/runtime-image-gateway-workspace.test.ts \
-    tests/integration/runtime-image-state-migration.test.mjs \
+    tests/integration/runtime-image-state-migration.test.ts \
     tests/integration/runtime-image-managed-files.test.ts \
-    tests/integration/runtime-image-native-listener.test.mjs \
+    tests/integration/runtime-image-native-listener.test.ts \
     tests/integration/runtime-image-startup-probe.test.mjs \
     tests/integration/runtime-image-startup-termination.test.ts \
     tests/integration/runtime-image-gateway-unclean-restart.test.ts \
     tests/integration/runtime-image-gateway-retained-state.test.ts \
     tests/integration/runtime-image-gateway-peer.test.ts \
-    tests/integration/runtime-image-native-worker.test.mjs
+    tests/integration/runtime-image-native-worker.test.ts
 ```
 
 The smoke starts task-owned containers with the Docker Compute Driver gateway

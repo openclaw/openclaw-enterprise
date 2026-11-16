@@ -3434,13 +3434,7 @@ export class OpenClawController {
   ) {
     const action = await this.authorizeAgentAccess(principalId, namespaceId, agentId, access);
     return this.read(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
-      const agent = await state.agents.findAgent(namespace.id, agentId);
-      if (!agent) {
-        throw new ScopeViolationError(
-          "The Agent does not belong to the exact Installation and Namespace.",
-        );
-      }
+      const { agent } = await this.exactAgent(state, namespaceId, agentId);
       const mode = action === "administer" ? "admin" : "chat";
       return access === "browser" ? { agent, mode } : agent;
     });
@@ -3627,13 +3621,7 @@ export class OpenClawController {
       namespaceId,
     });
     return this.read(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
-      const agent = await state.agents.findAgent(namespace.id, agentId);
-      if (!agent) {
-        throw new ScopeViolationError(
-          "The Agent does not belong to the exact Installation and Namespace.",
-        );
-      }
+      const { namespace, agent } = await this.exactAgent(state, namespaceId, agentId);
       const driver = this.runtimeCredentialComputeDriver("status");
       return this.runtimeCredentialStatus(
         await this.runtimeCredentialOperation(() =>
@@ -4442,13 +4430,7 @@ export class OpenClawController {
       namespaceId,
     });
     const binding = await this.read(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
-      const agent = await state.agents.findAgent(namespace.id, agentId);
-      if (!agent) {
-        throw new ScopeViolationError(
-          "The Agent does not belong to the exact Installation and Namespace.",
-        );
-      }
+      const { namespace, agent } = await this.exactAgent(state, namespaceId, agentId);
       return { namespace, agent, revision };
     });
     const driver = this.diagnosticsComputeDriver();
@@ -6230,13 +6212,7 @@ export class OpenClawController {
       parentAgentId: agentId,
     });
     return this.read(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
-      const agent = await state.agents.findAgent(namespace.id, agentId);
-      if (!agent) {
-        throw new ScopeViolationError(
-          "The Agent does not belong to the exact Installation and Namespace.",
-        );
-      }
+      const { namespace, agent } = await this.exactAgent(state, namespaceId, agentId);
       const revision = await state.revisions.findRevision(namespace.id, agent.id, revisionId);
       if (!revision) {
         throw new ScopeViolationError(
@@ -6489,13 +6465,7 @@ export class OpenClawController {
     const action = await this.authorizeAgentAccess(principalId, namespaceId, agentId, access);
     const browserAccess = access === "browser";
     return this.read(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
-      const agent = await state.agents.findAgent(namespace.id, agentId);
-      if (!agent) {
-        throw new ScopeViolationError(
-          "The Agent does not belong to the exact Installation and Namespace.",
-        );
-      }
+      const { namespace, agent } = await this.exactAgent(state, namespaceId, agentId);
       if (action === "operate" && agent.status !== "active") {
         throw new AgentDeletingError();
       }
@@ -11135,13 +11105,7 @@ export class OpenClawController {
       await this.authorize(principalId, "update", resource);
     };
     const readMetadata = async (state: PlatformReadView) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
-      const agent = await state.agents.findAgent(namespace.id, agentId);
-      if (!agent) {
-        throw new ScopeViolationError(
-          "The Agent does not belong to the exact Installation and Namespace.",
-        );
-      }
+      const { namespace, agent } = await this.exactAgent(state, namespaceId, agentId);
       if (agent.status !== "active") {
         throw new AgentDeletingError();
       }
@@ -15190,6 +15154,21 @@ export class OpenClawController {
       );
     }
     return namespace;
+  }
+
+  private async exactAgent(
+    state: PlatformReadView,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<{ namespace: Readonly<Namespace>; agent: Readonly<Agent> }> {
+    const namespace = await this.exactNamespace(state, namespaceId);
+    const agent = await state.agents.findAgent(namespace.id, agentId);
+    if (!agent) {
+      throw new ScopeViolationError(
+        "The Agent does not belong to the exact Installation and Namespace.",
+      );
+    }
+    return { namespace, agent };
   }
 
   private async lockNamespace(

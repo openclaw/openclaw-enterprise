@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { request, Agent } from "node:https";
 import { randomUUID } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
-import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
+import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
 import { connect, createServer as createTcpServer } from "node:net";
 import { readFile, writeFile } from "node:fs/promises";
 import test from "node:test";
@@ -29,7 +29,7 @@ import {
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
-import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
+import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";

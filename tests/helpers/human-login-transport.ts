@@ -17,7 +17,7 @@ import {
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
 import { listen } from "./listen.ts";
-import { waitUntil } from "./wait-for.mjs";
+import { waitUntil } from "./wait-for.ts";
 
 type TransportAuth = Pick<ControllerAuth["auth"], "handler" | "$context">;
 type TransportAuthOptions = Omit<ControllerAuth["auth"]["options"], "plugins"> & {

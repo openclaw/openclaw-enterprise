@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const requiresPostgres = {

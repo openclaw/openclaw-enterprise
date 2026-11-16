@@ -14,17 +14,19 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import {
-  imageTestOptions,
-  image,
   execute,
   runDocker,
-  waitForDockerLog,
   commandOutput,
-  createAdmittedRuntimeImageConfiguration,
-  jsonLogEntries,
   failureTail,
+  waitForDockerLog,
+} from "../helpers/runtime-image-docker.ts";
+import { jsonLogEntries } from "../helpers/runtime-image-gateway-observations.ts";
+import {
+  image,
+  imageTestOptions,
+  createAdmittedRuntimeImageConfiguration,
   runGatewaySmoke,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 
 // Only emit known diagnostic fields and values; fixture output and runtime logs are untrusted.
 const diagnosticPhases = new Set([

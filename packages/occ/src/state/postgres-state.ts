@@ -1119,6 +1119,25 @@ function timestampDate(row: PostgresRow, key: string): Date {
   return new Date(timestamp(row, key));
 }
 
+const PROVISIONING_CLAIM_OWNER_CTE = `owner AS MATERIALIZED (
+  SELECT work.*
+  FROM occ.controller_work AS work
+  JOIN occ.agent_provisioning_work AS provisioning
+    ON provisioning.work_id = work.idempotency_key
+  WHERE provisioning.work_id = $1
+    AND work.work_kind = 'provisioning'
+    AND work.namespace_id = provisioning.namespace_id
+    AND work.agent_id IS NULL
+    AND work.actor_id = provisioning.actor_id
+    AND work.revision_id IS NULL
+    AND work.namespace_target IS NULL
+    AND work.agent_target IS NULL
+    AND work.state = 'claimed'
+    AND work.claim_token = $2::uuid
+    AND work.lease_expires_at > clock_timestamp()
+  FOR UPDATE OF work
+)`;
+
 function provisioningRecordFromRow(row: PostgresRow): Readonly<AgentProvisioningRecord> {
   const status = text(row, "status");
   if (
@@ -4849,24 +4868,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           const updated = rows(
             (
               await client.query(
-                `WITH owner AS MATERIALIZED (
-                   SELECT work.*
-                   FROM occ.controller_work AS work
-                   JOIN occ.agent_provisioning_work AS provisioning
-                     ON provisioning.work_id = work.idempotency_key
-                   WHERE provisioning.work_id = $1
-                     AND work.work_kind = 'provisioning'
-                     AND work.namespace_id = provisioning.namespace_id
-                     AND work.agent_id IS NULL
-                     AND work.actor_id = provisioning.actor_id
-                     AND work.revision_id IS NULL
-                     AND work.namespace_target IS NULL
-                     AND work.agent_target IS NULL
-                     AND work.state = 'claimed'
-                     AND work.claim_token = $2::uuid
-                     AND work.lease_expires_at > clock_timestamp()
-                   FOR UPDATE OF work
-                 ), updated_provisioning AS (
+                `WITH ${PROVISIONING_CLAIM_OWNER_CTE}, updated_provisioning AS (
                    UPDATE occ.agent_provisioning_work AS provisioning
                    SET status = 'running',
                        -- The database clock stamps the effect, so a later attempt on any
@@ -4929,24 +4931,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           const updated = rows(
             (
               await client.query(
-                `WITH owner AS MATERIALIZED (
-                   SELECT work.*
-                   FROM occ.controller_work AS work
-                   JOIN occ.agent_provisioning_work AS provisioning
-                     ON provisioning.work_id = work.idempotency_key
-	                   WHERE provisioning.work_id = $1
-	                     AND work.work_kind = 'provisioning'
-	                     AND work.namespace_id = provisioning.namespace_id
-		                     AND work.agent_id IS NULL
-	                     AND work.actor_id = provisioning.actor_id
-	                     AND work.revision_id IS NULL
-	                     AND work.namespace_target IS NULL
-	                     AND work.agent_target IS NULL
-	                     AND work.state = 'claimed'
-	                     AND work.claim_token = $2::uuid
-	                     AND work.lease_expires_at > clock_timestamp()
-                   FOR UPDATE OF work
-                 ), updated_provisioning AS (
+                `WITH ${PROVISIONING_CLAIM_OWNER_CTE}, updated_provisioning AS (
                    UPDATE occ.agent_provisioning_work AS provisioning
                    SET completed_phase = $3::text,
                        status = COALESCE($4::text, provisioning.status),
@@ -5043,24 +5028,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           const checkpointed = rows(
             (
               await client.query(
-                `WITH owner AS MATERIALIZED (
-	                   SELECT work.*
-	                   FROM occ.controller_work AS work
-	                   JOIN occ.agent_provisioning_work AS provisioning
-	                     ON provisioning.work_id = work.idempotency_key
-	                   WHERE provisioning.work_id = $1
-	                     AND work.work_kind = 'provisioning'
-	                     AND work.namespace_id = provisioning.namespace_id
-		                     AND work.agent_id IS NULL
-	                     AND work.actor_id = provisioning.actor_id
-	                     AND work.revision_id IS NULL
-	                     AND work.namespace_target IS NULL
-	                     AND work.agent_target IS NULL
-	                     AND work.state = 'claimed'
-	                     AND work.claim_token = $2::uuid
-	                     AND work.lease_expires_at > clock_timestamp()
-	                   FOR UPDATE OF work
-	                 ), updated_provisioning AS (
+                `WITH ${PROVISIONING_CLAIM_OWNER_CTE}, updated_provisioning AS (
 	                   UPDATE occ.agent_provisioning_work AS provisioning
 	                   SET completed_phase = $3::text,
 	                       status = CASE
@@ -5186,24 +5154,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           const cancelled = rows(
             (
               await client.query(
-                `WITH owner AS MATERIALIZED (
-                   SELECT work.*
-                   FROM occ.controller_work AS work
-                   JOIN occ.agent_provisioning_work AS provisioning
-                     ON provisioning.work_id = work.idempotency_key
-                   WHERE provisioning.work_id = $1
-	                     AND work.work_kind = 'provisioning'
-	                     AND work.namespace_id = provisioning.namespace_id
-		                     AND work.agent_id IS NULL
-	                     AND work.actor_id = provisioning.actor_id
-	                     AND work.revision_id IS NULL
-	                     AND work.namespace_target IS NULL
-	                     AND work.agent_target IS NULL
-	                     AND work.state = 'claimed'
-	                     AND work.claim_token = $2::uuid
-	                     AND work.lease_expires_at > clock_timestamp()
-                   FOR UPDATE OF work
-                 ), updated_provisioning AS (
+                `WITH ${PROVISIONING_CLAIM_OWNER_CTE}, updated_provisioning AS (
 	                   UPDATE occ.agent_provisioning_work AS provisioning
 		                   SET status = 'cancelled',
 		                       progress = provisioning.progress || jsonb_build_object(

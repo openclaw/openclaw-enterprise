@@ -50,13 +50,13 @@ import {
 } from "../helpers/openshell-sandbox-workflows.mjs";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { redactedQaTail } from "../helpers/qa-secrets.mjs";
+import { redactedQaTail } from "../helpers/qa-secrets.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
-  startWorkspaceGatewayHostRelay,
 } from "../helpers/envoy-workspace-gateway.mjs";
+import { startWorkspaceGatewayHostRelay } from "../helpers/workspace-gateway-host-relay.ts";
 
 const execute = promisify(execFile);
 const selected = process.env.OCC_TEST_NAMESPACE_OPENSHELL_REAL === "1";
@@ -231,9 +231,11 @@ test(
       { platformNamespace },
       gatewayHelpers,
     );
+    const gatewayImage = env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE;
+    assert.ok(gatewayImage, "OCC_TEST_KUBERNETES_GATEWAY_IMAGE must select the relay image.");
     const gatewayEndpointPort = await startWorkspaceGatewayHostRelay(context, workspaceGateway, {
       ...gatewayHelpers,
-      gatewayImage: env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE,
+      gatewayImage,
     });
     const configuration = createOpenShellInstallationConfiguration({
       authentication: identity.authentication,
@@ -541,7 +543,7 @@ test(
       }))!;
     };
     const drivers = await loadDrivers(true);
-    const apiLogs: Record<string, unknown>[] = [];
+    const apiLogs: unknown[] = [];
     const apiDiagnostic = () =>
       redactedQaTail(
         JSON.stringify({ events: apiLogs.slice(-12), transportFailures }),

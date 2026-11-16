@@ -35,7 +35,7 @@ import {
   registerAndSelectDrivers,
 } from "../helpers/development.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { within } from "../helpers/wait-for.mjs";
+import { within } from "../helpers/wait-for.ts";
 
 const administrator = "service-account-driver-administrator";
 const reader = "service-account-driver-reader";

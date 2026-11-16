@@ -4,12 +4,14 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
+import { Type, type Static } from "typebox";
+import { Check } from "typebox/value";
 import type { OpenClawConfigurationDocument } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
 import { prepareObservabilityNativeRepository } from "./observability-native-repository.mjs";
 import { createObservabilityCollector } from "./production-observability-collector.ts";
-import { installProductionHelmControlPlane } from "./production-helm-real.mjs";
+import { installProductionHelmControlPlane } from "./production-helm-real.ts";
 import {
   createHarnessConfiguration,
   withStubbedProviderEndpoint,
@@ -46,6 +48,21 @@ type InstallationOptions = {
   modelTurns?: boolean;
   nativeRepository?: boolean;
 };
+
+const nativeRepositoryValues = Type.Object({
+  enabled: Type.Literal(true),
+  authority: Type.Literal("prepared-git"),
+  image: Type.String(),
+  serviceName: Type.String(),
+  backendId: Type.String(),
+  registryConfigMapName: Type.String(),
+  serviceConfigSecretName: Type.String(),
+  appKeySecretName: Type.String(),
+  preparedCustodySecretName: Type.String(),
+  tlsSecretName: Type.String(),
+  publicCaSecretName: Type.String(),
+  upstreamCidrs: Type.Array(Type.String()),
+});
 
 type HarnessConfiguration = OpenClawConfigurationDocument & {
   agents: { defaults: OpenClawConfigurationDocument };
@@ -251,7 +268,7 @@ export async function installObservabilityControlPlane(
       modelProvider: { protocol: "openai-responses", baseUrl: "https://model.stub.invalid/v1" },
     });
   }
-  let repositoryCredentials: Record<string, unknown> | undefined;
+  let repositoryCredentials: Static<typeof nativeRepositoryValues> | undefined;
   if (nativeRepository) {
     const prepared: unknown = await prepareObservabilityNativeRepository({
       configuration,
@@ -265,8 +282,11 @@ export async function installObservabilityControlPlane(
       apply,
       metadata,
     });
-    repositoryCredentials = readRecord(prepared, "native repository Helm values");
-    assert.equal(repositoryCredentials.image, images.credentials);
+    assert.ok(
+      Check(nativeRepositoryValues, prepared) && prepared.image === images.credentials,
+      "Expected native repository sender Helm values with the selected image",
+    );
+    repositoryCredentials = prepared;
   }
   await installProductionHelmControlPlane({
     selection,

@@ -97,7 +97,7 @@ test(
     validateQaInputs(selection);
     const { createQaInstallation, prepareQaPluginCatalogs, createQaAgent } =
       await import("../helpers/qa-installation.mjs");
-    const { protectedText } = await import("../helpers/qa-secrets.mjs");
+    const { protectedText } = await import("../helpers/qa-secrets.ts");
     const { createQaReport } = await import("../helpers/qa-report.mjs");
     const { createQaBrowser } = await import("../helpers/qa-browser.mjs");
     const { prepareQaRepository, verifyQaRepository, stopQaAgent } =

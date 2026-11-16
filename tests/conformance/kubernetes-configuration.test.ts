@@ -38,7 +38,7 @@ import {
 } from "../helpers/kubernetes-core-api.ts";
 import { writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
-import { within } from "../helpers/wait-for.mjs";
+import { within } from "../helpers/wait-for.ts";
 
 type ConfigMap = Awaited<ReturnType<FakeConfigurationCoreV1Api["readNamespacedConfigMap"]>>;
 type ConfigurationConfigMap = ConfigMap & {

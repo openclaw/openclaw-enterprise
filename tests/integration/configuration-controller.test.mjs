@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { registerConfigurationChannelCredentialCases } from "./configuration-channel-credential-cases.ts";
 import { registerConfigurationCredentialSaveCases } from "./configuration-credential-save-cases.ts";
 import {
   registerConfigurationCrudCases,
@@ -29,7 +30,7 @@ import {
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
 import { bindRole } from "../helpers/iam-grants.mjs";
-import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   catalogRowNoModel,
@@ -80,23 +81,29 @@ import { storedConfigurationProblem } from "../../apps/controller/src/console/st
 function createConfigurationBackend() {
   // This deliberately simple substrate exercises the real Fastify, IAM, OCC, and audit paths.
   // Kubernetes transport and ConfigMap ownership are verified by the actual Driver's own tests.
+  /** @type {Map<string, import("../../packages/contracts/src/index.ts").Configuration>} */
   const configurations = new Map();
+  /** @param {import("../../packages/contracts/src/index.ts").ConfigurationReference} reference */
   const key = ({ namespaceId, id }) => `${namespaceId}/${id}`;
   return {
     id: "configuration-integration",
-    capability: "configuration",
+    capability: /** @type {const} */ ("configuration"),
     implementation: "integration-memory-substrate",
+    /** @param {import("../../packages/contracts/src/index.ts").Configuration} configuration */
     async create(configuration) {
       configurations.set(key(configuration), structuredClone(configuration));
       return configuration;
     },
+    /** @param {import("../../packages/contracts/src/index.ts").ConfigurationReference} reference */
     async read(reference) {
       return configurations.get(key(reference));
     },
+    /** @param {import("../../packages/contracts/src/index.ts").Configuration} configuration */
     async update(configuration) {
       configurations.set(key(configuration), structuredClone(configuration));
       return configuration;
     },
+    /** @param {import("../../packages/contracts/src/index.ts").ConfigurationReference} reference */
     async delete(reference) {
       configurations.delete(key(reference));
     },
@@ -435,6 +442,13 @@ async function storedRowAgent(context, valid, { name, secretName, executionMode 
     executionMode,
   });
   return { ...agent, configurationDriver: context.configurationDriver, valid };
+}
+
+// A fresh rule-backed fixture with a ready Agent whose stored Configuration selects a runtime.
+async function storedConfigurationFixture(computeId, { name, secretName }) {
+  const context = await kubernetesRuleFixture(computeId, ...configurationRules);
+  const agent = await storedRowAgent(context, runtimeSelected, { name, secretName });
+  return { context, agent };
 }
 
 // Writes a row past OCC, as an older release's create would have stored it.
@@ -1205,15 +1219,11 @@ test("Configuration save refuses a Gateway tool policy that every OpenClaw topol
   // Findings 2688 and 2689. Save and deployment run the real Kubernetes Compute rules. The
   // Agent is embedded, the default: its Gateway applies the policy natively, so a policy only
   // dedicated admission refused saved, deployed and then failed every turn.
-  const context = await kubernetesRuleFixture(
-    "compute-tool-policy-integration",
-    ...configurationRules,
-  );
-  const withPolicy = (gatewayPolicy) => ({ ...runtimeSelected, tools: { gatewayPolicy } });
-  const agent = await storedRowAgent(context, runtimeSelected, {
+  const { context, agent } = await storedConfigurationFixture("compute-tool-policy-integration", {
     name: "Tool policy consumer",
     secretName: "tool-policy-key",
   });
+  const withPolicy = (gatewayPolicy) => ({ ...runtimeSelected, tools: { gatewayPolicy } });
   const administrative = setting(
     "tools.gatewayPolicy.allow",
     "must not grant Gateway administrative tools",
@@ -1284,17 +1294,13 @@ test("Configuration save refuses workspace bootstrap settings native setup refus
   // Finding 2699. Compute copies agents.defaults.skipBootstrap and skipOptionalBootstrapFiles into
   // native workspace setup, which refused an invalid one only after deployment started. Every
   // save path and deployment now refuse it, naming the setting and what it accepts.
-  const context = await kubernetesRuleFixture(
-    "compute-bootstrap-integration",
-    ...configurationRules,
-  );
+  const { context, agent } = await storedConfigurationFixture("compute-bootstrap-integration", {
+    name: "Bootstrap consumer",
+    secretName: "bootstrap-key",
+  });
   const withDefaults = (defaults) => ({
     ...runtimeSelected,
     agents: { defaults: { ...runtimeDefaults, ...defaults } },
-  });
-  const agent = await storedRowAgent(context, runtimeSelected, {
-    name: "Bootstrap consumer",
-    secretName: "bootstrap-key",
   });
   const skipBootstrap = setting("agents.defaults.skipBootstrap", "must be true or false");
   const optionalFiles = setting(
@@ -1394,12 +1400,11 @@ test("Configuration save and deployment refuse settings the pinned OpenClaw reti
   // Finding 2709. The OpenClaw pin removed these settings; its config validation refuses them,
   // and doctor --fix cannot rewrite OCE's read-only Configuration, so a saved one failed only
   // when the Gateway started. Every save path and deployment refuse each, whatever its value.
-  const context = await kubernetesRuleFixture("compute-retired-integration", ...configurationRules);
-  const { configurationDriver } = context;
-  const agent = await storedRowAgent(context, runtimeSelected, {
+  const { context, agent } = await storedConfigurationFixture("compute-retired-integration", {
     name: "Retired settings consumer",
     secretName: "retired-key",
   });
+  const { configurationDriver } = context;
   const flushes = "memory flushes use the session model and its fallbacks";
   const retries = "cyber-policy retries use the active model";
   const explicitControls = "configure the individual security controls explicitly";
@@ -1485,15 +1490,11 @@ test("Configuration save and deployment refuse another spelling of the codex or 
   // codex and acpx settings, and Compute renders codex settings, only at the exact key, so a later
   // `Codex` entry would replace what OCE checked: every save path, Agent save and deployment
   // refuse such a key, whatever it holds.
-  const context = await kubernetesRuleFixture(
-    "compute-plugin-key-integration",
-    ...configurationRules,
-  );
-  const { configurationDriver } = context;
-  const agent = await storedRowAgent(context, runtimeSelected, {
+  const { context, agent } = await storedConfigurationFixture("compute-plugin-key-integration", {
     name: "Plugin entry key consumer",
     secretName: "plugin-key",
   });
+  const { configurationDriver } = context;
   const sentinel = `synthetic-url-userinfo-${randomUUID()}`;
   const proxy = `http://u:${sentinel}@proxy.example:3128`;
   const codex = { config: { appServer: { approvalPolicy: "on-request" } } };
@@ -1632,15 +1633,11 @@ test("Configuration save and deployment refuse a model provider key OpenClaw app
   // puts the longer key last, so it wins there), and `OpenAI` alone would do the same while the
   // probe checks the default endpoint. Every save path, Agent save and deployment refuse such a
   // key, whatever its entry holds.
-  const context = await kubernetesRuleFixture(
-    "compute-provider-key-integration",
-    ...configurationRules,
-  );
-  const { configurationDriver } = context;
-  const agent = await storedRowAgent(context, runtimeSelected, {
+  const { context, agent } = await storedConfigurationFixture("compute-provider-key-integration", {
     name: "Model provider key consumer",
     secretName: "provider-key",
   });
+  const { configurationDriver } = context;
   const checked = { baseUrl: "https://api.openai.com/v1" };
   const elsewhere = { baseUrl: "https://models.example/v1" };
   const withProviders = (providers) => ({ ...runtimeSelected, models: { providers } });
@@ -1692,8 +1689,7 @@ test("Configuration save and deployment refuse OpenClaw's $include directive", a
   // settings no rule checked, such as a gateway.auth.mode Kubernetes Compute refuses, from a file
   // in the Gateway's config directory. Every save path, Agent save and deployment refuse it at any
   // depth; configuration-occ.test.ts proves the paths the refusal names.
-  const context = await kubernetesRuleFixture("compute-include-integration", ...configurationRules);
-  const agent = await storedRowAgent(context, runtimeSelected, {
+  const { context, agent } = await storedConfigurationFixture("compute-include-integration", {
     name: "Config include consumer",
     secretName: "config-include",
   });
@@ -1752,8 +1748,7 @@ test("Configuration save and deployment refuse a plugins.allow or plugins.deny O
   // plugins. Where a plugin runtime applies an overlay (plugin approvers, a managed or catalog
   // plugin), the Gateway entrypoint crashes sooner, when it trims each item. Each of these saved
   // and deployed. Now every save path, Agent save and deployment refuse it, naming the setting.
-  const context = await kubernetesRuleFixture("compute-plugin-policy-list", ...configurationRules);
-  const agent = await storedRowAgent(context, runtimeSelected, {
+  const { context, agent } = await storedConfigurationFixture("compute-plugin-policy-list", {
     name: "Plugin policy list consumer",
     secretName: "plugin-policy-list",
   });
@@ -1806,12 +1801,11 @@ test("Configuration save and deployment refuse OpenClaw's sandbox, which the OCE
   // failed. Every save path, Agent save and deployment run the rule, for the defaults and for one
   // Agent's entry, which overrides them; configuration-occ.test.ts proves each refused and
   // accepted value.
-  const context = await kubernetesRuleFixture("compute-sandbox-integration", ...configurationRules);
-  const { configurationDriver } = context;
-  const agent = await storedRowAgent(context, runtimeSelected, {
+  const { context, agent } = await storedConfigurationFixture("compute-sandbox-integration", {
     name: "Sandbox consumer",
     secretName: "sandbox-key",
   });
+  const { configurationDriver } = context;
   const [sandboxMode, execHost] = OPENCLAW_SANDBOX_SETTINGS;
   const defaultsMode = openClawSandboxRefusal(sandboxMode, sandboxMode.path);
   const defaultsHost = openClawSandboxRefusal(execHost, execHost.path);
@@ -1909,12 +1903,11 @@ test("Agent save, deployment and the Console's draft hold name the same first st
   // holds a draft's Deploy with the module it serves (stored-configuration-rules.mjs), which
   // checked only some of the rules, so it named a later problem than the 400, or none. For each
   // pair of rules, the row that fails both gets the earlier rule's refusal from all three.
-  const context = await kubernetesRuleFixture("compute-stored-order", ...configurationRules);
-  const { configurationDriver } = context;
-  const agent = await storedRowAgent(context, runtimeSelected, {
+  const { context, agent } = await storedConfigurationFixture("compute-stored-order", {
     name: "Stored order consumer",
     secretName: "stored-order-key",
   });
+  const { configurationDriver } = context;
   // One setting each rule refuses, in deploy's order.
   const problems = [
     ["include", ["agents", "defaults", "$include"], "./defaults.json"],
@@ -2962,648 +2955,27 @@ test("Preset save refuses a Codex approval policy every Gateway refuses, as Conf
   assertRefused(launched, policyRetired);
 });
 
-test("Configuration save and Kubernetes deployment refuse caller-owned credentials and channels with one named message", async () => {
-  // Finding 1116: deployment refused these with an unnamed 409; Configuration save accepted them.
-  // Both now run the Kubernetes Compute rule module and name the setting.
-  const configurationDriver = createConfigurationBackend();
-  const { namespace, collection, ...context } = await fixture({
-    configurationDriver,
-    computeDriver: kubernetesRules("compute-caller-settings", ...configurationRules),
-  });
-  const valid = runtimeSelected;
-  const { created, configurationId, item, agentPath } = await deployableAgent(context, namespace, {
-    values: valid,
-    name: "Caller settings consumer",
-    secretName: "caller-key",
-  });
-  const storeAsOlderRelease = (values) =>
-    writePastOcc(configurationDriver, configurationId, values);
-  const binding = "model credentials come from the Agent's Harness authentication binding";
-  const credentialHeader = (name) =>
-    `must not set the credential header "${name}" (its name marks a credential)`;
-
-  for (const [values, message] of [
-    [
-      { ...valid, channels: { discord: { enabled: true } } },
-      unsupportedChannelRefusal("channels.discord"),
-    ],
-    [
-      {
-        ...valid,
-        auth: { profiles: { "openai:default": { provider: "openai", mode: "api_key" } } },
-      },
-      setting("auth", `must be empty: ${binding}`),
-    ],
-    [
-      { ...valid, env: { vars: { OPENAI_BASE_URL: "https://example.invalid/v1" } } },
-      setting(
-        "env.vars.OPENAI_BASE_URL",
-        `must not be set: the Agent's Harness authentication binding owns model provider environment`,
-      ),
-    ],
-    [
-      {
-        ...valid,
-        models: {
-          providers: { openai: { headers: { "X-Api-Key": "${OPENAI_API_KEY}" }, models: [] } },
-        },
-      },
-      setting("models.providers.openai.headers", `${credentialHeader("X-Api-Key")}: ${binding}`),
-    ],
-    // OpenClaw's request transport overrides carry credentials too (finding 1142).
-    [
-      {
-        ...valid,
-        models: {
-          providers: {
-            openai: { request: { headers: { Authorization: "Bearer ${MODEL_TOKEN}" } } },
-          },
-        },
-      },
-      setting(
-        "models.providers.openai.request.headers",
-        `${credentialHeader("Authorization")}: ${binding}`,
-      ),
-    ],
-    [
-      {
-        ...valid,
-        models: {
-          providers: {
-            openai: {
-              request: { auth: { mode: "authorization-bearer", token: "${MODEL_TOKEN}" } },
-            },
-          },
-        },
-      },
-      setting(
-        "models.providers.openai.request.auth",
-        `must be unset or {mode: "provider-default"}: ${binding}`,
-      ),
-    ],
-    // A provider the primary model does not select is still reachable (imageModel, /model).
-    [
-      {
-        ...valid,
-        models: {
-          providers: { google: { headers: { "x-goog-api-key": "${GOOGLE_API_KEY}" } } },
-        },
-      },
-      setting(
-        "models.providers.google.headers",
-        `${credentialHeader("x-goog-api-key")}: ${binding}`,
-      ),
-    ],
-  ]) {
-    const label = JSON.stringify(values);
-    const rejected = await request(context.app, "POST", collection, {
-      body: { kind: "agent", values },
-    });
-    assert.equal(rejected.status, 400, `${label}: ${JSON.stringify(rejected.body)}`);
-    assert.equal(rejected.body.error.message, message, label);
-    const replaced = await request(context.app, "PATCH", item, { body: { values } });
-    assert.equal(replaced.status, 400, label);
-    assert.equal(replaced.body.error.message, message, label);
-    const unchanged = await request(context.app, "GET", item);
-    assert.deepEqual(unchanged.body.data, created.body.data, label);
-
-    // A row an older release stored still reads; deployment refuses it with the same text.
-    await storeAsOlderRelease(values);
-    const read = await request(context.app, "GET", item);
-    assert.equal(read.status, 200, label);
-    assert.deepEqual(read.body.data.values, values, label);
-    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
-    assert.equal(deployed.status, 400, `${label}: ${JSON.stringify(deployed.body)}`);
-    assert.equal(deployed.body.error.message, message, label);
-    // Agent save checks the same rule on the stored row.
-    const agentSaved = await request(context.app, "PATCH", agentPath, {
-      body: { configurationId },
-    });
-    assert.equal(agentSaved.status, 400, `${label}: ${JSON.stringify(agentSaved.body)}`);
-    assert.equal(agentSaved.body.error.message, message, label);
-    await storeAsOlderRelease(valid);
-  }
-  assert.equal(configurationDriver.storedConfigurations().length, 1);
-
-  // The provider apiKey rule depends only on the Configuration's primary model and Harness, so
-  // save refuses it too (finding 1299), and deployment names it on a row stored earlier.
-  const apiKey = {
-    ...valid,
-    models: {
-      providers: {
-        openai: { apiKey: { source: "env", provider: "default", id: "OTHER_MODEL_KEY" } },
-      },
-    },
-  };
-  const apiKeyRefusal = setting(
-    "models.providers.openai.apiKey",
-    "must be ${OPENAI_API_KEY} or an env SecretRef to OPENAI_API_KEY, which the Agent's Harness authentication binding supplies",
-  );
-  const saved = await request(context.app, "PATCH", item, { body: { values: apiKey } });
-  assert.equal(saved.status, 400, JSON.stringify(saved.body));
-  assert.equal(saved.body.error.message, apiKeyRefusal);
-  await storeAsOlderRelease(apiKey);
-  const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
-  assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
-  assert.equal(deployed.body.error.message, apiKeyRefusal);
-  await storeAsOlderRelease(valid);
-  // Agent save checks what depends on the Agent: an embedded Agent cannot serve a channel. The
-  // Installation's channel runtime and the channel's Secret bindings wait for deployment.
-  const slack = {
-    ...valid,
-    channels: {
-      slack: {
-        enabled: true,
-        mode: "socket",
-        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-      },
-    },
-  };
-  await updateSaved(context, item, slack);
-  const embeddedSlack = setting(
-    "channels.slack",
-    "is enabled, but channels require a dedicated Agent workload",
-  );
-  const agentUpdate = await request(context.app, "PATCH", agentPath, {
-    body: { configurationId },
-  });
-  assert.equal(agentUpdate.status, 400, JSON.stringify(agentUpdate.body));
-  assert.equal(agentUpdate.body.error.message, embeddedSlack);
-  const slackDeploy = await request(context.app, "POST", `${agentPath}/deploy`);
-  assert.equal(slackDeploy.status, 400);
-  assert.equal(slackDeploy.body.error.message, embeddedSlack);
-  const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
-  assert.deepEqual(revisions.body.data, []);
-
-  // A disabled unsupported channel and a non-credential env name still save.
-  for (const values of [
-    { ...valid, channels: { discord: { enabled: false } } },
-    { ...valid, env: { vars: { HTTP_PROXY: "http://proxy:3128" } } },
-  ]) {
-    await updateSaved(context, item, values, JSON.stringify(values));
-  }
-});
-
-test("Configuration create, update and Agent create's check refuse a channel credential reference without a Secret binding (finding 2319)", async () => {
-  // The bundled Kubernetes Compute delivers channel credentials only from Configuration Secret
-  // bindings. Deployment refused an unbound reference; create and update carry values and
-  // bindings in one request, so OCC refuses it where it is written, with the setting and the
-  // missing name.
-  const configurationDriver = createConfigurationBackend();
-  const { namespace, collection, ...context } = await fixture({
-    configurationDriver,
-    computeDriver: kubernetesRules("compute-channel-bindings", ...configurationRules),
-    computeImplementation: "kubernetes-local",
-  });
-  const valid = runtimeSelected;
-  const { created, configurationId, item } = await deployableAgent(context, namespace, {
-    values: valid,
-    name: "Channel bindings consumer",
-    secretName: "channel-bindings-key",
-  });
-  const binding = async (name) => {
-    const secret = await context.controller.createSecret(context.principal.id, {
-      namespaceId: namespace.id,
-      name,
-      value: `synthetic-${name}`,
-    });
-    return { source: secret.ref, delivery: { type: "env" } };
-  };
-  const bothBindings = {
-    SLACK_APP_TOKEN: await binding("slack-app"),
-    SLACK_BOT_TOKEN: await binding("slack-bot"),
-  };
-  const slackWith = (slack) => ({
-    ...valid,
-    channels: {
-      slack: {
-        enabled: true,
-        mode: "socket",
-        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-        botToken: "${SLACK_BOT_TOKEN}",
-        ...slack,
-      },
-    },
-  });
-  const slack = slackWith({});
-  const botRefusal = unboundReferenceRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN");
-  const appRefusal = unboundReferenceRefusal("channels.slack.appToken", "SLACK_APP_TOKEN");
-  const unchanged = async (label) =>
-    assert.deepEqual((await request(context.app, "GET", item)).body.data, created.body.data, label);
-
-  // Create: one binding of two is refused, naming the other; both save.
-  assertRefused(
-    await request(context.app, "POST", collection, {
-      body: {
-        kind: "agent",
-        values: slack,
-        secretBindings: { SLACK_APP_TOKEN: bothBindings.SLACK_APP_TOKEN },
-      },
-    }),
-    botRefusal,
-    { label: "create with one binding" },
-  );
-  const saved = await request(context.app, "POST", collection, {
-    body: { kind: "agent", values: slack, secretBindings: bothBindings },
-  });
-  assert.equal(saved.status, 201, JSON.stringify(saved.body));
-
-  // Update that adds the references and keeps the Configuration's bindings (none).
-  assertRefused(
-    await request(context.app, "PATCH", item, { body: { values: slack } }),
-    appRefusal,
-    { label: "update adds references" },
-  );
-  await unchanged("update adds references");
-  // Values and bindings in one update save; then an update that drops one binding is refused.
-  const bound = await request(context.app, "PATCH", item, {
-    body: { values: slack, secretBindings: bothBindings },
-  });
-  assert.equal(bound.status, 200, JSON.stringify(bound.body));
-  // An update of values only, as the Console's Configuration JSON editor sends, keeps and checks
-  // against the stored bindings.
-  const valuesOnly = await updateSaved(context, item, slack);
-  assert.deepEqual(valuesOnly.body.data.secretBindings, bothBindings);
-  assertRefused(
-    await request(context.app, "PATCH", item, {
-      body: { values: slack, secretBindings: { SLACK_BOT_TOKEN: bothBindings.SLACK_BOT_TOKEN } },
-    }),
-    appRefusal,
-    { label: "update removes a binding" },
-  );
-  assert.deepEqual(
-    (await request(context.app, "GET", item)).body.data,
-    valuesOnly.body.data,
-    "update removes a binding",
-  );
-
-  // A reference under a named account names its own setting; a disabled channel is not checked.
-  assertRefused(
-    await request(context.app, "PATCH", item, {
-      body: {
-        values: slackWith({ accounts: { work: { botToken: "${WORK_BOT_TOKEN}" } } }),
-        secretBindings: bothBindings,
-      },
-    }),
-    unboundReferenceRefusal("channels.slack.accounts.work.botToken", "WORK_BOT_TOKEN"),
-    { label: "named account" },
-  );
-  // A binding is an own key: an inherited name such as `constructor` binds nothing.
-  assertRefused(
-    await request(context.app, "PATCH", item, {
-      body: {
-        values: slackWith({ botToken: { source: "env", provider: "default", id: "constructor" } }),
-        secretBindings: bothBindings,
-      },
-    }),
-    unboundReferenceRefusal("channels.slack.botToken", "constructor"),
-    { label: "inherited name" },
-  );
-  // The runtime does not substitute a lowercase name, so it would send `${constructor}` itself as
-  // the token: a secret-input field refuses it, whatever the bindings hold (finding 2477).
-  assertRefused(
-    await request(context.app, "PATCH", item, {
-      body: { values: slackWith({ botToken: "${constructor}" }), secretBindings: bothBindings },
-    }),
-    unsubstitutedReferenceRefusal("channels.slack.botToken", "${constructor}"),
-    { label: "lowercase name" },
-  );
-  const disabled = await request(context.app, "PATCH", item, {
-    body: { values: slackWith({ enabled: false }), secretBindings: {} },
-  });
-  assert.equal(disabled.status, 200, JSON.stringify(disabled.body));
-
-  // A row an older release stored without bindings still reads. As for every save rule, an
-  // update that keeps the reference unbound is refused even when it changes something else, and
-  // one that adds the bindings repairs it.
-  await writePastOcc(configurationDriver, configurationId, slack);
-  const stored = await request(context.app, "GET", item);
-  assert.equal(stored.status, 200, JSON.stringify(stored.body));
-  assert.deepEqual(stored.body.data.values, slack);
-  assertRefused(
-    await request(context.app, "PATCH", item, {
-      body: { values: { ...slack, env: { vars: { HTTP_PROXY: "http://proxy:3128" } } } },
-    }),
-    appRefusal,
-    { label: "unrelated update of a stored row" },
-  );
-  const repaired = await request(context.app, "PATCH", item, {
-    body: { values: slack, secretBindings: bothBindings },
-  });
-  assert.equal(repaired.status, 200, JSON.stringify(repaired.body));
-  assert.deepEqual(repaired.body.data.secretBindings, bothBindings);
-
-  // Agent create's check refuses the reference when the caller sends the bindings it will save,
-  // before any Secret or Configuration is saved; without them, that check is skipped.
-  const validate = (configuration) =>
-    request(context.app, "POST", `/namespaces/${namespace.id}/agents/validate`, {
-      body: { configuration: { kind: "agent", ...configuration }, executionMode: "dedicated" },
-    });
-  assertRefused(
-    await validate({
-      values: slack,
-      secretBindings: { SLACK_APP_TOKEN: bothBindings.SLACK_APP_TOKEN },
-    }),
-    botRefusal,
-    { label: "validate" },
-  );
-  for (const configuration of [
-    { values: slack, secretBindings: bothBindings },
-    { values: slack },
-  ]) {
-    const checked = await validate(configuration);
-    assert.equal(checked.status, 204, JSON.stringify(checked.body));
-  }
-});
-
-// The Slack Channel Driver reads a token only from an env SecretRef with the default provider or
-// one whole `${NAME}`, and refuses any other SecretRef with binding_required at provisioning and
-// deployment. Save refuses those where the binding rule runs, for exactly the tokens the Driver
-// checks, naming the setting and never the value (finding 2514).
-test("Configuration save and Agent create's check refuse a Slack token SecretRef the Slack Channel Driver cannot read", async (t) => {
-  // The real Filesystem Configuration Driver, whose credential slot rule runs after OCC's.
-  const root = await temporaryDirectory(t, "occ-slack-token-refs-");
-  const { namespace, collection, ...context } = await fixture({
-    configurationDriver: new FilesystemConfigurationDriver(root),
-    computeDriver: kubernetesRules("compute-slack-token-refs", ...configurationRules),
-    computeImplementation: "kubernetes-local",
-  });
-  await context.controller.transact((state) =>
-    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-  );
-  const binding = async (name) => {
-    const secret = await context.controller.createSecret(context.principal.id, {
-      namespaceId: namespace.id,
-      name,
-      value: `synthetic-${name}`,
-    });
-    return { source: secret.ref, delivery: { type: "env" } };
-  };
-  const secretBindings = {
-    SLACK_APP_TOKEN: await binding("slack-app"),
-    SLACK_BOT_TOKEN: await binding("slack-bot"),
-  };
-  const appToken = { source: "env", provider: "default", id: "SLACK_APP_TOKEN" };
-  const fileRef = { source: "file", provider: "default", id: "/run/slack/bot" };
-  const slackWith = (slack) => ({
-    ...runtimeSelected,
-    channels: {
-      slack: { enabled: true, mode: "socket", appToken, botToken: "${SLACK_BOT_TOKEN}", ...slack },
-    },
-  });
-  const save = (values) =>
-    request(context.app, "POST", collection, { body: { kind: "agent", values, secretBindings } });
-  const validate = (values) =>
-    request(context.app, "POST", `/namespaces/${namespace.id}/agents/validate`, {
-      body: {
-        configuration: { kind: "agent", values, secretBindings },
-        executionMode: "dedicated",
-      },
-    });
-
-  for (const [slack, path] of [
-    [{ botToken: fileRef }, "channels.slack.botToken"],
-    [{ appToken: { source: "exec", provider: "default", id: "slack" } }, "channels.slack.appToken"],
-    [
-      { botToken: { source: "env", provider: "vault", id: "SLACK_BOT_TOKEN" } },
-      "channels.slack.botToken",
-    ],
-    [{ accounts: { work: { botToken: fileRef } } }, "channels.slack.accounts.work.botToken"],
-    // An account named "default" replaces the implicit one, and inherits the channel's token.
-    [{ botToken: fileRef, accounts: { default: { appToken } } }, "channels.slack.botToken"],
-  ]) {
-    const values = slackWith(slack);
-    const label = JSON.stringify(slack);
-    assertRefused(await save(values), unreadableSlackReference(path), {
-      label,
-      sentinel: "/run/slack/bot",
-    });
-    assertRefused(await validate(values), unreadableSlackReference(path), { label });
-  }
-  // The Driver reads no other object either, and the Configuration Driver accepts one there, so
-  // it is refused without being called a SecretRef, never echoing the value (finding 2518).
-  for (const botToken of [{ value: "xoxb-not-a-reference" }, {}]) {
-    assertRefused(
-      await save(slackWith({ botToken })),
-      unreadableSlackTokenRefusal("channels.slack.botToken", "object"),
-      { label: JSON.stringify(botToken), sentinel: "xoxb-not-a-reference" },
-    );
-  }
-  // The Driver skips the app token in HTTP mode, a disabled account and fields it does not read,
-  // and the channel's token when an account called "default" sets its own (finding 2519).
-  for (const slack of [
-    { mode: "http", appToken: fileRef },
-    { accounts: { work: { enabled: false, botToken: fileRef } } },
-    { signingSecret: fileRef },
-    { botToken: fileRef, accounts: { default: { appToken, botToken: "${SLACK_BOT_TOKEN}" } } },
-    // The Driver reads an env SecretRef without a provider as the default one.
-    { botToken: { source: "env", id: "SLACK_BOT_TOKEN" } },
-  ]) {
-    const saved = await save(slackWith(slack));
-    assert.equal(saved.status, 201, `${JSON.stringify(slack)}: ${JSON.stringify(saved.body)}`);
-  }
-});
-
-// Another Compute may resolve channel credentials without OCC Secret bindings (SSH Compute reads
-// the host's operator-owned environment file), so OCC applies the binding rule only on the
-// bundled Kubernetes Compute (finding 2319).
-test("Configuration save keeps an unbound channel credential reference on a Compute other than the bundled Kubernetes one", async () => {
-  const { collection, ...context } = await fixture({
-    computeDriver: kubernetesRules("compute-other-channel-bindings", ...configurationRules),
-  });
-  const slack = {
-    ...runtimeSelected,
-    channels: {
-      slack: {
-        enabled: true,
-        mode: "socket",
-        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-        botToken: "${SLACK_BOT_TOKEN}",
-      },
-    },
-  };
-  const saved = await request(context.app, "POST", collection, {
-    body: { kind: "agent", values: slack },
-  });
-  assert.equal(saved.status, 201, JSON.stringify(saved.body));
-});
-
-// The bundled Kubernetes Compute has two implementations: the Installation default
-// (`occ/kubernetes`) and the Driver's own default (`kubernetes-local`). Under either, OCC checks
-// every enabled channel, not only the first, and Agent provisioning checks the bindings it
-// creates the Configuration with, none when the request sends none (finding 2319).
-for (const computeImplementation of ["occ/kubernetes", "kubernetes-local"]) {
-  test(`Configuration create and Agent provisioning check every channel's credential references on ${computeImplementation}`, async () => {
-    const backend = createConfigurationBackend();
-    const { namespace, collection, ...context } = await fixture({
-      // Agent provisioning requires exact create and inspect; the refusal comes first.
-      configurationDriver: {
-        ...backend,
-        createExact: (configuration) => backend.create(configuration),
-        inspectExact: async () => undefined,
-      },
-      computeDriver: Object.assign(
-        kubernetesRules(`compute-channels-${computeImplementation}`, ...configurationRules),
-        {
-          agentProvisioning: { executionModes: ["dedicated"] },
-          validateAgentProvisioning() {},
-          async provisionAgentRuntimeCredentials() {
-            return { transportConfigured: true };
-          },
-          async getAgentRuntimeCredentialStatus() {
-            return { transportConfigured: false };
-          },
-        },
-      ),
-      computeImplementation,
-    });
-    await context.controller.transact((state) =>
-      state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-    );
-    const binding = async (name) => {
-      const secret = await context.controller.createSecret(context.principal.id, {
-        namespaceId: namespace.id,
-        name,
-        value: `synthetic-${name}`,
-      });
-      return { source: secret.ref, delivery: { type: "env" } };
+registerConfigurationChannelCredentialCases({
+  createConfigurationBackend,
+  async fixture(options) {
+    const context = await fixture(options);
+    return {
+      context,
+      request: (method, pathname, body) => request(context.app, method, pathname, { body }),
+      readyAgent: (agentId, configurationId, secretName) =>
+        readyAgent(context, context.namespace, agentId, configurationId, secretName),
     };
-    const slackBindings = {
-      SLACK_APP_TOKEN: await binding("slack-app"),
-      SLACK_BOT_TOKEN: await binding("slack-bot"),
-    };
-    const values = {
-      ...runtimeSelected,
-      channels: {
-        slack: {
-          enabled: true,
-          mode: "socket",
-          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-          botToken: "${SLACK_BOT_TOKEN}",
-        },
-        msteams: { enabled: true, appPassword: "${MSTEAMS_APP_PASSWORD}" },
-      },
-    };
-    const create = (secretBindings) =>
-      request(context.app, "POST", collection, { body: { kind: "agent", values, secretBindings } });
-
-    // The first channel's references are bound; the second channel's is not.
-    assertRefused(
-      await create(slackBindings),
-      unboundReferenceRefusal("channels.msteams.appPassword", "MSTEAMS_APP_PASSWORD"),
-    );
-    const allBindings = {
-      ...slackBindings,
-      MSTEAMS_APP_PASSWORD: await binding("msteams-password"),
-    };
-    const saved = await create(allBindings);
-    assert.equal(saved.status, 201, JSON.stringify(saved.body));
-    // The runtime substitutes a reference anywhere in a value, and with a `:-fallback` too: an
-    // unbound name is never set, so the fallback (here empty) would replace it. Each needs a
-    // binding, and the first unbound one is named (finding 2475). `$${NAME}` is the runtime's
-    // escape for literal text, not a reference.
-    const withAppPassword = (appPassword) => ({
-      ...values,
-      channels: { ...values.channels, msteams: { enabled: true, appPassword } },
-    });
-    // In this secret-input field the runtime also reads a whole `$NAME` as an environment
-    // SecretRef (finding 2476).
-    for (const appPassword of [
-      "secret-${MSTEAMS_TENANT_SECRET}",
-      "${MSTEAMS_TENANT_SECRET:-}",
-      "${MSTEAMS_APP_PASSWORD}-${MSTEAMS_TENANT_SECRET:-fallback}",
-      "$MSTEAMS_TENANT_SECRET",
-    ]) {
-      assertRefused(
-        await request(context.app, "PATCH", `${collection}/${saved.body.data.id}`, {
-          body: { values: withAppPassword(appPassword), secretBindings: allBindings },
-        }),
-        unboundReferenceRefusal("channels.msteams.appPassword", "MSTEAMS_TENANT_SECRET"),
-        { label: appPassword },
-      );
-    }
-    // A `${` the runtime does not substitute (a lowercase name, `-` without `:`) would reach
-    // Teams as written, so it is refused even with every binding (finding 2477). That text may be
-    // the password itself: the message shows only a lowercase `${name}` or the name before `-`,
-    // and never the rest of the value.
-    const secretText = "9f3c2a7b1d8e4f60a5b6c7d8e9f01234";
-    for (const [appPassword, message] of [
-      [
-        "${msteams_password}",
-        unsubstitutedReferenceRefusal("channels.msteams.appPassword", "${msteams_password}"),
-      ],
-      [`\${${secretText}}`, unsubstitutedReferenceRefusal("channels.msteams.appPassword")],
-      [
-        `${secretText}\${MSTEAMS_APP_PASSWORD-${secretText}}`,
-        unsubstitutedFallbackRefusal("channels.msteams.appPassword", "MSTEAMS_APP_PASSWORD"),
-      ],
-    ]) {
-      assertRefused(
-        await request(context.app, "PATCH", `${collection}/${saved.body.data.id}`, {
-          body: { values: withAppPassword(appPassword), secretBindings: allBindings },
-        }),
-        message,
-        { label: appPassword, sentinel: secretText },
-      );
-    }
-    // A token shaped like a name is shown only when it is lowercase, as a mistyped name is: a
-    // mixed-case one may be the password (finding 2485).
-    const identifierToken = "Zr9kq2LmP4xT7vB1nW3c";
-    assertRefused(
-      await request(context.app, "PATCH", `${collection}/${saved.body.data.id}`, {
-        body: { values: withAppPassword(`\${${identifierToken}}`), secretBindings: allBindings },
-      }),
-      unsubstitutedReferenceRefusal("channels.msteams.appPassword"),
-      { label: identifierToken, sentinel: identifierToken },
-    );
-    for (const appPassword of [
-      "${MSTEAMS_APP_PASSWORD}$${MSTEAMS_TENANT_SECRET}",
-      "$MSTEAMS_APP_PASSWORD",
-    ]) {
-      const accepted = await request(context.app, "PATCH", `${collection}/${saved.body.data.id}`, {
-        body: { values: withAppPassword(appPassword), secretBindings: allBindings },
-      });
-      assert.equal(accepted.status, 200, `${appPassword}: ${JSON.stringify(accepted.body)}`);
-    }
-    // A Preset carries no Secret bindings, so its defaults are not checked against any: the
-    // Configuration created from it is checked with its own bindings.
-    const preset = await savePreset(context, { configuration: { values } }, "Channels");
-    assert.equal(preset.status, 201, JSON.stringify(preset.body));
-
-    // Provisioning without bindings is checked against none: the first reference is refused
-    // before the Configuration is created.
-    const harnessSecret = await context.controller.createSecret(context.principal.id, {
-      namespaceId: namespace.id,
-      name: "channels-agent-key",
-      value: "synthetic-configuration-key",
-    });
-    await assert.rejects(
-      context.controller.provisionAgent(context.principal.id, {
-        namespaceId: namespace.id,
-        requestId: "channels-agent",
-        name: "Channels",
-        executionMode: "dedicated",
-        // Channels need a dedicated OpenClaw, which lists its native model catalog.
-        configuration: {
-          kind: "agent",
-          values: {
-            ...createHarnessConfiguration("openclaw", "gpt-4.1"),
-            channels: values.channels,
-          },
-        },
-        harnessAuth: { method: "api_key", source: harnessSecret.ref },
-      }),
-      {
-        name: "ConfigurationHarnessError",
-        message: unboundReferenceRefusal("channels.slack.appToken", "SLACK_APP_TOKEN"),
-      },
-    );
-    assert.deepEqual(
-      backend.storedConfigurations().map(({ id }) => id),
-      [saved.body.data.id],
-    );
-  });
-}
+  },
+  runtimeSelected,
+  setting,
+  assertRefused,
+  unsupportedChannelRefusal,
+  unboundReferenceRefusal,
+  unreadableSlackReference,
+  unreadableSlackTokenRefusal,
+  unsubstitutedReferenceRefusal,
+  unsubstitutedFallbackRefusal,
+});
 
 test("Configuration save refuses a model selection or apiKey off the primary model's provider, naming the setting", async (t) => {
   // Findings 1298 and 1299: these saved and failed only at deployment, which named no setting

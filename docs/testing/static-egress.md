@@ -77,7 +77,7 @@ credential reflection, rejection fencing and withdrawal. Sequential requests exc
 blocked Secret reads fill the 1,024 active slots, which delivery releases.
 
 The digest regression reads in-memory committed authorization without sending.
-`postgres-egress-send-receipts.test.mjs` uses PostgreSQL, a fault proxy and a byte-counting
+`postgres-egress-send-receipts.test.ts` uses PostgreSQL, a fault proxy and a byte-counting
 origin. It drops the second COMMIT reply after reservation, verifies no permit or
 origin arrival, then reconstructs the Forwarder before the deadline to exclude
 replacement sends. Policy, material and acceptance remain synthetic. Other cases

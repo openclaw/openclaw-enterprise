@@ -9,7 +9,7 @@ import {
   type DeploymentStatusResult,
 } from "../../packages/occ/src/index.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { repositoryBoundary } from "../helpers/postgres-worker-revision-support.mjs";
 import {

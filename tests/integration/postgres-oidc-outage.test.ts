@@ -14,7 +14,6 @@ import {
   authOperation,
   injectLocalhost,
   integer,
-  onboarded,
   oidcSignIn,
   passwordSignIn,
   record,
@@ -26,7 +25,7 @@ import {
 } from "../helpers/postgres-sign-in-test-boundaries.ts";
 import { runPasswordFallbackCases } from "./postgres-oidc-password-fallback-cases.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";
 
 const memberSubject = 7_000_001;
 // The production slow lane with shorter floors: 250 ms doubling to a 500 ms cap instead of
@@ -69,18 +68,15 @@ test(
     // Password onboarding on the default install, then the OIDC upgrade. Members read the
     // Installation but do not administer it, so a spent email refuses them.
     assert.ok(provider, "OIDC provider fixture is configured");
-    const { admin, accounts } = onboarded(
-      await authOperation("Password onboarding", () =>
-        onboard({
-          accounts: {
-            member: { email: "outage-member@example.test" },
-            other: { email: "outage-other@example.test" },
-            resetMember: { email: "outage-reset@example.test" },
-            disabledMember: { email: "outage-disabled@example.test" },
-          },
-        }),
-      ),
-      ["member", "other", "resetMember", "disabledMember"],
+    const { admin, accounts } = await authOperation("Password onboarding", () =>
+      onboard({
+        accounts: {
+          member: { email: "outage-member@example.test" },
+          other: { email: "outage-other@example.test" },
+          resetMember: { email: "outage-reset@example.test" },
+          disabledMember: { email: "outage-disabled@example.test" },
+        },
+      }),
     );
     const { member, other, resetMember, disabledMember } = accounts;
     const app = (apps.app = await authOperation("Production composition", () =>

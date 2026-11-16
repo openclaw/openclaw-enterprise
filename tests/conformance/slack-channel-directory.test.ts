@@ -18,7 +18,7 @@ import {
   requestThroughProxy,
   startGatewayProxy,
 } from "../helpers/gateway-proxy.ts";
-import { within } from "../helpers/wait-for.mjs";
+import { within } from "../helpers/wait-for.ts";
 
 const token = "xoxb-fixture";
 

@@ -4,7 +4,7 @@ import { writeFile } from "node:fs/promises";
 import net from "node:net";
 import type { TestContext } from "node:test";
 import { join } from "node:path";
-import { reservedPortArgs, reservePort } from "./available-port.mjs";
+import { reservedPortArgs, reservePort } from "./available-port.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 /**

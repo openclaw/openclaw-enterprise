@@ -3,7 +3,7 @@ import { lstat, readFile, writeFile, rename } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer, request } from "node:https";
 import type { Socket } from "node:net";
-import { startGitHubFixture } from "../repository-credentials/github.mjs";
+import { startGitHubFixture } from "../repository-credentials/github.ts";
 import { startGitSmartHttpFixture } from "../repository-credentials/git.mjs";
 
 export type ProviderReport = {
@@ -12,22 +12,16 @@ export type ProviderReport = {
   errors: string[];
   issues: unknown[];
   tokens: { static?: boolean; revoked: boolean }[];
-  apiTrace: { method: string; target: string; tokenIndex?: number | undefined }[];
+  apiTrace: {
+    method: string | undefined;
+    target: string | undefined;
+    tokenIndex?: number | undefined;
+  }[];
   gitTrace: { path: string; gitProtocol?: string | string[] | undefined }[];
 };
 
 type Cleanup = () => void | Promise<void>;
 type FixtureContext = { after: (callback: Cleanup) => void };
-type GitHubFixture = {
-  origin: string;
-  acceptStatic(token: string): number;
-  authorize(authorization: string | undefined, boundary: "git"): boolean;
-  issuesOfTokens: ProviderReport["issues"];
-  tokenState(): ProviderReport["tokens"];
-  trace: ProviderReport["apiTrace"];
-  errors: ProviderReport["errors"];
-};
-
 // Only this trusted fixture container sees provider material. The production
 // service still uses its fixed HTTPS origins and verifies their certificates.
 const cleanup: Cleanup[] = [];
@@ -36,6 +30,8 @@ const tls = {
   key: await readFile("/inputs/tls.key"),
   cert: await readFile("/inputs/tls.crt"),
   ca: await readFile("/inputs/tls.crt"),
+  keyFile: "/inputs/tls.key",
+  certFile: "/inputs/tls.crt",
 };
 const secrets: string[] = [];
 // Hold the first credential use once, so the host can probe the Agent container
@@ -67,15 +63,7 @@ async function holdOnce() {
   }
   throw new Error("fixture-hold-timeout");
 }
-// The mounted peers accept loaded TLS material. GitHub only reads the clock's
-// wall time, and neither peer needs the paths produced by their default TLS setup.
-type GitHubClock = NonNullable<Parameters<typeof startGitHubFixture>[1]>["clock"];
-type GitFixtureTls = NonNullable<
-  NonNullable<Parameters<typeof startGitSmartHttpFixture>[1]>["tls"]
->;
-
-const githubOptions = { tls, clock: { wallNow: () => Date.now() } as GitHubClock };
-const github: GitHubFixture = await startGitHubFixture(context, githubOptions);
+const github = await startGitHubFixture(context, { tls, clock: { wallNow: Date.now } });
 secrets.push(tls.key.toString().split("\n")[1]!);
 {
   // The token exists only here and in the service's read-only input mount. The host
@@ -92,7 +80,7 @@ secrets.push(tls.key.toString().split("\n")[1]!);
   await writeFile("/inputs/token", `${token}\n`, { mode: 0o600 });
 }
 const git = await startGitSmartHttpFixture(context, {
-  tls: tls as GitFixtureTls,
+  tls,
   authorize: github.authorize,
 });
 const githubOrigin = new URL(github.origin);
