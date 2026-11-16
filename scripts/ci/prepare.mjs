@@ -7,10 +7,8 @@ import { promisify } from "node:util";
 import {
   appendFile,
   chmod,
-  lstat,
   link,
   mkdir,
-  mkdtemp,
   open,
   readFile,
   rename,
@@ -33,7 +31,7 @@ import {
 } from "./runtime-artifact.ts";
 import { cleanupResourceIds } from "./cleanup.ts";
 import { withStateLock } from "./state-lock.ts";
-import { runPostgresAdmin } from "./postgres-admin.ts";
+import { createPostgresPreparation } from "./prepare-postgres.ts";
 import { createK3dFixtureStorage } from "./k3d-fixture-storage.ts";
 import { createK3dNodeImages } from "./k3d-node-images.ts";
 import {
@@ -53,7 +51,21 @@ import { prepareGatewayRouting } from "./routing.ts";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.ts";
 import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
 import { ownedName, randomSuffix, slug } from "./resource-names.ts";
-import { registryImage } from "./fixture-support-images.mjs";
+import { registryImage } from "./fixture-support-images.ts";
+import {
+  assertNodeBaseImage,
+  imageBuildArgs,
+  imageBuildBudgetMs,
+  imageBuildDeadlineMs,
+  imageBuildTestReserveMs,
+  imageCacheLanes,
+  imageCacheObservation,
+  laneImageCommand,
+  localImageBuildArgs,
+  observesImageCache,
+  reuseEngineImage,
+  warmImageBuildCache,
+} from "./image-build-cache.ts";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.ts";
 import { imageInventory, laneImagesResourceKind } from "./lane-images.ts";
 import { imageConfigDigest } from "./image-config-digest.ts";
@@ -72,7 +84,6 @@ import { prepareCodexSeccompProfile } from "../lib/codex-seccomp-k3d.ts";
 import { prepareOpenShell, validateOpenShellSelection } from "./openshell.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
 const runtimeDockerfile = join(repositoryRoot, "deploy/runtime/Dockerfile");
 const fixtureDockerContext = join(repositoryRoot, "tests/fixtures/kubernetes");
 const testSuitesManifestPath = join(repositoryRoot, "scripts/ci/test-suites.json");
@@ -167,13 +178,13 @@ function parseArgs(argv) {
     if (!arg.startsWith("--")) {
       throw new Error(`Unexpected argument: ${arg}`);
     }
-    if (arg.startsWith("--require-cache-export=")) {
-      throw new Error("--require-cache-export is a flag and takes no value.");
-    }
     const name = arg.slice(2);
-    if (name === "require-cache-export") {
-      args[name] = true;
-      continue;
+    if (
+      /^(?:warm-image-cache|require-cache-export|node-base-image|validate-node-base-image)(?:=|$)/u.test(
+        name,
+      )
+    ) {
+      throw new Error("Image cache warming uses scripts/ci/warm-image-cache.ts.");
     }
     const value = argv[index + 1];
     if (value === undefined || value.startsWith("--")) {
@@ -184,12 +195,6 @@ function parseArgs(argv) {
     }
   }
   return args;
-}
-
-function databaseName(kind, label) {
-  const prefix =
-    kind === "failures" ? "openclaw_failures" : kind === "k8s" ? "openclaw_k8s" : "openclaw_ci";
-  return ownedName(prefix, label, { maxLength: 63, separator: "_" });
 }
 
 function laneName(lane) {
@@ -536,327 +541,6 @@ function repositoryCredentialsImageJournal(statePath, state) {
   };
 }
 
-function dockerArgsForPostgres(resource, ...args) {
-  return ["compose", "-f", resource.composeFile, "-p", resource.name, ...args];
-}
-
-function postgresUrl(role, password, port, database) {
-  return `postgresql://${role}:${password}@127.0.0.1:${port}/${database}`;
-}
-
-function quoteIdentifier(value) {
-  if (!/^[a-z0-9_]+$/.test(value)) {
-    throw new Error(`Unsafe PostgreSQL identifier: ${value}`);
-  }
-  return `"${value.replaceAll('"', '""')}"`;
-}
-
-function postgresResource(state) {
-  return state.resources.find((resource) => resource.kind === "compose-postgres");
-}
-
-async function ensurePostgresServer(statePath, state) {
-  const existing = postgresResource(state);
-  if (existing) {
-    return existing;
-  }
-  await commandAvailable(process.env.OCC_DOCKER_BIN ?? "docker", [
-    "version",
-    "--format",
-    "{{.Server.Version}}",
-  ]);
-  const project = ownedName("openclaw-ci-pg", state.prefix, { maxLength: 63, separator: "_" });
-  const directory = join(dirname(statePath), `${project}-bootstrap`);
-  try {
-    await lstat(directory);
-    throw new Error(`Refusing existing PostgreSQL bootstrap directory: ${directory}`);
-  } catch (error) {
-    if (error.code !== "ENOENT") {
-      throw error;
-    }
-  }
-  const resource = addResource(state, "compose-postgres", {
-    name: project,
-    directory,
-    directoryCreated: false,
-    initSqlCreated: false,
-    composeFile: composePostgresFile,
-    // Zero asks Docker to allocate in its own host namespace. Keep this pending
-    // value until discovery succeeds so partial startup can still be cleaned.
-    port: 0,
-  });
-  await writeState(statePath, state);
-  try {
-    await mkdir(directory, { mode: 0o700 });
-  } catch (error) {
-    state.resources = state.resources.filter(({ id }) => id !== resource.id);
-    await writeState(statePath, state);
-    throw error;
-  }
-  // Cleanup must not claim a competing directory if creation or this save fails.
-  resource.directoryCreated = true;
-  await writeState(statePath, state);
-  // PostgreSQL reads this public bootstrap as its container user, not the checkout owner.
-  const initSql = join(directory, "init-local.sql");
-  await writeFile(initSql, await readFile(join(repositoryRoot, "migrations/init-local.sql")), {
-    flag: "wx",
-    mode: 0o600,
-  });
-  resource.initSqlCreated = true;
-  await writeState(statePath, state);
-  await chmod(initSql, 0o644);
-  try {
-    await execFile(
-      process.env.OCC_DOCKER_BIN ?? "docker",
-      dockerArgsForPostgres(resource, "up", "-d", "--wait"),
-      { env: { OCC_POSTGRES_PORT: "0", OPENCLAW_CI_POSTGRES_INIT_SQL: initSql } },
-    );
-  } catch (error) {
-    if (
-      /all predefined address pools have been fully subnetted/i.test(
-        `${error.stderr ?? ""}\n${error.stdout ?? ""}`,
-      )
-    ) {
-      const quotedStatePath = `'${statePath.replaceAll("'", "'\\''")}'`;
-      error.message +=
-        `\nDocker subnet pools are exhausted. Clean this run's partial resources with:\n` +
-        `node scripts/ci/cleanup.ts --state ${quotedStatePath}\n` +
-        `Retain the state if cleanup fails. On a shared host, ask the host administrator ` +
-        `to coordinate cleanup of confirmed abandoned projects with their owners; ` +
-        `do not prune shared networks or volumes. See docs/testing/postgresql.md#subnet-pool-exhaustion.`;
-    }
-    throw error;
-  }
-  const docker = process.env.OCC_DOCKER_BIN ?? "docker";
-  // Standalone podman-compose does not accept a service argument to ps.
-  const lookup =
-    basename(docker) === "podman"
-      ? await execFile(docker, [
-          "ps",
-          "--no-trunc",
-          "--filter",
-          `label=com.docker.compose.project=${resource.name}`,
-          "--filter",
-          "label=com.docker.compose.service=postgres",
-          "--format",
-          "{{.ID}}",
-        ])
-      : await execFile(docker, dockerArgsForPostgres(resource, "ps", "-q", "postgres"), {
-          env: { OCC_POSTGRES_PORT: "0", OPENCLAW_CI_POSTGRES_INIT_SQL: initSql },
-        });
-  const container = lookup.stdout.trim();
-  if (!/^[a-f0-9]{64}$/.test(container)) {
-    throw new Error("Expected one owned PostgreSQL container for port discovery.");
-  }
-  const cluster = state.resources.find(
-    (entry) => entry.kind === "k3d-cluster" && entry.status === "ready",
-  );
-  if (cluster) {
-    // Linux Docker can reassign an automatic host port when a network attaches.
-    // Finish this topology before publishing the port or opening test pools.
-    const networks = JSON.parse(
-      (
-        await execFile(docker, [
-          "inspect",
-          "--format",
-          "{{json .NetworkSettings.Networks}}",
-          `k3d-${cluster.name}-server-0`,
-        ])
-      ).stdout,
-    );
-    const network = Object.keys(networks).find((name) => name.startsWith(`k3d-${cluster.name}`));
-    if (!network) {
-      throw new Error("The owned k3d network is unavailable for PostgreSQL.");
-    }
-    await execFile(docker, ["network", "connect", network, container]);
-  }
-  const output = await execFile(docker, [
-    "inspect",
-    "--format",
-    "{{json .NetworkSettings.Ports}}",
-    container,
-  ]);
-  let ports;
-  try {
-    ports = JSON.parse(output.stdout);
-  } catch {
-    throw new Error("Invalid PostgreSQL port discovery response.");
-  }
-  const bindings = ports?.["5432/tcp"];
-  const port = Number(bindings?.[0]?.HostPort);
-  if (
-    !Array.isArray(bindings) ||
-    bindings.length !== 1 ||
-    bindings[0]?.HostIp !== "127.0.0.1" ||
-    typeof bindings[0]?.HostPort !== "string" ||
-    !/^[1-9][0-9]{0,4}$/.test(bindings[0].HostPort) ||
-    port > 65535 ||
-    port === 55432
-  ) {
-    throw new Error("Expected one loopback PostgreSQL port outside developer port 55432.");
-  }
-  resource.port = port;
-  await writeState(statePath, state);
-  await postgresAdmin(resource, { statements: ciPostgresSettings, stage: "postgres-settings" });
-  await markResourceReady(statePath, state, resource);
-  return resource;
-}
-
-// The lane's server is disposable (cleanup removes it with its volume), so it gives up
-// durability: commits stop waiting for WAL flushes, and the checkpoint each test
-// database's DROP DATABASE waits for skips its fsyncs. PostgreSQL containers wrote most
-// of a loaded runner's IO. A host crash could now corrupt the data and a server crash
-// could lose the last few hundred milliseconds of acknowledged commits; nothing kills
-// this server or reads it after a crash. The reload is requested before any test
-// database exists. Developers' compose.postgres.yaml server keeps PostgreSQL's defaults.
-const ciPostgresSettings = Object.freeze([
-  "ALTER SYSTEM SET fsync = off",
-  "ALTER SYSTEM SET synchronous_commit = off",
-  "ALTER SYSTEM SET full_page_writes = off",
-  "SELECT pg_catalog.pg_reload_conf()",
-]);
-
-// Administrative SQL on the lane's server, over its published port (postgres-admin.ts). A
-// failed database step carries the closed diagnostic contract run-tests.ts reports.
-async function postgresAdmin(server, { database, statements, stage }) {
-  try {
-    await runPostgresAdmin({ port: server.port, database, statements });
-  } catch (error) {
-    if (["database-create", "database-schema"].includes(stage)) {
-      error.code = "CI_PREPARATION_COMMAND_FAILED";
-      error.stage = stage;
-    }
-    throw error;
-  }
-}
-
-// A template must be a ready database this state owns on the same server. Nothing may
-// stay connected to it: PostgreSQL refuses to copy a database that has other sessions.
-function templateDatabase(state, server, templateUrl) {
-  let name;
-  try {
-    name = new URL(templateUrl).pathname.slice(1);
-  } catch {
-    throw new Error("The template must be a PostgreSQL URL that prepareFile returned.");
-  }
-  const template = state.resources.find(
-    (resource) =>
-      resource.kind === "postgres-database" &&
-      resource.name === name &&
-      resource.owner === state.prefix &&
-      resource.status === "ready" &&
-      resource.composeProject === server.name &&
-      resource.port === server.port,
-  );
-  if (!template) {
-    throw new Error("The template must be a ready database prepared in this state.");
-  }
-  return template.name;
-}
-
-async function createAndMigrateDatabase(
-  statePath,
-  state,
-  { kind = "ci", label, requireExistingServer = false, template },
-) {
-  const existingServer = postgresResource(state);
-  if (requireExistingServer && !existingServer) {
-    throw new Error(
-      "prepareFile requires prepareLane to create the owned PostgreSQL server first.",
-    );
-  }
-  const server = existingServer ?? (await ensurePostgresServer(statePath, state));
-  if (server.status !== "ready") {
-    throw new Error("PostgreSQL server is not ready; clean up the failed preparation first.");
-  }
-  const source =
-    template === undefined
-      ? await laneTemplateDatabase(statePath, state, server, kind)
-      : templateDatabase(state, server, template);
-  return createDatabase(statePath, state, server, { kind, label, source });
-}
-
-// The server's migrated database, one per kind, that each file's database of that kind
-// copies. Migrating takes a pnpm process and seconds of CPU, and it ran once per file
-// under the CI state lock, where each test's own copy waited behind it: a worker revision
-// file's first test waited for the runner to migrate the files that start with it
-// (finding 2178). A copy is the same database (schemas, their ACLs, every migration).
-// PostgreSQL copies only a database without sessions, and nothing connects to the
-// template: its URL is never handed out. Lane cleanup drops it with the other databases.
-async function laneTemplateDatabase(statePath, state, server, kind) {
-  const existing = state.resources.find(
-    (resource) =>
-      resource.kind === "postgres-database" &&
-      resource.laneTemplate === kind &&
-      resource.owner === state.prefix &&
-      resource.status === "ready" &&
-      resource.composeProject === server.name &&
-      resource.port === server.port,
-  );
-  if (existing) {
-    return existing.name;
-  }
-  const created = await createDatabase(statePath, state, server, {
-    kind,
-    label: "lane_template",
-    laneTemplate: kind,
-  });
-  return created.name;
-}
-
-async function createDatabase(statePath, state, server, { kind, label, source, laneTemplate }) {
-  const name = databaseName(kind, label);
-  const resource = addResource(state, "postgres-database", {
-    name,
-    composeProject: server.name,
-    port: server.port,
-    ...(laneTemplate === undefined ? {} : { laneTemplate }),
-  });
-  await writeState(statePath, state);
-
-  const grant = `GRANT CREATE ON DATABASE ${quoteIdentifier(name)} TO occ_migrator;`;
-  await postgresAdmin(server, {
-    statements: [
-      `CREATE DATABASE ${quoteIdentifier(name)}${source === undefined ? "" : ` TEMPLATE ${quoteIdentifier(source)}`}`,
-      // A copy carries the template's schemas, their ACLs and every migration, but not
-      // the database-level grant, which lives in pg_database, so it is granted from here.
-      // Each statement is its own request (CREATE DATABASE refuses a transaction block)
-      // and the first error stops the rest. Every test's copy runs this.
-      ...(source === undefined ? [] : [grant]),
-    ],
-    stage: "database-create",
-  });
-  const migrationUrl = postgresUrl("occ_migrator", "occ-migrator-local", server.port, name);
-  if (source === undefined) {
-    await postgresAdmin(server, {
-      database: name,
-      statements: [
-        `${grant} CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
-      ],
-      stage: "database-schema",
-    });
-    await execFile(process.env.OPENCLAW_CI_COREPACK_BIN ?? "corepack", ["pnpm", "db:migrate"], {
-      env: { OCC_MIGRATION_DATABASE_URL: migrationUrl },
-      stage: "database-migrate",
-    });
-  }
-  await markResourceReady(statePath, state, resource);
-  return {
-    name,
-    appUrl: postgresUrl("occ_app", "occ-app-local", server.port, name),
-    migrationUrl,
-    resourceId: resource.id,
-  };
-}
-
-/** @param {string | undefined} image */
-function assertNodeBaseImage(image) {
-  assertImmutableImageReference(image, "NODE_BASE_IMAGE");
-  if (!/(?:^|[/:])node:24[.-]/.test(image)) {
-    throw new Error("NODE_BASE_IMAGE must select an approved Node 24 image.");
-  }
-}
-
 function assertImmutableEnvImages(names, env = process.env) {
   for (const name of names) {
     assertImmutableImageReference(env[name], name);
@@ -968,310 +652,24 @@ async function validateLaneInputsBeforeSideEffects(lane, { file, modelSelectors 
   }
 }
 
-// Lanes that restore the hosted BuildKit cache. Only the main-only warm job
-// (ci-image-cache.yml) exports it, building with images-packaging's state.
-const imageCacheLanes = new Map([
-  ["slack", { localStore: false }],
-  ["production-tui", { localStore: false }],
-  ["gateway-routing", { localStore: false }],
-  ["k3d-otel", { localStore: false }],
-  ["openshell", { localStore: false }],
-  ["dev-up-k3d", { localStore: false }],
-  ["qa-matrix", { localStore: false }],
-  ["images-packaging", { localStore: false }],
-  ["images-runtime-startup", { localStore: false }],
-  ["images-runtime-startup-2", { localStore: false }],
-  ["images-runtime-startup-3", { localStore: false }],
-]);
-
-function imageCache(role) {
-  return `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1`;
-}
-
-// The hosted cache build's arguments without --load or the tag, writing only
-// to BuildKit's cache, with the given options first.
-function imageCacheOnlyArgs(buildArgs, ...options) {
-  if (buildArgs.slice(0, 3).join(" ") !== "buildx build --load") {
-    throw new Error("Only a hosted cache build can export the image cache.");
-  }
-  const rest = [];
-  for (let index = 3; index < buildArgs.length; index += 1) {
-    if (buildArgs[index] === "-t") {
-      index += 1;
-    } else {
-      rest.push(buildArgs[index]);
-    }
-  }
-  return ["buildx", "build", "--output", "type=cacheonly", ...options, ...rest];
-}
-
-// Only main's warm job (ci-image-cache.yml) writes the cache. It runs for every
-// image input change, on a schedule, and before selected OpenShell runs. The
-// singleton queue prevents concurrent writers, but does not order source commits.
-// CI lanes only restore: a lane export on main could land after a newer commit's warm export
-// and replace it, and on a pull request it cost about 40 s and filled only the
-// merge ref's scope. The warm job exports in a second build after the image is
-// built and loaded: the same arguments without --load or the tag, so BuildKit
-// reuses the steps it just ran and only uploads the cache.
-function imageCacheExportArgs(role, buildArgs) {
-  return imageCacheOnlyArgs(buildArgs, "--cache-to", `${imageCache(role)},mode=max,timeout=10m`);
-}
-
-// The runtime Dockerfile builds OpenClaw beside its bridge tests (openclaw-build
-// and openclaw-bridge-tests). OpenClaw's build refuses to start unless about 5 GiB
-// is available, and the warm runner has 7.65 GiB: with the tests beside it, it
-// found 2.2-3.9 GiB. The warm job builds that stage alone first, so the image
-// build after it reuses the result and runs the tests then. Image lanes run on
-// larger runners and keep both stages in parallel.
-const warmRuntimeFirstStage = "openclaw-build";
-
-// The warm job's limit for one image's cache export. Exports that reuse the
-// OpenClaw layers took 25-65 s. A change to those layers (an OpenClaw pin, patch
-// or install step) uploads them all again, one at a time: 513-817 s on the warm
-// runner. Those layers are not byte-reproducible, so a cut-off export's uploads
-// never help the next run, and a 5 min limit left the image lanes rebuilding
-// them on every run (finding 1275). One upload once stalled for 17 min (finding
-// 1219); this still bounds that. Tests shorten it.
-const imageCacheExportTimeoutMs =
-  Number(process.env.OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS) > 0
-    ? Number(process.env.OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS)
-    : 20 * 60_000;
-
-function imageBuildArgs(state, role, localStore) {
-  if (process.env.OCC_CI_IMAGE_CACHE === "1") {
-    if (
-      process.env.GITHUB_ACTIONS !== "true" ||
-      imageCacheLanes.get(isOpenShellLane(state.lane) ? "openshell" : state.lane)?.localStore !==
-        localStore ||
-      !process.env.ACTIONS_RUNTIME_TOKEN ||
-      !process.env.ACTIONS_RESULTS_URL
-    ) {
-      throw new Error("Image caching requires the hosted image lane and its cache credentials.");
-    }
-    return [
-      "buildx",
-      "build",
-      "--load",
-      ...(isOpenShellLane(state.lane) && process.env.OCC_CI_FIRST_AGENT_BUILDER
-        ? ["--builder", process.env.OCC_CI_FIRST_AGENT_BUILDER]
-        : []),
-      // An image ID covers each history entry's creation time. A fixed epoch lets
-      // builders that write the same layers agree on the ID, so reuseEngineImage
-      // can match an image another job built. It sets the config and history
-      // timestamps and WORKDIR directory mtimes; RUN steps do not see it.
-      "--build-arg",
-      "SOURCE_DATE_EPOCH=0",
-      "--cache-from",
-      `${imageCache(role)},timeout=60s`,
-    ];
-  }
-  return [
-    "build",
-    ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
-      ? ["--builder", "default", "--load"]
-      : []),
-  ];
-}
-
-// CI_RUNNER_DEADLINE_MS (Unix epoch milliseconds; the run-ci-lane action sets it five
-// minutes before the job's timeout-minutes) is when the lane's test files must have stopped.
-// A lane image build may use the time before it less this reserve for the rest of preparation
-// (an Envoy image, a seccomp profile, a fixture build or k3d imports in some lanes) and the
-// tests: the image lanes' test phases took at most 102-171 s per lane over 29 runs each
-// (10-19/20). A build
-// that misses the image cache can take 20 min: on #2905 the engine image probe below, then
-// bounded by a fixed 20 min, was stopped mid-build, the build after it took 4 more min, and
-// the tests got 40 s (finding 2103). Tests shorten the reserve.
-const imageBuildTestReserveMs =
-  Number(process.env.OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS) > 0
-    ? Number(process.env.OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS)
-    : 3 * 60_000;
-
-function imageBuildDeadlineMs() {
-  const deadline = Number(process.env.CI_RUNNER_DEADLINE_MS ?? "");
-  if (!Number.isSafeInteger(deadline) || deadline <= 0) {
-    return undefined;
-  }
-  return deadline - imageBuildTestReserveMs;
-}
-
-// What a lane image build may still take, or undefined outside a lane with a deadline.
-function imageBuildBudgetMs() {
-  const deadline = imageBuildDeadlineMs();
-  return deadline === undefined ? undefined : deadline - Date.now();
-}
-
-// The lane cannot pass once its image build has used the time its tests need, so it stops
-// with this instead of building on and cutting every test file at the deadline.
-function imageBuildOutOfTime(role, limitMs) {
-  const message =
-    `The ${role} image did not finish building within this lane's time` +
-    (limitMs > 0 ? ` (stopped after ${Math.round(limitMs / 1000)} s)` : "") +
-    `; the lane keeps ${Math.round(imageBuildTestReserveMs / 1000)} s before its deadline ` +
-    "for the rest of preparation and its tests, so it stops here. A build that misses the " +
-    "image cache, for example after a change to the image inputs, can take about 20 min.";
-  process.stdout.write(`::error title=Image build out of lane time::${message}\n`);
-  return Object.assign(new Error(message), { imageBuildOutOfTime: true });
-}
-
-const imageBuildTailLines = 40;
-
-// Runs a lane image build command within the lane's budget (unbounded without one).
-async function laneImageCommand(role, args, budgetMs = imageBuildBudgetMs()) {
-  if (budgetMs !== undefined && budgetMs < 1_000) {
-    throw imageBuildOutOfTime(role, 0);
-  }
-  try {
-    return await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, { timeoutMs: budgetMs });
-  } catch (error) {
-    if (budgetMs !== undefined && error.timedOut) {
-      // The build's progress names the step that was running (finding 2710: a cold
-      // build stopped after 1305 s with no clue which step stalled).
-      const tail = (error.stderr ?? "").trimEnd().split("\n").slice(-imageBuildTailLines);
-      if (tail.join("").trim()) {
-        process.stderr.write(
-          `[image-build] the ${role} image build's last output:\n${tail.join("\n")}\n`,
-        );
-      }
-      throw imageBuildOutOfTime(role, budgetMs);
-    }
-    throw error;
-  }
-}
-
-function observesImageCache(lane) {
-  return (
-    isOpenShellLane(lane) ||
-    ["slack", "production-tui", "gateway-routing", "k3d-otel"].includes(lane)
-  );
-}
-
-// Keep cache evidence without build arguments, URLs, command text or credentials.
-function imageCacheObservation(state, role, phase, output) {
-  if (!observesImageCache(state.lane)) {
-    return;
-  }
-  const text = output ?? "";
-  const cached = new Set([...text.matchAll(/^#(\d+) CACHED\r?$/gm)].map((match) => match[1]));
-  const sourceBuild = new Set(
-    [...text.matchAll(/^#(\d+) \[openclaw-build [^\]]+\] RUN /gm)].map((match) => match[1]),
-  );
-  progress(
-    state.lane,
-    JSON.stringify({
-      stage: isOpenShellLane(state.lane) ? "first-agent-image-cache" : "image-cache",
-      role,
-      phase,
-      cacheImports: [...text.matchAll(/^#\d+ importing cache manifest /gm)].length,
-      cachedSteps: cached.size,
-      openclawBuildSteps: sourceBuild.size,
-      openclawBuildCached: [...sourceBuild].filter((id) => cached.has(id)).length,
-    }),
-  );
-}
-
-// A restored build otherwise downloads every cached layer (about 20 s for the
-// runtime image) only to load an image the engine often already holds: the
-// hosted runners' Docker data comes from a shared image cache. Resolve the
-// image from the BuildKit cache without exporting its layers, then tag the
-// engine's image if it has the same ID. The ID is the digest of a config that
-// names every layer's content digest, so the tagged image is the one the build
-// would load. The warm job, which builds every step for its export, and any probe
-// failure (a timeout, an engine error, unreadable metadata, a failed tag) build as before. The log
-// says "absent" only when the engine reports no such image, "different" when it
-// holds another image under that reference, and "probe-failed" otherwise. In a lane with a
-// deadline the probe, which builds on a cache miss, may use the whole image build budget;
-// running out of it ends preparation ("out-of-time") instead of building again with no time
-// left for the tests. The trade-off: a probe that hangs, rather than builds slowly, no longer
-// hands over to a fresh build after 20 min in the longer lanes.
-async function reuseEngineImage(state, role, args, tag) {
-  if (args[0] !== "buildx" || !args.includes("--load")) {
-    return false;
-  }
-  const docker = process.env.OCC_DOCKER_BIN ?? "docker";
-  const started = performance.now();
-  let directory;
-  let outcome = "unresolved";
-  let image;
-  try {
-    directory = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), "oce-image-probe-"));
-    const metadata = join(directory, "metadata.json");
-    const probeArgs = [
-      "buildx",
-      "build",
-      "--output",
-      "type=image,push=false,store=false",
-      "--provenance=false",
-      "--metadata-file",
-      metadata,
-      ...args.slice(2).filter((arg) => arg !== "--load"),
-    ];
-    // A cache miss builds the image here; the build below then reuses those
-    // steps from the same builder and only exports and loads.
-    const budgetMs = imageBuildBudgetMs();
-    let probeResult;
-    if (budgetMs === undefined) {
-      probeResult = await execFile(docker, probeArgs, { timeoutMs: 20 * 60_000 });
-    } else {
-      try {
-        probeResult = await laneImageCommand(role, probeArgs, budgetMs);
-      } catch (error) {
-        if (error.imageBuildOutOfTime) {
-          outcome = "out-of-time";
-        }
-        throw error;
-      }
-    }
-    imageCacheObservation(state, role, "probe", probeResult.stderr);
-    const id = JSON.parse(await readFile(metadata, "utf8"))["containerimage.config.digest"];
-    if (!/^sha256:[a-f0-9]{64}$/u.test(id ?? "")) {
-      return false;
-    }
-    image = id;
-    // Under Docker's containerd image store the engine reports a manifest
-    // digest here instead, so the comparison fails safe, the log says
-    // "different", and the lane builds.
-    let held;
-    try {
-      held = (
-        await boundedImageCommand(["image", "inspect", "--format", "{{.Id}}", id])
-      ).stdout.trim();
-    } catch (error) {
-      if (!/No such (?:image|object)|image not known/i.test(error.stderr ?? "")) {
-        throw error;
-      }
-      outcome = "absent";
-      return false;
-    }
-    if (held !== id) {
-      outcome = "different";
-      return false;
-    }
-    await boundedImageCommand(["tag", id, tag]);
-    outcome = "reused";
-    return true;
-  } catch (error) {
-    if (error.imageBuildOutOfTime) {
-      throw error;
-    }
-    outcome = "probe-failed";
-    return false;
-  } finally {
-    if (directory !== undefined) {
-      await rm(directory, { recursive: true, force: true }).catch(() => {});
-    }
-    progress(
-      state.lane,
-      JSON.stringify({
-        stage: `${role}-image-reuse`,
-        outcome,
-        ...(image ? { image } : {}),
-        elapsedMs: Math.round(performance.now() - started),
-      }),
-    );
-  }
-}
-
+/**
+ * @param {string} statePath
+ * @param {CiState} state
+ * @param {{
+ *   controller?: boolean,
+ *   runtime?: boolean,
+ *   nodeBaseImage?: string | undefined,
+ *   localStore?: boolean,
+ *   cacheWarm?: boolean,
+ *   requireCacheExport?: boolean,
+ *   reuseEngineImages?: boolean,
+ *   revision?: string,
+ *   controllerTarget?: "runtime" | "development",
+ *   buildConcurrency?: number,
+ *   registryOutput?: string,
+ *   runtimeArtifact?: ReturnType<typeof runtimeArtifactSelection>,
+ * }} [options]
+ */
 async function buildRuntimeImages(
   statePath,
   state,
@@ -1310,72 +708,12 @@ async function buildRuntimeImages(
           `org.opencontainers.image.revision=${revision}`,
           "--provenance=false",
         ];
-  const warmCommand = async (heading, args, timeoutMs) => {
-    let output = "";
-    try {
-      const done = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, { timeoutMs });
-      output = done.stderr;
-      return done;
-    } catch (error) {
-      output = error.stderr ?? "";
-      throw error;
-    } finally {
-      process.stderr.write(`[image-cache-warm] ${heading}\n${output}\n`);
-    }
-  };
   const build = async (role, args) => {
-    if (!cacheWarm) {
+    if (cacheWarm) {
+      await warmImageBuildCache(role, args, requireCacheExport, progress);
+    } else {
       const result = await laneImageCommand(role, args);
-      imageCacheObservation(state, role, "load", result.stderr);
-      return result;
-    }
-    const exportArgs = imageCacheExportArgs(role, args);
-    // A failed or overrunning build fails the job and keeps nothing. The first
-    // stage and the image build share one limit. Cold runtime builds compile
-    // Node; give them the native runtime assembly budget, retaining 20 min
-    // for controller builds.
-    const buildTimeoutMs = (role === "runtime" ? 180 : 20) * 60_000;
-    const deadline = performance.now() + buildTimeoutMs;
-    if (role === "runtime") {
-      await warmCommand(
-        `runtime ${warmRuntimeFirstStage} build`,
-        imageCacheOnlyArgs(args, "--target", warmRuntimeFirstStage),
-        buildTimeoutMs,
-      );
-    }
-    await warmCommand(`${role} build`, args, Math.max(1, Math.round(deadline - performance.now())));
-    // Standalone exports are best effort; prerequisites require success. Without an
-    // export, image lanes restore
-    // the previous cache: content-addressed steps that still match are reused and
-    // the rest rebuild, so a missed export makes builds slower, never wrong.
-    // BuildKit writes the cache manifest after the layers, so an interrupted
-    // export leaves lanes the previous cache.
-    const started = performance.now();
-    let outcome = "exported";
-    try {
-      await warmCommand(`${role} cache export`, exportArgs, imageCacheExportTimeoutMs);
-    } catch (error) {
-      outcome = error.timedOut ? "timed-out" : "failed";
-      if (requireCacheExport) {
-        throw error;
-      }
-      const reason =
-        outcome === "timed-out"
-          ? `did not finish within ${imageCacheExportTimeoutMs} ms`
-          : "failed";
-      process.stdout.write(
-        `::warning title=Image cache export::The ${role} image built, but its cache export ` +
-          `${reason}; image lanes restore the previous cache until the next warm run.\n`,
-      );
-    } finally {
-      progress(
-        "image-cache-warm",
-        JSON.stringify({
-          stage: `${role}-cache-export`,
-          outcome,
-          elapsedMs: Math.round(performance.now() - started),
-        }),
-      );
+      imageCacheObservation(state.lane, role, "load", result.stderr, progress);
     }
   };
   const importDeadlineMs =
@@ -1391,6 +729,7 @@ async function buildRuntimeImages(
     ["version", "--format", "{{.Server.Version}}"],
     { timeoutMs: importBudgetMs },
   );
+  /** @type {Environment} */
   const env = {};
   const resources = [];
   const label =
@@ -1424,7 +763,7 @@ async function buildRuntimeImages(
       role: "controller",
       tag,
       args: [
-        ...imageBuildArgs(state, "controller", localStore),
+        ...imageBuildArgs(state.lane, "controller", localStore),
         ...plainProgress,
         "--pull=false",
         "--target",
@@ -1472,7 +811,7 @@ async function buildRuntimeImages(
         args:
           openclawSource === undefined
             ? [
-                ...imageBuildArgs(state, "runtime", localStore),
+                ...imageBuildArgs(state.lane, "runtime", localStore),
                 ...plainProgress,
                 ...revisionArgs,
                 ...sourceArguments,
@@ -1484,10 +823,7 @@ async function buildRuntimeImages(
                 repositoryRoot,
               ]
             : [
-                "build",
-                ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
-                  ? ["--builder", "default", "--load"]
-                  : []),
+                ...localImageBuildArgs(localStore),
                 ...plainProgress,
                 "--build-arg",
                 "OPENCLAW_DOCKER_BUILD_SKIP_DTS=1",
@@ -1522,7 +858,7 @@ async function buildRuntimeImages(
     builds.map((entry) => async () => {
       if (registryOutput) {
         const result = await laneImageCommand(entry.role, entry.args);
-        imageCacheObservation(state, entry.role, "direct-publish", result.stderr);
+        imageCacheObservation(state.lane, entry.role, "direct-publish", result.stderr, progress);
         const metadata = JSON.parse(await readFile(entry.metadataFile, "utf8"));
         const digest = metadata["containerimage.digest"];
         const reference = `${entry.tag.slice(0, entry.tag.lastIndexOf(":"))}@${digest}`;
@@ -1535,7 +871,7 @@ async function buildRuntimeImages(
           if (
             cacheWarm ||
             !reuseEngineImages ||
-            !(await reuseEngineImage(state, entry.role, entry.args, entry.tag))
+            !(await reuseEngineImage(state.lane, entry.role, entry.args, entry.tag, progress))
           ) {
             await build(entry.role, entry.args);
           }
@@ -1554,7 +890,7 @@ async function buildRuntimeImages(
 // Restore current-source image layers only. Local Setup still owns its cluster,
 // installation, Agent workflow and teardown. The loopback registry is CI-owned.
 async function prepareFirstAgentImages(statePath, state, env, file) {
-  imageBuildArgs(state, "runtime", false); // Validate the hosted cache boundary before resources.
+  imageBuildArgs(state.lane, "runtime", false); // Validate the hosted cache boundary before resources.
   if (process.env.OCC_K3D_OPENCLAW_SOURCE) {
     throw new Error("First-Agent image preparation requires the checkout's pinned runtime source.");
   }
@@ -1698,6 +1034,10 @@ const nodeImages = createK3dNodeImages({
 
 /** @type {import("./k3d-preparation.ts").PreparationJournal} */
 const preparationJournal = { addResource, writeState, markResourceReady };
+const { ensurePostgresServer, createAndMigrateDatabase } = createPostgresPreparation(
+  repositoryRoot,
+  preparationJournal,
+);
 const { ensureK3dCluster, k3dStage } = createK3dPreparation({
   ...preparationJournal,
   progress,
@@ -2951,7 +2291,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
       env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE = database.name;
       env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
-    if (relativeFile.endsWith("occ-metrics.test.mjs")) {
+    if (relativeFile === "tests/integration/occ-metrics.test.ts") {
       env.OCC_METRICS_TEST_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
     if (relativeFile === "tests/integration/postgres-api-request-audit.test.ts") {
@@ -3028,28 +2368,10 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
   };
 }
 
-// Repository of main's runtime images left tagged in the runners' shared image
-// cache (see warmImageCache). It is outside cleanup's owned names and is never pushed.
-const warmRuntimeImageRepository = "localhost/openclaw-ci-main/runtime";
-
-// Builds the Images and Packaging controller and runtime images only to write
-// main's hosted BuildKit cache (ci-image-cache.yml). It uses that lane's state,
-// inputs and build arguments, so the cache keys are the ones the CI image lanes
-// restore. GitHub scopes cache writes to the run's ref; only main may warm.
-async function warmImageCache({ statePath, requireCacheExport = false, nodeBaseImage }) {
-  if (
-    process.env.GITHUB_REF !== "refs/heads/main" ||
-    !["push", "schedule", "workflow_dispatch"].includes(process.env.GITHUB_EVENT_NAME)
-  ) {
-    throw new Error("Only a push, schedule or dispatch on main may warm the image cache.");
-  }
-  if (requireCacheExport) {
-    if (process.env.GITHUB_REPOSITORY !== "openclaw/openclaw-enterprise") {
-      throw new Error("Required cache exports run only in the canonical repository.");
-    }
-    // The protected caller resolves this input once for both producer and consumers.
-    assertNodeBaseImage(nodeBaseImage);
-  }
+// Both builds share the images-packaging recipe and cleanup journal with the
+// image lanes, so the cache writer produces the same inputs the lanes restore.
+/** @param {string | undefined} statePath */
+export async function prepareImageCacheBuilds(statePath) {
   const lane = "images-packaging";
   await validateLaneInputsBeforeSideEffects(lane);
   const resolvedStatePath = normalizeStatePath(statePath);
@@ -3058,72 +2380,35 @@ async function warmImageCache({ statePath, requireCacheExport = false, nodeBaseI
   }
   const state = baseState(lane, resolvedStatePath);
   await writeState(resolvedStatePath, state);
-  const effectiveNodeBaseImage = nodeBaseImage ?? effectiveLaneEnv(lane).NODE_BASE_IMAGE;
-  // The two builds are independent; in parallel their exports land sooner.
-  const [, runtime] = await timedPreparation(
-    "image-cache-warm",
-    "controller-runtime-image-build",
-    () =>
-      prepareTogether([
-        () =>
-          buildRuntimeImages(resolvedStatePath, state, {
-            controller: true,
-            nodeBaseImage: effectiveNodeBaseImage,
-            cacheWarm: true,
-            requireCacheExport,
-          }),
-        () =>
-          buildRuntimeImages(resolvedStatePath, state, {
-            runtime: true,
-            cacheWarm: true,
-            requireCacheExport,
-          }),
-      ]),
-  );
-  // The hosted runners' Docker data comes from a shared image cache, which keeps
-  // the images a job leaves tagged. Cleanup removes this run's owned tag, so also
-  // tag main's runtime image under a local name that no cleanup owns: image lanes
-  // then find the ID their restored cache resolves to (reuseEngineImage) instead
-  // of downloading and loading it. The tag names the image ID, so each new image
-  // gets its own tag instead of moving one; the shared cache evicts images unused
-  // for 8 days. Nothing is pushed.
-  const owned = runtime.env.OCC_TEST_RUNTIME_IMAGE;
-  const id = (
-    await boundedImageCommand(["image", "inspect", "--format", "{{.Id}}", owned])
-  ).stdout.trim();
-  if (!/^sha256:[a-f0-9]{64}$/u.test(id)) {
-    throw new Error("The warm runtime image has no image ID to keep.");
-  }
-  const kept = `${warmRuntimeImageRepository}:${id.slice("sha256:".length, "sha256:".length + 12)}`;
-  await boundedImageCommand(["tag", owned, kept]);
-  progress(
-    "image-cache-warm",
-    JSON.stringify({ stage: "runtime-image-kept", image: id, tag: kept }),
-  );
+  /** @type {string | undefined} */
+  const defaultNodeBaseImage = effectiveLaneEnv(lane).NODE_BASE_IMAGE;
+  return {
+    /** @param {string | undefined} nodeBaseImage @param {boolean} requireCacheExport */
+    async buildController(nodeBaseImage, requireCacheExport) {
+      await buildRuntimeImages(resolvedStatePath, state, {
+        controller: true,
+        nodeBaseImage: nodeBaseImage ?? defaultNodeBaseImage,
+        cacheWarm: true,
+        requireCacheExport,
+      });
+    },
+    /** @param {boolean} requireCacheExport */
+    async buildRuntime(requireCacheExport) {
+      const { env } = await buildRuntimeImages(resolvedStatePath, state, {
+        runtime: true,
+        cacheWarm: true,
+        requireCacheExport,
+      });
+      if (!env.OCC_TEST_RUNTIME_IMAGE) {
+        throw new Error("Image cache preparation did not produce a runtime image tag.");
+      }
+      return env.OCC_TEST_RUNTIME_IMAGE;
+    },
+  };
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const warmImageCacheSelected = Object.hasOwn(args, "warm-image-cache");
-  if (
-    !warmImageCacheSelected &&
-    ["require-cache-export", "node-base-image"].some((name) => Object.hasOwn(args, name))
-  ) {
-    throw new Error("--require-cache-export and --node-base-image require --warm-image-cache.");
-  }
-  if (warmImageCacheSelected) {
-    if (["lane", "file", "selected-file", "github-env"].some((name) => Object.hasOwn(args, name))) {
-      throw new Error(
-        "--warm-image-cache cannot be combined with lane, file, selected-file or github-env.",
-      );
-    }
-    await warmImageCache({
-      statePath: args.state,
-      requireCacheExport: args["require-cache-export"] === true,
-      nodeBaseImage: args["node-base-image"],
-    });
-    return;
-  }
   if (!args.lane) {
     throw new Error("--lane is required.");
   }
@@ -3150,7 +2435,6 @@ async function main() {
 }
 
 export {
-  assertNodeBaseImage,
   devUpUnrelatedImage,
   prepareDevUpImage,
   defaultK3sImage,

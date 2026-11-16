@@ -8,7 +8,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { API_REQUEST_AUDIT_ACTIONS } from "../../packages/contracts/src/index.ts";
 import type { AuditEvent, ResourceRef } from "../../packages/contracts/src/index.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   createDeviceCredentialDrivers,
@@ -16,7 +16,7 @@ import {
   DEVICE_ACCOUNT_ID,
 } from "../helpers/device-credential-gateway.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { bindRole, grantRole } from "../helpers/iam-grants.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 

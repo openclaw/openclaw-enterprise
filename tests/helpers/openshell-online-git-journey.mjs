@@ -10,7 +10,7 @@ import {
   cleanEnvironment,
   run,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 
 const packet = (line) =>
   Buffer.from((Buffer.byteLength(line) + 4).toString(16).padStart(4, "0") + line);

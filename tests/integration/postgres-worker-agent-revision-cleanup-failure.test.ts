@@ -11,7 +11,7 @@ import {
   SandboxRevisionUnsupportedError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
-import { withFailedCleanup } from "../helpers/compute-cleanup-failure.mjs";
+import { withFailedCleanup } from "../helpers/compute-cleanup-failure.ts";
 import { jsonLineDestination, requireLogRecord } from "../helpers/json-lines.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { completedPasses, completion } from "../helpers/postgres-worker-revision-support.mjs";

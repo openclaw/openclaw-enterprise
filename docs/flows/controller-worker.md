@@ -138,12 +138,10 @@ even when the count repeats. The lease token stays in the queue.
 `apps/controller/src/worker.ts:ControllerWorker.processRevision`,
 `apps/controller/src/worker.ts:ControllerWorker.authorizeRevision`
 
-Namespace work reloads its exact resource and expected `provisioning` or
-`deleting` status. Work whose target has already changed completes as
-`SUPERSEDED_TARGET`. Otherwise `authorize()` reloads IAM state and checks the
-original actor. Provisioning also checks restrictions on the exact Namespace;
-placement into an existing Kubernetes namespace requires Installation
-administration permission again.
+Namespace work verifies the target is still `provisioning` or `deleting`.
+A changed target completes as `SUPERSEDED_TARGET`. Otherwise `authorize()`
+rechecks the original actor. Provisioning enforces Namespace restrictions.
+Placement into an existing Kubernetes namespace requires Installation administration.
 
 Version work reloads its Namespace, Agent, saved version, and selected version.
 `processRevision()` rejects mismatched owners, an unready Namespace, an invalid
@@ -156,12 +154,12 @@ owns these checks.
 
 Revocation and denial fail permanently before Compute. Selected versions enter
 finalization or maintenance. Older versions end superseded, also once the newest,
-without Git, has a held runtime failure. Under
+without Git, has a held runtime failure. During
 [exclusive replacement](../reference/drivers/compute.md#production-revision-stages),
-the [shared stop boundary](../reference/agents/planned-replacement.md) controls
-native access and predecessor maintenance. Later admissions cannot reopen a
-stopped predecessor. Superseded inactive versions stop with
-`SUPERSEDED_STOP_YIELDED`; recovery deploys a new version.
+the [stop boundary](../reference/agents/planned-replacement.md) governs native access
+and maintenance. Neither redeploy after explicit Stop nor a new replacement mode
+reopens a stopped predecessor. Retargeting refunds the old claim. Superseded inactive
+versions stop with `SUPERSEDED_STOP_YIELDED`; deploy again to recover.
 
 Agent-stop work rechecks current exact-Agent `operate`; superseded desired state
 completes without shutdown.
@@ -387,6 +385,7 @@ the worker then rechecks permission to deploy.
 - `worker.compute-prepare-failed` names the failed Driver stage without the raw
   exception; match its `workId` or `revisionId` to the next `worker.completed`.
 - [Version](../../tests/integration/postgres-worker-agent-revision.test.mjs),
+  [revision lifecycle](../../tests/integration/postgres-worker-agent-revision-lifecycle.test.ts),
   [convergence](../../tests/integration/postgres-worker-agent-revision-convergence.test.ts),
   [credential-sources](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.ts),
   [health](../../tests/integration/postgres-worker-agent-revision-health.test.mjs),

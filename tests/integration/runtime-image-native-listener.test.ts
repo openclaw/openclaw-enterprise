@@ -3,7 +3,7 @@
 // proves why Compute admission refuses native listener TLS and binds that
 // cannot serve Pod-IP traffic.
 import type { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.mjs";
+import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.ts";
 import assert from "node:assert/strict";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { randomBytes } from "node:crypto";
@@ -23,16 +23,14 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { isStringArray, type ProxyRequest } from "../fixtures/runtime-native-trusted-proxy.mts";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { runDocker, commandOutput, failureTail } from "../helpers/runtime-image-docker.ts";
+import { waitForContainerReady } from "../helpers/runtime-image-gateway-observations.ts";
 import {
   image,
   imageTestOptions,
-  runDocker,
-  commandOutput,
-  failureTail,
   createAdmittedRuntimeImageConfiguration,
   runGatewaySmoke,
-  waitForContainerReady,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 import { eachSettled } from "../helpers/child-processes.mjs";
 
 type BindSettings = {

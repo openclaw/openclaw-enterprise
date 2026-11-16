@@ -16,7 +16,9 @@ import {
   checkProbeEventPrecedence,
   codexProbeEvents,
 } from "./codex-failure-output-classifier-cases.ts";
+import { registerCodexPatLoginRetryCases } from "./codex-native-startup-login-retry-cases.ts";
 
+/** @type {import("../fixtures/codex-native-startup-types.ts").StartupExpectation & { code: "READY" }} */
 const ready = {
   phases: [
     ["codex-login", "ok"],
@@ -25,6 +27,10 @@ const ready = {
   ],
   code: "READY",
 };
+/**
+ * @param {import("../fixtures/codex-native-startup-types.ts").LoginFailureCode} [code]
+ * @returns {import("../fixtures/codex-native-startup-types.ts").StartupExpectation & { check: "login"; code: import("../fixtures/codex-native-startup-types.ts").LoginFailureCode }}
+ */
 function loginFailure(code = "LOGIN_FAILED") {
   return { phases: [["codex-login", "failed"]], check: "login", code };
 }
@@ -1282,193 +1288,11 @@ test("Codex runtime retries a reliability failure of its login or model check, n
   const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
   const completed = { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } };
   const success = probe([started, assistant, completed]);
-  const pat = { loginMode: "codex_pat" };
-  const loginFailed = (stderr, elapsed) => login({ status: 1, stderr }, undefined, elapsed);
-  const network = "failed to request personal access token metadata: error sending request for url";
-  const serverError = "personal access token metadata request failed with status 503";
   // Codex exits 1 before printing any event: the 2017 model check shape.
   const exited = (stderr, result) => probe([], { status: 1, stderr, ...result });
   const exitCause = (detail) => ({ kind: "PROCESS_EXIT", detail });
   const exitFailure = (detail) => probeFailure(exitCause(detail));
-  const loginScenarios = [
-    {
-      name: "a login network failure then success retries once",
-      native: [loginFailed(network), login(), success],
-      expect: ready,
-      loginClasses: ["network"],
-      loginPauses: [1000],
-    },
-    {
-      // The request URL Codex names is not output that fails the same way again.
-      name: "a login network failure naming a URL with failure words retries once",
-      native: [
-        loginFailed(
-          "error sending request for url (https://credential-quota.example.invalid/apikey/403)",
-        ),
-        login(),
-        success,
-      ],
-      expect: ready,
-      loginClasses: ["network"],
-      loginPauses: [1000],
-    },
-    {
-      name: "a login 5xx then success retries once",
-      native: [loginFailed(serverError), login(), success],
-      expect: ready,
-      loginClasses: ["http_5xx"],
-      loginPauses: [1000],
-    },
-    {
-      name: "a login network failure then a 5xx then success backs off twice",
-      native: [loginFailed(network), loginFailed(serverError), login(), success],
-      expect: ready,
-      loginClasses: ["network", "http_5xx"],
-      loginPauses: [1000, 2000],
-    },
-    {
-      // A timed-out attempt waited 30 s already, so only the fast failure backs off.
-      name: "a login timeout then a network failure then success waits only after the fast failure",
-      native: [login(timedOut, 30000), loginFailed(network), login(undefined, 30000), success],
-      expect: ready,
-      loginClasses: ["timeout", "network"],
-      loginPauses: [2000],
-    },
-    {
-      name: "login network failures are held after five attempts with the same status shape",
-      native: Array.from({ length: 5 }, () => loginFailed(network)),
-      expect: loginFailure(),
-      loginClasses: ["network", "network", "network", "network", "network"],
-      loginPauses: [1000, 2000, 4000, 8000],
-    },
-    {
-      // Each wait follows a fast failure; the attempts and waits stay inside 90 s.
-      name: "login backoff ends at the 90-second budget",
-      random: 0.999,
-      native: [
-        loginFailed(network, 20000),
-        loginFailed(network, 20000),
-        loginFailed(network, 20000),
-        loginFailed(network, 10000),
-      ],
-      expect: loginFailure(),
-      loginClasses: ["network", "network", "network", "network"],
-      // 20 + 1.5 + 20 + 3 + 20 + 6 + 10 s leaves under 10 s: the 12 s fourth wait does not fit.
-      loginPauses: [1500, 2999, 5998],
-    },
-    {
-      // A wait that wakes late must not start an attempt without a timeout.
-      name: "a login retry wait that wakes too late is held at once",
-      lateWakeMs: 1000,
-      native: [loginFailed(network, 87500)],
-      expect: loginFailure(),
-      loginClasses: ["network"],
-      loginPauses: [1000],
-    },
-    {
-      name: "a login network failure then a credential rejection is held at once",
-      native: [loginFailed(network), loginFailed("request failed with status 401 Unauthorized")],
-      expect: loginFailure("AUTHENTICATION_FAILED"),
-      loginClasses: ["network", "http_401_403"],
-      loginPauses: [1000],
-    },
-    {
-      // Jitter spreads retries by up to half of the base delay.
-      name: "a login retry waits at most half again its base delay",
-      random: 0.999,
-      native: [loginFailed(network), loginFailed(network), login(), success],
-      expect: ready,
-      loginClasses: ["network", "network"],
-      loginPauses: [1500, 2999],
-    },
-    {
-      // Three attempts keep the 90 s the three 30 s attempts always had.
-      name: "a login retry gets only the remaining budget",
-      native: [loginFailed(network, 59500), login(timedOut, 29500)],
-      expect: loginFailure(),
-      loginClasses: ["network", "timeout"],
-      loginPauses: [1000],
-    },
-    {
-      name: "a login network failure with no budget left for a retry is held at once",
-      native: [loginFailed(network, 89000)],
-      expect: loginFailure(),
-      loginClasses: ["network"],
-    },
-    ...[
-      [
-        "a login 401",
-        "request failed with status 401 Unauthorized",
-        "http_401_403",
-        "AUTHENTICATION_FAILED",
-      ],
-      [
-        "a login 403",
-        "request failed with status 403 Forbidden",
-        "http_401_403",
-        "AUTHENTICATION_FAILED",
-      ],
-      // A credential rejection Codex quotes beside network text still names the credential.
-      [
-        "a login credential rejection beside network text",
-        'error sending request: "status 401 Unauthorized"',
-        "network",
-        "AUTHENTICATION_FAILED",
-      ],
-      ["a login rate limit", "last status: 429 Too Many Requests", "http_other"],
-      ["a login TLS failure", "invalid peer certificate: UnknownIssuer", "tls"],
-      [
-        "a login TLS failure beside network text",
-        "error sending request: tls handshake eof",
-        "tls",
-      ],
-      // The class names the most specific text; a no-retry marker still vetoes the retry.
-      [
-        "a login proxy 5xx naming a certificate",
-        "unexpected status 502 Bad Gateway: upstream certificate verify failed",
-        "http_5xx",
-      ],
-      [
-        "a login proxy 5xx naming a TLS handshake",
-        "unexpected status 503: tls handshake eof",
-        "http_5xx",
-      ],
-      ["a login proxy 5xx naming a handshake failure", "status 502: handshake failure", "http_5xx"],
-      [
-        "a login 401 beside a transport timeout",
-        "HTTP status client error (401 Unauthorized) for url: operation timed out",
-        "network",
-      ],
-      [
-        "a login rate limit beside a closed connection",
-        "Rate limit reached, connection closed",
-        "network",
-      ],
-      ["a login invalid key beside a broken pipe", "invalid api key; broken pipe", "network"],
-      ["a login 5xx naming a credential", "status 503: credential unavailable", "http_5xx"],
-      ["an unresolvable login host", "dns error: Name does not resolve", "network"],
-      ["unrecognized login output", "something else went wrong", "unknown"],
-      ["a silent login failure", "", "empty"],
-    ].map(([description, stderr, failureClass, code]) => ({
-      name: `${description} is held at once`,
-      native: [loginFailed(stderr)],
-      expect: loginFailure(code),
-      loginClasses: [failureClass],
-    })),
-    {
-      // A wrapper-side process error is not a reliability failure, whatever the output says.
-      name: "a login whose output overflowed is held at once",
-      native: [login({ status: null, error: { code: "ENOBUFS" }, stderr: network })],
-      expect: loginFailure(),
-      loginClasses: ["network"],
-    },
-    {
-      name: "a login timeout whose output names a credential rejection is held at once",
-      native: [login({ ...timedOut, stderr: "status 401 Unauthorized" })],
-      expect: loginFailure(),
-      loginClasses: ["http_401_403"],
-    },
-  ].map((scenario) => ({ ...pat, ...scenario }));
+  await registerCodexPatLoginRetryCases(t, { success, ready, loginFailure });
   const probeScenarios = [
     {
       name: "a model check that exits with a network failure then succeeds retries once",
@@ -1612,7 +1436,7 @@ test("Codex runtime retries a reliability failure of its login or model check, n
       probeCodes: ["MODEL_PROBE_TIMEOUT", "MODEL_PROBE_FAILED"],
     },
   ];
-  for (const scenario of [...loginScenarios, ...probeScenarios]) {
+  for (const scenario of probeScenarios) {
     // checkCodexStartup is async since protected startup awaits its release.
     await t.test(scenario.name, (t) => checkCodexStartup(t, scenario));
   }

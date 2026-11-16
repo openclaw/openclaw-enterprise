@@ -2392,7 +2392,8 @@ export class ControllerWorker {
           (operation.completionStartedAt !== undefined &&
             operation.executionIdentity !== undefined))
       ) {
-        throw new WorkClaimLostError();
+        await queue.defer(claim, { code: "PREDECESSOR_STOP_RETARGETED" });
+        return "retargeted" as const;
       }
       if (executionIdentity !== undefined && operation?.executionIdentity !== executionIdentity) {
         throw new WorkClaimLostError();
@@ -2403,6 +2404,10 @@ export class ControllerWorker {
         phase: "stopping",
       });
     }, this.queueOptions);
+    if (saved === "retargeted") {
+      // The transaction released this claim and refunded its attempt.
+      throw new WorkClaimLostError();
+    }
     if (saved !== undefined) {
       this.completionWaits.set(claim, saved);
     }

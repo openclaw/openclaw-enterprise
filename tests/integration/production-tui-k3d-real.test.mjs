@@ -11,7 +11,11 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { ownPortForward } from "../helpers/port-forward-cleanup.ts";
-import { availablePort } from "../helpers/available-port.mjs";
+import { availablePort } from "../helpers/available-port.ts";
+import {
+  productionTuiProxyCommand,
+  productionTuiProxyData,
+} from "../helpers/production-tui-proxy.ts";
 import { createProductionTuiRequest } from "../helpers/production-tui-request.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { installProductionHelmControlPlane } from "../helpers/production-helm-real.ts";
@@ -698,12 +702,7 @@ test(
         apiVersion: "v1",
         kind: "ConfigMap",
         metadata: metadata("proxy-code"),
-        data: {
-          "https-proxy.mjs": await readFile(
-            "tests/fixtures/production-tui/https-proxy.mjs",
-            "utf8",
-          ),
-        },
+        data: await productionTuiProxyData(),
       });
       if (signinSelected) {
         await apply({
@@ -734,7 +733,7 @@ test(
               name: "operator",
               image: images.node,
               imagePullPolicy: "IfNotPresent",
-              command: ["node", "/code/https-proxy.mjs"],
+              command: productionTuiProxyCommand,
               securityContext,
               resources,
               env: [

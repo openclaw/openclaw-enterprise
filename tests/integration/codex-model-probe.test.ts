@@ -16,7 +16,7 @@ import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/comp
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { requireLogRecord } from "../helpers/json-lines.ts";
 import { readJsonLines } from "../helpers/json-lines-file.ts";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 type RecoveryInput =
   "recover" | "timeout" | "rejected" | "killed-once" | "killed" | "malformed" | "tool";

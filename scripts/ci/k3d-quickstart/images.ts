@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { appendFile, readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { registryImage } from "../fixture-support-images.mjs";
+import { registryImage } from "../fixture-support-images.ts";
 import { loadRuntimeArtifact, runtimeArtifactSelection } from "../runtime-artifact.ts";
 
 const selection = runtimeArtifactSelection(process.env);

@@ -22,10 +22,10 @@ import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
 import { createCustodyTransitions } from "../helpers/egress-supplier-custody-transitions.mjs";
 import { withEnvironment } from "../helpers/environment.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import { createOpenShellKubernetesFixture } from "../helpers/openshell-kubernetes-real.mjs";
 import { isArray } from "../helpers/egress-observation-values.ts";
-import { waitFor } from "../helpers/qa-utils.mjs";
+import { waitFor } from "../helpers/qa-wait.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 type JsonRecord = Record<string, unknown>;

@@ -19,14 +19,14 @@ import { connect, createServer as createTcpServer } from "node:net";
 import { connect as connectTls } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 import { gzipSync } from "node:zlib";
-import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
-import { listen } from "../fixtures/repository-credentials/process.mjs";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.ts";
+import { listen } from "../fixtures/repository-credentials/process.ts";
 import {
-  appModule,
   eventually,
   startTokenServiceScope,
-} from "../fixtures/repository-credentials/service.mjs";
-import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.mjs";
+} from "../fixtures/repository-credentials/service-fixture.ts";
+import { appModule } from "../fixtures/repository-credentials/runtime.ts";
+import { startStaticTokenService } from "../fixtures/repository-credentials/service-resources.ts";
 
 const discovery = `/${fixtureRepository}.git/info/refs?service=git-upload-pack`;
 const upload = `/${fixtureRepository}.git/git-upload-pack`;
@@ -47,7 +47,7 @@ async function startTransport(
 ) {
   const options = {
     github: true,
-    clock: "system",
+    clock: "system" as const,
     // One exchange slot makes leaked reservations visible to the following request.
     limits: {
       exchanges: 1,
@@ -61,13 +61,8 @@ async function startTransport(
     },
   };
   const scope = await startTokenServiceScope(t, options);
-  const { resources, tls, github } = scope;
+  const { resources, tls, github, config, clock } = scope;
   assert.ok(github);
-  const config: unknown = scope.config;
-  assert.ok(config && typeof config === "object" && "gateway" in config);
-  assert.ok(config.gateway && typeof config.gateway === "object");
-  assert.ok("publicOrigin" in config.gateway && typeof config.gateway.publicOrigin === "string");
-  assert.ok("controlSocket" in config.gateway && typeof config.gateway.controlSocket === "string");
   const received: { method: string | undefined; path: string | undefined }[] = [];
   const upstream = createServer(tls, (incoming, outgoing) => {
     incoming.on("error", () => {});
@@ -83,7 +78,7 @@ async function startTransport(
   const logs: RefusalRecord[] = [];
   const started = await startStaticTokenService(resources, {
     config,
-    clock: scope.clock,
+    clock,
     tls,
     github,
     gitOrigin: origin,
@@ -91,20 +86,14 @@ async function startTransport(
     trustedUpstreamOrigins: trustedOrigins,
     log: log ?? ((record: RefusalRecord) => logs.push(record)),
   });
-  const { service } = started;
-  const listeners: unknown = started.listeners;
-  assert.ok(listeners && typeof listeners === "object" && "address" in listeners);
-  assert.ok(
-    listeners.address && typeof listeners.address === "object" && "port" in listeners.address,
-  );
-  assert.ok(typeof listeners.address.port === "number");
+  const { service, listeners } = started;
   const opened = service.open({ durationSeconds: 300, profile: "git-write" });
   return {
-    config: config as { gateway: { publicOrigin: string; controlSocket: string } },
+    config,
     tls,
     upstream,
     service,
-    listeners: listeners as { address: { port: number } },
+    listeners,
     opened,
     github,
     received,
@@ -1181,7 +1170,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
           uncertain: 0,
           auxiliaryPending: false,
         });
-        assert.equal(fixture.github.tokenState()[0].revoked, false);
+        assert.equal(fixture.github.tokenState()[0]?.revoked, false);
         assert.equal((await readDiscovery(fixture)).status, 401);
         assert.equal(fixture.received.length, 1);
         assert.equal(fixture.github.issuesOfTokens.length, 0);

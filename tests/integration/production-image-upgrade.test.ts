@@ -144,7 +144,7 @@ test("quickstart Installation updates preserve the bound Secret and stop on unsa
         "values.json": JSON.stringify(values),
         "installation.yaml": document,
         "key.json": JSON.stringify({ data: { key: "fixture-key" } }),
-        "request.mjs": "// Transport is substituted; the real shell constructs its request.\n",
+        "request.mts": "// Transport is substituted; the real shell constructs its request.\n",
       })) {
         await writeFile(join(directory, name), content, { mode: 0o600 });
       }

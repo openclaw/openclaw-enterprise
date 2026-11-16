@@ -2,16 +2,12 @@ import { registerCredentialFixtureRegressions } from "../fixtures/repository-cre
 import assert from "node:assert/strict";
 import test from "node:test";
 import { request } from "node:https";
-import type {
-  CredentialServiceOwner,
-  ExchangeSender,
-  RunningListeners,
-} from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
+import type { ExchangeSender } from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
 import type { ServiceConfig } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { writeFile } from "node:fs/promises";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import {
   createAlternateDriverFactory,
   startAlternateUpstream,
@@ -20,14 +16,14 @@ import {
   createServiceConfiguration,
   eventually,
   gatewayRequest,
-} from "../fixtures/repository-credentials/service.mjs";
+} from "../fixtures/repository-credentials/service-fixture.ts";
 import type { AlternateDriverObservation } from "../fixtures/repository-credentials/alternate/driver.ts";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.ts";
-import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
-import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
+import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.ts";
 import { removeRemoteBranches } from "../fixtures/repository-credentials/workflows.ts";
-import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
-import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.mjs";
+import { createResourceScope } from "../fixtures/repository-credentials/resources.ts";
+import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.ts";
 import { requestHead } from "../fixtures/repository-credentials/request-head.ts";
 
 registerCredentialFixtureRegressions();
@@ -154,15 +150,14 @@ test("second backend uses the production HTTPS sender and distinct native authen
     clock,
     accepted: upstream.accepted,
   });
-  const { service, listeners }: { service: CredentialServiceOwner; listeners: RunningListeners } =
-    await startServiceListeners(resources, {
-      config,
-      tls: upstream.tls,
-      factory,
-      clock,
-      upstreamOrigins: [upstream.origin],
-      log: undefined,
-    });
+  const { service, listeners } = await startServiceListeners(resources, {
+    config,
+    tls: upstream.tls,
+    factory,
+    clock,
+    upstreamOrigins: [upstream.origin],
+    log: undefined,
+  });
   const opened = service.open({ durationSeconds: 86400, profile: "git-write" });
   const fixture = { config, opened, listeners, tls: upstream.tls };
   const headers = {
@@ -211,15 +206,14 @@ test("drain-before rotation waits for a streamed upstream write and preserves th
     operationMs: 60000,
     controls: { observe: (event) => observations.push(event) },
   });
-  const { service, listeners }: { service: CredentialServiceOwner; listeners: RunningListeners } =
-    await startServiceListeners(resources, {
-      config,
-      tls: upstream.tls,
-      factory,
-      clock,
-      upstreamOrigins: [upstream.origin],
-      log: undefined,
-    });
+  const { service, listeners } = await startServiceListeners(resources, {
+    config,
+    tls: upstream.tls,
+    factory,
+    clock,
+    upstreamOrigins: [upstream.origin],
+    log: undefined,
+  });
   resources.after(release);
   const opened = service.open({ durationSeconds: 86400, profile: "git-write" });
   const fixture = { config, opened, listeners, tls: upstream.tls };

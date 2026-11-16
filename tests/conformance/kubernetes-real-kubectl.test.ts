@@ -54,7 +54,7 @@ import {
   registerBoundedTeardownRejectionCases,
   shortTeardownOptions,
 } from "./kubernetes-teardown-cases.ts";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 type RetryOptions = {
   sleep: (ms: number) => Promise<unknown>;
@@ -1968,23 +1968,8 @@ const topologyStandIn = (exported: string[]) => `
     });
     throw new Error("topology setup failed");
   }
-  // The live Slack proof checks both bots before it arranges the topology.
-  export async function slackApi(method, token, query) {
-    return method === "auth.test"
-      ? { team_id: "T0", user_id: token }
-      : {
-          channel: {
-            id: query.channel,
-            is_channel: true,
-            is_private: false,
-            is_im: false,
-            is_mpim: false,
-            is_member: true,
-          },
-        };
-  }
   ${exported
-    .filter((name) => !["arrangeProductionTopology", "slackApi"].includes(name))
+    .filter((name) => name !== "arrangeProductionTopology")
     .map((name) =>
       name.startsWith("requires")
         ? `export const ${name} = {};`
@@ -2013,6 +1998,28 @@ test(
     assert.ok(exported.includes("arrangeProductionTopology"));
     const standIn = join(directory, "topology.mjs");
     await writeFile(standIn, topologyStandIn(exported));
+    const slackWire = new URL("../helpers/slack-web-api.ts", import.meta.url);
+    const slackStandIn = join(directory, "slack-web-api.mjs");
+    await writeFile(
+      slackStandIn,
+      `
+  // The live Slack proof checks both bots before it arranges the topology.
+  export async function slackApi(method, token, query) {
+    return method === "auth.test"
+      ? { team_id: "T0", user_id: token }
+      : {
+          channel: {
+            id: query.channel,
+            is_channel: true,
+            is_private: false,
+            is_im: false,
+            is_mpim: false,
+            is_member: true,
+          },
+        };
+  }
+    `,
+    );
     const hooks = join(directory, "hooks.mjs");
     await writeFile(
       hooks,
@@ -2020,9 +2027,13 @@ test(
       registerHooks({
         resolve(specifier, context, nextResolve) {
           const resolved = nextResolve(specifier, context);
-          return resolved.url === ${JSON.stringify(helper.href)}
-            ? { url: ${JSON.stringify(pathToFileURL(standIn).href)}, shortCircuit: true }
-            : resolved;
+          if (resolved.url === ${JSON.stringify(helper.href)}) {
+            return { url: ${JSON.stringify(pathToFileURL(standIn).href)}, shortCircuit: true };
+          }
+          if (resolved.url === ${JSON.stringify(slackWire.href)}) {
+            return { url: ${JSON.stringify(pathToFileURL(slackStandIn).href)}, shortCircuit: true };
+          }
+          return resolved;
         },
       });`,
     );
@@ -2308,10 +2319,9 @@ async function fakeKubectlExec(script: string, ...args: string[]) {
 // A loopback port that refuses connections until the test ends. A released port could be
 // taken by a test running in parallel, and the probe would then connect.
 async function refusingLoopbackPort(t: TestContext) {
-  const refusing: { port: number | undefined; release: () => Promise<void> } = await refusingPort();
-  t.after(() => refusing.release());
-  assert.ok(typeof refusing.port === "number");
-  return refusing.port;
+  const { port, release } = await refusingPort();
+  t.after(release);
+  return port;
 }
 
 const quiet = { sleep: async () => {}, log: () => {} };
@@ -2328,8 +2338,7 @@ test("the probe's own refused connection passes a deny check", async (t) => {
 
 test("a connected probe fails a deny check", async (context) => {
   const server = createServer((socket) => socket.end());
-  const port: unknown = await listen(context, server);
-  assert.equal(typeof port, "number");
+  const port = await listen(context, server);
   await assert.rejects(
     assertProbeDenied(
       "open loopback traffic",

@@ -22,15 +22,15 @@ import {
   OPENCLAW_STATE_DATABASE_SCHEMA_VERSION,
 } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.ts";
+import { runDocker } from "../helpers/runtime-image-docker.ts";
+import { jsonLogEntries } from "../helpers/runtime-image-gateway-observations.ts";
 import {
   image,
   imageTestOptions,
-  runDocker,
   gatewayStateVolume,
   temporaryGatewayConfiguration,
-  jsonLogEntries,
   runGatewaySmoke,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 import {
   parseObservation,
   readAgentDatabase,

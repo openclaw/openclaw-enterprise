@@ -5,7 +5,6 @@ import type { ExternalProviderName } from "../../apps/controller/src/auth/human-
 import type { ProviderDenial } from "../../apps/controller/src/auth/provider-transport.ts";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import type { AuditEvent } from "../../packages/contracts/src/index.ts";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   bootstrapProductionInstallation,
   composeProductionSignIn,
@@ -15,10 +14,10 @@ import {
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { postgresSignInState } from "../helpers/postgres-sign-in-installation.ts";
 import {
   injectLocalhost,
   parseAuthResponse,
-  postgresState,
   recordData,
   text,
   type App,
@@ -56,8 +55,7 @@ test(
   requiresPostgres,
   async (t) => {
     const apps: { app?: App } = {};
-    const { pool } = postgresState(t, () => [apps.app]);
-    const state = new PostgresPlatformState(pool);
+    const { pool, state } = postgresSignInState(t, () => [apps.app]);
     await bootstrapProductionInstallation(t, { databaseUrl, email: adminEmail, authSecret });
     const { rows } = await pool.query<{ id: string }>(
       'SELECT id FROM occ."user" WHERE email = $1',

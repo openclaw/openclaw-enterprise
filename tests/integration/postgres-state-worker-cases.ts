@@ -17,7 +17,7 @@ import {
   request,
   startController,
 } from "../helpers/postgres-platform-state.ts";
-import { waitUntil, within } from "../helpers/wait-for.mjs";
+import { waitUntil, within } from "../helpers/wait-for.ts";
 
 export async function recheckNamespaceRestriction(context: TestContext) {
   const [{ Pool }, { createControllerWorker }, { createDevelopmentComputeDriver }] =

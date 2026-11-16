@@ -12,7 +12,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   createDeviceCredentialDrivers,

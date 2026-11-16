@@ -10,9 +10,8 @@ import {
 } from "../helpers/production-sign-in.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
-import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";
 import {
-  onboarded,
   readAccount,
   type SignInApp,
   accountPrincipalId,
@@ -61,16 +60,13 @@ test(
       admin,
       roles,
       accounts: { second, member },
-    } = onboarded(
-      await onboard({
-        remoteAddress: address(),
-        accounts: {
-          second: { email: "attach-second@example.test", role: "admin" },
-          member: { email: "attach-member@example.test" },
-        },
-      }),
-      ["second", "member"],
-    );
+    } = await onboard({
+      remoteAddress: address(),
+      accounts: {
+        second: { email: "attach-second@example.test", role: "admin" },
+        member: { email: "attach-member@example.test" },
+      },
+    });
     let adminHeaders: SessionHeaders;
     const app = await composeApp(oidcUpgradeSettings(admin.id));
     apps.push(app);

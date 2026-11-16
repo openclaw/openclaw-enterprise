@@ -6,6 +6,7 @@ import type { Pool } from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { privateBootstrapDirectory } from "../helpers/bootstrap-installation.mjs";
 import { withPool } from "../helpers/postgres-database.mjs";
+import { onboardPasswordAccounts } from "../helpers/postgres-sign-in-installation.ts";
 import {
   assertProviderAttached,
   clientAddresses,
@@ -15,11 +16,9 @@ import {
   defaultInstallSettings,
   fakeOidc,
   oidcUpgradeSettings,
-  onboardPasswordAccounts,
 } from "../helpers/production-sign-in.mjs";
 import {
   authOperation,
-  onboarded,
   oidcSignIn,
   parseAuthResponse,
   passwordSignIn,
@@ -113,7 +112,10 @@ test(
     const directory = await privateBootstrapDirectory(t, "openclaw-break-glass-");
     // Every mutating command refuses while any other client is connected, so the suite
     // opens a pool only for each short read and closes it before the next command.
-    const setup: unknown = await withPool(
+    const {
+      admin,
+      accounts: { member },
+    } = await withPool(
       databaseUrl,
       (pool: Pool) =>
         onboardPasswordAccounts(t, {
@@ -129,10 +131,6 @@ test(
         }),
       { max: 2 },
     );
-    const {
-      admin,
-      accounts: { member },
-    } = onboarded(setup, ["member"]);
     const guardedSettings = oidcUpgradeSettings(admin.id);
     const guardedApp = (app = await composeProductionSignIn(t, {
       ...controllerOptions,

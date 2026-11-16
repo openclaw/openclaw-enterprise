@@ -1,23 +1,16 @@
 import assert from "node:assert/strict";
-import { KeyObject } from "node:crypto";
-import type { Server } from "node:https";
-import type { TestContext } from "node:test";
 import type {
   EgressRef,
   EgressSourceKey,
   PreparedTokenEvidence,
 } from "../../packages/contracts/src/index.ts";
-import type { Clock } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts";
 import {
   captureMetadata as captureMetadataFromFixture,
   dispatchMetadata as dispatchMetadataFromFixture,
   raceMaintenance as raceMaintenanceFromFixture,
 } from "../helpers/github-metadata-exchange.mjs";
-import {
-  listenOnNewOrigin as listenOnNewOriginFromFixture,
-  startGitHubFixture,
-} from "../fixtures/repository-credentials/github.mjs";
+import type { GitHubFixture } from "../fixtures/repository-credentials/github.ts";
 import { wireTime as fixtureWireTime } from "../helpers/static-egress.mjs";
 
 // The shared JavaScript helpers remain callable from their existing tests. Treat
@@ -221,79 +214,4 @@ export async function raceMaintenance(
   signal: AbortSignal,
 ): Promise<unknown> {
   return callFixture(raceMaintenanceFromFixture, undefined, [owners, signal]);
-}
-
-export async function listenOnNewOrigin(
-  t: TestContext,
-  createIssuer: () => Server,
-): Promise<string> {
-  const origin = await callFixture(listenOnNewOriginFromFixture, undefined, [t, createIssuer]);
-  assert.ok(typeof origin === "string");
-  return origin;
-}
-
-interface IssuedToken {
-  token: string;
-  expires_at: string;
-  permissions: Readonly<Record<string, string>>;
-  repository_selection: "selected";
-  repositories: ReadonlyArray<{ id: number }>;
-}
-
-export interface GitHubFixtureOptions {
-  tokenLifetimeMs?: number;
-  tokenResponse?(packet: IssuedToken): IssuedToken;
-  beforeIssueResponse?(): Promise<void>;
-  issueResponseGate?(): Promise<void> | undefined;
-  revokeResponseGate?(): Promise<void> | undefined;
-}
-
-interface GitHubFixture {
-  readonly origin: string;
-  readonly tls: { ca: Buffer; key: Buffer; cert: Buffer };
-  readonly privateKey: KeyObject;
-  readonly issuesOfTokens: ReadonlyArray<{
-    repositoryIds: readonly (string | number)[] | "installation";
-    permissions: Readonly<Record<string, string>>;
-  }>;
-  readonly trace: ReadonlyArray<{ method: string; target: string }>;
-  readonly errors: readonly unknown[];
-  tokenState(): ReadonlyArray<{ revoked: boolean }>;
-  setIssueStatus(status: number, body?: string): void;
-  setRevokeStatus(status: number): void;
-  disconnectAfterMutation(method: "POST", target: string): void;
-}
-
-export async function startLifecycleGitHub(
-  t: TestContext,
-  clock: Clock,
-  options: GitHubFixtureOptions,
-): Promise<GitHubFixture> {
-  // The fixture's default clock has extra test controls, but the protocol uses
-  // the Clock contract. Pass the system clock without requiring those controls.
-  const started: unknown = await callFixture(startGitHubFixture, undefined, [
-    t,
-    { clock, ...options },
-  ]);
-  assert.ok(githubFixture(started));
-  return started;
-}
-
-function githubFixture(value: unknown): value is GitHubFixture {
-  return (
-    record(value) &&
-    typeof value.origin === "string" &&
-    record(value.tls) &&
-    Buffer.isBuffer(value.tls.ca) &&
-    Buffer.isBuffer(value.tls.key) &&
-    Buffer.isBuffer(value.tls.cert) &&
-    value.privateKey instanceof KeyObject &&
-    Array.isArray(value.issuesOfTokens) &&
-    Array.isArray(value.trace) &&
-    Array.isArray(value.errors) &&
-    typeof value.tokenState === "function" &&
-    typeof value.setIssueStatus === "function" &&
-    typeof value.setRevokeStatus === "function" &&
-    typeof value.disconnectAfterMutation === "function"
-  );
 }

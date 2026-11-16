@@ -6,14 +6,16 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { ControlRequest } from "../../../apps/controller/src/drivers/repo/access/control-contracts.ts";
 import type { RepositoryCredentialBoundSessionInput } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
-import { within } from "../../helpers/wait-for.mjs";
-import { appModule, appRoot } from "./runtime.mjs";
-import { createControlledClock } from "./clock.mjs";
-import { cleanEnvironment, createTlsMaterial } from "./process.mjs";
-import { createResourceScope } from "./resources.mjs";
-import { createServiceConfiguration } from "./service.mjs";
-import { startGitHubFixture, fixtureRepository, fixtureRepositoryId } from "./github.mjs";
-import { createRegistryMaterial, type FixtureOwner } from "./registry/material.ts";
+import { within } from "../../helpers/wait-for.ts";
+import { appRoot } from "./runtime.ts";
+import { appFunction } from "./app-functions.ts";
+import { createControlledClock } from "./clock.ts";
+import { cleanEnvironment, createTlsMaterial } from "./process.ts";
+import { createResourceScope } from "./resources.ts";
+import { createServiceConfiguration } from "./service-fixture.ts";
+import { startGitHubFixture, fixtureRepository, fixtureRepositoryId } from "./github.ts";
+import { createRegistryMaterial } from "./registry/material.ts";
+import type { FixtureOwner } from "./resources.ts";
 import type { GitHubFixture } from "./registry/provider.ts";
 import type { ServiceProcessRequest, ServiceProcessGeneration } from "./service-process-child.ts";
 
@@ -190,15 +192,12 @@ export async function startServiceProcessFixture(
   ownedDirectories.push(registryMaterial.directory);
   const githubOptions = { clock, tls };
   const github: GitHubFixture = await startGitHubFixture(resources, githubOptions);
-  const [{ callControl }, { loadGitHubRepositoryRegistry }, { resolveGitHubRepositoryBinding }]: [
-    typeof import("../../../apps/controller/src/drivers/repo/github/access/client/operator.ts"),
-    typeof import("../../../apps/controller/src/composition/repository-credentials/registry.ts"),
-    typeof import("../../../apps/controller/src/drivers/repo/github/access/registry.ts"),
-  ] = await Promise.all([
-    appModule("drivers/repo/github/access/client/operator"),
-    appModule("composition/repository-credentials/registry"),
-    appModule("drivers/repo/github/access/registry"),
-  ]);
+  const [callControl, loadGitHubRepositoryRegistry, resolveGitHubRepositoryBinding] =
+    await Promise.all([
+      appFunction("drivers/repo/github/access/client/operator", "callControl"),
+      appFunction("composition/repository-credentials/registry", "loadGitHubRepositoryRegistry"),
+      appFunction("drivers/repo/github/access/registry", "resolveGitHubRepositoryBinding"),
+    ]);
   const registry = await loadGitHubRepositoryRegistry(
     registryMaterial.registryFile,
     "github-fixture",

@@ -12,15 +12,13 @@ import {
   PLUGIN_APP_SERVER_TOKEN_HMAC_DOMAIN,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import { runDocker, commandOutput, failureTail } from "../helpers/runtime-image-docker.ts";
+import { jsonLogEntries } from "../helpers/runtime-image-gateway-observations.ts";
 import {
   imageTestOptions,
-  runDocker,
-  commandOutput,
   createAdmittedRuntimeImageConfiguration,
-  jsonLogEntries,
-  failureTail,
   runGatewaySmoke,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 
 // Only emit known diagnostic fields and values; fixture output and runtime logs are untrusted.
 const diagnosticPhases = new Set([

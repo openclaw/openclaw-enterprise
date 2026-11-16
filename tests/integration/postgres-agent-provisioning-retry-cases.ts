@@ -24,7 +24,7 @@ import { ServiceAccountDriverNotConfiguredError } from "../../packages/occ/src/i
 import { assertApiError } from "../helpers/api-error.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { AGENT_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { createRuntimeComputeDriver } from "./postgres-agent-provisioning-transport-fixture.ts";
 
 import {
