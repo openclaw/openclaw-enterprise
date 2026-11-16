@@ -173,6 +173,7 @@ test(
   "production image runs the chart's pre-upgrade Installation check",
   imageTestOptions,
   async (t) => {
+    assert.ok(image !== undefined);
     // The initialization hook runs this script with the chart's security context before
     // Helm replaces the API, so a refused Installation leaves the old Pods serving.
     const script = await readFile(
@@ -249,6 +250,7 @@ test(
 );
 
 test("production image includes the OpenShell gRPC proto asset", imageTestOptions, async () => {
+  assert.ok(image !== undefined);
   const probe = String.raw`
     import assert from "node:assert/strict";
     import { GrpcOpenShellGatewayClient } from "./apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -284,6 +286,7 @@ test("production image includes the OpenShell gRPC proto asset", imageTestOption
 });
 
 test("production image includes console shell and public assets", imageTestOptions, async () => {
+  assert.ok(image !== undefined);
   const { stdout: labels } = await runDocker([
     "image",
     "inspect",
