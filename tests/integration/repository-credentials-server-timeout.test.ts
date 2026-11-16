@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { within } from "../helpers/wait-for.ts";
 import { listen } from "../fixtures/repository-credentials/process.mjs";
 import { startTokenServiceScope } from "../fixtures/repository-credentials/service-fixture.ts";
-import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.ts";
 import {
   createStaticTokenServiceFactory,
   startServiceListeners,

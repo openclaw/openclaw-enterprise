@@ -26,7 +26,7 @@ import {
   createAlternateDriverFactory,
   startAlternateUpstream,
 } from "../fixtures/repository-credentials/alternate.ts";
-import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.ts";
 import {
   createTlsMaterial,
   listen,

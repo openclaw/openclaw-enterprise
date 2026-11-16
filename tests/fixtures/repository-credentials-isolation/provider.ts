@@ -3,7 +3,7 @@ import { lstat, readFile, writeFile, rename } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer, request } from "node:https";
 import type { Socket } from "node:net";
-import { startGitHubFixture } from "../repository-credentials/github.mjs";
+import { startGitHubFixture } from "../repository-credentials/github.ts";
 import { startGitSmartHttpFixture } from "../repository-credentials/git.mjs";
 
 export type ProviderReport = {
@@ -22,16 +22,6 @@ export type ProviderReport = {
 
 type Cleanup = () => void | Promise<void>;
 type FixtureContext = { after: (callback: Cleanup) => void };
-type GitHubFixture = {
-  origin: string;
-  acceptStatic(token: string): number;
-  authorize(authorization: string | undefined, boundary: "git"): boolean;
-  issuesOfTokens: ProviderReport["issues"];
-  tokenState(): ProviderReport["tokens"];
-  trace: ProviderReport["apiTrace"];
-  errors: ProviderReport["errors"];
-};
-
 // Only this trusted fixture container sees provider material. The production
 // service still uses its fixed HTTPS origins and verifies their certificates.
 const cleanup: Cleanup[] = [];
@@ -73,8 +63,7 @@ async function holdOnce() {
   }
   throw new Error("fixture-hold-timeout");
 }
-const githubOptions = { tls, clock: { wallNow: Date.now } };
-const github: GitHubFixture = await startGitHubFixture(context, githubOptions);
+const github = await startGitHubFixture(context, { tls, clock: { wallNow: Date.now } });
 secrets.push(tls.key.toString().split("\n")[1]!);
 {
   // The token exists only here and in the service's read-only input mount. The host

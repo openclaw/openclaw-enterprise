@@ -59,7 +59,7 @@ import {
   fixtureInstallationId,
   fixtureRepositoryId,
   fixtureRepository,
-} from "../fixtures/repository-credentials/github.mjs";
+} from "../fixtures/repository-credentials/github.ts";
 
 const ref = { id: "fixture-artifact-lease", generation: 1 };
 const origin = "https://artifact.example.test";

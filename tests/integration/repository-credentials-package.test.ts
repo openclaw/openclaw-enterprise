@@ -8,7 +8,7 @@ import { createServer, request } from "node:http";
 import { once } from "node:events";
 import { buffer } from "node:stream/consumers";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
+import { startGitHubFixture } from "../fixtures/repository-credentials/github.ts";
 import { loadGitHubRepositoryRegistry } from "../../apps/controller/src/composition/repository-credentials/registry.ts";
 import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { callControl } from "../../apps/controller/src/drivers/repo/github/access/client/operator.ts";
@@ -613,11 +613,12 @@ test(
               },
             },
             (response) => {
-              void buffer(response).then(
-                (bytes) =>
-                  resolve({ status: response.statusCode, body: JSON.parse(bytes.toString()) }),
-                reject,
-              );
+              void buffer(response)
+                .then((bytes) => {
+                  const body: unknown = JSON.parse(bytes.toString());
+                  resolve({ status: response.statusCode, body });
+                })
+                .catch(reject);
             },
           );
           outgoing.on("error", reject);
