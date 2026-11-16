@@ -1,4 +1,5 @@
-import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.mjs";
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
+import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -61,7 +62,7 @@ async function createPolicyApp(t, recordOperations = false, { laxDriver = false 
       drivers: { sandbox: "policy-openshell", credential_gateway: "policy-credentials" },
       client: new OpenShellGateway(
         { serviceName: "openshell-gateway" },
-        { gatewayClient: openShellWorkspaceProtocol() },
+        { gatewayClient: completeOpenShellGatewayClient(openShellWorkspaceProtocol()) },
       ),
     },
   });
