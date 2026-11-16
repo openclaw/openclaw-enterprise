@@ -725,7 +725,7 @@ async function validateOpenShellSelection(
   env: Environment,
   execFile: ExecuteFile,
   snapshotParent?: string,
-) {
+): ReturnType<typeof verifyOpenShellCandidate> {
   const releasedImages = {
     gateway: openShellGatewayImage,
     sandbox: openShellSandboxImage,
