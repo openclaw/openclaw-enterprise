@@ -48,7 +48,7 @@ import {
   omitNativeAdminStatusFields,
 } from "./console-agents-test-support.ts";
 import { STOP_REQUESTED, VERSION_READ_DENIED_HEADING } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   registerDeletionAndNavigationCases,
   registerSettingsRefocusAndTabsCases,

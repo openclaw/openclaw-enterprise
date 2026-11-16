@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { prepareFile } from "../../scripts/ci/prepare.mjs";
+import { authorizedPrincipal } from "./development-iam-state.ts";
 import {
-  authorizedPrincipal,
   createBackendWorkerDrivers,
   createBackendController,
   ensureInstallation,

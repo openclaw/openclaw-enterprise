@@ -14,7 +14,7 @@ import {
   NATIVE_ADMIN_DENIED,
   nativeAdminOffDenied,
 } from "../helpers/refusal-text.mjs";
-import { grantRole, restrict } from "../helpers/iam-grants.mjs";
+import { grantRole, restrict } from "../helpers/iam-grants.ts";
 import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
