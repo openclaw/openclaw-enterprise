@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
@@ -27,10 +28,14 @@ test("preview serves static docs on loopback and confines reads to site output",
   await assert.rejects(waitForDocsPreview(spawnDocsPreview(join(fixture, "missing"))), {
     code: "ENOENT",
   });
-  await assert.rejects(
-    waitForDocsPreview(spawnDocsPreview(fixture, "--port", "invalid")),
-    /Docs preview exited before ready: 1/,
-  );
+  const invalidPort = spawnDocsPreview(fixture, "--port", "invalid");
+  try {
+    await assert.rejects(waitForDocsPreview(invalidPort), /Docs preview exited before ready: 1/);
+  } finally {
+    if (invalidPort.pid !== undefined) {
+      await stopProcess(invalidPort);
+    }
+  }
   const child = spawnDocsPreview(fixture);
   t.after(async () => {
     if (child.pid !== undefined) {
@@ -148,6 +153,11 @@ test(
         assert.equal(source, "");
       } else {
         assert.ok(source.length > 0);
+        const syntax = spawnSync(process.execPath, ["--check", "--input-type=module"], {
+          input: source,
+          encoding: "utf8",
+        });
+        assert.equal(syntax.status, 0, syntax.stderr);
       }
     }
     const search = await fetch(`${origin}/pagefind/pagefind.js`);
