@@ -25,7 +25,7 @@ import {
   ACCEPTED_DEVICE_AUTO_APPROVE,
   INVALID_ALLOW_USERS,
   INVALID_DEVICE_AUTO_APPROVE,
-} from "../helpers/trusted-proxy-shapes.mjs";
+} from "../helpers/trusted-proxy-shapes.ts";
 import {
   CODEX_PLACEMENT_REFUSAL,
   KUBERNETES_ALLOW_USERS_REFUSAL,
