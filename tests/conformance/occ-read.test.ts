@@ -2,35 +2,48 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { type NativeIAMState, NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   AuthorizationDeniedError,
   OpenClawController,
   ResourceConflictError,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import {
   createDevelopmentComputeDriver,
   registerAndSelectDrivers,
-} from "../helpers/development.mjs";
-import { bindRole, grantRole, permissionsFor, principalIAMState } from "../helpers/iam-grants.mjs";
+} from "../helpers/development.ts";
+import { grantRole } from "../helpers/iam-grants.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 
 const installation = Object.freeze({
   id: "installation-read-test",
   name: "Exact-resource read controller",
   createdAt: "2026-08-17T00:00:00.000Z",
 });
+
 async function createFixture() {
-  const exactNamespaceId = "ns_00000000-0000-4000-8000-000000000001";
-  const scopedNamespaceId = "ns_00000000-0000-4000-8000-000000000002";
-  const iamState = principalIAMState(
-    ["principal-admin", "principal-exact-a", "principal-scoped-b", "principal-agent-a"],
-    "https://identity.example.com",
-  );
-  const { identities, roles } = iamState;
-  grantRole(iamState, "principal-admin", {
+  const principalIds = [
+    "principal-admin",
+    "principal-exact-a",
+    "principal-scoped-b",
+    "principal-agent-a",
+  ];
+  const iamState: { [Key in keyof NativeIAMState]: NativeIAMState[Key][number][] } = {
+    identities: principalIds.map((id) => ({
+      kind: "principal",
+      id,
+      issuer: "https://identity.example.com",
+      subject: id,
+    })),
+    groups: [],
+    memberships: [],
+    roles: [],
+    bindings: [],
+    restrictions: [],
+  };
+  const { role: adminRole } = grantRole(iamState, "principal-admin", {
     id: "role-admin",
     bindingId: "binding-admin",
     permissions: {
@@ -42,66 +55,12 @@ async function createFixture() {
       configuration: ["create", "read"],
     },
   });
-  const reads = { namespace: ["read"], agent: ["read"], agent_revision: ["read"] };
-  // One Role per exact binding: an exact Agent binding also applies its Role's agent_revision
-  // permissions to every revision of that Agent, so revision-level filtering needs an Agent
-  // binding whose Role cannot read revisions.
-  for (const [kind, id] of [
-    ["namespace", exactNamespaceId],
-    ["agent", "agent-3"],
-    ["agent_revision", "agent_revision-6"],
-  ]) {
-    roles.push({
-      id: `role-principal-exact-a-${kind}`,
-      namespaceId: exactNamespaceId,
-      permissions: permissionsFor({ [kind]: ["read"] }),
-    });
-    bindRole(iamState, "principal-exact-a", {
-      id: `binding-a-${kind}`,
-      roleId: `role-principal-exact-a-${kind}`,
-      namespaceId: exactNamespaceId,
-      resource: { kind, id },
-    });
-  }
-  // An owner-style grant: one Role that reads Agents and revisions, bound exactly to Agent A.
-  roles.push({
-    id: "role-principal-agent-a",
-    namespaceId: exactNamespaceId,
-    permissions: permissionsFor(reads),
-  });
-  for (const [kind, id] of [
-    ["namespace", exactNamespaceId],
-    ["agent", "agent-3"],
-  ]) {
-    bindRole(iamState, "principal-agent-a", {
-      id: `binding-agent-a-${kind}`,
-      roleId: "role-principal-agent-a",
-      namespaceId: exactNamespaceId,
-      resource: { kind, id },
-    });
-  }
-  grantRole(iamState, "principal-scoped-b", {
-    id: "role-principal-scoped-b",
-    bindingId: "binding-scoped-b",
-    namespaceId: scopedNamespaceId,
-    permissions: reads,
-  });
   const iam = new NativeIAMDriver(
     { loadNativeIAMState: async () => iamState },
     { id: "iam-read-test" },
   );
-  let sequence = 0;
-  let configurationSequence = 0;
   const controller = new OpenClawController(installation, {
     now: () => new Date(installation.createdAt),
-    createId: (kind) =>
-      kind === "namespace"
-        ? `ns_00000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`
-        : kind === "secret"
-          ? `sec_${randomUUID()}`
-          : kind === "configuration"
-            ? `cfg_00000000-0000-4000-8000-${String(++configurationSequence).padStart(12, "0")}`
-            : `${kind}-${++sequence}`,
   });
   const configurationDriver = createTestConfigurationDriver({ id: "configuration-read-test" });
   const compute = {
@@ -149,20 +108,16 @@ async function createFixture() {
       name: `harness-${agent.id}`,
       value: "synthetic-harness-key",
     });
-    identities.push({
+    iamState.identities.push({
       kind: "service_principal",
       id: agent.servicePrincipalId,
       namespaceId: agent.namespaceId,
       agentId: agent.id,
     });
-    roles.push({
+    grantRole(iamState, agent.servicePrincipalId, {
       id: `role-${agent.id}`,
-      permissions: [{ action: "operate", resourceKind: "secret" }],
-    });
-    bindRole(iamState, agent.servicePrincipalId, {
-      id: `binding-${agent.id}`,
-      roleId: `role-${agent.id}`,
       namespaceId: agent.namespaceId,
+      permissions: { secret: ["operate"] },
       resource: { kind: "secret", id: secret.id },
     });
     await controller.updateAgent("principal-admin", {
@@ -198,10 +153,40 @@ async function createFixture() {
     resolveApprovedDevelopmentHarness,
   );
 
-  assert.equal(namespaceA.id, "ns_00000000-0000-4000-8000-000000000001");
-  assert.equal(namespaceB.id, "ns_00000000-0000-4000-8000-000000000002");
+  // An exact Agent binding carries revision permissions to its children. Separate Roles
+  // keep the exact reader confined to the one revision named by its own binding.
+  for (const [kind, id] of [
+    ["namespace", namespaceA.id],
+    ["agent", agentA.id],
+    ["agent_revision", revisionA.id],
+  ] as const) {
+    grantRole(iamState, "principal-exact-a", {
+      id: `role-exact-a-${kind}`,
+      namespaceId: namespaceA.id,
+      permissions: [{ action: "read", resourceKind: kind }],
+      resource: { kind, id },
+    });
+  }
+  grantRole(iamState, "principal-agent-a", {
+    id: "role-parent-reader-namespace",
+    namespaceId: namespaceA.id,
+    permissions: { namespace: ["read"] },
+    resource: { kind: "namespace", id: namespaceA.id },
+  });
+  grantRole(iamState, "principal-agent-a", {
+    id: "role-parent-reader-agent",
+    namespaceId: namespaceA.id,
+    permissions: { agent: ["read"], agent_revision: ["read"] },
+    resource: { kind: "agent", id: agentA.id },
+  });
+  grantRole(iamState, "principal-scoped-b", {
+    id: "role-scoped-b",
+    namespaceId: namespaceB.id,
+    permissions: { namespace: ["read"], agent: ["read"], agent_revision: ["read"] },
+  });
 
   return {
+    adminRole,
     agentA,
     agentB,
     controller,
@@ -212,16 +197,25 @@ async function createFixture() {
     namespaceB,
     revisionA,
     revisionB,
-    roles,
   };
 }
 
 // Exercise the controller directly to verify that a refused adoption queues no operations.
 test("a refused existing-namespace adoption leaves Namespaces and pending operations unchanged", async () => {
-  const { controller, roles } = await createFixture();
-  roles[0].permissions.push({ action: "administer", resourceKind: "installation" });
+  const { controller, adminRole, namespaceA } = await createFixture();
+  adminRole.permissions.push({ action: "administer", resourceKind: "installation" });
   const existingNamespaces = await controller.listNamespaces("principal-admin");
-  const pendingOperations = controller.pendingOperations().length;
+  const pendingOperations = controller.pendingOperations();
+  // Successful Namespace creation must record work for this comparison to detect a regression.
+  assert.ok(
+    pendingOperations.some(
+      (operation) =>
+        operation.kind === "namespace" &&
+        operation.action === "reconcile" &&
+        operation.target === "ready" &&
+        operation.resourceId === namespaceA.id,
+    ),
+  );
   await assert.rejects(
     controller.createNamespace("principal-admin", {
       name: "Unsupported existing tenant",
@@ -230,7 +224,7 @@ test("a refused existing-namespace adoption leaves Namespaces and pending operat
     ResourceConflictError,
   );
   assert.deepEqual(await controller.listNamespaces("principal-admin"), existingNamespaces);
-  assert.equal(controller.pendingOperations().length, pendingOperations);
+  assert.deepEqual(controller.pendingOperations(), pendingOperations);
 });
 
 test("installation and exact resource reads require their own explicit authorization", async () => {
@@ -354,22 +348,42 @@ test("unauthorized reads cannot distinguish hidden resources from nonexistent re
     await createFixture();
   const operationCount = controller.pendingOperations().length;
 
-  for (const operation of [
-    controller.getNamespace("principal-exact-a", namespaceB.id),
-    controller.getNamespace("principal-exact-a", "namespace-missing"),
-    controller.listAgents("principal-exact-a", namespaceB.id),
-    controller.getAgent("principal-exact-a", namespaceA.id, hiddenAgentA.id),
-    controller.getAgent("principal-exact-a", namespaceA.id, "agent-missing"),
-    controller.getAgent("principal-scoped-b", namespaceA.id, agentA.id),
-    controller.listRevisions("principal-exact-a", namespaceA.id, hiddenAgentA.id),
-    controller.getRevision("principal-exact-a", namespaceA.id, agentA.id, hiddenRevisionA.id),
-    controller.getRevision("principal-exact-a", namespaceA.id, agentA.id, "revision-missing"),
-  ]) {
-    await assert.rejects(operation, AuthorizationDeniedError);
+  const absentNamespaceId = `ns_${randomUUID()}`;
+  const absentAgentId = `agt_${randomUUID()}`;
+  const absentRevisionId = `rev_${randomUUID()}`;
+  const denials: ReadonlyArray<readonly [label: string, read: () => Promise<unknown>]> = [
+    ["hidden Namespace", () => controller.getNamespace("principal-exact-a", namespaceB.id)],
+    ["absent Namespace", () => controller.getNamespace("principal-exact-a", absentNamespaceId)],
+    ["hidden Namespace's Agents", () => controller.listAgents("principal-exact-a", namespaceB.id)],
+    [
+      "hidden sibling Agent",
+      () => controller.getAgent("principal-exact-a", namespaceA.id, hiddenAgentA.id),
+    ],
+    ["absent Agent", () => controller.getAgent("principal-exact-a", namespaceA.id, absentAgentId)],
+    [
+      "Agent in another Namespace",
+      () => controller.getAgent("principal-scoped-b", namespaceA.id, agentA.id),
+    ],
+    [
+      "hidden Agent's revisions",
+      () => controller.listRevisions("principal-exact-a", namespaceA.id, hiddenAgentA.id),
+    ],
+    [
+      "hidden revision",
+      () =>
+        controller.getRevision("principal-exact-a", namespaceA.id, agentA.id, hiddenRevisionA.id),
+    ],
+    [
+      "absent revision",
+      () => controller.getRevision("principal-exact-a", namespaceA.id, agentA.id, absentRevisionId),
+    ],
+  ];
+  for (const [label, read] of denials) {
+    await assert.rejects(read, AuthorizationDeniedError, label);
   }
 
   await assert.rejects(
-    controller.getNamespace("principal-admin", "namespace-missing"),
+    controller.getNamespace("principal-admin", absentNamespaceId),
     ScopeViolationError,
   );
   assert.equal(controller.pendingOperations().length, operationCount);
@@ -393,11 +407,20 @@ test("empty lists and exact reads fail closed without an authoritative selected 
 
 test("collection filtering rejects an invalid or foreign-authority denial", async () => {
   const { controller, iam } = await createFixture();
-  iam.authorize = async () => ({
-    allowed: false,
-    reason: "A different authority attempted to deny this operation.",
-    driverId: "iam-foreign",
-  });
-
-  await assert.rejects(controller.listNamespaces("principal-admin"), AuthorizationDeniedError);
+  const originalAuthorize = iam.authorize;
+  try {
+    for (const driverId of ["", "iam-foreign"]) {
+      iam.authorize = async (request) => {
+        const decision = await originalAuthorize.call(iam, request);
+        return decision.allowed ? decision : { ...decision, driverId };
+      };
+      await assert.rejects(
+        controller.listNamespaces("principal-exact-a"),
+        AuthorizationDeniedError,
+        driverId === "" ? "missing authority" : "foreign authority",
+      );
+    }
+  } finally {
+    iam.authorize = originalAuthorize;
+  }
 });

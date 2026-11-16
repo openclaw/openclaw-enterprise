@@ -83,7 +83,7 @@
     "tests/integration/bootstrap-volume.test.ts",
     "tests/integration/secret-driver-startup.test.ts",
     "tests/conformance/kubernetes-configuration.test.ts",
-    "tests/conformance/occ-read.test.mjs",
+    "tests/conformance/occ-read.test.ts",
     "tests/integration/controller-lifecycle.test.ts",
     "tests/conformance/configuration-occ.test.ts",
     "tests/conformance/configuration-model-policy.test.ts",
@@ -340,7 +340,7 @@
       "path": "tests/conformance/codex-stderr-filter.test.ts"
     },
     {
-      "path": "tests/conformance/occ-read.test.mjs"
+      "path": "tests/conformance/occ-read.test.ts"
     },
     {
       "path": "tests/conformance/openshell-gateway-wire.test.ts"
