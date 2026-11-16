@@ -14,7 +14,7 @@ import type { KubernetesAuthentication } from "../../apps/controller/src/drivers
 import type { HarnessAuthSnapshot } from "../../packages/contracts/src/index.ts";
 import { asRecord, sha256Hex } from "../../packages/utils/src/index.ts";
 import { followContainerLog } from "./container-log-capture.ts";
-import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "./installation-driver-configuration.ts";
 import { kubectlGetJson } from "./kubernetes-api-read.ts";
 import { waitForResult } from "./wait-for.ts";
 

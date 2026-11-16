@@ -12,7 +12,7 @@ import {
   REPOSITORY_CONTROL_SOCKET,
 } from "../../scripts/lib/prepared-repository-installation.ts";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import {
   applyQaRepositoryInstallation,
   grantQaRepositoryBranch,

@@ -7,7 +7,7 @@ import { captureChild } from "../helpers/child-processes.mjs";
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
   createInstallationDriverConfiguration as installation,
-} from "../helpers/installation-driver-configuration.mjs";
+} from "../helpers/installation-driver-configuration.ts";
 import {
   chartTooling,
   parseProductionChart,

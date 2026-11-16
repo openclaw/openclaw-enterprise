@@ -51,7 +51,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
   createInstallationDriverConfiguration as installation,
-} from "../helpers/installation-driver-configuration.mjs";
+} from "../helpers/installation-driver-configuration.ts";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
 import { socketDirectory } from "../helpers/socket-directory.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
