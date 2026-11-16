@@ -50,7 +50,7 @@ import {
 } from "../helpers/openshell-sandbox-workflows.mjs";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { redactedQaTail } from "../helpers/qa-secrets.mjs";
+import { redactedQaTail } from "../helpers/qa-secrets.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import {
   createEnvoyWorkspaceGatewayPlan,

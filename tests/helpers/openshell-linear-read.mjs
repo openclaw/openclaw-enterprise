@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { createQaInstallation } from "./qa-installation.mjs";
 import { createNativePluginAssertions } from "./native-plugin-assertions.ts";
-import { protectedText, redactQaError } from "./qa-secrets.mjs";
+import { protectedText, redactQaError } from "./qa-secrets.ts";
 import { waitFor } from "./qa-utils.mjs";
 import { nativeProvisioningPath } from "./local-first-agent-native.mjs";
 

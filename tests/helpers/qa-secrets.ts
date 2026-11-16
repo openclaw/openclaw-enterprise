@@ -1,40 +1,41 @@
 import assert from "node:assert/strict";
-import { constants } from "node:fs";
+import { constants, type PathLike } from "node:fs";
 import { open } from "node:fs/promises";
 import { inspect, types } from "node:util";
+import type {
+  Agent,
+  CreateIAMAccessBindingBody,
+  CreateIAMRoleBody,
+} from "@openclaw-enterprise/contracts";
 import {
   failureSecrets,
   maskPrivateKeyLines,
   redactOutputLine,
+  type RedactionSecrets,
 } from "../../scripts/ci/failure-redaction.ts";
 
-const protectedValues = new Set();
+const protectedValues = new Set<string>();
 
 // The forms a registered value takes in logs and API errors besides itself:
 // JSON-escaped (pino's JSON lines, and Go's, which also escapes <, > and &),
 // base64 (a Secret's `data` in a kube API error) and percent-encoded. A value
 // shorter than 8 characters gets no base64 forms, which would be short enough
 // to garble unrelated text.
-export function qaSecretVariants(value) {
+export function registerQaSecret(value: string): void {
   const json = JSON.stringify(value).slice(1, -1);
   const goJson = json.replace(
     /[<>&\u2028\u2029]/gu,
     (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
   const bytes = Buffer.from(value, "utf8");
-  return [
-    ...new Set([
-      value,
-      json,
-      goJson,
-      ...(value.length >= 8 ? [bytes.toString("base64"), bytes.toString("base64url")] : []),
-      encodeURIComponent(value),
-    ]),
+  const variants = [
+    value,
+    json,
+    goJson,
+    ...(value.length >= 8 ? [bytes.toString("base64"), bytes.toString("base64url")] : []),
+    encodeURIComponent(value),
   ];
-}
-
-export function registerQaSecret(value) {
-  for (const variant of qaSecretVariants(value)) {
+  for (const variant of variants) {
     protectedValues.add(variant);
   }
 }
@@ -47,7 +48,7 @@ const maxErrorDepth = 8;
 // on its prototype.
 const inheritedErrorFields = ["name", "message", "stack", "code"];
 
-function isError(value) {
+function isError(value: object): value is Error {
   return types.isNativeError(value) || value instanceof Error;
 }
 
@@ -72,14 +73,14 @@ function isError(value) {
 // trap), a bare Error carrying only the redacted message is returned. Getters
 // run at least once per pass; one that returns a secret only on a later call
 // can slip past the first pass.
-export function redactQaError(error) {
+export function redactQaError(error: unknown): unknown {
   // Longest first, so a value containing another is replaced whole.
   const secrets = [...protectedValues].sort((a, b) => b.length - a.length);
   const marker = Buffer.from("[REDACTED]");
   const secretBytes = secrets.map((secret) => Buffer.from(secret, "utf8"));
   let found = false;
   let dryRun = true;
-  const redactText = (text) => {
+  const redactText = (text: string): string => {
     const redacted = secrets.reduce(
       (value, secret) => value.replaceAll(secret, "[REDACTED]"),
       text,
@@ -88,11 +89,11 @@ export function redactQaError(error) {
     return redacted;
   };
   // Byte for byte, so the rest of a binary buffer survives unchanged.
-  const redactBytes = (view) => {
+  const redactBytes = (view: ArrayBufferView): ArrayBufferView => {
     let bytes = Buffer.from(view.buffer, view.byteOffset, view.byteLength);
     let changed = false;
     for (const secret of secretBytes) {
-      const parts = [];
+      const parts: Buffer[] = [];
       let start = 0;
       for (let index = bytes.indexOf(secret); index !== -1; index = bytes.indexOf(secret, start)) {
         parts.push(bytes.subarray(start, index), marker);
@@ -117,10 +118,10 @@ export function redactQaError(error) {
     })
     .filter((form) => form.length > 0)
     .sort((a, b) => b.length - a.length);
-  let done = new Map();
-  const active = new Set();
+  const done = new Map<object, { result: unknown; depth: number }>();
+  const active = new Set<object>();
 
-  const redactValue = (value, depth) => {
+  const redactValue = (value: unknown, depth: number): unknown => {
     if (typeof value === "string") {
       return redactText(value);
     }
@@ -146,7 +147,7 @@ export function redactQaError(error) {
       return "[Truncated]";
     }
     active.add(value);
-    let result;
+    let result: unknown;
     try {
       result = isError(value) ? redactError(value, depth) : copyRedacted(value, depth);
     } finally {
@@ -157,12 +158,13 @@ export function redactQaError(error) {
   };
 
   // Own fields (symbol keys included) and, for an error, the inherited ones.
-  const redactFields = (object, depth, keys) => {
-    const fields = [];
+  type FieldKey = string | symbol;
+  const redactFields = (object: object, depth: number, keys: readonly FieldKey[]) => {
+    const fields: [key: FieldKey, original: unknown, redacted: unknown][] = [];
     for (const key of new Set([...keys, ...Reflect.ownKeys(object)])) {
-      let value;
+      let value: unknown;
       try {
-        value = object[key];
+        value = Reflect.get(object, key);
       } catch {
         continue;
       }
@@ -179,13 +181,13 @@ export function redactQaError(error) {
   // that is not an array, Map or Set). Functions are left out of a copy. An
   // unchanged object that is not a plain one is checked through its printed
   // form too: hidden state, a custom inspect method, a Map's own properties.
-  const copyRedacted = (value, depth) => {
+  const copyRedacted = (value: object, depth: number): unknown => {
     const copy = copyFields(value, depth);
-    const prototype = Object.getPrototypeOf(value);
+    const prototype: unknown = Object.getPrototypeOf(value);
     if (copy !== value || prototype === Object.prototype || prototype === null) {
       return copy;
     }
-    let text;
+    let text: string;
     try {
       // On one line and uncut, so a multi-line secret (a PEM key) stays whole.
       text = inspect(value, { ...printOptions, depth: 2, getters: true });
@@ -201,20 +203,22 @@ export function redactQaError(error) {
     return redacted === text ? value : redacted;
   };
 
-  const copyFields = (value, depth) => {
+  const copyFields = (value: object, depth: number): object => {
     if (Array.isArray(value)) {
-      const items = value.map((item) => redactValue(item, depth + 1));
-      return items.every((item, index) => item === value[index]) ? value : items;
+      const original: readonly unknown[] = value;
+      const items = original.map((item) => redactValue(item, depth + 1));
+      return items.every((item, index) => item === original[index]) ? value : items;
     }
     if (value instanceof Map || value instanceof Set) {
-      const entries = [...value.entries()];
-      const redacted = entries.map(([key, item]) => [
+      const collection: Map<unknown, unknown> | Set<unknown> = value;
+      const entries = [...collection.entries()];
+      const redacted = entries.map(([key, item]): [unknown, unknown] => [
         redactValue(key, depth + 1),
         redactValue(item, depth + 1),
       ]);
       if (
         redacted.every(
-          ([key, item], index) => key === entries[index][0] && item === entries[index][1],
+          ([key, item], index) => key === entries[index]?.[0] && item === entries[index]?.[1],
         )
       ) {
         return value;
@@ -232,14 +236,18 @@ export function redactQaError(error) {
     );
   };
 
-  const redactError = (object, depth) => {
+  const redactError = (object: Error, depth: number): Error => {
     const fields = redactFields(object, depth, inheritedErrorFields);
     if (dryRun) {
       return object;
     }
-    const write = (key, value) => {
+    const write = (key: FieldKey, value: unknown) => {
       try {
-        return Reflect.set(object, key, value) && object[key] === value;
+        if (!Reflect.set(object, key, value)) {
+          return false;
+        }
+        const current: unknown = Reflect.get(object, key);
+        return current === value;
       } catch {
         return false;
       }
@@ -249,14 +257,14 @@ export function redactQaError(error) {
     }
     // Every kept value went through redactValue; functions are dropped.
     const kept = fields
-      .map(([key, , redacted]) => [key, redacted])
-      .filter(([, value]) => typeof value !== "function");
+      .filter(([, , redacted]) => typeof redacted !== "function")
+      .map(([key, , redacted]): [FieldKey, unknown] => [key, redacted]);
     const values = new Map(kept);
     const message = values.get("message");
     const replacement = new Error(typeof message === "string" ? message : "[REDACTED]");
     for (const [key, value] of kept) {
       if (key !== "message" && key !== "stack") {
-        replacement[key] = value;
+        Object.assign(replacement, { [key]: value });
       }
     }
     const stack = values.get("stack");
@@ -273,13 +281,15 @@ export function redactQaError(error) {
       return error;
     }
     dryRun = false;
-    done = new Map();
+    done.clear();
     return redactValue(error, 0);
   } catch {
     let message = "[REDACTED: the thrown value could not be redacted]";
     try {
-      if (typeof error?.message === "string") {
-        message = redactText(error.message);
+      const boxed: object = Object(error);
+      const original: unknown = error == null ? undefined : Reflect.get(boxed, "message");
+      if (typeof original === "string") {
+        message = redactText(original);
       }
     } catch {
       // Keep the placeholder.
@@ -290,29 +300,32 @@ export function redactQaError(error) {
 
 // Command arguments and stdout can contain API payloads. Publish only a bounded
 // stderr tail, using the CI redactor plus dynamically generated fixture secrets.
-export function qaCommandFailureDetail(stderr, env) {
+export function qaCommandFailureDetail(stderr: unknown, env?: NodeJS.ProcessEnv): string {
   return redactedQaTail(stderr, env, { lines: 8, lineChars: 800 }).join("\n");
 }
 
 // The last `lines` lines of `text` (a command's stderr or a component log),
 // each cut to `lineChars` after the same redaction: environment values, every
 // registered fixture secret, common token shapes, and whole credential-bearing lines.
-export function redactedQaTail(text, env, { lines, lineChars }) {
-  const secrets = [
-    ...failureSecrets([env]),
-    // Text is redacted line by line, so each line of a multi-line value (a PEM
-    // key) is a value of its own, as failureSecrets does for the environment.
-    ...[...protectedValues].flatMap((value) => [
-      [value, "qa-secret"],
-      ...(value.includes("\n")
-        ? value
-            .split("\n")
-            .map((line) => line.trim())
-            .filter((line) => line.length >= 8)
-            .map((line) => [line, "qa-secret"])
-        : []),
-    ]),
-  ].sort(([a], [b]) => b.length - a.length);
+export function redactedQaTail(
+  text: unknown,
+  env: NodeJS.ProcessEnv | undefined,
+  { lines, lineChars }: { lines: number; lineChars: number },
+): string[] {
+  const entries = [...failureSecrets([env])];
+  for (const value of protectedValues) {
+    entries.push([value, "qa-secret"]);
+    // Treat each line of a multi-line value as a secret, as failureSecrets does.
+    if (value.includes("\n")) {
+      for (const line of value.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed.length >= 8) {
+          entries.push([trimmed, "qa-secret"]);
+        }
+      }
+    }
+  }
+  const secrets: RedactionSecrets = entries.sort(([a], [b]) => b.length - a.length);
   // A private key's body lines are found across the whole text, so a key that
   // starts above the tail still loses the lines inside it.
   return maskPrivateKeyLines(
@@ -326,7 +339,7 @@ export function redactedQaTail(text, env, { lines, lineChars }) {
 
 // Only the explicit API-key QA scenario accepts process-environment injection.
 // Register before an API call or assertion can include the value in an error.
-export async function protectedModelApiKey(env = process.env) {
+export async function protectedModelApiKey(env: NodeJS.ProcessEnv = process.env): Promise<string> {
   if (env.OCC_TEST_QA_MODEL_API_KEY === undefined) {
     return protectedText(env.OCC_TEST_QA_OPENAI_KEY_FILE, "model credential");
   }
@@ -336,7 +349,7 @@ export async function protectedModelApiKey(env = process.env) {
   return value;
 }
 
-export async function protectedText(path, label) {
+export async function protectedText(path: PathLike | undefined, label: string): Promise<string> {
   assert.ok(path, `${label} path is required`);
   // Check and read the same opened file; never follow a substituted symlink.
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -355,17 +368,42 @@ export async function protectedText(path, label) {
   }
 }
 
-export async function grantQaSecret(f, agent, secretId, name) {
-  const base = `/namespaces/${agent.namespaceId}`;
-  const role = await f.api("POST", `${base}/iam/roles`, {
+type QaIamTransport = {
+  api(
+    method: "POST",
+    path: `/namespaces/${string}/iam/roles`,
+    body: CreateIAMRoleBody,
+  ): Promise<unknown>;
+  api(
+    method: "POST",
+    path: `/namespaces/${string}/iam/access-bindings`,
+    body: CreateIAMAccessBindingBody,
+  ): Promise<unknown>;
+};
+
+export async function grantQaSecret(
+  f: QaIamTransport,
+  agent: Pick<Agent, "namespaceId" | "servicePrincipalId">,
+  secretId: string,
+  name: string,
+): Promise<void> {
+  const base: `/namespaces/${string}` = `/namespaces/${agent.namespaceId}`;
+  const roleBody: CreateIAMRoleBody = {
     name,
     permissions: [{ action: "operate", resourceKind: "secret" }],
-  });
-  await f.api("POST", `${base}/iam/access-bindings`, {
+  };
+  const role = await f.api("POST", `${base}/iam/roles`, roleBody);
+  const roleId = typeof role === "object" && role !== null && "id" in role ? role.id : undefined;
+  assert.ok(
+    typeof roleId === "string" && roleId.length > 0,
+    "QA IAM role response must include a role ID",
+  );
+  const bindingBody: CreateIAMAccessBindingBody = {
     subjectKind: "identity",
     subjectId: agent.servicePrincipalId,
-    roleId: role.id,
+    roleId,
     resourceKind: "secret",
     resourceId: secretId,
-  });
+  };
+  await f.api("POST", `${base}/iam/access-bindings`, bindingBody);
 }

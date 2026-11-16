@@ -8,7 +8,7 @@ import { zstdCompressSync } from "node:zlib";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createNativePluginAssertions } from "../helpers/native-plugin-assertions.ts";
 import type { SessionEvidenceOptions } from "../helpers/plugin-gateway-session-evidence.ts";
-import { registerQaSecret } from "../helpers/qa-secrets.mjs";
+import { registerQaSecret } from "../helpers/qa-secrets.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 type AssistantCall<Arguments> = {
