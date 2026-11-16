@@ -560,6 +560,22 @@ if (fs.existsSync(path.join(docs, "snippets"))) {
       !quickstartDownloads.has(path.relative(docs, source).split(path.sep).join("/")),
   });
 }
+// The downloadable session and Kubernetes snippets run beside the emitted JavaScript.
+if (quickstartScripts.length > 0) {
+  for (const caller of [
+    "stage-session.sh",
+    "operator-session.sh",
+    "cluster-browser-access.md",
+    "kubernetes/owner-listener.jq",
+  ]) {
+    const file = path.join(output, quickstartDirectory, caller);
+    let contents = fs.readFileSync(file, "utf8");
+    for (const [source, download] of quickstartDownloads) {
+      contents = contents.replaceAll(path.basename(source), path.basename(download));
+    }
+    fs.writeFileSync(file, contents);
+  }
+}
 for (const { download, javascript } of quickstartScripts) {
   fs.writeFileSync(path.join(output, download), javascript);
 }

@@ -51,7 +51,7 @@ function entrySlugs(entry: unknown): string[] {
 }
 
 // Exercise the shipped CLI against the authored corpus and generated API.
-test("docs build renders every authored page and preserves repository ownership", async () => {
+test("docs build renders every authored page and preserves repository ownership", async (t) => {
   // `docs:build` indexes the site with the docs-site package's Pagefind, which only
   // `pnpm docs:install` provides (the CI docs step runs it before this lane).
   assert.ok(
@@ -123,6 +123,17 @@ test("docs build renders every authored page and preserves repository ownership"
       await readFile(join(root, "dist/docs", asset)),
       await readFile(join(root, "docs", asset)),
     );
+  }
+  // Stage from the published tree so a checkout-only filename fails the download test.
+  const staged = await temporaryDirectory(t, "enterprise-quickstart-downloads-");
+  execFileSync("bash", ["-eu", join("docs", quickstart, "stage-session.sh")], {
+    cwd: join(root, "dist"),
+    env: { ...process.env, RUN_DIR: staged },
+  });
+  // The published listener manifest and ConfigMap example must use the downloadable payload.
+  for (const caller of ["kubernetes/owner-listener.jq", "cluster-browser-access.md"]) {
+    const source = await readFile(join(root, "dist/docs", quickstart, caller), "utf8");
+    assert.ok(source.includes("/owner-listener.mjs"), caller);
   }
   // A link out of docs/ points at the repository on GitHub.
   const specifications = await readFile(
