@@ -5410,17 +5410,18 @@ test("Agent provisioning API validates inline configuration with existing Secret
     Array.from({ length: 65 }, (_, index) => [`TOOL_${index}`, { source: toolApiKey.data.ref }]),
   );
   const invalidBodies = [
-    [
-      "submitted Secret values",
-      {
+    {
+      description: "submitted Secret values",
+      body: {
         ...requestBody(),
         secrets: [{ name: "tool-api-key", value: `tool-key-${randomUUID()}` }],
       },
-      "The request does not match the operation contract: body /secrets is not an accepted field.",
-    ],
-    [
-      "request-local Secret binding sources",
-      requestBody({
+      message:
+        "The request does not match the operation contract: body /secrets is not an accepted field.",
+    },
+    {
+      description: "request-local Secret binding sources",
+      body: requestBody({
         configuration: {
           secretBindings: {
             TOOL_API_KEY: {
@@ -5429,23 +5430,25 @@ test("Agent provisioning API validates inline configuration with existing Secret
           },
         },
       }),
-      "The request does not match the operation contract: body /configuration/secretBindings/TOOL_API_KEY/source/namespaceId is required.",
-    ],
-    [
-      "request-local Harness Secret source",
-      requestBody({
+      message:
+        "The request does not match the operation contract: body /configuration/secretBindings/TOOL_API_KEY/source/namespaceId is required.",
+    },
+    {
+      description: "request-local Harness Secret source",
+      body: requestBody({
         harnessAuth: {
           method: "api_key",
           source: { kind: "provisioning-secret", name: "model-api-key" },
         },
       }),
-      "The request does not match the operation contract: body /harnessAuth/source/namespaceId is required.",
-    ],
-    [
+      message:
+        "The request does not match the operation contract: body /harnessAuth/source/namespaceId is required.",
+    },
+    {
       // Only the source kind is wrong, so the api_key shape fits and the other Harness
       // authentication shapes' fields are not listed.
-      "Harness Secret source of another kind",
-      requestBody({
+      description: "Harness Secret source of another kind",
+      body: requestBody({
         harnessAuth: {
           method: "api_key",
           source: {
@@ -5454,34 +5457,38 @@ test("Agent provisioning API validates inline configuration with existing Secret
           },
         },
       }),
-      'The request does not match the operation contract: body /harnessAuth/source/kind has an unsupported value (expected "secret").',
-    ],
-    [
+      message:
+        'The request does not match the operation contract: body /harnessAuth/source/kind has an unsupported value (expected "secret").',
+    },
+    {
       // A string fits neither a Harness authentication shape nor null: one wrong-type problem
       // names both, not one per union level.
-      "Harness authentication of the wrong type",
-      requestBody({ harnessAuth: "api_key" }),
-      "The request does not match the operation contract: body /harnessAuth has the wrong type (expected one of object, null).",
-      [{ path: "/harnessAuth", code: "INVALID_TYPE" }],
-    ],
-    [
+      description: "Harness authentication of the wrong type",
+      body: requestBody({ harnessAuth: "api_key" }),
+      message:
+        "The request does not match the operation contract: body /harnessAuth has the wrong type (expected one of object, null).",
+      details: [{ path: "/harnessAuth", code: "INVALID_TYPE" }],
+    },
+    {
       // The method selects the api_key shape, so only its missing source is reported, not
       // the fields of the other methods' shapes or the runtime method's literal.
-      "Harness authentication method without its source",
-      requestBody({ harnessAuth: { method: "api_key" } }),
-      "The request does not match the operation contract: body /harnessAuth/source is required.",
-      [{ path: "/harnessAuth/source", code: "REQUIRED" }],
-    ],
-    [
-      "too many binding destinations",
-      requestBody({
+      description: "Harness authentication method without its source",
+      body: requestBody({ harnessAuth: { method: "api_key" } }),
+      message:
+        "The request does not match the operation contract: body /harnessAuth/source is required.",
+      details: [{ path: "/harnessAuth/source", code: "REQUIRED" }],
+    },
+    {
+      description: "too many binding destinations",
+      body: requestBody({
         configuration: { secretBindings: oversizedBindings },
       }),
-      "The request does not match the operation contract: body /configuration/secretBindings has an unsupported value (expected at most 64 fields).",
-    ],
-    [
-      "non-env delivery",
-      requestBody({
+      message:
+        "The request does not match the operation contract: body /configuration/secretBindings has an unsupported value (expected at most 64 fields).",
+    },
+    {
+      description: "non-env delivery",
+      body: requestBody({
         configuration: {
           secretBindings: {
             TOOL_API_KEY: {
@@ -5491,11 +5498,12 @@ test("Agent provisioning API validates inline configuration with existing Secret
           },
         },
       }),
-      'The request does not match the operation contract: body /configuration/secretBindings/TOOL_API_KEY/delivery/type has an unsupported value (expected "env").',
-    ],
-    [
-      "cross-Namespace Secret references",
-      requestBody({
+      message:
+        'The request does not match the operation contract: body /configuration/secretBindings/TOOL_API_KEY/delivery/type has an unsupported value (expected "env").',
+    },
+    {
+      description: "cross-Namespace Secret references",
+      body: requestBody({
         configuration: {
           secretBindings: {
             TOOL_API_KEY: {
@@ -5504,23 +5512,25 @@ test("Agent provisioning API validates inline configuration with existing Secret
           },
         },
       }),
-      "Secret references cannot cross Namespaces.",
-    ],
-    [
+      message: "Secret references cannot cross Namespaces.",
+    },
+    {
       // executionMode is optional and defaults to embedded; the Compute Driver provisions only
       // dedicated Agents, so the request is refused naming the field to set.
-      "omitted execution mode",
-      requestBody({ executionMode: undefined }),
-      "Agent provisioning needs dedicated execution; this request uses embedded execution. Set executionMode.",
-    ],
-    [
-      "embedded execution mode",
-      requestBody({ executionMode: "embedded" }),
-      "Agent provisioning needs dedicated execution; this request uses embedded execution. Set executionMode.",
-    ],
-    [
-      "reserved environment destinations",
-      requestBody({
+      description: "omitted execution mode",
+      body: requestBody({ executionMode: undefined }),
+      message:
+        "Agent provisioning needs dedicated execution; this request uses embedded execution. Set executionMode.",
+    },
+    {
+      description: "embedded execution mode",
+      body: requestBody({ executionMode: "embedded" }),
+      message:
+        "Agent provisioning needs dedicated execution; this request uses embedded execution. Set executionMode.",
+    },
+    {
+      description: "reserved environment destinations",
+      body: requestBody({
         configuration: {
           secretBindings: {
             OPENCLAW_TOKEN: {
@@ -5529,14 +5539,14 @@ test("Agent provisioning API validates inline configuration with existing Secret
           },
         },
       }),
-      "A secret binding destination uses the reserved prefix OPENCLAW_*: OPENCLAW_TOKEN.",
+      message: "A secret binding destination uses the reserved prefix OPENCLAW_*: OPENCLAW_TOKEN.",
       // The reserved destination is named by its pointer under the inline Configuration.
-      [{ path: "/configuration/secretBindings/OPENCLAW_TOKEN", code: "INVALID_VALUE" }],
-    ],
+      details: [{ path: "/configuration/secretBindings/OPENCLAW_TOKEN", code: "INVALID_VALUE" }],
+    },
   ];
 
   // Each case must fail on its own rule (the exact message), not on an unrelated one.
-  for (const [description, body, message] of invalidBodies) {
+  for (const { description, body, message } of invalidBodies) {
     const result = await provision(body);
     assertApiError(result, 400, "INVALID_REQUEST", description);
     if (message instanceof RegExp) {
@@ -5738,24 +5748,22 @@ test("Agent provisioning API validates inline configuration with existing Secret
   // an authorized caller; without the grant it is the same 403, so a caller learns nothing about
   // a Namespace they cannot provision in from how the plan is refused.
   const planRefusals = [
-    ["omitted execution mode", requestBody({ executionMode: undefined }), 400],
+    { description: "omitted execution mode", body: requestBody({ executionMode: undefined }) },
     // Provisioning needs dedicated Harness authentication. The rule is about the body, so an
     // authorized caller gets it by name, not a generic "not found" (D547).
-    [
-      "no Harness authentication",
-      requestBody({ harnessAuth: null }),
-      400,
-      "Agent provisioning requires dedicated Harness authentication.",
-    ],
-    [
-      "runtime Harness authentication",
-      requestBody({ harnessAuth: { method: "runtime" } }),
-      400,
-      "Agent provisioning requires dedicated Harness authentication.",
-    ],
+    {
+      description: "no Harness authentication",
+      body: requestBody({ harnessAuth: null }),
+      message: "Agent provisioning requires dedicated Harness authentication.",
+    },
+    {
+      description: "runtime Harness authentication",
+      body: requestBody({ harnessAuth: { method: "runtime" } }),
+      message: "Agent provisioning requires dedicated Harness authentication.",
+    },
   ];
   const assertPlanRefusalsDenied = async (grant) => {
-    for (const [description, body] of planRefusals) {
+    for (const { description, body } of planRefusals) {
       const denied = await provision(body);
       assertApiError(denied, 403, "FORBIDDEN", `${grant}, ${description}`);
     }
@@ -5771,9 +5779,9 @@ test("Agent provisioning API validates inline configuration with existing Secret
   });
   await assertPlanRefusalsDenied("without Installation administer");
   fixture.state.restrictions.pop();
-  for (const [description, body, status, message] of planRefusals) {
+  for (const { description, body, message } of planRefusals) {
     const refused = await provision(body);
-    assert.equal(refused.status, status, `${description}: ${JSON.stringify(refused.body)}`);
+    assert.equal(refused.status, 400, `${description}: ${JSON.stringify(refused.body)}`);
     if (message !== undefined) {
       assert.deepEqual(
         { code: refused.body.error.code, message: refused.body.error.message },
@@ -5810,7 +5818,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   computeDriver.validateAgentProvisioning = () => {};
   assert.equal(computeUnavailable.status, 503, JSON.stringify(computeUnavailable.body));
   assert.equal(computeUnavailable.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  for (const [, body, , details] of invalidBodies) {
+  for (const { body, details } of invalidBodies) {
     if (details) {
       const refused = await provision(body);
       assert.deepEqual(refused.body.error.details, details);
