@@ -2,33 +2,22 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import http from "node:http";
 import https from "node:https";
-import { connect as connectTcp, createServer as createTcpServer } from "node:net";
+import { connect as connectTcp, createServer as createTcpServer, Socket } from "node:net";
 import test from "node:test";
 import { createPublicGithubReadServer } from "../../apps/controller/src/drivers/repo/github/public-read/server.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { runPublicGithubReadSocketCapacityCases } from "./public-github-read-socket-capacity-cases.ts";
 
 // Request headers a client never finishes, so the reader holds the connection open.
 const unfinished = "GET /healthz HTTP/1.1\r\nHost: reader\r\n";
-// The fixed answer to a connection over the per-address cap, as the client reads it.
-const refusal =
-  /^HTTP\/1\.1 429 Too Many Requests\r\n(?=[^]*\r\nretry-after: 1\r\n)(?=[^]*\r\nconnection: close\r\n)[^]*too many reader connections/;
-// Unlike events.once, these never reject on the socket errors a reset produces.
-const event = (emitter, name) => new Promise((resolve) => emitter.once(name, resolve));
-const closed = (socket) => socket.closed || event(socket, "close");
-// Everything a raw client reads until the reader ends or resets the connection.
-const received = (client) =>
-  new Promise((resolve) => {
-    let text = "";
-    if (client.closed || client.readableEnded) {
-      resolve(text);
-      return;
-    }
-    client.setEncoding("utf8").on("data", (chunk) => (text += chunk));
-    client.once("end", () => resolve(text)).once("close", () => resolve(text));
-  });
 // A GET from one caller address, read to the end: { status, headers, body (JSON) }.
+/**
+ * @param {string} url
+ * @param {string} [localAddress]
+ * @returns {Promise<import("./public-github-read-socket-capacity-cases.ts").ReaderResponse>}
+ */
 const request = (url, localAddress) =>
   new Promise((resolve, reject) => {
     http
@@ -39,7 +28,9 @@ const request = (url, localAddress) =>
           for await (const chunk of res) {
             text += chunk;
           }
-          resolve({ status: res.statusCode, headers: res.headers, body: JSON.parse(text) });
+          /** @type {unknown} */
+          const body = JSON.parse(text);
+          resolve({ status: res.statusCode, headers: res.headers, body });
         } catch (error) {
           reject(error);
         }
@@ -54,20 +45,29 @@ const githubHeaders = "accept accept-encoding connection host user-agent x-githu
 
 // Starts a reader on loopback for one test. `connect` pairs a raw client with the reader's
 // side of its connection; `hold` opens connections that never finish their request headers.
+/** @param {import("node:test").TestContext} t */
 async function startReader(t) {
   const server = createPublicGithubReadServer();
+  /** @type {Socket[]} */
   const clients = [];
   t.after(() => clients.forEach((client) => client.destroy()));
   const port = await listen(t, server);
+  /** @param {Partial<import("node:net").TcpNetConnectOpts>} [options] */
   const connect = async (options = {}) => {
+    /** @type {Promise<unknown[]>} */
     const accepted = once(server, "connection");
     const client = connectTcp({ port, host: "127.0.0.1", ...options });
     client.on("error", () => {});
     clients.push(client);
     await once(client, "connect");
     const [socket] = await accepted;
+    assert.ok(socket instanceof Socket, "the reader accepted a TCP socket");
     return { client, socket };
   };
+  /**
+   * @param {number} count
+   * @param {string} [localAddress]
+   */
   const hold = async (count, localAddress) => {
     const held = [];
     for (let open = 0; open < count; open++) {
@@ -120,8 +120,10 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
   const linked = (response) => new URL(response.headers.get("link").split(">")[0].slice(1), origin);
   // Each Agent Pod is a separate caller address; loopback aliases stand in for them.
   const from = (address, path, base = origin) => request(base + repo + path, address);
+  /** @type {[string, string, string]} */
   const aliases = ["127.0.0.2", "127.0.0.3", "127.0.0.4"];
   const probe = createTcpServer();
+  /** @type {boolean} */
   const aliased = await new Promise((resolve) => {
     probe.once("error", () => resolve(false));
     probe.listen(0, aliases.at(-1), () => probe.close(() => resolve(true)));
@@ -500,122 +502,11 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       );
     },
   );
-  await t.test(
-    "idle sockets from one caller address cannot lock other callers out",
-    // Room for the idle sockets' close (about 7 s, at most 15 s) and setup.
-    aliased ? { timeout: 30_000 } : multipleCallers,
-    async (st) => {
-      const reader = await startReader(st);
-      const [idler, other] = aliases;
-      // One address opens 48 connections, the reader's whole budget without the per-address cap,
-      // and never finishes its request headers. The reader keeps four and refuses the rest.
-      const idle = await reader.hold(48, idler);
-      const idling = Date.now();
-      // Without the cap the reader is full and resets another caller until the idle sockets
-      // time out (6 s, or about 30 s with Node's default check interval). With it, at once.
-      const { status, code } = await request(reader.base + "/healthz", other).catch(
-        (error) => error,
-      );
-      assert.equal(status ?? code, 200, "another caller is answered while one address idles");
-      // The idle sockets the reader did accept close at the 6 s headers timeout, checked
-      // every second (about 7 s). Node checks that timeout in native code against the real
-      // clock, so the wait is real; it ends when the last socket closes. Allow 15 s for loaded
-      // runners: with Node's default 30 s check interval they would still be open.
-      await Promise.all(idle.map(({ client }) => closed(client)));
-      const elapsed = Date.now() - idling;
-      assert.ok(elapsed < 15_000, `idle sockets closed after ${elapsed} ms`);
-    },
-  );
-  await t.test(
-    "a connection over the per-address cap is answered 429 and closed",
-    { timeout: 15_000 },
-    async (st) => {
-      const reader = await startReader(st);
-      // This address holds its four connections with unfinished request headers.
-      const held = await reader.hold(4);
-      const healthz = () => request(reader.base + "/healthz");
-      // The fifth gets the documented retryable answer, not a reset (finding 1475).
-      const refused = await healthz();
-      assert.equal(refused.status, 429);
-      assert.equal(refused.headers["retry-after"], "1");
-      assert.equal(refused.headers.connection, "close");
-      assert.match(refused.body.message, /too many reader connections/);
-      // Once this address closes its connections, it is served again.
-      held.forEach(({ client }) => client.destroy());
-      const closing = Date.now();
-      await Promise.all(held.map(({ socket }) => closed(socket)));
-      assert.ok(Date.now() - closing < 5000, "the reader closes its side when the client does");
-      const served = await healthz();
-      assert.equal(served.status, 200);
-      assert.equal(served.body.message, "ready");
-    },
-  );
-  await t.test(
-    "a refused connection closes when its client does or after one second, and at most eight wait",
-    { timeout: 15_000 },
-    async (st) => {
-      // Only setTimeout is mocked: the one-second refusal timer fires only when this test
-      // ticks, so every close before a tick is the client's doing.
-      st.mock.timers.enable({ apis: ["setTimeout"] });
-      const reader = await startReader(st);
-      await reader.hold(4);
-      // A refused connection whose client stays half-open until the test closes it.
-      const refused = async () => {
-        const connection = await reader.connect({ allowHalfOpen: true });
-        assert.match(await received(connection.client), refusal);
-        return connection;
-      };
-
-      // A client that reads the answer and closes frees its refused connection at once.
-      const reading = await reader.connect();
-      assert.match(await received(reading.client), refusal);
-      await closed(reading.socket);
-
-      // A request still arriving after the answer is drained, not reset: the client reads
-      // the answer once it has sent the rest of its request.
-      const slow = await reader.connect();
-      const [start, rest] = ["GET /healthz HTTP/1.1\r\n", "Host: reader\r\n\r\n"];
-      slow.client.pause().write(start);
-      await Promise.race([
-        slow.socket.writableFinished || event(slow.socket, "finish"),
-        closed(slow.socket),
-      ]);
-      slow.client.write(rest);
-      // Keep the answer unread until the reader has read the whole request or the
-      // connection is gone.
-      while (slow.socket.bytesRead < (start + rest).length && !slow.client.closed) {
-        await new Promise(setImmediate);
-      }
-      const late = received(slow.client);
-      slow.client.resume();
-      assert.match(await late, refusal);
-      await closed(slow.socket);
-
-      // A client that resets its connection must not crash the reader with an unhandled
-      // socket error.
-      const reset = await refused();
-      reset.client.resetAndDestroy();
-      await closed(reset.socket);
-
-      // A client that never closes is closed after one second.
-      const lingering = await refused();
-      st.mock.timers.tick(999);
-      assert.equal(lingering.socket.destroyed, false);
-      st.mock.timers.tick(1);
-      assert.equal(lingering.socket.destroyed, true);
-      await closed(lingering.socket);
-
-      // Eight refused connections can wait for their clients; the ninth closes unanswered
-      // until one of them closes.
-      const waiting = [];
-      for (let count = 0; count < 8; count++) {
-        waiting.push(await refused());
-      }
-      const ninth = await reader.connect({ allowHalfOpen: true });
-      assert.equal(await received(ninth.client), "");
-      waiting[0].client.end();
-      await closed(waiting[0].socket);
-      await refused();
-    },
-  );
+  await runPublicGithubReadSocketCapacityCases(t, {
+    startReader,
+    request,
+    aliases,
+    aliased,
+    multipleCallers,
+  });
 });
