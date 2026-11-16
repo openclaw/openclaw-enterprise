@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import type { SessionStatus } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
-import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
+import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.ts";
 import { socketDirectory } from "../helpers/socket-directory.ts";
 
 for (const outcome of ["lost reply", "recovered status"] as const) {

@@ -15,7 +15,7 @@ on:
       - "tests/helpers/observability-demo-k3d.ts"
       - "tests/helpers/kubernetes-real.ts"
       - "tests/helpers/wait-for.ts"
-      - "tests/fixtures/repository-credentials/process.mjs"
+      - "tests/fixtures/repository-credentials/process.ts"
       - "scripts/ci/**"
       - "pnpm-lock.yaml"
   push:
@@ -33,7 +33,7 @@ on:
       - "tests/helpers/observability-demo-k3d.ts"
       - "tests/helpers/kubernetes-real.ts"
       - "tests/helpers/wait-for.ts"
-      - "tests/fixtures/repository-credentials/process.mjs"
+      - "tests/fixtures/repository-credentials/process.ts"
       - "scripts/ci/**"
       - "pnpm-lock.yaml"
   merge_group:

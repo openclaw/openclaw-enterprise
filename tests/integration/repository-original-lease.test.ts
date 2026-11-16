@@ -20,10 +20,10 @@ import type { DispatchGate } from "../../apps/controller/src/drivers/repo/access
 import { within } from "../helpers/wait-for.ts";
 import type { GitHubStaticTokenOwner } from "../../apps/controller/src/drivers/repo/github/access/types.ts";
 import { githubTokenConfigurationData } from "../fixtures/repository-credentials/builders.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
+import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.ts";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
-import { appModule } from "../fixtures/repository-credentials/runtime.mjs";
+import { appFunction } from "../fixtures/repository-credentials/app-functions.ts";
 import {
   createLoopbackServiceConfiguration,
   gatewayRequest,
@@ -62,10 +62,12 @@ test(
         response.end(JSON.stringify({ id: 73, full_name: "fixture/repository" }));
       }),
     );
-    const [{ createGitHubDriverFactory }, { createGitHubStaticTokenOwner }] = await Promise.all([
-      appModule("drivers/repo/github/access/factory"),
-      appModule("drivers/repo/github/access/static-token"),
-    ]);
+    const [createGitHubDriverFactory, createGitHubStaticTokenOwner, validateGitHubConfiguration] =
+      await Promise.all([
+        appFunction("drivers/repo/github/access/factory", "createGitHubDriverFactory"),
+        appFunction("drivers/repo/github/access/static-token", "createGitHubStaticTokenOwner"),
+        appFunction("drivers/repo/github/access/config", "validateGitHubConfiguration"),
+      ]);
     const owners: GitHubStaticTokenOwner[] = tokens.map((token) =>
       createGitHubStaticTokenOwner({ token: Buffer.from(token) }),
     );
@@ -78,7 +80,9 @@ test(
       close: () => owners.forEach((owner) => owner.close()),
     };
     const realFactory: RepositoryBackendFactory = createGitHubDriverFactory({
-      configuration: githubTokenConfigurationData({ leaseSeconds: 900 }),
+      configuration: validateGitHubConfiguration(
+        githubTokenConfigurationData({ leaseSeconds: 900 }),
+      ),
       authority,
       gatewayOrigin: config.gateway.publicOrigin,
       limits: config.limits,

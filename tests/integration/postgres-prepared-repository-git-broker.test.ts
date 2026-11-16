@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { request, Agent } from "node:https";
+import { request, Agent, type RequestOptions } from "node:https";
 import { randomUUID } from "node:crypto";
-import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpServer, type IncomingMessage } from "node:http";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
 import { connect, createServer as createTcpServer } from "node:net";
 import { readFile, writeFile } from "node:fs/promises";
-import test from "node:test";
+import { buffer } from "node:stream/consumers";
+import test, { type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -27,21 +30,80 @@ import {
   listen,
   run,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
-import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
+} from "../fixtures/repository-credentials/process.ts";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
 import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import { startListeners } from "../../apps/controller/src/drivers/repo/access/server.ts";
+import type { RefusalRecord } from "../../apps/controller/src/drivers/repo/access/transport/agent.ts";
 import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
 
+type BrokerInput = Parameters<
+  NonNullable<NonNullable<Parameters<typeof fixture>[1]>["openBroker"]>
+>[0];
+type BrokerRequest = {
+  method?: string;
+  headers?: RequestOptions["headers"];
+  body?: string | Buffer | undefined;
+  beforeBody?: () => Promise<void>;
+};
+type BrokerResponse = { status: number; text: string };
+type Broker = Awaited<ReturnType<typeof startBroker>>;
+
+function object(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Expected a JSON object");
+  }
+  return value as Record<string, unknown>;
+}
+
+function jsonObject(text: string): Record<string, unknown> {
+  const value: unknown = JSON.parse(text);
+  return object(value);
+}
+
+async function readResponse(response: IncomingMessage): Promise<BrokerResponse> {
+  const { statusCode } = response;
+  if (statusCode === undefined) {
+    throw new Error("Expected an HTTP response status");
+  }
+  return { status: statusCode, text: (await buffer(response)).toString() };
+}
+
+async function readProviderPulls(url: string, options: RequestOptions): Promise<unknown[]> {
+  // The request callback cannot propagate promise rejections to its caller.
+  const response = await new Promise<BrokerResponse>(
+    (resolve, reject: (reason: unknown) => void) => {
+      request(url, options, (message) => {
+        void readResponse(message).then(resolve, reject);
+      })
+        .once("error", reject)
+        .end();
+    },
+  );
+  assert.equal(response.status, 200, "Expected a successful provider pull list");
+  const value: unknown = JSON.parse(response.text);
+  assert.ok(Array.isArray(value), "Expected the provider's list of pull requests");
+  return value;
+}
+
 async function startBroker(
-  t,
-  { gh, registry, socketPath, namespaceId, binding, pushRef, deadlineWallMs, repository },
+  t: TestContext,
+  {
+    gh,
+    registry,
+    socketPath,
+    namespaceId,
+    binding,
+    pushRef,
+    deadlineWallMs,
+    repository,
+  }: BrokerInput,
 ) {
   const tls = gh.tls;
-  const observed = [];
+  const observed: { method: string | undefined; url: string | undefined }[] = [];
   const origin = await startGitSmartHttpFixture(t, {
     tls,
     repository,
@@ -84,7 +146,7 @@ async function startBroker(
   const service = createCredentialService({ config, factory, clock });
   t.after(() => service.shutdown(5000));
   // The production composition writes each refusal record to the broker's log (finding 2411).
-  const logs = [];
+  const logs: RefusalRecord[] = [];
   const server = await startListeners({
     service,
     factory,
@@ -112,17 +174,16 @@ async function startBroker(
     "Basic " + Buffer.from("gateway-session:" + opened.bearer).toString("base64");
   const agent = new Agent({ ca: tls.ca, keepAlive: true, maxSockets: 1 });
   t.after(() => agent.destroy());
-  function http(path, { method = "GET", headers, body, beforeBody } = {}) {
-    return new Promise((resolve, reject) => {
+  function http(
+    path: string,
+    { method = "GET", headers, body, beforeBody }: BrokerRequest = {},
+  ): Promise<BrokerResponse> {
+    return new Promise((resolve, reject: (reason: unknown) => void) => {
       const req = request(
         address + path,
         { agent, method, headers: { authorization, host: "127.0.0.1", ...headers } },
         (res) => {
-          const chunks = [];
-          res.on("data", (chunk) => chunks.push(chunk));
-          res.once("end", () =>
-            resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString() }),
-          );
+          void readResponse(res).then(resolve, reject);
         },
       );
       req.once("error", reject);
@@ -134,7 +195,7 @@ async function startBroker(
               assert.equal(req.socket, socket);
               req.end(body);
             })
-            .catch((error) => {
+            .catch((error: unknown) => {
               req.destroy();
               reject(error);
             });
@@ -169,7 +230,7 @@ async function startBroker(
     env,
     pushRef,
     repository,
-    slow(value) {
+    slow(value: boolean) {
       slow = value;
     },
   };
@@ -180,14 +241,22 @@ async function startBroker(
 // Finding 2411: each refused authenticated request logs exactly one record with the code
 // the Agent received (an error envelope's code, or a receipt's error), where it was refused,
 // the operation once known, and the session.
-function refusedOnceBy(b, response, reason, operation, upstreamConnect) {
+function refusedOnceBy(
+  b: Broker,
+  response: BrokerResponse,
+  reason: RefusalRecord["reason"],
+  operation?: RefusalRecord["operation"],
+  upstreamConnect?: RefusalRecord["upstreamConnect"],
+) {
   assert.ok(response.status >= 400, response.text);
-  const { error } = JSON.parse(response.text);
+  const { error } = jsonObject(response.text);
+  const reasonCode = typeof error === "string" ? error : object(error).code;
+  assert.equal(typeof reasonCode, "string");
   assert.deepEqual(b.logs.splice(0), [
     {
       event: "repository-credentials.denied",
       status: response.status,
-      reasonCode: typeof error === "string" ? error : error.code,
+      reasonCode,
       reason,
       ...(operation === undefined ? {} : { operation }),
       ...(upstreamConnect === undefined ? {} : { upstreamConnect }),
@@ -196,12 +265,21 @@ function refusedOnceBy(b, response, reason, operation, upstreamConnect) {
   ]);
 }
 
-async function withdrawRepositoryBinding(t, { state, pool, agent, revision }) {
+async function withdrawRepositoryBinding(
+  t: TestContext,
+  {
+    state,
+    pool,
+    agent,
+    revision,
+  }: Pick<Awaited<ReturnType<typeof fixture>>, "state" | "pool" | "agent" | "revision">,
+) {
   const original = await state.read((unit) =>
     unit.operations.findWork(`agent_revision:${revision.id}:reconcile`),
   );
   assert.ok(original);
   const installation = await state.read((unit) => unit.installations.getInstallation());
+  assert.ok(installation);
   const auth = await createTestAuthPrincipal({ installationId: installation.id });
   assert.notEqual(original.actorId, auth.seed.principal.id);
   const iam = new NativeIAMDriver({
@@ -223,6 +301,7 @@ async function withdrawRepositoryBinding(t, { state, pool, agent, revision }) {
     controller,
     iamDriver: iam,
     auditSink: new InMemoryAuditSink(),
+    resolveHarness: resolveApprovedHarness,
     durableRequestAuditSink: state.auditSink,
     auth: auth.auth,
     development: {
@@ -232,25 +311,38 @@ async function withdrawRepositoryBinding(t, { state, pool, agent, revision }) {
     },
   });
   t.after(() => app.close());
-  const api = await createAuthenticatedControllerRequest(app, auth);
-  const result = await api("PATCH", "/namespaces/" + agent.namespaceId + "/agents/" + agent.id, {
-    configurationId: agent.configurationId,
-    repositoryBindings: [],
-  });
+  const api: (method: "PATCH", path: string, payload: Record<string, unknown>) => Promise<unknown> =
+    await createAuthenticatedControllerRequest(app, auth);
+  const response: unknown = await api(
+    "PATCH",
+    "/namespaces/" + agent.namespaceId + "/agents/" + agent.id,
+    {
+      configurationId: agent.configurationId,
+      repositoryBindings: [],
+    },
+  );
+  const result = object(response);
   assert.equal(result.status, 200, JSON.stringify(result.error));
-  assert.deepEqual(result.data.repositoryBindings ?? [], []);
+  assert.deepEqual(object(result.data).repositoryBindings ?? [], []);
+  const { requestId } = object(result.meta);
+  assert.equal(typeof requestId, "string");
   // Cleanup retains the original deployer, even when another principal removes Git.
   const workId = repositoryRemovalWorkKey(revision.id);
   const withdrawal = await state.read((unit) => unit.operations.findWork(workId));
   assert.ok(withdrawal);
   assert.equal(withdrawal.actorId, original.actorId);
-  const replay = await api("PATCH", "/namespaces/" + agent.namespaceId + "/agents/" + agent.id, {
-    configurationId: agent.configurationId,
-    repositoryBindings: [],
-  });
-  assert.equal(replay.status, 200, JSON.stringify(replay.error));
+  const replay: unknown = await api(
+    "PATCH",
+    "/namespaces/" + agent.namespaceId + "/agents/" + agent.id,
+    {
+      configurationId: agent.configurationId,
+      repositoryBindings: [],
+    },
+  );
+  const replayResult = object(replay);
+  assert.equal(replayResult.status, 200, JSON.stringify(replayResult.error));
   // Only the request that queued withdrawal is linked to this job.
-  const events = await pool.query(
+  const events = await pool.query<Record<string, unknown>>(
     `SELECT details->'__occAuditMetadata'->>'requestId' AS request_id, actor_id,
             resource_kind, resource_id, namespace_id, details->>'agentId' AS agent_id
      FROM occ.audit_events WHERE action = 'openclaw.controller_work.queued'
@@ -259,7 +351,7 @@ async function withdrawRepositoryBinding(t, { state, pool, agent, revision }) {
   );
   assert.deepEqual(events.rows, [
     {
-      request_id: result.meta.requestId,
+      request_id: requestId,
       actor_id: original.actorId,
       resource_kind: "agent_revision",
       resource_id: revision.id,
@@ -276,24 +368,41 @@ test(
     timeout: 75000,
   },
   async (t) => {
-    const f = await fixture(t, {
+    const {
+      broker: b,
+      pool,
+      admissionId,
+      gh,
+      owner,
+      permissions,
+      state,
+      agent,
+      revision,
+    } = await fixture<Broker>(t, {
       openBroker: (input) => startBroker(t, input),
       recordDeploymentOperation: true,
     });
-    const b = f.broker;
+    assert.ok(b);
     const repo = "/" + b.repository + ".git/";
     const discovery = repo + "info/refs?service=git-upload-pack";
-    const useCount = async () =>
-      (
-        await f.pool.query(
-          "SELECT count(*)::int AS n FROM occ.prepared_repository_git_uses WHERE admission_id=$1",
-          [f.admissionId],
-        )
-      ).rows[0].n;
+    const useCount = async () => {
+      const { rows } = await pool.query<{ n: unknown }>(
+        "SELECT count(*)::int AS n FROM occ.prepared_repository_git_uses WHERE admission_id=$1",
+        [admissionId],
+      );
+      const [count] = rows;
+      if (typeof count?.n !== "number") {
+        throw new Error("Expected a PostgreSQL use count");
+      }
+      return count.n;
+    };
 
-    const refusedOnce = (response, reason, operation) =>
-      refusedOnceBy(b, response, reason, operation);
-    const logged = [];
+    const refusedOnce = (
+      response: BrokerResponse,
+      reason: RefusalRecord["reason"],
+      operation?: RefusalRecord["operation"],
+    ) => refusedOnceBy(b, response, reason, operation);
+    const logged: RefusalRecord[] = [];
     const keep = () => logged.push(...b.logs);
 
     // No prepared material yet: the owner cannot authorize the send, so nothing is sent.
@@ -301,13 +410,13 @@ test(
     assert.equal(cold.status, 503);
     keep();
     refusedOnce(cold, "not_dispatched", "git-discovery");
-    assert.equal(f.gh.issuesOfTokens.length, 0);
-    await prepare(f);
+    assert.equal(gh.issuesOfTokens.length, 0);
+    await prepare({ gh, owner, permissions });
     assert.equal((await b.http(discovery)).status, 200);
     const before = await useCount();
     const beforeOrigin = b.observed.length;
-    const packet = (text) => (text.length + 4).toString(16).padStart(4, "0") + text;
-    const line = (ref) => packet("0".repeat(40) + " " + "1".repeat(40) + " " + ref + "\n");
+    const packet = (text: string) => (text.length + 4).toString(16).padStart(4, "0") + text;
+    const line = (ref: string) => packet("0".repeat(40) + " " + "1".repeat(40) + " " + ref + "\n");
     // The server receives a mixed-ref update directly, independent of any client hooks.
     const mixed = await b.http(repo + "git-receive-pack", {
       method: "POST",
@@ -369,6 +478,7 @@ test(
     assert.equal(identity.status, 200);
     assert.equal(b.origin.trace.length, beforeIdentity + 1);
     const identityRequest = b.origin.trace[beforeIdentity];
+    assert.ok(identityRequest);
     assert.equal(identityRequest.method, "POST");
     assert.equal(identityRequest.path, repo + "git-upload-pack");
     assert.equal(identityRequest.contentEncoding, undefined);
@@ -392,6 +502,7 @@ test(
     assert.equal((await started).status, 200);
     assert.equal(b.origin.trace.length, beforeGzip + 1);
     const decodedRequest = b.origin.trace[beforeGzip];
+    assert.ok(decodedRequest);
     assert.equal(decodedRequest.method, "POST");
     assert.equal(decodedRequest.path, repo + "git-upload-pack");
     assert.equal(decodedRequest.contentEncoding, undefined);
@@ -399,10 +510,11 @@ test(
 
     const remote = b.opened.client.gitRemote.replace("https://127.0.0.1", b.address);
     const cwd = await temporaryDirectory(t, "warm-native-git-");
-    const git = (args, allowFailure = false) => run("git", args, { cwd, env: b.env, allowFailure });
+    const git = (args: string[], allowFailure = false) =>
+      run("git", args, { cwd, env: b.env, allowFailure });
     await git(["clone", remote, "writer"]);
     await writeFile(join(cwd, "writer", "review.txt"), "Native Git wrote this review\n");
-    const writer = (...args) => git(["-C", "writer", ...args]);
+    const writer = (...args: string[]) => git(["-C", "writer", ...args]);
     await writer("add", "review.txt");
     const author = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test"];
     await writer(...author, "commit", "-m", "Propose review");
@@ -421,7 +533,7 @@ test(
     await writer(...author, "commit", "--allow-empty", "-m", "Inconclusive push");
     const next = (await writer("rev-parse", "HEAD")).stdout.trim();
     b.origin.disconnectAfterNextAcceptedPush();
-    const pushes = () => b.observed.filter(({ url }) => url.endsWith("/git-receive-pack")).length;
+    const pushes = () => b.observed.filter(({ url }) => url?.endsWith("/git-receive-pack")).length;
     const count = pushes();
     const uncertain = await git(["-C", "writer", "push", "origin", "HEAD:" + b.pushRef], true);
     assert.notEqual(uncertain.code, 0);
@@ -446,7 +558,7 @@ test(
       },
       body: packet("command=ls-refs\n") + "00010000",
       async beforeBody() {
-        await withdrawRepositoryBinding(t, f);
+        await withdrawRepositoryBinding(t, { state, pool, agent, revision });
         withdrawn = true;
       },
     });
@@ -465,7 +577,7 @@ test(
     }
     assert.equal(b.observed.length, sent);
     assert.equal(await useCount(), used);
-    assert.equal(f.gh.issuesOfTokens.length, 1);
+    assert.equal(gh.issuesOfTokens.length, 1);
   },
 );
 
@@ -482,9 +594,16 @@ for (const mode of [
     const settles = mode.startsWith("created");
     // The registry lowercases the repository; GitHub answers with its own spelling (finding 2236).
     const spelled = mode === "created in GitHub's spelling";
-    const spell = (url) =>
+    const spell = (url: string) =>
       url.replace(/(?<=^https:\/\/github\.com\/)[^/]+\/[^/]+/, (name) => name.toUpperCase());
-    const f = await fixture(t, {
+    const {
+      broker: b,
+      gh,
+      owner,
+      permissions,
+      withdraw,
+      admitReplacement,
+    } = await fixture<Broker>(t, {
       draftPull,
       draftResponse:
         mode === "mismatched provider 201"
@@ -494,7 +613,7 @@ for (const mode of [
             : undefined,
       openBroker: (input) => startBroker(t, input),
     });
-    const b = f.broker;
+    assert.ok(b);
     const path = "/repos/" + b.repository + "/pulls";
     const head = b.pushRef.slice("refs/heads/".length);
     const base = "main";
@@ -507,20 +626,28 @@ for (const mode of [
       authorization: "Bearer " + b.opened.bearer,
       "x-oce-operation-id": operationId,
     };
-    const send = (input = {}) =>
+    const send = (input: Partial<BrokerRequest> = {}) =>
       b.http(path, { method: "POST", headers, body: JSON.stringify(packet), ...input });
-    let invoke;
-    const observed = () => f.gh.trace.filter((q) => q.method === "POST" && q.target === path);
+    let invoke:
+      | ((extra: string[], operation?: string, target?: string) => ReturnType<typeof run>)
+      | undefined;
+    const observed = () => gh.trace.filter((q) => q.method === "POST" && q.target === path);
     if (!draftPull) {
-      await prepare(f);
+      await prepare({ gh, owner, permissions });
       assert.equal((await send()).status, 400);
       assert.equal(observed().length, 0);
+      // An unauthenticated observer must report the real provider's refusal to its caller.
+      await assert.rejects(readProviderPulls(gh.origin + path, { ca: gh.tls.ca }), {
+        code: "ERR_ASSERTION",
+        actual: 401,
+        expected: 200,
+      });
       return;
     }
     // A cold request cannot mint a token or leave a durable operation.
     assert.equal((await send()).status, 503);
-    assert.equal(f.gh.issuesOfTokens.length, 0);
-    await prepare(f);
+    assert.equal(gh.issuesOfTokens.length, 0);
+    await prepare({ gh, owner, permissions });
     for (const input of [
       { body: JSON.stringify({ ...packet, head: "main" }) },
       { body: JSON.stringify({ ...packet, base: "other" }) },
@@ -532,7 +659,7 @@ for (const mode of [
       assert.equal((await send(input)).status, 400);
     }
     assert.equal(observed().length, 0);
-    assert.equal(f.gh.issuesOfTokens.length, 1);
+    assert.equal(gh.issuesOfTokens.length, 1);
 
     if (mode === "connection failed before any write") {
       // Finding 2429: the GitHub connection fails before TLS, so the broker settles the create
@@ -541,12 +668,12 @@ for (const mode of [
       // attempt that connected names the failed provider connect (finding 3183), and the
       // receipt the Agent reads never carries it.
       b.logs.splice(0);
-      f.gh.refuseNextConnection();
-      const api = new URL(f.gh.origin);
+      gh.refuseNextConnection();
+      const api = new URL(gh.origin);
       for (let i = 0; i < 2; i++) {
         const response = await send();
         assert.equal(response.status, 409);
-        const value = JSON.parse(response.text);
+        const value = jsonObject(response.text);
         assert.equal(value.operationId, operationId);
         assert.equal(value.error, "not-submitted");
         assert.equal(value.upstreamConnect, undefined);
@@ -562,7 +689,7 @@ for (const mode of [
         refusedOnceBy(b, response, "not_dispatched", "api", connect);
       }
       assert.equal(observed().length, 0);
-      assert.equal(f.gh.pulls.size, 0);
+      assert.equal(gh.pulls.size, 0);
       return;
     }
 
@@ -572,10 +699,10 @@ for (const mode of [
       const { root } = await createNativeClientMaterial(
         t,
         [{ opened: b.opened, repositoryRef: "source" }],
-        { ca: f.gh.tls.ca },
+        { ca: gh.tls.ca },
       );
       const proxy = createHttpServer();
-      const tunnels = [];
+      const tunnels: (string | undefined)[] = [];
       proxy.on("connect", (req, socket, early) => {
         tunnels.push(req.url);
         const upstream = connect(Number(new URL(b.address).port), "127.0.0.1", () => {
@@ -586,11 +713,10 @@ for (const mode of [
         relaySockets(socket, upstream);
       });
       const proxyAddress = (await listen(t, proxy)).replace(/^https:/, "http:");
-      const client = new URL(
-        "../../apps/controller/src/drivers/repo/github/access/client/draft-pr.ts",
-        import.meta.url,
-      ).href;
-      const args = (operation = operationId, target = base) => [
+      const client = fileURLToPath(
+        new URL("../fixtures/repository-credentials/native-draft-child.ts", import.meta.url),
+      );
+      const args = (operation: string, target: string) => [
         "pr-create",
         "--operation-id",
         operation,
@@ -603,20 +729,11 @@ for (const mode of [
         title,
       ];
       // The helper's own entry point, so its exit code and failure line are the Agent's view.
-      const command =
-        "import {createDraftPull,draftPullFailureMessage} from " +
-        JSON.stringify(client) +
-        "; await createDraftPull(process.argv.slice(2),process.argv[1]).catch((e)=>" +
-        "{const f=draftPullFailureMessage(e);process.stderr.write(f.message+'\\n');process.exitCode=f.exitCode;});";
-      invoke = (extra, operation, target) =>
-        run(
-          process.execPath,
-          ["--input-type=module", "-e", command, root, ...args(operation, target), ...extra],
-          {
-            env: { ...cleanEnvironment(), HTTPS_PROXY: proxyAddress },
-            allowFailure: true,
-          },
-        );
+      invoke = (extra, operation = operationId, target = base) =>
+        run(process.execPath, [client, root, ...args(operation, target), ...extra], {
+          env: { ...cleanEnvironment(), HTTPS_PROXY: proxyAddress },
+          allowFailure: true,
+        });
       const bodyFile = join(await temporaryDirectory(t), "body.txt");
       await writeFile(bodyFile, "file contents must stay local");
       const refused = await invoke(["--body-file", bodyFile]);
@@ -626,11 +743,12 @@ for (const mode of [
       const output = await invoke(["--body", body]);
       assert.equal(output.code, 0, output.stderr);
       assert.deepEqual(tunnels, ["127.0.0.1:443"]);
-      const receipt = JSON.parse(output.stdout);
+      const receipt = jsonObject(output.stdout);
       assert.equal(receipt.operationId, operationId);
-      assert.equal(receipt.head.ref, head);
-      assert.equal(receipt.base.ref, base);
+      assert.equal(object(receipt.head).ref, head);
+      assert.equal(object(receipt.base).ref, base);
       assert.equal(receipt.draft, true);
+      assert.equal(typeof receipt.number, "number");
       const url = "https://github.com/" + b.repository + "/pull/" + receipt.number;
       assert.equal(receipt.url, spelled ? spell(url) : url);
       assert.equal(spelled, receipt.url !== url);
@@ -640,10 +758,10 @@ for (const mode of [
       );
       // Finding 2410: a definite broker refusal names its code and says GitHub received
       // nothing; only an unknown outcome prints "Draft not confirmed".
-      const refusal = (result) => {
+      const refusal = (result: Awaited<ReturnType<typeof run>>) => {
         assert.equal(result.code, 1, result.stderr);
         assert.doesNotMatch(result.stderr, /Draft not confirmed/);
-        return result.stderr.trim().split("\n").at(-1);
+        return result.stderr.trim().split("\n").at(-1) ?? "";
       };
       assert.equal(
         refusal(await invoke(["--body", body], randomUUID(), "other")),
@@ -657,7 +775,7 @@ for (const mode of [
       const repeat = await send();
       assert.equal(repeat.status, 201);
       assert.deepEqual(
-        JSON.parse(repeat.text),
+        jsonObject(repeat.text),
         receipt,
         "same operation returns the committed safe projection",
       );
@@ -665,13 +783,13 @@ for (const mode of [
       // Provider creates the PR and drops its response. We can inspect that projection here;
       // the production broker must preserve uncertainty rather than claim that evidence or re-POST.
       if (mode === "lost provider reply") {
-        f.gh.disconnectAfterMutation("POST", path);
+        gh.disconnectAfterMutation("POST", path);
       }
       b.logs.splice(0);
       for (let i = 0; i < 2; i++) {
         const response = await send();
         assert.equal(response.status, 409);
-        const value = JSON.parse(response.text);
+        const value = jsonObject(response.text);
         assert.equal(value.operationId, operationId);
         assert.equal(value.error, "outcome_unknown");
       }
@@ -683,51 +801,41 @@ for (const mode of [
     b.logs.splice(0);
     const other = await send({ headers: { ...headers, "x-oce-operation-id": randomUUID() } });
     assert.equal(other.status, 409);
-    assert.equal(JSON.parse(other.text).error, "operation_conflict");
+    assert.equal(jsonObject(other.text).error, "operation_conflict");
     refusedOnceBy(b, other, "operation_conflict", "api");
     const changed = await send({ body: JSON.stringify({ ...packet, title: "different" }) });
-    assert.equal(JSON.parse(changed.text).error, "operation_conflict");
+    assert.equal(jsonObject(changed.text).error, "operation_conflict");
     refusedOnceBy(b, changed, "operation_conflict", "api");
     // An independently authenticated observer reconciles by reading, never by trying another create.
     // Its observation cannot be presented as a delivered result to the Agent which lost the reply.
     const observer = randomUUID();
-    f.gh.acceptStatic(observer);
+    gh.acceptStatic(observer);
     const query = new URLSearchParams({ base, head: b.repository.split("/")[0] + ":" + head });
-    const visible = await new Promise((resolve, reject) => {
-      request(
-        f.gh.origin + path + "?" + query,
-        { ca: f.gh.tls.ca, headers: { authorization: "Bearer " + observer } },
-        async (res) => {
-          assert.equal(res.statusCode, 200);
-          const chunks = [];
-          for await (const chunk of res) {
-            chunks.push(chunk);
-          }
-          resolve(JSON.parse(Buffer.concat(chunks).toString()));
-        },
-      )
-        .once("error", reject)
-        .end();
+    const visible = await readProviderPulls(gh.origin + path + "?" + query, {
+      ca: gh.tls.ca,
+      headers: { authorization: "Bearer " + observer },
     });
     assert.equal(visible.length, 1);
-    const [created] = visible;
+    const created = object(visible[0]);
     assert.equal(created.body, body);
-    assert.equal(created.head.ref, head);
-    assert.equal(created.base.ref, base);
+    assert.equal(object(created.head).ref, head);
+    assert.equal(object(created.base).ref, base);
     assert.equal(created.maintainer_can_modify, false);
-    assert.equal(f.gh.pulls.size, 1);
+    assert.equal(gh.pulls.size, 1);
+    const [attempt] = observed();
+    assert.ok(attempt);
     if (mode !== "lost provider reply") {
-      assert.equal(observed()[0].usedBearer, true);
-      assert.equal(observed()[0].forwardedOperationId, false);
+      assert.equal(attempt.usedBearer, true);
+      assert.equal(attempt.forwardedOperationId, false);
     }
-    assert.equal(observed()[0].apiVersion, "2026-03-10");
-    assert.equal(observed()[0].tokenIndex, 1);
+    assert.equal(attempt.apiVersion, "2026-03-10");
+    assert.equal(attempt.tokenIndex, 1);
     assert.equal(
       observed().length,
       1,
       "exactly one provider create attempt, including ambiguous response",
     );
-    await f.withdraw();
+    await withdraw();
     assert.equal((await send()).status, 503, "cannot replay even a receipt after withdrawal");
     if (invoke) {
       const withdrawn = await invoke(["--body", body], randomUUID());
@@ -741,13 +849,13 @@ for (const mode of [
     // A legitimate replacement with the identical grant and old client operation cannot obtain
     // the prior admission's receipt, a second permit, or a fresh token by trying this endpoint.
     const replacement = b.openSession();
-    await f.admitReplacement(replacement.session.sessionId);
+    await admitReplacement(replacement.session.sessionId);
     const next = await send({
       headers: { ...headers, authorization: "Bearer " + replacement.bearer },
     });
     assert.equal(next.status, 409);
-    assert.deepEqual(JSON.parse(next.text), { error: "operation_conflict" });
+    assert.deepEqual(jsonObject(next.text), { error: "operation_conflict" });
     assert.equal(observed().length, 1);
-    assert.equal(f.gh.issuesOfTokens.length, 1, "no request-time mint or permission escalation");
+    assert.equal(gh.issuesOfTokens.length, 1, "no request-time mint or permission escalation");
   });
 }

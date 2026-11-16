@@ -285,7 +285,7 @@
     "tests/integration/postgres-prepared-github-git-use.test.mjs": 7700,
     "tests/integration/postgres-prepared-github-lifecycle.test.ts": 13900,
     "tests/integration/postgres-prepared-receipt-restart.test.ts": 2500,
-    "tests/integration/postgres-prepared-repository-git-broker.test.mjs": 13400,
+    "tests/integration/postgres-prepared-repository-git-broker.test.ts": 13400,
     "tests/integration/postgres-prepared-standing-expiry.test.ts": 2900,
     "tests/integration/postgres-prepared-standing-removal.test.ts": 1700,
     "tests/integration/postgres-prepared-token-service.test.ts": 2700,

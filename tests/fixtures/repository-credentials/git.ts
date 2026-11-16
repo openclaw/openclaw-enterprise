@@ -1,30 +1,29 @@
-import { spawn } from "node:child_process";
+/// <reference lib="es2024.promise" />
+
+import { spawn, type ChildProcess } from "node:child_process";
 import { cpSync, rmSync } from "node:fs";
+import type { OutgoingHttpHeaders } from "node:http";
 import { createServer } from "node:https";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  cleanEnvironment,
-  createTlsMaterial,
-  listen,
-  run,
-  temporaryDirectory,
-} from "./process.mjs";
+
+import type { CleanupRegistrar } from "../../helpers/console-file-app.ts";
+import { cleanEnvironment, createTlsMaterial, listen, run, temporaryDirectory } from "./process.ts";
 
 // Seeding a repository takes nine Git processes. The first fixture for a repository name in a
 // process seeds a template; every fixture copies it into its own directory without Git, so a
 // fixture that receives pushes or adds commits changes only its copy. Templates are removed when
 // the process exits; like any temporary directory, a process killed by a signal leaves them.
-const repositoryTemplates = new Map();
-const templateDirectories = new Set();
+const repositoryTemplates = new Map<string, ReturnType<typeof seedRepositoryTemplate>>();
+const templateDirectories = new Set<string>();
 process.once("exit", () => {
   for (const directory of templateDirectories) {
     rmSync(directory, { recursive: true, force: true });
   }
 });
 
-function repositoryTemplate(repository) {
+function repositoryTemplate(repository: string) {
   let template = repositoryTemplates.get(repository);
   if (template === undefined) {
     template = seedRepositoryTemplate(repository);
@@ -34,7 +33,7 @@ function repositoryTemplate(repository) {
   return template;
 }
 
-async function seedRepositoryTemplate(repository) {
+async function seedRepositoryTemplate(repository: string) {
   const directory = await mkdtemp(join(tmpdir(), "repository-credentials-git-template-"));
   templateDirectories.add(directory);
   const bare = join(directory, `${repository}.git`);
@@ -58,7 +57,7 @@ async function seedRepositoryTemplate(repository) {
   return { bare, seed };
 }
 
-async function copyRepositoryTemplate(repository, bare, seed) {
+async function copyRepositoryTemplate(repository: string, bare: string, seed: string) {
   const pending = repositoryTemplate(repository);
   const template = await pending;
   try {
@@ -66,7 +65,7 @@ async function copyRepositoryTemplate(repository, bare, seed) {
     cpSync(template.bare, bare, { recursive: true });
     cpSync(template.seed, seed, { recursive: true });
   } catch (error) {
-    if (error.code !== "ENOENT") {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
       throw error;
     }
     // The template lives as long as the process; if something swept it from the temporary
@@ -84,34 +83,41 @@ async function copyRepositoryTemplate(repository, bare, seed) {
 
 // git-http-backend owns the protocol and repository mutation; the fixture only
 // supplies CGI framing and a controlled provider authentication check.
-/**
- * @param {{after(cleanup: () => void | Promise<void>): void}} t
- * @param {{authorize?: (authorization: string | undefined, boundary: "git") => boolean,
- *   repository?: string, tls?: Awaited<ReturnType<typeof createTlsMaterial>>,
- *   observeRequest?: (method: string, url: string) => void}} options
- */
+type GitFixtureOptions = {
+  authorize?: (authorization: string | undefined, boundary: "git") => boolean;
+  repository?: string;
+  tls?: Awaited<ReturnType<typeof createTlsMaterial>>;
+  observeRequest?: (method: string | undefined, url: string | undefined) => void;
+};
+
+type GitRequestTrace = {
+  method: string | undefined;
+  path: string;
+  gitProtocol: string | string[] | undefined;
+  contentEncoding: string | undefined;
+  contentLength: string | undefined;
+};
+
+type HeldFetch = { started(): void; released: Promise<void>; beforeHeaders: boolean };
+
 export async function startGitSmartHttpFixture(
-  t,
+  t: CleanupRegistrar,
   {
-    authorize = /** @type {(authorization: string | undefined, boundary: "git") => boolean} */ (
-      () => true
-    ),
+    authorize = () => true,
     repository = "fixture/repository",
     tls,
     observeRequest,
-  } = {},
+  }: GitFixtureOptions = {},
 ) {
   tls ??= await createTlsMaterial(t);
   const directory = await temporaryDirectory(t, "repository-credentials-git-");
   const bare = join(directory, `${repository}.git`);
   const seed = join(directory, "seed");
   await copyRepositoryTemplate(repository, bare, seed);
-  /** @type {{method: string | undefined, path: string, gitProtocol: string | string[] | undefined,
-   * contentEncoding: string | undefined, contentLength: string | undefined}[]} */
-  const trace = [];
-  const children = new Set();
+  const trace: GitRequestTrace[] = [];
+  const children = new Set<ChildProcess>();
   let disconnectPush = false;
-  let heldFetch;
+  let heldFetch: HeldFetch | undefined;
   let requests = 0;
   const server = createServer(tls, (request, response) => {
     requests++;
@@ -120,7 +126,7 @@ export async function startGitSmartHttpFixture(
       response.writeHead(401).end();
       return;
     }
-    const url = new URL(request.url, "https://fixture.invalid");
+    const url = new URL(String(request.url), "https://fixture.invalid");
     trace.push({
       method: request.method,
       path: url.pathname,
@@ -141,7 +147,7 @@ export async function startGitSmartHttpFixture(
         REQUEST_METHOD: request.method,
         CONTENT_TYPE: request.headers["content-type"] ?? "",
         CONTENT_LENGTH: request.headers["content-length"] ?? "",
-        HTTP_GIT_PROTOCOL: request.headers["git-protocol"] ?? "",
+        HTTP_GIT_PROTOCOL: String(request.headers["git-protocol"] ?? ""),
         REMOTE_USER: "fixture",
         REMOTE_ADDR: "127.0.0.1",
       }),
@@ -152,14 +158,19 @@ export async function startGitSmartHttpFixture(
     void (async () => {
       let pending = Buffer.alloc(0);
       let headersSent = false;
-      for await (let chunk of child.stdout) {
+      const output: AsyncIterable<unknown, unknown, unknown> = child.stdout;
+      for await (const value of output) {
+        if (!Buffer.isBuffer(value)) {
+          throw new Error("expected Git CGI bytes");
+        }
+        let chunk = value;
         if (!headersSent) {
           pending = Buffer.concat([pending, chunk]);
           const end = pending.indexOf("\r\n\r\n");
           if (end < 0) {
             continue;
           }
-          const headers = {};
+          const headers: OutgoingHttpHeaders = {};
           let status = 200;
           for (const line of pending.subarray(0, end).toString().split("\r\n")) {
             const colon = line.indexOf(":");
@@ -198,7 +209,7 @@ export async function startGitSmartHttpFixture(
           chunk = pending.subarray(end + 4);
         }
         if (!drop && !response.write(chunk)) {
-          await new Promise((resolve) => {
+          await new Promise<void>((resolve) => {
             const done = () => {
               response.off("drain", done);
               response.off("close", done);
@@ -246,18 +257,11 @@ export async function startGitSmartHttpFixture(
     bare,
     trace,
     traffic: () => ({ connections, requests }),
-    /** @returns {{observed: Promise<void>, release(): void}} */
     holdNextFetch({ beforeHeaders = false } = {}) {
-      let started;
-      let release;
-      const observed = new Promise((resolve) => {
-        started = resolve;
-      });
-      const released = new Promise((resolve) => {
-        release = resolve;
-      });
+      const { promise: observed, resolve: started } = Promise.withResolvers<void>();
+      const { promise: released, resolve: release } = Promise.withResolvers<void>();
       heldFetch = { started, released, beforeHeaders };
-      return { observed, release };
+      return { observed, release: () => release() };
     },
     disconnectAfterNextAcceptedPush() {
       disconnectPush = true;
@@ -269,8 +273,7 @@ export async function startGitSmartHttpFixture(
       await run("git", ["push", bare, "HEAD:refs/heads/main"], { cwd: seed });
       return (await run("git", ["rev-parse", "HEAD"], { cwd: seed })).stdout.trim();
     },
-    /** @param {string} name */
-    async ref(name) {
+    async ref(name: string) {
       return (await run("git", ["rev-parse", name], { cwd: bare })).stdout.trim();
     },
   };

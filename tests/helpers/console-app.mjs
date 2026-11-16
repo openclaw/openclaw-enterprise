@@ -36,7 +36,7 @@ import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { reservePort } from "./available-port.ts";
-import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
+import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.ts";
 import { createConsoleFixtureTransport } from "./console-fixture-transport.ts";
 import { createFixtureResponse } from "./console-fixture-response.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";

@@ -34,7 +34,7 @@ import {
   createHarnessConfiguration,
   withNativeAdminGateway,
 } from "../helpers/harness-configuration.mjs";
-import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
+import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { registerNativeAdminHttpIntegrityCases } from "./native-admin-http-integrity-cases.ts";

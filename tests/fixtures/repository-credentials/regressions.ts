@@ -9,14 +9,13 @@ import type { JsonValue } from "../../../apps/controller/src/drivers/repo/access
 import type { SessionStatus } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { socketDirectory } from "../../helpers/socket-directory.ts";
 import { registerResourceCleanup, closeAndDispose, type ResourceCleanup } from "./cleanup.ts";
-import { loadRepositoryClientModule, type ClientCommand } from "./clients.ts";
+import { loadRepositoryClientModule } from "./clients.ts";
 import { runInFixtureContainer } from "./container.ts";
-import { run as runCommand, temporaryDirectory } from "./process.mjs";
+import { run, temporaryDirectory } from "./process.ts";
 import { startCredentialServiceFixture, gatewayRequest } from "./service-fixture.ts";
 
 type GatewayRequestOptions = { method: string; path: string; body?: JsonValue | undefined };
 
-const run = runCommand as ClientCommand;
 type DisposalObservation = Pick<SessionStatus, "sessionId" | "state" | "activeUses"> & {
   cleanup: Pick<SessionStatus["cleanup"], "active" | "pending" | "uncertain" | "auxiliaryPending">;
 };

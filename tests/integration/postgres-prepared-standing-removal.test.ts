@@ -10,7 +10,7 @@ import { startRepositoryReceiptServer } from "../../apps/controller/src/backends
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
 import { sessionAttempt } from "../conformance/repository-sessions.contract.ts";
-import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import {
   controlRequest,

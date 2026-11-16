@@ -7,8 +7,8 @@ import type { TestContext } from "node:test";
 import type { JsonValue } from "../../../apps/controller/src/drivers/repo/access/json-value.ts";
 import type { RepositoryCredentialSessionResult } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import type { RuntimeRepositoryBinding } from "../../../apps/controller/src/drivers/repo/github/access/client/manifest.ts";
-import { appRoot, appExtension, appModule, credentialClientPath } from "./runtime.mjs";
-import { cleanEnvironment, run as runProcess, temporaryDirectory } from "./process.mjs";
+import { appRoot, appExtension, appModule, credentialClientPath } from "./runtime.ts";
+import { cleanEnvironment, run, temporaryDirectory } from "./process.ts";
 
 type NativeMaterialEntry = { repositoryRef: string; publicCa?: Uint8Array } & (
   | { opened: RepositoryCredentialSessionResult; clientDirectory?: never }
@@ -23,13 +23,6 @@ type ClientCommandOptions = {
   allowFailure?: boolean;
   signal?: AbortSignal;
 };
-export type ClientCommand = (
-  command: string,
-  args: string[],
-  options?: ClientCommandOptions,
-) => Promise<{ code: number | null; stdout: string; stderr: string }>;
-
-const run = runProcess as ClientCommand;
 
 // Source and delivered builds resolve the same module exports through different file paths.
 export async function loadRepositoryClientModule<Module extends object>(

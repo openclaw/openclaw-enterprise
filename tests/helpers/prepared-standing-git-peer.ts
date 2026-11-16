@@ -12,8 +12,8 @@ import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/
 import type { Clock } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
-import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
-import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
+import { temporaryDirectory } from "../fixtures/repository-credentials/process.ts";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
 import {
   startGitHubFixture,
   fixtureRepository,

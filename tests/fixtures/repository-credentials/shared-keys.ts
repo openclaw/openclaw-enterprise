@@ -1,12 +1,11 @@
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, type KeyObject } from "node:crypto";
 
-/** @type {Map<string, {publicKey: import("node:crypto").KeyObject, privateKey: import("node:crypto").KeyObject}>} */
-const keyPairs = new Map();
+const keyPairs = new Map<string, { publicKey: KeyObject; privateKey: KeyObject }>();
 
 // An RSA-2048 key costs 50-300 ms of CPU to generate, and fixtures made one for every
 // GitHub App, TLS listener and CA they started: about 30 CPU-seconds per Checks 2 run.
 // Fixtures that need a key but not a unique one share this per-process key pair for each
-// `name`. createTlsMaterial (process.mjs) mints one certificate per process from its key;
+// `name`. createTlsMaterial (process.ts) mints one certificate per process from its key;
 // other certificates made from these keys are still minted per call. Two certificates with
 // the same subject and key verify each other, so a test that proves a peer with an
 // untrusted certificate is refused must give the two sides different names. It lives here, and

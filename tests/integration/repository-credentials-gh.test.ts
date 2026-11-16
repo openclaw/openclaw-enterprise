@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
-import type { ClientCommand } from "../fixtures/repository-credentials/clients.ts";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { JsonValue } from "../../apps/controller/src/drivers/repo/access/json-value.ts";
@@ -10,11 +9,8 @@ import {
   createNativeClientMaterial,
   loadRepositoryClientModule,
 } from "../fixtures/repository-credentials/clients.ts";
-import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.mjs";
-import {
-  cleanEnvironment,
-  run as runProcess,
-} from "../fixtures/repository-credentials/process.mjs";
+import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.ts";
+import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.ts";
 import {
   startCredentialServiceFixture,
   gatewayRequest,
@@ -26,7 +22,6 @@ import {
   type ResourceCleanup,
 } from "../fixtures/repository-credentials/cleanup.ts";
 
-const run = runProcess as ClientCommand;
 function jsonObject(value: unknown): Record<string, unknown> {
   assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
   return value as Record<string, unknown>;

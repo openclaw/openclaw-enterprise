@@ -1,4 +1,4 @@
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
-import { run } from "../fixtures/repository-credentials/process.mjs";
+import { run } from "../fixtures/repository-credentials/process.ts";
 import { controlRequest } from "../fixtures/repository-credentials/service-fixture.ts";
 import { socketDirectory } from "../helpers/socket-directory.ts";
 import { isJsonObject, readJsonObject } from "./repository-credentials-driver-fixture.ts";

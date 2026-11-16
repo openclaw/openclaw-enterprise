@@ -7,7 +7,7 @@ import type { ServiceConfig } from "../../apps/controller/src/drivers/repo/acces
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { writeFile } from "node:fs/promises";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import {
   createAlternateDriverFactory,
   startAlternateUpstream,
@@ -19,8 +19,8 @@ import {
 } from "../fixtures/repository-credentials/service-fixture.ts";
 import type { AlternateDriverObservation } from "../fixtures/repository-credentials/alternate/driver.ts";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.ts";
-import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
-import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
+import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.ts";
 import { removeRemoteBranches } from "../fixtures/repository-credentials/workflows.ts";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.ts";

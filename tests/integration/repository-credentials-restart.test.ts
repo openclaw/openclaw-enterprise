@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmod, lstat, readFile, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
-import { appRoot, credentialDriverModule } from "../fixtures/repository-credentials/runtime.mjs";
-import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
+import { appRoot, credentialDriverModule } from "../fixtures/repository-credentials/runtime.ts";
+import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
 import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service-fixture.ts";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 
@@ -77,7 +77,7 @@ function startProcess({ resources, config, tls }: Awaited<ReturnType<typeof conf
   child.stdin.end(
     JSON.stringify({
       config,
-      runtime: new URL("../fixtures/repository-credentials/runtime.mjs", import.meta.url).href,
+      runtime: new URL("../fixtures/repository-credentials/runtime.ts", import.meta.url).href,
       adapter: new URL("../fixtures/repository-credentials/alternate.ts", import.meta.url).href,
       key: tls.keyFile,
       cert: tls.certFile,

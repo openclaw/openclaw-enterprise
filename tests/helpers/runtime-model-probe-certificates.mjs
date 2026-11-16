@@ -1,6 +1,6 @@
 // @ts-check
 
-import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
+import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.ts";
 import { caAndLeaf } from "./certificates.mjs";
 
 // Callers own subprocess policy and cleanup: image tests remove the CA key,

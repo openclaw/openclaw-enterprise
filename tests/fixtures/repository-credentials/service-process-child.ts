@@ -1,8 +1,8 @@
 import type { RunningService } from "../../../apps/controller/src/composition/repository-credentials/service.ts";
 import type { ServiceConfig } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
-import { createControlledClock } from "./clock.mjs";
-import type { createTlsMaterial } from "./process.mjs";
-import { appModule } from "./runtime.mjs";
+import { createControlledClock } from "./clock.ts";
+import type { createTlsMaterial } from "./process.ts";
+import { appFunction } from "./app-functions.ts";
 
 export type ServiceProcessRequest = { id: number } & (
   | {
@@ -41,13 +41,18 @@ process.on("message", async ({ id, command, input }: ServiceProcessRequest) => {
     if (command === "start" && !running) {
       clock = createControlledClock(input.wallMs);
       const { config, tls, origin } = input;
-      const [{ loadGitHubRepositoryRegistry }, { createPreparedGitHubRegistryFactory }]: [
-        typeof import("../../../apps/controller/src/composition/repository-credentials/registry.ts"),
-        typeof import("../../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts"),
-      ] = await Promise.all([
-        appModule("composition/repository-credentials/registry"),
-        appModule("drivers/repo/github/access/warm-registry-factory"),
-      ]);
+      const [loadGitHubRepositoryRegistry, createPreparedGitHubRegistryFactory] = await Promise.all(
+        [
+          appFunction(
+            "composition/repository-credentials/registry",
+            "loadGitHubRepositoryRegistry",
+          ),
+          appFunction(
+            "drivers/repo/github/access/warm-registry-factory",
+            "createPreparedGitHubRegistryFactory",
+          ),
+        ],
+      );
       const registry = await loadGitHubRepositoryRegistry(input.registryFile, "github-fixture");
       const factory = createPreparedGitHubRegistryFactory({
         registry,
@@ -58,10 +63,10 @@ process.on("message", async ({ id, command, input }: ServiceProcessRequest) => {
         apiOrigin: origin,
         gitOrigin: origin,
       });
-      const {
-        runService,
-      }: typeof import("../../../apps/controller/src/composition/repository-credentials/service.ts") =
-        await appModule("composition/repository-credentials/service");
+      const runService = await appFunction(
+        "composition/repository-credentials/service",
+        "runService",
+      );
       running = await runService(
         {
           config,
