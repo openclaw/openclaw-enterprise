@@ -1235,14 +1235,22 @@ test("a sender bearer is admitted only with its operator route and only once", (
   // A held (starting) run still reports its `box run`; a failed or exited run reports none.
   assert.deepEqual(
     observedView({
-      view: { ...view, state: "starting", protectedStartup: {} },
+      view: {
+        ...view,
+        state: "starting",
+        protectedStartup: { plan: {}, reservedAt: new Date(0).toISOString() },
+      },
       execution: { boxProcess: () => box, generation: () => "c".repeat(64) },
     }),
     {
       ...view,
       state: "starting",
       repositorySender: { ...view.repositorySender, processInstanceId: "boot:42:99" },
-      protectedStartup: { generationSha256: "c".repeat(64) },
+      protectedStartup: {
+        plan: {},
+        reservedAt: new Date(0).toISOString(),
+        generationSha256: "c".repeat(64),
+      },
     },
   );
   for (const [state, current] of [

@@ -96,7 +96,13 @@ export interface RecordView {
    * Protected startup: the reservation generation (fixed once `box run` exists, before any
    * release) and, after the host verified Compute's release, the release's SHA-256.
    */
-  protectedStartup?: { generationSha256?: string; startupId?: string; startupSha256?: string };
+  protectedStartup?: {
+    plan: Record<string, unknown>;
+    reservedAt: string;
+    generationSha256?: string;
+    startupId?: string;
+    startupSha256?: string;
+  };
 }
 
 interface LaunchPlan extends StartInput {
@@ -1044,6 +1050,10 @@ export function observedView(record: {
             ...startup,
             ...(generation === undefined ? {} : { generationSha256: generation }),
           },
+          // The file-only node's owner generation is the reservation from the first read.
+          ...(generation === undefined || record.view.workspaceNodeMode === undefined
+            ? {}
+            : { generationSha256: generation }),
         }),
   };
 }
@@ -1157,6 +1167,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         }
       } else {
         await held.execution.release();
+        if (prior === undefined) throw new Error("release_outside_held_execution");
         held.view.protectedStartup = { ...prior, ...verified };
       }
       reply(response, 200, observedView(held));
@@ -1300,7 +1311,11 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       };
       attempted = true;
       reserveExecution(config.runtimeDir, view);
-      if (input.protectedStartup !== undefined) view.protectedStartup = {};
+      if (input.protectedStartup !== undefined)
+        view.protectedStartup = {
+          plan: input.protectedStartup.plan,
+          reservedAt: new Date().toISOString(),
+        };
       const running: LiveRecord = {
         view,
         retiring: false,

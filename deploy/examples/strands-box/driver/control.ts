@@ -23,6 +23,19 @@ export interface Execution {
   readonly workspaceNodeMode?: WorkspaceNodeMode;
   readonly workspaceVolume?: WorkspaceVolume;
   readonly generationSha256?: string;
+  /** Host-observed sender identity: bearer digest and the live `box run` process. */
+  readonly repositorySender?: {
+    readonly bearerSha256: string;
+    readonly processInstanceId?: string;
+  };
+  /** Protected startup as the host observes it; `plan` is the exact admitted proxy plan. */
+  readonly protectedStartup?: {
+    readonly plan: Readonly<Record<string, unknown>>;
+    readonly reservedAt: string;
+    readonly generationSha256?: string;
+    readonly startupId?: string;
+    readonly startupSha256?: string;
+  };
 }
 
 export type WorkspaceNodeMode = "file-only-v1";
@@ -33,6 +46,8 @@ export interface WorkspaceVolume {
 
 const EXECUTION_PATH = "/v1/execution";
 const ADMISSION_PATH = "/v1/admission";
+const RELEASE_PATH = "/v1/release";
+const SHA256 = /^[a-f0-9]{64}$/;
 const LIMIT = 32_768;
 const TIMEOUT = 5_000;
 
@@ -123,8 +138,69 @@ function parseOwner(value: unknown): Owner | undefined {
   };
 }
 
+function parseSender(value: unknown): Execution["repositorySender"] {
+  if (value === undefined) return undefined;
+  const sender = record(value);
+  if (
+    !sender ||
+    Object.keys(sender).some((key) => key !== "bearerSha256" && key !== "processInstanceId") ||
+    typeof sender.bearerSha256 !== "string" ||
+    !SHA256.test(sender.bearerSha256) ||
+    (sender.processInstanceId !== undefined &&
+      (typeof sender.processInstanceId !== "string" ||
+        !/^[a-f0-9-]{36}:[1-9][0-9]{0,9}:[1-9][0-9]{0,19}$/.test(sender.processInstanceId)))
+  ) {
+    throw new Error("Invalid sender evidence");
+  }
+  return {
+    bearerSha256: sender.bearerSha256,
+    ...(sender.processInstanceId === undefined
+      ? {}
+      : { processInstanceId: sender.processInstanceId }),
+  };
+}
+
+function parseStartup(value: unknown): Execution["protectedStartup"] {
+  if (value === undefined) return undefined;
+  const startup = record(value);
+  const plan = record(startup?.plan);
+  const allowed = ["plan", "reservedAt", "generationSha256", "startupId", "startupSha256"];
+  if (
+    !startup ||
+    !plan ||
+    Object.keys(startup).some((key) => !allowed.includes(key)) ||
+    typeof startup.reservedAt !== "string" ||
+    new Date(startup.reservedAt).toISOString() !== startup.reservedAt ||
+    (startup.generationSha256 !== undefined &&
+      (typeof startup.generationSha256 !== "string" || !SHA256.test(startup.generationSha256))) ||
+    (startup.startupSha256 !== undefined &&
+      (typeof startup.startupSha256 !== "string" ||
+        !SHA256.test(startup.startupSha256) ||
+        typeof startup.startupId !== "string" ||
+        startup.generationSha256 === undefined)) ||
+    (startup.startupId !== undefined && startup.startupSha256 === undefined)
+  ) {
+    throw new Error("Invalid protected startup evidence");
+  }
+  return {
+    plan,
+    reservedAt: startup.reservedAt,
+    ...(startup.generationSha256 === undefined
+      ? {}
+      : { generationSha256: startup.generationSha256 as string }),
+    ...(startup.startupSha256 === undefined
+      ? {}
+      : {
+          startupId: startup.startupId as string,
+          startupSha256: startup.startupSha256 as string,
+        }),
+  };
+}
+
 function parseExecution(value: unknown): Execution {
   const document = record(value);
+  const repositorySender = parseSender(document?.repositorySender);
+  const protectedStartup = parseStartup(document?.protectedStartup);
   const owner = parseOwner(document?.owner);
   const endpoint = record(document?.endpoint);
   const volume = workspaceVolume(document?.workspaceVolume);
@@ -149,7 +225,8 @@ function parseExecution(value: unknown): Execution {
         !/^[a-f0-9]{64}$/.test(document.generationSha256))) ||
     (document.workspaceNodeMode !== undefined &&
       document.state === "running" &&
-      document.generationSha256 === undefined)
+      document.generationSha256 === undefined) ||
+    (repositorySender === undefined) !== (protectedStartup === undefined)
   ) {
     throw new DependencyUnavailableError("Strands Box returned invalid execution evidence.");
   }
@@ -166,6 +243,8 @@ function parseExecution(value: unknown): Execution {
     ...(document.generationSha256 === undefined
       ? {}
       : { generationSha256: document.generationSha256 }),
+    ...(repositorySender === undefined ? {} : { repositorySender }),
+    ...(protectedStartup === undefined ? {} : { protectedStartup }),
   };
 }
 
@@ -183,6 +262,7 @@ type ControlRequest =
       readonly body: AdmissionRequest & {
         readonly workspaceNodeSetupCode?: string;
         readonly controlledInference?: true;
+        readonly repositorySenderBearer?: string;
       };
     }
   | {
@@ -215,6 +295,24 @@ export async function control(
     throw new DependencyUnavailableError(
       "The Strands Box host did not confirm the execution operation.",
     );
+  }
+}
+
+/** Relay Compute's signed release; the host verifies it before opening the startup gate. */
+export async function releaseExecution(
+  socketPath: string,
+  body: Pick<Execution, "owner" | "executionId" | "requirementsDigest"> & {
+    readonly release: Readonly<Record<string, unknown>>;
+  },
+  signal: AbortSignal,
+): Promise<Execution> {
+  try {
+    const reply = await send(socketPath, "POST", RELEASE_PATH, body, signal);
+    if (reply.status !== 200) throw new Error("Refused release");
+    return parseExecution(JSON.parse(reply.body));
+  } catch {
+    signal.throwIfAborted();
+    throw new DependencyUnavailableError("The Strands Box host did not confirm the release.");
   }
 }
 

@@ -4,8 +4,8 @@ import type { PreparedGitHubRepositoryUseRequest } from "@openclaw-enterprise/co
 
 export const GIT_ORIGIN = "https://github.com";
 export const API_ORIGIN = "https://api.github.com";
-export const BODY_LIMIT = 8 * 1024 * 1024;
-export const REPLY_LIMIT = 16 * 1024 * 1024;
+export const BODY_LIMIT: number = 8 * 1024 * 1024;
+export const REPLY_LIMIT: number = 16 * 1024 * 1024;
 
 type Operation = PreparedGitHubRepositoryUseRequest["operation"];
 

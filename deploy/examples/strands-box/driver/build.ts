@@ -15,7 +15,17 @@ const compilerOptions: ts.CompilerOptions = {
   rewriteRelativeImportExtensions: true,
   verbatimModuleSyntax: true,
 };
-for (const name of ["index", "control", "relay", "native"]) {
+// The paired registration bundles the fixed-repository sender from ../git under dist/git.
+await mkdir(join(output, "git"), { recursive: true });
+for (const name of [
+  "index",
+  "control",
+  "relay",
+  "native",
+  "protected",
+  "../git/index",
+  "../git/protocol",
+]) {
   const fileName = fileURLToPath(new URL(`./${name}.ts`, import.meta.url));
   const source = await readFile(fileName, "utf8");
   const js = ts.transpileModule(source, { compilerOptions, fileName, reportDiagnostics: true });
@@ -34,6 +44,8 @@ for (const name of ["index", "control", "relay", "native"]) {
       }),
     );
   }
-  await writeFile(join(output, `${name}.js`), js.outputText);
-  await writeFile(join(output, `${name}.d.ts`), declarations.outputText);
+  const target = name.startsWith("../git/") ? name.slice(3) : name;
+  const local = (text: string) => text.replaceAll('from "../git/', 'from "./git/');
+  await writeFile(join(output, `${target}.js`), local(js.outputText));
+  await writeFile(join(output, `${target}.d.ts`), local(declarations.outputText));
 }

@@ -69,7 +69,7 @@ export const BOX_PHANTOM_IDENTITY = "box-phantom-sha256:";
 /** Box injects the real value of this variable; the workload sees only a placeholder. */
 export const SENDER_BEARER_ENV = "OCE_REPOSITORY_SENDER_BEARER";
 /** 32 random bytes in unpadded base64url, minted once per execution by the paired Driver. */
-export const SENDER_BEARER = /^[A-Za-z0-9_-]{43}$/;
+export const SENDER_BEARER: RegExp = /^[A-Za-z0-9_-]{43}$/;
 
 export interface GitReceipt {
   readonly requestId: string;
