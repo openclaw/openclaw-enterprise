@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.ts";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { writeCommand } from "../helpers/fake-commands.ts";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
