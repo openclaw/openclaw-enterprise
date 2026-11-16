@@ -148,6 +148,7 @@ export default defineConfig(
       "scripts/console-storybook/story.ts",
       "scripts/console-storybook/public/*.mjs",
       "scripts/docs-site/compute-matrix-browser.mts",
+      "scripts/docs-site/preview-client.mts",
     ],
     languageOptions: {
       globals: {
