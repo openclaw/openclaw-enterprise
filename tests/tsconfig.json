@@ -72,6 +72,8 @@
     "conformance/kubernetes-workload-program-cases.ts",
     "conformance/kubernetes-workspace-delivery-cases.ts",
     "conformance/kubernetes-workspace-node-cases.ts",
+    "conformance/kubernetes-workspace-node-delivery-cases.ts",
+    "conformance/kubernetes-workspace-node-activation-cases.ts",
     "conformance/kubernetes-workspace-storage-cases.ts",
     "conformance/kubernetes-dedicated-deploy-fixture.ts",
     "conformance/kubernetes-embedded-replacement-fixture.ts",
