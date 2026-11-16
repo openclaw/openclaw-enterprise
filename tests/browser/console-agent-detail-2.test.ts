@@ -35,6 +35,7 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
 import {
+  deploymentDetailsOpen,
   deploymentRecordUrl,
   expectDeploymentOutcome,
 } from "./console-deployment-activity-helpers.ts";
@@ -860,8 +861,8 @@ test("Deployment activity keeps keyboard focus when refresh discovers a newer ve
   const { page } = await newPage(t, fixture, {
     context: { viewport: { width: 1440, height: 1000 } },
   });
-  // This controller fixture admits revisions but has no deployment worker. Supply
-  // its supported queued record only for v1; v2's read and all overview calls use the real API.
+  // This fixture admits revisions without recording deployment operations. Supply
+  // the queued record only for v1; later record reads and overview calls use the real API.
   const queued = deploymentStatusResponse(first, { status: "queued" });
   await page.route(firstUrl, (route) => route.fulfill(queued));
   await page.clock.install();
@@ -951,4 +952,44 @@ test("Deployment activity keeps keyboard focus when refresh discovers a newer ve
     true,
     "Refresh deployment keeps focus after the newer record appears",
   );
+
+  // A keyboard reader can move to the disclosure while a refresh is in flight.
+  const summary = activity.locator(":scope > details > summary");
+  const summaryHasFocus = () => summary.evaluate((node) => node === document.activeElement);
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("v3"));
+  const third = await fixture.deployAgent(namespace.id, agent.id);
+  const thirdUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, third.id);
+  const heldRefresh = await holdRequests(t, page, secondUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  await page.keyboard.press("Enter");
+  const heldRefreshResponse = await heldRefresh.requested;
+  assert.ok(heldRefreshResponse);
+  assert.equal(heldRefreshResponse.status(), 503);
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await summaryHasFocus(), true);
+  if (await deploymentDetailsOpen(page)) {
+    await page.keyboard.press("Enter");
+  }
+  assert.equal(await deploymentDetailsOpen(page), false);
+  const oldSummary = await summary.elementHandle();
+  assert.ok(oldSummary);
+
+  const thirdRecord = page.waitForResponse(
+    (response) => response.url() === thirdUrl && response.request().method() === "GET",
+  );
+  heldRefresh.release();
+  assert.equal((await thirdRecord).status(), 503);
+  await activity
+    .getByText("Most recent visible deployment · v3", { exact: true })
+    .waitFor({ state: "attached" });
+  assert.equal(await oldSummary.evaluate((node) => node.isConnected), false);
+  assert.equal(await summaryHasFocus(), true, "the newer disclosure keeps keyboard focus");
+  assert.equal(await deploymentDetailsOpen(page), true);
+  await page.keyboard.press("Enter");
+  assert.equal(await deploymentDetailsOpen(page), false);
+  await page.keyboard.press("Space");
+  assert.equal(await deploymentDetailsOpen(page), true);
 });
