@@ -242,7 +242,6 @@ async function fixture(
     },
     /** A source stored before a rule existed, with its provider, as an older release left it. */
     seedStored(type, config) {
-      /** @satisfies {import("../../packages/contracts/src/index.ts").CredentialSource} */
       const stored = {
         id: "cs_" + randomUUID(),
         namespaceId: namespace.id,
@@ -251,9 +250,9 @@ async function fixture(
         config: type === "openai" ? config : toolConfig(type, config),
         secrets:
           type === "openai" ? { api_key: secret.ref } : { [SECRET_FIELD[type]]: toolSecret.ref },
-        ownerCapability: "credential_gateway",
+        ownerCapability: /** @type {const} */ ("credential_gateway"),
         driverId: driver.id,
-        state: "ready",
+        state: /** @type {const} */ ("ready"),
         createdAt: new Date(now - 71_000).toISOString(),
       };
       const workspace = openShellWorkspaceName(namespace);
@@ -873,8 +872,7 @@ test("offered OpenShell source values return field-specific HTTP 400 before effe
   const f = await fixture(t, { toolSources: true });
   // Use each offered type through real API/OCC/Driver admission. Only the value is
   // invalid: catalog fields and Secret references are valid, so this must not be a 404.
-  /** @satisfies {[string, string, string][]} */
-  const invalidValues = [
+  for (const [type, field, value] of [
     ["bearer-token", "host", "*.example.test"],
     ["bearer-token", "port", "0"],
     ["bearer-token", "path", "relative"],
@@ -883,9 +881,9 @@ test("offered OpenShell source values return field-specific HTTP 400 before effe
     ["oauth2-client-credentials", "client_id", "not visible"],
     ["oauth2-client-credentials", "scope", "read\twrite"],
     ["oauth2-refresh-token", "env_var", "OPENAI_API_KEY"],
-  ];
-  for (const [type, field, value] of invalidValues) {
+  ]) {
     await t.test(type + ": " + field, async () => {
+      assert.ok(field, "Each refusal case must name the invalid config field.");
       const response = await f.saveTool(type, { [field]: value }, "invalid-" + field);
       assert.deepEqual((await f.request("GET", f.path)).data, []);
       assertRefused(response, field);
