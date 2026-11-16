@@ -7,15 +7,50 @@ import { createServer as httpsServer } from "node:https";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+
+import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
+import { selfSigned } from "../helpers/certificates.ts";
 import { listen } from "../helpers/listen.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { waitFor } from "../helpers/wait-for.ts";
-import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { selfSigned } from "../helpers/certificates.ts";
 
 const execute = promisify(execFile);
+
+type PeerStatusOverrides = Partial<
+  Record<
+    | "APP_SERVER_TOKEN"
+    | "OPENCLAW_AGENT_REVISION_ID"
+    | "NODE_EXTRA_CA_CERTS"
+    | "OPENCLAW_PEER_PLUGIN_STATUS_URL",
+    string
+  >
+>;
+
+type PeerStatusResult =
+  | { ok: true; value: { revisionId: string; successfulPluginIds: readonly string[] } }
+  | { ok: false; message: string };
+
+function decodePeerStatusResult(stdout: string): PeerStatusResult {
+  const result: unknown = JSON.parse(stdout);
+  assert.ok(
+    typeof result === "object" && result !== null && "ok" in result,
+    "invalid client result",
+  );
+  if (result.ok === false) {
+    assert.ok("message" in result && typeof result.message === "string", "invalid client error");
+    return { ok: false, message: result.message };
+  }
+  assert.equal(result.ok, true, "invalid client result tag");
+  assert.ok("value" in result && typeof result.value === "object" && result.value !== null);
+  const { value } = result;
+  assert.ok("revisionId" in value && typeof value.revisionId === "string");
+  assert.ok("successfulPluginIds" in value && Array.isArray(value.successfulPluginIds));
+  const successfulPluginIds: readonly unknown[] = value.successfulPluginIds;
+  assert.ok(successfulPluginIds.every((pluginId) => typeof pluginId === "string"));
+  return { ok: true, value: { revisionId: value.revisionId, successfulPluginIds } };
+}
 
 test("real peer-status HTTPS transport authenticates its revision and verifies server trust", async (t) => {
   const directory = await temporaryDirectory(t, "oce-peer-status-");
@@ -26,6 +61,8 @@ test("real peer-status HTTPS transport authenticates its revision and verifies s
   const reservation = await reservePort({ host: "0.0.0.0" });
   t.after(reservation.release);
   const { port } = reservation;
+  const statusPath = "/openclaw/plugin-runtime/remote-status";
+  const statusUrl = `http://127.0.0.1:${port}${statusPath}`;
   const environment = {
     PATH: process.env.PATH,
     OPENCLAW_PLUGIN_STATUS_PORT: String(port),
@@ -46,13 +83,14 @@ test("real peer-status HTTPS transport authenticates its revision and verifies s
     stdio: ["ignore", "ignore", "pipe", "ipc"],
   });
   t.after(() => stopProcess(child));
-  await once(child, "message");
+  const [message]: readonly unknown[] = await once(child, "message");
+  assert.equal(message, "ready");
   // "ready" follows listen() before the bind completes. A 401 can only come from the status
   // server (the reservation resets connections), so it is bound and the hold can end.
   await waitFor(
     "the status server to answer on its port",
     () =>
-      fetch(`http://127.0.0.1:${port}/openclaw/plugin-runtime/remote-status`).then(
+      fetch(statusUrl).then(
         async (response) => {
           await response.body?.cancel();
           return response.status === 401 || undefined;
@@ -77,10 +115,11 @@ test("real peer-status HTTPS transport authenticates its revision and verifies s
         {
           host: "127.0.0.1",
           port,
-          path: "/openclaw/plugin-runtime/remote-status",
+          path: statusPath,
           headers: incoming.headers,
         },
         (response) => {
+          assert.ok(response.statusCode !== undefined, "peer status response has no HTTP status");
           outgoing.writeHead(response.statusCode, response.headers);
           response.pipe(outgoing);
         },
@@ -98,7 +137,7 @@ test("real peer-status HTTPS transport authenticates its revision and verifies s
     clientFile,
     `${PLUGIN_RUNTIME_HELPERS}\nreadPeerPluginRuntimeStatus().then(value=>console.log(JSON.stringify({ok:true,value}))).catch(error=>console.log(JSON.stringify({ok:false,message:error.message})));`,
   );
-  async function read(overrides = {}) {
+  async function read(overrides: PeerStatusOverrides = {}): Promise<PeerStatusResult> {
     const { stdout } = await execute(process.execPath, [clientFile], {
       env: {
         ...environment,
@@ -106,12 +145,15 @@ test("real peer-status HTTPS transport authenticates its revision and verifies s
         OPENCLAW_PEER_PLUGIN_STATUS_URL: url,
         ...overrides,
       },
+      encoding: "utf8",
       timeout: 15_000,
     });
-    return JSON.parse(stdout);
+    return decodePeerStatusResult(stdout);
   }
   const valid = await read();
-  assert.equal(valid.ok, true);
+  if (!valid.ok) {
+    assert.fail(valid.message);
+  }
   assert.equal(valid.value.revisionId, "revision-one");
   assert.deepEqual(valid.value.successfulPluginIds, ["plugin-one"]);
   assert.equal((await read({ APP_SERVER_TOKEN: "another-agent-token" })).ok, false);
@@ -125,6 +167,7 @@ test("real peer-status HTTPS transport authenticates its revision and verifies s
     (await read({ OPENCLAW_PEER_PLUGIN_STATUS_URL: url.replace("https:", "http:") })).ok,
     false,
   );
-  const missing = await fetch(`http://127.0.0.1:${port}/openclaw/plugin-runtime/remote-status`);
+  const missing = await fetch(statusUrl);
+  await missing.body?.cancel();
   assert.equal(missing.status, 401);
 });

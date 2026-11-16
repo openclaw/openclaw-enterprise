@@ -90,7 +90,7 @@
     "tests/conformance/repository-credentials-contracts.test.ts",
     "tests/integration/plugin-driver-startup.test.ts",
     "tests/integration/repository-credentials-config.test.ts",
-    "tests/integration/kubernetes-peer-status.test.mjs",
+    "tests/integration/kubernetes-peer-status.test.ts",
     "tests/conformance/repository-credentials-lifecycle.test.ts",
     "tests/integration/ssh-compute-startup.test.ts",
     "tests/integration/oidc-login-transport.test.ts",
@@ -704,7 +704,7 @@
       ]
     },
     {
-      "path": "tests/integration/kubernetes-peer-status.test.mjs",
+      "path": "tests/integration/kubernetes-peer-status.test.ts",
       "expectedTests": [
         "real peer-status HTTPS transport authenticates its revision and verifies server trust"
       ]
