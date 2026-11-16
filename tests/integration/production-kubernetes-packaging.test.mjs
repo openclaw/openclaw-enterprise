@@ -16,6 +16,7 @@ import {
   PLUGIN_RUNTIME_STATUS_PORT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
 import {
@@ -1947,18 +1948,14 @@ test(
     );
     await writeFile(liveValues, defaults, { mode: 0o600 });
     const initial = { ...values, ...repositoryCredentialValues };
+    const editLiveValues = (expression) =>
+      execute(process.env.OCC_YQ_BIN ?? "yq", ["-i", expression, liveValues]);
     for (const [key, value] of Object.entries(initial)) {
-      await execute(process.env.OCC_YQ_BIN ?? "yq", [
-        "-i",
-        `${key.startsWith(".") ? key : `.${key}`} = ${JSON.stringify(value)}`,
-        liveValues,
-      ]);
+      await editLiveValues(`${key.startsWith(".") ? key : `.${key}`} = ${JSON.stringify(value)}`);
     }
-    await execute(process.env.OCC_YQ_BIN ?? "yq", [
-      "-i",
+    await editLiveValues(
       ".gatewayRouting.enabled = false | .repositoryCredentials.enabled = true | del(.repositoryCredentials.hostname, .repositoryCredentials.serviceName)",
-      liveValues,
-    ]);
+    );
     const installation = join(directory, "installation.json");
     const kubeconfig = join(directory, "kubeconfig");
     const key = join(directory, "key");
@@ -2020,6 +2017,7 @@ test(
     const worker = join(directory, "worker.json");
     const nodes = join(directory, "nodes.json");
     const probeCalls = join(directory, "probe-calls.txt");
+    const helmCalls = join(directory, "helm-calls.txt");
     const controllerImage = `registry.example.invalid/controller@sha256:${"c".repeat(64)}`;
     const brokerImage = `registry.example.invalid/repository-credentials@sha256:${"e".repeat(64)}`;
     await writeFile(
@@ -2038,8 +2036,7 @@ test(
       }),
     );
     const wrappers = {
-      kubectl: `#!/usr/bin/env bash
-case "$*" in
+      kubectl: `case "$*" in
   *'get secret '*) cat "$TEST_SECRET" ;;
   *'get deployment openclaw-enterprise-worker '*) cat "$TEST_WORKER" ;;
   *'get nodes --output json'*) cat "$TEST_NODES" ;;
@@ -2048,8 +2045,7 @@ case "$*" in
   *) exit 90 ;;
 esac
 `,
-      occ: `#!/usr/bin/env bash
-[[ $# == 4 && "$1" == --output && "$2" == json && "$3" == installation ]] || exit 94
+      occ: `[[ $# == 4 && "$1" == --output && "$2" == json && "$3" == installation ]] || exit 94
 case "$4" in
   get) printf '{"id":"ins_test"}' ;;
   deployment-inventory) printf '{"installationId":"ins_test","namespaces":[]}' ;;
@@ -2057,31 +2053,41 @@ case "$4" in
 esac
 `,
       // This test proves chart endpoint preservation, not image compatibility.
-      node: `#!/usr/bin/env bash
-if [[ "$1" == scripts/upgrade-repository-image-probe.ts ]]; then
+      node: `if [[ "$1" == scripts/upgrade-repository-image-probe.ts ]]; then
   [[ $# == 4 ]] || exit 92
   printf '%s|%s|%s\\n' "$2" "$3" "$4" >> "$TEST_PROBE_CALLS"
   printf '{"fixture":true}\\n'
-else
+elif [[ "$1" == scripts/lib/image-reference-problem.ts && $# == 2 ]]; then
   exec "$TEST_REAL_NODE" "$@"
+else
+  exit 92
 fi
 `,
-      docker: `#!/usr/bin/env bash
-exit 93
-`,
-      helm: `#!/usr/bin/env bash
-case "$1 $2" in
+      docker: "exit 93",
+      helm: `case "$1 $2" in
   'get values') cat "$TEST_LIVE_VALUES" ;;
   'status oce') if [[ "$*" == *'--output json'* ]]; then printf '{"name":"oce","namespace":"openclaw-system","version":1,"info":{"status":"deployed"}}'; else printf 'deployed'; fi ;;
-  'template oce') exec "$TEST_REAL_HELM" "$@" ;;
-  'upgrade --install') exit 47 ;;
+  'template oce')
+    # Only delegate the local chart render. No extra flags can select server-side rendering.
+    [[ $# == 12 && "$3" == deploy/helm/openclaw-enterprise &&
+       "$4" == --kubeconfig && "$5" == /* && "$6" == --kube-context && "$7" == fixture &&
+       "$8" == --namespace && "$9" == openclaw-system &&
+       "\${10}" == --is-upgrade && "\${11}" == --values && "\${12}" == /* ]] || exit 91
+    exec "$TEST_REAL_HELM" "$@" ;;
+  'upgrade --install')
+    for arg in "$@"; do
+      [[ "$arg" == --dry-run=server ]] && exit 47
+    done
+    exit 91 ;;
   *) exit 91 ;;
 esac
 `,
     };
     for (const [name, contents] of Object.entries(wrappers)) {
-      await writeFile(join(bin, name), contents);
-      await chmod(join(bin, name), 0o755);
+      await writeCommand(bin, name, contents, {
+        interpreter: "bash",
+        log: name === "helm" ? helmCalls : undefined,
+      });
     }
     const realHelm = (await execute("sh", ["-c", 'command -v "$1"', "sh", helm])).stdout.trim();
     const { stdout: sourceRevision } = await execute("git", ["rev-parse", "HEAD"], {
@@ -2128,15 +2134,14 @@ esac
           },
         }),
       );
-      await execute(process.env.OCC_YQ_BIN ?? "yq", [
-        "-i",
+      await editLiveValues(
         configuredHostname
           ? `.repositoryCredentials.hostname = ${JSON.stringify(configuredHostname)}`
           : "del(.repositoryCredentials.hostname)",
-        liveValues,
-      ]);
+      );
       const evidence = join(directory, name);
       await writeFile(probeCalls, "", { mode: 0o600 });
+      await writeFile(helmCalls, "", { mode: 0o600 });
       await assert.rejects(
         execute(
           new URL("../../scripts/upgrade-production-images", import.meta.url).pathname,
@@ -2193,6 +2198,12 @@ esac
       assert.equal(
         await readFile(probeCalls, "utf8"),
         `${controllerImage}|${brokerImage}|linux/amd64\n`,
+      );
+      const helmOperations = (await commandCalls(helmCalls)).map((call) => call.split(" ", 1)[0]);
+      assert.deepEqual(
+        helmOperations.filter((operation) => operation === "template" || operation === "upgrade"),
+        failure ? [] : ["template", "upgrade"],
+        name,
       );
       if (!failure) {
         // A failed dry-run has a render but no successful-preparation pointer.
