@@ -14,9 +14,16 @@ entries use the same four fields.
   adds another CA.
 - **Workaround:** name the endpoint with an operator DNS name pinned to one
   private IPv4 address, then either use a publicly trusted certificate for that
-  name, or use a Box build that reads the `upstream_ca_files` key and set a route
-  CA on the host. See [Controlled inference route](driver/README.md#controlled-inference-route).
-- **Upstream status:** not yet reported to strands-agents/box.
+  name, or use a Box build that reads the `upstream-ca-file` key and set the
+  host's upstream CA bundle. Box trusts that bundle for every upstream it dials,
+  so the host refuses to start unless every route Box dials declares the
+  bundle's digest. An inline workspace node must opt in or use the separate file
+  node. See [Controlled inference route](driver/README.md#controlled-inference-route).
+- **Upstream status:** reported as
+  [strands-agents/box#54](https://github.com/strands-agents/box/issues/54).
+  [strands-agents/box#147](https://github.com/strands-agents/box/pull/147) is open
+  and adds the gateway-wide `upstream-ca-file` key that the host writes. Per-route
+  CA scoping upstream would remove the need for every route to opt in.
 
 ## Box presents no client certificate
 

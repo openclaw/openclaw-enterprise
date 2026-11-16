@@ -166,15 +166,16 @@ node deploy/examples/strands-box/ordinary-chat/serve-installed-model.ts "$MODEL_
 
 Box must trust the fixture's HTTPS certificate. Stock Box trusts only its
 compiled-in public roots, so name the fixture with an operator DNS name and
-use a publicly trusted certificate for that name, or use a route CA with a Box
-build that reads it. Either way, pin the private listener address: see
-[Controlled inference route](../driver/README.md#controlled-inference-route).
-The certificate must name the DNS name, and the Box host must resolve the name
-to exactly the listener `address`. Set the same `url` and `address` (and
-`ca` when used) in the host's `controlledInference`, the same origin in
-Compute's model provider, and the same `modelBaseUrl`, `address` and
-`caSha256` in the Driver configuration. The fixture accepts only the public
-controlled inference marker from the selected Box address. Use no
+use a publicly trusted certificate for that name, or use an upstream CA
+bundle with a Box build that reads it. Either way, pin the private listener
+address: see [Controlled inference route](../driver/README.md#controlled-inference-route).
+The certificate must name the DNS name, and the Box host must resolve the
+name to exactly the listener `address`. Set the same `url` and `address` in
+the host's `controlledInference`, the same origin in Compute's model
+provider, and the same `modelBaseUrl` and `address` in the Driver
+configuration. With a bundle, also set the host's `upstreamCa` and the same
+`caSha256` on the host route and in the Driver. The fixture accepts only the
+public controlled inference marker from the selected Box address. Use no
 model-provider credential.
 
 ## Start the held host and approve
