@@ -39,6 +39,7 @@
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner-native-child.test.ts",
     "tests/integration/ci-runner-process-ownership.test.ts",
     "tests/integration/ci-runner-openshell-progress.test.ts",
     "tests/integration/ci-runner-case-enforcement.test.ts",
@@ -269,6 +270,13 @@
         "complete lifecycle restricts manifest selection before effects",
         "complete lifecycle losing an attempt claim cannot run phases or clean its winner",
         "complete lifecycle owns detached test groups after deadline or coordinator loss"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-runner-native-child.test.ts",
+      "expectedTests": [
+        "native child query retains only an observed stage from its own failed exec",
+        "runner reports a native child stage only on the canonical failed topology case"
       ]
     },
     {
