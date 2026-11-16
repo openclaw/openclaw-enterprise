@@ -79,6 +79,7 @@ import {
   createDedicatedDeployKubernetesFixture,
   nativeHarnessResource,
   nativeSandboxIdentity,
+  nativeSandboxRevision,
   readyNativeHarnessPod,
   recordingNativeSandbox,
 } from "./kubernetes-dedicated-deploy-fixture.ts";
@@ -1120,12 +1121,7 @@ test("provider-owned Harness preparation waits to renew expired setup until its 
   const { driver, revision, namespace, state, gatewayName, prepare, markReady, read, save } =
     dedicatedFirstDeployFixture({
       sandboxDriver,
-      revision: {
-        harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-        sandboxDriverId: sandboxDriver.id,
-        configuration: createHarnessConfiguration("openclaw", "gpt-5"),
-        plugins: undefined,
-      },
+      revision: nativeSandboxRevision(sandboxDriver.id),
     });
   assert.equal((await prepare()).ready, false);
   assert.equal(provisions.length, 0);
@@ -1522,12 +1518,7 @@ test("native Sandbox enrollment waits for the bound Gateway before reporting rea
   };
   const fixture = dedicatedFirstDeployFixture({
     sandboxDriver,
-    revision: {
-      harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-      sandboxDriverId: sandboxDriver.id,
-      configuration: createHarnessConfiguration("openclaw", "gpt-5"),
-      plugins: undefined,
-    },
+    revision: nativeSandboxRevision(sandboxDriver.id),
   });
   const { state, namespace, gatewayName, markReady, prepare, read } = fixture;
   assert.equal((await prepare()).ready, false);
@@ -1588,15 +1579,7 @@ test("Kubernetes native Sandbox provisioning fails a revision on the worker's he
   const { revision, state, namespace, gatewayName, markReady, prepare } =
     dedicatedFirstDeployFixture({
       sandboxDriver,
-      revision: {
-        harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-        sandboxDriverId: sandboxDriver.id,
-        configuration: admitLoggingConfiguration(
-          createHarnessConfiguration("openclaw", "gpt-5"),
-          "info",
-        ),
-        plugins: undefined,
-      },
+      revision: nativeSandboxRevision(sandboxDriver.id, "info"),
     });
   assert.equal((await prepare()).ready, false);
   markReady(gatewayName);
@@ -1739,15 +1722,7 @@ test("Kubernetes Sandbox provisioning fails a revision at once when the provider
   };
   const { gatewayName, markReady, prepare } = dedicatedFirstDeployFixture({
     sandboxDriver,
-    revision: {
-      harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-      sandboxDriverId: sandboxDriver.id,
-      configuration: admitLoggingConfiguration(
-        createHarnessConfiguration("openclaw", "gpt-5"),
-        "info",
-      ),
-      plugins: undefined,
-    },
+    revision: nativeSandboxRevision(sandboxDriver.id, "info"),
   });
   assert.equal((await prepare()).ready, false);
   markReady(gatewayName);
@@ -1802,15 +1777,7 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
       withdrawals.push(context);
     },
   };
-  const nativeRevision = {
-    harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-    sandboxDriverId: sandboxDriver.id,
-    configuration: admitLoggingConfiguration(
-      createHarnessConfiguration("openclaw", "gpt-5"),
-      "info",
-    ),
-    plugins: undefined,
-  };
+  const nativeRevision = nativeSandboxRevision(sandboxDriver.id, "info");
   const encode = (value) => Buffer.from(value, "utf8").toString("base64");
   const decode = (value) => Buffer.from(value ?? "", "base64").toString("utf8");
   // The predecessor enrolled the Agent's device under its own revision.
@@ -2145,15 +2112,7 @@ test("Kubernetes Compute withdraws a native Harness exposure outside a preparati
   };
   const { driver, revision, namespace, clients } = dedicatedFirstDeployFixture({
     sandboxDriver,
-    revision: {
-      harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-      sandboxDriverId: sandboxDriver.id,
-      configuration: admitLoggingConfiguration(
-        createHarnessConfiguration("openclaw", "gpt-5"),
-        "info",
-      ),
-      plugins: undefined,
-    },
+    revision: nativeSandboxRevision(sandboxDriver.id, "info"),
   });
   const signal = new AbortController().signal;
   await driver.withdrawHarnessExposure(revision, signal);
