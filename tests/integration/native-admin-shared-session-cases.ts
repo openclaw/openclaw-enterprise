@@ -30,9 +30,9 @@ type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type FixtureResponse = { status: number; body: unknown };
 type ServiceKeyContext = {
   fixture: {
-    request(
+    request: (
       ...args: Parameters<ConsoleFixture["request"]>
-    ): Promise<FixtureResponse & { headers: Headers; data: unknown }>;
+    ) => Promise<FixtureResponse & { headers: Headers; data: unknown }>;
     fixtureResponse: ConsoleFixture["fixtureResponse"];
     policy: Pick<ConsoleFixture["policy"], "roles" | "bindings"> & { identities: Identity[] };
   };
@@ -60,20 +60,20 @@ type HttpResponse = Pick<InjectedResponse, "statusCode" | "headers" | "body">;
 interface SharedSessionDependencies {
   publicOrigin: string;
   authBaseURL: string;
-  createNativeAdminFixture(
+  createNativeAdminFixture: (
     t: TestContext,
     options?: { nativeDomain?: string; auditSink?: InMemoryAuditSink; logger?: OccLogger },
-  ): Promise<SharedSessionFixture>;
-  nativeStatus(context: SharedSessionFixture): Promise<FixtureResponse>;
-  injectJson(
+  ) => Promise<SharedSessionFixture>;
+  nativeStatus: (context: SharedSessionFixture) => Promise<FixtureResponse>;
+  injectJson: (
     fixture: NativeAdminApp,
     method: "GET" | "POST",
     path: string,
     options: { headers: Record<string, string> },
-  ): Promise<HttpResponse>;
-  nativeAuthority(native: { origin: string }): string;
-  createSiblingAgent(context: SharedSessionFixture): Promise<Pick<Agent, "id">>;
-  trustLocalUpstreamCertificate(t: TestContext, cert: string): void;
+  ) => Promise<HttpResponse>;
+  nativeAuthority: (native: { origin: string }) => string;
+  createSiblingAgent: (context: SharedSessionFixture) => Promise<Pick<Agent, "id">>;
+  trustLocalUpstreamCertificate: (t: TestContext, cert: string) => void;
 }
 
 // Check the JavaScript entry's real fixture and callbacks wherever it registers these cases.
