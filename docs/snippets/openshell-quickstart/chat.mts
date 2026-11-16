@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { isIPv4 } from "node:net";
 import type { GatewayClientOptions } from "@openclaw/gateway-client";
 
 function object(value: unknown, message: string): Record<string, unknown> {
@@ -32,7 +33,7 @@ function gatewayAuthority(startup: unknown): string {
     !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(
       hostname,
     ) ||
-    /(^|\.)(?:0x[0-9a-f]*|[0-9]+)$/.test(hostname) ||
+    (/(^|\.)(?:0x[0-9a-f]*|[0-9]+)$/.test(hostname) && !isIPv4(hostname)) ||
     typeof port !== "number" ||
     !Number.isInteger(port) ||
     port < 1 ||

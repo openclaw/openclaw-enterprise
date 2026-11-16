@@ -485,9 +485,7 @@ for (const page of pages.values()) {
     resolvedLinks.set(href, resolveLink(page, href));
     linkCount++;
   }
-  const text = publishedQuickstartPaths(
-    renderComputeMatrixBlocks(page.text, { sourceFile: page.file, root: docs }),
-  );
+  const text = renderComputeMatrixBlocks(page.text, { sourceFile: page.file, root: docs });
   page.html = useGithubHeadingIds(
     renderMdxish(text, md, {
       sourceFile: page.file,

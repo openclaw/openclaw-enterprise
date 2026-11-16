@@ -105,6 +105,11 @@ test("docs build renders every authored page and preserves repository ownership"
   for (const [guide, script] of guides) {
     const html = await readFile(join(root, "dist/docs/guides", guide, "index.html"), "utf8");
     assert.ok(html.includes(`href="/${quickstart}/${script}.mjs"`));
+    if (guide === "deploy/local-setup") {
+      assert.ok(
+        html.replace(/<[^>]+>/g, "").includes(`install -m 600 docs/${quickstart}/${script}.mts`),
+      );
+    }
   }
   for (const script of [
     "configure-installation",
@@ -130,7 +135,13 @@ test("docs build renders every authored page and preserves repository ownership"
   );
   const verifier = `${quickstartAssets}/verify-github-installation.mjs`;
   assert.ok(enrollment.includes(`href="/${verifier}"`));
-  assert.ok(enrollment.replace(/<[^>]+>/g, "").includes(`docs/${verifier}`));
+  const enrollmentText = enrollment.replace(/<[^>]+>/g, "");
+  assert.ok(enrollmentText.includes(`installation_check=docs/${verifier}`));
+  assert.ok(
+    enrollmentText.includes(
+      `installation_check:-docs/${quickstart}/verify-github-installation.mts`,
+    ),
+  );
 
   // Run the shipped staging command from both trees. The published shell must copy
   // the historical download and use the same staged filename when sending a turn.
