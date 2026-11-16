@@ -1,4 +1,4 @@
-import { openShellNamespaceObjects } from "./openshell-workspace-protocol.mjs";
+import { openShellNamespaceObjects } from "./openshell-workspace-protocol.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import assert from "node:assert/strict";
