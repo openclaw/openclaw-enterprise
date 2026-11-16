@@ -18,7 +18,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { storedCredentialSourceConfig } from "../helpers/refusal-text.mjs";
-import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 
 // Tool source types, the Secret field each takes, and a valid config each starts from.
 const SECRET_FIELD = {

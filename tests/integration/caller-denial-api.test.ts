@@ -6,7 +6,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import {
   agentPrincipalDenied,
   callerDenied,
