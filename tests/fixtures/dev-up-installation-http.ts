@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { appendFileSync, readFileSync } from "node:fs";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, METHODS, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createTlsServer } from "node:https";
 import type { Server } from "node:net";
 import { join } from "node:path";
@@ -12,14 +12,16 @@ assert.ok(
   "Dev-up Installation fixture arguments are required",
 );
 
+const routes = ["/api/auth/session", "/namespaces/namespace_fixture", "/installation"] as const;
+
 function respond(log: string, request: IncomingMessage, response: ServerResponse): void {
   const authorized = request.headers["x-api-key"] === serviceKey;
-  appendFileSync(
-    log,
-    JSON.stringify({ method: request.method, url: request.url, authorized }) + "\n",
-  );
+  // Record the observed route without persisting arbitrary request targets or query strings.
+  const url = routes.find((route) => route === request.url) ?? "unrecognized";
+  const method = METHODS.find((verb) => verb === request.method) ?? "unrecognized";
+  appendFileSync(log, JSON.stringify({ method, url, authorized }) + "\n");
   response.setHeader("content-type", "application/json");
-  if (request.url === "/api/auth/session") {
+  if (url === "/api/auth/session") {
     if (scenario === "readiness-blocked") {
       response.writeHead(503);
     }
@@ -27,13 +29,13 @@ function respond(log: string, request: IncomingMessage, response: ServerResponse
     return;
   }
   const meta = { requestId: "req_fixture" };
-  if (request.url === "/namespaces/namespace_fixture" && authorized) {
+  if (url === "/namespaces/namespace_fixture" && authorized) {
     response.end(
       JSON.stringify({ data: { id: "namespace_fixture", name: "default", status: "ready" }, meta }),
     );
     return;
   }
-  if (request.url !== "/installation" || !authorized || scenario === "api-unauthorized") {
+  if (url !== "/installation" || !authorized || scenario === "api-unauthorized") {
     response.writeHead(401);
     response.end(
       JSON.stringify({
