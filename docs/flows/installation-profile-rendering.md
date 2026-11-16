@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-11-16
-last_updated_session: authoring-run/e8039d10-1e3b-41aa-82f2-0d2c709b421f
+last_updated_session: authoring-run/a92d5e93-e5c6-44c1-acf1-b4d08ee54a70
 ---
 
 # Installation Profile Rendering Flow
@@ -126,11 +126,11 @@ and paired metrics selectors. Invalid values fail preflight.
 
 `signInProvider` checks GitHub, Google and OIDC Secret names and keys; client-ID
 and client-secret keys must differ after chart defaults. `dedicatedSecrets`
-preserves chart ordering: ChatGPT admin, database CA, gateway API key, sign-in
-and repository Secrets cannot match `occ-installation-startup`, `occ-database`,
-`occ-auth`, generated Gateway Secrets (`chartGatewaySecretNames`), enabled log
+refuses bootstrap, ChatGPT admin, database CA, gateway API key, sign-in and
+repository Secret collisions with `occ-installation-startup`, `occ-database`,
+`occ-auth`, generated Gateway Secrets (`chartGatewaySecretNames`), enabled
 collector Secrets, or earlier listed Secrets. Only the two public CA Secrets
-may share one; collisions fail preflight.
+may share.
 
 `scripts/render-installation-profile.ts:nodeSelector` checks
 `controlPlane.nodeSelector`, `runtime.nodeSelector` and
@@ -323,6 +323,8 @@ activation, and repository registry creation need separate evidence.
 ## Changelog
 
 - 2026-11-18: Render `presets.includeDefaults` from site input, defaulting to `true`. (accompanying change)
+
+- 2026-11-16 16:10: Reject bootstrap Secret collisions before emitting deployment files. (authoring-run/a92d5e93-e5c6-44c1-acf1-b4d08ee54a70 - 294c801cd)
 
 - 2026-11-16 09:42: Trace the bootstrap credential Secret profile input in the accompanying uncommitted renderer change. (authoring-run/e8039d10-1e3b-41aa-82f2-0d2c709b421f - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
 

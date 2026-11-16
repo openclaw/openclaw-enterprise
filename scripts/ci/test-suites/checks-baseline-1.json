@@ -424,7 +424,10 @@
     },
     {
       "path": "tests/integration/profile-renderer.test.ts",
-      "expectedTests": ["preflight rejects noncanonical SHA-256 image digests"]
+      "expectedTests": [
+        "preflight rejects noncanonical SHA-256 image digests",
+        "preflight refuses bootstrap Secret collisions as fresh Helm does"
+      ]
     },
     {
       "path": "tests/integration/production-keycloak-profile.test.ts",

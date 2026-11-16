@@ -78,6 +78,7 @@ interface ChatGptValues {
   providerCidr: string;
 }
 interface SecretValues {
+  bootstrap: { adminEmail: string; credentials: { secretName: string } };
   database: { caSecretName?: string; caMountPath?: string };
   repositoryCredentials: RepositoryValues;
   backend?: { chatgpt: ChatGptValues };
@@ -104,7 +105,6 @@ interface ProfileValues extends SecretValues {
   installation: { name: string };
   auth: ExternalSignInValues & { baseUrl: string };
   agentNativeAdmin: { enabled: boolean; domain: string; sessionMode?: string };
-  bootstrap: { adminEmail: string; credentials: { secretName: string } };
   database: { cidrs: unknown[]; caSecretName?: string; caKey?: string; caMountPath?: string };
   api: {
     clients: { namespace: string; podLabels: InputRecord }[];
@@ -1573,6 +1573,7 @@ function dedicatedSecrets(
   ]);
   const repository = values.repositoryCredentials;
   const fields: (readonly [string, string | undefined, string?])[] = [
+    ["controlPlane.bootstrapCredentialsSecretName", values.bootstrap.credentials.secretName],
     ...(values.backend?.chatgpt?.enabled
       ? [
           [

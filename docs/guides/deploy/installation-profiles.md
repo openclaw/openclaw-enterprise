@@ -238,7 +238,7 @@ through a shared proxy address. A source-preserving load balancer needs no prese
 
 Client-ID and client-secret Secret keys must differ; an omitted key counts as
 the chart default (`client-id` or `client-secret`).
-As the chart requires, each credential Secret is dedicated: a sign-in
+Each credential Secret is dedicated: `bootstrapCredentialsSecretName`, a sign-in
 `secretName` (default `occ-google-login` or `occ-oidc-login`),
 `gatewayApiKeySecretName`, `databaseCa.secretName` (which may equal
 `repository.publicCaSecretName`), the ChatGPT admin Secret (with
