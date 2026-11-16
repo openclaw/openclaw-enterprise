@@ -11,8 +11,8 @@ The result is `created`, `updated` or `unchanged`. The file is the
 [provision](../../reference/api.md) request body without `requestId`. It holds
 references to Secrets, never Secret values. `name` selects the Agent.
 
-- **No Agent has the name:** `apply` queues first-time provisioning with a new
-  `requestId`. The result is `created`. Check progress with the work ID it
+- **No Agent has the name:** `apply` queues first-time provisioning with a
+  `requestId` derived from the file, so repeating the same file is safe. The result is `created`. Check progress with the work ID it
   prints. Provisioning needs Installation `administer`, and it needs dedicated
   execution on Kubernetes Compute.
 - **An Agent has the name:** `apply` compares the file with the saved
@@ -20,7 +20,8 @@ references to Secrets, never Secret values. `name` selects the Agent.
   `updated`. If nothing changed, it makes no write or deployment, and the result
   is `unchanged`. A `secretBindings` list that the file omits keeps its saved value.
 
-`apply` changes only `configuration` and these Agent fields: `backendId`,
+`apply` refuses a file with an unknown field or without `configuration.values`
+before any write. It changes only `configuration` and these Agent fields: `backendId`,
 `harnessAuth`, `executionMode`, `gatewayManagedMode`, `plugins` and
 `pluginApprovers`. For an existing Agent, `initialWorkspaceFiles`,
 `workspaceDefaultsId`, `nativeAdmin`, `repositoryBindings` and `repositoryAccess`
@@ -29,7 +30,9 @@ settings. The other three apply only when the Agent is created.
 
 Deployment checks the saved Configuration against the Agent. If the deploy fails
 after the save, the error names the cause and the command `occ agent deploy ID`.
-Fix the cause, then run that command. A second `apply` reports `unchanged`,
+Fix the cause, then run that command. If the reply was lost, the error says the
+result is unknown. Check `occ agent revisions ID` for a revision with the saved
+generation before you deploy again. A second `apply` reports `unchanged`,
 because the values are saved.
 
 See the [CLI apply flow](../../flows/cli-agent-apply.md).

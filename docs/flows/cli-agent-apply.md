@@ -1,6 +1,6 @@
 ---
 created: 2026-11-15
-updated: 2026-11-15
+updated: 2026-11-16
 last_updated_session: opencode/agent-apply
 ---
 
@@ -43,31 +43,35 @@ graph TD
 
 `internal/occcli/agent_apply.go:applyAgent`
 
-The CLI refuses a file that has a `requestId` or no `name`. It lists the
+The CLI refuses a file that has a `requestId`, no `name`, an unknown field, or
+no `configuration.values` object. It lists the
 Namespace's Agents and compares `name`. OCC keeps names unique in a Namespace.
 
 ### 2. Create
 
 `internal/occcli/agent_apply.go:provisionAgent`
 
-The CLI adds a random version 4 `requestId` and sends the file to
+The CLI adds a `requestId` derived from the file and sends the file to
 `POST /namespaces/{id}/agents/provision`. OCC answers 202 with the provisioning
-record. Each run sends a new `requestId`, so apply does not make a repeat of a
-lost response safe. Check the Agent list before you run it again.
+record. The same file gives the same `requestId`, so a repeat while creation is
+pending, or after a lost response, replays the request.
 
 ### 3. Update
 
 `internal/occcli/agent_apply.go:updateAgent`
 
-The CLI compares decoded JSON, and counts an empty object as an omitted value.
-It compares only the fields in the file. The saved Configuration is patched with
+The CLI compares decoded JSON, and counts an empty object as an omitted value,
+except `pluginApprovers`: an explicit empty list differs from an omitted one.
+It compares only the fields in the file. Before each write it rereads the Agent
+and stops if another Configuration is bound. The saved Configuration is patched with
 its read `generation`, so a concurrent edit gets a conflict. The Agent patch
 carries only changed fields. Deployment runs once after the saves.
 
 Each call is a separate request. If the Agent patch or deploy fails, the earlier
 saves stay. The error names the next command. A deploy failure leaves the saved
 Configuration unchanged on the next `apply`, so the error asks for
-`occ agent deploy ID`.
+`occ agent deploy ID`. If the deploy reply is lost, the result is unknown, and
+the error says to check `occ agent revisions ID` before deploying again.
 
 ## Debugging and Verification
 
@@ -90,3 +94,4 @@ Configuration unchanged on the next `apply`, so the error asks for
 ## Changelog
 
 - 2026-11-15 00:00: Added the apply flow (opencode/agent-apply - a42a5f120)
+- 2026-11-16 00:00: Addressed review: file validation, request ID reuse, approver list, rebind check (opencode/agent-apply)

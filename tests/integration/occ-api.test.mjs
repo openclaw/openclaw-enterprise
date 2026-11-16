@@ -10103,6 +10103,19 @@ test("occ agent apply deploys an existing Agent only when its file changes", asy
       return true;
     });
     assert.equal(mutations(), mutationsAfter);
+
+    // A misspelled field is refused with a valid change beside it, and nothing is written.
+    await assert.rejects(
+      apply({
+        ...withValues({ agents: { defaults: { model: "openai/gpt-6" } } }),
+        harnessAut: null,
+      }),
+      (error) => {
+        assert.match(error.stderr, /unknown field harnessAut/);
+        return true;
+      },
+    );
+    assert.equal(mutations(), mutationsAfter);
   } finally {
     await app.close();
   }
