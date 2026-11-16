@@ -73,7 +73,7 @@ import {
   providerReadinessFixture,
   supervisorPeerLabels,
 } from "../fixtures/kubernetes-provider-readiness.mjs";
-import { writeSafeKubeconfig, writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
+import { writeSafeKubeconfig, writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import {

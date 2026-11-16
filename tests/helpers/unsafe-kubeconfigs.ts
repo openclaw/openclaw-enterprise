@@ -1,7 +1,29 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { temporaryDirectory } from "./temporary-directory.mjs";
+import type { CleanupRegistrar } from "./console-file-app.ts";
+import { temporaryDirectory } from "./temporary-directory.ts";
+
+type Cluster = { name: string; cluster: { server: string } };
+type Context = { name: string; context: { cluster: string; user: string } };
+type User = { name: string; user: { token: string } };
+
+type Scenario = {
+  name: string;
+  context?: string;
+  contexts?: readonly Context[];
+  clusters?: readonly Cluster[];
+  users?: readonly User[];
+  server?: string;
+  skipTLSVerify?: boolean;
+};
+
+type WrittenKubeconfig = {
+  name: string;
+  kubeconfigPath: string;
+  context: string;
+};
 
 // Kubeconfigs that the official Kubernetes client parses but whose identity or transport a
 // Driver must refuse before contacting the API server: each differs from a safe kubeconfig
@@ -14,7 +36,7 @@ const contextEntry = {
   name: context,
   context: { cluster: "unsafe-fixture-cluster", user: "unsafe-fixture-user" },
 };
-const scenarios = [
+const scenarios: readonly Scenario[] = [
   { name: "unselected-context", context: "missing-context" },
   { name: "duplicate-context", contexts: [contextEntry, contextEntry] },
   {
@@ -47,7 +69,7 @@ const scenarios = [
   { name: "invalid-api-url", server: "not a url" },
 ];
 
-async function writeKubeconfig(directory, scenario) {
+async function writeKubeconfig(directory: string, scenario: Scenario): Promise<WrittenKubeconfig> {
   const kubeconfigPath = join(directory, `${scenario.name}.json`);
   await writeFile(
     kubeconfigPath,
@@ -74,18 +96,16 @@ async function writeKubeconfig(directory, scenario) {
   return { name: scenario.name, kubeconfigPath, context: scenario.context ?? context };
 }
 
-function privateDirectory(t) {
-  return temporaryDirectory(t, "openclaw-unsafe-kubeconfig-");
-}
+const directoryPrefix = "openclaw-unsafe-kubeconfig-";
 
 /**
  * Writes one kubeconfig per unsafe scenario into a private temporary directory that `t`
  * removes afterwards. Returns `{ name, kubeconfigPath, context }` per scenario, where
  * `context` is the context a Driver should be configured to request.
  */
-export async function writeUnsafeKubeconfigs(t) {
-  const directory = await privateDirectory(t);
-  const written = [];
+export async function writeUnsafeKubeconfigs(t: CleanupRegistrar): Promise<WrittenKubeconfig[]> {
+  const directory = await temporaryDirectory(t, directoryPrefix);
+  const written: WrittenKubeconfig[] = [];
   for (const scenario of scenarios) {
     written.push(await writeKubeconfig(directory, scenario));
   }
@@ -96,6 +116,6 @@ export async function writeUnsafeKubeconfigs(t) {
  * Writes the safe kubeconfig every unsafe scenario departs from, as `{ name, kubeconfigPath,
  * context }`. A Driver must accept it and only then fail to reach the unreachable API server.
  */
-export async function writeSafeKubeconfig(t) {
-  return writeKubeconfig(await privateDirectory(t), { name: "safe" });
+export async function writeSafeKubeconfig(t: CleanupRegistrar): Promise<WrittenKubeconfig> {
+  return writeKubeconfig(await temporaryDirectory(t, directoryPrefix), { name: "safe" });
 }
