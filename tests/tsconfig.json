@@ -292,6 +292,7 @@
     "helpers/signin/writer-fence.ts",
     "../scripts/ci/prepared-signin-case.ts",
     "helpers/controlled-tls-origin.ts",
+    "integration/public-github-read-http-wire-cases.ts",
     "integration/public-github-read-socket-capacity-cases.ts",
     "helpers/controlled-tls-origin-scenario.ts",
     "fixtures/plugin-driver-preflight-database-child.ts",

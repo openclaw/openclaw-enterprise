@@ -8,6 +8,10 @@ import { createPublicGithubReadServer } from "../../apps/controller/src/drivers/
 import { selfSigned } from "../helpers/certificates.ts";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import {
+  publicGithubReadNextPage,
+  runPublicGithubReadHttpWireCases,
+} from "./public-github-read-http-wire-cases.ts";
 import { runPublicGithubReadSocketCapacityCases } from "./public-github-read-socket-capacity-cases.ts";
 
 // Request headers a client never finishes, so the reader holds the connection open.
@@ -37,6 +41,18 @@ const request = (url, localAddress) =>
       })
       .once("error", reject);
   });
+/**
+ * @param {string} url
+ * @param {import("node:http").RequestOptions} options
+ * @param {string} body
+ * @returns {Promise<import("node:http").IncomingMessage>}
+ */
+function rawRequest(url, options, body) {
+  return new Promise((resolve, reject) => {
+    http.request(url, options, resolve).once("error", reject).end(body);
+  });
+}
+
 const json = { "content-type": "application/json" };
 // A provider answer that ends a held or ordinary read successfully.
 const ok = (res) => res.writeHead(200, json).end("{}");
@@ -116,8 +132,6 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
   const repo = "/repos/example/project";
   const get = (path = "", options) => fetch(origin + repo + path, options);
   const query = (url) => Object.fromEntries(url.searchParams);
-  // The local page a response's first link names.
-  const linked = (response) => new URL(response.headers.get("link").split(">")[0].slice(1), origin);
   // Each Agent Pod is a separate caller address; loopback aliases stand in for them.
   const from = (address, path, base = origin) => request(base + repo + path, address);
   /** @type {[string, string, string]} */
@@ -157,10 +171,6 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       "another reader should not spend quota during a known denial",
     );
   };
-  const issues = "https://api.github.com/repositories/12/issues?";
-  // A provider listing whose next page is this link.
-  const nextPage = (link) => answer(200, [], { link: `<${link}>; rel="next"` });
-
   await t.test(
     "public pull data and local pagination, then an opaque 404 if visibility changes",
     async () => {
@@ -182,7 +192,7 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       assert.equal(response.headers.get("set-cookie"), null);
       assert.equal((await response.json())[0].number, 7);
       assert.match(response.headers.get("link"), /^<.*>; rel="next"$/);
-      const next = linked(response);
+      const next = publicGithubReadNextPage(response, origin);
       assert.equal(next.origin, origin);
       assert.equal(next.pathname, repo + "/pulls");
       // The next page keeps the original query.
@@ -195,177 +205,18 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       assert.equal(requests, 2, "a repository made private must never be served from a cache");
     },
   );
-  await t.test("issue cursors survive local pagination when earlier issues disappear", async () => {
-    const issued = "opaque+/cursor==";
-    reply = (req, res) => {
-      const url = new URL(req.url, "https://api.github.com");
-      const after = url.searchParams.get("after");
-      if (!url.searchParams.has("page")) {
-        const next = new URL(issues + "per_page=2&page=2&state=open");
-        next.searchParams.set("after", issued);
-        res.writeHead(200, { ...json, link: `<${next}>; rel="next"` });
-        res.end(JSON.stringify([{ number: 1 }, { number: 2 }]));
-      } else {
-        assert.equal(url.searchParams.get("state"), "all");
-        res.writeHead(200, json);
-        // After issue 1 disappears, offset page 2 is empty; the issued cursor still finds issue 3.
-        res.end(JSON.stringify(after === issued ? [{ number: 3 }] : []));
-      }
-    };
-    const numbers = async (response) => (await response.json()).map(({ number }) => number);
-    const first = await get("/issues?state=all&per_page=2");
-    assert.deepEqual(await numbers(first), [1, 2]);
-    const next = linked(first);
-    assert.equal(next.pathname, repo + "/issues");
-    assert.deepEqual(query(next), { per_page: "2", state: "all", page: "2", after: issued });
-    const second = await fetch(next);
-    assert.equal(second.status, 200);
-    assert.deepEqual(await numbers(second), [3]);
-
-    const newer = new URL(issues + "page=3");
-    newer.searchParams.set("before", "next_cursor");
-    nextPage(newer);
-    const replaced = linked(await fetch(next));
-    assert.equal(replaced.searchParams.get("after"), null);
-    assert.equal(replaced.searchParams.get("before"), "next_cursor");
-
-    nextPage("https://api.github.com/repos/example/project/issues?page=2&after=cursor");
-    const named = await fetch(origin + "/repos/Example/Project/issues?state=all");
-    assert.equal(named.status, 200);
-    const namedNext = linked(named);
-    assert.equal(namedNext.pathname, "/repos/Example/Project/issues");
-    assert.equal(namedNext.searchParams.get("after"), "cursor");
-  });
-  await t.test("unsafe issue continuations fail instead of reporting a complete list", async () => {
-    for (const [path, link] of [
-      ...[
-        "page=2&after=invalid%20cursor",
-        "page=2&after=one&after=two",
-        "page=2&after=one&before=two",
-        "page=2&page=3&after=one",
-        "page=2&after=" + "a".repeat(1025),
-        "page=1001&after=one",
-        "after=one",
-        "page=2&after=" + "%2F".repeat(700),
-      ].map((query) => ["/issues?state=all", `<${issues}${query}>; rel="next"`]),
-      ["/issues", `<${issues}page=2>; rel=next`],
-      ["/issues", '<https://unrelated.invalid/repositories/12/issues?page=2>; rel="next"'],
-      ["/pulls", '<https://api.github.com/repositories/12/pulls?page=2&after=cursor>; rel="next"'],
-    ]) {
-      answer(200, [], { link });
-      const response = await get(path);
-      assert.equal(response.status, 502, link);
-      assert.match((await response.json()).message, /incomplete/i);
-    }
-    const before = requests;
-    for (const path of [
-      "/issues?after=bad%20cursor",
-      "/issues?after=one&after=two",
-      "/issues?after=one&before=two",
-      "/issues?after=" + "a".repeat(1025),
-      "/issues/1?after=one",
-      "/pulls?after=one",
-      "/releases?before=one",
-    ]) {
-      assert.equal((await get(path)).status, 400, path);
-    }
-    assert.equal(requests, before);
-  });
-  await t.test("page 1000 succeeds only if the provider has no next page", async () => {
-    answer(200, []);
-    const last = await get("/pulls?page=1000");
-    assert.equal(last.status, 200);
-    assert.equal(last.headers.get("link"), null);
-
-    for (const [path, next] of [
-      ["/pulls?page=1000", "pulls?page=1001"],
-      ["/issues?page=1000", "issues?page=1000&after=cursor"],
-    ]) {
-      nextPage("https://api.github.com/repositories/12/" + next);
-      const incomplete = await get(path);
-      assert.equal(incomplete.status, 502, path);
-      assert.match((await incomplete.json()).message, /incomplete.*1000/i);
-    }
-  });
-  await t.test("a directory at GitHub's entry limit cannot establish completeness", async () => {
-    const entries = (length) =>
-      Array.from({ length }, () => ({ name: "entry", type: "file", size: 0 }));
-    answer(200, entries(999));
-    const belowLimit = await get("/contents");
-    assert.equal(belowLimit.status, 200);
-    assert.equal((await belowLimit.json()).length, 999);
-
-    answer(200, entries(1000));
-    const atLimit = await get("/contents");
-    assert.equal(atLimit.status, 502);
-    assert.match((await atLimit.json()).message, /possibly incomplete.*1000/i);
-  });
-  await t.test(
-    "writes, bodies and alternate routes fail locally; provider redirects are never followed",
-    async () => {
-      const before = requests;
-      const write = await get("/pulls", { method: "POST", body: "{}" });
-      assert.equal(write.status, 405);
-      assert.equal(write.headers.get("allow"), "GET");
-      const withBody = await new Promise((resolve, reject) => {
-        http
-          .request(origin + repo, { headers: { "content-length": "2" } }, resolve)
-          .once("error", reject)
-          .end("{}");
-      });
-      assert.equal(withBody.statusCode, 400);
-      withBody.resume();
-      for (const path of [
-        "?access_token=synthetic",
-        "/pulls?per_page=101",
-        "/contents/%2e%2e%2fprivate",
-        "/contents/file?raw=true",
-        "/pulls?sort=updated&sort=created",
-        "/releases/download/file",
-      ]) {
-        assert.equal((await get(path)).status, 400, path);
-      }
-      assert.equal((await fetch(origin + "/graphql")).status, 400);
-      assert.equal(requests, before);
-      answer(302, {}, { location: "https://unrelated.invalid/redirect" });
-      const redirect = await get();
-      assert.equal(redirect.status, 502);
-      assert.equal(redirect.headers.get("location"), null);
-      assert.equal(requests, before + 1);
+  await runPublicGithubReadHttpWireCases(t, {
+    origin,
+    repo,
+    fetch,
+    get,
+    rawRequest,
+    answer,
+    setReply: (handler) => {
+      reply = handler;
     },
-  );
-  await t.test(
-    "only complete bounded inline files or directory metadata, never download URLs or partial data",
-    async () => {
-      const file = {
-        name: "readme",
-        type: "file",
-        size: 5,
-        encoding: "base64",
-        content: "aGVsbG8=",
-        download_url: "https://unrelated.invalid/download",
-      };
-      answer(200, [file]);
-      assert.deepEqual(await (await get("/contents")).json(), [
-        { name: "readme", size: 5, type: "file" },
-      ]);
-      answer(200, file);
-      const complete = await (await get("/contents/readme?ref=feature%2Fexample")).json();
-      assert.equal(Buffer.from(complete.content, "base64").toString(), "hello");
-      assert.equal(complete.download_url, undefined);
-      for (const [path, status, body, headers = json] of [
-        ["/contents/readme", 413, JSON.stringify({ ...file, size: 1048577 })],
-        ["/contents/readme", 502, JSON.stringify({ ...file, size: 6 })],
-        // The provider closes before the 100 bytes it announced.
-        ["/issues/3", 502, "[7]", { ...json, "content-length": "100", connection: "close" }],
-        // One byte over the 12 MiB response bound.
-        ["/releases/4", 502, Buffer.alloc(12 * 1024 * 1024 + 1)],
-      ]) {
-        reply = (req, res) => res.writeHead(200, headers).end(body);
-        assert.equal((await get(path)).status, status, path);
-      }
-    },
-  );
+    requestCount: () => requests,
+  });
   await t.test(
     "three callers' reads can run; excess fails promptly; quota denial becomes a shared retry time",
     multipleCallers,
