@@ -26,7 +26,7 @@ type RuntimeAsset =
   { path: string; link: string } | { path: string; size: number; mode: number; sha256: string };
 
 // Every OpenClaw patch deploy/runtime/Dockerfile applies, in order, as provenance records it under
-// `patches` (finding 2290). runtime-assets.test.mjs checks this list against the Dockerfile.
+// `patches` (finding 2290). runtime-assets.test.ts checks this list against the Dockerfile.
 // `field` keeps the per-patch provenance names that existed before `patches`.
 const appliedPatches: readonly AppliedPatch[] = [
   {

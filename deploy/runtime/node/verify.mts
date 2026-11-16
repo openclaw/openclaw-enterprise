@@ -2,8 +2,17 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes, webcrypto } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-const source = JSON.parse(readFileSync("/usr/local/share/oce-node/source.json", "utf8"));
-const receipt = JSON.parse(readFileSync("/usr/local/share/oce-node/provenance.json", "utf8"));
+const source: unknown = JSON.parse(readFileSync("/usr/local/share/oce-node/source.json", "utf8"));
+const receipt: unknown = JSON.parse(
+  readFileSync("/usr/local/share/oce-node/provenance.json", "utf8"),
+);
+assert.ok(
+  source && typeof source === "object" && !Array.isArray(source),
+  "Invalid Node source manifest",
+);
+assert.ok("version" in source && typeof source.version === "string", "Invalid Node source version");
+assert.ok("modules" in source && typeof source.modules === "string", "Invalid Node modules ABI");
+assert.ok("napi" in source && typeof source.napi === "string", "Invalid Node API version");
 assert.equal(process.versions.node, source.version);
 assert.equal(process.versions.modules, source.modules);
 assert.equal(process.versions.napi, source.napi);
