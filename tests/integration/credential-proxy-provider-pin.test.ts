@@ -8,27 +8,24 @@ import type {
   CredentialGatewayDriver,
   CredentialSource,
   EgressInstallation,
-  EgressRequest,
 } from "../../packages/contracts/src/index.ts";
 import type {
   OpenClawController,
   PlatformStateStore,
   PlatformUnitOfWork,
 } from "../../packages/occ/src/index.ts";
-import {
-  CredentialProxy,
-  type EgressAuthorityPorts,
-} from "../../packages/occ/src/credential-proxy.ts";
+import { CredentialProxy } from "../../packages/occ/src/credential-proxy.ts";
 import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { staticEgressFixture, syntheticDispatchFixture } from "../helpers/static-egress.mjs";
+import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 
 test("classification diagnostics reject contradictory reports and preserve audit-write refusal", async (t) => {
   // This checks the shared registry's provider and audit ports. The PostgreSQL
   // egress case separately proves signed transport and persisted attribution.
   const f = await syntheticDispatchFixture(t, new EgressSendReceipts(new InMemoryPlatformState()));
-  const ports = f.ports as unknown as EgressAuthorityPorts;
+  const ports = f.ports;
   const peer = await ports.exchangeOwner.verify("synthetic-peer");
   assert.ok(peer);
   const installed = await ports.installation(peer);
@@ -81,7 +78,7 @@ test("classification diagnostics reject contradictory reports and preserve audit
         body: Buffer.from(
           JSON.stringify({ model: "fixture-model", input: "hello", store: !scenario.accept }),
         ),
-      } as unknown as EgressRequest;
+      };
       const reads = f.reads;
       const result = await proxy.resolve(
         "synthetic-peer",
@@ -352,7 +349,7 @@ test("credential exchange refuses a conflicted eligible provider before route fa
     t,
     new EgressSendReceipts(new InMemoryPlatformState()),
   );
-  const ports = synthetic.ports as unknown as EgressAuthorityPorts;
+  const ports = synthetic.ports;
   const syntheticPeer = await ports.exchangeOwner.verify("synthetic-peer");
   assert.ok(syntheticPeer);
   const installed = await ports.installation(syntheticPeer);
@@ -384,7 +381,7 @@ test("credential exchange refuses a conflicted eligible provider before route fa
     "synthetic-peer",
     syntheticPeer.sandboxId,
     {
-      ...(synthetic.request as unknown as EgressRequest),
+      ...synthetic.request,
       bindingId: healthyRoute.binding.binding.id,
     },
     AbortSignal.timeout(5_000),
