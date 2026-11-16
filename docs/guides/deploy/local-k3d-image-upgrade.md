@@ -159,9 +159,10 @@ This procedure keeps the existing Installation and refuses every Installation
 change except the Plugin Driver selection. A release that changes launcher or
 profile Installation values, such as the Gateway and Harness memory sizes, does
 not change an existing installation. Diff `internal/occdev/kubernetes.go`,
-`scripts/render-installation-profile.mjs` and
+`scripts/render-installation-profile.ts` and
 `deploy/examples/production/installation.yaml` between the deployed and candidate
-source. Apply the changes you adopt before or after the upgrade as in
+source (pre-migration releases: deployed `.mjs` implementation versus candidate
+`.ts`). Apply adopted changes as in
 [apply other Installation changes](production-upgrade.md#apply-other-installation-changes),
 with this page's `INSTALLATION`, `VALUES`, kubeconfig, context, release and
 namespace, including for an installation created by `dev-up`. Do not apply with

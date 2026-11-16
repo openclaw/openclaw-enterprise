@@ -20,7 +20,7 @@ import type {
 import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { fixture } from "../fixtures/prepared-repository-git.mjs";
 import { standingGitOrigin } from "../helpers/prepared-standing-git-peer.ts";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(

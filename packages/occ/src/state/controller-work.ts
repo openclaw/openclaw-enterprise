@@ -159,6 +159,12 @@ export function deploymentProgressForWork(
       message =
         "Waiting for the previous version to finish its active work and deliver its results before this version starts.";
       break;
+    case "PLANNED_PREDECESSOR_STOP_YIELDED":
+    case "PLANNED_PREDECESSOR_STOP_PENDING":
+      code = attempt.code;
+      message =
+        "The controller will retry stopping the previous version before this deployment continues.";
+      break;
     case "PREDECESSOR_STOP_YIELDED":
       // Exclusive replacement: the serving version's gateway drains before this one starts.
       code = attempt.code;
@@ -415,7 +421,7 @@ export function validateRuntimeFailureEvidence(value: unknown): RuntimeFailureEv
 
 /**
  * Validates failure data before it is recorded, and again when it is read back. A runtime
- * failure value outside the vocabulary in packages/contracts/src/runtime-failure.mjs is recorded,
+ * failure value outside the vocabulary in packages/contracts/src/runtime-failure.ts is recorded,
  * and read back, as UNRECOGNIZED rather than as served (findings 1660, 1674).
  */
 export function validateFailureData(

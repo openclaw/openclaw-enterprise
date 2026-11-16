@@ -79,7 +79,9 @@ import {
   ActivationPendingError,
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
+  AuditAppendUnavailableError,
   DependencyUnavailableError,
+  PostgresCommitOutcomeUnknownError,
   KubernetesSecretWriteForbiddenError,
   PersistedStateInvalidError,
   SandboxGatewayUnauthorizedError,
@@ -139,6 +141,7 @@ import {
   withYieldingComputeStop,
 } from "./drivers/compute/operation-context.ts";
 import type { OccMetrics, WorkKind, WorkOutcome } from "./metrics/index.ts";
+import { DeploymentTimings } from "./worker/deployment-timing.ts";
 import {
   isStopYieldedCode,
   PredecessorStopYieldedError,
@@ -180,6 +183,7 @@ export interface ControllerWorkerOptions {
   readonly metrics?: OccMetrics;
   readonly pool: PostgresPool & PostgresQueryClient;
   readonly mode?: "development" | "production";
+  readonly controlPlaneAuditEnabled?: boolean;
   readonly drivers?: InstallationRuntimeDrivers;
   readonly computeDriver?: ComputeDriver;
   readonly sandboxDriver?: SandboxDriver;
@@ -248,6 +252,20 @@ const REVISION_KEPT_WITHOUT_GIT_CODES: ReadonlySet<string> = new Set([
 // An active revision's source is already consumed.
 function isCandidateDeployment(claim: ClaimedWork): boolean {
   return claim.idempotencyKey === `agent_revision:${claim.revisionId}:reconcile`;
+}
+
+function isCommittedPredecessorStop(
+  replacement: Readonly<PredecessorReplacement> | undefined,
+  candidateRevisionId: string,
+): replacement is Readonly<PredecessorReplacement> & { readonly stoppingAt: string } {
+  return (
+    replacement?.phase === "stopping" &&
+    replacement.candidateRevisionId === candidateRevisionId &&
+    replacement.executionIdentity !== undefined &&
+    replacement.completionStartedAt !== undefined &&
+    replacement.stoppingAt !== undefined &&
+    replacement.stopCompleted !== true
+  );
 }
 
 // A refused candidate whose stop keeps failing waits on that stop, which can block the serial
@@ -566,6 +584,16 @@ interface DispatchResult {
   readonly authorization?: AuthorizationRequest;
 }
 
+class RevisionPreparationBlocked extends Error {
+  readonly denial: RevisionDispatchResult | undefined;
+
+  constructor(denial?: RevisionDispatchResult) {
+    super("Deployment must recheck current authority before preparation.");
+    this.name = "RevisionPreparationBlocked";
+    this.denial = denial;
+  }
+}
+
 interface RevisionDispatchResult extends DispatchResult {
   /** Terminal preparation requires durable retirement of this exact revision. */
   readonly cleanupFailedPreparation?: true;
@@ -860,18 +888,6 @@ function workOperation(claim: ControllerWork): string {
   return "work.reconcile";
 }
 
-// Worker-local phase timing for one deployment work item. It spans the passes
-// this process observes; a restart or eviction starts a new record.
-interface DeployTiming {
-  passes: number;
-  passStartedAt: number;
-  prepareMs: number;
-  firstUnreadyAt: number | undefined;
-  readinessWaitMs: number | undefined;
-  readyAt: number | undefined;
-}
-
-const MAX_DEPLOY_TIMINGS = 256;
 const SAFE_COMPUTE_FAILURE_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 const SAFE_COMPUTE_FAILURE_STAGE = /^[a-z][a-z0-9_]{0,63}$/;
 const SAFE_COMPUTE_FAILURE_CLASS = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
@@ -916,6 +932,35 @@ function workLogFields(claim: ClaimedWork): {
     attempt: claim.attemptCount,
     operation: workOperation(claim),
   };
+}
+
+function agentWorkLogFields(claim: ClaimedWork) {
+  return {
+    ...workLogFields(claim),
+    namespaceId: claim.namespaceId,
+    agentId: claim.agentId,
+  };
+}
+
+function workerPassErrorCode(error: unknown): string {
+  if (error instanceof WorkClaimLostError) {
+    return "CLAIM_LOST";
+  }
+  if (error instanceof PostgresCommitOutcomeUnknownError) {
+    return "COMMIT_OUTCOME_UNKNOWN";
+  }
+  if (
+    (error instanceof AuditAppendUnavailableError &&
+      error.reasonCode === "AUDIT_CAPACITY_EXCEEDED") ||
+    (error instanceof Error &&
+      "code" in error &&
+      error.code === "53400" &&
+      "constraint" in error &&
+      error.constraint === "control_plane_audit_capacity")
+  ) {
+    return "AUDIT_CAPACITY_EXCEEDED";
+  }
+  return "WORKER_UNAVAILABLE";
 }
 
 function validDriver(driver: ComputeDriver): boolean {
@@ -1246,7 +1291,7 @@ export class ControllerWorker {
     string,
     { readonly stoppedAt: number; readonly restopAfterMs: number }
   >();
-  private readonly deployTimings = new Map<string, DeployTiming>();
+  private readonly deployTimings = new DeploymentTimings();
   /** The last stuck-cleanup cause logged per repository cleanup work item. */
   private readonly repositoryCleanupCauses = new Map<string, string>();
   /**
@@ -1291,6 +1336,7 @@ export class ControllerWorker {
     this.queueOptions = {
       leaseDurationMs: this.leaseDurationMs,
       maxAttempts: this.maxAttempts,
+      controlPlaneAuditEnabled: options.controlPlaneAuditEnabled ?? this.mode === "development",
     };
     this.state = new PostgresPlatformState(options.pool, {
       workQueue: this.queueOptions,
@@ -1645,7 +1691,7 @@ export class ControllerWorker {
         } else {
           this.emit({
             event: "worker.error",
-            code: error instanceof WorkClaimLostError ? "CLAIM_LOST" : "WORKER_UNAVAILABLE",
+            code: workerPassErrorCode(error),
             ...(error instanceof ClaimLeaseLostError
               ? {
                   ...(claimed === undefined ? {} : workLogFields(claimed)),
@@ -2071,21 +2117,10 @@ export class ControllerWorker {
       throw new Error("PLUGIN_DRIVER_MISMATCH");
     }
     this.validateExecutionAdmission(revision);
-    const timing = this.deployTimings.get(claim.idempotencyKey);
-    const started = Date.now();
+    const timing = this.deployTimings.beginPreparation(claim.idempotencyKey);
     try {
       const prepared = await this.prepareRevisionPass(claim, revision, context);
-      if (timing !== undefined) {
-        const now = Date.now();
-        if (!prepared.observation.ready) {
-          timing.firstUnreadyAt ??= now;
-        } else {
-          timing.readyAt = now;
-          if (timing.readinessWaitMs === undefined && timing.firstUnreadyAt !== undefined) {
-            timing.readinessWaitMs = now - timing.firstUnreadyAt;
-          }
-        }
-      }
+      timing?.observeReadiness(prepared.observation);
       return prepared;
     } catch (failure) {
       const error = primaryComputeFailure(failure);
@@ -2093,7 +2128,11 @@ export class ControllerWorker {
       // own claim-loss or interruption record explains it, so there is no Compute failure to
       // describe (finding 1040).
       // A predecessor's stop that yielded is no preparation failure: the candidate is untouched.
-      if (error instanceof WorkClaimLostError || error instanceof ComputeStopYieldedError) {
+      if (
+        error instanceof WorkClaimLostError ||
+        error instanceof ComputeStopYieldedError ||
+        error instanceof RevisionPreparationBlocked
+      ) {
         throw error;
       }
       let diagnostic: ComputePrepareRevisionFailureDiagnostic | undefined;
@@ -2121,9 +2160,7 @@ export class ControllerWorker {
       }
       throw error;
     } finally {
-      if (timing !== undefined) {
-        timing.prepareMs += Date.now() - started;
-      }
+      timing?.finish();
     }
   }
 
@@ -2157,6 +2194,9 @@ export class ControllerWorker {
         ),
       );
       await this.stopPredecessors(claim, earlier);
+      if (earlier.length !== 0 && isCandidateDeployment(claim)) {
+        await this.recheckPreparationAuthority(claim, revision);
+      }
     }
     try {
       return await this.prepareAfterPredecessors(claim, revision, context);
@@ -2347,8 +2387,10 @@ export class ControllerWorker {
       );
       if (
         operation?.predecessorRevisionId === previous.id &&
-        operation.phase === "pre-stop" &&
-        operation.candidateRevisionId !== claim.revisionId
+        operation.candidateRevisionId !== claim.revisionId &&
+        (operation.phase === "pre-stop" ||
+          (operation.completionStartedAt !== undefined &&
+            operation.executionIdentity !== undefined))
       ) {
         throw new WorkClaimLostError();
       }
@@ -2383,6 +2425,30 @@ export class ControllerWorker {
       if (oldest !== undefined) {
         this.stoppedPredecessors.delete(oldest);
       }
+    }
+  }
+
+  private async recheckPreparationAuthority(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<void> {
+    // Stopping predecessors may take minutes. Use the current owner and grant at
+    // the boundary before creating the candidate's runtime.
+    const { namespace, agent } = await this.state.read(async (view) => ({
+      namespace: await view.namespaces.findNamespace(revision.namespaceId),
+      agent: await view.agents.findAgent(revision.namespaceId, revision.agentId),
+    }));
+    if (
+      namespace?.status !== "ready" ||
+      agent?.status !== "active" ||
+      agent.desiredRuntimeState !== "running" ||
+      agent.servicePrincipalId !== revision.servicePrincipalId
+    ) {
+      throw new RevisionPreparationBlocked();
+    }
+    const denied = await this.authorizeRevision(claim, agent, revision);
+    if (denied !== undefined) {
+      throw new RevisionPreparationBlocked(denied);
     }
   }
 
@@ -2679,9 +2745,7 @@ export class ControllerWorker {
     this.reportRepositoryCleanupCause(claim, complete ? undefined : cause);
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: cleanupRevisionId,
       outcome: complete ? "success" : "pending",
       code: complete
@@ -2820,9 +2884,7 @@ export class ControllerWorker {
     }
     this.emit({
       event: "worker.repository-cleanup-warning",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: repositoryCleanupRevisionId(claim),
       code: "REPOSITORY_CLEANUP_STALLED",
       cause,
@@ -2910,7 +2972,11 @@ export class ControllerWorker {
       }
       result = await this.observe(claim, namespace);
     } catch (error) {
-      if (error instanceof WorkClaimLostError) {
+      if (
+        error instanceof WorkClaimLostError ||
+        error instanceof AuditAppendUnavailableError ||
+        error instanceof PostgresCommitOutcomeUnknownError
+      ) {
         throw error;
       }
       result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
@@ -2929,9 +2995,7 @@ export class ControllerWorker {
     this.passOutcome = result.outcome === "succeeded" ? "success" : result.outcome;
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       outcome: this.passOutcome,
       code: result.outcome === "succeeded" ? "PROVISIONING_COMPLETED" : result.code,
       ...(result.outcome === "succeeded" ? { revisionId: result.revisionId } : {}),
@@ -3388,9 +3452,7 @@ export class ControllerWorker {
         this.passOutcome = "pending";
         this.emit({
           event: "worker.completed",
-          ...workLogFields(claim),
-          namespaceId: claim.namespaceId,
-          agentId: claim.agentId,
+          ...agentWorkLogFields(claim),
           outcome: "pending",
           code: "REPOSITORY_CLEANUP_PENDING",
         });
@@ -3429,9 +3491,7 @@ export class ControllerWorker {
         : result.outcome;
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       // `result` is the Driver's classification; `outcome` the queue's decision, so a retry that
       // spent the attempt budget reads `permanent` here, as the hint says (finding 1694).
       result: result.outcome,
@@ -3535,9 +3595,7 @@ export class ControllerWorker {
     }
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: result.revision?.id,
       // As for a deletion: `outcome` is the queue's decision (finding 1694).
       result: result.outcome,
@@ -3897,9 +3955,7 @@ export class ControllerWorker {
     this.passOutcome = terminal(result) ? "permanent" : result.outcome;
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       // `outcome` is the queue's decision; a terminal retry (`permanent` here) has its recovery
       // series queued (finding 1694).
@@ -4357,9 +4413,7 @@ export class ControllerWorker {
     this.passOutcome = "success";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       result: "success",
       outcome: "success",
@@ -4579,64 +4633,19 @@ export class ControllerWorker {
     });
   }
 
-  private beginDeployPass(claim: ClaimedWork): void {
-    // Maintenance, cleanup and stop work are not deployments.
-    if (claim.idempotencyKey !== `agent_revision:${claim.revisionId}:reconcile`) {
-      return;
-    }
-    let timing = this.deployTimings.get(claim.idempotencyKey);
-    if (timing === undefined) {
-      if (this.deployTimings.size >= MAX_DEPLOY_TIMINGS) {
-        this.deployTimings.delete(this.deployTimings.keys().next().value!);
-      }
-      timing = {
-        passes: 0,
-        passStartedAt: 0,
-        prepareMs: 0,
-        firstUnreadyAt: undefined,
-        readinessWaitMs: undefined,
-        readyAt: undefined,
-      };
-      this.deployTimings.set(claim.idempotencyKey, timing);
-    }
-    timing.passes += 1;
-    timing.passStartedAt = Date.now();
-    timing.readyAt = undefined;
-  }
-
-  /**
-   * Phase timing for the deployment pass that is finishing. Milliseconds are
-   * worker wall clock: `durationMs` is this pass, `prepareMs` sums Compute
-   * preparation across passes, `readinessWaitMs` runs from the first unready
-   * observation to the first ready one (or now), `activationMs` runs from this
-   * pass's ready observation to completion, and `elapsedMs` is since admission,
-   * by the database clock (`workAgeMs`).
-   */
   private deployTimingFields(claim: ClaimedWork): Readonly<Record<string, number>> {
-    const timing = this.deployTimings.get(claim.idempotencyKey);
-    if (timing === undefined) {
-      return {};
-    }
-    const now = Date.now();
-    if (this.passOutcome === "success" || this.passOutcome === "permanent") {
-      this.deployTimings.delete(claim.idempotencyKey);
-    }
-    let readinessWaitMs = timing.readinessWaitMs ?? 0;
-    if (timing.readinessWaitMs === undefined && timing.firstUnreadyAt !== undefined) {
-      readinessWaitMs = now - timing.firstUnreadyAt;
-    }
-    return {
-      durationMs: now - timing.passStartedAt,
-      deployPasses: timing.passes,
-      prepareMs: timing.prepareMs,
-      readinessWaitMs,
-      ...(timing.readyAt === undefined ? {} : { activationMs: now - timing.readyAt }),
-      elapsedMs: this.workAgeMs(claim),
-    };
+    return this.deployTimings.completionFields(
+      claim.idempotencyKey,
+      this.passOutcome === "success" || this.passOutcome === "permanent",
+      () => this.workAgeMs(claim),
+    );
   }
 
   private async processRevision(claim: ClaimedWork): Promise<void> {
-    this.beginDeployPass(claim);
+    // Maintenance, cleanup and stop work are not deployments.
+    if (claim.idempotencyKey === `agent_revision:${claim.revisionId}:reconcile`) {
+      this.deployTimings.beginPass(claim.idempotencyKey);
+    }
     let result: RevisionDispatchResult;
     let failureLogFields: Readonly<Record<string, string | number>> | undefined;
     let refusalWaitRead = false;
@@ -4719,6 +4728,9 @@ export class ControllerWorker {
           outcome: "permanent",
           code: "COMPUTE_DRIVER_MISMATCH",
         });
+        return;
+      }
+      if (await this.recoverCommittedPredecessorStop(claim, revision)) {
         return;
       }
       const repositoryWithdrawal =
@@ -5117,7 +5129,8 @@ export class ControllerWorker {
             error instanceof RepositoryCredentialAuthorityError ||
             error instanceof RepositorySessionWithdrawnError ||
             error instanceof ComputeStopYieldedError ||
-            error instanceof ComputePreparationFailedError
+            error instanceof ComputePreparationFailedError ||
+            error instanceof RevisionPreparationBlocked
           ) {
             throw error;
           }
@@ -5153,9 +5166,7 @@ export class ControllerWorker {
             this.passOutcome = "pending";
             this.emit({
               event: "worker.completed",
-              ...workLogFields(claim),
-              namespaceId: claim.namespaceId,
-              agentId: claim.agentId,
+              ...agentWorkLogFields(claim),
               revisionId: revision.id,
               outcome: "pending",
               code,
@@ -5222,9 +5233,7 @@ export class ControllerWorker {
         this.passOutcome = "pending";
         this.emit({
           event: "worker.completed",
-          ...workLogFields(claim),
-          namespaceId: claim.namespaceId,
-          agentId: claim.agentId,
+          ...agentWorkLogFields(claim),
           revisionId: claim.revisionId,
           outcome: "pending",
           code,
@@ -5250,6 +5259,15 @@ export class ControllerWorker {
       }
       if (error instanceof RefusedCandidateStopError) {
         ({ result, logFields: failureLogFields } = error.pending());
+      } else if (error instanceof RevisionPreparationBlocked) {
+        if (error.denial === undefined) {
+          // Re-enter dispatch so its current Stop, deletion or ownership path
+          // handles cleanup and the public result. This does not spend an attempt.
+          await this.queue.defer(claim, { code: "REVISION_LIFECYCLE_CHANGED" }, { delayMs: 1 });
+          this.passOutcome = "pending";
+          return;
+        }
+        result = error.denial;
       } else {
         const dependencyFailure = revisionDependencyFailure(error);
         if (error instanceof ComputePreparationFailedError) {
@@ -5372,9 +5390,7 @@ export class ControllerWorker {
     this.passOutcome = deferred ? "pending" : "success";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: revision.id,
       outcome: this.passOutcome,
       code,
@@ -5483,9 +5499,7 @@ export class ControllerWorker {
       this.passOutcome = "success";
       this.emit({
         event: "worker.completed",
-        ...workLogFields(claim),
-        namespaceId: claim.namespaceId,
-        agentId: claim.agentId,
+        ...agentWorkLogFields(claim),
         revisionId: claim.revisionId,
         result: "success",
         outcome: "success",
@@ -6498,6 +6512,13 @@ export class ControllerWorker {
         return;
       }
     }
+    if (
+      (resolved.outcome === "permanent" ||
+        (resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts)) &&
+      (await this.recoverCommittedPredecessorStop(claim))
+    ) {
+      return;
+    }
     // OCC refused this candidate (its authority, credentials or configuration), so its runtime
     // must not keep serving. A runtime that failed by itself (a held startup failure, the
     // convergence deadline, exhausted retries) stays for diagnosis on its version's Logs tab.
@@ -6760,9 +6781,7 @@ export class ControllerWorker {
       : resolved;
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       result: reported.outcome,
       outcome: reported.outcome,
@@ -6771,6 +6790,131 @@ export class ControllerWorker {
       ...this.deployTimingFields(claim),
       ...stopYieldsField(stopYields),
     });
+  }
+
+  /**
+   * Finish a committed handoff under its deployment claim. A failed or yielded stop defers
+   * this exact operation before any candidate preparation or terminal result.
+   */
+  private async recoverCommittedPredecessorStop(
+    claim: ClaimedWork,
+    candidate?: Readonly<AgentRevision>,
+  ): Promise<boolean> {
+    const { namespaceId, agentId, revisionId } = claim;
+    if (
+      agentId === undefined ||
+      revisionId === undefined ||
+      claim.namespaceTarget !== undefined ||
+      claim.agentTarget !== undefined ||
+      !isCandidateDeployment(claim)
+    ) {
+      return false;
+    }
+    if (candidate !== undefined && this.compute.requiresStoppedPredecessors?.(candidate) !== true) {
+      return false;
+    }
+    // A durable planned stop is required before the locked recovery path.
+    const replacement = await this.state.read((view) =>
+      view.agents.findPredecessorReplacement(namespaceId, agentId),
+    );
+    if (!isCommittedPredecessorStop(replacement, revisionId)) {
+      return false;
+    }
+    const target = await this.state.transactWithQueue(async (unit, queue) => {
+      const agent = await this.lockClaimAgent(unit, claim);
+      const replacement = await unit.agents.findPredecessorReplacement(namespaceId, agentId);
+      if (
+        !isCommittedPredecessorStop(replacement, revisionId) ||
+        replacement.predecessorRevisionId !== agent?.activeRevisionId
+      ) {
+        return undefined;
+      }
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
+      const currentCandidate =
+        candidate ?? (await unit.revisions.findRevision(namespaceId, agentId, revisionId));
+      if (
+        currentCandidate === undefined ||
+        (candidate === undefined &&
+          this.compute.requiresStoppedPredecessors?.(currentCandidate) !== true)
+      ) {
+        return undefined;
+      }
+      const predecessor = await unit.revisions.findRevision(
+        namespaceId,
+        agentId,
+        replacement.predecessorRevisionId,
+      );
+      if (
+        predecessor === undefined ||
+        predecessor.revision >= currentCandidate.revision ||
+        predecessor.compute.id !== this.compute.id ||
+        predecessor.compute.implementation !== this.compute.implementation
+      ) {
+        return undefined;
+      }
+      return { predecessor, stoppingAt: replacement.stoppingAt };
+    }, this.queueOptions);
+    if (target === undefined) {
+      return false;
+    }
+    const { predecessor, stoppingAt } = target;
+    try {
+      if (!this.stoppedRecently(predecessor.id)) {
+        await this.closeRevisionCredentials(claim, predecessor);
+        await this.stopYieldingDrain(claim, predecessor);
+        this.recordStopped(predecessor.id, this.leaseDurationMs);
+      }
+    } catch (error) {
+      if (error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      const code =
+        error instanceof ComputeStopYieldedError
+          ? "PLANNED_PREDECESSOR_STOP_YIELDED"
+          : "PLANNED_PREDECESSOR_STOP_PENDING";
+      await this.queue.defer(claim, { code }, { delayMs: this.stopYieldRecheckMs(claim) });
+      this.passOutcome = "pending";
+      const yields =
+        code === "PLANNED_PREDECESSOR_STOP_YIELDED" ? this.recordStopYield(claim, code) : undefined;
+      if (code === "PLANNED_PREDECESSOR_STOP_PENDING" || yields !== undefined) {
+        this.emit({
+          event: "worker.completed",
+          ...workLogFields(claim),
+          namespaceId: claim.namespaceId,
+          agentId: claim.agentId,
+          revisionId: claim.revisionId,
+          outcome: "pending",
+          code,
+          ...revisionFailureLogFields(error),
+          ...stopYieldsField(yields),
+        });
+      }
+      return true;
+    }
+    await this.state.transactWithQueue(async (unit, queue) => {
+      await this.lockClaimAgent(unit, claim);
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
+      // Admission may have reassigned the same stop. Preserve the new candidate association.
+      await unit.agents.confirmPredecessorStop(
+        predecessor.namespaceId,
+        predecessor.agentId,
+        predecessor.id,
+        stoppingAt,
+      );
+      // Stop or a newer admission can commit during the Driver call. Resume with
+      // fresh lifecycle and authorization reads instead of using the old snapshot.
+      await queue.defer(
+        claim,
+        { code: "PLANNED_PREDECESSOR_STOP_COMPLETED" },
+        { delayMs: 1, recordEvidence: false },
+      );
+    }, this.queueOptions);
+    this.passOutcome = "pending";
+    return true;
   }
 
   /**
@@ -7099,9 +7243,7 @@ export class ControllerWorker {
       this.passOutcome = outcome;
       this.emit({
         event: "worker.completed",
-        ...workLogFields(claim),
-        namespaceId: claim.namespaceId,
-        agentId: claim.agentId,
+        ...agentWorkLogFields(claim),
         revisionId: revision.id,
         outcome,
         code:
@@ -7126,9 +7268,7 @@ export class ControllerWorker {
     this.passOutcome = "success";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: revision.id,
       result: "success",
       outcome: "success",
@@ -7226,9 +7366,7 @@ export class ControllerWorker {
       this.passOutcome = "pending";
       this.emit({
         event: "worker.completed",
-        ...workLogFields(claim),
-        namespaceId: claim.namespaceId,
-        agentId: claim.agentId,
+        ...agentWorkLogFields(claim),
         revisionId: claim.revisionId,
         result: "pending",
         outcome: "pending",
@@ -7241,9 +7379,7 @@ export class ControllerWorker {
       // Like the pointer commit's lost race, this pass committed a retry (finding 1611).
       this.emit({
         event: "worker.completed",
-        ...workLogFields(claim),
-        namespaceId: claim.namespaceId,
-        agentId: claim.agentId,
+        ...agentWorkLogFields(claim),
         revisionId: claim.revisionId,
         result: "retry",
         outcome: "retry",
@@ -7260,9 +7396,7 @@ export class ControllerWorker {
     }
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       result: result.outcome,
       outcome: result.outcome,
@@ -7345,9 +7479,7 @@ export class ControllerWorker {
     this.passOutcome = superseded ? "success" : "permanent";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       result: "pending",
       outcome: "pending",
@@ -7423,9 +7555,7 @@ export class ControllerWorker {
     this.passOutcome = "permanent";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId,
       result: "retry",
       outcome: "retry",
@@ -7522,9 +7652,7 @@ export class ControllerWorker {
     this.passOutcome = "permanent";
     this.emit({
       event: "worker.completed",
-      ...workLogFields(claim),
-      namespaceId: claim.namespaceId,
-      agentId: claim.agentId,
+      ...agentWorkLogFields(claim),
       revisionId: claim.revisionId,
       result: "permanent",
       outcome: "permanent",

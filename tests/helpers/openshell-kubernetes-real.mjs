@@ -18,15 +18,13 @@ import {
   diagnosticDeadlineMs,
   productionGatewayMemoryLimit,
   withinDiagnosticDeadline,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
+import { readCodexPolicyThread } from "./codex-policy-thread-evidence.ts";
 import { runGatewayInstallation } from "./openshell-installation.ts";
 
-import {
-  appServerUrlShape,
-  nativeFailureMarker,
-  observeConnectedOperation,
-  rememberKubectlOutcome,
-} from "./egress-connected-failure.mjs";
+import { parseJson, record } from "./egress-observation-values.ts";
+import { appServerUrlShape, nativeFailureMarker } from "./egress-native-exec-observation.ts";
+import { observeConnectedOperation, rememberKubectlOutcome } from "./egress-connected-failure.ts";
 
 const execute = promisify(execFile);
 const kubectlKillSignal = "SIGKILL";
@@ -232,7 +230,15 @@ export class OpenShellDeploymentFailedError extends Error {
 }
 
 export function waitForOpenShellRevisionActivation(
-  waitFor,
+  /** @type {(description: string | (() => string), read: () => Promise<unknown>) => Promise<unknown>} */ waitFor,
+  /** @type {{
+   *   request: (method: string, path: string) => Promise<{status: number, data: unknown}>,
+   *   agentPath: string,
+   *   revisionId: string,
+   *   workerEvents?: readonly Readonly<Record<string, unknown>>[],
+   *   checkDeploymentBeforeActivation?: boolean,
+   *   reportDeploymentStatusOnTimeout?: boolean,
+   * }} */
   {
     request,
     agentPath,
@@ -352,6 +358,11 @@ export function modelAtCapacityOutcome(error) {
 // condition, not the product's. A turn that had begun a command keeps its unknown outcome and
 // is never run again. Either way an at-capacity failure says so on its first line, since the
 // kubectl failure itself starts with the command line; any other failure is thrown at once.
+/**
+ * @template Result
+ * @param {() => Promise<Result>} turn
+ * @param {{ attempts?: number, firstDelayMs?: number, sleep?: (ms: number) => Promise<unknown>, log?: (message: string) => void }} [options]
+ */
 export async function retryModelAtCapacity(
   turn,
   {
@@ -402,6 +413,7 @@ export function openshellHash(value, length = 12) {
   return sha256Hex(value, length);
 }
 
+/** @param {string} agentId */
 export function openShellAgentName(agentId) {
   return `agent-${openshellHash(agentId)}`;
 }
@@ -410,10 +422,21 @@ export function openShellGatewayName(agentId) {
   return `gateway-${openshellHash(agentId)}`;
 }
 
+/** @param {{agentId: string, id: string}} revision */
 export function openShellRevisionName(revision) {
   return `${openShellAgentName(revision.agentId)}-rev-${openshellHash(revision.id)}`;
 }
 
+/**
+ * @param {string} namespace
+ * @param {{namespaceId: string, agentId: string, id: string}} revision
+ * @param {{apiVersion: string, metadata: {namespace: string, name: string, uid: string, labels?: Record<string, string>}}} sandbox
+ * @param {Required<Pick<import("../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js").V1Pod, "metadata">> &
+ *   {spec: Pick<import("../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js").V1PodSpec,
+ *     "serviceAccountName" | "automountServiceAccountToken" | "volumes">}} pod
+ * @param {string} [profile] Untrusted profile names are rejected by this oracle.
+ * @param {string} [configuredServiceAccountName]
+ */
 export function assertOpenShellHarnessBinding(
   namespace,
   revision,
@@ -917,6 +940,17 @@ export function openShellGatewayNetworkPolicies(namespace, apiPeers) {
   };
 }
 
+/**
+ * @param {Parameters<typeof createRealKubernetesFixture>[0] & {
+ *   codexCommandGraceMs?: number | undefined,
+ *   modelAtCapacityRetry?: Parameters<typeof retryModelAtCapacity>[1],
+ *   openShellGatewayImage?: string | undefined, openShellSandboxImage?: string | undefined,
+ *   openShellSupervisorImage?: string | undefined, openShellRuntimeClass?: string | undefined,
+ *   openShellHelmPath?: string | undefined, openShellHelmChart?: string | undefined,
+ *   openShellWorkspaceHelmChart?: string | undefined, openShellChartVersion?: string | undefined,
+ *   commandTimeoutMs?: number | undefined, signal?: AbortSignal | undefined,
+ * }} options
+ */
 export function createOpenShellKubernetesFixture({
   kubeconfigPath,
   kubernetesContext,
@@ -1199,6 +1233,7 @@ export function createOpenShellKubernetesFixture({
       `--set-string=gateway.networkPolicy.podSelector.app\\.kubernetes\\.io/instance=${instance}`,
     ];
     function installChart(release, chart, values) {
+      assert.ok(openShellHelmPath, "the Gateway installation requires Helm");
       return execute(
         openShellHelmPath,
         [
@@ -2130,15 +2165,15 @@ export function createOpenShellKubernetesFixture({
         modelAtCapacityRetry,
       );
       try {
-        return JSON.parse(output);
+        return parseJson(output);
       } catch (error) {
-        if (commandTimeoutMs !== undefined && gatewayTurn) {
+        if (error instanceof Error && commandTimeoutMs !== undefined && gatewayTurn) {
           rememberKubectlOutcome(error, {
             outcome: "exit",
             exitCode: 0,
             signal: null,
             killed: null,
-            signalAborted: signal?.aborted === true,
+            signalAborted: record(signal).aborted === true,
           });
         }
         throw error;
@@ -2147,11 +2182,20 @@ export function createOpenShellKubernetesFixture({
     return gatewayTurn ? observeConnectedOperation("gateway-codex-exec", run) : run();
   }
 
+  /**
+   * @param {{ namespace: string, gatewayPod: string, threadId: string }} input
+   */
   async function readCodexThreadFromGatewayPod({ namespace, gatewayPod, threadId }) {
     assert.ok(typeof threadId === "string" && threadId.length > 0);
-    return requestCodexFromPod({ namespace, pod: gatewayPod, readThreadId: threadId });
+    const thread = await requestCodexFromPod({
+      namespace,
+      pod: gatewayPod,
+      readThreadId: threadId,
+    });
+    return readCodexPolicyThread(thread, threadId);
   }
 
+  /** @param {{ namespace: string, gatewayPod: string, container?: string | undefined, providerModel?: string | undefined, prompt?: string | undefined, observeFailure?: boolean | undefined, timeoutMs?: number | undefined }} options */
   async function requestCodexTurnFromGatewayPod({
     namespace,
     gatewayPod,

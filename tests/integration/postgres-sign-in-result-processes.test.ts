@@ -10,10 +10,10 @@ import {
   consoleOrigin,
   sessionCookieName,
 } from "../helpers/production-sign-in.mjs";
+import type { ApiInput, AuthorizeRequest } from "../helpers/sign-in-api-process.ts";
 
 type Api = { url: string; authorize(url: string): Promise<string> };
 type Login = { attemptId: string; cookie: string };
-type ApiInput = { databaseUrl: string; recoveryUserId: string; secrets: Record<string, string> };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -34,7 +34,7 @@ async function within<T>(promise: Promise<T>, milliseconds: number, message: str
 }
 
 async function startApi(t: TestContext, input: ApiInput) {
-  const child = fork(new URL("../helpers/sign-in-api-process.mjs", import.meta.url), [], {
+  const child = fork(new URL("../helpers/sign-in-api-process.ts", import.meta.url), [], {
     execArgv: [],
     env: { PATH: process.env.PATH, NODE_NO_WARNINGS: "1" },
     stdio: ["ignore", "pipe", "pipe", "ipc"],
@@ -50,7 +50,7 @@ async function startApi(t: TestContext, input: ApiInput) {
       child.kill("SIGTERM");
     }
     try {
-      const [code, signal] = await within(closed, 15000, "API process did not stop");
+      const [code, signal]: unknown[] = await within(closed, 15000, "API process did not stop");
       assert.equal(code, 0);
       assert.equal(signal, null);
     } catch (error) {
@@ -75,32 +75,32 @@ async function startApi(t: TestContext, input: ApiInput) {
   const [message]: unknown[] = await within(ready, 30000, "API process did not become ready");
   assert.ok(isRecord(message));
   assert.equal(message.type, "ready");
-  assert.equal(message.pid, child.pid);
+  const pid = child.pid;
+  assert.ok(typeof pid === "number");
+  assert.equal(message.pid, pid);
   assert.ok(typeof message.url === "string");
   const authorize = async (url: string) => {
     const id = randomUUID();
-    let listener: (message: unknown) => void;
-    const reply = new Promise<string>((resolve) => {
-      listener = (message) => {
-        if (
-          isRecord(message) &&
-          message.type === "code" &&
-          message.id === id &&
-          typeof message.code === "string"
-        ) {
-          resolve(message.code);
-        }
-      };
-      child.on("message", listener);
-      child.send({ type: "authorize", id, url });
-    });
+    const reply = Promise.withResolvers<string>();
+    const listener = (message: unknown) => {
+      if (
+        isRecord(message) &&
+        message.type === "code" &&
+        message.id === id &&
+        typeof message.code === "string"
+      ) {
+        reply.resolve(message.code);
+      }
+    };
+    child.on("message", listener);
     try {
-      return await within(reply, 10000, "OIDC fixture did not authorize");
+      child.send({ type: "authorize", id, url } satisfies AuthorizeRequest);
+      return await within(reply.promise, 10000, "OIDC fixture did not authorize");
     } finally {
-      child.off("message", listener!);
+      child.off("message", listener);
     }
   };
-  return { url: message.url, pid: child.pid, stop, authorize };
+  return { url: message.url, pid, stop, authorize };
 }
 
 async function request(
@@ -229,8 +229,13 @@ test(
       throw new Error("Sign-in test installation bootstrap failed");
     });
     const pool = testPool(t, { connectionString: databaseUrl });
-    const recoveryUserId = (await pool.query('SELECT id FROM occ."user" WHERE email = $1', [email]))
-      .rows[0].id;
+    const { rows } = await pool.query<{ id: string }>(
+      'SELECT id FROM occ."user" WHERE email = $1',
+      [email],
+    );
+    const [recoveryUser] = rows;
+    assert.ok(recoveryUser);
+    const recoveryUserId = recoveryUser.id;
     const input = { databaseUrl, recoveryUserId, secrets };
     const a = await startApi(t, input);
     const b = await startApi(t, input);

@@ -38,6 +38,7 @@ test(
     let bootstrapJobs: readonly { idempotency_key: string }[] = [];
     let application: Awaited<ReturnType<typeof postgresApp>> | undefined;
     const f = await staticEgressFixture(t, {
+      includeLegacy: true,
       appFactory: async (context, options?: FixtureAppOptions) => {
         assert.ok(options);
         registrations = options.driverConfigurations;
@@ -109,6 +110,35 @@ test(
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const unboundId: unknown = created.data.id;
     assert.ok(typeof unboundId === "string");
+    assert.equal(created.data.egress.adoption, "live", "fresh enrollment stays protected");
+    assert.ok(f.legacySource);
+    assert.equal(f.legacySource.egress, undefined);
+    const legacyBefore = await p.state.read((view) =>
+      view.credentialSources.findCredentialSource(f.namespace.id, f.legacySource.id),
+    );
+    assert.equal(legacyBefore?.driverId, p.controller.selectedDriver("credential_gateway").id);
+    assert.equal(legacyBefore?.state, "ready");
+    assert.equal(legacyBefore?.egress, undefined);
+    assert.equal(
+      await p.state.transact((view) =>
+        view.credentialSources.hasReferences(f.namespace.id, f.legacySource.id),
+      ),
+      false,
+    );
+    const gatewayBefore = structuredClone([...f.providers.entries()]);
+    const effectsBefore = [...f.gatewayEffects];
+    assert.equal(gatewayBefore.length, 1, "only the retained ordinary source has a Gateway copy");
+    const adopted = await f.request("PATCH", `${f.path}/${f.legacySource.id}`, {
+      body: consent,
+    });
+    assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
+    const legacyAfter = await p.state.read((view) =>
+      view.credentialSources.findCredentialSource(f.namespace.id, f.legacySource.id),
+    );
+    assert.equal(legacyAfter?.driverId, legacyBefore?.driverId);
+    assert.deepEqual(legacyAfter?.egress?.key.provider, openAiStaticProviderRef);
+    assert.deepEqual([...f.providers.entries()], gatewayBefore);
+    assert.deepEqual(f.gatewayEffects, effectsBefore);
     assert.equal(
       await p.state.transact((view) =>
         view.credentialSources.hasReferences(f.namespace.id, unboundId),
@@ -356,6 +386,12 @@ test(
     assert.ok(retained.installed);
 
     const cases = [
+      {
+        name: "retained ordinary source refuses re-adoption after retirement",
+        method: "PATCH",
+        url: `${f.path}/${f.legacySource.id}`,
+        body: consent,
+      },
       {
         name: "unbound protected source re-admission PATCH",
         method: "PATCH",

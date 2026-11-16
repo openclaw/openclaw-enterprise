@@ -7,8 +7,8 @@ import { join, resolve } from "node:path";
 import { prepareNativeAdminConfiguration } from "../../apps/controller/src/gateway/native-admin.ts";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { availablePort } from "./available-port.ts";
-import { selectComposeSubnet } from "./compose-network.mjs";
-import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
+import { selectComposeSubnet } from "./compose-network.ts";
+import { createNativePluginAssertions } from "./native-plugin-assertions.ts";
 import { prepareHybridInstallation } from "./qa-hybrid.mjs";
 import { grantQaRepositoryBranch } from "./qa-repository.mjs";
 import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
@@ -19,9 +19,9 @@ import {
   grantQaSecret,
   qaCommandFailureDetail,
   redactedQaTail,
-} from "./qa-secrets.mjs";
+} from "./qa-secrets.ts";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
-import { maskPrivateKeyLines } from "../../scripts/ci/failure-redaction.mjs";
+import { maskPrivateKeyLines } from "../../scripts/ci/failure-redaction.ts";
 
 function execute(command, args, options) {
   const { input, allowExitCodes = [0], timeout = 0, ...rest } = options;
@@ -237,6 +237,11 @@ export async function deployQaAgentAndWait(
     "POST",
     base + "/deploy",
     harnessOverrides === undefined ? undefined : { harnessOverrides },
+    {
+      onMeta({ requestId }) {
+        agent.deployRequestId = requestId;
+      },
+    },
   );
   // A timeout names the deployment's last status and attempt, and how long it had that status
   // (finding 2106: six cells timed out at 600 s with no status).
@@ -574,7 +579,7 @@ export async function createQaInstallation(
       const path = await f.write(`apply-${randomUUID()}.json`, object);
       await f.kubectl("apply", "-f", path);
     },
-    async api(method, path, body) {
+    async api(method, path, body, { onMeta } = {}) {
       const response = await fetch(f.apiUrl + path, {
         method,
         headers: {
@@ -597,7 +602,11 @@ export async function createQaInstallation(
         }
       }
       assert.ok(response.ok, `OCC ${method} ${path}: HTTP ${response.status} (${code})`);
-      return text ? JSON.parse(text).data : undefined;
+      if (text) {
+        const { data, meta } = JSON.parse(text);
+        onMeta?.(meta);
+        return data;
+      }
     },
     async compose(...args) {
       return f.run("docker", [

@@ -17,8 +17,10 @@ custody and retirement. Provider adapters own provider-specific scope, injection
 and response rules. The proxy enforces requests and obtains eligible material;
 it does not run a credential renewal loop.
 
-Credential Proxy does not replace every Credential Gateway. Existing static
-Gateway-owned attachments retain their own delivery path.
+Selecting Credential Proxy does not adopt ordinary sources into protected delivery.
+New and existing ordinary sources use Credential Gateway. Protected sources and
+repository bindings require Proxy admission; an Agent with neither needs no Proxy
+plan. An unavailable Proxy never permits Gateway fallback for a protected source.
 
 ## Interface
 

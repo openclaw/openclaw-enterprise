@@ -146,6 +146,7 @@ export function bindPlatformUnitOfWork(
     agents: bindRepository(repositories.agents, lifetime, [
       "findPredecessorReplacement",
       "recordPredecessorReplacement",
+      "confirmPredecessorStop",
       "findAgentForBrowsing",
       "listAgentsForBrowsing",
       "findAgent",

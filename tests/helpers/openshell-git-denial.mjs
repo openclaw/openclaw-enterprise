@@ -20,7 +20,7 @@ export function gitHttp403Command(git) {
       '*"returned error: 403"*|*"response 403"*) exit 0 ;; ' +
       '*"Could not resolve host"*|*"Could not resolve proxy"*) exit 10 ;; ' +
       '*"Failed to connect"*|*"Could not connect to server"*) exit 11 ;; ' +
-      '*"SSL certificate problem"*|*"server certificate verification failed"*) exit 12 ;; ' +
+      '*"SSL certificate problem"*|*"SSL certificate OpenSSL verify result:"*|*"server certificate verification failed"*) exit 12 ;; ' +
       '*"returned error: "*|*"HTTP code "*) exit 13 ;; ' +
       '*"Operation timed out"*|*"Connection timed out"*|*"Operation too slow"*) exit 14 ;; ' +
       "*) exit 2 ;; esac",

@@ -288,7 +288,7 @@ Run the renderer from the repository root with Node.js satisfying `engines.node`
 admin, run `pnpm install` first: the public suffix check uses the API's list.
 
 ```sh
-node scripts/render-installation-profile.mjs \
+node scripts/render-installation-profile.ts \
   --profile codex \
   --input .build/profile-inputs/codex.json \
   --out-dir .build/profile-renders/codex

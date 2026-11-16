@@ -26,6 +26,10 @@ async function keyArguments(keyPath, keyPem) {
 
 // A self-signed server (or client) certificate in `directory`, as `<name>.key` and
 // `<name>.crt`. Returns the PEM texts and their paths.
+/**
+ * @param {string} directory
+ * @param {{name?: string, commonName?: string, subjectAltName?: string, keyPem?: string, days?: number}} [options]
+ */
 export async function selfSigned(
   directory,
   {
@@ -161,6 +165,19 @@ export async function signedLeaf(
 
 // A CA and a server leaf it signed, in `directory` as ca-key.pem, ca.pem, key.pem and
 // cert.pem. `run` and file ownership as for certificateAuthority.
+/**
+ * @param {string} directory
+ * @param {{
+ *   caName: string,
+ *   commonName?: string | undefined,
+ *   subject?: string | undefined,
+ *   subjectAltName?: string | undefined,
+ *   caKeyPem?: string | undefined,
+ *   leafKeyPem?: string | undefined,
+ *   days?: number,
+ *   run?: (command: string, args: string[]) => Promise<unknown>,
+ * }} options
+ */
 export async function caAndLeaf(
   directory,
   { caName, commonName, subject, subjectAltName, caKeyPem, leafKeyPem, days = 2, run = execute },

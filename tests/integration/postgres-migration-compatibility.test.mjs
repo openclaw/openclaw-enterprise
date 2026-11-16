@@ -8,22 +8,27 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import {
+  assertLegacyAgentMigrationRefusal,
+  assertLegacyControllerWorkBackfill,
+} from "./postgres-historical-agent-migration-cases.ts";
 import pg from "pg";
 import {
   assertCredentialSchemaPrivileges,
   assertInjectedMigrationRollback,
   retainGatewaySourcesAcrossProxyAdmission,
 } from "../helpers/credential-source-owner-upgrade.ts";
-import { request, startController } from "../helpers/postgres-platform-state.mjs";
+import { request, startController } from "../helpers/postgres-platform-state.ts";
 import { assertPopulatedUpgradeReturn } from "../helpers/populated-upgrade-return.ts";
 import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.mjs";
 import {
   catalogDigest,
   initialSchemaState,
   migrationCatalog,
-} from "../../scripts/migration-catalog.mjs";
+} from "../../scripts/migration-catalog.ts";
 import { migrateWithHistory } from "../../scripts/migration-history.mjs";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
+import { PostgresWorkQueue } from "../../packages/occ/src/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   assertReleasedControllerCompatibility,
@@ -305,498 +310,21 @@ test(
   },
 );
 
+const historicalMigrationDependencies = { ownedPostgres, runCommand, migrationsDirectory };
+
 for (const legacyState of ["active_runtime", "harness_revision", "harness_account"]) {
   test(
     `Migration rejects legacy ${legacyState} state without changing persisted rows`,
     requiresOwnedPostgres,
-    async (context) => {
-      const fixture = await ownedPostgres();
-      const database = `openclaw_ci_agent_stop_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
-      let pool;
-      context.after(async () => {
-        try {
-          if (pool !== undefined) {
-            await pool.end();
-          }
-        } finally {
-          await runCommand(fixture, "docker", [
-            ...fixture.composeArgs,
-            "psql",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-U",
-            "postgres",
-            "-d",
-            "postgres",
-            "-c",
-            `DROP DATABASE IF EXISTS ${database} WITH (FORCE)`,
-          ]);
-        }
-      });
-
-      await runCommand(fixture, "docker", [
-        ...fixture.composeArgs,
-        "psql",
-        "-v",
-        "ON_ERROR_STOP=1",
-        "-U",
-        "postgres",
-        "-d",
-        "postgres",
-        "-c",
-        `CREATE DATABASE ${database}`,
-      ]);
-      await runCommand(fixture, "docker", [
-        ...fixture.composeArgs,
-        "psql",
-        "-v",
-        "ON_ERROR_STOP=1",
-        "-U",
-        "postgres",
-        "-d",
-        database,
-        "-c",
-        `GRANT CREATE ON DATABASE ${database} TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
-      ]);
-
-      const migrationUrl = new URL(fixture.migrationUrl);
-      migrationUrl.pathname = `/${database}`;
-      pool = new pg.Pool({ connectionString: migrationUrl.toString(), max: 1 });
-      const migrationFiles = (await readdir(migrationsDirectory))
-        .filter(
-          (name) =>
-            /^\d{4}_.+\.sql$/.test(name) &&
-            name <
-              (legacyState === "active_runtime"
-                ? "0016_agent_stop.sql"
-                : "0017_harness_auth_binding.sql"),
-        )
-        .sort();
-      assert.equal(
-        migrationFiles.at(-1),
-        legacyState === "active_runtime" ? "0015_agent_plugins.sql" : "0016_agent_stop.sql",
-      );
-      for (const name of migrationFiles) {
-        await pool.query(await readFile(join(migrationsDirectory, name), "utf8"));
-      }
-
-      const namespaceId = `ns_${randomUUID()}`;
-      const configurationId = `cfg_${randomUUID()}`;
-      const agentId = `agt_${randomUUID()}`;
-      const revisionId = `rev_${randomUUID()}`;
-      const servicePrincipalId = `service-agent-${agentId}`;
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        await client.query(
-          `INSERT INTO occ.namespaces (id, name, status, created_at)
-         VALUES ($1, $2, 'ready', clock_timestamp())`,
-          [namespaceId, `active-agent-${randomUUID()}`],
-        );
-        await client.query(
-          `INSERT INTO occ.configurations (id, namespace_id, kind, generation, created_at)
-         VALUES ($1, $2, 'agent', 1, clock_timestamp())`,
-          [configurationId, namespaceId],
-        );
-        await client.query(
-          `INSERT INTO occ.iam_identities (id, namespace_id, agent_id, kind)
-         VALUES ($1, $2, $3, 'service_principal')`,
-          [servicePrincipalId, namespaceId, agentId],
-        );
-        await client.query(
-          `INSERT INTO occ.agents
-           (id, namespace_id, name, configuration_id, backend_id, execution_mode,
-            service_principal_id, created_at)
-         VALUES ($1, $2, $3, $4, NULL, 'dedicated', $5, clock_timestamp())`,
-          [
-            agentId,
-            namespaceId,
-            `active-agent-${randomUUID()}`,
-            configurationId,
-            servicePrincipalId,
-          ],
-        );
-        if (legacyState !== "harness_account") {
-          await client.query(
-            `INSERT INTO occ.agent_revisions
-           (id, namespace_id, agent_id, revision_number, admitted_spec, backend_id, admitted_at)
-         VALUES ($1, $2, $3, 1, $4, NULL, clock_timestamp())`,
-            [
-              revisionId,
-              namespaceId,
-              agentId,
-              {
-                configuration_id: configurationId,
-                configuration_kind: "agent",
-                configuration_generation: 1,
-                draft_spec: {},
-                harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
-                compute: { id: "kubernetes", implementation: "test" },
-              },
-            ],
-          );
-        }
-        if (legacyState === "active_runtime") {
-          await client.query(
-            "UPDATE occ.agents SET active_revision_id = $1 WHERE namespace_id = $2 AND id = $3",
-            [revisionId, namespaceId, agentId],
-          );
-        }
-        if (legacyState === "harness_account") {
-          const serviceAccountId = `sa_${randomUUID()}`;
-          await client.query(
-            "INSERT INTO occ.service_accounts (id, namespace_id, name) VALUES ($1, $2, $3)",
-            [serviceAccountId, namespaceId, "legacy account"],
-          );
-          await client.query("UPDATE occ.agents SET service_account_id = $1 WHERE id = $2", [
-            serviceAccountId,
-            agentId,
-          ]);
-        }
-        await client.query("COMMIT");
-      } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-      } finally {
-        client.release();
-      }
-
-      const agentStopMigration = await readFile(
-        join(
-          migrationsDirectory,
-          legacyState === "active_runtime"
-            ? "0016_agent_stop.sql"
-            : "0017_harness_auth_binding.sql",
-        ),
-        "utf8",
-      );
-      await assert.rejects(pool.query(agentStopMigration), ({ code, message }) =>
-        legacyState === "active_runtime"
-          ? code === "55000" &&
-            message ===
-              "Agent stop migration requires active revisions and pending revision work to be removed before cutover"
-          : code === "23514" &&
-            message.startsWith("Legacy Agent authentication state is unsupported"),
-      );
-      const unchanged = await pool.query(
-        `SELECT active_revision_id,
-              EXISTS (
-                SELECT 1 FROM information_schema.columns
-                WHERE table_schema = 'occ' AND table_name = 'agents'
-                  AND column_name = $3
-              ) AS migration_started
-       FROM occ.agents WHERE namespace_id = $1 AND id = $2`,
-        [
-          namespaceId,
-          agentId,
-          legacyState === "active_runtime" ? "desired_runtime_state" : "harness_auth",
-        ],
-      );
-      assert.deepEqual(unchanged.rows, [
-        {
-          active_revision_id: legacyState === "active_runtime" ? revisionId : null,
-          migration_started: false,
-        },
-      ]);
-    },
+    (context) =>
+      assertLegacyAgentMigrationRefusal(context, historicalMigrationDependencies, legacyState),
   );
 }
 
 test(
   "Migration backfills legacy terminal controller work from durable audit evidence",
   requiresOwnedPostgres,
-  async (context) => {
-    const fixture = await ownedPostgres();
-    const database = `openclaw_ci_work_outcome_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
-    let pool;
-    context.after(async () => {
-      try {
-        if (pool !== undefined) {
-          await pool.end();
-        }
-      } finally {
-        await runCommand(fixture, "docker", [
-          ...fixture.composeArgs,
-          "psql",
-          "-v",
-          "ON_ERROR_STOP=1",
-          "-U",
-          "postgres",
-          "-d",
-          "postgres",
-          "-c",
-          `DROP DATABASE IF EXISTS ${database} WITH (FORCE)`,
-        ]);
-      }
-    });
-
-    await runCommand(fixture, "docker", [
-      ...fixture.composeArgs,
-      "psql",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-U",
-      "postgres",
-      "-d",
-      "postgres",
-      "-c",
-      `CREATE DATABASE ${database}`,
-    ]);
-    await runCommand(fixture, "docker", [
-      ...fixture.composeArgs,
-      "psql",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-U",
-      "postgres",
-      "-d",
-      database,
-      "-c",
-      `GRANT CREATE ON DATABASE ${database} TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
-    ]);
-
-    const migrationUrl = new URL(fixture.migrationUrl);
-    migrationUrl.pathname = `/${database}`;
-    pool = new pg.Pool({ connectionString: migrationUrl.toString(), max: 1 });
-    const migrationFiles = (await readdir(migrationsDirectory))
-      .filter(
-        (name) =>
-          /^\d{4}_.+\.sql$/.test(name) && name < "0019_controller_work_terminal_outcome.sql",
-      )
-      .sort();
-    assert.equal(migrationFiles.at(-1), "0018_runtime_harness_auth.sql");
-    for (const name of migrationFiles) {
-      await pool.query(await readFile(join(migrationsDirectory, name), "utf8"));
-    }
-
-    const namespaceId = `ns_${randomUUID()}`;
-    const configurationId = `cfg_${randomUUID()}`;
-    const firstAgentId = `agt_${randomUUID()}`;
-    const secondAgentId = `agt_${randomUUID()}`;
-    const firstRevisionId = `rev_${randomUUID()}`;
-    const secondRevisionId = `rev_${randomUUID()}`;
-    const failedRevisionId = `rev_${randomUUID()}`;
-    const actorId = "legacy-worker";
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      await client.query(
-        `INSERT INTO occ.namespaces (id, name, status, created_at)
-         VALUES ($1, $2, 'ready', '2026-09-20T00:00:00Z'::timestamptz)`,
-        [namespaceId, `terminal-work-${randomUUID()}`],
-      );
-      await client.query(
-        `INSERT INTO occ.configurations (id, namespace_id, kind, generation, created_at)
-         VALUES ($1, $2, 'agent', 1, '2026-09-20T00:00:00Z'::timestamptz)`,
-        [configurationId, namespaceId],
-      );
-
-      for (const agentId of [firstAgentId, secondAgentId]) {
-        await client.query(
-          `INSERT INTO occ.iam_identities (id, namespace_id, agent_id, kind)
-           VALUES ($1, $2, $3, 'service_principal')`,
-          [`service-agent-${agentId}`, namespaceId, agentId],
-        );
-        await client.query(
-          `INSERT INTO occ.agents
-             (id, namespace_id, name, configuration_id, backend_id, execution_mode,
-              service_principal_id, created_at)
-           VALUES ($1, $2, $3, $4, NULL, 'dedicated', $5, '2026-09-20T00:00:00Z'::timestamptz)`,
-          [
-            agentId,
-            namespaceId,
-            `agent-${agentId.slice("agt_".length, "agt_".length + 8)}`,
-            configurationId,
-            `service-agent-${agentId}`,
-          ],
-        );
-      }
-
-      const admittedSpec = {
-        configuration_id: configurationId,
-        configuration_kind: "agent",
-        configuration_generation: 1,
-        draft_spec: {},
-        harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
-        harness_auth: { method: "runtime" },
-        compute: { id: "kubernetes", implementation: "test" },
-      };
-      for (const [agentId, revisionId, revisionNumber] of [
-        [firstAgentId, firstRevisionId, 1],
-        [firstAgentId, secondRevisionId, 2],
-        [secondAgentId, failedRevisionId, 1],
-      ]) {
-        await client.query(
-          `INSERT INTO occ.agent_revisions
-             (id, namespace_id, agent_id, revision_number, admitted_spec, backend_id, admitted_at)
-           VALUES ($1, $2, $3, $4, $5, NULL, '2026-09-20T00:00:00Z'::timestamptz)`,
-          [revisionId, namespaceId, agentId, revisionNumber, admittedSpec],
-        );
-      }
-      await client.query("UPDATE occ.agents SET active_revision_id = $1 WHERE id = $2", [
-        secondRevisionId,
-        firstAgentId,
-      ]);
-
-      const workRows = [
-        ["legacy-revision-activated", firstAgentId, firstRevisionId, null, "succeeded", 2],
-        [
-          "legacy-revision-without-activation",
-          firstAgentId,
-          secondRevisionId,
-          null,
-          "succeeded",
-          3,
-        ],
-        ["legacy-namespace-reconciled", null, null, "ready", "succeeded", 1],
-        ["legacy-revision-failed", secondAgentId, failedRevisionId, null, "failed_permanent", 4],
-        ["legacy-revision-unknown", secondAgentId, failedRevisionId, null, "failed_permanent", 5],
-      ];
-      for (const [key, agentId, revisionId, namespaceTarget, state, attemptCount] of workRows) {
-        await client.query(
-          `INSERT INTO occ.controller_work
-             (idempotency_key, namespace_id, agent_id, revision_id, actor_id,
-              namespace_target, state, available_at, attempt_count, completed_at,
-              created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7,
-             '2026-09-20T00:00:00Z'::timestamptz, $8,
-             '2026-09-20T00:01:00Z'::timestamptz,
-             '2026-09-20T00:00:00Z'::timestamptz,
-             '2026-09-20T00:01:00Z'::timestamptz)`,
-          [key, namespaceId, agentId, revisionId, actorId, namespaceTarget, state, attemptCount],
-        );
-      }
-      await client.query(
-        `INSERT INTO occ.controller_work
-           (idempotency_key, namespace_id, actor_id, namespace_target, state,
-            available_at, attempt_count, created_at, updated_at)
-         VALUES ('legacy-namespace-pending', $1, $2, 'ready', 'queued',
-           '2026-09-20T00:00:00Z'::timestamptz, 0,
-           '2026-09-20T00:00:00Z'::timestamptz,
-           '2026-09-20T00:00:00Z'::timestamptz)`,
-        [namespaceId, actorId],
-      );
-
-      await client.query(
-        `INSERT INTO occ.audit_events
-           (id, occurred_at, kind, actor_id, action, namespace_id,
-            resource_kind, resource_id, outcome, details)
-         VALUES ($1, '2026-09-20T00:00:30Z'::timestamptz, 'mutation', $2,
-           'openclaw.agents.lifecycle.activate', $3, 'agent_revision', $4, 'success', NULL)`,
-        [`aud_${randomUUID()}`, actorId, namespaceId, firstRevisionId],
-      );
-
-      const reconcileRows = [
-        [
-          "2026-09-20T00:01:00.100Z",
-          "agent_revision",
-          secondRevisionId,
-          "success",
-          "RECONCILE_SUCCEEDED",
-          3,
-        ],
-        ["2026-09-20T00:01:00.200Z", "namespace", namespaceId, "success", "RECONCILE_SUCCEEDED", 1],
-        [
-          "2026-09-20T00:01:00.300Z",
-          "agent_revision",
-          failedRevisionId,
-          "failure",
-          "CONVERGENCE_DEADLINE_EXCEEDED",
-          4,
-        ],
-      ];
-      for (const [
-        occurredAt,
-        resourceKind,
-        resourceId,
-        outcome,
-        reasonCode,
-        attemptCount,
-      ] of reconcileRows) {
-        await client.query(
-          `INSERT INTO occ.audit_events
-             (id, occurred_at, kind, actor_id, action, namespace_id,
-              resource_kind, resource_id, outcome, details)
-           VALUES ($1, $2::timestamptz, 'mutation', $3, 'reconcile', $4,
-             $5, $6, $7, jsonb_build_object('reasonCode', $8::text, 'attemptCount', $9::integer))`,
-          [
-            `aud_${randomUUID()}`,
-            occurredAt,
-            actorId,
-            namespaceId,
-            resourceKind,
-            resourceId,
-            outcome,
-            reasonCode,
-            attemptCount,
-          ],
-        );
-      }
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
-
-    await pool.query(
-      await readFile(
-        join(migrationsDirectory, "0019_controller_work_terminal_outcome.sql"),
-        "utf8",
-      ),
-    );
-    const migrated = await pool.query(
-      `SELECT idempotency_key, state, completed_at IS NULL AS completed_at_is_null,
-              reason_code, result_data
-       FROM occ.controller_work
-       ORDER BY idempotency_key`,
-    );
-    assert.deepEqual(migrated.rows, [
-      {
-        idempotency_key: "legacy-namespace-pending",
-        state: "queued",
-        completed_at_is_null: true,
-        reason_code: null,
-        result_data: null,
-      },
-      {
-        idempotency_key: "legacy-namespace-reconciled",
-        state: "succeeded",
-        completed_at_is_null: false,
-        reason_code: "RECONCILE_SUCCEEDED",
-        result_data: null,
-      },
-      {
-        idempotency_key: "legacy-revision-activated",
-        state: "succeeded",
-        completed_at_is_null: false,
-        reason_code: "REVISION_ACTIVATED",
-        result_data: null,
-      },
-      {
-        idempotency_key: "legacy-revision-failed",
-        state: "failed_permanent",
-        completed_at_is_null: false,
-        reason_code: "CONVERGENCE_DEADLINE_EXCEEDED",
-        result_data: null,
-      },
-      {
-        idempotency_key: "legacy-revision-unknown",
-        state: "failed_permanent",
-        completed_at_is_null: false,
-        reason_code: "LEGACY_OUTCOME_UNKNOWN",
-        result_data: null,
-      },
-      {
-        idempotency_key: "legacy-revision-without-activation",
-        state: "succeeded",
-        completed_at_is_null: false,
-        reason_code: "RECONCILE_SUCCEEDED",
-        result_data: null,
-      },
-    ]);
-  },
+  (context) => assertLegacyControllerWorkBackfill(context, historicalMigrationDependencies),
 );
 
 test(
@@ -1406,6 +934,7 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
       ["occ.hold_account_administration_policy(text)", true],
+      ["occ.hold_agent_audit_policy(text)", true],
       ["occ.record_repository_standing_execution(text,text,text,text,text)", true],
       ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
@@ -1969,7 +1498,7 @@ async function canonicalData(db) {
       "gateway_managed_mode",
     ],
     agent_revisions: ["gateway_managed_mode"],
-    controller_work: ["work_kind"],
+    controller_work: ["work_kind", "audit_attempt_id"],
   };
   const hasPresets =
     (await db.app.query("SELECT to_regclass('occ.presets') AS relation")).rows[0].relation !== null;
@@ -2003,6 +1532,164 @@ async function canonicalData(db) {
   }
   return result;
 }
+
+test(
+  "Canonical migration preserves pending SandboxPolicy custody across the published 0076 and 0077 predecessors",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    for (const [prefix, history] of [
+      [76, "preControlPlaneAudit"],
+      [77, "prePendingSandboxPolicyApplication"],
+      [78, "prePredecessorReplacement"],
+      [79, "preRevisionRuntimeInputs"],
+    ]) {
+      await context.test(`populated canonical ${prefix}`, async (child) => {
+        const db = await historyDatabase(child, fixture, "pending_policy", { prefix });
+        const namespace = `ns_${randomUUID()}`;
+        const { agent, revision } = await seedCanonicalAgent(db, namespace, {
+          computeAdmission: true,
+          executionAdmission: true,
+          harnessSettings: true,
+        });
+        const applicationId = randomUUID();
+        const application = {
+          id: applicationId,
+          revisionId: revision,
+          policyVersion: 1,
+          snapshot: {
+            driverId: "migration-fixture",
+            implementation: "test",
+            version: 1,
+            defaults: {},
+            additions: [],
+          },
+          state: "pending",
+          requestedBy: "migration-fixture",
+          requestedAt: new Date().toISOString(),
+        };
+        const workKey = `agent:${agent}:reconcile:sandbox_policy:${applicationId}`;
+        // Persist the same policy/queue ownership shape used by normal application admission.
+        await db.app.query("BEGIN");
+        try {
+          await db.app.query(
+            "UPDATE occ.sandbox_policies SET document=document || jsonb_build_object('application',$1::jsonb) WHERE agent_id=$2",
+            [application, agent],
+          );
+          await new PostgresWorkQueue(db.app).enqueue({
+            idempotencyKey: workKey,
+            namespaceId: namespace,
+            agentId: agent,
+            agentTarget: "sandbox_policy",
+            actorId: application.requestedBy,
+          });
+          await db.app.query("COMMIT");
+        } catch (error) {
+          await db.app.query("ROLLBACK");
+          throw error;
+        }
+        const custody = async () => ({
+          policy: (
+            await db.app.query("SELECT * FROM occ.sandbox_policies WHERE agent_id=$1", [agent])
+          ).rows,
+          work: (
+            await db.app.query("SELECT * FROM occ.controller_work WHERE idempotency_key=$1", [
+              workKey,
+            ])
+          ).rows,
+          audit: (
+            await db.app.query("SELECT * FROM occ.audit_events WHERE namespace_id=$1 ORDER BY id", [
+              namespace,
+            ])
+          ).rows,
+        });
+        const binding = async () =>
+          (
+            await db.migrator
+              .query(`SELECT p.oid,pg_get_userbyid(p.proowner) AS owner,p.proacl::text AS acl,
+        t.oid AS trigger_oid,t.tgfoid,pg_get_triggerdef(t.oid) AS trigger_definition
+        FROM pg_proc p JOIN pg_trigger t ON t.tgfoid=p.oid
+        WHERE p.oid='occ.guard_sandbox_policy_update()'::regprocedure AND NOT t.tgisinternal`)
+          ).rows;
+        const before = await custody();
+        const beforeBinding = await binding();
+        const receipts = await historyReceipts(db.migrator);
+        assert.equal(receipts.length, prefix);
+        assert.equal(before.policy[0].document.application.state, "pending");
+        assert.equal(before.work[0].state, "queued");
+        assert.deepEqual(await runHistoryCommand(db, "production", "--check"), {
+          ok: true,
+          history,
+        });
+        assert.deepEqual(await runHistoryCommand(db, "production", "--require-current"), {
+          ok: false,
+          code: "MIGRATION_HISTORY_PENDING",
+        });
+        assert.deepEqual(await custody(), before);
+        assert.deepEqual(await runHistoryCommand(db, "production"), {
+          ok: true,
+          history,
+        });
+        await assertCompletedHistory(db, receipts);
+        // Public 0077 adds the audit-attempt column without changing queued work.
+        const upgradedCustody = {
+          ...before,
+          work:
+            prefix === 76
+              ? before.work.map((row) => ({ ...row, audit_attempt_id: null }))
+              : before.work,
+        };
+        const manifest = JSON.parse(
+          await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
+        );
+        assert.deepEqual(
+          (await historyReceipts(db.migrator))
+            .slice(prefix)
+            .map(({ hash, created_at }) => [hash, Number(created_at)]),
+          manifest.entries.slice(prefix).map(({ sha256, when }) => [sha256, when]),
+        );
+        assert.equal(manifest.entries[77].tag, "0078_preserve_pending_sandbox_policy_application");
+        assert.deepEqual(await custody(), upgradedCustody);
+        assert.deepEqual(await binding(), beforeBinding);
+        await assert.rejects(
+          db.app.query(
+            "UPDATE occ.sandbox_policies SET document=document-'application' WHERE agent_id=$1",
+            [agent],
+          ),
+          { code: "23514" },
+        );
+        assert.deepEqual(await custody(), upgradedCustody);
+        assert.deepEqual(await runHistoryCommand(db, "production", "--require-current"), {
+          ok: true,
+          history: "completed",
+        });
+
+        // An unrelated receipt in the same slot is not an upgradeable canonical prefix.
+        const unknown = await historyDatabase(child, fixture, "unknown_policy_slot", { prefix });
+        await unknown.migrator.query(
+          "INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES(repeat('0',64),$1)",
+          [manifest.entries[prefix].when],
+        );
+        const unknownBefore = await historySnapshot(unknown);
+        for (const flag of ["--check", undefined]) {
+          assert.deepEqual(
+            await runHistoryCommand(
+              unknown,
+              "production",
+              flag,
+              /applied receipts differ from canonical history/,
+            ),
+            {
+              ok: false,
+              code: "MIGRATION_HISTORY_UNSUPPORTED",
+            },
+          );
+          assert.deepEqual(await historySnapshot(unknown), unknownBefore);
+        }
+      });
+    }
+  },
+);
 
 test(
   "An authenticated user can browse revisions retained across the Harness settings migration",
@@ -2280,6 +1967,10 @@ test(
       [73, "preFiniteRepositorySessionWithdrawal"],
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preControlPlaneAudit"],
+      [77, "prePendingSandboxPolicyApplication"],
+      [78, "prePredecessorReplacement"],
+      [79, "preRevisionRuntimeInputs"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2773,6 +2464,10 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
+      [76, "preControlPlaneAudit"],
+      [77, "prePendingSandboxPolicyApplication"],
+      [78, "prePredecessorReplacement"],
+      [79, "preRevisionRuntimeInputs"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2968,6 +2663,10 @@ test(
     for (const [prefix, history] of [
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preControlPlaneAudit"],
+      [77, "prePendingSandboxPolicyApplication"],
+      [78, "prePredecessorReplacement"],
+      [79, "preRevisionRuntimeInputs"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -3057,6 +2756,10 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
+      [76, "preControlPlaneAudit"],
+      [77, "prePendingSandboxPolicyApplication"],
+      [78, "prePredecessorReplacement"],
+      [79, "preRevisionRuntimeInputs"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3079,7 +2782,12 @@ test(
         // Fail the common reduction grant after admission backfill and repository authority.
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
+        // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
         const rollbackTag = [
+          [79, "ALTER TABLE"],
+          [78, "GRANT"],
+          [77, "CREATE FUNCTION"],
+          [76, "CREATE INDEX"],
           [75, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],

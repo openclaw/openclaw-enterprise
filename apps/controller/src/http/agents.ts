@@ -11,6 +11,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import {
   accessBindingsRemovedWithAgent,
+  AuditAppendUnavailableError,
   NamespaceNotReadyError,
   RepositoryOptionsUnavailableError,
   restrictionsRemovedWithAgent,
@@ -28,7 +29,7 @@ import {
   prepareNativeAdminConfiguration,
   type NativeAdminAccessConfig,
 } from "../gateway/native-admin.ts";
-import { dependencyUnavailable, failure } from "./errors.ts";
+import { failure } from "./errors.ts";
 import type { RequestContext, ResourceHandler, ResourceHandlers } from "./types.ts";
 
 interface AgentHandlerOptions {
@@ -409,12 +410,20 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         meta: { requestId: request.id },
       });
     },
-    async getAgent({ controller, context, request, reply, params, namespaceId }) {
+    async getAgent({
+      controller,
+      context,
+      request,
+      reply,
+      params,
+      namespaceId,
+      setAuditReadTarget,
+    }) {
       const agentId = params.agentId!;
+      const agent = await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
+      setAuditReadTarget({ kind: "agent", id: agent.id, namespaceId: agent.namespaceId });
       reply.send({
-        data: clientAgent(
-          await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId),
-        ),
+        data: clientAgent(agent),
         meta: { requestId: request.id },
       });
     },
@@ -518,8 +527,10 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         );
         try {
           await unit.audit.append(mutationEvent({ kind: "agent", id: agentId, namespaceId }));
-        } catch {
-          throw dependencyUnavailable();
+        } catch (error) {
+          throw error instanceof AuditAppendUnavailableError
+            ? error
+            : new AuditAppendUnavailableError();
         }
         return provisioned;
       });
@@ -621,8 +632,10 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         const agent = await controller.stopAgent(context.actorId, namespaceId, agentId);
         try {
           await unit.audit.append(mutationEvent({ kind: "agent", id: agentId, namespaceId }));
-        } catch {
-          throw dependencyUnavailable();
+        } catch (error) {
+          throw error instanceof AuditAppendUnavailableError
+            ? error
+            : new AuditAppendUnavailableError();
         }
         return clientAgent(agent);
       });
@@ -657,7 +670,15 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         },
       });
     },
-    async getAgentRevision({ controller, context, request, reply, params, namespaceId }) {
+    async getAgentRevision({
+      controller,
+      context,
+      request,
+      reply,
+      params,
+      namespaceId,
+      setAuditReadTarget,
+    }) {
       const agentId = params.agentId!;
       const revision = await controller.getRevisionForBrowsing(
         context.actorId,
@@ -665,9 +686,22 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         agentId,
         params.revisionId as string,
       );
+      setAuditReadTarget({
+        kind: "agent_revision",
+        id: revision.id,
+        namespaceId: revision.namespaceId,
+      });
       reply.send({ data: clientRevision(revision), meta: { requestId: request.id } });
     },
-    async getAgentDeployment({ controller, context, request, reply, params, namespaceId }) {
+    async getAgentDeployment({
+      controller,
+      context,
+      request,
+      reply,
+      params,
+      namespaceId,
+      setAuditReadTarget,
+    }) {
       const agentId = params.agentId!;
       const status = await controller.getDeploymentStatus(
         context.actorId,
@@ -675,6 +709,11 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         agentId,
         params.deploymentId as string,
       );
+      setAuditReadTarget({
+        kind: "agent_revision",
+        id: status.deploymentId,
+        namespaceId: status.namespaceId,
+      });
       reply.send({ data: status, meta: { requestId: request.id } });
     },
     async diagnoseAgentDeployment({ controller, context, request, reply, params, namespaceId }) {

@@ -142,7 +142,7 @@ and reject reused refresh tokens. Use fresh fixture identities and state;
 never point this lane at an existing user's deployment.
 
 ```sh
-node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.mjs run openshell-oauth \
+node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.ts run openshell-oauth \
   --state /tmp/oce-openshell-oauth-state.json \
   --results /tmp/oce-openshell-oauth-results.json
 ```
@@ -178,7 +178,7 @@ separate simulated UI evidence. Neither proves external token refresh or injecti
 `tests/conformance/kubernetes-compute.test.mjs` exercises the real Compute
 preparation path with Driver transport fixtures. It checks source matching,
 Harness-only placeholder/metadata delivery, and refusal before provisioning on
-invalid attachments. `tests/integration/codex-model-probe.test.mjs` runs the
+invalid attachments. `tests/integration/codex-model-probe.test.ts` runs the
 emitted launcher in Docker with a substituted Codex executable, checking the
 generated auth file at both the probe and app-server boundaries. Select its
 immutable Node image with `OCC_TEST_CODEX_PROBE_IMAGE`.

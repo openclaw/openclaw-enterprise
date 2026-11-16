@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 const DEFAULT_PORT = 3128;
 const CONNECT_TIMEOUT_MS = 10_000;
 const SHUTDOWN_DRAIN_MS = 2_000;
-// How long a client may take to read what is still queued for it, and close its side, after
-// the proxy has finished writing to it.
+// How long client output may remain blocked, or a client may take to drain and close its
+// side after the proxy has finished writing to it.
 const CLIENT_DRAIN_TIMEOUT_MS = 10_000;
 const ALLOWED_SUFFIXES = [".slack.com", ".slack-edge.com", ".slack-msgs.com"];
 const ALLOWED_HOSTS = new Set(["slack.com", "slack-edge.com", "slack-msgs.com"]);
@@ -76,9 +76,9 @@ function cutClient(socket) {
 }
 
 // Called once the proxy is done writing to the client: the upstream closed, or a CONNECT was
-// refused. When the client's write side was already ended (pipe() ends it on the upstream's
-// clean EOF; reject() ends it with the status line), bytes can still be queued for a slow
-// client, and destroy() would drop them. Even after they are flushed, a close with unread
+// refused. When the client's write side was already ended (forwardToClient ends it on the
+// upstream's clean EOF; reject() ends it with the status line), bytes can still be queued for
+// a slow client, and destroy() would drop them. Even after they are flushed, a close with unread
 // client bytes (a TLS close_notify, say) makes the kernel reset the connection and drop the
 // tail. So linger: discard what the client sends, keep the socket until the client has read
 // everything and closed its side, and cut it at `drainTimeoutMs`. Anything else (an upstream
@@ -96,6 +96,66 @@ function closeClientWhenDrained(clientSocket, drainTimeoutMs) {
   const timer = setTimeout(() => cutClient(clientSocket), drainTimeoutMs);
   timer.unref();
   clientSocket.once("close", () => clearTimeout(timer));
+}
+
+// Bound pending client writes even below the high-water mark, where no drain event fires.
+// Keep normal pause/resume backpressure without timing out idle Socket Mode tunnels.
+// EOF hands ownership back to closeClientWhenDrained, which preserves complete replies.
+function forwardToClient(upstream, clientSocket, drainTimeoutMs) {
+  let timer;
+  let pendingWrites = 0;
+  let stopped = false;
+  const clear = () => {
+    clearTimeout(timer);
+    timer = undefined;
+  };
+  const write = (chunk) => {
+    if (stopped) {
+      return;
+    }
+    pendingWrites += 1;
+    if (timer === undefined) {
+      timer = setTimeout(() => {
+        clear();
+        if (pendingWrites > 0 && clientSocket.writableLength > 0) {
+          stop();
+          cutClient(clientSocket);
+          upstream.destroy();
+        }
+      }, drainTimeoutMs);
+      timer.unref();
+    }
+    if (
+      !clientSocket.write(chunk, () => {
+        pendingWrites -= 1;
+        if (pendingWrites === 0) {
+          clear();
+        }
+      })
+    ) {
+      upstream.pause();
+    }
+  };
+  const resume = () => upstream.resume();
+  const end = () => {
+    stop();
+    clientSocket.end();
+  };
+  const stop = () => {
+    stopped = true;
+    clear();
+    upstream.off("data", write);
+    upstream.off("end", end);
+    upstream.off("close", stop);
+    clientSocket.off("drain", resume);
+    clientSocket.off("close", stop);
+  };
+  upstream.on("data", write);
+  upstream.once("end", end);
+  upstream.once("close", stop);
+  clientSocket.on("drain", resume);
+  clientSocket.once("close", stop);
+  return write;
 }
 
 export function createSlackProxyServer({ clientDrainTimeoutMs = CLIENT_DRAIN_TIMEOUT_MS } = {}) {
@@ -121,11 +181,11 @@ export function createSlackProxyServer({ clientDrainTimeoutMs = CLIENT_DRAIN_TIM
     upstream.once("connect", () => {
       connected = true;
       upstream.setTimeout(0);
-      clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      const writeToClient = forwardToClient(upstream, clientSocket, clientDrainTimeoutMs);
+      writeToClient("HTTP/1.1 200 Connection Established\r\n\r\n");
       if (head.length > 0) {
         upstream.write(head);
       }
-      upstream.pipe(clientSocket);
       clientSocket.pipe(upstream);
     });
     upstream.once("timeout", () => upstream.destroy(new Error("upstream connection timeout")));

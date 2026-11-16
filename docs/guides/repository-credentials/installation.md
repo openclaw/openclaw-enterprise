@@ -197,12 +197,12 @@ in effect. Unbound Agents receive no generated policy change. Because worker and
 sidecar share a Pod network namespace, these rules do not isolate containers
 within that Pod.
 
-Render the chart and use the rendered broker origin as the source of truth for
-the certificate. The helper reads the worker sidecar argument from the rendered
-manifests; it does not construct a second hostname.
+Use the release checkout's pinned Node.js version (24.22.1) to run the helper.
+Use the broker hostname from the rendered worker sidecar argument as the
+certificate's DNS SAN.
 
 ```bash
-node scripts/render-repository-credentials-origin.mjs \
+node scripts/render-repository-credentials-origin.ts \
   --release oce --namespace openclaw-system \
   --values "$OCC_INPUT_DIRECTORY/values.yaml" \
   > "$OCC_INPUT_DIRECTORY/repository-broker.json"
