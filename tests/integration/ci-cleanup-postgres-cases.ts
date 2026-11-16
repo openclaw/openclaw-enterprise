@@ -560,7 +560,7 @@ export function registerChildJournalCases(): void {
     const args = [
       "--test",
       "--test-name-pattern",
-      "/^PostgreSQL preparation uses distinct Docker-assigned loopback ports and cleans its projects$/",
+      "/^PostgreSQL preparation uses distinct engine-assigned loopback ports and cleans its projects$/",
       "tests/integration/ci-prepare-postgres-real.test.ts",
     ];
     // The actual test refuses preexisting registered children before adopting them,
