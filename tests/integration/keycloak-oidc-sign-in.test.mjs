@@ -154,7 +154,7 @@ async function prepareInstallation(t) {
 
 /** @param {TestContext} t */
 async function prepareInstallationFixture(t) {
-  const secrets = readKeycloakSecrets(JSON.parse(await readFile(secretsFile, "utf8")));
+  const secrets = readKeycloakSecrets(JSON.parse(await readFile(text(secretsFile), "utf8")));
   const pool = new pg.Pool({ connectionString: databaseUrl });
   cleanup.push(() => pool.end());
   const state = new PostgresPlatformState(pool);
