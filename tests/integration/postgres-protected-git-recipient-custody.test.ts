@@ -1799,6 +1799,8 @@ test(
     };
     const relayOperations: string[] = [];
     let fault: ((input: ReservationInput) => Promise<void>) | undefined;
+    let beforeConfirm: ((collectRequest: Buffer) => Promise<void>) | undefined;
+    let collectRequest: Buffer | undefined;
     let relayFailure: unknown;
     const workerEndpoint = await listen(
       t,
@@ -1818,12 +1820,19 @@ test(
             }
             const bytes = Buffer.concat(chunks);
             const input = JSON.parse(bytes.toString("utf8")) as ReservationInput;
+            if (input.operation === "confirm" && beforeConfirm) {
+              assert.ok(collectRequest, "the Worker collected the reservation before confirming");
+              await beforeConfirm(collectRequest);
+              beforeConfirm = undefined;
+            }
             const upstream = await issuerRequest(bytes);
             relayOperations.push(input.operation);
             if (input.operation === "begin" && fault) {
-              assert.ok(
-                [200, 204].includes(upstream.status),
-                "the issuer accepted the reservation RPC",
+              assert.equal(upstream.status, 204, "the initial reservation reply must be HTTP 204");
+              assert.equal(
+                upstream.body.length,
+                0,
+                "the initial reservation reply carries no fence",
               );
               await fault(input);
               assert.equal(response.headersSent, false);
@@ -1831,9 +1840,13 @@ test(
               response.destroy();
               return;
             }
+            if (input.operation === "collect-reservation" && beforeConfirm) {
+              assert.equal(upstream.status, 200, "the Worker can collect the reserved fence once");
+              collectRequest = bytes;
+            }
             response.writeHead(upstream.status, upstream.headers).end(upstream.body);
           } catch (error) {
-            relayFailure = error;
+            relayFailure ??= error;
             response.destroy();
           }
         },
@@ -3025,6 +3038,17 @@ test(
           assert.equal(peer.gh.issuesOfTokens.length, 1);
           assert.deepEqual(peer.origin.traffic(), { connections: 0, requests: 0 });
           dropped = input;
+          // Keep confirmation off the issuer until the duplicate has been checked against the live reservation.
+          beforeConfirm = async (bytes) => {
+            const duplicate = await issuerRequest(bytes);
+            assert.equal(
+              duplicate.status,
+              204,
+              "a duplicate collection while pending must be HTTP 204",
+            );
+            assert.equal(duplicate.body.length, 0, "a duplicate collection carries no fence");
+            assert.deepEqual((await witness()).rows, pending);
+          };
           fault = undefined;
         };
         const version = await waitFor(
@@ -3032,15 +3056,16 @@ test(
           async () => {
             const current = await command<RepositoryGitMaterialVersion | string>({
               kind: "prepare",
+            }).catch((error) => {
+              throw relayFailure ?? error;
             });
+            assert.ifError(relayFailure);
             return typeof current === "string" ? undefined : current;
           },
           { timeoutMs: 15_000, intervalMs: 100 },
         );
-        assert.equal(relayFailure, undefined);
         assert.ok(dropped);
         assert.deepEqual(version, dropped.version);
-        assert.equal((await raw({ ...dropped, operation: "collect-reservation" })).status, 204);
         assert.equal((await raw(dropped)).status, 204);
         assert.deepEqual(
           relayOperations.filter((operation) =>
