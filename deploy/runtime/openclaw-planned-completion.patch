@@ -1,14 +1,16 @@
 diff --git a/docs/cli/gateway/query.md b/docs/cli/gateway/query.md
-index c1f8903..51ae1f8 100644
+index c1f8903..694041b 100644
 --- a/docs/cli/gateway/query.md
 +++ b/docs/cli/gateway/query.md
-@@ -536,6 +536,36 @@ returns the same details while draining, and each draining observation writes
+@@ -536,6 +536,38 @@ returns the same details while draining, and each draining observation writes
  one `DRAINING` line to the Gateway log. Pending final writes remain protected
  until their persistence owner settles, even after a chat client disconnects.
  
 +Planned-update controllers can call `gateway.suspend.prepare` with
 +`completionDeadlineMs`, an absolute Unix time in milliseconds no more than
-+30 minutes ahead. This mode rejects new independent work while admitted work
++30 minutes ahead. The Gateway tolerates five seconds of clock skew and caps
++the wait at 30 minutes on its monotonic clock. Outside the clock window it
++returns retryable unavailability. This mode rejects new independent work while admitted work
 +and pending delivery finish. It does not queue rejected requests. Unlike
 +`drain: true`, it does not treat cleared write custody as task completion or
 +terminate terminals. Those options cannot be combined.
@@ -414,6 +416,116 @@ index ad789e4..5097d19 100644
        });
        hostLifecycle = iterationHost;
        let startupFailedBeforeServerHandle = false;
+diff --git a/src/cli/update-cli/update-command-service-drain.native.test.ts b/src/cli/update-cli/update-command-service-drain.native.test.ts
+index db003d6..357ebe5 100644
+--- a/src/cli/update-cli/update-command-service-drain.native.test.ts
++++ b/src/cli/update-cli/update-command-service-drain.native.test.ts
+@@ -9,7 +9,7 @@ import type { GatewayServiceCommandConfig } from "../../daemon/service-types.js"
+ import type { openSystemdBroker } from "../../daemon/systemd-peer-native.js";
+ import type { CallGatewayCliOptions } from "../../gateway/call.js";
+ import {
+-  armGatewaySuspendHandoff,
++  requestGatewaySuspendHandoff,
+   consumeGatewaySuspendHandoff,
+   getGatewaySuspendStatus,
+   prepareGatewaySuspend,
+@@ -299,7 +299,8 @@ beforeEach(() => {
+       if (!owner) {
+         throw new Error("Fixture host has no process-exit owner");
+       }
+-      const result = armGatewaySuspendHandoff({
++      const result = await requestGatewaySuspendHandoff({
++        assertCurrent: () => request.assertDispatchCurrent?.(),
+         suspensionId: stringParam(request, "suspensionId"),
+         owner,
+         ...(input.commit === true ? { commit: true } : {}),
+@@ -421,6 +422,48 @@ test.each([0, 1])(
+   },
+ );
+ 
++test(
++  "the native handoff allows a late terminal write to settle after ten seconds",
++  { timeout: 25_000 },
++  async () => {
++    let release: ReturnType<typeof setTimeout> | undefined;
++    const originalCall = mocks.call.getMockImplementation()!;
++    mocks.call.mockImplementation(async (request: CallGatewayCliOptions) => {
++      if (request.method !== "gateway.suspend.handoff") {
++        return originalCall(request);
++      }
++      // Apply the request's wire timeout to the real suspension and native stop owners.
++      let timeout: ReturnType<typeof setTimeout> | undefined;
++      try {
++        return await Promise.race([
++          originalCall(request),
++          new Promise<never>((_, reject) => {
++            timeout = setTimeout(
++              () => reject(new Error("handoff RPC timed out")),
++              request.timeoutMs ?? 10_000,
++            );
++          }),
++        ]);
++      } finally {
++        clearTimeout(timeout);
++      }
++    });
++    f.atNativeInspection = () => {
++      f.persistence = 1;
++      release = setTimeout(() => {
++        f.persistence = 0;
++      }, 12_000);
++    };
++    try {
++      await stopWithLiveDrain();
++      expect(f.events.filter((event) => event === "effect:StopUnit")).toHaveLength(1);
++      expect(f.shutdownCommitted).toBe(true);
++    } finally {
++      clearTimeout(release);
++    }
++  },
++);
++
+ test.each(["native inspection", "handoff dispatch"] as const)(
+   "refuses protected config drift at %s",
+   async (window) => {
+@@ -457,6 +500,7 @@ test.each(["expiry", "resume", "write custody", "boot replacement"] as const)(
+         expect(resumeGatewaySuspend(f.suspensionId)).toMatchObject({ ok: true, resumed: true });
+       } else if (change === "write custody") {
+         f.persistence = 1;
++        f.monotonic += 30_000;
+       } else {
+         f.bootId = "replacement-boot";
+       }
+diff --git a/src/cli/update-cli/update-command-service-drain.ts b/src/cli/update-cli/update-command-service-drain.ts
+index 697685a..6277727 100644
+--- a/src/cli/update-cli/update-command-service-drain.ts
++++ b/src/cli/update-cli/update-command-service-drain.ts
+@@ -77,6 +77,7 @@ export async function withGatewayMaintenanceDrain<T>(
+           "gateway.suspend.handoff",
+           { suspensionId, target: processTarget, commit: true },
+           beforeCommit,
++          Math.max(1, original.expiresAtMs - Date.now()),
+         );
+         assertResidentCurrent();
+         if (
+@@ -176,6 +177,7 @@ export async function withGatewayMaintenanceDrain<T>(
+     method: string,
+     args?: unknown,
+     beforeDispatch?: () => void,
++    timeoutMs = 10_000,
+   ): Promise<R> => {
+     assertResidentCurrent();
+     if (params.control) {
+@@ -202,8 +204,7 @@ export async function withGatewayMaintenanceDrain<T>(
+       localPortOverride: port,
+       ignoreEnvUrlOverride: true,
+       tlsFingerprint: target.tlsFingerprint,
+-      // The deadline bounds deferral, not the final RPC needed to observe custody.
+-      timeoutMs: 10_000,
++      timeoutMs,
+       onHelloOk: (hello) => {
+         observedBootId = hello.server.bootId;
+       },
 diff --git a/src/gateway/server-active-work.ts b/src/gateway/server-active-work.ts
 index b12510f..4d9ff7d 100644
 --- a/src/gateway/server-active-work.ts
@@ -455,133 +567,12 @@ index b12510f..4d9ff7d 100644
      getTerminalSessions: () => context.terminalSessions?.size ?? 0,
    };
  }
-diff --git a/src/gateway/server-http.probe.test.ts b/src/gateway/server-http.probe.test.ts
-index 6b9e4b4..e90197d 100644
---- a/src/gateway/server-http.probe.test.ts
-+++ b/src/gateway/server-http.probe.test.ts
-@@ -5,6 +5,7 @@ import nodePath from "node:path";
- import { describe, expect, it, vi } from "vitest";
- import { createDeferred } from "../../test/helpers/promise.js";
- import {
-+  isGatewayCompletionWaitActive,
-   prepareGatewaySuspend,
-   resumeGatewaySuspend,
- } from "../infra/gateway-suspend-coordinator.js";
-@@ -228,54 +229,65 @@ describe("gateway probe endpoints", () => {
-     );
-   });
- 
--  it("keeps liveness green while a prepared suspension lease makes readiness red", async () => {
--    resetGatewayWorkAdmission();
--    const channelManager = {
--      getRuntimeSnapshot: () => ({ channels: {}, channelAccounts: {} }),
--      getAutostartSuppression: () => null,
--      isAmbientAutostartSuppressed: () => false,
--    };
--    const getReadiness = createReadinessChecker({
--      channelManager,
--      startedAt: Date.now(),
--      getGatewayDraining: isGatewayDraining,
--    });
--    try {
--      await withProbeServer({ getReadiness, openAiChatCompletionsEnabled: true }, async (probe) => {
--        const prepared = prepareGatewaySuspend({
--          requestId: "request-readiness-probe",
--          pauseScheduling: vi.fn(),
--          resumeScheduling: vi.fn(),
--          createSuspensionId: () => "suspension-readiness-probe",
--          inspect: { ...idleInspectors, getRootRequests: () => 0 },
--        });
--        if (prepared.status !== "ready") {
--          throw new Error(`expected prepared suspension, received ${prepared.status}`);
--        }
-+  it.each([false, true])(
-+    "keeps completion waits routable without admitting new work (completion=%s)",
-+    async (completion) => {
-+      resetGatewayWorkAdmission();
-+      const channelManager = {
-+        getRuntimeSnapshot: () => ({ channels: {}, channelAccounts: {} }),
-+        getAutostartSuppression: () => null,
-+        isAmbientAutostartSuppressed: () => false,
-+      };
-+      const getReadiness = createReadinessChecker({
-+        channelManager,
-+        startedAt: Date.now(),
-+        getGatewayDraining: () => !isGatewayCompletionWaitActive() && isGatewayDraining(),
-+      });
-+      try {
-+        await withProbeServer(
-+          { getReadiness, openAiChatCompletionsEnabled: true },
-+          async (probe) => {
-+            const prepared = prepareGatewaySuspend({
-+              requestId: "request-readiness-probe",
-+              ...(completion ? { completionDeadlineMs: Date.now() + 60_000 } : {}),
-+              pauseScheduling: vi.fn(),
-+              resumeScheduling: vi.fn(),
-+              createSuspensionId: () => "suspension-readiness-probe",
-+              inspect: { ...idleInspectors, getRootRequests: () => 0 },
-+            });
-+            if (prepared.status !== "ready") {
-+              throw new Error(`expected prepared suspension, received ${prepared.status}`);
-+            }
- 
--        await probe.json("/healthz", 200, { ok: true, status: "live" }, true);
-+            await probe.json("/healthz", 200, { ok: true, status: "live" }, true);
- 
--        await probe.json("/readyz", 503, readyState(["gateway-draining"], false));
-+            await probe.json(
-+              "/readyz",
-+              completion ? 200 : 503,
-+              completion ? readyState([]) : readyState(["gateway-draining"], false),
-+            );
- 
--        for (const [path, method] of [
--          ["/v1/chat/completions", "POST"],
--          ["/__openclaw__/board/agent%3Amain%3Amain/status/index.html?bt=garbage", "GET"],
--        ] as const) {
--          await probe.json({ path, method }, 503, { error: { code: "gateway_unavailable" } });
--        }
-+            for (const [path, method] of [
-+              ["/v1/chat/completions", "POST"],
-+              ["/__openclaw__/board/agent%3Amain%3Amain/status/index.html?bt=garbage", "GET"],
-+            ] as const) {
-+              await probe.json({ path, method }, 503, { error: { code: "gateway_unavailable" } });
-+            }
- 
--        expect(resumeGatewaySuspend(prepared.suspensionId)).toEqual({
--          ok: true,
--          status: "running",
--          resumed: true,
--        });
-+            expect(resumeGatewaySuspend(prepared.suspensionId)).toEqual({
-+              ok: true,
-+              status: "running",
-+              resumed: true,
-+            });
- 
--        await probe.json("/readyz", 200, readyState([]));
--      });
--    } finally {
--      resetGatewayWorkAdmission();
--    }
--  });
-+            await probe.json("/readyz", 200, readyState([]));
-+          },
-+        );
-+      } finally {
-+        resetGatewayWorkAdmission();
-+      }
-+    },
-+  );
- 
-   it("keeps in-flight core HTTP work visible to suspension preparation", async () => {
-     resetGatewayWorkAdmission();
 diff --git a/src/gateway/server-methods/suspend.integration.test.ts b/src/gateway/server-methods/suspend.integration.test.ts
 new file mode 100644
-index 0000000..dc01aae
+index 0000000..a15e51d
 --- /dev/null
 +++ b/src/gateway/server-methods/suspend.integration.test.ts
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,194 @@
 +import { afterEach, expect, it, vi } from "vitest";
 +import type {
 +  GatewaySuspendPrepareResult,
@@ -635,7 +626,11 @@ index 0000000..dc01aae
 +            }),
 +          },
 +          cfg: {
-+            gateway: { mode: "local", auth: { mode: "token", token } },
++            gateway: {
++              mode: "local",
++              auth: { mode: "token", token },
++              http: { endpoints: { chatCompletions: { enabled: true } } },
++            },
 +            agents: {
 +              entries: { main: {} },
 +              defaults: { workspace: state.workspaceDir, skipBootstrap: true },
@@ -655,9 +650,32 @@ index 0000000..dc01aae
 +              timeout: 15_000,
 +            })
 +            .toBe(200);
++          for (const invalid of [
++            { drain: true, completionDeadlineMs: Date.now() + 60_000 },
++            { terminalPolicy: "terminate", completionDeadlineMs: Date.now() + 60_000 },
++          ]) {
++            await expect(
++              client.request("gateway.suspend.prepare", { requestId: "invalid", ...invalid }),
++            ).rejects.toThrow(/invalid gateway.suspend.prepare params/i);
++          }
++          for (const offset of [-1, 31 * 60_000]) {
++            await expect(
++              client.request("gateway.suspend.prepare", {
++                requestId: "outside-window",
++                completionDeadlineMs: Date.now() + offset,
++              }),
++            ).rejects.toThrow(/outside Gateway clock window/i);
++          }
++          const approval = await client.request<{ id: string }>("exec.approval.request", {
++            command: "printf approval",
++            twoPhase: true,
++            requireDeliveryRoute: false,
++            suppressDelivery: true,
++            timeoutMs: 60_000,
++          });
 +          const request = {
 +            requestId: "planned-update",
-+            completionDeadlineMs: Date.now() + 60_000,
++            completionDeadlineMs: Date.now() + 30 * 60_000 + 3_000,
 +          };
 +          const held = await client.request<GatewaySuspendPrepareResult>(
 +            "gateway.suspend.prepare",
@@ -681,6 +699,24 @@ index 0000000..dc01aae
 +            scopes: ["operator.admin"],
 +          });
 +          clients.push(reconnected);
++          const approvals = await reconnected.request<Array<{ id: string }>>(
++            "exec.approval.list",
++            {},
++          );
++          expect(approvals.map((entry) => entry.id)).toContain(approval.id);
++          await reconnected.request("exec.approval.resolve", { id: approval.id, decision: "deny" });
++          expect(await reconnected.request("exec.approval.list", {})).not.toContainEqual(
++            expect.objectContaining({ id: approval.id }),
++          );
++          const rejected = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
++            method: "POST",
++            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
++            body: JSON.stringify({
++              model: "openclaw",
++              messages: [{ role: "user", content: "busy" }],
++            }),
++          });
++          expect(rejected.status).toBe(503);
 +          expect(await reconnected.request("gateway.suspend.prepare", request)).toMatchObject({
 +            status: "draining",
 +            suspensionId: held.suspensionId,
@@ -731,58 +767,21 @@ index 0000000..dc01aae
 +    );
 +  },
 +);
-diff --git a/src/gateway/server-methods/suspend.test.ts b/src/gateway/server-methods/suspend.test.ts
-index 95b8f46..c1f62a9 100644
---- a/src/gateway/server-methods/suspend.test.ts
-+++ b/src/gateway/server-methods/suspend.test.ts
-@@ -35,6 +35,33 @@ async function invoke(method: keyof typeof suspendHandlers, params: unknown) {
- beforeEach(() => vi.clearAllMocks());
- 
- describe("gateway suspend handlers", () => {
-+  it.each([
-+    { drain: true, offset: 60_000 },
-+    { terminalPolicy: "terminate", offset: 60_000 },
-+    { offset: -1 },
-+    { offset: 31 * 60_000 },
-+  ])("refuses unsafe completion-wait parameters: %j", async ({ offset, ...params }) => {
-+    const { respond } = await invoke("gateway.suspend.prepare", {
-+      requestId: "planned-update",
-+      completionDeadlineMs: Date.now() + offset,
-+      ...params,
-+    });
-+    expect(coordinator.prepare).not.toHaveBeenCalled();
-+    expect(respond).toHaveBeenCalledWith(false, undefined, {
-+      code: "INVALID_REQUEST",
-+      message: "invalid gateway.suspend.prepare params",
-+    });
-+  });
-+
-+  it("passes a bounded completion wait to the suspension owner", async () => {
-+    const completionDeadlineMs = Date.now() + 60_000;
-+    coordinator.prepare.mockReturnValueOnce({ status: "draining", blockers: [], activeCount: 1 });
-+    await invoke("gateway.suspend.prepare", { requestId: "planned-update", completionDeadlineMs });
-+    expect(coordinator.prepare).toHaveBeenCalledWith(
-+      expect.objectContaining({ completionDeadlineMs, terminalPolicy: "preserve" }),
-+    );
-+  });
-+
-   it("validates the closed prepare params shape", async () => {
-     const { respond } = await invoke("gateway.suspend.prepare", {
-       requestId: "request-1",
 diff --git a/src/gateway/server-methods/suspend.ts b/src/gateway/server-methods/suspend.ts
-index 4a74034..989d20c 100644
+index 4a74034..dc95d10 100644
 --- a/src/gateway/server-methods/suspend.ts
 +++ b/src/gateway/server-methods/suspend.ts
-@@ -8,7 +8,7 @@ import {
+@@ -8,7 +8,8 @@ import {
    validateGatewaySuspendHandoffParams,
  } from "../../../packages/gateway-protocol/src/index.js";
  import {
 -  armGatewaySuspendHandoff,
++  GATEWAY_COMPLETION_MAX_MS,
 +  requestGatewaySuspendHandoff,
    getGatewaySuspendStatus,
    prepareGatewaySuspend,
    resumeGatewaySuspend,
-@@ -17,6 +17,7 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
+@@ -17,6 +18,7 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
  import { getGatewayProcessInstanceId } from "../process-instance.js";
  import { createGatewayServerActiveWorkInspectors } from "../server-active-work.js";
  import { respondError } from "./response.js";
@@ -790,7 +789,7 @@ index 4a74034..989d20c 100644
  import type { GatewayRequestContext } from "./shared-types.js";
  import type { GatewayClient, GatewayRequestHandlers, RespondFn } from "./types.js";
  
-@@ -57,7 +58,8 @@ function respondSuspendStatus(
+@@ -57,7 +59,8 @@ function respondSuspendStatus(
  }
  
  export const suspendHandlers: GatewayRequestHandlers = {
@@ -800,7 +799,7 @@ index 4a74034..989d20c 100644
      if (!validateGatewaySuspendHandoffParams(params)) {
        respond(false, undefined, invalidParams("gateway.suspend.handoff"));
        return;
-@@ -74,13 +76,18 @@ export const suspendHandlers: GatewayRequestHandlers = {
+@@ -74,13 +77,18 @@ export const suspendHandlers: GatewayRequestHandlers = {
        respondError(respond, ErrorCodes.UNAVAILABLE, "gateway host does not own process exit");
        return;
      }
@@ -821,18 +820,32 @@ index 4a74034..989d20c 100644
        return;
      }
      suspendLog.info(
-@@ -93,12 +100,25 @@ export const suspendHandlers: GatewayRequestHandlers = {
+@@ -93,12 +101,39 @@ export const suspendHandlers: GatewayRequestHandlers = {
        respond(false, undefined, invalidParams("gateway.suspend.prepare"));
        return;
      }
 +    if (
 +      params.completionDeadlineMs !== undefined &&
-+      (params.drain === true ||
-+        params.terminalPolicy === "terminate" ||
-+        params.completionDeadlineMs <= Date.now() ||
-+        params.completionDeadlineMs > Date.now() + 30 * 60_000)
++      (params.drain === true || params.terminalPolicy === "terminate")
 +    ) {
 +      respond(false, undefined, invalidParams("gateway.suspend.prepare"));
++      return;
++    }
++    // The controller and Gateway can read different wall clocks. The Gateway
++    // still caps its actual hold at 30 minutes on its own monotonic clock.
++    const now = Date.now();
++    if (
++      params.completionDeadlineMs !== undefined &&
++      (params.completionDeadlineMs <= now ||
++        params.completionDeadlineMs > now + GATEWAY_COMPLETION_MAX_MS + 5_000)
++    ) {
++      respond(
++        false,
++        undefined,
++        errorShape(ErrorCodes.UNAVAILABLE, "Completion deadline outside Gateway clock window", {
++          retryable: true,
++        }),
++      );
 +      return;
 +    }
      const requestId = params.requestId.trim();
@@ -1022,7 +1035,7 @@ index 00d8400..4e610ae 100644
        expect(handler).not.toHaveBeenCalled();
        expectRejected(blocked, {
 diff --git a/src/gateway/server-request-lifecycle.ts b/src/gateway/server-request-lifecycle.ts
-index 05558b9..944d7cf 100644
+index 05558b9..4b43115 100644
 --- a/src/gateway/server-request-lifecycle.ts
 +++ b/src/gateway/server-request-lifecycle.ts
 @@ -10,6 +10,7 @@ import {
@@ -1033,13 +1046,26 @@ index 05558b9..944d7cf 100644
  import {
    getGatewayRestartDrainSignal,
    getGatewaySuspendAdmissionPhase,
-@@ -30,6 +31,9 @@ const SUSPEND_CONTROL_METHODS = new Set([
+@@ -27,9 +28,22 @@ const SUSPEND_CONTROL_METHODS = new Set([
+   "gateway.suspend.handoff",
+ ]);
+ 
++// These reads let a reconnected operator find existing work. Each handler still
++// applies its normal scope and per-request visibility checks.
++const COMPLETION_OBSERVATION_METHODS = new Set([
++  "system.info",
++  "exec.approval.list",
++  "plugin.approval.list",
++  "openclaw.approval.list",
++  "question.list",
++]);
++
  export function isGatewayRootlessRequestAllowed(method: string): boolean {
    return (
      SUSPEND_CONTROL_METHODS.has(method) ||
 +    // Reconnected completion controllers must rediscover the exact live process.
 +    // Existing authorization and observation-only scope still apply.
-+    (method === "system.info" && isGatewayCompletionWaitActive()) ||
++    (COMPLETION_OBSERVATION_METHODS.has(method) && isGatewayCompletionWaitActive()) ||
      (method === "update.runs.get" &&
        getGatewayRestartDrainSignal().aborted &&
        getGatewaySuspendAdmissionPhase() === "accepting")
@@ -1205,10 +1231,18 @@ index 4e60ec1..36016cf 100644
      expect(fixture.consume()).toEqual({ ok: true, value: false });
      expect(fixture.arm().ok).toBe(false);
 diff --git a/src/infra/gateway-suspend-coordinator.ts b/src/infra/gateway-suspend-coordinator.ts
-index 4844e10..2025163 100644
+index 4844e10..1d18504 100644
 --- a/src/infra/gateway-suspend-coordinator.ts
 +++ b/src/infra/gateway-suspend-coordinator.ts
-@@ -52,12 +52,14 @@ type HeldGatewaySuspension = {
+@@ -21,6 +21,7 @@ import {
+   type GatewayActiveWorkSnapshot,
+ } from "./gateway-active-work.js";
+ 
++export const GATEWAY_COMPLETION_MAX_MS = 30 * 60_000;
+ const GATEWAY_SUSPEND_TTL_MS = 2 * 60_000;
+ // Drain preparation waits for persistence, then hands running work to committed
+ // shutdown. Reconnects do not extend its deadline; freeze retains its own TTL.
+@@ -52,12 +53,14 @@ type HeldGatewaySuspension = {
    requestId: string;
    terminalPolicy: GatewaySuspendTerminalPolicy;
    drain: boolean;
@@ -1223,7 +1257,7 @@ index 4844e10..2025163 100644
    shutdown?: { signal: AbortSignal; phase: "interrupting" | "exiting" };
    commitAdmission?: () => boolean;
    nowMs: () => number;
-@@ -68,6 +70,8 @@ export type GatewaySuspendHandoffOwner = {
+@@ -68,6 +71,8 @@ export type GatewaySuspendHandoffOwner = {
    isCurrent: () => boolean;
    /** Transfers a validated suspension into this host's synchronous one-way shutdown. */
    commitStop?: () => void;
@@ -1232,7 +1266,7 @@ index 4844e10..2025163 100644
  };
  
  type GatewaySuspendCoordinatorState = {
-@@ -131,6 +135,11 @@ function currentSuspension(): HeldGatewaySuspension | null {
+@@ -131,6 +136,11 @@ function currentSuspension(): HeldGatewaySuspension | null {
    return current ? normalizeExpiredHeldSuspension(current) : null;
  }
  
@@ -1244,7 +1278,7 @@ index 4844e10..2025163 100644
  function resumeSchedulingBeforeReopen(params: {
    resumeScheduling: () => void;
    reopenAdmission: (reason?: string) => boolean;
-@@ -164,9 +173,17 @@ function armExpiry(entry: HeldGatewaySuspension): HeldGatewaySuspension {
+@@ -164,9 +174,17 @@ function armExpiry(entry: HeldGatewaySuspension): HeldGatewaySuspension {
  }
  
  function renewHeldSuspension(held: HeldGatewaySuspension, nowMs: number): void {
@@ -1265,7 +1299,7 @@ index 4844e10..2025163 100644
  }
  
  function suspensionReady(drain: boolean, snapshot: GatewayActiveWorkSnapshot): boolean {
-@@ -207,11 +224,12 @@ function heldPrepareResult(
+@@ -207,11 +225,12 @@ function heldPrepareResult(
      : { status: "draining", ...result, retryAfterMs: GATEWAY_SUSPEND_DRAIN_POLL_MS };
  }
  
@@ -1279,7 +1313,7 @@ index 4844e10..2025163 100644
    pauseScheduling: () => void;
    resumeScheduling: () => void;
    inspect?: Partial<GatewayActiveWorkInspectors>;
-@@ -226,14 +244,26 @@ export function prepareGatewaySuspend(params: {
+@@ -226,14 +245,28 @@ export function prepareGatewaySuspend(params: {
      ignoreTerminalSessions: terminalPolicy === "terminate",
    };
    const nowMs = (params.nowMs ?? Date.now)();
@@ -1289,7 +1323,9 @@ index 4844e10..2025163 100644
 +      ? undefined
 +      : {
 +          deadlineMs: params.completionDeadlineMs,
-+          monotonicDeadlineMs: performance.now() + params.completionDeadlineMs - nowMs,
++          monotonicDeadlineMs:
++            performance.now() +
++            Math.min(GATEWAY_COMPLETION_MAX_MS, params.completionDeadlineMs - nowMs),
 +        };
 +  const ttlMs = completion
 +    ? Math.min(GATEWAY_SUSPEND_TTL_MS, completion.deadlineMs - nowMs)
@@ -1308,7 +1344,7 @@ index 4844e10..2025163 100644
      ) {
        return { status: "conflict", expiresAtMs: existing.expiresAtMs };
      }
-@@ -274,7 +304,7 @@ export function prepareGatewaySuspend(params: {
+@@ -274,7 +307,7 @@ export function prepareGatewaySuspend(params: {
        owner: params.requestId,
        leaseId: suspensionId,
        caller: params.caller ?? "in-process",
@@ -1317,7 +1353,7 @@ index 4844e10..2025163 100644
      },
    );
    if (!admission) {
-@@ -305,7 +335,7 @@ export function prepareGatewaySuspend(params: {
+@@ -305,7 +338,7 @@ export function prepareGatewaySuspend(params: {
      if ((params.nowMs ?? Date.now)() >= nowMs + ttlMs || performance.now() >= deadlineAtMs) {
        throw new Error("gateway suspension expired during preparation");
      }
@@ -1326,7 +1362,7 @@ index 4844e10..2025163 100644
        resume();
        schedulingPaused = false;
        return {
-@@ -329,6 +359,7 @@ export function prepareGatewaySuspend(params: {
+@@ -329,6 +362,7 @@ export function prepareGatewaySuspend(params: {
        requestId: params.requestId,
        terminalPolicy,
        drain,
@@ -1334,7 +1370,7 @@ index 4844e10..2025163 100644
        suspensionId,
        expiresAtMs,
        deadlineAtMs,
-@@ -351,28 +382,79 @@ export function prepareGatewaySuspend(params: {
+@@ -351,28 +385,79 @@ export function prepareGatewaySuspend(params: {
    }
  }
  
@@ -1419,7 +1455,7 @@ index 4844e10..2025163 100644
    }
    return undefined;
  }
-@@ -382,7 +464,8 @@ export function armGatewaySuspendHandoff(params: {
+@@ -382,7 +467,8 @@ export function armGatewaySuspendHandoff(params: {
    suspensionId: string;
    owner: GatewaySuspendHandoffOwner;
    commit?: true;
@@ -1429,7 +1465,7 @@ index 4844e10..2025163 100644
    const committed = params.commit ? getRestartingSuspension() : undefined;
    if (
      committed?.suspensionId === params.suspensionId &&
-@@ -396,18 +479,22 @@ export function armGatewaySuspendHandoff(params: {
+@@ -396,18 +482,22 @@ export function armGatewaySuspendHandoff(params: {
    }
    const held = COORDINATOR_STATE.current;
    if (!held || held.suspensionId !== params.suspensionId) {
@@ -1456,7 +1492,7 @@ index 4844e10..2025163 100644
      }
      const changed = handoffRefusal(held, params.owner);
      if (changed) {
-@@ -415,11 +502,11 @@ export function armGatewaySuspendHandoff(params: {
+@@ -415,11 +505,11 @@ export function armGatewaySuspendHandoff(params: {
      }
      held.handoff = params.owner;
      try {
@@ -1470,7 +1506,7 @@ index 4844e10..2025163 100644
      }
      const signal = getGatewayRestartDrainSignal();
      if (
-@@ -428,9 +515,12 @@ export function armGatewaySuspendHandoff(params: {
+@@ -428,9 +518,12 @@ export function armGatewaySuspendHandoff(params: {
        held.shutdown?.signal !== signal ||
        !isGatewayRestartDraining()
      ) {
@@ -1484,7 +1520,7 @@ index 4844e10..2025163 100644
      return ok({
        status: "committed",
        suspensionId: held.suspensionId,
-@@ -445,13 +535,18 @@ export function armGatewaySuspendHandoff(params: {
+@@ -445,13 +538,18 @@ export function armGatewaySuspendHandoff(params: {
  export function consumeGatewaySuspendHandoff(
    owner: GatewaySuspendHandoffOwner | undefined,
  ): Result<boolean, string> {

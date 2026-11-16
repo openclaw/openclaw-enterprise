@@ -248,7 +248,7 @@ RUN echo 'b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538  /tmp
 
 # Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
 COPY deploy/runtime/openclaw-planned-completion.patch /tmp/openclaw-planned-completion.patch
-RUN echo 'e6dd8a4c0c85c77390bb4aa68e62416d7a4fe950f5d622c79809e73c79e6f1cb  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
+RUN echo 'c4d00ea11a5c65495225f5164397a7251b7acd43bf73d8df888578bc7a7548e4  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-planned-completion.patch
 
 # Remove this backport when the pinned core includes upstream openclaw/openclaw#185180.
@@ -270,6 +270,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
     packages/gateway-protocol/src/gateway-suspend.test.ts src/infra/gateway-suspend-coordinator.test.ts \
     src/gateway/server-methods/suspend.integration.test.ts src/cli/gateway-cli/host-lifecycle.test.ts \
+    src/cli/update-cli/update-command-service-drain.native.test.ts \
     src/gateway/server-methods.suspension-admission.test.ts \
     src/sessions/session-controller.watchdog.test.ts src/agents/embedded-agent-runner/runs.liveness.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \

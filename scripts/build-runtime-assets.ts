@@ -61,7 +61,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-planned-completion.patch",
-    sha256: "e6dd8a4c0c85c77390bb4aa68e62416d7a4fe950f5d622c79809e73c79e6f1cb",
+    sha256: "c4d00ea11a5c65495225f5164397a7251b7acd43bf73d8df888578bc7a7548e4",
   },
   {
     file: "openclaw-native-turn-settlement.patch",

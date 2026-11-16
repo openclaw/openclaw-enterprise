@@ -83,7 +83,10 @@ docker build -f deploy/runtime/Dockerfile \
 Before assembly, `openclaw-bridge-tests` runs bridge suites, CUA tests, and
 typechecks with the same checkout, arguments, base, and platform. Failure blocks
 smoke and upload. Local assembly can run independently.
-Tests cover native turn settlement and planned completion.
+The planned-completion suite checks that a reconnected operator can find
+and resolve a pending approval while the Gateway refuses new HTTP work.
+The Linux updater suite checks a terminal write that outlasts the ordinary RPC
+timeout during handoff.
 
 The `resources` step checks architecture, CPU, memory, and cgroup-v2 ancestor
 limits. Both stages use its Node compiler budget. ARM runtime can select eight
