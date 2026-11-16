@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { writeFileSync, readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { request, type IncomingHttpHeaders, type IncomingMessage } from "node:http";
 import { createServer } from "node:https";
-import { request } from "node:http";
 
 const { TLS_CERT_FILE, TLS_KEY_FILE, TARGET_URL } = process.env;
 const port = Number.parseInt(process.env.PORT ?? "8443", 10);
@@ -33,12 +33,12 @@ function admitted(suffix = "") {
   }
 }
 
-function proxyHeaders(headers) {
+function proxyHeaders(headers: IncomingHttpHeaders): IncomingHttpHeaders {
   const forwarded = /^(?:forwarded|x-real-ip|x-forwarded-.+)$/i;
   return Object.fromEntries(Object.entries(headers).filter(([name]) => !forwarded.test(name)));
 }
 
-function proxyPath(url) {
+function proxyPath(url: IncomingMessage["url"]): string {
   return typeof url === "string" && url.startsWith("/") && !url.startsWith("//") ? url : "/";
 }
 
@@ -47,18 +47,15 @@ createServer(
   (incoming, outgoing) => {
     // Bootstrap reads also establish custody while traffic is closed. Match the raw path
     // exactly so URL normalization cannot turn a permitted request into an auth request.
+    const { method, url, headers } = incoming;
     const retainedRead =
-      incoming.method === "GET" &&
-      (incoming.url === "/installation" || /^\/namespaces\/[A-Za-z0-9_-]+$/.test(incoming.url));
+      method === "GET" &&
+      (url === "/installation" || /^\/namespaces\/[A-Za-z0-9_-]+$/.test(url ?? ""));
     const bootstrap =
       guarded &&
       admitted(".bootstrap") &&
-      (retainedRead ||
-        (incoming.method === "POST" &&
-          incoming.url === "/namespaces" &&
-          incoming.headers["x-api-key"]));
-    const retained =
-      guarded && retainedRead && incoming.headers["x-api-key"] && admitted(".retained");
+      (retainedRead || (method === "POST" && url === "/namespaces" && headers["x-api-key"]));
+    const retained = guarded && retainedRead && headers["x-api-key"] && admitted(".retained");
     if (guarded && !bootstrap && !retained && !admitted()) {
       outgoing.writeHead(503, { "x-rehearsal-gate": "closed", "cache-control": "no-store" });
       outgoing.end();
@@ -68,9 +65,9 @@ createServer(
       {
         hostname: target.hostname,
         port: target.port || 80,
-        path: proxyPath(incoming.url),
-        method: incoming.method,
-        headers: proxyHeaders(incoming.headers),
+        path: proxyPath(url),
+        method,
+        headers: proxyHeaders(headers),
       },
       (response) => {
         outgoing.writeHead(response.statusCode ?? 502, proxyHeaders(response.headers));
