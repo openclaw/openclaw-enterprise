@@ -12,6 +12,10 @@ import {
   assertLegacyAgentMigrationRefusal,
   assertLegacyControllerWorkBackfill,
 } from "./postgres-historical-agent-migration-cases.ts";
+import {
+  registerPostgresMigrationCredentialLineageCases,
+  registerPostgresMigrationCredentialLineageRefusalCase,
+} from "./postgres-migration-credential-lineage-cases.ts";
 import { registerPostgresMigrationSchemaAdmissionCases } from "./postgres-migration-schema-admission-cases.ts";
 import { registerPostgresMigrationTransactionCommandCases } from "./postgres-migration-transaction-command-cases.ts";
 import pg from "pg";
@@ -22,7 +26,6 @@ import {
 } from "../helpers/credential-source-owner-upgrade.ts";
 import { request, startController } from "../helpers/postgres-platform-state.ts";
 import { assertPopulatedUpgradeReturn } from "../helpers/populated-upgrade-return.ts";
-import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.ts";
 import {
   catalogDigest,
   initialSchemaState,
@@ -947,7 +950,7 @@ async function assertHistoryRefused(db, refusal) {
 
 /**
  * @param {Pick<Awaited<ReturnType<typeof historyDatabase>>, "app" | "migrator">} db
- * @param {readonly { hash: string, created_at: string | number }[]} [previous]
+ * @param {readonly { hash: string, created_at: string | number | null }[]} [previous]
  */
 async function assertCompletedHistory(db, previous = []) {
   const manifest = JSON.parse(
@@ -1174,175 +1177,6 @@ async function seedCanonicalData(
     );
   }
   return namespace;
-}
-
-async function seedProviderCompletedData(db) {
-  const installation = `ins_${randomUUID()}`;
-  const namespace = `ns_${randomUUID()}`;
-  const configuration = `cfg_${randomUUID()}`;
-  const agent = `agt_${randomUUID()}`;
-  const revision = `rev_${randomUUID()}`;
-  const serviceAccount = `sa_${randomUUID()}`;
-  const preset = `pre_${randomUUID()}`;
-  const admission = `admission-${randomUUID()}`;
-  const servicePrincipal = `service-agent-${agent}`;
-  const fingerprint = createHash("sha256").update(`provider-plan-${randomUUID()}`).digest("hex");
-  await db.app.query(
-    "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Provider fixture',now())",
-    [installation],
-  );
-  await db.app.query(
-    "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,$2,'ready',now())",
-    [namespace, `provider-${randomUUID()}`],
-  );
-  await db.app.query(
-    `INSERT INTO occ.presets(id,namespace_id,name,template,created_at)
-     VALUES($1,$2,'Provider preset',$3::jsonb,now())`,
-    [
-      preset,
-      namespace,
-      JSON.stringify({ agent: { name: "Provider preset agent", providerId: "openai" } }),
-    ],
-  );
-  await db.app.query("BEGIN");
-  try {
-    await db.app.query(
-      "INSERT INTO occ.configurations(id,namespace_id,kind,generation,created_at) VALUES($1,$2,'agent',1,now())",
-      [configuration, namespace],
-    );
-    await db.app.query(
-      "INSERT INTO occ.service_accounts(id,namespace_id,name,credential) VALUES($1,$2,'Provider account',NULL)",
-      [serviceAccount, namespace],
-    );
-    await db.app.query(
-      "INSERT INTO occ.iam_identities(id,namespace_id,agent_id,kind) VALUES($1,$2,$3,'service_principal')",
-      [servicePrincipal, namespace, agent],
-    );
-    await db.app.query(
-      `INSERT INTO occ.agents
-        (id, namespace_id, name, configuration_id, provider_id, execution_mode,
-         service_principal_id, harness_auth, created_at)
-       VALUES($1,$2,'Provider agent',$3,'openai','dedicated',$4,$5::jsonb,now())`,
-      [
-        agent,
-        namespace,
-        configuration,
-        servicePrincipal,
-        JSON.stringify({ method: "chatgpt_service_account", serviceAccountId: serviceAccount }),
-      ],
-    );
-    await db.app.query(
-      `INSERT INTO occ.agent_revisions
-        (id,namespace_id,agent_id,revision_number,provider_id,admitted_spec,admitted_at)
-       VALUES($1,$2,$3,1,'openai',$4::jsonb,now())`,
-      [
-        revision,
-        namespace,
-        agent,
-        JSON.stringify({
-          configuration_id: configuration,
-          configuration_kind: "agent",
-          configuration_generation: 1,
-          draft_spec: {},
-          harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
-          harness_auth: {
-            method: "chatgpt_service_account",
-            serviceAccountId: serviceAccount,
-            credential: { kind: "access_token", secretRef: { name: "svc-token", key: "token" } },
-            providerBinding: {
-              providerId: "openai",
-              driverId: "chatgpt-service-accounts",
-              workspaceId: "workspace",
-              credentialIssued: true,
-            },
-          },
-          compute: { id: "kubernetes", implementation: "test" },
-          repository_credentials: {
-            driver: { id: "repository-credentials", implementation: "github" },
-            deadlineWallMs: 1,
-            bindings: [
-              {
-                repositoryRef: "openclaw-enterprise",
-                profile: "git-write",
-                providerId: "repository-provider",
-                grant: {
-                  providerInstanceId: "github-app",
-                  repositoryId: "repo-id",
-                  grantId: "grant-id",
-                },
-              },
-            ],
-          },
-        }),
-      ],
-    );
-    await db.app.query("COMMIT");
-  } catch (error) {
-    await db.app.query("ROLLBACK");
-    throw error;
-  }
-  await db.migrator.query(
-    `INSERT INTO occ.service_account_driver_bindings
-      (service_account_id, namespace_id, provider_id, driver_id, external_account_id, workspace_id)
-     VALUES($1,$2,'openai','chatgpt-service-accounts','external-account','workspace')`,
-    [serviceAccount, namespace],
-  );
-  await db.app.query("UPDATE occ.agents SET desired_runtime_state='running' WHERE id=$1", [agent]);
-  await db.app.query(
-    `INSERT INTO occ.repository_session_attempts
-      (namespace_id,agent_id,revision_id,repository_ref,admission_id,duration_seconds,
-       deadline_wall_ms,phase,created_at,updated_at)
-     VALUES($1,$2,$3,'openclaw-enterprise',$4,60,1,'opening',now(),now())`,
-    [namespace, agent, revision, admission],
-  );
-  await db.app.query(
-    `INSERT INTO occ.controller_work
-      (idempotency_key,namespace_id,actor_id,work_kind,state,available_at,completed_at,reason_code,created_at,updated_at)
-     VALUES($1,$2,'provider-fixture','provisioning','succeeded',now(),now(),'PROVISIONING_SUCCEEDED',now(),now())`,
-    [`work-${randomUUID()}`, namespace],
-  );
-  const workId = (
-    await db.app.query("SELECT idempotency_key FROM occ.controller_work WHERE namespace_id=$1", [
-      namespace,
-    ])
-  ).rows[0].idempotency_key;
-  await db.app.query(
-    `INSERT INTO occ.agent_provisioning_work
-      (work_id,namespace_id,agent_id,configuration_id,actor_id,request_id,request_fingerprint,
-       status,completed_phase,revision_id,plan,progress,created_at,updated_at)
-     VALUES($1,$2,$3,$4,'provider-fixture','request-1',$5,'succeeded','handoff',$6,$7::jsonb,'{}'::jsonb,now(),now())`,
-    [
-      workId,
-      namespace,
-      agent,
-      configuration,
-      fingerprint,
-      revision,
-      JSON.stringify({
-        name: "Provider agent",
-        providerId: "openai",
-        executionMode: "dedicated",
-        configuration: { kind: "agent", values: {} },
-        harnessAuth: { method: "chatgpt_service_account", serviceAccountId: serviceAccount },
-        repositoryBindings: [{ repositoryRef: "openclaw-enterprise", profile: "git-write" }],
-        drivers: {
-          compute: "compute-kubernetes",
-          configuration: "config-kubernetes",
-          iam: "native-iam",
-        },
-      }),
-    ],
-  );
-  return {
-    namespace,
-    agent,
-    revision,
-    serviceAccount,
-    preset,
-    admission,
-    workId,
-    fingerprint,
-  };
 }
 
 // Migration 0037 adds authentication-version columns, the identity-only CHECK
@@ -2167,214 +2001,18 @@ test(
   },
 );
 
-test(
-  "Canonical repository-prefix upgrade retains exact attempt cleanup context",
+registerPostgresMigrationCredentialLineageCases({
   requiresHistoryPostgres,
-  async (context) => {
-    const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(context, fixture, "repository", { prefix: 27 });
-    const namespaceId = await seedCanonicalData(db, { preset: true });
-    const snapshot = repositoryCredentials();
-    const revisionId = `rev_${randomUUID()}`;
-    const admissionId = `admission-${randomUUID()}`;
-    const owner = (
-      await db.app.query(
-        `INSERT INTO occ.agent_revisions (id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
-     SELECT $2,namespace_id,agent_id,2,admitted_spec || jsonb_build_object('repository_credentials',$3::jsonb),backend_id,now()
-     FROM occ.agent_revisions WHERE namespace_id=$1 RETURNING agent_id`,
-        [namespaceId, revisionId, JSON.stringify(snapshot)],
-      )
-    ).rows[0].agent_id;
-    await db.app.query("UPDATE occ.agents SET desired_runtime_state='running' WHERE id=$1", [
-      owner,
-    ]);
-    await db.app.query(
-      `INSERT INTO occ.repository_session_attempts
-     (namespace_id,agent_id,revision_id,repository_ref,admission_id,duration_seconds,deadline_wall_ms,phase,created_at,updated_at)
-     VALUES($1,$2,$3,$4,$5,60,$6,'opening',now(),now())`,
-      [
-        namespaceId,
-        owner,
-        revisionId,
-        snapshot.bindings[0].repositoryRef,
-        admissionId,
-        snapshot.deadlineWallMs,
-      ],
-    );
-    const before = (
-      await db.app.query(
-        "SELECT to_jsonb(attempt) AS value FROM occ.repository_session_attempts AS attempt",
-      )
-    ).rows;
-    const receipts = await historyReceipts(db.migrator);
-    assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
-      ok: true,
-      history: "repositoryCredentials",
-    });
-    assert.deepEqual(await runHistoryMigration(db), { ok: true, history: "repositoryCredentials" });
-    await assertCompletedHistory(db, receipts);
-    const retained = (
-      await db.app.query(
-        "SELECT to_jsonb(attempt) AS value FROM occ.repository_session_attempts AS attempt",
-      )
-    ).rows;
-    assert.deepEqual(
-      retained,
-      before.map(({ value }) => ({
-        value: {
-          ...value,
-          broker_protocol: 0,
-          live_revision_id: revisionId,
-          cleanup_context: { driver: snapshot.driver, binding: snapshot.bindings[0] },
-          // Upgrading this attempt must not turn it into a successor of another session.
-          predecessor_admission_id: null,
-          execution_fingerprint: null,
-        },
-      })),
-    );
-    assert.deepEqual(await runHistoryMigration(db, "production"), {
-      ok: true,
-      history: "completed",
-    });
-  },
-);
-
-test(
-  "Provider migration preserves fingerprints and rejects retired managed PAT bindings",
-  requiresHistoryPostgres,
-  async (context) => {
-    const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(context, fixture, "providerlineage");
-    await installProviderCompletedHistory(db);
-    const seeded = await seedProviderCompletedData(db);
-    const receipts = await historyReceipts(db.migrator);
-    assert.equal(receipts.length, 31);
-    assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
-      ok: true,
-      history: "providerCompleted",
-    });
-    // Preserve the historical terminology migration proof through its supported auth shape.
-    // The canonical PAT-source migration must then refuse the retired binding atomically.
-    await installCanonicalPrefix(db, 48);
-    assert.deepEqual((await historyReceipts(db.migrator)).slice(0, receipts.length), receipts);
-    assert.deepEqual(
-      (
-        await db.app.query(
-          `SELECT backend_id AS "backendId", harness_auth AS "harnessAuth"
-           FROM occ.agents WHERE namespace_id=$1 AND id=$2`,
-          [seeded.namespace, seeded.agent],
-        )
-      ).rows,
-      [
-        {
-          backendId: "openai",
-          harnessAuth: {
-            method: "chatgpt_service_account",
-            serviceAccountId: seeded.serviceAccount,
-          },
-        },
-      ],
-    );
-    const revision = (
-      await db.app.query(
-        `SELECT backend_id AS "backendId",
-                admitted_spec #> '{harness_auth,backendBinding}' AS "backendBinding",
-                admitted_spec #> '{harness_auth,providerBinding}' AS "providerBinding",
-                admitted_spec #> '{repository_credentials,bindings,0,backendId}' AS "repositoryBackendId",
-                admitted_spec #> '{repository_credentials,bindings,0,providerId}' AS "repositoryProviderId"
-         FROM occ.agent_revisions WHERE namespace_id=$1 AND id=$2`,
-        [seeded.namespace, seeded.revision],
-      )
-    ).rows[0];
-    assert.deepEqual(revision, {
-      backendId: "openai",
-      backendBinding: {
-        backendId: "openai",
-        driverId: "chatgpt-service-accounts",
-        workspaceId: "workspace",
-        credentialIssued: true,
-      },
-      providerBinding: null,
-      repositoryBackendId: "repository-provider",
-      repositoryProviderId: null,
-    });
-    assert.deepEqual(
-      (
-        await db.migrator.query(
-          `SELECT backend_id AS "backendId" FROM occ.service_account_driver_bindings
-           WHERE namespace_id=$1 AND service_account_id=$2`,
-          [seeded.namespace, seeded.serviceAccount],
-        )
-      ).rows,
-      [{ backendId: "openai" }],
-    );
-    assert.deepEqual(
-      (
-        await db.app.query(
-          `SELECT request_fingerprint AS "requestFingerprint",
-                  plan->>'backendId' AS "backendId",
-                  plan ? 'providerId' AS "hasProviderId"
-           FROM occ.agent_provisioning_work WHERE work_id=$1`,
-          [seeded.workId],
-        )
-      ).rows,
-      [{ requestFingerprint: seeded.fingerprint, backendId: "openai", hasProviderId: false }],
-    );
-    assert.deepEqual(
-      (
-        await db.app.query(
-          `SELECT template #>> '{agent,backendId}' AS "backendId",
-                  template #> '{agent,providerId}' AS "providerId"
-           FROM occ.presets WHERE namespace_id=$1 AND id=$2`,
-          [seeded.namespace, seeded.preset],
-        )
-      ).rows,
-      [{ backendId: "openai", providerId: null }],
-    );
-    assert.deepEqual(
-      (
-        await db.app.query(
-          `SELECT cleanup_context #>> '{binding,backendId}' AS "backendId",
-                  cleanup_context #> '{binding,providerId}' AS "providerId"
-           FROM occ.repository_session_attempts WHERE admission_id=$1`,
-          [seeded.admission],
-        )
-      ).rows,
-      [{ backendId: "repository-provider", providerId: null }],
-    );
-    assert.deepEqual(
-      (
-        await db.migrator.query(
-          `SELECT table_name,column_name FROM information_schema.columns
-	           WHERE table_schema='occ'
-	             AND table_name IN ('agents','agent_revisions','service_account_driver_bindings')
-	             AND column_name='provider_id'
-	           ORDER BY table_name,column_name`,
-        )
-      ).rows,
-      [],
-    );
-    assert.deepEqual(
-      (
-        await db.migrator.query(
-          `SELECT table_name,column_name FROM information_schema.columns
-	           WHERE table_schema='occ' AND table_name='account' AND column_name='provider_id'`,
-        )
-      ).rows,
-      [{ table_name: "account", column_name: "provider_id" }],
-    );
-    assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
-      ok: true,
-      history: "preCodexPatSources",
-    });
-    const beforeRefusal = await historySnapshot(db);
-    assert.deepEqual(await runHistoryMigration(db, "production"), {
-      ok: false,
-      code: "MIGRATION_FAILED",
-    });
-    assert.deepEqual(await historySnapshot(db), beforeRefusal);
-  },
-);
+  migrationHistoryFixture,
+  historyDatabase,
+  seedCanonicalData,
+  installProviderCompletedHistory,
+  installCanonicalPrefix,
+  runHistoryMigration,
+  historyReceipts,
+  historySnapshot,
+  assertCompletedHistory,
+});
 
 test(
   "Canonical migration completes a Provider lineage after later canonical migrations",
@@ -2630,31 +2268,13 @@ test(
   },
 );
 
-test(
-  "Canonical migration refuses ambiguous Provider and Backend data before mutation",
+registerPostgresMigrationCredentialLineageRefusalCase({
   requiresHistoryPostgres,
-  async (context) => {
-    const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(context, fixture, "ambiguousprovider");
-    await installProviderCompletedHistory(db);
-    const seeded = await seedProviderCompletedData(db);
-    await db.migrator.query(
-      `UPDATE occ.presets
-       SET template=jsonb_set(template,'{agent,backendId}','"openai"'::jsonb,true)
-       WHERE namespace_id=$1 AND id=$2`,
-      [seeded.namespace, seeded.preset],
-    );
-    const before = (
-      await db.migrator.query("SELECT template FROM occ.presets WHERE id=$1", [seeded.preset])
-    ).rows;
-    await assertHistoryRefused(db);
-    assert.deepEqual(
-      (await db.migrator.query("SELECT template FROM occ.presets WHERE id=$1", [seeded.preset]))
-        .rows,
-      before,
-    );
-  },
-);
+  migrationHistoryFixture,
+  historyDatabase,
+  installProviderCompletedHistory,
+  assertHistoryRefused,
+});
 
 test(
   "Canonical migration rollback preserves receipts and retries through the other command",
