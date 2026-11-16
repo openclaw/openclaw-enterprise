@@ -36,7 +36,7 @@ import {
   untilSent,
   withRetryTimers,
 } from "../helpers/kubernetes-core-api.ts";
-import { writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
+import { writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { within } from "../helpers/wait-for.mjs";
 
@@ -409,12 +409,8 @@ test("configuration CRUD fails closed when its explicitly selected kubeconfig is
 });
 
 test("the official Kubernetes client rejects ambiguous identities and insecure API servers", async (t) => {
-  const scenarios: { kubeconfigPath: unknown; context: unknown; name: unknown }[] =
-    await writeUnsafeKubeconfigs(t);
+  const scenarios = await writeUnsafeKubeconfigs(t);
   for (const scenario of scenarios) {
-    assert.ok(typeof scenario.kubeconfigPath === "string");
-    assert.ok(typeof scenario.context === "string");
-    assert.ok(typeof scenario.name === "string");
     const driver = createDriver({
       mode: "kubeconfig",
       kubeconfigPath: scenario.kubeconfigPath,

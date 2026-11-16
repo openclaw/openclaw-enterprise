@@ -238,6 +238,7 @@
     "integration/production-upgrade-installation-recovery-cases.ts",
     "integration/production-upgrade-startup-preflight-cases.ts",
     "integration/production-upgrade-writer-handoff-cases.ts",
+    "integration/production-kubernetes-native-access-cases.ts",
     "integration/production-kubernetes-secret-cases.ts",
     "helpers/compute-credential-catalog.ts",
     "helpers/kubernetes-openshell-network-policy.ts",
