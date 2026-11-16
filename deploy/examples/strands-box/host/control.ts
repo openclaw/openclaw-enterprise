@@ -7,12 +7,14 @@ import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
 import {
   assertPinnedResolution,
+  assertUpstreamCaScope,
   CONTROLLED_INFERENCE_MARKER,
+  loadUpstreamCa,
   parseRoute,
   routeView,
   sameRouteView,
 } from "./egress.ts";
-import type { EgressRoute, RouteView } from "./egress.ts";
+import type { EgressRoute, RouteView, UpstreamCa } from "./egress.ts";
 import {
   ensureEmpty,
   fields,
@@ -91,6 +93,7 @@ interface InstalledConfig extends HostConfig {
   workspaceNode?: EgressRoute;
   separateWorkspaceNode?: NodeInstallation;
   controlledInference?: EgressRoute;
+  upstreamCa?: UpstreamCa;
 }
 
 interface RecordView {
@@ -341,6 +344,7 @@ function installedConfig(value: unknown): InstalledConfig {
     "workspaceNode",
     "separateWorkspaceNode",
     "controlledInference",
+    "upstreamCa",
   ]);
   if (config.workspace !== WORKSPACE) throw new Error("unsupported_workspace_path");
   const endpoint = object(data.endpoint);
@@ -449,6 +453,15 @@ function installedConfig(value: unknown): InstalledConfig {
       }
     }
   }
+  const controlledInference =
+    data.controlledInference === undefined
+      ? undefined
+      : parseRoute(data.controlledInference, "controlled-inference");
+  const upstreamCa = data.upstreamCa === undefined ? undefined : loadUpstreamCa(data.upstreamCa);
+  assertUpstreamCaScope(
+    upstreamCa,
+    boxDialedRoutes({ workspaceNode, separateWorkspaceNode, controlledInference }),
+  );
   return {
     ...config,
     owner: ownerPin,
@@ -467,10 +480,27 @@ function installedConfig(value: unknown): InstalledConfig {
       : { workspaceSetupId: string(data.workspaceSetupId) }),
     ...(workspaceNode === undefined ? {} : { workspaceNode }),
     ...(separateWorkspaceNode === undefined ? {} : { separateWorkspaceNode }),
-    ...(data.controlledInference === undefined
-      ? {}
-      : { controlledInference: parseRoute(data.controlledInference, "controlled-inference") }),
+    ...(controlledInference === undefined ? {} : { controlledInference }),
+    ...(upstreamCa === undefined ? {} : { upstreamCa }),
   };
+}
+
+/**
+ * Every configured route that Box itself may dial: the workspace node only when it runs inline
+ * (a separate file node dials from outside Box), and the controlled model. A new route kind that
+ * Box dials belongs here, and opts in to an upstream CA bundle by declaring its digest.
+ */
+export function boxDialedRoutes(config: {
+  readonly workspaceNode?: EgressRoute | undefined;
+  readonly separateWorkspaceNode?: unknown;
+  readonly controlledInference?: EgressRoute | undefined;
+}): EgressRoute[] {
+  return [
+    ...(config.workspaceNode !== undefined && config.separateWorkspaceNode === undefined
+      ? [config.workspaceNode]
+      : []),
+    ...(config.controlledInference === undefined ? [] : [config.controlledInference]),
+  ];
 }
 
 // Keep these exact literals pinned against the real Compute producer in conformance.
@@ -840,6 +870,7 @@ function admitted(
     readOnly: [],
     writable: [...mounts.keys(), ...config.writableState],
     egress,
+    ...(config.upstreamCa === undefined ? {} : { upstreamCa: config.upstreamCa }),
     ...(separateNode === undefined && typeof setupCode === "string" && expiresAt !== undefined
       ? { workspaceNodeSetupCode: setupCode, workspaceNodeSetupExpiresAt: expiresAt }
       : {}),

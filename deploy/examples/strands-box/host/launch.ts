@@ -33,7 +33,7 @@ import {
   report,
   safeReason,
 } from "./diagnostics.ts";
-import type { EgressRoute } from "./egress.ts";
+import type { EgressRoute, UpstreamCa } from "./egress.ts";
 import {
   WORKSPACE_VERIFIER,
   verifyWorkspaceVerifier,
@@ -180,6 +180,8 @@ export interface StartInput {
   workspaceNodeSetupCode?: string;
   workspaceNodeSetupExpiresAt?: number;
   egress?: readonly EgressRoute[];
+  /** The execution's one extra upstream CA bundle; every route in `egress` must opt in to it. */
+  upstreamCa?: UpstreamCa;
 }
 
 export interface OwnerReady {
@@ -585,9 +587,10 @@ export function start(
           (verifier === undefined ? "" : workspaceVerifierPolicy(config.workspace)),
         ownerOnly,
       );
-      // Only a route CA verified at host config load is written, into the authority directory
-      // that no grant covers. Stock Box refuses the key, so it fails closed before any egress.
-      const caPem = upstreamCaPem(input.egress ?? []);
+      // Only the CA bundle verified at host config load is written, into the authority directory
+      // that no grant covers, and only when every route Box dials opts in to it again here.
+      // Stock Box refuses the key, so it fails closed before any egress.
+      const caPem = upstreamCaPem(input.upstreamCa, input.egress ?? []);
       if (caPem !== undefined) writeFileSync(caFile, caPem, ownerOnly);
       // Box excludes its own box.toml and policy directory from every native grant.
       // Stage the Node input separately: the authority directory is never mounted.
@@ -612,7 +615,7 @@ export function start(
         'name = "oce-strands"',
         `box_dir = ${quoted(join(run, "box-state"))}`,
         `policy = ${quoted(policyFile)}`,
-        ...(caPem === undefined ? [] : [`${BOX_UPSTREAM_CA_KEY} = [${quoted(caFile)}]`]),
+        ...(caPem === undefined ? [] : [`${BOX_UPSTREAM_CA_KEY} = ${quoted(caFile)}`]),
         "",
         "[agent]",
         `command = [${[config.nodeBin, "--jitless", agentEntry, visibleAgentInput].map(quoted).join(", ")}]`,
