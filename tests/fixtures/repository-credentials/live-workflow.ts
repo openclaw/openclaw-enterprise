@@ -3,7 +3,6 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 
-import type { JsonValue } from "../../../apps/controller/src/drivers/repo/access/json-value.ts";
 import type { RepositoryCredentialSessionResult } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { appFunction } from "./app-functions.ts";
 import { closeAndDispose, registerResourceCleanup, type ResourceCleanup } from "./cleanup.ts";
@@ -138,15 +137,8 @@ export async function exerciseLiveWorkflow(
     const repository = reply.client.repository;
     const prefix = `repos/${repository}`;
     const marker = (kind: "pull" | "issue" | "comment") => `<!-- ${branch}:${kind} -->`;
-    const write = async (
-      method: "POST" | "PATCH",
-      path: string,
-      filename: string,
-      body: JsonValue,
-    ) => {
-      const input = await client.json(filename, body);
-      return client.gh(["api", "--method", method, path, "--input", input]);
-    };
+    const write = (method: "POST" | "PATCH", path: string, input: string) =>
+      client.gh(["api", "--method", method, path, "--input", input]);
 
     await client.git(["clone", reply.client.gitRemote, checkout]);
     await client.git(["fetch", "origin"], { cwd: checkout });
@@ -164,6 +156,12 @@ export async function exerciseLiveWorkflow(
     await client.git(["push", "origin", `HEAD:refs/heads/${branch}`], { cwd: checkout });
 
     const pullMarker = marker("pull");
+    const pullInput = await client.json("pull.json", {
+      title: "Credential gateway smoke",
+      body: pullMarker,
+      base,
+      head: branch,
+    });
     registerResourceCleanup(cleanups, {
       request,
       repository,
@@ -171,27 +169,25 @@ export async function exerciseLiveWorkflow(
       marker: pullMarker,
       head: branch,
     });
-    const pull = await write("POST", `${prefix}/pulls`, "pull.json", {
-      title: "Credential gateway smoke",
-      body: pullMarker,
-      base,
-      head: branch,
-    });
+    const pull = await write("POST", `${prefix}/pulls`, pullInput);
     const pullNumber = parseResourceId(pull.stdout, "number");
     await client.gh(["api", `${prefix}/pulls/${pullNumber}`]);
-    await write("PATCH", `${prefix}/pulls/${pullNumber}`, "update.json", {
+    const updateInput = await client.json("update.json", {
       title: "Credential gateway smoke checked",
     });
+    await write("PATCH", `${prefix}/pulls/${pullNumber}`, updateInput);
 
     const issueMarker = marker("issue");
-    registerResourceCleanup(cleanups, { request, repository, kind: "issues", marker: issueMarker });
-    const issue = await write("POST", `${prefix}/issues`, "issue.json", {
+    const issueInput = await client.json("issue.json", {
       title: "Credential gateway smoke",
       body: issueMarker,
     });
+    registerResourceCleanup(cleanups, { request, repository, kind: "issues", marker: issueMarker });
+    const issue = await write("POST", `${prefix}/issues`, issueInput);
     const issueNumber = parseResourceId(issue.stdout, "number");
     const commentsPath = `${prefix}/issues/${issueNumber}/comments`;
     const commentMarker = marker("comment");
+    const commentInput = await client.json("comment.json", { body: commentMarker });
     registerResourceCleanup(cleanups, {
       request,
       repository,
@@ -199,7 +195,7 @@ export async function exerciseLiveWorkflow(
       marker: commentMarker,
       issueNumber,
     });
-    const comment = await write("POST", commentsPath, "comment.json", { body: commentMarker });
+    const comment = await write("POST", commentsPath, commentInput);
     parseResourceId(comment.stdout, "id");
     await client.gh(["api", "--paginate", commentsPath]);
   } catch (error) {
