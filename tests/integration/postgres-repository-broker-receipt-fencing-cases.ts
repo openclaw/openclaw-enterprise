@@ -10,7 +10,7 @@ import {
 import {
   seedSessionRevision,
   sessionAttempt,
-} from "../conformance/repository-sessions.contract.mjs";
+} from "../conformance/repository-sessions.contract.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 
 type AttemptInput = Parameters<RepositorySessionRepository["createAttempt"]>[0];

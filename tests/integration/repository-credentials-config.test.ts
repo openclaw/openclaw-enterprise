@@ -5,8 +5,8 @@ import fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { readProtectedFile } from "../../apps/controller/src/composition/repository-credentials/protected-file.ts";
-import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
+import { socketDirectory } from "../helpers/socket-directory.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test("prepared startup accepts TLS without an App key or provider calls and rejects unsafe material", async (t) => {

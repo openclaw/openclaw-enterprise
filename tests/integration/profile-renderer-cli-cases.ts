@@ -214,6 +214,49 @@ export function registerCliCases(): void {
     assert.match(codex.preflight.warnings.join("\n"), /issuance is wired but remains unverified/);
   });
 
+  test("renderer CLI follows prepared repository database CA mounts", { skip: helmSkip }, (t) => {
+    for (const profile of ["openclaw", "codex"]) {
+      const input = profile === "codex" ? codexInput() : baseInput();
+      for (const enabled of [false, true]) {
+        for (const mountPath of [
+          "/etc/openclaw/prepared-repository",
+          "etc/openclaw/prepared-repository/",
+          "/etc/company/postgres-ca",
+        ]) {
+          const directory = temporaryDirectorySync(t, "oce-prepared-ca-");
+          const site = {
+            ...input,
+            controlPlane: {
+              ...input.controlPlane,
+              databaseCa: { secretName: "occ-db-ca", mountPath },
+            },
+            repository: enabled ? repositoryConfiguration() : { enabled },
+          };
+          if (enabled && mountPath.includes("prepared-repository")) {
+            assert.throws(
+              () => renderCli(profile, site, directory),
+              (error) => {
+                assert.equal(propertyAt(error, "status"), 1);
+                return true;
+              },
+            );
+            assert.match(
+              readPreflight(directory).errors.join("\n"),
+              /controlPlane\.databaseCa\.mountPath must be distinct from other active mounts/,
+            );
+            assert.equal(existsSync(join(directory, "values.yaml")), false);
+            assert.equal(existsSync(join(directory, "installation.yaml")), false);
+          } else {
+            const output = renderCli(profile, site, directory);
+            assert.equal(output.summary.ok, true);
+            assert.equal(objectAt(loadYaml(output.values), "database").caMountPath, mountPath);
+            assert.ok(helmTemplate(output).length > 0);
+          }
+        }
+      }
+    }
+  });
+
   test("profiles reject invalid Helm release names before emitting deployment files", async (t) => {
     for (const profile of ["openclaw", "codex"]) {
       const input = profile === "codex" ? codexInput() : baseInput();

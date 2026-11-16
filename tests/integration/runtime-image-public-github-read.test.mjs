@@ -11,13 +11,12 @@ import {
   PUBLIC_GITHUB_READ_SKILL,
 } from "../../apps/controller/src/drivers/repo/github/public-read/codex.ts";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
+import { runDocker, waitForDockerLog } from "../helpers/runtime-image-docker.ts";
 import {
   image,
   imageTestOptions,
   reviewedCodexSeccompSecurityOptions,
-  runDocker,
-  waitForDockerLog,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 
 // Runs in the reader container. Only GitHub's address and trust root are substituted;
 // the real reader constructs the request and verifies the provider's TLS identity.

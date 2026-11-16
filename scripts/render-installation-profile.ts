@@ -755,6 +755,7 @@ function validateDatabaseCaMount(values: SecretValues, diagnostics: Errors) {
       "/etc/openclaw/repository-ca",
       "/var/run/secrets/kubernetes.io/serviceaccount",
       "/run/openclaw/repository-control",
+      "/etc/openclaw/prepared-repository",
     ]) {
       reserved.add(path);
     }

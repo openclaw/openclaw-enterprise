@@ -9,7 +9,7 @@ import type {
   RevisionHarnessDescriptor,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
-import { writeSafeKubeconfig } from "../helpers/unsafe-kubeconfigs.mjs";
+import { writeSafeKubeconfig } from "../helpers/unsafe-kubeconfigs.ts";
 import {
   createKubernetesComputeDriver,
   KubernetesComputeDriver,
@@ -37,9 +37,7 @@ type NamespaceRecord = NamespaceList["items"][number] & {
 };
 
 async function namespaceCore(t: TestContext, listNamespace: CoreApi["listNamespace"]) {
-  const { kubeconfigPath, context }: { kubeconfigPath: string; context: unknown } =
-    await writeSafeKubeconfig(t);
-  assert.ok(typeof context === "string");
+  const { kubeconfigPath, context } = await writeSafeKubeconfig(t);
   const { sdk, clientConfiguration } = await createKubernetesClientConfiguration(
     { mode: "kubeconfig", kubeconfigPath, context },
     (message) => new Error(message),

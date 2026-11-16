@@ -15,7 +15,7 @@ import {
   requiresPostgres,
   setup as setupSingletonWorker,
 } from "../helpers/compute-singleton-worker.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 interface SeededRevision {
   readonly id: string;

@@ -41,6 +41,7 @@ checksum-verified `openclaw-required-worker-authority-regression.patch`
 and runs the real Gateway public-RPC cases without network access. The cases
 cover placement before and after acknowledgement, disconnect, and committed
 role, scope, and profile revocation.
+[OpenClaw #196972](https://github.com/openclaw/openclaw/pull/196972) adds an opt-in wait for admitted work and final writes.
 The build also applies `openclaw-codex-full-access-profile.patch`, which selects
 the native full-access Codex profile, and
 `openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation
@@ -53,6 +54,9 @@ unattributed owner requires operator confirmation.
 OpenClaw normalizes newly created owner-only Linux directories that inherit
 setgid and reports invalid plugin settings during startup. The build runs the
 upstream private-store regressions.
+`openclaw-native-turn-settlement.patch` carries [upstream #185180](https://github.com/openclaw/openclaw/pull/185180).
+When Codex releases a long-running turn, the Gateway gives final delivery its normal progress window.
+
 `openclaw-node-setup-renewal.patch` adds `--pair-or-reconnect` for first enrollment
 or renewal under the same binding. Fresh setup comes first; a typed bootstrap rejection
 allows one validated saved-token retry. See [node enrollment](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
@@ -321,17 +325,17 @@ set -a
 . /tmp/images-runtime-startup.env
 set +a
 OPENCLAW_ENTERPRISE_CI_STATE=/tmp/images-runtime-startup.json \
-  node --test tests/integration/runtime-image-startup.test.mjs \
+  node --test tests/integration/runtime-image-startup.test.ts \
     tests/integration/runtime-image-gateway-workspace.test.ts \
-    tests/integration/runtime-image-state-migration.test.mjs \
+    tests/integration/runtime-image-state-migration.test.ts \
     tests/integration/runtime-image-managed-files.test.ts \
-    tests/integration/runtime-image-native-listener.test.mjs \
+    tests/integration/runtime-image-native-listener.test.ts \
     tests/integration/runtime-image-startup-probe.test.mjs \
     tests/integration/runtime-image-startup-termination.test.ts \
     tests/integration/runtime-image-gateway-unclean-restart.test.ts \
     tests/integration/runtime-image-gateway-retained-state.test.ts \
     tests/integration/runtime-image-gateway-peer.test.ts \
-    tests/integration/runtime-image-native-worker.test.mjs
+    tests/integration/runtime-image-native-worker.test.ts
 ```
 
 The smoke starts task-owned containers with the Docker Compute Driver gateway

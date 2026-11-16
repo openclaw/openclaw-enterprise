@@ -250,10 +250,11 @@ behavior.
 
 ## Debugging and Verification
 
-- `node --test tests/integration/occ-api.test.mjs` checks the HTTP contract and
-  API admission behavior for Namespace IAM policy, including refusal of all five
-  writes without declared transaction participation. The Agent Backend case
-  also checks equal create denials for configured and unknown valid Backend IDs,
+- `node --test tests/integration/occ-api-namespace-iam-policy.test.ts` checks the
+  Namespace IAM HTTP contract and API admission, including refusal of all five
+  writes without declared transaction participation.
+- The Agent Backend case in `tests/integration/occ-api.test.mjs` checks equal
+  create denials for configured and unknown valid Backend IDs,
   request-correlated authorization audit, unchanged process-local Agent,
   Configuration, IAM policy, ServicePrincipal, and operation State, and creation
   by a non-administrator with the required grants.

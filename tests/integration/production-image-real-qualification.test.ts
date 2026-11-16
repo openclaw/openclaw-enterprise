@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { checkBrokerCapability } from "../../scripts/upgrade-repository-image-probe.ts";
-import { testOwner, withTestOwnerLabel } from "../helpers/docker-test-owner.mjs";
+import { testOwner, withTestOwnerLabel } from "../helpers/docker-test-owner.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 

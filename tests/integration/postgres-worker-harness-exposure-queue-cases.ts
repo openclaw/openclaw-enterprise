@@ -7,7 +7,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import type { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { completedPasses } from "../helpers/postgres-worker-revision-queue.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 type WorkerRevisionFixtures = ReturnType<typeof createWorkerRevisionFixtures>;
 type RevisionFixture = Awaited<ReturnType<WorkerRevisionFixtures["setup"]>>;

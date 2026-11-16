@@ -8,6 +8,7 @@
     "tests/integration/dev-up-compose-startup.test.ts",
     "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
+    "tests/integration/occ-api-namespace-iam-policy.test.ts",
     "tests/integration/occ-api-joint-plugin-deployment.test.ts",
     "tests/integration/occ-service-account-lifecycle.test.ts",
     "tests/integration/stored-document-serialization.test.ts",
@@ -24,7 +25,7 @@
     "tests/integration/configuration-startup.test.mjs",
     "tests/integration/installation-change-preflight.test.mjs",
     "tests/conformance/kubernetes-secret-driver.test.ts",
-    "tests/docs/docs-site.test.mjs",
+    "tests/docs/docs-site.test.ts",
     "tests/conformance/kubernetes-compute.test.mjs",
     "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
@@ -39,7 +40,7 @@
     "tests/integration/console-api.test.ts",
     "tests/integration/caller-denial-api.test.ts",
     "tests/conformance/kubernetes-preflight.test.ts",
-    "tests/conformance/kubernetes-client.test.mjs",
+    "tests/conformance/kubernetes-client.test.ts",
     "tests/conformance/kubernetes-api-read.test.ts",
     "tests/integration/configuration-controller.test.mjs",
     "tests/integration/configuration-body-limits.test.mjs",
@@ -62,7 +63,7 @@
     "tests/docs/generated-api-reference.test.ts",
     "tests/integration/service-api-keys.test.ts",
     "tests/integration/driver-plugin-installation.test.ts",
-    "tests/conformance/workspace-files-configuration.test.mjs",
+    "tests/conformance/workspace-files-configuration.test.ts",
     "tests/integration/common-logging.test.ts",
     "tests/docs/docs-length.test.mjs",
     "tests/integration/production-image-upgrade.test.ts",
@@ -71,9 +72,9 @@
     "tests/conformance/update-contributors.test.ts",
     "tests/conformance/socket-directory.test.ts",
     "tests/conformance/temporary-directory.test.mjs",
-    "tests/integration/production-controller-security.test.mjs",
+    "tests/integration/production-controller-security.test.ts",
     "tests/conformance/kubernetes-runtime-credentials.test.ts",
-    "tests/conformance/openshell-gateway-wire.test.mjs",
+    "tests/conformance/openshell-gateway-wire.test.ts",
     "tests/conformance/openshell-provider-profile-wire.test.ts",
     "tests/conformance/oauth-connection.test.mjs",
     "tests/conformance/openshell-oauth-wire.test.mjs",
@@ -82,7 +83,7 @@
     "tests/integration/bootstrap-volume.test.ts",
     "tests/integration/secret-driver-startup.test.ts",
     "tests/conformance/kubernetes-configuration.test.ts",
-    "tests/conformance/occ-read.test.mjs",
+    "tests/conformance/occ-read.test.ts",
     "tests/integration/controller-lifecycle.test.ts",
     "tests/conformance/configuration-occ.test.ts",
     "tests/conformance/configuration-model-policy.test.ts",
@@ -106,11 +107,11 @@
     "tests/integration/production-healthcheck.test.ts",
     "tests/conformance/pr-status.test.ts",
     "tests/conformance/codex-stderr-filter.test.ts",
-    "tests/docs/docs-server.test.mjs",
+    "tests/docs/docs-server.test.ts",
     "tests/integration/console-build-metadata.test.ts",
     "tests/conformance/console-design-tokens.test.ts",
     "tests/conformance/audit.test.ts",
-    "tests/conformance/compute-lifecycle-hooks.test.mjs",
+    "tests/conformance/compute-lifecycle-hooks.test.ts",
     "tests/conformance/model-discovery.test.ts",
     "tests/conformance/utils.test.ts",
     "tests/conformance/workspace-node-setup.test.ts",
@@ -120,7 +121,7 @@
     "tests/conformance/console-agent-name-runs.test.ts",
     "tests/conformance/console-json-errors.test.ts",
     "tests/integration/bootstrap-output.test.ts",
-    "tests/conformance/slack-configuration.test.mjs",
+    "tests/conformance/slack-configuration.test.ts",
     "tests/integration/slack-destination.test.ts",
     "tests/conformance/console-gateway-safety.test.ts",
     "tests/conformance/grafana-overview-dashboard.test.ts",
@@ -132,26 +133,26 @@
     "tests/integration/credential-proxy-peer-pin.test.ts",
     "tests/integration/credential-proxy-provider-pin.test.ts",
     "tests/integration/credential-proxy-stream-exchange.test.ts",
-    "tests/integration/egress-stock-online-authority.test.mjs",
+    "tests/integration/egress-stock-online-authority.test.ts",
     "tests/integration/managed-plugin-request-authority.test.ts",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
     "tests/integration/harness-egress-probe-diagnostics.test.ts",
     "tests/integration/openshell-permission-diagnostic.test.ts",
-    "tests/conformance/openshell-prepared-git-provider.test.mjs",
+    "tests/conformance/openshell-prepared-git-provider.test.ts",
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/conformance/openshell-git-denial.test.ts",
     "tests/integration/openshell-observed-request-hook.test.ts",
-    "tests/integration/credential-free-online-grant.test.mjs",
+    "tests/integration/credential-free-online-grant.test.ts",
     "tests/integration/credential-free-metadata-grant.test.ts",
     "tests/integration/agent-grant-rehearsal.test.ts",
     "tests/integration/egress-enrollment.test.mjs",
     "tests/integration/protected-driver-registration.test.ts",
     "tests/integration/credential-policy-recovery.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
-    "tests/integration/egress-installation-exchange.test.mjs",
+    "tests/integration/egress-installation-exchange.test.ts",
     "tests/integration/egress-prepared-github-metadata.test.mjs",
     "tests/integration/protected-source-refusals.test.ts",
-    "tests/integration/refusal-answers.test.mjs",
+    "tests/integration/refusal-answers.test.ts",
     "tests/integration/namespace-deletion-console-api.test.ts",
     "tests/integration/github-selected-repositories.test.ts"
   ],
@@ -160,7 +161,7 @@
       "path": "tests/conformance/audit.test.ts"
     },
     {
-      "path": "tests/conformance/compute-lifecycle-hooks.test.mjs"
+      "path": "tests/conformance/compute-lifecycle-hooks.test.ts"
     },
     {
       "path": "tests/conformance/model-discovery.test.ts"
@@ -202,10 +203,10 @@
       "path": "tests/docs/docs-length.test.mjs"
     },
     {
-      "path": "tests/docs/docs-server.test.mjs"
+      "path": "tests/docs/docs-server.test.ts"
     },
     {
-      "path": "tests/docs/docs-site.test.mjs"
+      "path": "tests/docs/docs-site.test.ts"
     },
     {
       "path": "tests/docs/generated-api-reference.test.ts"
@@ -271,7 +272,7 @@
       "path": "tests/conformance/kubernetes-preflight.test.ts"
     },
     {
-      "path": "tests/conformance/kubernetes-client.test.mjs"
+      "path": "tests/conformance/kubernetes-client.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-network-policy.test.mjs"
@@ -339,10 +340,10 @@
       "path": "tests/conformance/codex-stderr-filter.test.ts"
     },
     {
-      "path": "tests/conformance/occ-read.test.mjs"
+      "path": "tests/conformance/occ-read.test.ts"
     },
     {
-      "path": "tests/conformance/openshell-gateway-wire.test.mjs"
+      "path": "tests/conformance/openshell-gateway-wire.test.ts"
     },
     {
       "path": "tests/conformance/openshell-provider-profile-wire.test.ts",
@@ -380,7 +381,7 @@
       "path": "tests/conformance/secret-occ.test.ts"
     },
     {
-      "path": "tests/conformance/slack-configuration.test.mjs"
+      "path": "tests/conformance/slack-configuration.test.ts"
     },
     {
       "path": "tests/integration/slack-destination.test.ts"
@@ -407,7 +408,7 @@
       "path": "tests/conformance/workspace-node-setup.test.ts"
     },
     {
-      "path": "tests/conformance/workspace-files-configuration.test.mjs"
+      "path": "tests/conformance/workspace-files-configuration.test.ts"
     },
     {
       "path": "tests/conformance/workspace-files.test.ts"
@@ -481,6 +482,22 @@
       "path": "tests/integration/occ-api.test.mjs"
     },
     {
+      "path": "tests/integration/occ-api-namespace-iam-policy.test.ts",
+      "expectedTests": [
+        "Namespace IAM routes manage exact Role and AccessBinding policy through the selected Driver",
+        "Namespace IAM routes bind existing humans to the exact Namespace and Agent",
+        "Namespace IAM refuses bindings whose Role cannot apply to the target",
+        "Namespace IAM routes bind humans enrolled after bootstrap through the live resolver",
+        "access removed by deleting its target or Namespace is audited and leaves no policy behind",
+        "Namespace IAM reports invalid policy input as 400 with the field and refuses inert Permissions",
+        "Namespace IAM Roles cannot grant Namespace lifecycle actions to a Namespace binding",
+        "OCC rejects Namespace lifecycle Role Permissions before any IAM Driver or State write",
+        "Console share grants confer only the shared Agent and Namespace discovery",
+        "Namespace IAM read routes serialize broad native policy without widening mutations",
+        "Namespace IAM routes fail closed without policy management and roll back audit failures"
+      ]
+    },
+    {
       "path": "tests/integration/occ-api-joint-plugin-deployment.test.ts"
     },
     {
@@ -504,7 +521,7 @@
       "path": "tests/integration/list-summaries.test.ts"
     },
     {
-      "path": "tests/integration/production-controller-security.test.mjs"
+      "path": "tests/integration/production-controller-security.test.ts"
     },
     {
       "path": "tests/integration/production-healthcheck.test.ts"
@@ -559,6 +576,9 @@
     },
     {
       "path": "tests/integration/startup-ipv6-loopback.test.ts"
+    },
+    {
+      "path": "tests/integration/postgres-controller-readiness.test.ts"
     },
     {
       "path": "tests/integration/common-logging.test.ts"
@@ -745,7 +765,7 @@
       ]
     },
     {
-      "path": "tests/integration/egress-stock-online-authority.test.mjs"
+      "path": "tests/integration/egress-stock-online-authority.test.ts"
     },
     {
       "path": "tests/integration/managed-plugin-request-authority.test.ts"
@@ -879,11 +899,11 @@
         "Git denial receipt refuses foreign, incomplete, and ambiguous log histories",
         "Git denial receipt rejects normalized or noncanonical event dates",
         "Git denial receipt refuses a replaced supervisor before or during the read",
-        "Git denial command retains non-403 failure categories without output"
+        "Git removal denial command reports only signed or transport failures"
       ]
     },
     {
-      "path": "tests/conformance/openshell-prepared-git-provider.test.mjs",
+      "path": "tests/conformance/openshell-prepared-git-provider.test.ts",
       "expectedTests": [
         "prepared Git static token and rotation use released fields without returning credentials or readiness",
         "prepared Git bootstraps without privilege and distinguishes accepted rotation from exact installed state",
@@ -898,7 +918,7 @@
       ]
     },
     {
-      "path": "tests/integration/credential-free-online-grant.test.mjs",
+      "path": "tests/integration/credential-free-online-grant.test.ts",
       "expectedTests": [
         "signed stock request observes an OCC credential-free grant and its withdrawal",
         "a signed stock request cannot carry a credential-free grant across revision replacement",
@@ -948,11 +968,12 @@
         "OpenShell exchange: first-renewal outage, then recover",
         "OpenShell exchange: first-renewal outage, then withdraw",
         "OpenShell exchange: post-renewal outage, then recover",
-        "OpenShell exchange: post-renewal outage, then withdraw"
+        "OpenShell exchange: post-renewal outage, then withdraw",
+        "exchange reader rejects invalid reply envelopes and preserves terminal ordering"
       ]
     },
     {
-      "path": "tests/integration/egress-installation-exchange.test.mjs"
+      "path": "tests/integration/egress-installation-exchange.test.ts"
     },
     {
       "path": "tests/integration/egress-prepared-github-metadata.test.mjs"
@@ -961,7 +982,7 @@
       "path": "tests/integration/protected-source-refusals.test.ts"
     },
     {
-      "path": "tests/integration/refusal-answers.test.mjs"
+      "path": "tests/integration/refusal-answers.test.ts"
     },
     {
       "path": "tests/integration/namespace-deletion-console-api.test.ts"

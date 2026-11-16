@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { createServer as createTlsServer } from "node:tls";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import {
@@ -47,7 +47,7 @@ export async function verifyDatabaseStartupTrust(t: TestContext) {
   const container = firstContainer(api);
   const args = container.args.map((arg) => {
     if (arg === "apps/controller/src/server.mjs") {
-      return "tests/fixtures/oidc-ca-postgres-consumer.mjs";
+      return "tests/fixtures/oidc-ca-postgres-consumer.ts";
     }
     return arg.startsWith("/") ? wiring.resolve(arg) : arg;
   });
@@ -281,7 +281,7 @@ export async function verifyDatabaseStartupTrust(t: TestContext) {
   // certificate against the IP, which the DNS:localhost certificate does not carry.
   const unguarded = await execute(
     process.execPath,
-    ["tests/fixtures/oidc-ca-postgres-consumer.mjs"],
+    ["tests/fixtures/oidc-ca-postgres-consumer.ts"],
     { env: { OCC_DATABASE_URL: ipConnection(selected) }, timeout: 10000 },
   );
   assert.match(unguarded.stdout, /^entrypoint\n\{"code":"ERR_TLS_CERT_ALTNAME_INVALID"\}\n$/);

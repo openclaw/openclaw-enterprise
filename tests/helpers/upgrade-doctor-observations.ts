@@ -1,15 +1,15 @@
-type DoctorPodOptions = {
+type DoctorPodOptions<Observation> = {
   containerName?: "gateway" | "agent";
   name?: string;
   uid?: string;
   phase?: "Running" | "Failed" | "Succeeded";
   ready?: boolean;
   reason?: "Evicted";
-  restartCount?: number;
-  lastTerminationReason?: string | undefined;
+  restartCount?: number | Observation;
+  lastTerminationReason?: string | Observation | undefined;
 };
 
-export function createDoctorPodFixture(image: string) {
+export function createDoctorPodFixture<Observation = never>(image: string) {
   return function doctorPod({
     containerName = "gateway",
     name = containerName,
@@ -19,7 +19,7 @@ export function createDoctorPodFixture(image: string) {
     reason,
     restartCount = 0,
     lastTerminationReason,
-  }: DoctorPodOptions = {}) {
+  }: DoctorPodOptions<Observation> = {}) {
     return {
       metadata: { namespace: "tenant", name, uid },
       spec: { containers: [{ name: containerName, image }] },
