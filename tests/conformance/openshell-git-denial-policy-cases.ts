@@ -1,5 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+
+import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { createOpenShellGitDenial } from "../helpers/openshell-git-denial.ts";
+import {
+  addWireService,
+  bindWireServer,
+  grpc,
+  shutdownWireServer,
+  type WireSandboxLogLine,
+  type WireRequest,
+} from "./openshell-gateway-wire-fixture.ts";
 import {
   denial,
   endedAt,
@@ -14,13 +25,53 @@ import {
 } from "./openshell-git-denial-receipt-fixture.ts";
 
 export function registerGitDenialPolicyCases() {
-  test("Git denial receipt requires fresh evidence and retains the final millisecond bucket", async () => {
+  test("Git denial receipt requires fresh evidence and retains the final millisecond bucket", async (t) => {
     const baseline = [warning, denial, line(1)];
-    const f = fixture(baseline);
-    const before = await f.observer.snapshot();
+    const requests: WireRequest<"GetSandboxLogs">[] = [];
+    // Use the real decoder for the receipt that shares a millisecond with the
+    // attempt's end. The wire peer returns log batches, and the observer decides.
+    const wireLine = (entry: typeof denial): WireSandboxLogLine => ({
+      sandbox_id: entry.sandboxId,
+      event_time: {
+        seconds: String(Math.floor(Date.parse(entry.time) / 1000)),
+        nanos: Number(entry.time.slice(20, 29)),
+      },
+      level: entry.level,
+      target: entry.target,
+      message: entry.message,
+      source: entry.source,
+      fields: entry.fields,
+    });
+    const logs = baseline.map(wireLine);
+    const server = new grpc.Server();
+    addWireService(server, {
+      GetSandboxLogs(call, reply) {
+        requests.push(call.request);
+        reply(null, { logs, buffer_total: logs.length });
+      },
+    });
+    const port = await bindWireServer(server);
+    const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+    t.after(async () => {
+      client.close();
+      await shutdownWireServer(server);
+    });
+    const supervisor = { sandboxId: denial.sandboxId };
+    const observer = createOpenShellGitDenial({
+      gatewayClient: client,
+      workspace: "workspace-one",
+      sandbox: "sandbox-name",
+      sandboxId: supervisor.sandboxId,
+      supervisor,
+      readSupervisor: async () => supervisor,
+      executable,
+      signal: t.signal,
+    });
+    const before = await observer.snapshot();
     assert.deepEqual(before, {});
-    f.set([...baseline, warning, denial, marker]);
-    assert.deepEqual(await f.observer.expectAfter(before, interval), {
+    // Append the same pair after the anchor, followed by the unique DNS marker.
+    logs.push(wireLine(warning), wireLine(denial), wireLine(marker));
+    assert.deepEqual(await observer.expectAfter(before, interval), {
       count: 1,
       reason: "transparent_tcp_policy_denied",
       policyReason: "endpoint-not-admitted",
@@ -31,13 +82,34 @@ export function registerGitDenialPolicyCases() {
       startedAt,
       endedAt,
     });
+    const request = {
+      workspace_scope: { workspace: "workspace-one", selection: "workspace" },
+      sandbox: "sandbox-name",
+      lines: 2000,
+    };
+    assert.deepEqual(requests, [request, request]);
+    // Within a single millisecond, the OCSF event still cannot precede WARN.
+    logs.splice(
+      baseline.length,
+      2,
+      wireLine({ ...warning, time: "2026-11-05T12:00:00.002999999Z" }),
+      wireLine({ ...denial, time: "2026-11-05T12:00:00.002000000Z" }),
+    );
+    await assert.rejects(
+      observer.expectAfter(before, interval),
+      refusalAt("policy-pair", /competing or unpaired/),
+    );
+    assert.deepEqual(requests, [request, request, request]);
+
+    const f = fixture(baseline);
+    const ipv6Before = await f.observer.snapshot();
     f.set([
       ...baseline,
       { ...warning, fields: { ...warning.fields, destination: "[fd23:6f70:656e::1]:443" } },
       denial,
       { ...marker, time: "2026-11-05T12:00:00.004999999Z" },
     ]);
-    assert.equal((await f.observer.expectAfter(before, interval)).count, 1);
+    assert.equal((await f.observer.expectAfter(ipv6Before, interval)).count, 1);
 
     // A valid trailing warning may arrive before its OCSF record. Do not accept
     // the first complete pair until every observed staged denial is paired.
@@ -123,11 +195,6 @@ export function registerGitDenialPolicyCases() {
         [denial, warning],
         [warning, line("intervening"), denial],
         ...alteredWarnings.map((change) => [{ ...warning, ...change }, denial]),
-        // Within one millisecond bucket, the OCSF record still cannot precede WARN.
-        [
-          { ...warning, time: "2026-11-05T12:00:00.002999999Z" },
-          { ...denial, time: "2026-11-05T12:00:00.002000000Z" },
-        ],
       ];
       for (const sequence of sequences) {
         const f = fixture([line(1)]);
