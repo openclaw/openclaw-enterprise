@@ -15,7 +15,7 @@ import {
 import {
   seedSessionRevision,
   sessionAttempt,
-} from "../conformance/repository-sessions.contract.mjs";
+} from "../conformance/repository-sessions.contract.ts";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import { startServiceProcessFixture } from "../fixtures/repository-credentials/service-process.ts";
 import { controlRequest } from "../fixtures/repository-credentials/service-fixture.ts";
