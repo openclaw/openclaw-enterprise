@@ -534,7 +534,9 @@ export function sourceEvidence(
       ],
     };
   }
-  if (!requireCleanTracked) return { sha: githubSha || head, issues: [] };
+  if (!requireCleanTracked) {
+    return { sha: githubSha || head, issues: [] };
+  }
   if (!head) {
     return {
       sha: null,

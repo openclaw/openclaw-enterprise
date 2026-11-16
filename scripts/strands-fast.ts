@@ -315,7 +315,9 @@ async function main() {
     (finishedSource.sha === source.sha
       ? null
       : "the checked-out source SHA changed during the run");
-  if (sourceProblem) console.error(sourceProblem);
+  if (sourceProblem) {
+    console.error(sourceProblem);
+  }
   const passed =
     sourceProblem === null &&
     !interrupted &&
