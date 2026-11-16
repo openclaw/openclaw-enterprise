@@ -1686,3 +1686,73 @@ test(
     }
   },
 );
+
+test(
+  "box-agent starts the command only after the release socket answers the fixed line",
+  { skip: unsupported, timeout: 20_000 },
+  async () => {
+    const directory = temporary();
+    const marker = join(directory, "started");
+    const releaseSocket = join(directory, "release.sock");
+    const inputFile = join(directory, "agent.json");
+    const node = realpathSync(process.execPath);
+    writeFileSync(
+      inputFile,
+      JSON.stringify({
+        command: [node, "-e", "require('node:fs').writeFileSync(process.argv[1], 'x')", marker],
+        workspace: directory,
+        codexBin: join(directory, "absent-codex"),
+        socketPath: join(directory, "inner.sock"),
+        releaseSocket,
+      }),
+      { mode: 0o600 },
+    );
+    const agent = spawn(
+      node,
+      [
+        fileURLToPath(
+          new URL("../../deploy/examples/strands-box/host/box-agent.ts", import.meta.url),
+        ),
+        inputFile,
+      ],
+      { stdio: ["ignore", "ignore", "ignore"] },
+    );
+    const servers: Server[] = [];
+    const answer = async (line: string) => {
+      const server = createServer((socket) => socket.end(line));
+      servers.push(server);
+      server.listen(releaseSocket);
+      await once(server, "listening");
+      return server;
+    };
+    const absent = () => {
+      try {
+        lstatSync(marker);
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    try {
+      // No socket, then a socket with the wrong answer: the command never starts.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      assert.ok(absent());
+      const wrong = await answer("release\n");
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      assert.ok(absent());
+      await new Promise<void>((resolve) => wrong.close(() => resolve()));
+      await answer("released\n");
+      const deadline = Date.now() + 10_000;
+      while (absent() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      assert.equal(absent(), false);
+    } finally {
+      agent.kill("SIGKILL");
+      for (const server of servers) {
+        server.close();
+      }
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
