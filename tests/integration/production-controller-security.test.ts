@@ -227,7 +227,7 @@ test("IAM decision reasons must be strings before an installation-admin read", a
     method: "GET",
     path: string,
     options: Parameters<typeof injectJson>[3],
-  ) => ReturnType<typeof app.inject> = injectJson;
+  ) => Promise<Awaited<ReturnType<typeof app.inject>>> = injectJson;
   const read = () =>
     injectControllerJson(app, "GET", "/observability", { session, remoteAddress: "127.0.0.1" });
 
