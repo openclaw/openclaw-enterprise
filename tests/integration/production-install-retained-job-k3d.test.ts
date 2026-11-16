@@ -9,7 +9,7 @@ import {
   explicitK3dSelection,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.ts";
-import { parseProductionChart, productionValues } from "../helpers/production-chart.mjs";
+import { parseProductionChart, productionValues } from "../helpers/production-chart.ts";
 
 const execute = promisify(execFile);
 const selection = explicitK3dSelection();

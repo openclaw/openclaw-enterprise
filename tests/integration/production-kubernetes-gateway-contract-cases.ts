@@ -18,7 +18,7 @@ import {
 import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
-import { parseProductionChart, renderExecutionChart } from "../helpers/production-chart.mjs";
+import { parseProductionChart, renderExecutionChart } from "../helpers/production-chart.ts";
 import {
   gatewayRoutingValues,
   gatewaySandboxValues,

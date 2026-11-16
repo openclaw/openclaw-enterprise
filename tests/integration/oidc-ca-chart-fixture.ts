@@ -10,7 +10,7 @@ import {
   chartTooling,
   parseProductionChart,
   renderProductionChart,
-} from "../helpers/production-chart.mjs";
+} from "../helpers/production-chart.ts";
 import { findResource } from "../helpers/production-chart-resource.ts";
 
 export const execute = promisify(execFile);

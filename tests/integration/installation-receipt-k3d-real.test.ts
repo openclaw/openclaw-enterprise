@@ -16,7 +16,8 @@ import {
 import { prepareProductionHelmControlPlane } from "../helpers/production-helm-real.ts";
 import type { FixtureRun } from "../helpers/production-rehearsal-custody.ts";
 import { runFixtureCommand } from "../helpers/production-rehearsal-custody.ts";
-import { parseProductionChart, renderProductionChart } from "../helpers/production-chart.mjs";
+import { findChartJob } from "../helpers/production-chart-resource.ts";
+import { parseProductionChart, renderProductionChart } from "../helpers/production-chart.ts";
 
 function heldResponse() {
   let resolve!: () => void;
@@ -420,13 +421,12 @@ test(
         {},
         { namespace, release, isUpgrade: false, valuesFiles: [prepared.valuesPath] },
       );
-      const replacement = (await parseProductionChart(render.stdout)).find(
-        (item: { kind?: string }) => item.kind === "Job",
-      );
-      assert.ok(replacement);
-      replacement.metadata.annotations["openclaw.dev/installation-attempt"] = asRecord(
-        original.annotations,
-      )?.["openclaw.dev/installation-attempt"];
+      const replacement = findChartJob(await parseProductionChart(render.stdout));
+      const annotations = asRecord(replacement.metadata.annotations);
+      assert.ok(annotations, "Expected initialization Job annotations");
+      annotations["openclaw.dev/installation-attempt"] = asRecord(original.annotations)?.[
+        "openclaw.dev/installation-attempt"
+      ];
       replacement.metadata.namespace = namespace;
       replacement.spec.suspend = true;
       await kubectl("-n", namespace, "delete", "job", jobName);

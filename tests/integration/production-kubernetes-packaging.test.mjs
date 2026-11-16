@@ -19,7 +19,7 @@ import {
   productionCollectorValues,
   goToolEnvironment,
   renderExecutionChart,
-} from "../helpers/production-chart.mjs";
+} from "../helpers/production-chart.ts";
 import { productionChartRendererRefusalCases } from "../helpers/production-chart-renderer-refusal-cases.ts";
 import {
   gatewayRoutingValues,
