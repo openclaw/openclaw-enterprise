@@ -47,12 +47,10 @@ to the exact `/32` for the assigned Box host's source address as seen by Envoy.
 Publish the normal Gateway HTTPS listener privately on a port above 1023 for
 the file node. Set the Installation's `gatewayRouting.endpointPort` to that
 published port and configure the listener mapping separately. Keep the Envoy
-policy's target port aligned with the Envoy Pod listener. On the selected
-Container Network Interface (CNI), verify the Worker can reach the relay on
-TCP 8443 and the Box host can reach the private Gateway origin. Check that an
-unselected Pod cannot use the relay and an unrelated source cannot reach Envoy.
-If source NAT or a node-traffic exemption admits the denied source, use a
-placement that preserves these network boundaries before continuing.
+policy's target port aligned with the Envoy Pod listener. Before rollout,
+review the rendered policies and the selected Container Network Interface (CNI).
+The relay Service has no endpoint until provision, so test its live connectivity
+only after the original relay Pod starts, as described below.
 
 Opt in to `workspaceNodeMode: file-only-v1` in the Box Driver configuration on
 the API and Worker. Keep the [controlled inference settings](../driver/README.md#build-and-select).
@@ -106,8 +104,8 @@ Enter the staged image directory and its device and inode as
 `separateWorkspaceNode.rootfs` and `rootfsIdentity`. Set `runtimeSha256` to
 the SHA-256 of the installed `workspace-node-runtime.mjs`.
 
-Use the Gateway listener configured above. Set `workspaceNode.url` to its
-DNS name and port with the `/node` suffix.
+Use the Gateway listener configured above. Set `workspaceNode.url` to the exact
+URL emitted by Compute, including `/namespaces/<namespaceId>/agents/<agentId>/node`.
 Set the listener's exact private IPv4 address in `workspaceNode.address`.
 When Compute projects a Gateway CA, set `caSha256` to the SHA-256 of those
 PEM bytes. The host connector forwards TLS bytes to the configured address
@@ -175,8 +173,14 @@ Do not reuse this approval if the host, Worker, mount or revision changes.
 ## Verify one chat and the file node
 
 Use the original `ready.json` digest to start the
-[host ingress](../ingress/README.md) on its approved TLS route. Wait until
-the Worker observes the native Harness and its actual enrolled node and
+[host ingress](../ingress/README.md) on its approved TLS route. Once the original
+relay Pod and Worker are running, verify on the selected CNI that the Worker can
+reach the relay on TCP 8443. Verify that both the Worker and Box host can reach the
+private Gateway hostname and published port.
+Check that an unselected Pod cannot use the relay and an unrelated source cannot
+reach Envoy. If source NAT or a node-traffic exemption admits a denied source,
+stop and use a placement that preserves these boundaries before submitting work.
+Wait until the Worker observes the native Harness and its actual enrolled node and
 activates that revision. Record the final Gateway and relay Pod UIDs and
 the Agent Service UID. The preliminary Gateway can roll while Compute installs
 the owner binding. Verify the selected final Gateway serves the checks below.

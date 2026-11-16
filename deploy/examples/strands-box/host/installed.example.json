@@ -38,7 +38,7 @@
     "/home/node/openclaw-runtime-assets"
   ],
   "workspaceNode": {
-    "url": "wss://gateway.example.invalid:8443/agents/agt_example/node",
+    "url": "wss://gateway.example.invalid:8443/namespaces/ns_example/agents/agt_example/node",
     "address": "10.0.0.1"
   },
   "separateWorkspaceNode": {
