@@ -17,7 +17,13 @@ import (
 func (r *runner) prepareBootstrapCredentials(state *developmentState) error {
 	passwordPath := filepath.Join(state.directory, "initial-admin-password")
 	keyPath := filepath.Join(state.directory, "initial-admin-service-key")
-	password := r.setting("OPENCLAW_DEV_PASSWORD", "openclaw-development-password")
+	password := r.env["OPENCLAW_DEV_PASSWORD"]
+	if password == "" {
+		password = "openclaw-development-password"
+		if state.DeploymentMode == "k3d" {
+			password = rand.Text()
+		}
+	}
 	if err := exclusiveWrite(passwordPath, []byte(password), 0600); err != nil {
 		return err
 	}

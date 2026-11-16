@@ -124,10 +124,9 @@ validate the Installation before CLI export.
 
 `scripts/dev-up` and `internal/occdev/bootstrap.go:prepareBootstrapCredentials`
 resolve Compose password precedence before preparation. `prepareBootstrapMounts` inspects the
-Compose bootstrap UID before startup, then changes ownership
-of private mount copies only. Originals remain host-owned `0600` recovery inputs.
-Compose projects those copies as bootstrap-only secrets; Kubernetes setup
-precreates the Secret before Helm. Migration, API and
+Compose bootstrap UID and assigns private mount copies before startup. Originals remain host-owned `0600` recovery inputs.
+Compose projects bootstrap-only copies; Kubernetes-only setup precreates its
+Secret with a random default password before Helm. Migration, API and
 worker receive neither credential. API and worker load committed state after
 initializer success. The
 [bootstrap flow](../local-password-authentication.md) owns credentials, concurrent

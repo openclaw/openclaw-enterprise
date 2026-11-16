@@ -68,6 +68,30 @@ func TestBootstrapCredentialsArePrivateAndNotOverwritten(t *testing.T) {
 	}
 }
 
+func TestKubernetesBootstrapPasswordDefault(t *testing.T) {
+	var previous string
+	for range 2 {
+		r := newRunner(Options{Repository: t.TempDir()})
+		delete(r.env, "OPENCLAW_DEV_PASSWORD")
+		state := &developmentState{directory: t.TempDir(), DeploymentMode: "k3d"}
+		if err := r.prepareBootstrapCredentials(state); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(filepath.Join(state.directory, "initial-admin-password"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		password := string(data)
+		if password == "openclaw-development-password" || password == previous || len(password) < 12 || len(password) > 128 {
+			t.Fatal("Kubernetes-only setup must retain a fresh valid random password")
+		}
+		if info, err := os.Stat(filepath.Join(state.directory, "initial-admin-password")); err != nil || info.Mode().Perm() != 0600 {
+			t.Fatal("password recovery file is not private")
+		}
+		previous = password
+	}
+}
+
 func TestBootstrapExportsOnlyAfterInstallationVerification(t *testing.T) {
 	for _, scenario := range []string{"authorized", "rejected", "missing Installation ID"} {
 		t.Run(scenario, func(t *testing.T) {
