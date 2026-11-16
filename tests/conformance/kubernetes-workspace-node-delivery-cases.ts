@@ -42,13 +42,15 @@ export type DedicatedDeployFixtureFactory = (options?: {
   statusProxy?: boolean;
   clock?: { now: number };
   delay?: (ms: number) => Promise<void>;
-  revision?: Pick<AgentRevision, "id" | "agentId">;
+  revision?: Pick<AgentRevision, "id" | "agentId" | "configurationId" | "servicePrincipalId">;
 }) => DedicatedDeployFixture;
 
-const secondAgent = { id: "revision-a-1", agentId: "agent-a" } satisfies Pick<
-  AgentRevision,
-  "id" | "agentId"
->;
+const secondAgent = {
+  id: "revision-a-1",
+  agentId: "agent-a",
+  configurationId: "cfg_00000000-0000-4000-8000-000000000001",
+  servicePrincipalId: "service-principal-agent-a",
+};
 
 export function renderedRecord(value: unknown, description: string) {
   const record = asRecord(value);
