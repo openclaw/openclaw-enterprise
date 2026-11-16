@@ -7,6 +7,7 @@ import { createServer as createHttpServer, type IncomingMessage } from "node:htt
 import { request } from "node:https";
 import { createServer as createNetServer } from "node:net";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -469,6 +470,8 @@ async function pairedFixture(t: TestContext) {
     apiOrigin: "https://api.github.com",
   };
   let committed: EgressInstallation | undefined;
+  let installedVersion: typeof version | undefined;
+  let pending: typeof version | undefined;
   const denied = { kind: "denied", reason: "unavailable" } as const;
   const compatibility = { readMaterial: async () => undefined, authorize: async () => denied };
   const authority: ProtectedRepositoryGitAuthority = {
@@ -482,11 +485,18 @@ async function pairedFixture(t: TestContext) {
         assert.deepEqual(installation, committed);
         return (fence = { revisionId: revision.id, fence: 1, observed: installation });
       },
+      // As OCC's delivery row: an identical installed version or a pending intent is refused.
       async beginInstall(route, installed) {
+        if (pending !== undefined || isDeepStrictEqual(installedVersion, installed)) {
+          return undefined;
+        }
         state.installs++;
+        pending = { ...installed };
         return { ...route, ...installed };
       },
       async confirmInstall({ revisionId, fence: number, observed }) {
+        installedVersion = pending;
+        pending = undefined;
         return { revisionId, fence: number, observed };
       },
     },
@@ -498,9 +508,22 @@ async function pairedFixture(t: TestContext) {
           assert.deepEqual(route, fence);
           return state.withdrawn ? { absent: "withdrawn" } : material;
         },
-        async authorize(q) {
+        async authorize(q, installed) {
           if (state.withdrawn) {
             return { kind: "denied", reason: "access_withdrawn" };
+          }
+          // As OCC's installed-evidence check: only the confirmed version at the observed fence.
+          if (
+            !isDeepStrictEqual(
+              {
+                preparationAttemptId: installed.preparationAttemptId,
+                materialVersion: installed.materialVersion,
+              },
+              installedVersion,
+            ) ||
+            !isDeepStrictEqual(installed.route, fence)
+          ) {
+            return denied;
           }
           return {
             kind: "allow",
@@ -722,7 +745,7 @@ test(
       true,
     );
     const bind = f.owner.requireRepositoryGitTransport();
-    const binding = await bind(f.authority);
+    let binding = await bind(f.authority);
     assert.ok(binding.reconcile);
     // Before reconcile, the listener has no recipient and refuses before any provider use.
     assert.equal((await f.call("/repository.git/info/refs?service=git-upload-pack")).status, 403);
@@ -734,6 +757,14 @@ test(
     // A repeated pass with the same material version installs nothing new.
     await binding.reconcile(signal);
     assert.equal(f.state.installs, 1);
+    // A Worker restart loses the in-memory recipient. The new binding resumes the version OCC
+    // already holds for this recipient without a second install intent.
+    await binding.close();
+    binding = await bind(f.authority);
+    assert.equal((await f.call("/repository.git/info/refs?service=git-upload-pack")).status, 403);
+    await binding.reconcile!(signal);
+    assert.equal(f.state.installs, 1);
+    assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "ready");
     await f.proxy.sourceControl.assertAvailable?.(signal, "github_repository");
 
     assert.equal(

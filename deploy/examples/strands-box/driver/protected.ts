@@ -382,8 +382,18 @@ class Shared {
     };
     if (isDeepStrictEqual(active.version, version)) return;
     const pending = await authority.recipients.beginInstall(route, version);
-    if (pending === undefined || this.active !== active) return;
-    const confirmed = await authority.recipients.confirmInstall(pending);
+    if (this.active !== active) return;
+    let confirmed: RepositoryGitInstallationFence | undefined;
+    if (pending === undefined) {
+      // OCC refuses an intent for the version its delivery row already holds, which is the state
+      // a restarted Worker finds. observe() returned this fence only with no pending write, so
+      // adopt it for that version without a second intent. Every request's authorize still
+      // checks the installed fence and version against OCC's row and denies any other state.
+      if (active.version !== undefined) return;
+      confirmed = route;
+    } else {
+      confirmed = await authority.recipients.confirmInstall(pending);
+    }
     if (confirmed === undefined || this.active !== active) return;
     active.confirmed = confirmed;
     active.version = version;
