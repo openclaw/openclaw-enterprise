@@ -1665,6 +1665,16 @@ function externalGitJourney(
           ["-c", auth, "push", remote, "HEAD:refs/heads/elsewhere"],
           true,
         );
+        assert.deepEqual(
+          outcomes(start),
+          [
+            ["advertise-receive-pack", "allow"],
+            ["receive-pack", "allow"],
+            ["advertise-receive-pack", "allow"],
+            ["receive-pack", "unavailable"],
+          ],
+          JSON.stringify({ code: elsewhere.code, stderr: elsewhere.stderr }),
+        );
         assert.notEqual(elsewhere.code, 0);
         assert.match(elsewhere.stderr, /403/);
         assert.equal(receivePacks(), 1, "a refused ref update never reaches the origin");
