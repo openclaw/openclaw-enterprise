@@ -513,6 +513,7 @@ test(
   },
 );
 
+/** @satisfies {import("./native-admin-session-lease-cases.ts").LeaseDependencies} */
 const leaseDependencies = {
   openNativeAdminSocketScenario,
   assertSocketAuditCloseReason,
