@@ -47,6 +47,7 @@ type Checkpoint =
   | ["skipper_runtime_signal", string]
   | ["skipper_model_request_observation", string]
   | ["skipper_model_fixture_selected_terminal_success", true]
+  | ["skipper_model_fixture_terminal_writer", string]
   | ["skipper_stage", (typeof stages)[number] | `${typeof installerPrefix}${string}`]
   | ["skipper_installed_cleanup", (typeof cleanups)[number]];
 
@@ -140,6 +141,12 @@ export async function recordSkipperTestFailure(
     if (diagnostic.modelFixtureSelectedTerminalSuccess) {
       await recordSkipperCheckpoint("skipper_model_fixture_selected_terminal_success", true);
     }
+    if (diagnostic.modelFixtureTerminalWriter) {
+      await recordSkipperCheckpoint(
+        "skipper_model_fixture_terminal_writer",
+        diagnostic.modelFixtureTerminalWriter,
+      );
+    }
     if (gatewayChatPhase) {
       await recordSkipperCheckpoint("skipper_gateway_chat_phase", gatewayChatPhase);
     }
@@ -212,6 +219,7 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
             gatewayCategory: process.env.SKIPPER_GATEWAY_CATEGORY,
             gatewayTransportCause: process.env.SKIPPER_GATEWAY_TRANSPORT_CAUSE,
             runtimeSignal: process.env.SKIPPER_RUNTIME_SIGNAL,
+            modelFixtureTerminalWriter: process.env.SKIPPER_MODEL_FIXTURE_TERMINAL_WRITER,
             modelFixtureSelectedTerminalSuccess:
               process.env.SKIPPER_MODEL_FIXTURE_SELECTED_TERMINAL_SUCCESS === "true",
             modelRequestObservation: process.env.SKIPPER_MODEL_REQUEST_OBSERVATION,
@@ -266,6 +274,9 @@ if (import.meta.main && process.env.SKIPPER_PROOF_OUTCOME === "failure") {
               ? { gatewayTransportCause: gatewayChat.gatewayTransportCause }
               : {}),
             ...(gatewayChat?.runtimeSignal ? { runtimeSignal: gatewayChat.runtimeSignal } : {}),
+            ...(gatewayChat?.modelFixtureTerminalWriter
+              ? { modelFixtureTerminalWriter: gatewayChat.modelFixtureTerminalWriter }
+              : {}),
             ...(gatewayChat?.modelFixtureSelectedTerminalSuccess
               ? { modelFixtureSelectedTerminalSuccess: true }
               : {}),
