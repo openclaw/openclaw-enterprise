@@ -9,7 +9,7 @@ author: freeqaz
 - **ID:** RFC-0040
 - **Created:** 2026-11-16
 - **Last updated:** 2026-11-16
-- **RFC PR:** [Review URL when available]
+- **RFC PR:** [#6346](https://github.com/openclaw/openclaw-enterprise/pull/6346)
 - **Related:** [Sandbox contract](../../docs/reference/drivers/sandbox.md),
   [Credential Proxy contract](../../docs/reference/drivers/credential-proxy.md),
   [Driver packages](../../docs/reference/drivers/selection.md#package-identity-and-factory-exports),
