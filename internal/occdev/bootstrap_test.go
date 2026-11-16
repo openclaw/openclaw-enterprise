@@ -68,6 +68,40 @@ func TestBootstrapCredentialsArePrivateAndNotOverwritten(t *testing.T) {
 	}
 }
 
+func TestSetupPasswordTerminators(t *testing.T) {
+	const expected = " preserved password spaces "
+	for _, tc := range []struct {
+		name, suffix string
+		valid        bool
+	}{
+		{"none", "", true}, {"LF", "\n", true}, {"CRLF", "\r\n", true},
+		{"repeated", "\n\n", false}, {"bare CR", "\r", false}, {"embedded", "\nmore", false}, {"NUL", "\x00", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRunner(Options{Repository: t.TempDir()})
+			r.env["OPENCLAW_DEV_PASSWORD"] = expected + tc.suffix
+			state := &developmentState{directory: t.TempDir(), DeploymentMode: "k3d"}
+			err := r.prepareBootstrapCredentials(state)
+			if !tc.valid {
+				if err == nil {
+					t.Fatal("invalid password was accepted")
+				}
+				if _, err := os.Stat(filepath.Join(state.directory, "initial-admin-password")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("invalid password was persisted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(state.directory, "initial-admin-password"))
+			if err != nil || string(data) != expected {
+				t.Fatal("setup password differs from the initializer's canonical value")
+			}
+		})
+	}
+}
+
 func TestKubernetesBootstrapPasswordDefault(t *testing.T) {
 	var previous string
 	for range 2 {

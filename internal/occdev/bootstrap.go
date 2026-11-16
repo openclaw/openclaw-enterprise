@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/openclaw/openclaw-enterprise/internal/occclient"
@@ -23,6 +24,15 @@ func (r *runner) prepareBootstrapCredentials(state *developmentState) error {
 		if state.DeploymentMode == "k3d" {
 			password = rand.Text()
 		}
+	}
+	// Match the initializer's single optional file terminator; password spaces are significant.
+	if strings.HasSuffix(password, "\r\n") {
+		password = strings.TrimSuffix(password, "\r\n")
+	} else {
+		password = strings.TrimSuffix(password, "\n")
+	}
+	if strings.ContainsAny(password, "\r\n\x00") {
+		return fmt.Errorf("administrator password must not contain NUL or embedded line breaks")
 	}
 	if err := exclusiveWrite(passwordPath, []byte(password), 0600); err != nil {
 		return err

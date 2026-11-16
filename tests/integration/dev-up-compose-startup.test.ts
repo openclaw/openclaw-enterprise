@@ -645,7 +645,12 @@ test("dev-up rejects an Installation response without its server-owned ID", asyn
 });
 
 test("dev-up resolves Compose env-file password precedence before preparing inputs", async (t) => {
-  for (const override of [undefined, "synthetic-shell-password"]) {
+  for (const [override, expected] of [
+    [undefined, " synthetic-env-file-password "],
+    ["synthetic-shell-password", "synthetic-shell-password"],
+    [" synthetic-shell-password \n", " synthetic-shell-password "],
+    [" synthetic-shell-password \r\n", " synthetic-shell-password "],
+  ]) {
     const fixture = await createFixture(t);
     await writeFile(fixture.emptyEnv, 'OPENCLAW_DEV_PASSWORD=" synthetic-env-file-password "\n');
     delete fixture.env.OPENCLAW_DEV_PASSWORD;
@@ -657,7 +662,7 @@ test("dev-up resolves Compose env-file password precedence before preparing inpu
     const bundle = result.stdout.match(/^Bootstrap input files: (.+)$/m)?.[1];
     assert.ok(bundle);
     const password = await readFile(join(bundle, "admin-password"), "utf8");
-    assert.equal(password === (override ?? " synthetic-env-file-password "), true);
+    assert.equal(password === expected, true);
     assert.ok(!(result.stdout + result.stderr).includes(password));
   }
 });

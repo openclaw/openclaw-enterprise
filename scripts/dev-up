@@ -505,6 +505,9 @@ config = json.loads(config_path.read_text())
 password = config.pop("x-openclaw-bootstrap-password", None)
 if not isinstance(password, str):
     raise SystemExit("Compose must resolve x-openclaw-bootstrap-password for setup")
+password = password[:-2] if password.endswith("\r\n") else password.removesuffix("\n")
+if any(character in password for character in ("\r", "\n", "\0")):
+    raise SystemExit("administrator password must not contain NUL or embedded line breaks")
 config_path.write_text(json.dumps(config))
 key = "occ_" + secrets.token_urlsafe(32)
 for name, value in {
