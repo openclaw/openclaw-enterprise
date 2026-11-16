@@ -77,7 +77,7 @@ function errorMessage(error: unknown): unknown {
   return isRecord(error) ? error.message : undefined;
 }
 
-function isSupervisorResult(value: unknown): value is SupervisorResult {
+export function isSupervisorResult(value: unknown): value is SupervisorResult {
   return (
     isRecord(value) &&
     (value.code === null || typeof value.code === "number") &&

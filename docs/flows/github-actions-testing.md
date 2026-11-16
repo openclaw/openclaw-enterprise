@@ -131,14 +131,14 @@ Dependency caches for PR merge-refs and main exclude results and credential-bear
 
 ### 2. Prepare resources under the job owner
 
-`scripts/ci/prepare.mjs:main` and `scripts/ci/prepare.mjs:ensureK3dCluster`
+`scripts/ci/prepare.mjs:main` and `scripts/ci/k3d-preparation.ts:ensureK3dCluster`
 
 See [resource preparation](github-actions-testing/preparation.md).
 
 `scripts/ci/prepare.mjs:prepareLane` pre-pulls `logging-collector`’s configured
 Collector and Node images and the shared Prometheus and Grafana pins.
-`ensureDockerSourceImage` reuses verified local digests or verifies downloads from
-`scripts/ci/image-pull.ts:pullImage` before publishing inputs. Registry 5xx/rate
+`scripts/ci/k3d-image-admission.ts:ensureDockerSourceImage` verifies local digests or calls
+`scripts/ci/image-pull.ts:pullImage` and checks the downloaded digest. Registry 5xx/rate
 limits retry within the shared budget; missing manifests/authorization refusals
 fail immediately. Unpinned Node overrides retain test-owned pulls.
 

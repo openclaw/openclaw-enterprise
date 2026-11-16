@@ -6,7 +6,7 @@
 
 ### 2. Prepare resources under the job owner
 
-`scripts/ci/prepare.mjs:prepareFile`, `scripts/ci/prepare.mjs:ensureK3dCluster`
+`scripts/ci/prepare.mjs:prepareFile`, `scripts/ci/k3d-preparation.ts:ensureK3dCluster`
 
 Static Checks restores the documentation pnpm store before installation. On
 cache misses, it saves the store after Pagefind succeeds. Baseline part 1 and
@@ -84,19 +84,19 @@ First Agent Smoke's `prepareRuntimeArtifactLayout` verifies compressed and
 uncompressed layer digests; Buildx builds its trust layer from the verified
 platform manifest digest.
 
-Before tagging or import, the CLI records image ownership in private
-`RUNNER_TEMP` state, excluded from uploads. Database tests use the limited
-application role and fresh migrated databases; Agent revision worker tests use
-migrated template copies (`prepareFile({ template })`). Failure and Kubernetes
-database names satisfy admission guards.
+`scripts/ci/prepare-command.ts:execFile` drains both output streams. Cluster
+creation uses the cleanup supervisor to hold the process group for signal forwarding.
 
-Ordinary lanes select loopback k3d contexts and digest-pinned Kubernetes 1.35 K3s;
-readiness rejects other server versions. OpenShell keeps its separate K3s pin.
-External images use approved registry digests and the selected platform. All
-images receive run-owned references at their imported platform manifest digests.
-Preparation pins OCI or Docker manifests against kubelet garbage collection.
-Every node must report the expected containerd digest and an exact CRI
-digest-list entry with boolean `pinned: true`. Manual imports are excluded.
+The CLI journals image ownership in private `RUNNER_TEMP` state before tagging
+or import. Database tests use the limited application role and freshly migrated
+databases. Agent revision tests copy migrated templates (`prepareFile({ template })`).
+Failure and Kubernetes database names satisfy admission guards.
+
+Ordinary k3d lanes require loopback and digest-pinned K3s 1.35. OpenShell has a
+separate pin. `scripts/ci/k3d-image-admission.ts:registerImageInK3d` checks external
+digests and platform. Imported images get run-owned, manifest-digest references
+pinned against garbage collection. Every node must report the containerd digest
+and matching CRI digest-list entry with boolean `pinned: true`. Manual imports are excluded.
 
 TUI upgrades require both candidate and baseline controller/runtime digests
 before allocation. Preparation imports all four, rejects candidates resolving to
