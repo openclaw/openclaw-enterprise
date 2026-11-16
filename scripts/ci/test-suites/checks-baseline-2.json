@@ -112,7 +112,7 @@
     "tests/integration/worker-shutdown.test.ts",
     "tests/conformance/postgres-transaction-unknown-commit.test.ts",
     "tests/integration/oidc-id-token.test.ts",
-    "tests/integration/repository-credentials-shutdown.test.mjs",
+    "tests/integration/repository-credentials-shutdown.test.ts",
     "tests/conformance/repository-transactions.test.ts",
     "tests/integration/google-id-token.test.ts",
     "tests/integration/first-agent-startup.test.ts",
@@ -658,7 +658,7 @@
       "path": "tests/integration/repository-receipt-observation.test.ts"
     },
     {
-      "path": "tests/integration/repository-credentials-shutdown.test.mjs"
+      "path": "tests/integration/repository-credentials-shutdown.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-router.test.ts"

@@ -360,7 +360,7 @@
     "tests/integration/repository-credentials-router.test.ts": 3500,
     "tests/integration/repository-credentials-server-timeout.test.ts": 1300,
     "tests/integration/repository-credentials-service-loss.test.ts": 400,
-    "tests/integration/repository-credentials-shutdown.test.mjs": 400,
+    "tests/integration/repository-credentials-shutdown.test.ts": 400,
     "tests/integration/repository-credentials-transport-bounds.test.ts": 2200,
     "tests/integration/repository-native-cutover.test.ts": 1400,
     "tests/integration/repository-runtime-materialization.test.ts": 1200,
