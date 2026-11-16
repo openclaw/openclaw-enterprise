@@ -20,7 +20,12 @@ import {
 import { createServer } from "node:net";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CONTROLLED_INFERENCE_MARKER, policy } from "./egress.ts";
+import {
+  BOX_UPSTREAM_CA_KEY,
+  CONTROLLED_INFERENCE_MARKER,
+  policy,
+  upstreamCaPem,
+} from "./egress.ts";
 import {
   collectDiagnostics,
   drainDiagnostics,
@@ -532,6 +537,7 @@ export function start(
       const agentFile = join(authority, "agent.json");
       const policyFile = join(authority, "policy.dw");
       const boxFile = join(authority, "box.toml");
+      const caFile = join(authority, "upstream-ca.pem");
       const agentEntry = join(config.agentBuildDir, "box-agent.js");
       const helper = join(config.agentBuildDir, "transport.js");
       const diagnostics = join(config.agentBuildDir, "diagnostics.js");
@@ -569,6 +575,10 @@ export function start(
           (verifier === undefined ? "" : workspaceVerifierPolicy(config.workspace)),
         ownerOnly,
       );
+      // Only a route CA verified at host config load is written, into the authority directory
+      // that no grant covers. Stock Box refuses the key, so it fails closed before any egress.
+      const caPem = upstreamCaPem(input.egress ?? []);
+      if (caPem !== undefined) writeFileSync(caFile, caPem, ownerOnly);
       // Box excludes its own box.toml and policy directory from every native grant.
       // Stage the Node input separately: the authority directory is never mounted.
       const visibleAgentInput = join(staging, "agent.json");
@@ -592,6 +602,7 @@ export function start(
         'name = "oce-strands"',
         `box_dir = ${quoted(join(run, "box-state"))}`,
         `policy = ${quoted(policyFile)}`,
+        ...(caPem === undefined ? [] : [`${BOX_UPSTREAM_CA_KEY} = [${quoted(caFile)}]`]),
         "",
         "[agent]",
         `command = [${[config.nodeBin, "--jitless", agentEntry, visibleAgentInput].map(quoted).join(", ")}]`,

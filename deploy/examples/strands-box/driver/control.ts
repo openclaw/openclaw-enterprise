@@ -23,6 +23,41 @@ export interface Execution {
   readonly workspaceNodeMode?: WorkspaceNodeMode;
   readonly workspaceVolume?: WorkspaceVolume;
   readonly generationSha256?: string;
+  readonly controlledInference?: ControlledInferenceRoute;
+}
+
+/** The nonsecret controlled inference route: HTTPS origin, pinned private IPv4, route CA digest. */
+export interface ControlledInferenceRoute {
+  readonly url: string;
+  readonly address: string;
+  readonly caSha256?: string;
+}
+
+export function inferenceRouteEvidence(value: unknown): ControlledInferenceRoute | undefined {
+  const route = record(value);
+  if (
+    route === undefined ||
+    Object.keys(route).some((key) => key !== "url" && key !== "address" && key !== "caSha256") ||
+    typeof route.url !== "string" ||
+    route.url.length > 256 ||
+    typeof route.address !== "string" ||
+    !/^[0-9.]{7,15}$/.test(route.address) ||
+    (route.caSha256 !== undefined &&
+      (typeof route.caSha256 !== "string" || !/^[a-f0-9]{64}$/.test(route.caSha256)))
+  )
+    return undefined;
+  return {
+    url: route.url,
+    address: route.address,
+    ...(route.caSha256 === undefined ? {} : { caSha256: route.caSha256 }),
+  };
+}
+
+export function sameInferenceRoute(
+  a: ControlledInferenceRoute | undefined,
+  b: ControlledInferenceRoute | undefined,
+): boolean {
+  return a?.url === b?.url && a?.address === b?.address && a?.caSha256 === b?.caSha256;
 }
 
 export type WorkspaceNodeMode = "file-only-v1";
@@ -77,6 +112,7 @@ export function sameExecution(a: Execution, b: Execution): boolean {
     a.workspaceNodeMode === b.workspaceNodeMode &&
     sameWorkspaceVolume(a.workspaceVolume, b.workspaceVolume) &&
     a.generationSha256 === b.generationSha256 &&
+    sameInferenceRoute(a.controlledInference, b.controlledInference) &&
     a.endpoint.url === b.endpoint.url &&
     a.endpoint.workspaceRoot === b.endpoint.workspaceRoot
   );
@@ -128,7 +164,9 @@ function parseExecution(value: unknown): Execution {
   const owner = parseOwner(document?.owner);
   const endpoint = record(document?.endpoint);
   const volume = workspaceVolume(document?.workspaceVolume);
+  const inference = inferenceRouteEvidence(document?.controlledInference);
   if (
+    (document?.controlledInference !== undefined && inference === undefined) ||
     !owner ||
     !endpoint ||
     typeof endpoint.url !== "string" ||
@@ -166,6 +204,7 @@ function parseExecution(value: unknown): Execution {
     ...(document.generationSha256 === undefined
       ? {}
       : { generationSha256: document.generationSha256 }),
+    ...(inference === undefined ? {} : { controlledInference: inference }),
   };
 }
 
@@ -182,7 +221,7 @@ type ControlRequest =
       readonly method: "PUT";
       readonly body: AdmissionRequest & {
         readonly workspaceNodeSetupCode?: string;
-        readonly controlledInference?: true;
+        readonly controlledInference?: ControlledInferenceRoute;
       };
     }
   | {
@@ -223,6 +262,7 @@ export async function requestAdmission(
   input: AdmissionRequest,
   signal: AbortSignal,
   workspaceNodeMode?: WorkspaceNodeMode,
+  controlledInference?: ControlledInferenceRoute,
 ): Promise<"held" | "approved"> {
   try {
     const reply = await send(socketPath, "POST", ADMISSION_PATH, input, signal);
@@ -237,6 +277,10 @@ export async function requestAdmission(
       (value.workspaceVolume !== undefined &&
         workspaceVolume(value.workspaceVolume) === undefined) ||
       !sameWorkspaceVolume(workspaceVolume(value.workspaceVolume), input.workspaceVolume) ||
+      (value.controlledInference !== undefined &&
+        inferenceRouteEvidence(value.controlledInference) === undefined) ||
+      // The host must hold, and the operator approve, the same route this Driver was given.
+      !sameInferenceRoute(inferenceRouteEvidence(value.controlledInference), controlledInference) ||
       (value.state !== "held" && value.state !== "approved")
     ) {
       throw new Error("Mismatched admission receipt");

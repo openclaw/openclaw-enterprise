@@ -28,7 +28,9 @@ import {
   record,
   requestAdmission,
   sameExecution,
+  sameInferenceRoute,
   sameOwner,
+  type ControlledInferenceRoute,
   type Execution,
   type Owner,
   type WorkspaceNodeMode,
@@ -46,7 +48,11 @@ interface Options {
   readonly nativeCaBundle: string;
   readonly workspaceRoot: string;
   readonly relay: RelayOptions;
-  readonly controlledInference?: { readonly modelBaseUrl: string };
+  readonly controlledInference?: {
+    readonly modelBaseUrl: string;
+    readonly address?: string;
+    readonly caSha256?: string;
+  };
   readonly workspaceNodeMode?: WorkspaceNodeMode;
 }
 
@@ -79,7 +85,11 @@ export const configurationSchema: NonNullable<DriverImplementation["configuratio
       type: "object",
       additionalProperties: false,
       required: ["modelBaseUrl"],
-      properties: { modelBaseUrl: { type: "string", minLength: 1, maxLength: 256 } },
+      properties: {
+        modelBaseUrl: { type: "string", minLength: 1, maxLength: 256 },
+        address: { type: "string", minLength: 7, maxLength: 15 },
+        caSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+      },
     },
     relay: {
       type: "object",
@@ -120,21 +130,51 @@ function relayAddress(address: string): boolean {
   return isIP(address) === 4 && /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2[0-9]|3[01])\.)/.test(address);
 }
 
-function privateModelBaseUrl(value: string): boolean {
+/** An operator DNS name: at least two LDH labels, no trailing dot, not an address spelling. */
+function operatorDnsName(hostname: string): boolean {
+  const labels = hostname.split(".");
+  return (
+    hostname.length <= 253 &&
+    labels.length >= 2 &&
+    labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) &&
+    !/^[0-9]+$/.test(labels.at(-1)!) &&
+    labels.at(-1) !== "localhost"
+  );
+}
+
+/**
+ * The exact controlled inference route the host must also hold: the HTTPS /v1 origin, either a
+ * private IPv4 literal or an operator DNS name, and the one private IPv4 address Box may dial.
+ */
+export function inferenceRoute(
+  value: NonNullable<Options["controlledInference"]>,
+): ControlledInferenceRoute | undefined {
   try {
-    const url = new URL(value);
-    return (
-      url.protocol === "https:" &&
-      url.pathname === "/v1" &&
-      (relayAddress(url.hostname) || url.hostname.endsWith(".svc.cluster.local")) &&
-      !url.username &&
-      !url.password &&
-      !url.search &&
-      !url.hash &&
-      url.toString() === value
-    );
+    const url = new URL(value.modelBaseUrl);
+    const literal = isIP(url.hostname) === 4;
+    const address = value.address ?? (literal ? url.hostname : undefined);
+    if (
+      url.protocol !== "https:" ||
+      url.pathname !== "/v1" ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      url.toString() !== value.modelBaseUrl ||
+      address === undefined ||
+      !relayAddress(address) ||
+      (literal ? url.hostname !== address : !operatorDnsName(url.hostname)) ||
+      (value.caSha256 !== undefined && !/^[a-f0-9]{64}$/.test(value.caSha256))
+    ) {
+      return undefined;
+    }
+    return {
+      url: value.modelBaseUrl,
+      address,
+      ...(value.caSha256 === undefined ? {} : { caSha256: value.caSha256 }),
+    };
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -200,13 +240,10 @@ export function validateConfiguration(
     invalid("/nativeCaBundle", "Supply public PEM CA certificates only.");
   if (!relayAddress(options.relay.hostAddress))
     invalid("/relay/hostAddress", "Use one dedicated private IPv4 address.");
-  if (
-    options.controlledInference &&
-    !privateModelBaseUrl(options.controlledInference.modelBaseUrl)
-  ) {
+  if (options.controlledInference && !inferenceRoute(options.controlledInference)) {
     invalid(
-      "/controlledInference/modelBaseUrl",
-      "Use the single private HTTPS /v1 origin of the controlled model fixture.",
+      "/controlledInference",
+      "Use one HTTPS /v1 origin named by a private IPv4 address or an operator DNS name, with the one private IPv4 address it must resolve to.",
     );
   }
   if (options.workspaceNodeMode !== undefined && options.controlledInference === undefined) {
@@ -341,6 +378,7 @@ class StrandsBoxDriver implements SandboxDriver {
       );
     }
     const volume = await this.readWorkspaceVolume(context);
+    const inference = model === undefined ? undefined : this.inference();
     const requirementsDigest = digest(requirements);
     const admission = {
       owner,
@@ -356,6 +394,7 @@ class StrandsBoxDriver implements SandboxDriver {
           admission,
           context.signal,
           this.options.workspaceNodeMode,
+          inference,
         )) === "held"
       ) {
         throw new TransientDependencyError(
@@ -385,7 +424,7 @@ class StrandsBoxDriver implements SandboxDriver {
               ...(setupMaterial === undefined
                 ? {}
                 : { workspaceNodeSetupCode: setupMaterial.code }),
-              ...(model === undefined ? {} : { controlledInference: true }),
+              ...(inference === undefined ? {} : { controlledInference: inference }),
             },
           },
           context.signal,
@@ -396,7 +435,8 @@ class StrandsBoxDriver implements SandboxDriver {
       !execution ||
       !sameOwner(execution.owner, owner) ||
       !sameWorkspaceVolume(execution.workspaceVolume, volume) ||
-      execution.requirementsDigest !== requirementsDigest
+      execution.requirementsDigest !== requirementsDigest ||
+      !sameInferenceRoute(execution.controlledInference, inference)
     ) {
       throw new DependencyUnavailableError(
         "The Strands Box execution is absent or belongs to different admitted inputs.",
@@ -660,7 +700,21 @@ class StrandsBoxDriver implements SandboxDriver {
     if (execution !== undefined && execution.workspaceNodeMode !== this.options.workspaceNodeMode) {
       throw new DependencyUnavailableError("The Strands Box host workspace node mode changed.");
     }
+    if (
+      execution?.controlledInference !== undefined &&
+      !sameInferenceRoute(execution.controlledInference, this.inference())
+    ) {
+      throw new DependencyUnavailableError(
+        "The Strands Box host model route differs from the Installation's controlled inference route.",
+      );
+    }
     return execution;
+  }
+
+  /** The configured route; configuration validation has already refused any other shape. */
+  private inference(): ControlledInferenceRoute | undefined {
+    const configured = this.options.controlledInference;
+    return configured === undefined ? undefined : inferenceRoute(configured);
   }
 
   private async current(context: SandboxHarnessContext): Promise<Execution> {

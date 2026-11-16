@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import {
@@ -41,6 +41,7 @@ import {
 } from "../../deploy/examples/strands-box/host/installed-workspace-node.ts";
 import {
   canonical,
+  confirmControlledInference,
   digest,
   profileDigest,
   parseOwner,
@@ -56,7 +57,15 @@ import {
   isApproved,
 } from "../../deploy/examples/strands-box/host/admission.ts";
 import type { Pending } from "../../deploy/examples/strands-box/host/admission.ts";
-import { parseRoute, policy } from "../../deploy/examples/strands-box/host/egress.ts";
+import {
+  assertPinnedResolution,
+  BOX_UPSTREAM_CA_KEY,
+  parseRoute,
+  policy,
+  routeView,
+  sameRouteView,
+  upstreamCaPem,
+} from "../../deploy/examples/strands-box/host/egress.ts";
 import { hostConfig, smokeInput, start } from "../../deploy/examples/strands-box/host/launch.ts";
 import {
   WORKSPACE_MARKER,
@@ -1116,6 +1125,260 @@ test(
       if (canRemove) {
         rmSync(root, { recursive: true, force: true });
       }
+    }
+  },
+);
+
+function certificate(directory: string, name: string, ca: boolean): string {
+  const out = join(directory, `${name}.pem`);
+  execFileSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "ec",
+      "-pkeyopt",
+      "ec_paramgen_curve:prime256v1",
+      "-nodes",
+      "-subj",
+      `/CN=${name}`,
+      "-days",
+      "1",
+      "-addext",
+      ca ? "basicConstraints=critical,CA:TRUE" : "basicConstraints=critical,CA:FALSE",
+      "-keyout",
+      join(directory, `${name}.key`),
+      "-out",
+      out,
+    ],
+    { stdio: "ignore" },
+  );
+  chmodSync(out, 0o600);
+  return out;
+}
+
+function sha256File(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+test("a controlled inference DNS name is accepted only with its one pinned private IPv4", () => {
+  const url = "https://model.pilot.example:8444/v1";
+  const route = parseRoute({ url, address: "10.0.0.9" }, "controlled-inference");
+  assert.deepEqual(routeView(route), { url, address: "10.0.0.9" });
+  const rules = policy([route]);
+  assert.match(
+    rules,
+    /context.input.host == "model.pilot.example" && context.input.port == 8444 && !\(context.input has ip6\) && \(!\(context.input has ip4\) \|\| \(context.input has ip4 && context.input.ip4 == "10.0.0.9"\)\)/,
+  );
+  assert.match(rules, /context.input.path == "\/v1\/responses"/);
+  for (const [value, kind] of [
+    // Public, metadata, shared and loopback addresses.
+    [{ url, address: "8.8.8.8" }, "controlled-inference"],
+    [{ url, address: "169.254.169.254" }, "controlled-inference"],
+    [{ url, address: "100.64.0.9" }, "controlled-inference"],
+    [{ url, address: "127.0.0.1" }, "controlled-inference"],
+    [{ url: "https://203.0.113.7/v1", address: "203.0.113.7" }, "controlled-inference"],
+    // A private literal must be its own pinned address.
+    [{ url: "https://10.0.0.9/v1", address: "10.0.0.10" }, "controlled-inference"],
+    // Names that are not one operator FQDN.
+    [{ url: "https://model/v1", address: "10.0.0.9" }, "controlled-inference"],
+    [{ url: "https://model.localhost/v1", address: "10.0.0.9" }, "controlled-inference"],
+    [{ url: "https://model.pilot.example./v1", address: "10.0.0.9" }, "controlled-inference"],
+    [{ url: "https://[fd00::9]/v1", address: "10.0.0.9" }, "controlled-inference"],
+    // Compute never produces these spellings, so the host refuses them at load.
+    [{ url: "https://model.pilot.example/v1/", address: "10.0.0.9" }, "controlled-inference"],
+    [{ url: "https://model.pilot.example/openai/v1", address: "10.0.0.9" }, "controlled-inference"],
+    // A route CA belongs only to the controlled inference route.
+    [{ url: "wss://gateway.pilot.example/pair", address: "10.0.0.1", ca: {} }, "workspace-node"],
+    [{ url, address: "10.0.0.9", extra: true }, "controlled-inference"],
+  ] as const) {
+    assert.throws(() => parseRoute(value, kind), { message: /invalid_fixed_egress/ });
+  }
+});
+
+test("the Driver's stated model route must equal the host route, including its CA digest", () => {
+  const url = "https://model.pilot.example:8444/v1";
+  const route = parseRoute({ url, address: "10.0.0.9" }, "controlled-inference");
+  assert.equal(sameRouteView({ url, address: "10.0.0.9" }, route), true);
+  confirmControlledInference(route, true, { url, address: "10.0.0.9" });
+  confirmControlledInference(route, false, undefined);
+  for (const stated of [
+    { url, address: "10.0.0.10" },
+    { url: "https://other.pilot.example:8444/v1", address: "10.0.0.9" },
+    { url, address: "10.0.0.9", caSha256: "a".repeat(64) },
+    { url, address: "10.0.0.9", extra: "x" },
+    { url },
+    true,
+    [url, "10.0.0.9"],
+  ]) {
+    assert.equal(sameRouteView(stated, route), false);
+    assert.throws(() => confirmControlledInference(route, true, stated), {
+      message: "controlled_inference_route_mismatch",
+    });
+  }
+  assert.throws(() => confirmControlledInference(route, true, undefined), {
+    message: "controlled_inference_unconfirmed",
+  });
+  assert.throws(() => confirmControlledInference(route, false, { url, address: "10.0.0.9" }), {
+    message: "controlled_inference_unconfirmed",
+  });
+  assert.throws(() => confirmControlledInference(undefined, true, { url, address: "10.0.0.9" }), {
+    message: "controlled_inference_route_mismatch",
+  });
+});
+
+test("the host refuses a name that resolves anywhere but the pinned address", async () => {
+  const route = parseRoute(
+    { url: "https://model.pilot.example/v1", address: "10.0.0.9" },
+    "controlled-inference",
+  );
+  const answers =
+    (value: readonly { address: string; family: number }[] | Error) => async (hostname: string) => {
+      assert.equal(hostname, "model.pilot.example");
+      if (value instanceof Error) {
+        throw value;
+      }
+      return value;
+    };
+  await assertPinnedResolution(route, answers([{ address: "10.0.0.9", family: 4 }]));
+  for (const value of [
+    [{ address: "10.0.0.10", family: 4 }],
+    [{ address: "8.8.8.8", family: 4 }],
+    [
+      { address: "10.0.0.9", family: 4 },
+      { address: "10.0.0.10", family: 4 },
+    ],
+    [
+      { address: "10.0.0.9", family: 4 },
+      { address: "fd00::9", family: 6 },
+    ],
+    [],
+  ]) {
+    await assert.rejects(assertPinnedResolution(route, answers(value)), {
+      message: "egress_name_not_pinned",
+    });
+  }
+  await assert.rejects(assertPinnedResolution(route, answers(new Error("ENOTFOUND"))), {
+    message: "egress_name_unresolved",
+  });
+  const literal = parseRoute(
+    { url: "https://10.0.0.9/v1", address: "10.0.0.9" },
+    "controlled-inference",
+  );
+  await assertPinnedResolution(literal, () => assert.fail("a literal needs no lookup"));
+});
+
+test(
+  "a route CA is loaded once by digest, must be CA certificates, and reaches only Box's authority files",
+  { skip: unsupported },
+  async () => {
+    const directory = temporary();
+    try {
+      const url = "https://model.pilot.example:8444/v1";
+      const caFile = certificate(directory, "route-ca", true);
+      const sha256 = sha256File(caFile);
+      const route = parseRoute(
+        { url, address: "10.0.0.9", ca: { file: caFile, sha256 } },
+        "controlled-inference",
+      );
+      assert.deepEqual(routeView(route), { url, address: "10.0.0.9", caSha256: sha256 });
+      assert.equal(upstreamCaPem([route]), readFileSync(caFile, "utf8").trim() + "\n");
+      assert.equal(
+        upstreamCaPem([parseRoute({ url, address: "10.0.0.9" }, "controlled-inference")]),
+        undefined,
+      );
+      // The CA digest does not change the network pin.
+      assert.equal(
+        policy([route]),
+        policy([parseRoute({ url, address: "10.0.0.9" }, "controlled-inference")]),
+      );
+      const refused = (ca: unknown, message: string) =>
+        assert.throws(() => parseRoute({ url, address: "10.0.0.9", ca }, "controlled-inference"), {
+          message,
+        });
+      refused({ file: caFile, sha256: "0".repeat(64) }, "route_ca_mismatch");
+      const leaf = certificate(directory, "leaf", false);
+      refused({ file: leaf, sha256: sha256File(leaf) }, "invalid_route_ca");
+      const linked = join(directory, "linked.pem");
+      symlinkSync(caFile, linked);
+      refused({ file: linked, sha256 }, "invalid_route_ca");
+      const padded = join(directory, "padded.pem");
+      writeFileSync(padded, `${readFileSync(caFile, "utf8")}\nnot a certificate\n`, {
+        mode: 0o600,
+      });
+      refused({ file: padded, sha256: sha256File(padded) }, "invalid_route_ca");
+      const writable = join(directory, "writable.pem");
+      writeFileSync(writable, readFileSync(caFile));
+      chmodSync(writable, 0o666);
+      refused({ file: writable, sha256 }, "invalid_route_ca");
+      refused({ file: "relative.pem", sha256 }, "invalid_route_ca");
+      refused({ file: caFile, sha256: sha256.toUpperCase() }, "invalid_route_ca");
+      refused({ file: caFile, sha256, extra: true }, "invalid_route_ca");
+
+      // Launch writes the verified bytes into the authority directory and names them in
+      // box.toml; the operator file can change afterwards without reaching Box.
+      const runtimeDir = join(directory, "run");
+      const workspace = join(directory, "workspace");
+      const agentBuildDir = join(directory, "build");
+      for (const path of [runtimeDir, workspace, agentBuildDir]) {
+        mkdirSync(path, { mode: 0o700 });
+      }
+      for (const file of ["box-agent.js", "transport.js", "diagnostics.js"]) {
+        writeFileSync(join(agentBuildDir, file), "", { mode: 0o600 });
+      }
+      const verified = readFileSync(caFile, "utf8");
+      writeFileSync(caFile, readFileSync(leaf));
+      const boxBin = join(directory, "fixture-box");
+      writeFileSync(
+        boxBin,
+        '#!/bin/sh\ncp -- "$3" ../generated-box.toml || exit 3\n' +
+          `ca=$(sed -n 's/^${BOX_UPSTREAM_CA_KEY} = \\["\\(.*\\)"\\]$/\\1/p' "$3")\n` +
+          'cp -- "$ca" ../generated-ca.pem || exit 4\n' +
+          'cp -- "$(dirname "$3")/policy.dw" ../generated-policy.dw || exit 5\nexit 2\n',
+        { mode: 0o700 },
+      );
+      const node = realpathSync(process.execPath);
+      const config = hostConfig({
+        boxBin,
+        nodeBin: node,
+        codexBin: node,
+        agentBuildDir,
+        runtimeDir,
+        workspace,
+        read: [],
+        exec: [],
+        linuxPreview: true,
+      });
+      const { input } = smokeInput(config);
+      const execution = start(config, { ...input, egress: [route] });
+      await assert.rejects(execution.ready, { message: /^startup_refused:/ });
+      assert.equal(await execution.done, 2);
+      const generated = readFileSync(join(directory, "generated-box.toml"), "utf8");
+      const line = generated.split("\n").find((row) => row.startsWith(`${BOX_UPSTREAM_CA_KEY} = `));
+      assert.ok(line, generated);
+      const paths = JSON.parse(line.slice(line.indexOf("["))) as string[];
+      assert.equal(paths.length, 1);
+      const path = paths[0]!;
+      const policyLine = generated.match(/^policy = (".*")$/m);
+      assert.ok(policyLine);
+      // Box excludes its own configuration directory from every grant.
+      assert.equal(dirname(path), dirname(JSON.parse(policyLine[1]!) as string));
+      assert.equal(
+        readFileSync(join(directory, "generated-ca.pem"), "utf8"),
+        verified.trim() + "\n",
+      );
+      assert.match(
+        readFileSync(join(directory, "generated-policy.dw"), "utf8"),
+        /context.input.ip4 == "10.0.0.9"/,
+      );
+      const rows = generated.split("\n").filter((row) => /^(read|write|exec) = \[/.test(row));
+      const grants = rows.flatMap((row) => JSON.parse(row.slice(row.indexOf("["))) as string[]);
+      for (const grant of grants) {
+        assert(!(path === grant || path.startsWith(grant + sep)), `${grant} covers the route CA`);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   },
 );

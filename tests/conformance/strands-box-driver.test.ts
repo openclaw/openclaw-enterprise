@@ -40,7 +40,8 @@ const endpoint = {
   url: "wss://box-harness.pilot.svc.cluster.local:8443/",
   workspaceRoot: "/home/node/workspace",
 };
-const modelBaseUrl = "https://model.pilot.svc.cluster.local/v1";
+const modelBaseUrl = "https://model.pilot.example:8444/v1";
+const modelRoute = { url: modelBaseUrl, address: "10.0.0.9" };
 const controlledMarker = "openclaw-strands-controlled-inference-v1";
 const key = "OPENAI_API_KEY";
 const token = "synthetic-transport-capability";
@@ -175,7 +176,10 @@ function objectApi() {
   };
 }
 
-async function fixture(t: TestContext) {
+async function fixture(
+  t: TestContext,
+  options: { readonly controlledInference?: Record<string, unknown> } = {},
+) {
   const directory = await temporaryDirectory(t, "strands-driver-");
   const packageRoot = join(directory, "controller");
   const scope = join(packageRoot, "node_modules/@openclaw-enterprise");
@@ -224,7 +228,10 @@ async function fixture(t: TestContext) {
     nativeEndpoint: endpoint.url,
     nativeCaBundle: ca,
     workspaceRoot: endpoint.workspaceRoot,
-    controlledInference: { modelBaseUrl },
+    controlledInference: options.controlledInference ?? {
+      modelBaseUrl,
+      address: modelRoute.address,
+    },
     relay: {
       image: `registry.example/relay@sha256:${"f".repeat(64)}`,
       hostAddress: "10.0.0.7",
@@ -288,6 +295,8 @@ async function fixture(t: TestContext) {
   let execution: Record<string, unknown> | undefined;
   let pending: Record<string, unknown> | undefined;
   let approved = true;
+  // The route the fixture host holds, as the real host reports it for a model projection.
+  let hostRoute: Record<string, unknown> | undefined = modelRoute;
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -316,6 +325,7 @@ async function fixture(t: TestContext) {
           state: approved ? "approved" : "held",
           owner: body.owner,
           requirementsDigest: body.requirementsDigest,
+          ...(hostRoute === undefined ? {} : { controlledInference: hostRoute }),
         });
       } else if (method === "PUT" && body) {
         assert.equal(execution, undefined, "fixture host permits one execution only");
@@ -323,12 +333,17 @@ async function fixture(t: TestContext) {
         assert.deepEqual(body.owner, pending.owner);
         assert.equal(body.requirementsDigest, pending.requirementsDigest);
         assert.deepEqual(body.requirements, pending.requirements);
+        if (JSON.stringify(body.controlledInference) !== JSON.stringify(hostRoute)) {
+          json(422, { error: "host_request_refused" });
+          return;
+        }
         execution = {
           owner: body.owner,
           requirementsDigest: body.requirementsDigest,
           executionId: "execution-fixture",
           state: "running",
           endpoint,
+          ...(hostRoute === undefined ? {} : { controlledInference: hostRoute }),
         };
         json(202, execution);
       } else if (method === "DELETE" && body && execution) {
@@ -445,6 +460,13 @@ async function fixture(t: TestContext) {
     },
     replaceExecution() {
       execution = { ...execution, executionId: "replacement" };
+    },
+    setHostRoute(route: Record<string, unknown> | undefined) {
+      hostRoute = route;
+      if (execution !== undefined) {
+        const { controlledInference: _previous, ...rest } = execution;
+        execution = { ...rest, ...(route === undefined ? {} : { controlledInference: route }) };
+      }
     },
     startForeignExecution() {
       execution = {
@@ -595,7 +617,7 @@ test(
       revisionId: revision.id,
     });
     assert.equal(put.workspaceNodeSetupCode, x.setupCode);
-    assert.equal(put.controlledInference, true);
+    assert.deepEqual(put.controlledInference, modelRoute);
     assert.ok(!JSON.stringify(put).includes(controlledMarker));
     assert.ok(!JSON.stringify(put).includes(token));
     assert.deepEqual(
@@ -1301,5 +1323,102 @@ test(
     assert.deepEqual(await probe(url, ca, capability, signal), { state: "serving" });
     assert.equal(native.exitCode, null);
     await stopProcess(native);
+  },
+);
+
+test(
+  "controlled inference accepts an operator DNS name only with one pinned private IPv4",
+  { timeout: 30_000 },
+  async (t) => {
+    const x = await fixture(t);
+    const validate = x.loaded.module.validateConfiguration;
+    assert.ok(validate);
+    const configured = (controlledInference: Record<string, unknown>) =>
+      validate({ ...x.selection.configuration, controlledInference });
+    const refused = (controlledInference: Record<string, unknown>) =>
+      assert.deepEqual(
+        configured(controlledInference).map(({ path }) => path),
+        ["/controlledInference"],
+        JSON.stringify(controlledInference),
+      );
+    const ca = "a".repeat(64);
+    assert.deepEqual(configured({ modelBaseUrl, address: "10.0.0.9" }), []);
+    assert.deepEqual(configured({ modelBaseUrl, address: "192.168.4.2", caSha256: ca }), []);
+    assert.deepEqual(configured({ modelBaseUrl: "https://10.0.0.9/v1" }), []);
+    assert.deepEqual(configured({ modelBaseUrl: "https://10.0.0.9/v1", address: "10.0.0.9" }), []);
+    // A name with no pinned address could resolve anywhere.
+    refused({ modelBaseUrl });
+    // Public, link-local, shared and loopback addresses are never the controlled route.
+    for (const address of ["8.8.8.8", "169.254.169.254", "100.64.0.9", "127.0.0.1", "0.0.0.0"]) {
+      refused({ modelBaseUrl, address });
+    }
+    refused({ modelBaseUrl: "https://203.0.113.7/v1" });
+    refused({ modelBaseUrl: "https://10.0.0.9/v1", address: "10.0.0.10" });
+    for (const url of [
+      "https://model/v1",
+      "https://localhost/v1",
+      "https://model.localhost/v1",
+      "https://model.pilot.example./v1",
+      "https://[fd00::9]/v1",
+      "http://model.pilot.example/v1",
+      "https://model.pilot.example/v1/",
+      "https://model.pilot.example/openai/v1",
+      "https://user@model.pilot.example/v1",
+      "https://model.pilot.example/v1?x=1",
+      "https://model.pilot.example:443/v1",
+      "https://MODEL.pilot.example/v1",
+      "https://model_x.pilot.example/v1",
+    ]) {
+      refused({ modelBaseUrl: url, address: "10.0.0.9" });
+    }
+    refused({ modelBaseUrl, address: "10.0.0.9", caSha256: "A".repeat(64) });
+  },
+);
+
+test(
+  "a host holding a different model name, address or route CA refuses before approval or start",
+  { timeout: 30_000 },
+  async (t) => {
+    for (const hostRoute of [
+      { url: modelBaseUrl, address: "10.0.0.10" },
+      { url: "https://other.pilot.example:8444/v1", address: modelRoute.address },
+      { ...modelRoute, caSha256: "b".repeat(64) },
+      undefined,
+    ]) {
+      const x = await fixture(t);
+      assert.ok(x.driver.provisionHarness);
+      x.setHostRoute(hostRoute);
+      await assert.rejects(
+        x.driver.provisionHarness(x.context),
+        /did not confirm the exact pending workload/,
+      );
+      assert.deepEqual(
+        x.requests.map(({ method }) => method),
+        ["GET", "POST"],
+      );
+      assert.ok(!x.kube.reads.some((read) => read.startsWith("Secret/")));
+      assert.deepEqual(x.kube.actions, []);
+    }
+  },
+);
+
+test(
+  "the route CA digest is part of the agreed route and a later host route change stops serving",
+  { timeout: 30_000 },
+  async (t) => {
+    const caSha256 = "c".repeat(64);
+    const x = await fixture(t, {
+      controlledInference: { modelBaseUrl, address: modelRoute.address, caSha256 },
+    });
+    assert.ok(x.driver.provisionHarness && x.driver.harnessEndpoint);
+    // Approval was for a host without the CA: the digest mismatch refuses.
+    await assert.rejects(x.driver.provisionHarness(x.context), /exact pending workload/);
+    x.setHostRoute({ ...modelRoute, caSha256 });
+    const ref = await x.driver.provisionHarness(x.context);
+    const put = x.requests.find(({ method }) => method === "PUT")?.body;
+    assert.deepEqual(put?.controlledInference, { ...modelRoute, caSha256 });
+    servingRelay(x.kube, ref.resourceName);
+    x.setHostRoute({ ...modelRoute, address: "10.0.0.10", caSha256 });
+    await assert.rejects(x.driver.harnessEndpoint(x.context), /model route differs/);
   },
 );

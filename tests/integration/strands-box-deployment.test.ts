@@ -35,7 +35,8 @@ const driverSource = join(repository, "deploy/examples/strands-box/driver");
 const packageName = "@openclaw-enterprise/example-strands-box-driver";
 const implementation = `${packageName}@0.1.0`;
 const sandboxId = "strands-box-demo";
-const modelOrigin = "https://model.pilot.svc.cluster.local/v1";
+const modelOrigin = "https://model.pilot.example:8444/v1";
+const modelAddress = "10.0.0.9";
 const modelMarker = "openclaw-strands-controlled-inference-v1";
 const setupCode = "test-only-workspace-setup-code";
 
@@ -309,6 +310,7 @@ async function heldHostPeer(
           requirementsDigest: admission.requirementsDigest,
           workspaceNodeMode: "file-only-v1",
           workspaceVolume: admission.workspaceVolume,
+          controlledInference: { url: modelOrigin, address: modelAddress },
         }),
       );
       return;
@@ -380,7 +382,7 @@ test(
               nativeEndpoint: `wss://box-harness.${kubeNamespace}.svc.cluster.local:8443/`,
               nativeCaBundle: installed.ca,
               workspaceRoot: "/home/node/workspace",
-              controlledInference: { modelBaseUrl: modelOrigin },
+              controlledInference: { modelBaseUrl: modelOrigin, address: modelAddress },
               workspaceNodeMode: "file-only-v1",
               relay: {
                 image: `registry.example/relay@sha256:${"f".repeat(64)}`,
