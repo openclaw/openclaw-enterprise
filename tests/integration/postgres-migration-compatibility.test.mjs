@@ -13,6 +13,7 @@ import {
   assertLegacyControllerWorkBackfill,
 } from "./postgres-historical-agent-migration-cases.ts";
 import { registerPostgresMigrationSchemaAdmissionCases } from "./postgres-migration-schema-admission-cases.ts";
+import { registerPostgresMigrationTransactionCommandCases } from "./postgres-migration-transaction-command-cases.ts";
 import pg from "pg";
 import {
   assertCredentialSchemaPrivileges,
@@ -756,6 +757,13 @@ const migrationScripts = readFile(join(repositoryRoot, "package.json"), "utf8").
 
 // flag is a migration command option or undefined; refusal,
 // when set, must match the command's MIGRATION_HISTORY_UNSUPPORTED message.
+/**
+ * @param {{ migrationUrl: string }} db
+ * @param {import("./postgres-migration-transaction-command-cases.ts").MigrationCommandMode} [mode]
+ * @param {import("./postgres-migration-transaction-command-cases.ts").MigrationCommandFlag} [flag]
+ * @param {RegExp} [refusal]
+ * @returns {Promise<import("./postgres-migration-transaction-command-cases.ts").MigrationCommandResult>}
+ */
 async function runHistoryCommand(db, mode = "development", flag, refusal) {
   const script = (await migrationScripts)[
     mode === "production" ? "db:migrate:production" : "db:migrate"
@@ -775,36 +783,49 @@ async function runHistoryCommand(db, mode = "development", flag, refusal) {
       timeout: 180_000,
       maxBuffer: 16 * 1024 * 1024,
     });
+    const event = checkOnly ? "migration.checked" : "migration.completed";
     const result = stdout
       .split("\n")
       .filter((line) => line.startsWith("{"))
-      .map((line) => JSON.parse(line))
-      .find((value) => value.event === (checkOnly ? "migration.checked" : "migration.completed"));
-    assert.ok(result, "The supported migration command must report its successful outcome.");
+      .map(/** @returns {unknown} */ (line) => JSON.parse(line))
+      .find(
+        (value) =>
+          value !== null && typeof value === "object" && "event" in value && value.event === event,
+      );
+    assert.ok(
+      result !== null &&
+        typeof result === "object" &&
+        "history" in result &&
+        typeof result.history === "string",
+      "The supported migration command must report its successful outcome.",
+    );
     return { ok: true, history: result.history };
   } catch (error) {
-    const output = `${error.stdout ?? ""}\n${error.stderr ?? ""}`;
-    if (error.code === 1 && output.includes('"code":"MIGRATION_HISTORY_UNSUPPORTED"')) {
+    const code = error instanceof Error && "code" in error ? error.code : undefined;
+    const stdout = error instanceof Error && "stdout" in error ? error.stdout : undefined;
+    const stderr = error instanceof Error && "stderr" in error ? error.stderr : undefined;
+    const output = `${stdout ?? ""}\n${stderr ?? ""}`;
+    if (code === 1 && output.includes('"code":"MIGRATION_HISTORY_UNSUPPORTED"')) {
       if (refusal !== undefined) {
         assert.match(output, refusal);
       }
       return { ok: false, code: "MIGRATION_HISTORY_UNSUPPORTED" };
     }
-    if (error.code === 1 && output.includes('"code":"MIGRATION_HISTORY_PENDING"')) {
+    if (code === 1 && output.includes('"code":"MIGRATION_HISTORY_PENDING"')) {
       return { ok: false, code: "MIGRATION_HISTORY_PENDING" };
     }
-    if (error.code === 1 && output.includes('"code":"MIGRATION_HISTORY_NOT_EMPTY"')) {
+    if (code === 1 && output.includes('"code":"MIGRATION_HISTORY_NOT_EMPTY"')) {
       assert.ok(
         output.includes("use --check to inspect migration history without applying changes"),
       );
       return { ok: false, code: "MIGRATION_HISTORY_NOT_EMPTY" };
     }
-    if (error.code === 1 && output.includes('"code":"MIGRATION_FAILED"')) {
+    if (code === 1 && output.includes('"code":"MIGRATION_FAILED"')) {
       return { ok: false, code: "MIGRATION_FAILED" };
     }
     // Subprocess errors can retain connection credentials in stdout or stderr.
     // eslint-disable-next-line preserve-caught-error
-    throw new Error(`Migration subprocess failed unexpectedly (code=${error.code ?? "none"}).`);
+    throw new Error(`Migration subprocess failed unexpectedly (code=${code ?? "none"}).`);
   }
 }
 
@@ -863,31 +884,40 @@ async function runHistoryMigration(db, mode = "development", flag, refusal, asse
   }
 }
 
+/** @param {pg.Client} client */
 async function historyReceipts(client) {
-  const { rows } = await client.query(
+  /** @type {import("pg").QueryResult<{ present: boolean }>} */
+  const ledger = await client.query(
     `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class c
       JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
       WHERE n.nspname='drizzle' AND c.relname='__drizzle_migrations') AS present`,
   );
-  return !rows[0].present
-    ? []
-    : (
-        await client.query(
-          "SELECT id,hash,created_at FROM drizzle.__drizzle_migrations ORDER BY id",
-        )
-      ).rows;
+  const [state] = ledger.rows;
+  assert.ok(state, "Expected the PostgreSQL ledger presence result.");
+  if (!state.present) {
+    return [];
+  }
+  /** @type {import("pg").QueryResult<import("./postgres-migration-transaction-command-cases.ts").MigrationReceipt>} */
+  const receipts = await client.query(
+    "SELECT id,hash,created_at FROM drizzle.__drizzle_migrations ORDER BY id",
+  );
+  return receipts.rows;
 }
 
+/** @param {{ migrator: pg.Client }} db */
 async function historySnapshot(db) {
+  const receipts = await historyReceipts(db.migrator);
+  const occ = await migrationCatalog(db.migrator);
+  const drizzle = await migrationCatalog(db.migrator, "drizzle");
+  /** @type {import("pg").QueryResult<import("./postgres-migration-transaction-command-cases.ts").MigrationDefaultAcl>} */
+  const defaultAcls = await db.migrator.query(
+    "SELECT oid,defaclrole,defaclnamespace,defaclobjtype,defaclacl::text AS acl FROM pg_catalog.pg_default_acl ORDER BY oid",
+  );
   return {
-    receipts: await historyReceipts(db.migrator),
-    occ: await migrationCatalog(db.migrator),
-    drizzle: await migrationCatalog(db.migrator, "drizzle"),
-    defaultAcls: (
-      await db.migrator.query(
-        "SELECT oid,defaclrole,defaclnamespace,defaclobjtype,defaclacl::text AS acl FROM pg_catalog.pg_default_acl ORDER BY oid",
-      )
-    ).rows,
+    receipts,
+    occ,
+    drizzle,
+    defaultAcls: defaultAcls.rows,
     initialOcc: await initialSchemaState(db.migrator, "occ"),
     initialDrizzle: await initialSchemaState(db.migrator, "drizzle"),
   };
@@ -1792,140 +1822,15 @@ test(
   },
 );
 
-test(
-  "Separate database deployment verifies the exact candidate history without applying pending SQL",
+registerPostgresMigrationTransactionCommandCases({
   requiresHistoryPostgres,
-  async (context) => {
-    const db = await historyDatabase(context, await migrationHistoryFixture(), "separate", {
-      prefix: 73,
-    });
-    const verify = () => runHistoryCommand(db, "production", "--require-current");
-    const predecessor = await historySnapshot(db);
-    assert.deepEqual(await verify(), { ok: false, code: "MIGRATION_HISTORY_PENDING" });
-    assert.deepEqual(await historySnapshot(db), predecessor);
-    assert.deepEqual(await runHistoryCommand(db, "production"), {
-      ok: true,
-      history: "preFiniteRepositorySessionWithdrawal",
-    });
-    const current = await historySnapshot(db);
-    assert.deepEqual(await verify(), { ok: true, history: "completed" });
-    assert.deepEqual(await historySnapshot(db), current);
-    await db.migrator.query("REVOKE SELECT ON occ.iam_identities FROM occ_app");
-    assert.deepEqual(await verify(), { ok: false, code: "MIGRATION_HISTORY_UNSUPPORTED" });
-  },
-);
-
-test(
-  "Completed migration avoids DDL while preserving read-only refusal and lock release",
-  requiresHistoryPostgres,
-  async (context) => {
-    const db = await historyDatabase(context, await migrationHistoryFixture(), "completed", {
-      prefix: 73,
-    });
-    // Observe attempted DDL, including CREATE IF NOT EXISTS on existing objects.
-    // These database-local objects are outside the canonical application catalogs.
-    await historyAdmin(
-      db,
-      db.name,
-      `CREATE SEQUENCE public.migration_ddl_attempts;
-       GRANT USAGE, SELECT ON public.migration_ddl_attempts TO occ_migrator;
-       CREATE FUNCTION public.observe_migration_ddl() RETURNS event_trigger
-       LANGUAGE plpgsql AS $$ BEGIN
-         PERFORM nextval('public.migration_ddl_attempts');
-       END $$;
-       CREATE EVENT TRIGGER observe_migration_ddl ON ddl_command_start
-       WHEN TAG IN ('CREATE SCHEMA', 'CREATE TABLE')
-       EXECUTE FUNCTION public.observe_migration_ddl();`,
-    );
-    const attempts = async () =>
-      (await db.migrator.query("SELECT last_value FROM public.migration_ddl_attempts")).rows[0]
-        .last_value;
-    assert.deepEqual(await runHistoryCommand(db, "production"), {
-      ok: true,
-      history: "preFiniteRepositorySessionWithdrawal",
-    });
-    const before = await attempts();
-    assert.ok(Number(before) >= 2, "The observer must see the pending migrator's DDL.");
-    const snapshot = await historySnapshot(db);
-    for (const mode of ["development", "production"]) {
-      assert.deepEqual(await runHistoryCommand(db, mode), { ok: true, history: "completed" });
-      assert.equal(await attempts(), before, "A completed migration must not attempt DDL.");
-    }
-
-    const readonly = new URL(db.migrationUrl);
-    readonly.searchParams.set("options", "-c default_transaction_read_only=on");
-    const readonlyDb = { ...db, migrationUrl: readonly.toString() };
-    assert.deepEqual(await runHistoryCommand(readonlyDb, "production"), {
-      ok: false,
-      code: "MIGRATION_FAILED",
-    });
-    for (const flag of ["--check", "--require-current"]) {
-      assert.deepEqual(await runHistoryCommand(readonlyDb, "production", flag), {
-        ok: true,
-        history: "completed",
-      });
-    }
-    assert.deepEqual(await runHistoryCommand(readonlyDb, "production", "--expect-empty"), {
-      ok: false,
-      code: "MIGRATION_HISTORY_NOT_EMPTY",
-    });
-
-    // Keep the backend alive: closing the pool would hide a missing explicit unlock.
-    for (const readOnly of [false, true]) {
-      const pool = await createPostgresPool(db.migrationUrl, {
-        max: 1,
-        options: `-c default_transaction_read_only=${readOnly ? "on" : "off"}`,
-      });
-      try {
-        if (readOnly) {
-          await assert.rejects(migrateWithHistory(pool), (error) => error.cause?.code === "25006");
-        } else {
-          assert.equal(await migrateWithHistory(pool), "completed");
-        }
-        assert.equal(
-          (await pool.query("SHOW transaction_read_only")).rows[0].transaction_read_only,
-          readOnly ? "on" : "off",
-        );
-        assert.equal(
-          (await db.migrator.query("SELECT pg_try_advisory_lock(1868785005, 1835624306) AS held"))
-            .rows[0].held,
-          true,
-        );
-        await db.migrator.query("SELECT pg_advisory_unlock(1868785005, 1835624306)");
-      } finally {
-        await pool.end();
-      }
-    }
-    assert.deepEqual(await historySnapshot(db), snapshot);
-  },
-);
-
-test(
-  "First installation requires empty migration history under the migration lock",
-  requiresHistoryPostgres,
-  async (context) => {
-    const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(context, fixture, "first_install");
-    // The real production command: its exit code, stdout outcome and refusal message.
-    const firstInstall = () => runHistoryCommand(db, "production", "--expect-empty");
-    const refused = { ok: false, code: "MIGRATION_HISTORY_NOT_EMPTY" };
-    // Concurrent callers both intend a first installation. Only the lock winner may migrate.
-    const results = await Promise.all([firstInstall(), firstInstall()]);
-    assert.deepEqual(
-      results.sort((a, b) => Number(b.ok) - Number(a.ok)),
-      [{ ok: true, history: "empty" }, refused],
-    );
-    await assertCompletedHistory(db);
-
-    const before = await historySnapshot(db);
-    assert.deepEqual(await firstInstall(), refused);
-    assert.deepEqual(await historySnapshot(db), before);
-    assert.deepEqual(await runHistoryCommand(db, "production", "--check"), {
-      ok: true,
-      history: "completed",
-    });
-  },
-);
+  migrationHistoryFixture,
+  historyDatabase,
+  historyAdmin,
+  runHistoryCommand,
+  historySnapshot,
+  assertCompletedHistory,
+});
 
 test(
   "Canonical migration commands preserve main data and serialize fresh/repeat runners",

@@ -250,6 +250,7 @@
     "helpers/populated-upgrade-return.ts",
     "integration/postgres-historical-agent-migration-cases.ts",
     "integration/postgres-migration-schema-admission-cases.ts",
+    "integration/postgres-migration-transaction-command-cases.ts",
     "helpers/deployed-repository-capability.ts",
     "helpers/production-upgrade-*.ts",
     "helpers/upgrade-doctor-observations.ts",
