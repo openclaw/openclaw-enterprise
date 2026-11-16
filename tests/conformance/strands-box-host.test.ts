@@ -1262,6 +1262,12 @@ test("the host refuses a name that resolves anywhere but the pinned address", as
   await assert.rejects(assertPinnedResolution(route, answers(new Error("ENOTFOUND"))), {
     message: "egress_name_unresolved",
   });
+  await assert.rejects(
+    assertPinnedResolution(route, () => new Promise(() => undefined), 20),
+    {
+      message: "egress_name_unresolved",
+    },
+  );
   const literal = parseRoute(
     { url: "https://10.0.0.9/v1", address: "10.0.0.9" },
     "controlled-inference",

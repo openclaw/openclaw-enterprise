@@ -935,7 +935,14 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       if (pending === undefined) {
         const plan = admitted(config, supplied, data, "observe");
         const inference = inferenceRoute(plan);
-        if (inference !== undefined) await assertPinnedResolution(inference);
+        if (inference !== undefined) {
+          await assertPinnedResolution(inference);
+          // Another request may have recorded the pending admission during the lookup.
+          if (shuttingDown || pending !== undefined) {
+            reply(response, 409, { error: "pending_admission_conflict" });
+            return;
+          }
+        }
         const workspaceNode = approvedWorkspaceNode(plan);
         const view: Pending = {
           version: 1,
@@ -1016,6 +1023,17 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         reply(response, 409, { error: "owner_admission_not_approved" });
         return;
       }
+      // Resolve again just before the one start attempt; Box pins the address it dials.
+      // Nothing below this lookup awaits, so the checks after it hold until Box starts.
+      if (pending.view.controlledInference !== undefined) {
+        if (config.controlledInference === undefined)
+          throw new Error("controlled_inference_admitted_route_changed");
+        await assertPinnedResolution(config.controlledInference);
+        if (shuttingDown || attempted || current !== undefined) {
+          reply(response, 409, { error: "execution_already_attempted" });
+          return;
+        }
+      }
       const input = admitted(config, supplied, data, "start");
       const workspaceNode = approvedWorkspaceNode(input);
       if (workspaceNode?.planSha256 !== pending.view.workspaceNode?.planSha256) {
@@ -1026,8 +1044,6 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       if (JSON.stringify(inferenceView) !== JSON.stringify(pending.view.controlledInference)) {
         throw new Error("controlled_inference_admitted_route_changed");
       }
-      // Resolve again just before the one start attempt; Box pins the address it dials.
-      if (inference !== undefined) await assertPinnedResolution(inference);
       const view: RecordView = {
         owner: supplied,
         requirementsDigest,

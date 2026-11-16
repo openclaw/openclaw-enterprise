@@ -184,14 +184,24 @@ type Lookup = (
 export async function assertPinnedResolution(
   route: EgressRoute,
   resolve: Lookup = lookup as unknown as Lookup,
+  timeoutMs = 2_000,
 ): Promise<void> {
   const hostname = new URL(route.url).hostname;
   if (isIPv4(hostname)) return;
   let answers: readonly { address: string; family: number }[];
+  let timer: NodeJS.Timeout | undefined;
   try {
-    answers = await resolve(hostname, { all: true, verbatim: true });
+    // The control socket answers within seconds; a slow resolver refuses instead of waiting.
+    answers = await Promise.race([
+      resolve(hostname, { all: true, verbatim: true }),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
+      }),
+    ]);
   } catch {
     throw new Error("egress_name_unresolved");
+  } finally {
+    clearTimeout(timer);
   }
   if (
     answers.length === 0 ||
