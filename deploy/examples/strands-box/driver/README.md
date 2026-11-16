@@ -380,6 +380,12 @@ The registration provides:
 Withdrawing the repository assignment stops new sends before any provider
 connection. The Box execution and its chat keep running.
 
+The Agent Gateway sends a protected Box turn with the same
+`externalSandbox` policy and `networkAccess: "restricted"` as an ordinary Box
+turn. Under that policy Codex applies no network sandbox of its own; it only
+sets `CODEX_SANDBOX_NETWORK_DISABLED=1` for commands. Box egress, with the
+`repository-sender` route as the only Git destination, is the network fence.
+
 ## Execution lifecycle
 
 The Worker sends the exact admitted workload and its canonical JSON SHA-256 to
