@@ -219,7 +219,7 @@
     "tests/integration/driver-plugin-installation.test.ts": 4200,
     "tests/integration/egress-connected-preflight.test.mjs": 2400,
     "tests/integration/egress-enrollment.test.mjs": 1900,
-    "tests/integration/egress-installation-exchange.test.mjs": 3300,
+    "tests/integration/egress-installation-exchange.test.ts": 3300,
     "tests/integration/egress-prepared-github-metadata.test.mjs": 1600,
     "tests/integration/egress-stock-online-authority.test.mjs": 700,
     "tests/integration/egress-stock-online-git-authority.test.mjs": 900,

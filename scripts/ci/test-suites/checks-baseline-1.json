@@ -149,7 +149,7 @@
     "tests/integration/protected-driver-registration.test.ts",
     "tests/integration/credential-policy-recovery.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
-    "tests/integration/egress-installation-exchange.test.mjs",
+    "tests/integration/egress-installation-exchange.test.ts",
     "tests/integration/egress-prepared-github-metadata.test.mjs",
     "tests/integration/protected-source-refusals.test.ts",
     "tests/integration/refusal-answers.test.ts",
@@ -973,7 +973,7 @@
       ]
     },
     {
-      "path": "tests/integration/egress-installation-exchange.test.mjs"
+      "path": "tests/integration/egress-installation-exchange.test.ts"
     },
     {
       "path": "tests/integration/egress-prepared-github-metadata.test.mjs"

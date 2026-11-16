@@ -26,7 +26,7 @@ With installed workspace dependencies, run the focused source suites:
 ```sh
 pnpm test:files -- tests/integration/static-egress.test.mjs \
   tests/integration/egress-prepared-github-metadata.test.mjs \
-  tests/integration/egress-installation-exchange.test.mjs
+  tests/integration/egress-installation-exchange.test.ts
 ```
 
 This selects literal files without provisioning dependencies or preventing skips.

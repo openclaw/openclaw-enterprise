@@ -137,7 +137,7 @@ function refusal(value: unknown): Refusal {
   return { code };
 }
 
-function resolution(value: unknown): Resolution {
+export function decodeResolution(value: unknown): Resolution {
   const message = object(value, "resolved");
   const result = oneof(message, "result", resolutions);
   switch (result) {
@@ -225,7 +225,7 @@ export function decodeExchangeReply(value: unknown): ExchangeReply {
     case "challenge":
       return { event, challenge: bytes(message.challenge, event, 32) };
     case "resolved":
-      return { event, resolved: resolution(message.resolved) };
+      return { event, resolved: decodeResolution(message.resolved) };
     case "authorized":
       return { event, authorized: authorization(message.authorized) };
     case "response":
