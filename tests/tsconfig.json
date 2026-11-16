@@ -217,6 +217,7 @@
     "helpers/production-tui-otel.ts",
     "helpers/credential-source-owner-upgrade.ts",
     "helpers/populated-upgrade-return.ts",
+    "integration/postgres-historical-agent-migration-cases.ts",
     "helpers/deployed-repository-capability.ts",
     "helpers/production-upgrade-*.ts",
     "helpers/upgrade-doctor-observations.ts",
