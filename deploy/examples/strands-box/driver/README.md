@@ -7,10 +7,13 @@ transport verifier. The host matches those inputs to its independently admitted
 execution. A private relay carries the existing Harness WebSocket protocol.
 
 This example supports ordinary execution with a controlled, non-authorizing
-inference fixture. It does not register a Credential Proxy or provide protected
-Git. Selecting it as a paired protected Driver is refused by the normal loader.
-The Driver also refuses protected revision inputs, credential attachments, a
-projected workload identity or initial workspace files before starting the Box.
+inference fixture. Without `repositorySender` it does not register a Credential
+Proxy or provide protected Git: the paired loader refuses it, and the Driver
+refuses protected revision inputs, credential attachments, a projected workload
+identity or initial workspace files before starting the Box. With
+`repositorySender` the package returns the
+[paired protected registration](#paired-protected-registration) instead, which
+the ordinary `drivers.sandbox` loader refuses.
 
 The Driver reports `serving` only after the original Codex server answers the
 Driver’s authenticated JSON-RPC `initialize` request. Check the actual Box,
@@ -305,6 +308,77 @@ test "$(worker stat -c '%F:%u:%a:%d:%i' /run/strands-box/control.sock)" = "$sock
 Keep the request held until the exact live socket and Worker mount match the
 original readback. Keep private configuration and response bodies off the
 terminal and out of reports. Use the normal Worker's identity and mount flags.
+
+## Paired protected registration
+
+Add `repositorySender` to the Driver configuration and select the same Driver
+as `drivers.credential_proxy` with an empty configuration:
+
+```json
+{
+  "drivers": {
+    "sandbox": {
+      "id": "strands-box",
+      "package": "@openclaw-enterprise/example-strands-box-driver",
+      "configuration": {
+        "...": "the ordinary settings above",
+        "repositorySender": {
+          "url": "https://repository-sender.example.invalid:9443/",
+          "address": "10.0.0.9",
+          "peerAddress": "10.0.0.7",
+          "listenPort": 9443,
+          "certificateFile": "/var/run/strands-sender/tls.crt",
+          "keyFile": "/var/run/strands-sender/tls.key",
+          "journalDir": "/var/lib/strands-sender",
+          "repository": {
+            "repository": "example/review",
+            "repositoryId": "123",
+            "installationId": "456",
+            "head": "agent-review",
+            "base": "main"
+          }
+        }
+      }
+    },
+    "credential_proxy": { "id": "strands-box", "configuration": {} }
+  }
+}
+```
+
+- `url` and `address` are what Box connects to. The host's own
+  `repositorySender` route must name the same URL and private IPv4. The host
+  refuses wiring that differs from its route.
+- The Worker listens on `listenPort` and drops every peer except
+  `peerAddress`, the Box host's source address. Keep the NetworkPolicy as the
+  outer fence. Box checks the listener certificate against public roots only,
+  so the certificate must chain to a root Box trusts.
+- `journalDir` is a Worker-local, owner-only directory. The sender keeps one
+  journal subdirectory per execution so a lost push or draft reply is never
+  replayed.
+- `repository` selects one GitHub repository and two distinct branches. The
+  sender accepts a push only to `head` and opens draft pull requests only from
+  `head` into `base`.
+
+The registration provides:
+
+- the protected Sandbox Driver (`provisionHarness`, `protectedWorkspaceEndpoint`,
+  `enrollHarness`, `repositoryAccess`). It admits only a protected v5 revision
+  with one online-request GitHub repository plan, no other egress route, no
+  credential attachments and a dedicated Codex Harness. It sends the host a
+  fresh 256-bit bearer in `PUT /v1/execution`. The host keeps the bearer in
+  memory, gives it only to `box run` as a phantom credential, and reports its
+  SHA-256 and the live `box run` process identity. `enrollHarness` relays
+  Compute's signed startup release to `POST /v1/release`. The host verifies
+  the signature and opens the startup gate only for that held execution.
+- the Credential Proxy (`sourceControl`, `configureRevision`, `wiringStatus`,
+  `verifyInstallation`, `removeRevision`, `bindRepositoryGit`). The installation
+  that Compute commits is built only from what the host reports. The listener
+  and the sender run only in the Worker, after `bindRepositoryGit`. Each request
+  reads the current material version from OCC. Box never receives the
+  installation token.
+
+Withdrawing the repository assignment stops new sends before any provider
+connection. The Box execution and its chat keep running.
 
 ## Execution lifecycle
 

@@ -2,7 +2,7 @@
 
 This example implements a trusted sender for one selected GitHub repository and one admitted execution. It serves smart HTTP at `/repository.git` and one draft creation at `POST /draft-pull`. The remote origin is fixed by the sender. The caller cannot select the GitHub host or repository. The example PR command uses a fixed head and base. The installation token and GitHub repository policies determine provider permissions.
 
-The ordinary Box example does not install a protected recipient or provide its authenticated Git route. Leave protected repository access disabled until the same selected Driver can supply both. Do not use the ordinary Box control socket, a static token, or an unauthenticated TLS proxy as a substitute.
+The ordinary Box example does not install a protected recipient or provide its authenticated Git route. The [paired protected registration](../driver/README.md#paired-protected-registration) of the same package supplies both and runs this sender in the Worker. Do not use the ordinary Box control socket, a static token, or an unauthenticated TLS proxy as a substitute.
 
 ## Bind the sender in the selected Driver
 
@@ -13,7 +13,7 @@ The ordinary Box example does not install a protected recipient or provide its a
 
 The sender compares the request's bearer digest with the reported digest in constant time, then rechecks the whole current recipient before it reads material and again before any request bytes reach the provider. A bearer from a replaced `box run` no longer matches the committed recipient, so its requests are refused before any material read or connection.
 
-The ordinary Box example Driver refuses protected wiring and credential attachments. Protected wiring needs the paired registration described in the [Driver guide](../driver/README.md). The sender's local tests supply a controlled authority and recipient fixture to test the transport itself.
+The ordinary Box example Driver refuses protected wiring and credential attachments. Protected wiring needs the [paired registration](../driver/README.md#paired-protected-registration). The sender's local tests supply a controlled authority and recipient fixture to test the transport itself.
 
 ## Use the admitted remote
 

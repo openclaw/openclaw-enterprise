@@ -1,11 +1,14 @@
 # Run one dedicated Codex Agent in Strands Box
 
 Verify native startup on a dedicated Linux ARM64 host, then deploy an Agent
-through the ordinary OpenClaw Enterprise (OCE) workflow. The example Driver
-refuses protected repository delivery. Leave it disabled on that path. The
-[fixed-repository sender](git/README.md) has component tests against controlled
-origins. It has yet to be verified on an installed Box Agent. The GitHub steps
-below are acceptance checks for a paired Driver and sender on the same execution.
+through the ordinary OpenClaw Enterprise (OCE) workflow. By default the example
+Driver refuses protected repository delivery. Configuring `repositorySender`
+selects the [paired protected registration](driver/README.md#paired-protected-registration)
+instead: the same package then supplies the protected Sandbox Driver and its
+Credential Proxy, and the [fixed-repository sender](git/README.md) runs in the
+Worker. The pairing has component tests against controlled origins. It has yet
+to be verified on an installed Box Agent. The GitHub steps below are acceptance
+checks for that pairing on one execution.
 
 The [Worker integration test](../../../tests/integration/strands-box-deployment.test.ts)
 deploys an Agent through the API and checks the original request at the Driver.
@@ -144,19 +147,20 @@ environment, files and prompts.
    [draft command](git/README.md#use-the-admitted-remote).
 
    ```sh
-   curl --cacert "$SENDER_CA" --cert "$EXECUTION_CERT" --key "$EXECUTION_KEY" \
+   curl --header "Authorization: Bearer $OCE_REPOSITORY_SENDER_BEARER" \
      --header 'Content-Type: application/json' --data '{"title":"Review change"}' \
-     https://repository-sender.example.invalid/draft-pull
+     https://repository-sender.example.invalid:9443/draft-pull
    ```
 
-   Use the configured sender hostname and the execution's certificate files.
+   Use the configured sender URL. Inside Box the variable holds only a
+   placeholder; Box replaces it with the execution's bearer on the way out.
    Independently verify the file, branch, commit and draft head on GitHub. The
    example PR action uses its configured head and base. GitHub's token
    permissions and repository rules govern provider access.
 
-2. Try a different repository path against the controlled sender. Verify that
-   it refuses the request before contacting the origin and leaves the attempted
-   ref unchanged.
+2. Try a different repository path, and a push to any ref other than the
+   configured head, against the controlled sender. Verify that it refuses each
+   request before contacting the origin and leaves the attempted ref unchanged.
 3. Withdraw the active Agent's repository assignment through OCE without
    stopping the Agent. From that same execution, attempt a fresh authenticated
    fetch and a fresh push. Verify that the sender refuses both before contacting

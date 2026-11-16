@@ -11,7 +11,7 @@
 import { createHash, createPublicKey, randomBytes, randomUUID, verify } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { createServer, type Server } from "node:https";
+import { type Agent, createServer, type Server } from "node:https";
 import { isIP } from "node:net";
 import { isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -220,12 +220,16 @@ class Shared {
   readonly id: string;
   readonly options: Options & { readonly repositorySender: RepositorySenderConfiguration };
 
+  readonly upstreamAgent: Agent | undefined;
+
   constructor(
     id: string,
     options: Options & { readonly repositorySender: RepositorySenderConfiguration },
+    upstreamAgent?: Agent,
   ) {
     this.id = id;
     this.options = options;
+    this.upstreamAgent = upstreamAgent;
     this.sender = senderRef(id);
     this.wiring = wiringConfiguration(options.repositorySender);
   }
@@ -393,6 +397,7 @@ class Shared {
         journalDir: this.journal(installation.plan.execution.executionId),
         current: (lifetime) => this.current(lifetime),
         record: receipt,
+        ...(this.upstreamAgent === undefined ? {} : { upstreamAgent: this.upstreamAgent }),
       });
       active.binding = await sender.bindRepositoryGit(authority);
       active.sender = sender;
@@ -468,11 +473,13 @@ export function createProtectedRegistration(
   id: string,
   implementation: string,
   input: Options,
+  /** Test seam only: `createDriver` never passes it, so configuration cannot select it. */
+  seams: { readonly upstreamAgent?: Agent } = {},
 ): DriverRegistration {
   const configured = input.repositorySender;
   if (configured === undefined) throw new Error("repositorySender is required.");
   const options = { ...structuredClone(input), repositorySender: structuredClone(configured) };
-  const shared = new Shared(id, options);
+  const shared = new Shared(id, options, seams.upstreamAgent);
 
   class ProtectedStrandsBoxDriver extends Base implements ProtectedWorkspaceSandboxDriver {
     readonly repositoryAccess: SandboxRepositoryAccess = {
