@@ -59,6 +59,16 @@ function assertRefused(response, field, message, label = field) {
 
 // Gateway storage and Compute placement are test doubles. Requests use the real
 // Fastify app, authentication, IAM, OCC transactions, and OpenShell Driver.
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {{
+ *   toolSources?: boolean,
+ *   persistedIam?: boolean,
+ *   gateway?: import("../../packages/contracts/src/index.ts").OpenShellBackendConfiguration,
+ *   modelProvider?: { protocol: "openai-responses", baseUrl: string },
+ *   placement?: ReturnType<typeof createOpenShellBackend>["client"]["placement"]
+ * }} [options]
+ */
 async function fixture(
   t,
   {
@@ -232,6 +242,7 @@ async function fixture(
     },
     /** A source stored before a rule existed, with its provider, as an older release left it. */
     seedStored(type, config) {
+      /** @satisfies {import("../../packages/contracts/src/index.ts").CredentialSource} */
       const stored = {
         id: "cs_" + randomUUID(),
         namespaceId: namespace.id,
