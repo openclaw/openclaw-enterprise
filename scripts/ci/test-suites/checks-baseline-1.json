@@ -968,7 +968,8 @@
         "OpenShell exchange: first-renewal outage, then recover",
         "OpenShell exchange: first-renewal outage, then withdraw",
         "OpenShell exchange: post-renewal outage, then recover",
-        "OpenShell exchange: post-renewal outage, then withdraw"
+        "OpenShell exchange: post-renewal outage, then withdraw",
+        "exchange reader rejects invalid reply envelopes and preserves terminal ordering"
       ]
     },
     {

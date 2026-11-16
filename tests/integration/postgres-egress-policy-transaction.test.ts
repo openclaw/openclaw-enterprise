@@ -144,6 +144,7 @@ async function assertDenialAudit(
       namespaceId: f.namespace.id,
       id: f.source.id,
     });
+    assert.ok(event.details);
     assert.equal(event.details.phase, "before_send");
     assert.equal(event.details.code, code);
     assert.equal(event.details.revisionId, f.revision.id);

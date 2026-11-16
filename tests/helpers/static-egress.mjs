@@ -11,8 +11,8 @@ import {
 import { InstalledDriver } from "../../packages/occ/src/index.ts";
 import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync, randomUUID, randomBytes, sign } from "node:crypto";
-import { createServer as createHttpsServer, request as httpsRequest } from "node:https";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createServer as createHttpsServer } from "node:https";
 import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -33,10 +33,17 @@ import {
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-authority.ts";
 import { selfSigned } from "./certificates.mjs";
 import { listen } from "./listen.ts";
-import { requestId } from "./static-egress-request-id.ts";
+import {
+  createExchangeClients,
+  createExchangeOrigin,
+  createStaticEgressExchange,
+} from "./static-egress-exchange.ts";
+import { Check } from "typebox/value";
+import { NamespaceSchema } from "../../packages/contracts/src/api/resources.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
-export { requestId };
+export { requestId } from "./static-egress-request-id.ts";
+export { supervisorBearer, wireTime } from "./static-egress-exchange.ts";
 export { syntheticDispatchFixture } from "./static-egress-dispatch.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -53,10 +60,6 @@ export const loadGatewayDefinition = (options) =>
     { keepCase: true, enums: String, longs: String, ...options },
   );
 
-export const wireTime = (millis) => ({
-  seconds: Math.floor(millis / 1000),
-  nanos: (millis % 1000) * 1e6,
-});
 export const unary = (client, method, request, metadata, timeoutMs = 5000) =>
   new Promise((resolve, reject) =>
     client[method](
@@ -66,13 +69,6 @@ export const unary = (client, method, request, metadata, timeoutMs = 5000) =>
       (error, result) => (error ? reject(error) : resolve(result)),
     ),
   );
-export function supervisorBearer(claims, privateKey) {
-  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  const header = encode({ alg: "EdDSA", typ: "openshell-ext+jwt", kid: "fixture-key" });
-  const signed = header + "." + encode(claims);
-  return `Bearer ${signed}.${sign(null, Buffer.from(signed), privateKey).toString("base64url")}`;
-}
-
 /** Real app/auth/IAM/controller/Drivers. Storage and installed runtime observations are wire fixtures,
  * not a Kubernetes API server or an OpenShell supervisor. No authorization/provider logic is mocked.
  * @template {import("node:net").Server} [Provider=never]
@@ -558,29 +554,8 @@ async function buildStaticEgressFixture(
       withdraw: (...args) => owner.withdraw(...args),
     });
   }
-  const providerRequests = [];
-  /** @type {{ status: number, body?: unknown, contentType?: string, rawBody?: string | Buffer, trailers?: import("node:http").OutgoingHttpHeaders }} */
-  let providerResponse = { status: 200, body: { output: "fixture answer" } };
-  const createProvider = providerServer === undefined ? createHttpsServer : providerServer;
-  const provider = createProvider({ key, cert }, async (request, response) => {
-    const bytes = await buffer(request);
-    providerRequests.push({
-      method: request.method,
-      path: request.url,
-      authorization: request.headers.authorization,
-      body: bytes.length ? JSON.parse(bytes) : undefined,
-      headers: request.headers,
-    });
-    response.writeHead(providerResponse.status, {
-      "content-type": providerResponse.contentType ?? "application/json",
-    });
-    response.write(providerResponse.rawBody ?? JSON.stringify(providerResponse.body));
-    if (providerResponse.trailers) {
-      response.addTrailers(providerResponse.trailers);
-    }
-    response.end();
-  });
-  const providerPort = await listen(t, provider);
+  const origin = await createExchangeOrigin(t, { key, cert }, providerServer);
+  const { providerPort, providerRequests, setResponse } = origin;
   const modelProvider = {
     protocol: "openai-responses",
     baseUrl: `https://provider.example.test:${providerPort}/v1`,
@@ -603,8 +578,10 @@ async function buildStaticEgressFixture(
       { binaries: ["/usr/bin/model-client"] },
       { id: "openshell-credentials", backend },
     );
+  const gatewayMethods = /** @type {const} */ (["registerSource", "updateSource", "removeSource"]);
+  /** @type {(typeof gatewayMethods)[number][]} */
   const gatewayEffects = [];
-  for (const method of ["registerSource", "updateSource", "removeSource"]) {
+  for (const method of gatewayMethods) {
     const original = catalog[method].bind(catalog);
     catalog[method] = (...args) => {
       gatewayEffects.push(method);
@@ -667,7 +644,9 @@ async function buildStaticEgressFixture(
   }
   app.controller.registerDriver(installedDriver);
   app.controller.selectDriver("sandbox", sandbox.id);
-  namespace = await app.createNamespace(`egress-${randomUUID().slice(0, 8)}`);
+  const createdNamespace = await app.createNamespace(`egress-${randomUUID().slice(0, 8)}`);
+  assert.ok(Check(NamespaceSchema, createdNamespace), "Expected a valid provisioned Namespace");
+  namespace = createdNamespace;
   runtimeNamespace = physicalPlacement
     ? await placement.resolveSandboxNamespace(namespace)
     : namespace;
@@ -796,7 +775,7 @@ async function buildStaticEgressFixture(
   const revision = await app.controller.transact((unit) =>
     unit.revisions.findRevision(namespace.id, agent.id, revisionMetadata.id),
   );
-  assert.ok(revision.egressPlan, "deployment must admit the consumed protected plan");
+  assert.ok(revision?.egressPlan, "deployment must admit the consumed protected plan");
   const context = {
     namespace: runtimeNamespace,
     revision,
@@ -901,291 +880,24 @@ async function buildStaticEgressFixture(
   let authority = createOpenShellEgressAuthority(identity, authorityController);
   const authorityPort = await bindOpenShellEgressAuthority(authority, "127.0.0.1:0", cert, key);
   t.after(() => authority.forceShutdown());
-  const definition = loader.loadSync(
-    new URL(
-      "../../apps/controller/src/drivers/egress-proxy/proto/supervisor_middleware.proto",
-      import.meta.url,
-    ).pathname,
-    { keepCase: true, longs: String, enums: Number, defaults: false, oneofs: true },
-  );
-  /** @param {Uppercase<import("../../packages/contracts/src/index.ts").EgressRefusal["kind"]> | "UNSPECIFIED"} name
-   * @returns {number} */
-  const refusalCode = (name) => {
-    const entry = definition["openshell.middleware.v1.HttpCredentialRefusalCode"].type.value.find(
-      (value) => value.name === `HTTP_CREDENTIAL_REFUSAL_CODE_${name}`,
-    );
-    assert.ok(typeof entry?.number === "number", `Unknown HTTP credential refusal code: ${name}`);
-    return entry.number;
-  };
-  const services = grpc.loadPackageDefinition(definition).openshell.middleware.v1;
-  function createAuthorityClient(name) {
-    // Keep the connection on IPv4 loopback and verify the certificate's DNS SAN.
-    return new services[name](`127.0.0.1:${authorityPort}`, grpc.credentials.createSsl(cert), {
-      "grpc.ssl_target_name_override": "localhost",
-    });
-  }
-  const clients = Object.fromEntries(
-    [
-      "HttpCredentialAccess",
-      "HttpResponsePreReturn",
-      "SupervisorMiddleware",
-      "HttpInstallationExchange",
-    ].map((name) => [name, createAuthorityClient(name)]),
-  );
-  t.after(() => {
-    for (const client of Object.values(clients)) {
-      client.close();
-    }
+  const {
+    clients,
+    reconnect,
+    transport: exchangeTransport,
+  } = createExchangeClients(t, authorityPort, cert);
+  const exchange = createStaticEgressExchange({
+    cert,
+    controller: app.controller,
+    exchangeKeys,
+    getSecretReads: () => secretReads,
+    installation,
+    namespace,
+    now,
+    origin,
+    sandboxId,
+    supervisorKey: keys.privateKey,
+    transport: exchangeTransport,
   });
-  const supervisorClaims = () => {
-    const now = Math.floor(Date.now() / 1000);
-    return {
-      iss: "https://gateway.example.test",
-      aud: "oce-egress",
-      sub: `spiffe://openshell/sandbox/${sandboxId}`,
-      iat: now,
-      exp: now + 60,
-      jti: randomUUID(),
-      caller_kind: "supervisor",
-      sandbox_id: sandboxId,
-      instance_id: installation.enforcement.instanceId,
-      exchange_key: {
-        profile: "openshell-exchange-v1",
-        ...exchangeKeys.publicKey.export({ format: "jwk" }),
-      },
-    };
-  };
-  /** @param {Partial<Record<keyof ReturnType<typeof supervisorClaims>, unknown>>} [overrides]
-   * @returns {import("./openshell-grpc-sdk.ts").Grpc.Metadata} */
-  const metadata = (overrides = {}) => {
-    const token = supervisorBearer({ ...supervisorClaims(), ...overrides }, keys.privateKey);
-    const result = new grpc.Metadata();
-    result.set("authorization", token);
-    return result;
-  };
-  /** @typedef {{ seconds: string | number, nanos: number }} ExchangeTimestamp */
-  /** @returns {{
-   *   audience: string,
-   *   deadline: ExchangeTimestamp,
-   *   response_custody: Buffer,
-   *   verified_execution_policy_hash: string,
-   *   request: {
-   *     context: { request_id: string, sandbox_id: string },
-   *     target: { scheme: string, host: string, port: number, method: string, path: string },
-   *     headers: { name: string, value: string }[],
-   *     body: Buffer,
-   *   },
-   * }} */
-  const capture = (body = { model: "fixture-model", input: "hello", store: false }) => ({
-    audience: "oce-egress",
-    deadline: wireTime(now().getTime() + 20_000),
-    response_custody: randomBytes(32),
-    verified_execution_policy_hash: installation.enforcement.policyHash,
-    request: {
-      context: {
-        request_id: requestId(now().getTime()),
-        sandbox_id: sandboxId,
-      },
-      target: {
-        scheme: "https",
-        host: "provider.example.test",
-        port: providerPort,
-        method: "POST",
-        path: "/v1/responses",
-      },
-      headers: [{ name: "content-type", value: "application/json" }],
-      body: Buffer.from(JSON.stringify(body)),
-    },
-  });
-  function permitRequest(captured, ready, { noMaterial = false } = {}) {
-    const hash = createHash("sha256");
-    for (const header of noMaterial ? [] : ready.credential_headers) {
-      for (const value of [header.name, header.value]) {
-        const bytes = Buffer.from(value);
-        const length = Buffer.alloc(8);
-        length.writeBigUInt64BE(BigInt(bytes.length));
-        hash.update(length).update(bytes);
-      }
-    }
-    return {
-      context: captured.request.context,
-      operation_handle: ready.operation_handle,
-      audience: "oce-egress",
-      deadline: captured.deadline,
-      ...(noMaterial ? { no_material_required: true } : { evidence: ready.evidence }),
-      credential_headers_sha256: hash.digest(),
-    };
-  }
-  async function send(captured, ready) {
-    return new Promise((resolve, reject) => {
-      const outgoing = httpsRequest(
-        {
-          hostname: "127.0.0.1",
-          servername: "provider.example.test",
-          ca: cert,
-          port: providerPort,
-          method: captured.request.target.method,
-          path: captured.request.target.path,
-          headers: Object.fromEntries(
-            [...captured.request.headers, ...ready.credential_headers].map(({ name, value }) => [
-              name,
-              value,
-            ]),
-          ),
-        },
-        async (response) => {
-          resolve({
-            status: response.statusCode,
-            headers: [{ name: "content-type", value: response.headers["content-type"] }],
-            body: await buffer(response),
-            trailers: response.rawTrailers.flatMap((name, index, values) =>
-              index % 2 ? [] : [{ name, value: values[index + 1] }],
-            ),
-            response_complete: response.complete,
-          });
-        },
-      );
-      outgoing.on("error", reject);
-      outgoing.end(captured.request.body);
-    });
-  }
-  async function beginExchange(peer = metadata()) {
-    /** @type {import("./openshell-grpc-sdk.ts").Grpc.ClientDuplexStream<unknown, unknown>} */
-    const stream = clients.HttpInstallationExchange.Exchange(peer, {
-      deadline: Date.now() + 5000,
-    });
-    const queued = [];
-    const received = [];
-    const waiting = [];
-    let failure;
-    stream.on("data", (message) => {
-      received.push(message);
-      const waiter = waiting.shift();
-      if (waiter) {
-        waiter.resolve(message);
-      } else {
-        queued.push(message);
-      }
-    });
-    stream.on("error", (error) => {
-      failure = error;
-      for (const waiter of waiting.splice(0)) {
-        waiter.reject(error);
-      }
-    });
-    const next = () => {
-      if (queued.length) {
-        return Promise.resolve(queued.shift());
-      }
-      if (failure) {
-        return Promise.reject(failure);
-      }
-      return new Promise((resolve, reject) => waiting.push({ resolve, reject }));
-    };
-    stream.on("end", () => {
-      failure ??= new Error("Installation exchange ended without another message");
-      for (const waiter of waiting.splice(0)) {
-        waiter.reject(failure);
-      }
-    });
-    const { challenge } = await next();
-    return {
-      stream,
-      next,
-      challenge,
-      received,
-      /** @param {ReturnType<typeof capture>} captured */
-      opening(captured, privateKey = exchangeKeys.privateKey, boundChallenge = challenge) {
-        const encoded =
-          definition["openshell.middleware.v1.HttpCredentialResolveRequest"].serialize(captured);
-        return {
-          open: {
-            resolve_request: encoded,
-            signature: sign(
-              null,
-              Buffer.concat([Buffer.from("openshell-exchange-v1\0"), boundChallenge, encoded]),
-              privateKey,
-            ),
-          },
-        };
-      },
-    };
-  }
-  // These are real bidirectional exchanges. In this fixture only, the test caller
-  // owns the simulated downstream and gates synthetic provider access on the echoed custody.
-  const exchangeByHandle = new Map();
-  const exchangeByRequest = new WeakMap();
-  /** @param {ReturnType<typeof capture>} captured
-   * @param {ReturnType<typeof metadata>} [peer] */
-  async function resolve(captured, peer) {
-    const exchange = await beginExchange(peer);
-    exchange.stream.write(exchange.opening(captured));
-    const { resolved } = await exchange.next();
-    if (resolved.ready || resolved.ready_without_material) {
-      const handle = (resolved.ready || resolved.ready_without_material).operation_handle.toString(
-        "base64",
-      );
-      const entry = { captured, exchange };
-      exchangeByHandle.set(handle, entry);
-      exchange.stream.once("status", () => exchangeByHandle.delete(handle));
-      exchangeByRequest.set(captured, exchange);
-    }
-    return resolved;
-  }
-  async function authorize(permit, { cancelAfterMs } = {}) {
-    const handle = permit.operation_handle.toString("base64");
-    const { captured, exchange } = exchangeByHandle.get(handle);
-    const timer = cancelAfterMs && setTimeout(() => exchange.stream.cancel(), cancelAfterMs);
-    try {
-      exchange.stream.write({ authorize: permit });
-      const { authorized } = await exchange.next();
-      if (authorized.allowed) {
-        assert.equal(authorized.allowed.no_material_required, permit.no_material_required === true);
-        assert.deepEqual(authorized.allowed.response_custody, captured.response_custody);
-        assert.deepEqual(
-          authorized.allowed.credential_headers_sha256,
-          permit.credential_headers_sha256,
-        );
-      }
-      return authorized;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  // The supervisor's stream-progress frame; the reply is a lease or a refused stream.
-  async function progress(captured, frame) {
-    const exchange = exchangeByRequest.get(captured);
-    exchange.stream.write({ progress: frame });
-    try {
-      const { lease } = await exchange.next();
-      assert.ok(lease, "a progress frame is answered with a lease or a refusal");
-      return lease;
-    } catch (error) {
-      if (error.code !== grpc.status.PERMISSION_DENIED) {
-        throw error;
-      }
-      return { refused: true };
-    }
-  }
-  async function protect(captured, response) {
-    const exchange = exchangeByRequest.get(captured);
-    exchange.stream.write({ response });
-    try {
-      const { response: result } = await exchange.next();
-      assert.equal(result.response_complete, true);
-      return result;
-    } catch (error) {
-      if (error.code !== grpc.status.PERMISSION_DENIED) {
-        throw error;
-      }
-      assert.equal(
-        exchange.received.filter((message) => message.response).length,
-        0,
-        "a refused complete response must release no response message, even a head",
-      );
-      return { blocked: true };
-    }
-  }
   return {
     ...app,
     fixtureKind: /** @type {const} */ ("deployed"),
@@ -1193,7 +905,6 @@ async function buildStaticEgressFixture(
     namespace,
     runtimeNamespace,
     modelProvider,
-    refusalCode,
     secret,
     source,
     legacySource,
@@ -1213,41 +924,15 @@ async function buildStaticEgressFixture(
     get authority() {
       return authority;
     },
-    metadata,
-    beginExchange,
-    resolve,
-    authorize,
-    capture,
-    permitRequest,
-    send,
-    progress,
-    protect,
+    ...exchange,
+    exchange,
     async restartAuthority() {
       authority.forceShutdown();
       authority = createOpenShellEgressAuthority(identity, authorityController);
       await bindOpenShellEgressAuthority(authority, "127.0.0.1:" + authorityPort, cert, key);
-      for (const [name, client] of Object.entries(clients)) {
-        client.close();
-        clients[name] = createAuthorityClient(name);
-      }
+      reconnect();
     },
-    providerRequests,
-    provider,
-    /** @param {typeof providerResponse} [response]
-     * @param {Record<string, unknown>} [request]
-     * @param {ReturnType<typeof metadata>} [peer]
-     * @returns {Promise<unknown>} */
-    async exchangeResponse(response = providerResponse, request, peer) {
-      const captured = capture(request);
-      const { ready } = await resolve(captured, peer);
-      assert.ok(ready, "authority resolved this operation");
-      assert.ok((await authorize(permitRequest(captured, ready))).allowed);
-      const before = providerRequests.length;
-      providerResponse = response;
-      const result = await protect(captured, await send(captured, ready));
-      assert.equal(providerRequests.length, before + 1, "provider received the authorized request");
-      return result;
-    },
+    setResponse,
     async rotateSecret(value) {
       const result = await app.request(
         "PATCH",
@@ -1257,9 +942,6 @@ async function buildStaticEgressFixture(
         },
       );
       assert.equal(result.status, 200, JSON.stringify(result.body));
-    },
-    setResponse(value) {
-      providerResponse = value;
     },
     get secretReads() {
       return secretReads;
@@ -1336,6 +1018,19 @@ export async function staticEgressFixture(t, options) {
     throw new Error("Expected a static egress fixture.");
   }
   return fixture;
+}
+
+/**
+ * @template {import("node:net").Server} [Provider=never]
+ * @param {import("node:test").TestContext} t
+ * @param {{now?: () => Date, providerServer?: (tls: import("node:tls").TlsOptions, handle: import("node:http").RequestListener) => Provider, credentialProxyCapacity?: import("../../packages/occ/src/credential-proxy.ts").CredentialProxyCapacity}} [options]
+ */
+export async function staticEgressWireFixture(t, options) {
+  const fixture = await buildStaticEgressFixture(t, options);
+  if (fixture.fixtureKind !== "deployed") {
+    throw new Error("Expected a deployed installation exchange fixture.");
+  }
+  return fixture.exchange;
 }
 
 /**
