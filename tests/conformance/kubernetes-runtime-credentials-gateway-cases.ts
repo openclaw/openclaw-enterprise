@@ -79,10 +79,10 @@ export function registerGatewayPasswordProjection(): void {
         `gateway-${suffix}`,
         { namespaceId: namespace.id, agentId },
         target,
-      {
-        runtime: "openclaw-enterprise/gateway-fixture:local",
-        workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
-      },
+        {
+          runtime: "openclaw-enterprise/gateway-fixture:local",
+          workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
+        },
         `agent-${suffix}`,
         "gateway",
         {},

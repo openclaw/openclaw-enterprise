@@ -42,10 +42,10 @@ export function registerKubernetesDeployment(): void {
         revisionId: "revision-plugin-compute-1",
       },
       { name: kubernetesNamespaceName(tenant.id), plane: "execution" },
-    {
-      runtime: "openclaw-enterprise/agent-fixture:local",
-      workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
-    },
+      {
+        runtime: "openclaw-enterprise/agent-fixture:local",
+        workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
+      },
       "agent-plugin-compute",
       "agent",
       {},
@@ -135,10 +135,10 @@ export function registerKubernetesDeployment(): void {
           revisionId: "revision-plugin-compute-1",
         },
         { name: "oce-plugin-compute", plane: "execution" },
-      {
-        runtime: "openclaw-enterprise/gateway-fixture:local",
-        workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
-      },
+        {
+          runtime: "openclaw-enterprise/gateway-fixture:local",
+          workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
+        },
         "gateway-plugin-compute",
         "gateway",
         {},
@@ -408,10 +408,10 @@ export function registerKubernetesDeployment(): void {
         revisionId: "revision-plugin-compute-1",
       },
       { name: "oce-plugin-compute", plane: "execution" },
-    {
-      runtime: "openclaw-enterprise/gateway-fixture:local",
-      workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
-    },
+      {
+        runtime: "openclaw-enterprise/gateway-fixture:local",
+        workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
+      },
       "gateway-plugin-compute",
       "gateway",
       {},
@@ -493,10 +493,10 @@ export function registerKubernetesDeployment(): void {
         "gateway-plugin-free",
         { namespaceId: tenant.id, agentId: agent.id, revisionId: candidate.id },
         { name: "oce-plugin-compute", plane: "execution" },
-      {
-        runtime: "openclaw-enterprise/gateway-fixture:local",
-        workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
-      },
+        {
+          runtime: "openclaw-enterprise/gateway-fixture:local",
+          workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
+        },
         "gateway-plugin-compute",
         "gateway",
         {},
