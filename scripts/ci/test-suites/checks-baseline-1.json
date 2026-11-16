@@ -72,7 +72,7 @@
     "tests/conformance/update-contributors.test.ts",
     "tests/conformance/socket-directory.test.ts",
     "tests/conformance/temporary-directory.test.mjs",
-    "tests/integration/production-controller-security.test.mjs",
+    "tests/integration/production-controller-security.test.ts",
     "tests/conformance/kubernetes-runtime-credentials.test.ts",
     "tests/conformance/openshell-gateway-wire.test.ts",
     "tests/conformance/openshell-provider-profile-wire.test.ts",
@@ -521,7 +521,7 @@
       "path": "tests/integration/list-summaries.test.ts"
     },
     {
-      "path": "tests/integration/production-controller-security.test.mjs"
+      "path": "tests/integration/production-controller-security.test.ts"
     },
     {
       "path": "tests/integration/production-healthcheck.test.ts"
