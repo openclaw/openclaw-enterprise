@@ -4886,8 +4886,13 @@ function completeSetupCode(payload) {
 export const CODEX_WORKSPACE_NODE_COMMANDS =
   "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills";
 
-/** Stock Codex program when a provider runs the file-only node separately. */
-export const PROVIDER_CODEX_ONLY_ENTRYPOINT = agentRuntimeEntrypoint({ withNode: true });
+/**
+ * Stock Codex program when a provider runs the file-only node separately. It is the
+ * same bytes as the nested child of AGENT_WITH_NODE_ENTRYPOINT, which existing provider
+ * Sandboxes compare on every retry, so it keeps that child's unused installer-only
+ * references and is not one of the standalone `*_ENTRYPOINT` launch programs.
+ */
+export const PROVIDER_CODEX_ONLY_PROGRAM = agentRuntimeEntrypoint({ withNode: true });
 
 // Kubernetes Codex implementation: this file-only node is not an OpenClaw
 // execution worker; its explicit command allowlist disables worker hosting.
@@ -5352,7 +5357,7 @@ for (const slot of [...processes].reverse()) start(slot);
 }
 
 // The provider-owned child omits the native installer; the stock program is the same child.
-const providerCodexChild = PROVIDER_CODEX_ONLY_ENTRYPOINT;
+const providerCodexChild = PROVIDER_CODEX_ONLY_PROGRAM;
 const protectedProviderCodexChild = agentRuntimeEntrypoint({ withNode: true, protected: true });
 export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   nodeProgramArguments(providerCodexChild),
