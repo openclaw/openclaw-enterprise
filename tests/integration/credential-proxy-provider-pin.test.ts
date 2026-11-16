@@ -894,11 +894,17 @@ test("a source update withholds resolved material after its provider or injector
   assert.equal(f.providerRequests.length, 0);
 });
 
+function assertSandboxNamespaceResolution(
+  compute: ComputeDriver,
+): asserts compute is ComputeDriver & Required<Pick<ComputeDriver, "resolveSandboxNamespace">> {
+  assert.equal(typeof compute.resolveSandboxNamespace, "function");
+}
+
 test("live static registration does not require Compute placement", async (t) => {
   const f = await staticEgressFixture(t, { physicalPlacement: true });
   assert.ok("egress" in f);
-  const compute: Required<Pick<ComputeDriver, "resolveSandboxNamespace">> =
-    f.controller.selectedDriver("compute");
+  const compute = f.controller.selectedDriver("compute");
+  assertSandboxNamespaceResolution(compute);
   const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
   const placement = t.mock.method(compute, "resolveSandboxNamespace", async () => {
     throw new Error("placement unavailable");
@@ -1039,8 +1045,8 @@ test("live static registration losing to DELETE preserves its deleting row witho
       }),
   });
   assert.ok("egress" in f);
-  const compute: Required<Pick<ComputeDriver, "resolveSandboxNamespace">> =
-    f.controller.selectedDriver("compute");
+  const compute = f.controller.selectedDriver("compute");
+  assertSandboxNamespaceResolution(compute);
   const gateway: CredentialGatewayDriver = f.controller.selectedDriver("credential_gateway");
   const placement = t.mock.method(compute, "resolveSandboxNamespace");
   const registration = t.mock.method(gateway, "registerSource");
@@ -1370,8 +1376,8 @@ test("explicit live adoption does not require Compute placement", async (t) => {
   assert.ok("egress" in f);
   assert.ok(f.legacySource);
   await ordinaryAdoptionSource(f.controller, f.namespace.id, f.legacySource.id);
-  const compute: Required<Pick<ComputeDriver, "resolveSandboxNamespace">> =
-    f.controller.selectedDriver("compute");
+  const compute = f.controller.selectedDriver("compute");
+  assertSandboxNamespaceResolution(compute);
   const placement = t.mock.method(compute, "resolveSandboxNamespace", async () => {
     throw new Error("placement unavailable");
   });
