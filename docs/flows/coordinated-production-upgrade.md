@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-13"
-last_updated_session: "authoring-run/01a117f8-113d-7610-83db-37431b054e44"
+updated: "2026-11-14"
+last_updated_session: "authoring-run/9b1d4770-fd45-4533-9bc4-99395d39837a"
 ---
 
 # Production image upgrade flow
@@ -120,14 +120,13 @@ This permits neither online migration nor rollback; see [qualification limits](.
 and runtime inspection. Agent reads bracket explicit-revision runtime reads,
 freezing identity and Driver-declared roles in `agent-continuity.json`, not editable topology.
 
-Repository-enabled releases require immutable controller/broker images and one
-architecture across matching control-plane nodes, including unready/cordoned ones. `scripts/upgrade-image-identity.py:read_platform`
-verifies the selected platform and blob hashes from Docker OCI exports
-(2 MiB/blob, 32 MiB total metadata).
-`scripts/upgrade-repository-image-probe.mjs` tests both images
-for recovery and refused reservations with synthetic inputs/private receipt listener,
-recording image identities, requests and responses.
-Kubernetes image availability, receipt durability and disposal remain unverified; the broker hostname stays fixed. See [broker restart recovery](../guides/repository-credentials/installation.md#install-and-verify).
+Repository credentials require immutable images and one architecture across all
+matching control-plane nodes. `scripts/upgrade-image-identity.py:read_platform`
+verifies the platform and OCI metadata hashes (2 MiB per blob, 32 MiB total).
+`scripts/upgrade-repository-image-probe.ts:main` qualifies admission with synthetic
+requests before preparation and again on resume. It reports a nonzero broker exit
+only if the socket stayed absent and Docker confirms the owned container exited
+without an OOM kill or daemon error. See [broker restart recovery](../guides/repository-credentials/installation.md#install-and-verify).
 
 For immutable switches, `prepare_upgrade` validates identities, unrelated data and
 candidate YAML, then hashes staged bytes; `upgrade-evidence.py` binds both snapshots.
@@ -135,30 +134,32 @@ Changed immutable data requires a successor. Mutable changes require a Kubernete
 self-review of named-Secret update access: denial stops preparation; inconclusive
 review warns and continues. Replacement still requires update permission.
 Rendered Certificates require server-side dry-run admission.
-`scripts/upgrade-startup-preflight.mjs` copies controller images, environment,
-mounts and service accounts into single-Pod Jobs: candidate Secret, no retries,
-deadline. `preflight_startup` refuses changed UIDs or multiple children.
-Job failure overrides child success.
+`scripts/upgrade-startup-preflight.ts` builds single-Pod Jobs with the candidate
+Secret, controller image, environment, mounts, and service account. Jobs have a
+deadline and zero retries. `preflight_startup` refuses changed UIDs or multiple
+children. Job failure overrides child success.
 
-`scripts/migrate-production.mjs --check` uses the initializer's migration container,
-environment, mounts and Pod identity before preflight success or shutdown.
-`scripts/migration-history.mjs:migrateWithHistory` checks receipts/catalog/grants under
-lock without applying migrations. Pending canonical history is allowed. Helm rechecks.
+`migrationJob` selects one initialization Job by release and component. It refuses
+malformed labels and preserves the Job and Pod labels used by chart policies.
+`scripts/migrate-production.mjs --check` runs with the initializer's migration
+identity before shutdown. `scripts/migration-history.mjs:migrateWithHistory` checks
+receipts, catalog, and grants under lock. Pending canonical history is allowed.
+Helm rechecks before migrating.
 
-API `apps/controller/src/composition/console-theme.ts:loadConsoleTheme` rejects invalid
-bundles; workers skip themes. Both use `loadStartupConfigurationSnapshot` and
-`loadInstallationConfiguration` without database access.
-`connectionPlan` preserves only recognized chart entrypoints. For private OIDC CA
-trust it retains the chart-owned database preload, CA argv position and CA
-assembler/mounts; unknown plans refuse. Both entrypoints require a PostgreSQL URL.
-Each writer Job uses the candidate's `createPostgresPool` and rendered
-`OCC_DATABASE_URL` to select at most two IDs from `occ.installation` in a read-only
-transaction. Exactly one must match the authenticated API/startup-Secret ID.
-Statement and lock timeouts are five seconds; authentication through cleanup has
-a 15-second deadline. Fixed diagnostics distinguish identity refusal from an
-incomplete check; neither exposes rows or connection errors. Nothing bootstraps.
-Both application connections are checked; the separate migrator's identity and
-data continuity remain unproved.
+`apps/controller/src/composition/console-theme.ts:loadConsoleTheme` checks API
+theme bundles. Both writers use `loadStartupConfigurationSnapshot` and
+`loadInstallationConfiguration` without database access. For OpenShell
+`bearerTokenFile`, each Job checks file type and readability without reading the token.
+
+`connectionPlan` refuses unknown chart entrypoints. Private OIDC CA trust retains
+the chart's database preload, CA argument, and assembler mounts. Both writer Jobs
+require `OCC_DATABASE_URL`. The candidate's `createPostgresPool` reads up to two
+`occ.installation` IDs in a read-only transaction. Exactly one must match the
+authenticated API/startup-Secret ID. Statement and lock timeouts are five seconds.
+Authentication through cleanup has a 15-second deadline. Fixed diagnostics
+distinguish refusal from an incomplete check without exposing connection errors
+or rows. The Jobs check writer connections. Migrator identity and data continuity
+remain unverified.
 
 Before further quiescence or Helm submission, `preflight_resume` runs all three
 Jobs in one `upgrade-preflight-resume.*` attempt: migration history plus API/worker
@@ -335,15 +336,16 @@ replacement even while the terminating Pod still appears in the Kubernetes API.
 
 `docs/guides/deploy/production-upgrade.md:Verify the release`
 
-Completion requires the expected Helm revision and OCC access; runtime upgrades
-also require deployment, readiness and Doctor success.
-For selected-Agent checks, `verify_agent_continuity` precedes terminal controller/Helm checks.
-Each role needs one Running, Ready Pod; replacement UIDs/completed init containers are valid. Eight results hit the endpoint cap and cannot prove uniqueness.
-Previously observed provider Harness status must remain running. Failure retains
-observations without `completed`; resume rechecks without rerunning successful Helm.
-
-`completed` refuses resume; its absence proves nothing. Reconcile failed writes.
-Verify routing, models, channels, credentials, workspaces and restores. Check console publication with [`verifyConsoleRelease`](../release/container-promotion.md#verify-the-served-console).
+Confirm Helm revision and OCC access. Runtime upgrades require deployment,
+readiness and Doctor success. `verify_agent_continuity` precedes terminal
+controller/Helm checks. Require one Running, Ready Pod per role. Replacement
+UIDs and completed init containers qualify. Eight results leave uniqueness unknown.
+Previously running provider Harnesses must stay running. Failure retains
+observations without `completed`. Reconcile failed writes. Resume rechecks
+without repeating successful Helm. `completed` blocks resume.
+Verify routing, models, channels, credentials, workspaces and restores.
+The [served Console check](../release/container-promotion.md#verify-the-served-console)
+accepts an optional image-bound entry digest.
 
 ### Read-only export after a split-layout refusal
 
@@ -389,13 +391,14 @@ Unsaved exact-name reuse requires no Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-14 07:25: Trace initialization Job selection and migration Pod label validation. (authoring-run/9b1d4770-fd45-4533-9bc4-99395d39837a - ba5b0832956ac3ad93695aab92db952f388ae7da)
+
+- 2026-11-14 06:52: Trace the broker exit before socket readiness. (authoring-run/837cd51d-17ce-4c24-ad13-20197e634e9c - ba5b0832956ac3ad93695aab92db952f388ae7da)
+
+- 2026-11-13 17:42: Trace the OpenShell bearer token file check in each writer Job. (authoring-run/01a1d5fb-c244-7162-a7e2-17b48732f5c4 - 1f0bf5cd0a208f362971accbb1850db193f9d4d9)
+
+- 2026-11-13 14:29: Document optional Console entry verification. (authoring-run/a7f1373b-e0ab-4c0e-a622-91d8d3169950 - ef69b58a9e60e68af17f54bb2750fffe28804b9b)
+
 - 2026-11-13 05:08: Exclude terminating Pods when selecting Doctor targets. (authoring-run/01a117f8-113d-7610-83db-37431b054e44 - ca6bfc2f0376ee3fd9c5a9a255f7e5f37a454131)
-- 2026-11-12 20:49: Preserve status after polling errors. (authoring-run/86c357a9-a36e-44f0-98ad-4cc95273808b - a627e44694987459dbbf9aa59a3d76b9a97f48a7)
-- 2026-11-12 07:07: Check candidate writer database identity, connection prerequisites and rollback recovery. (authoring-run/a05e47bb-d115-4f74-b4a7-8c9455c30057 - c7da19f78a8125fe0a7dec649b5417a23ded1d8e)
-- 2026-11-12 03:35: Preserve JSON values. (authoring-run/9680374b-51c1-4f5e-a3d5-a7c0c1006b92 - b80d084ba843cb8e9ff99e9550bb35dcf6b820f6)
-
-- 2026-11-12 00:11: Precheck worker patch access. (authoring-run/db7ef311-7726-453b-b06c-e048bc6054ac - 8cd9b5d944e1c25191c6622cf5b6cf1fe7b33054)
-
-- 2026-11-11 12:30: Record preflight creation plans and link the separate cleanup-only recovery path. (authoring-run/9239da57-dcad-427a-82aa-c7d64376fdc5 - e961361d56537b17f361347b097d075f5e608fb1)
 
 [Production image upgrade flow documentation history](coordinated-production-upgrade/history.md) preserves the older dated entries.

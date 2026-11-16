@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, symlink, unlink, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -50,6 +50,34 @@ async function runCaseLane(
   const summary: RunnerSummary = JSON.parse(await readFile(resultsPath, "utf8"));
   return { result, summary };
 }
+
+test("unknown selection options fail before running tests or writing receipts", async (t) => {
+  const root = await createRunnerFixture(t);
+  const file = "tests/integration/selected.test.mjs";
+  const marker = join(root, "executed");
+  await writeFile(
+    join(root, file),
+    `import test from "node:test"; import { writeFileSync } from "node:fs";
+     test("selected", () => writeFileSync(${JSON.stringify(marker)}, "ran"));`,
+  );
+  await writeRunnerManifest(root, {
+    lanes: { local: { files: [{ path: file, expectedTests: ["selected"] }] } },
+  });
+  for (const option of ["--fiel", "--test-nam"]) {
+    const state = join(root, "state", `${option}.json`);
+    const results = join(root, "results", `${option}.json`);
+    const result = runRunnerSync([
+      ...laneArgs(root, "local", state, results),
+      ...(option === "--fiel" ? [option, file] : ["--file", file, option, "selected"]),
+    ]);
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, new RegExp(`Unsupported option: ${option}`));
+    for (const path of [marker, state, results]) {
+      await assert.rejects(access(path), { code: "ENOENT" });
+    }
+  }
+});
 
 test("focused runs retain case enforcement and cleanup but cannot complete a full lane", async (t) => {
   const root = await createRunnerFixture(t);

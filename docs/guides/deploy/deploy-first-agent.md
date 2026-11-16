@@ -75,7 +75,7 @@ modelSource=$(request GET "$base/credential-sources" |
     '[.data[]|select(.name==$n and .type==$t and .state=="ready" and .ownerCapability=="credential_gateway")]|select(length==1)|first.id')
 ```
 
-Otherwise, store the credential in a Namespace Secret and register its reference before enabling the repository Credential Proxy. Set `credential_file` to the path of your owner-only file.
+Otherwise, store the credential in a Namespace Secret and register its reference with Credential Gateway. This works with or without the repository Credential Proxy. Set `credential_file` to the path of your owner-only file.
 
 ```bash
 # POST $base/secrets: read the credential from its file.
@@ -126,7 +126,7 @@ After creating the dedicated Agent, bind its exact browser origin to its new Con
 installation=$(request GET "/installation" | jq -er .data.id)
 origin=$(node --input-type=module - "$CONSOLE_ORIGIN" "$NATIVE_ADMIN_DOMAIN" "$RUN_DIR/agent" "$installation" <<'JS'
 import { readFileSync } from "node:fs";
-import { deriveNativeAdminHost } from "./apps/controller/src/gateway/native-admin-host.mjs";
+import { deriveNativeAdminHost } from "./apps/controller/src/gateway/native-admin-host.ts";
 const [consoleOrigin, nativeAdminDomain, agentFile, installation] = process.argv.slice(2);
 const { data: agent } = JSON.parse(readFileSync(agentFile));
 const url = new URL(consoleOrigin);

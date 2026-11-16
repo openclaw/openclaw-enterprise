@@ -3,10 +3,10 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
-import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.mjs";
+import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.ts";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
-const gate = resolve("scripts/ci/impact-gate.mjs");
+const gate = resolve("scripts/ci/impact-gate.ts");
 
 type JobState = { result: string; outputs: Record<string, string> };
 type GateNeeds = Record<string, JobState> & {
@@ -103,7 +103,7 @@ test("gate accepts only the selected jobs and preserves full-mode matrix ownersh
 });
 
 test("gate rejects failed, cancelled, missing, and unexpectedly run or skipped jobs", (t) => {
-  for (const mode of ["docs", "full"]) {
+  for (const mode of ["docs", "full"] as const) {
     for (const [job, state] of Object.entries(passingGateNeeds(mode))) {
       for (const bad of [
         "failure",
@@ -292,6 +292,15 @@ test("tests mode rejects wrong job states and unverifiable lane sets", (t) => {
   const other = testNeeds(lanes);
   other.impact.outputs.lanes = JSON.stringify(["checks-baseline-1"]);
   assert.notEqual(runTestsGate(t, lanes, other).status, 0);
+  // Equivalent JSON must still match the impact output byte for byte.
+  const spaced = JSON.stringify(lanes, null, 2);
+  const differentText = runTestsGate(t, spaced, testNeeds(lanes));
+  assert.notEqual(differentText.status, 0);
+  assert.match(differentText.stderr, /impact output does not match the selected lanes/);
+  const sameText = testNeeds(lanes);
+  sameText.impact.outputs.lanes = spaced;
+  const matched = runTestsGate(t, spaced, sameText);
+  assert.equal(matched.status, 0, matched.stderr);
   const wrongMode = testNeeds(lanes);
   wrongMode.impact.outputs.mode = "full";
   assert.notEqual(runTestsGate(t, lanes, wrongMode).status, 0);

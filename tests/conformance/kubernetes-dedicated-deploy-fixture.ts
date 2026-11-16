@@ -6,6 +6,7 @@ import type {
   SandboxHarnessContext,
   SandboxResourceRef,
 } from "../../packages/contracts/src/index.ts";
+import { supervisorPeerLabels } from "../fixtures/kubernetes-provider-readiness.mjs";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { labelSelectorLabels, tenant } from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
@@ -131,6 +132,27 @@ export function nativeHarnessResource(
     agentId: context.revision.agentId,
     revisionId: context.revision.id,
   };
+}
+
+export function recordingNativeSandbox(provisions: SandboxHarnessContext[]) {
+  return {
+    ...nativeSandboxIdentity(),
+    async workspaceNodePeerLabels({ revision }) {
+      return provisions.some((context) => context.revision.id === revision.id)
+        ? supervisorPeerLabels(revision.id)
+        : undefined;
+    },
+    async provisionHarness(context) {
+      provisions.push(context);
+      return nativeHarnessResource(context);
+    },
+    async harnessEndpoint() {
+      return assert.fail("native OpenClaw has no inbound Harness endpoint");
+    },
+  } satisfies Pick<
+    SandboxDriver,
+    "workspaceNodePeerLabels" | "provisionHarness" | "harnessEndpoint"
+  >;
 }
 
 export function readyNativeHarnessPod(

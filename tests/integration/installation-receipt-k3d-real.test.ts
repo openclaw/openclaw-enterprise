@@ -6,12 +6,14 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   createKubernetesClient,
   createKubernetesInstallationConfiguration,
+  explicitK3dSelection,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
-import { prepareProductionHelmControlPlane } from "../helpers/production-helm-real.mjs";
+} from "../helpers/kubernetes-real.ts";
+import { prepareProductionHelmControlPlane } from "../helpers/production-helm-real.ts";
 import type { FixtureRun } from "../helpers/production-rehearsal-custody.ts";
 import { runFixtureCommand } from "../helpers/production-rehearsal-custody.ts";
 import { parseProductionChart, renderProductionChart } from "../helpers/production-chart.mjs";
@@ -25,11 +27,6 @@ function heldResponse() {
 }
 
 const selected = process.env.OCC_TEST_PRODUCTION_OBSERVABILITY === "1";
-const selection = {
-  kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
-  kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
-};
-
 test(
   "production installation receipts survive interruption before and after Job capture",
   {
@@ -39,15 +36,22 @@ test(
     timeout: 900_000,
   },
   async (t) => {
-    await validateExplicitK3dLoopbackContext(selection);
-    const images = {
-      controller: process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
-      postgres: process.env.OCC_TEST_PRODUCTION_POSTGRES_IMAGE,
-      runtime: process.env.OCC_TEST_KUBERNETES_IMAGE,
-    };
-    for (const [name, image] of Object.entries(images)) {
+    const selectionInput = explicitK3dSelection();
+    await validateExplicitK3dLoopbackContext(selectionInput);
+    const { kubeconfigPath, kubernetesContext } = selectionInput;
+    assert.ok(kubeconfigPath && kubernetesContext);
+    const selection = { kubeconfigPath, kubernetesContext };
+    function importedImage(name: string) {
+      const image = process.env[name];
       assert.match(image ?? "", /^\S+@sha256:[a-f0-9]{64}$/, `${name} requires an immutable image`);
+      assert.ok(image);
+      return image;
     }
+    const images = {
+      controller: importedImage("OCC_TEST_PRODUCTION_CONTROLLER_IMAGE"),
+      postgres: importedImage("OCC_TEST_PRODUCTION_POSTGRES_IMAGE"),
+      runtime: importedImage("OCC_TEST_KUBERNETES_IMAGE"),
+    };
     const kubernetes = createKubernetesClient({ selection });
     const { kubectl, resource, waitFor } = kubernetes;
     const directory = await mkdtemp(join(tmpdir(), "occ-receipt-production-"));
@@ -310,13 +314,14 @@ test(
       terminate();
       await exited;
       heldPath = "";
-      const original = await resource("job", jobName, namespace);
+      const original = asRecord(asRecord(await resource("job", jobName, namespace))?.metadata);
+      assert.ok(typeof original?.uid === "string" && original.uid, "expected the Job UID");
       if (capture === "before") {
         await assert.rejects(readFile(join(receipt, "job.json")), { code: "ENOENT" });
       } else {
         assert.equal(
           JSON.parse(await readFile(join(receipt, "job.json"), "utf8")).uid,
-          original.metadata.uid,
+          original.uid,
         );
       }
       await assert.rejects(readFile(join(receipt, "helm-result.json")), { code: "ENOENT" });
@@ -419,8 +424,9 @@ test(
         (item: { kind?: string }) => item.kind === "Job",
       );
       assert.ok(replacement);
-      replacement.metadata.annotations["openclaw.dev/installation-attempt"] =
-        original.metadata.annotations["openclaw.dev/installation-attempt"];
+      replacement.metadata.annotations["openclaw.dev/installation-attempt"] = asRecord(
+        original.annotations,
+      )?.["openclaw.dev/installation-attempt"];
       replacement.metadata.namespace = namespace;
       replacement.spec.suspend = true;
       await kubectl("-n", namespace, "delete", "job", jobName);

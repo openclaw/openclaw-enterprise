@@ -60,7 +60,10 @@
     "OCC_TEST_KEYCLOAK_CONSOLE_KEY"
   ],
   "prepare": {
-    "sourceBuildFiles": ["tests/integration/qa-matrix-real.test.mjs"]
+    "sourceBuildFiles": [
+      "tests/integration/qa-matrix-real.test.mjs",
+      "tests/integration/openshell-git-retention-real.test.ts"
+    ]
   },
   "files": [
     {

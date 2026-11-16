@@ -7,9 +7,17 @@ export const CODEX_LINEAR_REMOTE_ID = "plugin_asdk_app_69a089a326dc8191b32a3f255
 export const CODEX_LINEAR_APP_ID = "asdk_app_69a089a326dc8191b32a3f2553f5be2c";
 export const CODEX_LINEAR_VERSION = "5.0.1";
 
-const nodeRequire = createRequire(
-  new URL("../conformance/plugin-compute.test.mjs", import.meta.url),
-);
+const nodeRequire = createRequire(import.meta.url);
+
+export function readCodexRuntimeTimers(env: NodeJS.ProcessEnv): readonly number[] {
+  return JSON.parse(
+    vm.runInNewContext(
+      `${PLUGIN_RUNTIME_HELPERS}
+JSON.stringify([CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS, CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS]);`,
+      { Buffer, process: { env }, require: nodeRequire },
+    ),
+  );
+}
 
 type CodexPluginSummaryOptions = {
   nativeId?: string | null;
@@ -72,27 +80,60 @@ export function codexReadResponse(options: CodexReadResponseOptions = {}) {
   };
 }
 
+type CodexApprovalMode = "auto" | "prompt" | "approve" | "writes";
+type CodexApprovalsReviewer = "user" | "auto_review";
+
+type CodexAccountPolicy = {
+  default_tools_approval_mode?: CodexApprovalMode | null;
+  approvals_reviewer?: CodexApprovalsReviewer | null;
+};
+
+export type CodexAppPolicy = CodexAccountPolicy & {
+  enabled?: boolean;
+  default_tools_enabled?: boolean | null;
+  destructive_enabled?: boolean | null;
+  open_world_enabled?: boolean | null;
+  omit_tools_from?: readonly string[];
+  tools?:
+    | Record<string, { enabled?: boolean | null; approval_mode?: CodexApprovalMode | null }>
+    | null
+    | undefined;
+  links?: Record<string, CodexAccountPolicy> | null | undefined;
+};
+
+export type CodexPluginPolicy = {
+  enabled?: boolean | null;
+  mcp_servers?: Record<string, object>;
+};
+
+export type CodexAppPolicies = Record<string, CodexAppPolicy> & { _default: CodexAppPolicy };
+export type CodexPluginPolicies = Record<string, CodexPluginPolicy> & {
+  _default: CodexPluginPolicy;
+};
+
 export function codexConfigReadResponse(
-  appConfig: Readonly<Record<string, unknown>> | null = {},
+  appConfig: CodexAppPolicy | null = {},
   pluginEnabled: boolean | null = true,
 ) {
+  const apps: CodexAppPolicies = {
+    _default: { enabled: false },
+    [CODEX_LINEAR_APP_ID]: {
+      enabled: true,
+      default_tools_approval_mode: "auto",
+      ...appConfig,
+    },
+  };
+  const plugins: CodexPluginPolicies = {
+    _default: { enabled: false },
+    [CODEX_LINEAR_NATIVE_ID]: { enabled: pluginEnabled },
+  };
   return {
     config: {
       approval_policy: "on-request",
       model: "test-model",
       features: { apps: true, plugins: true, remote_plugin: true },
-      apps: {
-        _default: { enabled: false },
-        [CODEX_LINEAR_APP_ID]: {
-          enabled: true,
-          default_tools_approval_mode: "auto",
-          ...appConfig,
-        },
-      },
-      plugins: {
-        _default: { enabled: false },
-        [CODEX_LINEAR_NATIVE_ID]: { enabled: pluginEnabled },
-      },
+      apps,
+      plugins,
     },
     origins: {},
   };
@@ -101,13 +142,13 @@ export function codexConfigReadResponse(
 type CodexRequest = {
   method: string;
   params?: unknown;
-  id?: unknown;
+  id?: number;
 };
 
-type CodexRequestHandler = (method: string, params: unknown, id: unknown) => unknown;
+type CodexRequestHandler = (method: string, params: unknown, id: number | undefined) => unknown;
 
 export function codexRequestDispatcher(
-  responses: Readonly<Record<string, (params: unknown, id: unknown) => unknown>>,
+  responses: Readonly<Record<string, (params: unknown, id: number | undefined) => unknown>>,
 ): CodexRequestHandler {
   return (method, params, id) => {
     const respond =
@@ -137,13 +178,19 @@ export function codexApiKeyDisabledResponses() {
   };
 }
 
+type CodexWebSocketOptions = { headers: { Authorization: string } };
+type CodexInstallResult = {
+  successfulPluginIds: string[];
+  failures: { pluginId: string; code: string }[];
+};
+
 type WebSocketListener = (event: unknown) => void;
 type TimerCallback = (...args: unknown[]) => void;
 
 type CodexRuntimeHelperOptions = {
   files?: Iterable<readonly [string, unknown]> | null;
   refusedConnections?: number | null;
-  Date?: DateConstructor | null;
+  Date?: Pick<DateConstructor, "now"> | null;
   setTimeout?: ((callback: TimerCallback, delay?: number, ...args: unknown[]) => unknown) | null;
   env?: Readonly<Record<string, unknown>> | null;
   failures?: unknown;
@@ -162,10 +209,10 @@ export async function runCodexRuntimeHelper(
   const refusedConnections = options.refusedConnections ?? 0;
   class FakeWebSocket {
     declare readonly url: string;
-    declare readonly options: unknown;
+    declare readonly options: CodexWebSocketOptions;
     declare readonly listeners: Map<string, WebSocketListener[]>;
 
-    constructor(url: string, options: unknown) {
+    constructor(url: string, options: CodexWebSocketOptions) {
       this.url = url;
       this.options = options;
       this.listeners = new Map();
@@ -236,7 +283,7 @@ export async function runCodexRuntimeHelper(
     }
   }
   const result: {
-    resolve?: (value: unknown) => void;
+    resolve?: (value: CodexInstallResult) => void;
     reject?: (reason: unknown) => void;
   } = {};
   const sandbox = {
@@ -286,7 +333,7 @@ export async function runCodexRuntimeHelper(
     },
     result,
   };
-  const completion = new Promise<unknown>((resolve, reject) => {
+  const completion = new Promise<CodexInstallResult>((resolve, reject) => {
     sandbox.result.resolve = resolve;
     sandbox.result.reject = reject;
   });

@@ -337,17 +337,20 @@ test(
         captured,
         ready,
         refused,
-        authorize: () => f.authorize(f.permitRequest(captured, ready)),
+        authorize() {
+          assert.ok(ready, "A prepared send requires material");
+          return f.authorize(f.permitRequest(captured, ready));
+        },
       };
     };
     const revision = f.revision!;
     assert.equal(revision.credentialSources[0].credentialProxyId, f.egress!.id);
     assert.equal(
-      (await select({ target: { path: "/channels/private" } })).refused.code,
+      (await select({ target: { path: "/channels/private" } })).refused?.code,
       f.refusalCode!("DENIED"),
     );
     assert.equal(
-      (await select()).refused.code,
+      (await select()).refused?.code,
       f.refusalCode!("NOT_READY"),
       "cold use cannot prepare material",
     );
