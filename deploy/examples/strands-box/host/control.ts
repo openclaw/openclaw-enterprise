@@ -5,8 +5,14 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
-import { CONTROLLED_INFERENCE_MARKER, parseRoute } from "./egress.ts";
-import type { EgressRoute } from "./egress.ts";
+import {
+  assertPinnedResolution,
+  CONTROLLED_INFERENCE_MARKER,
+  parseRoute,
+  routeView,
+  sameRouteView,
+} from "./egress.ts";
+import type { EgressRoute, RouteView } from "./egress.ts";
 import {
   ensureEmpty,
   fields,
@@ -96,10 +102,29 @@ interface RecordView {
   workspaceNodeMode?: NodeInstallation["mode"];
   workspaceVolume?: NodeInstallation["workspaceVolume"];
   generationSha256?: string;
+  controlledInference?: RouteView;
 }
 
 interface LaunchPlan extends StartInput {
   readonly separateNode?: NodeLaunch;
+}
+
+/**
+ * The Driver states the exact route it was configured with. The host's own route stays the only
+ * one Box receives; a missing, extra or different statement refuses before anything starts.
+ */
+export function confirmControlledInference(
+  route: EgressRoute | undefined,
+  needed: boolean,
+  stated: unknown,
+): void {
+  if (needed !== (stated !== undefined)) throw new Error("controlled_inference_unconfirmed");
+  if (needed && (route === undefined || !sameRouteView(stated, route)))
+    throw new Error("controlled_inference_route_mismatch");
+}
+
+function inferenceRoute(plan: LaunchPlan): EgressRoute | undefined {
+  return plan.egress?.find((route) => route.kind === "controlled-inference");
 }
 
 function approvedWorkspaceNode(plan: LaunchPlan): Pending["workspaceNode"] {
@@ -660,12 +685,12 @@ function admitted(
       environment[name] = env.value;
     }
   }
-  if (
-    phase === "start" &&
-    (needsControlledInference !== (request.controlledInference === true) ||
-      (request.controlledInference !== undefined && request.controlledInference !== true))
-  )
-    throw new Error("controlled_inference_unconfirmed");
+  if (phase === "start")
+    confirmControlledInference(
+      config.controlledInference,
+      needsControlledInference,
+      request.controlledInference,
+    );
   const egress: EgressRoute[] = [];
   const setupCode = request.workspaceNodeSetupCode;
   let expiresAt: number | undefined;
@@ -850,7 +875,12 @@ function reply(
   body?:
     | RecordView
     | { error: string }
-    | { state: "held" | "approved"; owner: Owner; requirementsDigest: string },
+    | {
+        state: "held" | "approved";
+        owner: Owner;
+        requirementsDigest: string;
+        controlledInference?: RouteView;
+      },
 ): void {
   response.writeHead(code, {
     "Cache-Control": "no-store",
@@ -1001,6 +1031,15 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       }
       if (pending === undefined) {
         const plan = admitted(config, supplied, data, "observe");
+        const inference = inferenceRoute(plan);
+        if (inference !== undefined) {
+          await assertPinnedResolution(inference);
+          // Another request may have recorded the pending admission during the lookup.
+          if (shuttingDown || pending !== undefined) {
+            reply(response, 409, { error: "pending_admission_conflict" });
+            return;
+          }
+        }
         const workspaceNode = approvedWorkspaceNode(plan);
         const view: Pending = {
           version: 1,
@@ -1010,6 +1049,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
           image: config.image,
           commandSha256: digest(plan.command),
           ...(workspaceNode === undefined ? {} : { workspaceNode }),
+          ...(inference === undefined ? {} : { controlledInference: routeView(inference) }),
           counts: {
             environment: Object.keys(plan.environment).length,
             files: plan.files?.length ?? 0,
@@ -1032,6 +1072,9 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
               workspaceNodeMode: pending.view.workspaceNode.mode,
               workspaceVolume: pending.view.workspaceNode.workspaceVolume,
             }),
+        ...(pending.view.controlledInference === undefined
+          ? {}
+          : { controlledInference: pending.view.controlledInference }),
       });
       return;
     }
@@ -1082,10 +1125,26 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         reply(response, 409, { error: "owner_admission_not_approved" });
         return;
       }
+      // Resolve again just before the one start attempt; Box pins the address it dials.
+      // Nothing below this lookup awaits, so the checks after it hold until Box starts.
+      if (pending.view.controlledInference !== undefined) {
+        if (config.controlledInference === undefined)
+          throw new Error("controlled_inference_admitted_route_changed");
+        await assertPinnedResolution(config.controlledInference);
+        if (shuttingDown || attempted || current !== undefined) {
+          reply(response, 409, { error: "execution_already_attempted" });
+          return;
+        }
+      }
       const input = admitted(config, supplied, data, "start");
       const workspaceNode = approvedWorkspaceNode(input);
       if (workspaceNode?.planSha256 !== pending.view.workspaceNode?.planSha256) {
         throw new Error("file_node_admitted_plan_changed");
+      }
+      const inference = inferenceRoute(input);
+      const inferenceView = inference === undefined ? undefined : routeView(inference);
+      if (JSON.stringify(inferenceView) !== JSON.stringify(pending.view.controlledInference)) {
+        throw new Error("controlled_inference_admitted_route_changed");
       }
       const view: RecordView = {
         owner: supplied,
@@ -1099,6 +1158,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
               workspaceNodeMode: workspaceNode.mode,
               workspaceVolume: workspaceNode.workspaceVolume,
             }),
+        ...(inferenceView === undefined ? {} : { controlledInference: inferenceView }),
       };
       attempted = true;
       reserveExecution(config.runtimeDir, view);
