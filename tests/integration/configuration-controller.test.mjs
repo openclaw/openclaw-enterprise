@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { registerConfigurationChannelCredentialCases } from "./configuration-channel-credential-cases.ts";
+import { registerConfigurationSizeAdmissionCases } from "./configuration-size-admission-cases.ts";
 import { registerConfigurationCredentialSaveCases } from "./configuration-credential-save-cases.ts";
 import { registerConfigurationStoredCompatibilityCases } from "./configuration-stored-compatibility-cases.ts";
 import {
@@ -11,7 +12,6 @@ import {
   registerFilesystemConfigurationCredentialCase,
 } from "./configuration-http-lifecycle-cases.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
-import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import test from "node:test";
@@ -227,6 +227,15 @@ async function sharedApp(withCompute, withConfiguration, computeImplementation) 
 
 let namespaces = 0;
 
+/**
+ * @param {{
+ *   permissions?: import("../../packages/contracts/src/index.ts").Permission[],
+ *   configurationDriver?: import("./configuration-size-admission-cases.ts").ConfigurationFixtureDriver | null,
+ *   computeDriver?: import("../../packages/contracts/src/index.ts").ComputeDriver,
+ *   computeImplementation?: string,
+ *   auditSink?: import("../../packages/audit/src/index.ts").AuditSink,
+ * }} [options]
+ */
 async function fixture({
   permissions,
   configurationDriver = createConfigurationBackend(),
@@ -274,6 +283,18 @@ async function saveFixture(t, computeDriver = createReadyComputeDriver("compute-
   return { ...context, root, stored: () => readdir(join(root, id)).catch(() => []) };
 }
 
+/**
+ * @param {import("../../apps/controller/src/index.ts").ControllerApp & {
+ *   defaultSession?: Awaited<ReturnType<typeof signInToControllerApp>>,
+ * }} app
+ * @param {string} method
+ * @param {string} pathname
+ * @param {{
+ *   body?: unknown,
+ *   authorization?: boolean,
+ *   session?: Awaited<ReturnType<typeof signInToControllerApp>>,
+ * }} [options]
+ */
 async function request(
   app,
   method,
@@ -4134,189 +4155,12 @@ test("Configuration and Preset saves check a URL of many ${NAME:-fallback} refer
   });
 });
 
-test("Configuration save refuses a document too large to store before its content rules", async () => {
-  // Finding 1317: the Kubernetes Driver's 1 MiB ConfigMap cap ran after OCC's content rules, so
-  // the rules walked any document up to the 6.2 MiB request limit. OCC now asks the Driver
-  // first, and HTTP names the limit instead of calling the document invalid, so the user knows
-  // to shrink it. The real Kubernetes Driver checks the values here; the simple substrate stands
-  // in for its ConfigMap storage.
-  const kubernetes = new KubernetesConfigurationDriver({ authentication: { mode: "inCluster" } });
-  const backend = createConfigurationBackend();
-  const configurationDriver = {
-    ...backend,
-    validate: (configuration) => kubernetes.validate(configuration),
-    validateSize: (values) => kubernetes.validateSize(values),
-    // Agent provisioning requires exact create and inspect before it reads the plan; the size
-    // refusal comes first, so neither runs.
-    createExact: (configuration) => backend.create(configuration),
-    inspectExact: async () => undefined,
-  };
-  const { namespace, collection, ...context } = await fixture({
-    configurationDriver,
-    computeDriver: createReadyComputeDriver("compute-oversized", {
-      agentProvisioning: { executionModes: ["dedicated"] },
-      validateAgentProvisioning() {},
-      async provisionAgentRuntimeCredentials() {
-        return { transportConfigured: true };
-      },
-      async getAgentRuntimeCredentialStatus() {
-        return { transportConfigured: false };
-      },
-    }),
-  });
-  const contentRefusal = setting(
-    "models.providers.openai.models",
-    "must be an array of model entries",
-  );
-  // A document that breaks a content rule, padded to `bytes` of JSON.
-  const document = (bytes) => {
-    const values = {
-      models: { providers: { openai: { models: "gpt-5" } } },
-      plugins: { entries: { knowledge: { config: { note: "" } } } },
-    };
-    values.plugins.entries.knowledge.config.note = "x".repeat(
-      bytes - JSON.stringify(values).length,
-    );
-    return values;
-  };
-  const sizeRefusal =
-    "Configuration values are too large: stored as JSON they must be smaller than 1 MiB. Remove or shorten settings, then save again.";
-  const limit = 1_048_576;
-  const under = document(limit - 1);
-  const over = document(limit);
-  const save = (method, path, values) =>
-    request(context.app, method, path, {
-      body: method === "POST" ? { kind: "agent", values } : { values },
-    });
-
-  // Just under the cap the content rule refuses it by name; at the cap the size refusal wins.
-  assertRefused(await save("POST", collection, under), contentRefusal);
-  assertRefused(await save("POST", collection, over), sizeRefusal);
-  await assert.rejects(
-    context.controller.createConfiguration(context.principal.id, {
-      namespaceId: namespace.id,
-      kind: "agent",
-      values: over,
-    }),
-    { name: "ConfigurationSizeError", message: sizeRefusal },
-  );
-  // So is the Configuration Agent provisioning creates.
-  await context.controller.transact((state) =>
-    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-  );
-  const harnessSecret = await context.controller.createSecret(context.principal.id, {
-    namespaceId: namespace.id,
-    name: "oversized-agent-key",
-    value: "synthetic-configuration-key",
-  });
-  // Called directly: the provision route's request body limit refuses a 1 MiB document first.
-  await assert.rejects(
-    context.controller.provisionAgent(context.principal.id, {
-      namespaceId: namespace.id,
-      requestId: "oversized-agent",
-      name: "Oversized",
-      executionMode: "dedicated",
-      configuration: { kind: "agent", values: over },
-      harnessAuth: { method: "api_key", source: harnessSecret.ref },
-    }),
-    { name: "ConfigurationSizeError", message: sizeRefusal },
-  );
-
-  // An update is checked in the same order.
-  const created = await save("POST", collection, {});
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const item = `${collection}/${created.body.data.id}`;
-  assertRefused(await save("PATCH", item, under), contentRefusal);
-  assertRefused(await save("PATCH", item, over), sizeRefusal);
-  assert.deepEqual(
-    configurationDriver.storedConfigurations().map(({ values }) => values),
-    [{}],
-  );
-});
-
-test("Configuration save checks a large agents roster in step with its size", async () => {
-  // Finding 1321: a valid Configuration of 60,000 agents.entries without their own settings
-  // (710 KB, under the 1 MiB cap) held the controller's event loop for 7-8 s at save, so every
-  // tenant's requests waited. The Kubernetes Configuration Driver's credential rules and the
-  // Kubernetes Compute model rules built each setting's name for every entry, set or not, and
-  // listed the roster once per setting. They now skip a setting an entry does not hold.
-  const kubernetes = new KubernetesConfigurationDriver({ authentication: { mode: "inCluster" } });
-  const compute = createTestKubernetesComputeDriver("compute-large-roster");
-  // Each rule the save runs, with the arguments it ran with, so it can be timed again.
-  const checks = [];
-  const recorded =
-    (rule) =>
-    (...args) => {
-      checks.push(() => rule(...args));
-      return rule(...args);
-    };
-  const configurationDriver = {
-    ...createConfigurationBackend(),
-    validate: recorded((configuration) => kubernetes.validate(configuration)),
-    validateSize: (values) => kubernetes.validateSize(values),
-  };
-  const { collection, ...context } = await fixture({
-    configurationDriver,
-    computeDriver: createReadyComputeDriver("compute-large-roster", {
-      implementation: "integration-compute-substrate",
-      ...Object.fromEntries(
-        configurationRules.map((rule) => [rule, (...args) => compute[rule](...args)]),
-      ),
-      validateConfiguration: recorded((...args) => compute.validateConfiguration(...args)),
-    }),
-  });
-  const codex = {
-    model: "codex/gpt-5",
-    models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
-  };
-  const created = await request(context.app, "POST", collection, {
-    body: { kind: "agent", values: { agents: { defaults: codex } } },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const values = {
-    agents: {
-      defaults: codex,
-      ownership: "explicit",
-      entries: Object.fromEntries(Array.from({ length: 60_000 }, (_, index) => [`a${index}`, {}])),
-    },
-  };
-  assert.ok(JSON.stringify(values).length > 700_000);
-  checks.length = 0;
-  const saved = await request(context.app, "PATCH", `${collection}/${created.body.data.id}`, {
-    body: { values },
-  });
-  assert.equal(saved.status, 200, JSON.stringify(saved.body).slice(0, 500));
-  assert.equal(Object.keys(saved.body.data.values.agents.entries).length, 60_000);
-  assert.equal(checks.length, 2);
-  // The bound is relative to a structured clone of the same document, so a slow or busy runner
-  // does not fail it. The two are timed in turn, each at its best of five. At two CPUs the
-  // save's two rules take about 2.5 clones; they took about 13 before.
-  const timings = { checking: Infinity, cloning: Infinity };
-  for (let round = 0; round < 5; round += 1) {
-    for (const [name, work] of [
-      ["checking", () => checks.forEach((check) => check())],
-      ["cloning", () => structuredClone(values)],
-    ]) {
-      const started = performance.now();
-      work();
-      timings[name] = Math.min(timings[name], performance.now() - started);
-    }
-  }
-  const { checking, cloning } = timings;
-  assert.ok(
-    checking < 6 * cloning,
-    `the rules took ${checking.toFixed(0)} ms, a clone ${cloning.toFixed(0)} ms`,
-  );
-  // A setting an entry does hold is still checked, and named.
-  values.agents.entries.a59999 = { sandbox: { ssh: { identityData: "synthetic-literal-key" } } };
-  const refused = await request(context.app, "PATCH", `${collection}/${created.body.data.id}`, {
-    body: { values },
-  });
-  assert.equal(refused.status, 400, JSON.stringify(refused.body).slice(0, 500));
-  assert.equal(
-    refused.body.error.message,
-    literalKey("/agents/entries/a59999/sandbox/ssh/identityData"),
-  );
+registerConfigurationSizeAdmissionCases({
+  createConfigurationBackend,
+  fixture,
+  request,
+  setting,
+  literalKey,
 });
 
 test("Configuration and Preset saves read a git config value as a proxy when its key names one", async (t) => {
