@@ -1969,8 +1969,7 @@ export function createAgentDetailScenarios({
         deployed: true,
         clipboard: "unavailable",
         actions: [{ selector: ".page-meta-copy", click: true }],
-        description:
-          "When the browser has no clipboard access, you can copy the Agent ID by hand.",
+        description: "When the browser has no clipboard access, you can copy the Agent ID by hand.",
         steps: ["Check that the entire Agent ID is selected and “Copy selection” appears."],
       },
       draftCredentialRejected: {
