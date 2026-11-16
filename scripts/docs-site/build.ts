@@ -89,18 +89,31 @@ const docs = path.join(root, "docs");
 // The checked-out programs run with Node type stripping. Keep the published
 // JavaScript URLs available to readers of earlier versions of the guides.
 const quickstartDirectory = "snippets/openshell-quickstart";
-const quickstartDownloads = new Map(
-  [
+const publishedQuickstartAssets = "assets/openshell-quickstart";
+const quickstartDownloads = new Map<string, string>([
+  ...[
     "configure-installation.mts",
     "inspect-linear-transcript.mts",
     "request.mts",
     "kubernetes/owner-listener.mts",
     "kubernetes/git-revision-audit.mts",
-  ].map((file) => {
+  ].map((file): [string, string] => {
     const source = quickstartDirectory + "/" + file;
     return [source, source.replace(/\.mts$/, ".mjs")];
   }),
-);
+  [quickstartDirectory + "/chat.mts", publishedQuickstartAssets + "/chat.mjs"],
+  [
+    quickstartDirectory + "/verify-github-installation.mts",
+    publishedQuickstartAssets + "/verify-github-installation.mjs",
+  ],
+]);
+function publishedQuickstartPaths(text: string): string {
+  for (const [source, download] of quickstartDownloads) {
+    // Replace checkout paths before callers are rewritten by staged filename.
+    text = text.replaceAll("docs/" + source, "docs/" + download);
+  }
+  return text;
+}
 const output = path.resolve(root, values.output ?? "dist/docs");
 if (values.output !== undefined) {
   const previewPath = path.relative(path.join(root, "dist"), output).split(path.sep).join("/");
@@ -472,7 +485,9 @@ for (const page of pages.values()) {
     resolvedLinks.set(href, resolveLink(page, href));
     linkCount++;
   }
-  const text = renderComputeMatrixBlocks(page.text, { sourceFile: page.file, root: docs });
+  const text = publishedQuickstartPaths(
+    renderComputeMatrixBlocks(page.text, { sourceFile: page.file, root: docs }),
+  );
   page.html = useGithubHeadingIds(
     renderMdxish(text, md, {
       sourceFile: page.file,
@@ -569,7 +584,7 @@ if (quickstartScripts.length > 0) {
     "kubernetes/owner-listener.jq",
   ]) {
     const file = path.join(output, quickstartDirectory, caller);
-    let contents = fs.readFileSync(file, "utf8");
+    let contents = publishedQuickstartPaths(fs.readFileSync(file, "utf8"));
     for (const [source, download] of quickstartDownloads) {
       contents = contents.replaceAll(path.basename(source), path.basename(download));
     }
@@ -577,7 +592,9 @@ if (quickstartScripts.length > 0) {
   }
 }
 for (const { download, javascript } of quickstartScripts) {
-  fs.writeFileSync(path.join(output, download), javascript);
+  const file = path.join(output, download);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, javascript);
 }
 fs.cpSync(path.join(assets, "fonts"), path.join(output, "assets/fonts"), { recursive: true });
 const carapaceCss = [

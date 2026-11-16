@@ -1,6 +1,7 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
+    "lib": ["ES2022", "ES2024.Promise", "DOM"],
     "allowJs": true,
     "checkJs": false,
     "composite": false,
@@ -14,6 +15,15 @@
     "paths": {
       "@kubernetes/client-node": [
         "../apps/controller/node_modules/@kubernetes/client-node/dist/index.d.ts"
+      ],
+      "@openclaw/gateway-client": [
+        "../apps/controller/node_modules/@openclaw/gateway-client/dist/index.d.mts"
+      ],
+      "/app/apps/controller/src/drivers/repo/access/*": [
+        "../apps/controller/src/drivers/repo/access/*"
+      ],
+      "/app/apps/controller/src/drivers/repo/github/access/*": [
+        "../apps/controller/src/drivers/repo/github/access/*"
       ],
       "@openclaw-enterprise/contracts": ["../packages/contracts/src/index.ts"],
       "/app/packages/occ/src/index.ts": ["../packages/occ/src/index.ts"],

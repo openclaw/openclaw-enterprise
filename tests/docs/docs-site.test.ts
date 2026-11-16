@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import test from "node:test";
 
@@ -117,19 +117,58 @@ test("docs build renders every authored page and preserves repository ownership"
     execFileSync(process.execPath, ["--check", download + ".mjs"], { encoding: "utf8" });
     assert.equal(existsSync(download + ".mts"), false, "Do not publish a second typed download");
   }
-  for (const script of ["chat.mjs", "verify-github-installation.mjs"]) {
-    const asset = join("assets/openshell-quickstart", script);
-    assert.deepEqual(
-      await readFile(join(root, "dist/docs", asset)),
-      await readFile(join(root, "docs", asset)),
-    );
+  const quickstartAssets = "assets/openshell-quickstart";
+  const published = join(root, "dist/docs");
+  for (const script of ["chat", "verify-github-installation"]) {
+    const asset = join(published, quickstartAssets, script + ".mjs");
+    execFileSync(process.execPath, ["--check", asset], { encoding: "utf8" });
+    assert.equal(existsSync(join(published, quickstart, script + ".mts")), false);
   }
-  // Stage from the published tree so a checkout-only filename fails the download test.
-  const staged = await temporaryDirectory(t, "enterprise-quickstart-downloads-");
-  execFileSync("bash", ["-eu", join("docs", quickstart, "stage-session.sh")], {
-    cwd: join(root, "dist"),
-    env: { ...process.env, RUN_DIR: staged },
+  const enrollment = await readFile(
+    join(published, "guides/repository-credentials/openshell-enrollment/index.html"),
+    "utf8",
+  );
+  const verifier = `${quickstartAssets}/verify-github-installation.mjs`;
+  assert.ok(enrollment.includes(`href="/${verifier}"`));
+  assert.ok(enrollment.replace(/<[^>]+>/g, "").includes(`docs/${verifier}`));
+
+  // Run the shipped staging command from both trees. The published shell must copy
+  // the historical download and use the same staged filename when sending a turn.
+  const stage = join("docs", quickstart, "stage-session.sh");
+  for (const { cwd, source, basename } of [
+    { cwd: root, source: `${quickstart}/chat.mts`, basename: "chat.mts" },
+    {
+      cwd: join(root, "dist"),
+      source: `${quickstartAssets}/chat.mjs`,
+      basename: "chat.mjs",
+    },
+  ]) {
+    const staged = await temporaryDirectory(t, "enterprise-quickstart-downloads-");
+    execFileSync("bash", ["-eu", stage], { cwd, env: { ...process.env, RUN_DIR: staged } });
+    const chat = join(staged, basename);
+    assert.equal((await stat(chat)).mode & 0o777, 0o600);
+    assert.deepEqual(await readFile(chat), await readFile(join(cwd, "docs", source)));
+    const session = await readFile(join(staged, "operator-session.sh"), "utf8");
+    assert.ok(session.includes(`< "$RUN_DIR/${basename}"`));
+  }
+
+  // A partial downloaded tree must fail at staging instead of silently queuing a turn.
+  const incomplete = await temporaryDirectory(t, "enterprise-quickstart-incomplete-");
+  await cp(join(published, quickstart), join(incomplete, "docs", quickstart), {
+    recursive: true,
   });
+  const staged = await temporaryDirectory(t, "enterprise-quickstart-downloads-");
+  const stageResult = spawnSync("bash", ["-eu", stage], {
+    cwd: incomplete,
+    env: { ...process.env, RUN_DIR: staged },
+    encoding: "utf8",
+  });
+  if (stageResult.error) {
+    throw stageResult.error;
+  }
+  assert.equal(stageResult.status, 1, stageResult.stderr);
+  assert.match(stageResult.stderr, /assets\/openshell-quickstart\/chat\.mjs/);
+  assert.equal(existsSync(join(staged, "chat.mjs")), false);
   // The published listener manifest and ConfigMap example must use the downloadable payload.
   for (const caller of ["kubernetes/owner-listener.jq", "cluster-browser-access.md"]) {
     const source = await readFile(join(root, "dist/docs", quickstart, caller), "utf8");
