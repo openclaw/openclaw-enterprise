@@ -1603,6 +1603,8 @@ function externalGitJourney(
       if (writes) {
         // The sender reports each request's ref and draft scope; the Worker's owner decides
         // against the registry grant (push ref, base, one draft) and records every allow.
+        assert.ok("pulls" in gh);
+        const { pulls } = gh;
         const start = peer.decisions.length;
         const secret = peer.clientHeader.slice("Authorization: ".length);
         const receivePacks = () =>
@@ -1676,7 +1678,7 @@ function externalGitJourney(
           0,
         );
         assert.equal((await draft("elsewhere")).status, 403, "only the granted base");
-        assert.equal(gh.pulls.size, 0, "a refused draft never reaches the provider");
+        assert.equal(pulls.size, 0, "a refused draft never reaches the provider");
         const created = await draft("main");
         assert.equal(created.status, 201);
         assert.equal(created.data.draft, true);
@@ -1685,7 +1687,7 @@ function externalGitJourney(
           ["review", "main"],
         );
         assert.equal((await draft("main")).status, 403, "the grant allows one draft");
-        assert.equal(gh.pulls.size, 1, "the second draft never reaches the provider");
+        assert.equal(pulls.size, 1, "the second draft never reaches the provider");
         assert.deepEqual(outcomes(start), [
           ["advertise-receive-pack", "allow"],
           ["receive-pack", "allow"],
@@ -1760,7 +1762,7 @@ function externalGitJourney(
         await settleRevisionMaintenance(f, revision);
         const writeTraffic = () => ({
           git: traffic(),
-          pulls: gh.pulls.size,
+          pulls: pulls.size,
           issues: gh.issuesOfTokens.length,
         });
         const before = writeTraffic();
