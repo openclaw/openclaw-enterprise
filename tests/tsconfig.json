@@ -108,6 +108,7 @@
     "integration/occ-api-compute-admission-cases.ts",
     "integration/occ-api-plugin-policy-cases.ts",
     "integration/repository-credentials-deployment-admission-cases.ts",
+    "integration/repository-credentials-agent-access-cases.ts",
     "integration/configuration-startup-input-cases.ts",
     "integration/configuration-startup-validation-cases.ts",
     "integration/configuration-startup-credential-proxy-cases.ts",
