@@ -41,6 +41,10 @@ checksum-verified `openclaw-required-worker-authority-regression.patch`
 and runs the real Gateway public-RPC cases without network access. The cases
 cover placement before and after acknowledgement, disconnect, and committed
 role, scope, and profile revocation.
+The image includes the checksum-verified planned-completion patch for
+[OpenClaw #196972](https://github.com/openclaw/openclaw/pull/196972). A caller
+can ask Gateway to wait for accepted work and final writes until a deadline.
+The caller must select this mode for the predecessor it intends to replace.
 The build also applies `openclaw-codex-full-access-profile.patch`, which selects
 the native full-access Codex profile, and
 `openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation

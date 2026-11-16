@@ -347,6 +347,10 @@ Verify routing, models, channels, credentials, workspaces and restores.
 The [served Console check](../release/container-promotion.md#verify-the-served-console)
 accepts an optional image-bound entry digest.
 
+A Gateway image with the planned-completion patch can report when admitted work
+and final writes have drained. Fleet verification still checks the original
+result at its destination. The image alone does not change the worker's stop order.
+
 ### Read-only export after a split-layout refusal
 
 [Split-layout export](../guides/deploy/split-layout-upgrade.md#export-and-re-create)
