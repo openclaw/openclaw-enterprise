@@ -99,6 +99,7 @@
     "fixtures/egress-send-receipt-owner.mts",
     "conformance/standing-approval-history-cases.ts",
     "conformance/oauth-renewal-refusal-cases.ts",
+    "integration/postgres-worker-agent-revision-dispatch-cases.ts",
     "integration/postgres-worker-revision-database-teardown-cases.ts",
     "integration/postgres-worker-revision-fixture-exit-cases.ts",
     "integration/postgres-worker-revision-serial-work-case.ts",
