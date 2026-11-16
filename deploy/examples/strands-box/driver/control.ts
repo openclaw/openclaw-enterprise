@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { request } from "node:http";
 import { dirname } from "node:path";
-import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
+import { DependencyUnavailableError, TransientDependencyError } from "@openclaw-enterprise/occ";
 import type { HarnessWorkloadRequirements } from "@openclaw-enterprise/contracts";
 
 export interface Owner {
@@ -177,7 +177,7 @@ interface AdmissionRequest {
 }
 
 type ControlRequest =
-  | { readonly method: "GET" }
+  | { readonly method: "GET"; readonly phase?: "initial-provision" }
   | {
       readonly method: "PUT";
       readonly body: AdmissionRequest & {
@@ -202,6 +202,7 @@ export async function control(
       EXECUTION_PATH,
       "body" in operation ? operation.body : undefined,
       signal,
+      operation.method === "GET" && operation.phase === "initial-provision",
     );
     if (operation.method === "GET" && reply.status === 404) return undefined;
     if (operation.method === "DELETE" && reply.status === 204) return undefined;
@@ -209,8 +210,9 @@ export async function control(
       throw new Error("Refused control request");
     }
     return parseExecution(JSON.parse(reply.body));
-  } catch {
+  } catch (error) {
     signal.throwIfAborted();
+    if (error instanceof TransientDependencyError) throw error;
     // A failed response conveys no evidence that a mutation did or did not happen.
     throw new DependencyUnavailableError(
       "The Strands Box host did not confirm the execution operation.",
@@ -256,9 +258,29 @@ async function send(
   path: string,
   body: unknown,
   signal: AbortSignal,
+  initialProvision = false,
 ): Promise<{ status: number; body: string }> {
   signal.throwIfAborted();
-  const socket = await lstat(socketPath);
+  const socket = await lstat(socketPath).catch(async (error: unknown) => {
+    if (initialProvision && record(error)?.code === "ENOENT") {
+      const directory = await lstat(dirname(socketPath));
+      if (
+        directory.isDirectory() &&
+        (directory.mode & 0o077) === 0 &&
+        directory.uid === process.geteuid?.()
+      ) {
+        // First provision can reach the original control export before its Host starts.
+        // This lstat precedes every request; no admission or launch has been sent.
+        signal.throwIfAborted();
+        throw new TransientDependencyError(
+          "sandbox_gateway",
+          "unavailable",
+          "The Strands Box host has not opened the initial control socket.",
+        );
+      }
+    }
+    throw error;
+  });
   const directory = await lstat(dirname(socketPath));
   if (
     !socket.isSocket() ||

@@ -36,11 +36,11 @@ export interface Pending {
   controller: ControllerIdentity;
 }
 
-export function currentController(pid = process.pid): ControllerIdentity {
+export function currentController(pid = process.pid, verifiedBootId?: string): ControllerIdentity {
   return {
     pid,
     startTicks: processIdentity(pid).startTicks,
-    bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
+    bootId: verifiedBootId ?? readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
   };
 }
 
@@ -79,6 +79,7 @@ export function approve(
   pin: OwnerPin,
   revisionId: string,
   requirementsDigest: string,
+  verifiedBootId?: string,
 ): void {
   const pending = object(readConfig(join(runtimeDir, "pending.json"))) as unknown as Pending;
   if (
@@ -87,19 +88,25 @@ export function approve(
     pending.owner.revisionId !== revisionId ||
     pending.requirementsDigest !== requirementsDigest ||
     !/^[a-f0-9]{64}$/.test(requirementsDigest) ||
-    JSON.stringify(currentController(pending.controller.pid)) !== JSON.stringify(pending.controller)
+    JSON.stringify(currentController(pending.controller.pid, verifiedBootId)) !==
+      JSON.stringify(pending.controller)
   ) {
     throw new Error("approval_custody_mismatch");
   }
   durableRecord(approvalDir, "approval.json", approvalFor(pending));
 }
 
-export function isApproved(approvalDir: string, pending: Pending): boolean {
+export function isApproved(
+  approvalDir: string,
+  pending: Pending,
+  verifiedBootId?: string,
+): boolean {
   try {
     return (
       JSON.stringify(readConfig(join(approvalDir, "approval.json"))) ===
         JSON.stringify(approvalFor(pending)) &&
-      JSON.stringify(currentController()) === JSON.stringify(pending.controller)
+      JSON.stringify(currentController(undefined, verifiedBootId)) ===
+        JSON.stringify(pending.controller)
     );
   } catch {
     return false;

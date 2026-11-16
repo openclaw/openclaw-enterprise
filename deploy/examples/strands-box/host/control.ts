@@ -31,8 +31,20 @@ import {
 } from "./admission.ts";
 import type { Owner, OwnerPin, Pending } from "./admission.ts";
 import {
+  assertHarnessImageCommand,
+  assertHarnessImageLaunch,
+  assertHarnessImageView,
+  HARNESS_SPLIT_COMBINED_SHA256,
+  HARNESS_SPLIT_COMMAND_SHA256,
+  installHarnessImage,
+  readHarnessImageSplit,
+  readHarnessProc,
+} from "./installed-harness-image.ts";
+import type { HarnessImageInstallation } from "./installed-harness-image.ts";
+import {
   assertNodeInputs,
   assertPinnedDirectory,
+  assertStockCombinedCommand,
   FILE_NODE_STATE,
   mountIdentity,
   nodeRuntimeBytes,
@@ -60,6 +72,8 @@ const MOUNTS = {
 interface InstalledConfig extends HostConfig {
   owner: OwnerPin;
   image: string;
+  harnessImage?: HarnessImageInstallation;
+  harnessImageSplit?: MountIdentity;
   controlSocketMode?: "worker-directory";
   profileSha256?: string;
   approvalDir?: string;
@@ -106,12 +120,30 @@ function approvedWorkspaceNode(plan: LaunchPlan): Pending["workspaceNode"] {
 }
 
 function startInstalledExecution(config: InstalledConfig, plan: LaunchPlan): Execution {
-  const box = start(config, plan);
+  const image = config.harnessImage;
+  const beforeBoxExec =
+    image === undefined
+      ? undefined
+      : () => {
+          if (config.harnessImageSplit !== undefined) {
+            const split = readHarnessImageSplit(
+              config.agentBuildDir,
+              image,
+              config.harnessImageSplit,
+            );
+            pinnedHarnessImageArgv(split.data);
+          }
+          assertHarnessImageLaunch(image);
+          return image.bootId;
+        };
+  const box = start(config, plan, undefined, beforeBoxExec);
   const input = plan.separateNode;
   if (input === undefined) return box;
 
   const abort = new AbortController();
-  const node = startWorkspaceNode(input, join(config.runtimeDir, "file-node"), abort.signal);
+  const startNode = () =>
+    startWorkspaceNode(input, join(config.runtimeDir, "file-node"), abort.signal);
+  const node = image === undefined ? startNode() : box.spawned.then(startNode);
   const nodeDone = node.then(
     (process) => process.done,
     () => 1,
@@ -272,6 +304,7 @@ function installedConfig(value: unknown): InstalledConfig {
   const config = hostConfig(value, [
     "owner",
     "image",
+    "harnessImageReceipt",
     "controlSocketMode",
     "profileSha256",
     "approvalDir",
@@ -300,6 +333,10 @@ function installedConfig(value: unknown): InstalledConfig {
     throw new Error("invalid_fixed_endpoint");
   const image = string(data.image);
   if (!/@sha256:[a-f0-9]{64}$/.test(image)) throw new Error("unverified_agent_image");
+  const harnessImage =
+    data.harnessImageReceipt === undefined
+      ? undefined
+      : installHarnessImage(data.harnessImageReceipt, image, config);
   const controlSocketMode = data.controlSocketMode;
   if (controlSocketMode !== undefined && controlSocketMode !== "worker-directory") {
     throw new Error("invalid_control_socket_mode");
@@ -329,6 +366,12 @@ function installedConfig(value: unknown): InstalledConfig {
     data.separateWorkspaceNode === undefined
       ? undefined
       : nodeInstallation(data.separateWorkspaceNode);
+  let harnessImageSplit: MountIdentity | undefined;
+  if (harnessImage !== undefined && separateWorkspaceNode !== undefined) {
+    const split = readHarnessImageSplit(config.agentBuildDir, harnessImage);
+    pinnedHarnessImageArgv(split.data);
+    harnessImageSplit = split.identity;
+  }
   if (separateWorkspaceNode !== undefined) {
     // The file node's state and root image may never be present in a Box grant.
     const isolated = [FILE_NODE_STATE, separateWorkspaceNode.rootfs];
@@ -385,6 +428,8 @@ function installedConfig(value: unknown): InstalledConfig {
     ...config,
     owner: ownerPin,
     image,
+    ...(harnessImage === undefined ? {} : { harnessImage }),
+    ...(harnessImageSplit === undefined ? {} : { harnessImageSplit }),
     ...(controlSocketMode === undefined ? {} : { controlSocketMode }),
     ...(profileSha256 === undefined ? {} : { profileSha256 }),
     ...(approvalDir === undefined ? {} : { approvalDir }),
@@ -457,6 +502,25 @@ function parseStockHarnessCommand(value: unknown): {
 
 export function stockHarnessCommand(value: unknown): readonly string[] {
   return parseStockHarnessCommand(value).command;
+}
+
+function pinnedHarnessImageArgv(value: unknown): readonly string[] {
+  const command = stockHarnessCommand(value);
+  if (digest(command) !== HARNESS_SPLIT_COMMAND_SHA256) {
+    throw new Error("harness_image_split_argv_changed");
+  }
+  return command;
+}
+
+export function splitSelectedHarnessImageCommand(
+  combined: Buffer,
+  standalone: unknown,
+): readonly string[] {
+  assertStockCombinedCommand(combined);
+  if (createHash("sha256").update(combined).digest("hex") !== HARNESS_SPLIT_COMBINED_SHA256) {
+    throw new Error("harness_image_split_combined_changed");
+  }
+  return pinnedHarnessImageArgv(standalone);
 }
 
 function admitted(
@@ -700,6 +764,9 @@ function admitted(
         identity: config.mountIdentities.get(path)!,
       })),
       runtime: join(config.agentBuildDir, "workspace-node-runtime.mjs"),
+      ...(config.harnessImage === undefined
+        ? {}
+        : { mountinfo: () => readHarnessProc(config.harnessImage!).mountinfo }),
       route: config.workspaceNode,
       ...(environment.OPENCLAW_NODE_CA_PEM === undefined
         ? {}
@@ -718,8 +785,31 @@ function admitted(
       delete environment[key];
     mounts.delete(FILE_NODE_STATE);
   }
+  let command = stock.command;
+  if (separateNode !== undefined) {
+    if (config.harnessImage === undefined) {
+      command = splitStockCommand(stock.program);
+    } else {
+      if (config.harnessImageSplit === undefined) {
+        throw new Error("harness_image_split_not_approved");
+      }
+      const split = readHarnessImageSplit(
+        config.agentBuildDir,
+        config.harnessImage,
+        config.harnessImageSplit,
+      );
+      command = splitSelectedHarnessImageCommand(stock.program, split.data);
+    }
+  }
+  if (config.harnessImage !== undefined) {
+    if (needsSetupCode && separateNode === undefined) {
+      throw new Error("harness_image_requires_separate_workspace_node");
+    }
+    assertHarnessImageCommand(config.harnessImage, command, environment.PATH);
+    assertHarnessImageView(config.harnessImage);
+  }
   return {
-    command: separateNode === undefined ? stock.command : splitStockCommand(stock.program),
+    command,
     environment,
     files,
     readOnly: [],
@@ -801,7 +891,10 @@ function controlSocketPath(config: InstalledConfig): string {
     (character) => `\\${character.charCodeAt(0).toString(8).padStart(3, "0")}`,
   );
   if (
-    readFileSync("/proc/self/mountinfo", "utf8")
+    (config.harnessImage === undefined
+      ? readFileSync("/proc/self/mountinfo", "utf8")
+      : readHarnessProc(config.harnessImage).mountinfo
+    )
       .split("\n")
       .some((line) => line.split(" ", 5)[4] === mountPath)
   ) {
@@ -817,7 +910,11 @@ function controlSocketPath(config: InstalledConfig): string {
 export async function serveInstalledControl(config: InstalledConfig): Promise<void> {
   const socketPath = controlSocketPath(config);
   if (config.approvalDir !== undefined) ensureEmpty(config.approvalDir);
-  const controller = currentController();
+  const image = config.harnessImage;
+  const controller = currentController(
+    undefined,
+    image === undefined ? undefined : readHarnessProc(image).bootId,
+  );
   let pending: { view: Pending; requirements: string } | undefined;
   process.umask(0o077);
   let current: LiveRecord | undefined;
@@ -975,7 +1072,12 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
               ? {}
               : { workspaceVolume: data.workspaceVolume }),
           }) ||
-        (config.approvalDir !== undefined && !isApproved(config.approvalDir, pending.view))
+        (config.approvalDir !== undefined &&
+          !isApproved(
+            config.approvalDir,
+            pending.view,
+            image === undefined ? undefined : readHarnessProc(image).bootId,
+          ))
       ) {
         reply(response, 409, { error: "owner_admission_not_approved" });
         return;
@@ -1089,6 +1191,7 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
         config.owner,
         process.argv[4],
         process.argv[5],
+        config.harnessImage === undefined ? undefined : readHarnessProc(config.harnessImage).bootId,
       );
       process.stdout.write("strands-box-control: exact held admission approved\n");
     } else {

@@ -57,6 +57,7 @@ import {
 } from "../../deploy/examples/strands-box/host/admission.ts";
 import type { Pending } from "../../deploy/examples/strands-box/host/admission.ts";
 import { parseRoute, policy } from "../../deploy/examples/strands-box/host/egress.ts";
+import { verifyHarnessImageFile } from "../../deploy/examples/strands-box/host/installed-harness-image.ts";
 import { hostConfig, smokeInput, start } from "../../deploy/examples/strands-box/host/launch.ts";
 import {
   WORKSPACE_MARKER,
@@ -554,6 +555,57 @@ test(
     assert.match(output, /strands-box-diagnostic source=box stage=stderr reason=unrecognized/);
     assert.match(output, /strands-box-diagnostic source=box stage=exit reason=nonzero/);
     assert(!output.includes("fixture-private"));
+  },
+);
+
+test(
+  "a pre-exec refusal stops the launcher before the Box child is spawned",
+  { skip: unsupported },
+  async (t) => {
+    const directory = temporary();
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const runtimeDir = join(directory, "run");
+    const workspace = join(directory, "workspace");
+    const agentBuildDir = join(directory, "build");
+    for (const path of [runtimeDir, workspace, agentBuildDir]) {
+      mkdirSync(path, { mode: 0o700 });
+    }
+    for (const file of ["box-agent.js", "transport.js", "diagnostics.js"]) {
+      writeFileSync(join(agentBuildDir, file), "", { mode: 0o600 });
+    }
+    const boxBin = join(directory, "fixture-box");
+    writeFileSync(boxBin, "#!/bin/sh\ntouch ../spawned\nsleep 1\n", { mode: 0o700 });
+    const node = realpathSync(process.execPath);
+    const config = hostConfig({
+      boxBin,
+      nodeBin: node,
+      codexBin: node,
+      agentBuildDir,
+      runtimeDir,
+      workspace,
+      read: [],
+      exec: [],
+      linuxPreview: true,
+    });
+    const { input } = smokeInput(config);
+    const entry = join(agentBuildDir, "box-agent.js");
+    const bytes = "console.log('agent');";
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    writeFileSync(entry, bytes);
+    const original = verifyHarnessImageFile(entry, sha256, false);
+    const replacement = join(agentBuildDir, "replacement.js");
+    writeFileSync(replacement, bytes, { mode: 0o600 });
+    renameSync(replacement, entry);
+    let checked = false;
+    const execution = start(config, input, undefined, () => {
+      checked = true;
+      verifyHarnessImageFile(entry, sha256, false, false, original);
+    });
+    await assert.rejects(execution.spawned, /startup_refused:start-box/);
+    await assert.rejects(execution.ready, /startup_refused:start-box/);
+    assert.equal(await execution.done, 1);
+    assert.equal(checked, true);
+    assert.throws(() => lstatSync(join(directory, "spawned")), { code: "ENOENT" });
   },
 );
 
