@@ -24,8 +24,12 @@ rebuilds `/opt/oce/runtime/contents.json` and its provenance digest with the
 host's source commit, JIT mode and SHA-256 as `codeModeHost` in
 `provenance.json`.
 
-The build requires that host to evaluate `19 + 23` and return `42` without
-network access.
+The last step runs without network access. Both the stock host and the
+packaged host must evaluate `19 + 23` and return `42`. The stock host must
+also map executable memory that no file backs, which is its V8 JIT code
+range. The packaged host must map none. A host that maps JIT memory fails in a
+sandbox that forbids JIT. User-mode emulation maps its own translated code, so
+the step refuses to run under it.
 
 Select the resulting image for the sandboxed dedicated Harness and verify a
 Code Mode result through the installed Agent.
