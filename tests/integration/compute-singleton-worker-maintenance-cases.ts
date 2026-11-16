@@ -63,6 +63,12 @@ function maintenanceSandbox(maintenanceIntervalMs: number): SandboxDriver {
     facets: ["process"],
     supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     maintenanceIntervalMs,
+    // A maintenance interval requires a provider-owned Harness. The fixture Compute owns
+    // its workload and never calls the provider, so these cases prove only the worker's
+    // schedule and dispatch flag.
+    async provisionHarness() {
+      throw new Error("The fixture Compute does not provision Sandbox Harnesses.");
+    },
     async cleanup() {},
   };
 }
@@ -232,6 +238,21 @@ export function registerComputeSingletonMaintenanceCases(): void {
         { revisionId: candidate.id, active: null, existingOnly: undefined },
         { revisionId: candidate.id, active: candidate.id, existingOnly: true },
       ]);
+    },
+  );
+
+  test(
+    "startup refuses a Sandbox maintenance interval for a Compute-owned Harness",
+    requiresPostgres,
+    async (context) => {
+      // Compute applies its own Harness Deployment and ignores existingHarnessOnly, so a
+      // restricted maintenance pass could recreate a Harness whose enrollment inputs retired.
+      const { provisionHarness: _provisionHarness, ...computeOwned } = maintenanceSandbox(60_000);
+      const fixture = await setup(context, computeOwned);
+      assert.throws(
+        () => fixture.start(fixture.compute),
+        /A Sandbox maintenance interval requires provider-owned Harnesses/,
+      );
     },
   );
 

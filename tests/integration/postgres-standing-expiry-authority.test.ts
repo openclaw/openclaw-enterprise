@@ -285,7 +285,14 @@ for (const scenario of [
           supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
           implementation: "sandbox-worker-fixture",
           facets: ["networking"],
-          ...(sandboxCadence && { maintenanceIntervalMs: WITHDRAWAL_SANDBOX_INTERVAL_MS }),
+          // A maintenance interval requires a provider-owned Harness; the fixture Compute
+          // owns its workload and never calls the provider.
+          ...(sandboxCadence && {
+            maintenanceIntervalMs: WITHDRAWAL_SANDBOX_INTERVAL_MS,
+            async provisionHarness(): Promise<never> {
+              throw new Error("The fixture Compute does not provision Sandbox Harnesses.");
+            },
+          }),
           async cleanup() {},
         };
         const authorityFixture = {

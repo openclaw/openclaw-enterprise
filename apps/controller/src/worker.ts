@@ -1393,6 +1393,11 @@ export class ControllerWorker {
       }
       if (this.sandbox.maintenanceIntervalMs !== undefined) {
         positiveInteger(this.sandbox.maintenanceIntervalMs, "Sandbox maintenance interval");
+        // Only a provider can honor existingHarnessOnly. Compute applies its own Harness
+        // Deployment and would recreate a missing one during the restricted pass.
+        if (this.sandbox.provisionHarness === undefined) {
+          throw new Error("A Sandbox maintenance interval requires provider-owned Harnesses.");
+        }
       }
       if (!validLifecycleHooks(this.sandbox)) {
         throw new Error("The selected Sandbox Driver exposes invalid lifecycle hooks.");
