@@ -39,7 +39,7 @@ After credential authorization under the [contribution policy](../../CONTRIBUTIN
 ```sh
 OCC_TEST_CODEX_STARTUP_READS_REAL=1 node --test \
   --test-name-pattern='native Codex app-server' \
-  tests/integration/codex-plugin-startup-reads-real.test.mjs
+  tests/integration/codex-plugin-startup-reads-real.test.ts
 ```
 
 The test removes its container. It checks the authenticated metadata protocol, not a model turn or connector call.

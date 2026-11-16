@@ -24,7 +24,7 @@
       "path": "tests/integration/plugin-driver-real.test.mjs"
     },
     {
-      "path": "tests/integration/codex-plugin-startup-reads-real.test.mjs"
+      "path": "tests/integration/codex-plugin-startup-reads-real.test.ts"
     }
   ]
 }
