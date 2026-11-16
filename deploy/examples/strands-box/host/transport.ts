@@ -50,6 +50,9 @@ export function listen(server: Server, path: string): Promise<SocketIdentity> {
 }
 
 // Start time (field 22) and parent (field 4) in the current PID namespace.
+/** The fixed answer of the host's release socket after a verified protected startup release. */
+export const RELEASE_LINE = "released\n";
+
 export interface ProcessIdentity {
   pid: number;
   ppid: number;

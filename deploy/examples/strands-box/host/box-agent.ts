@@ -15,6 +15,7 @@ import {
   listen,
   PORT,
   processIdentity,
+  RELEASE_LINE,
   sameProcess,
   tcpOwnership,
   upgradeStatus,
@@ -28,6 +29,32 @@ interface AgentInput {
   codexBin: string;
   socketPath: string;
   projectionSocket?: string;
+  /** Protected startup: wait here until the host verified Compute's signed release. */
+  releaseSocket?: string;
+}
+
+/**
+ * Wait, without a deadline, for the host-owned release socket to appear and answer the
+ * fixed release line. The host creates it only after it verified Compute's signed startup
+ * release for this exact execution, so Codex never starts before release.
+ */
+async function awaitRelease(path: string, signal: AbortSignal): Promise<void> {
+  for (;;) {
+    signal.throwIfAborted();
+    const answer = await new Promise<string | undefined>((resolve) => {
+      const socket = createConnection({ path });
+      const chunks: Buffer[] = [];
+      socket.setTimeout(2_000, () => socket.destroy());
+      socket.on("data", (chunk: Buffer) => {
+        chunks.push(chunk);
+        if (Buffer.concat(chunks).length > 64) socket.destroy();
+      });
+      socket.once("error", () => resolve(undefined));
+      socket.once("close", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    });
+    if (answer === RELEASE_LINE) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
 }
 
 // This file is launched by Box with an owner-generated, read-only input file.
@@ -64,6 +91,23 @@ async function run(input: AgentInput): Promise<number> {
   if (program === undefined) throw new Error("empty_command");
   const env = { ...process.env, NODE_OPTIONS: "--jitless" };
   let projection: string | undefined;
+  if (input.releaseSocket !== undefined) {
+    report("inner", "release", "entered");
+    const held = new AbortController();
+    const stop = () => held.abort();
+    process.once("SIGTERM", stop);
+    process.once("SIGINT", stop);
+    try {
+      await awaitRelease(input.releaseSocket, held.signal);
+    } catch (error) {
+      report("inner", "release", "stopped");
+      throw error;
+    } finally {
+      process.off("SIGTERM", stop);
+      process.off("SIGINT", stop);
+    }
+    report("inner", "release", "observed");
+  }
   if (input.projectionSocket !== undefined) {
     report("inner", "projection", "entered");
     try {

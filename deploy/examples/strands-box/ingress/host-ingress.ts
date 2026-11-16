@@ -392,7 +392,12 @@ export async function createFixedIngress(
         reject(socket, 400);
         return;
       }
-      forward(socket, upgradeHeaders(message, config.authority), original, config.readySha256);
+      forward(
+        socket,
+        upgradeHeaders(message, config.authority),
+        original,
+        original.generationSha256,
+      );
     } catch {
       reject(socket, 400);
     }

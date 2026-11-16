@@ -21,6 +21,8 @@ interface GenerationReceipt {
   readonly startTicks: string;
   readonly socketDev: string;
   readonly socketIno: string;
+  /** Protected startup only: the reservation generation pinned before Compute's release. */
+  readonly generationSha256?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -35,7 +37,13 @@ function receipt(bytes: Buffer): GenerationReceipt {
   const value: unknown = JSON.parse(bytes.toString("utf8"));
   if (
     !isRecord(value) ||
-    Object.keys(value).sort().join(",") !== EXPECTED_FIELDS.join(",") ||
+    Object.keys(value)
+      .filter((key) => key !== "generationSha256")
+      .sort()
+      .join(",") !== EXPECTED_FIELDS.join(",") ||
+    (value.generationSha256 !== undefined &&
+      (typeof value.generationSha256 !== "string" ||
+        !/^[a-f0-9]{64}$/.test(value.generationSha256))) ||
     value.version !== 1 ||
     typeof value.pid !== "number" ||
     !Number.isSafeInteger(value.pid) ||
@@ -60,6 +68,9 @@ function receipt(bytes: Buffer): GenerationReceipt {
     startTicks: value.startTicks,
     socketDev: value.socketDev,
     socketIno: value.socketIno,
+    ...(typeof value.generationSha256 === "string"
+      ? { generationSha256: value.generationSha256 }
+      : {}),
   };
 }
 
@@ -189,6 +200,8 @@ async function ownsListener(pid: number, inode: string): Promise<boolean> {
 
 export interface OriginalSocket {
   readonly pinnedPath: string;
+  /** The owner generation the Gateway pinned: the protected reservation, else the receipt digest. */
+  readonly generationSha256: string;
   valid(): Promise<boolean>;
   close(): Promise<void>;
 }
@@ -280,6 +293,7 @@ export async function openOriginalSocket(
     }
     return {
       pinnedPath: `/proc/self/fd/${handle.fd}`,
+      generationSha256: expected.generationSha256 ?? readySha256,
       valid,
       async close() {
         if (!closed) {

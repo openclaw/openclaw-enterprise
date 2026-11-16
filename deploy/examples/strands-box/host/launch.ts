@@ -47,6 +47,7 @@ import {
   listen,
   PORT,
   processIdentity,
+  RELEASE_LINE,
   sameProcess,
   sameSocket,
   socketIdentity,
@@ -84,6 +85,7 @@ const startupMessages = new Set([
   "owner_cleanup_failed",
   "startup_refused:stage-inputs",
   "startup_refused:start-box",
+  "startup_refused:wait-release",
   "startup_refused:wait-original-native",
   "startup_refused:verify-native-auth",
   "startup_refused:publish-owner-socket",
@@ -186,6 +188,8 @@ export interface StartInput {
    * Its `repository-sender` route must also be the single such route in `egress`.
    */
   repositorySenderBearer?: string;
+  /** Protected startup: Box starts, but the command waits until `release()` is called. */
+  releaseGate?: true;
 }
 
 /** The trusted `box run` process of this execution, read from /proc after spawn. */
@@ -203,6 +207,8 @@ export interface OwnerReady {
   startTicks: string;
   socketDev: string;
   socketIno: string;
+  /** Protected startup only: the reservation generation reported before the release. */
+  generationSha256?: string;
 }
 
 export interface Execution {
@@ -210,6 +216,13 @@ export interface Execution {
   readonly done: Promise<number>;
   /** Present once `box run` was spawned; `undefined` before that or after it exited. */
   boxProcess(): BoxProcess | undefined;
+  /**
+   * Protected startup only: SHA-256 of the reservation (this host process, the `box run`
+   * process and the sender bearer digest), fixed before the release and repeated in ready.json.
+   */
+  generation(): string | undefined;
+  /** Open the protected startup gate once; only the caller that verified the release calls it. */
+  release(): Promise<void>;
   stop(): Promise<number>;
 }
 
@@ -481,10 +494,40 @@ export function start(
   void ready.catch(() => {});
   let boxRun: BoxProcess | undefined;
   let boxOwner: ProcessIdentity | undefined;
+  let gate: ReturnType<typeof createServer> | undefined;
+  let gatePath: string | undefined;
+  let gateStopped = false;
+  let reservation: string | undefined;
+  let gateOpened!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    gateOpened = resolve;
+  });
   const done = run();
   return {
     ready,
     done,
+    async release() {
+      const owner = boxOwner;
+      const path = gatePath;
+      if (
+        gate !== undefined ||
+        gateStopped ||
+        path === undefined ||
+        owner === undefined ||
+        !sameProcess(owner) ||
+        abort.signal.aborted
+      ) {
+        throw new Error("release_gate_unavailable");
+      }
+      gate = createServer((socket) => {
+        socket.on("error", () => socket.destroy());
+        if (!sameProcess(owner) || abort.signal.aborted) socket.destroy();
+        else socket.end(RELEASE_LINE);
+      });
+      await listen(gate, path);
+      gateOpened();
+    },
+    generation: () => reservation,
     boxProcess: () =>
       boxRun !== undefined && boxOwner !== undefined && sameProcess(boxOwner) ? boxRun : undefined,
     stop: () => {
@@ -581,6 +624,9 @@ export function start(
           codexBin: config.codexBin,
           socketPath: inner,
           ...(input.workspaceNodeSetupCode === undefined ? {} : { projectionSocket: projection }),
+          ...(input.releaseGate === true
+            ? { releaseSocket: join(projectionDir, "release.sock") }
+            : {}),
         }),
         ownerOnly,
       );
@@ -620,7 +666,9 @@ export function start(
         diagnostics,
         visibleAgentInput,
         ...stagedPaths,
-        ...(input.workspaceNodeSetupCode === undefined ? [] : [projectionDir]),
+        ...(input.workspaceNodeSetupCode === undefined && input.releaseGate !== true
+          ? []
+          : [projectionDir]),
       ]);
       const write = outermost([...writable, config.workspace, bridgeDir]);
       const exec = outermost([...config.exec, config.codexBin, config.nodeBin]);
@@ -699,12 +747,40 @@ export function start(
       });
       if (child.pid === undefined) throw new Error("box_start_failed");
       owner = processIdentity(child.pid);
+      if (input.releaseGate === true) gatePath = join(projectionDir, "release.sock");
       boxOwner = owner;
       boxRun = {
         bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
         pid: owner.pid,
         startTicks: owner.startTicks,
       };
+      if (input.releaseGate === true) {
+        reservation = createHash("sha256")
+          .update(
+            JSON.stringify({
+              version: 1,
+              profile: "strands-box-protected-reservation-v1",
+              host: { pid: process.pid, startTicks: processIdentity(process.pid).startTicks },
+              box: boxRun,
+              bearerSha256:
+                senderBearer === undefined
+                  ? null
+                  : createHash("sha256").update(senderBearer).digest("hex"),
+            }),
+          )
+          .digest("hex");
+      }
+      if (input.releaseGate === true) {
+        stage = "wait-release";
+        // No deadline: the held execution waits for Compute's release or for retirement.
+        await new Promise<void>((resolve, reject) => {
+          if (abort.signal.aborted) reject(new Error("stopped"));
+          abort.signal.addEventListener("abort", () => reject(new Error("stopped")), {
+            once: true,
+          });
+          void opened.then(resolve);
+        });
+      }
       stage = "wait-original-native";
       report("box", "listener", "entered");
       pinnedIdentity = await waitFor(() => {
@@ -754,6 +830,7 @@ export function start(
         startTicks: processIdentity(process.pid).startTicks,
         socketDev: publicIdentity.dev,
         socketIno: publicIdentity.ino,
+        ...(reservation === undefined ? {} : { generationSha256: reservation }),
       };
       if (!original() || abort.signal.aborted) throw new Error("native_stopped_during_startup");
       writeFileSync(stagedReceipt, `${JSON.stringify(receipt)}\n`, ownerOnly);
@@ -771,6 +848,8 @@ export function start(
       process.stderr.write(`strands-box-host: startup refused at ${stage}\n`);
       readyReject(new Error(`startup_refused:${stage}`));
     } finally {
+      gateStopped = true;
+      gate?.close();
       relay?.close();
       handoff?.close();
       if (watch !== undefined) clearInterval(watch);
