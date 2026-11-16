@@ -20,7 +20,7 @@ import {
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { providerInstanceId } from "../helpers/human-login-transport.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";
 
 const googleClientId = "session-provider.apps.googleusercontent.com";
 const oidcClientId = "session-provider-oidc-client";
