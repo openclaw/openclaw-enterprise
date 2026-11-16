@@ -12,7 +12,8 @@ import { createNativePluginAssertions } from "./native-plugin-assertions.ts";
 import { runQaCommand } from "./qa-command.ts";
 import { prepareHybridInstallation } from "./qa-hybrid.mjs";
 import { grantQaRepositoryBranch, readQaRepositoryRegistry } from "./qa-repository-preparation.ts";
-import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
+import { dumpYaml, loadYaml } from "./kubernetes-yaml.ts";
+import { waitFor } from "./qa-wait.ts";
 import {
   protectedText,
   protectedModelApiKey,

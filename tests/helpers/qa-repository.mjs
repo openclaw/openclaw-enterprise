@@ -26,7 +26,8 @@ import {
   readQaRepositoryUpstreamPolicy,
   selectPreparedQaRepository,
 } from "./qa-repository-preparation.ts";
-import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
+import { dumpYaml, loadYaml } from "./kubernetes-yaml.ts";
+import { waitFor } from "./qa-wait.ts";
 import { protectedText, redactedQaTail, registerQaSecret } from "./qa-secrets.ts";
 
 // Run where prepared GitHub issuance runs, before any QA Agent binds this repository.

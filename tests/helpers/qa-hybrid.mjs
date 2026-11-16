@@ -3,7 +3,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { gatewayRoutingPins } from "../../scripts/ci/routing.ts";
-import { loadYaml, dumpYaml, waitFor, yamlDocuments } from "./qa-utils.mjs";
+import { dumpYaml, loadYaml, yamlDocuments } from "./kubernetes-yaml.ts";
+import { waitFor } from "./qa-wait.ts";
 import { registerQaSecret } from "./qa-secrets.ts";
 
 export async function verifyNetworkPolicy(f) {
