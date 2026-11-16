@@ -2959,6 +2959,9 @@ export async function renderAgentDetail(
           const focused = document.activeElement;
           const refreshFocused =
             focused instanceof HTMLButtonElement && focused.parentElement === activityPanel;
+          const summarySelector = ":scope > details > summary";
+          const summaryFocused =
+            focused !== null && focused === activityPanel.querySelector(summarySelector);
           activityPanel.replaceWith(panel);
           activityPanel = panel;
           // The panel's direct button refreshes whichever deployment is now shown.
@@ -2966,6 +2969,8 @@ export async function renderAgentDetail(
             panel
               .querySelector<HTMLButtonElement>(":scope > button")
               ?.focus({ preventScroll: true });
+          } else if (summaryFocused) {
+            panel.querySelector<HTMLElement>(summarySelector)?.focus({ preventScroll: true });
           }
         }
         void Promise.all([nativeAdmin.ready, failed ? callerPermissionsRead : null]).then(

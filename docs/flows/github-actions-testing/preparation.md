@@ -50,21 +50,21 @@ Gateway/Agent pairs before creating state. `prepareK3dRuntimeImages` imports the
 selected artifact or builds source when both are absent; selected pairs retain their immutable references.
 Controller build selection is independent.
 
-`scripts/ci/prepare.mjs:imageBuildArgs` restores read-only caches, including
+`scripts/ci/image-build-cache.ts:imageBuildArgs` restores read-only caches, including
 `k3d-otel`. `prepareLane` primes selected `sourceBuildFiles`;
 each OpenShell lane builds its stack. Tests inherit builder and epoch,
 not cache credentials; installers still build source.
-`openshell-build-inputs` resolves the `integration-main` controller base for
-`all`/`openshell` builds, including Local Setup. `openshell-image-cache` requires
-caller-source exports and successful cleanup before admission. Strict export
-errors propagate after sibling settlement; standalone exports remain best effort.
-Queued writers remain unordered by commit; mutable caches permit misses.
-`imageCacheObservation` counts steps/imports for Gateway Routing, Slack Live,
-Production TUI, `k3d-otel` and OpenShell, including alternate sources.
-It deduplicates step IDs; import lines do not prove hits. Loads may reuse probes.
+`openshell-build-inputs` resolves the `integration-main` controller base.
+`scripts/ci/warm-image-cache.ts` validates the base before Buildx setup, then
+builds the controller and runtime concurrently. Required export errors propagate
+after both builds settle. Standalone exports are best effort.
+The workflow requires a retained runtime tag and successful cleanup before
+OpenShell admission for the same source SHA. Queued writers can run out of
+commit order. `imageCacheObservation` counts distinct steps and cache imports;
+import lines alone cannot establish cache hits. Loads may reuse probes.
 
-Image lanes, First Agent Smoke, Docker Model Runtime, Gateway Routing and
-Production TUI fetch artifacts by repository/run/artifact IDs with `actions: read`.
+Images, First Agent Smoke, Docker Model Runtime, Gateway Routing and
+Production TUI fetch artifacts by repository/run/artifact ID with `actions: read`.
 
 Docker Model Runtime requires an artifact ID on producer success. Failure or
 skip selects standalone builds. Local import cancels three minutes before the
@@ -116,7 +116,7 @@ reads bounded metadata; results and diagnostics retain only their preparation's 
 Missing metadata records `unavailable`; image policy is unchanged.
 Extraction journals IDs before removal. Cleanup removes containers and anonymous volumes. Journal and cleanup errors fail preparation; unresolved resources retain receipts.
 
-`scripts/ci/prepare.mjs:ensurePostgresServer` journals exclusive bootstrap-directory
+`scripts/ci/prepare-postgres.ts:ensurePostgresServer` journals exclusive bootstrap-directory
 and SQL-copy ownership. It refuses existing paths and retires failed directory
 records. Its container-readable `migrations/init-local.sql` copy is selected by
 `OPENCLAW_CI_POSTGRES_INIT_SQL`.
@@ -201,9 +201,9 @@ not include tenant workloads or complete Pod specifications.
 
 The runtime image recipe pins compatible OpenClaw, Codex-plugin and Slack-plugin releases together with the Codex app-server version required by the plugin. Image startup smoke verifies fresh-home plugin loading, actual app-server initialization, and nested Codex home ownership for generated images and credential files before credentialed tests. Routing additionally requires the Gateway identity-scope contract; embedded continuity requires outgoing media to remain visible through history and artifact APIs across Pod replacement. Image builds alone prove none of these outcomes.
 
-`scripts/ci/prepare.mjs:reuseEngineImage` asks BuildKit whether the restored cache
-resolves to an image already in the engine; a cache miss builds it. In CI, the
-probe and subsequent build share the remaining `CI_RUNNER_DEADLINE_MS` budget,
+`scripts/ci/image-build-cache.ts:reuseEngineImage` uses BuildKit's scalar
+SHA-256 config digest to inspect the engine. A failed reuse probe falls back to
+the build. In CI, both share the remaining `CI_RUNNER_DEADLINE_MS` budget,
 reserving three minutes for preparation and tests. Exhaustion reports `Image
 build out of lane time`, starts no further build, and leaves owned-tag removal to
 job cleanup. Local runs and main's cache warmer have no lane deadline. The warmer

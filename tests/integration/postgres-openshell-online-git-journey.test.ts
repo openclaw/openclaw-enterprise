@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { narrowOnlineGitJourney } from "../helpers/postgres-repository-set-journey.ts";
-import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.ts";
 import { gitCommandBodies } from "../helpers/openshell-online-git-journey.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";

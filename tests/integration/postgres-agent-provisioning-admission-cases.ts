@@ -15,7 +15,7 @@ import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.
 import { assertApiError } from "../helpers/api-error.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { createRuntimeComputeDriver } from "./postgres-agent-provisioning-transport-fixture.ts";
 
 import {

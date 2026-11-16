@@ -77,7 +77,7 @@ import {
   MODEL_CREDENTIAL_REJECTED_RECORDED,
   NO_SANDBOX_DRIVER_NETWORK_POLICY,
 } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
 
 // Legacy resource fields enter the suite as unknown; the checks below narrow them.
 type NamespaceFixture = {

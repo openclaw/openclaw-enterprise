@@ -32,7 +32,7 @@ import {
   repositoryRestartState,
 } from "../helpers/postgres-repository-restart-inventory.ts";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
-import { waitFor, within } from "../helpers/wait-for.mjs";
+import { waitFor, within } from "../helpers/wait-for.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
   advanceCleanupRetries,
@@ -46,8 +46,8 @@ import {
 
 // Agent stop and its Gateway drain, Agent deletion and Namespace teardown, moved unchanged from
 // postgres-worker-agent-revision-teardown.test.ts, which keeps the repository session cases, so the two run side by side in
-// the PostgreSQL Application lane. Deployment and dispatch cases, and the persisted deploy, stop
-// and delete lifecycle, are in postgres-worker-agent-revision.test.mjs.
+// the PostgreSQL Application lane. Deployment and dispatch cases are in
+// postgres-worker-agent-revision.test.mjs. The -lifecycle sibling covers persisted deploy, Stop and delete.
 
 const fixtures = createWorkerRevisionFixtures(import.meta.url);
 type RawFixture = Awaited<ReturnType<typeof fixtures.setup>>;

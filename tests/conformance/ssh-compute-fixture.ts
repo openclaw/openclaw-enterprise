@@ -36,7 +36,7 @@ import {
   type OpenClawConfigurationValue,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 export const fixtureBin = fileURLToPath(new URL("../fixtures/ssh-compute/bin", import.meta.url));
 export const digest = (value: string) => createHash("sha256").update(value).digest("hex");

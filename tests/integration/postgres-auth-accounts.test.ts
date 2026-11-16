@@ -28,7 +28,7 @@ import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mj
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 const adminEmail = "postgres-admin@openclaw.local";
 const adminPassword = "postgres-development-password";

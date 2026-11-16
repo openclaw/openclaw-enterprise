@@ -8,7 +8,7 @@ import {
   imageSmokeTimeoutMultiplier,
 } from "../helpers/image-smoke-timeout.ts";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
-import { temporaryGatewayConfiguration } from "../helpers/runtime-image-startup.mjs";
+import { temporaryGatewayConfiguration } from "../helpers/runtime-image-startup.ts";
 import { probeRenderedSchema } from "../fixtures/runtime-image-startup/rendered-schema.ts";
 import { record, parseJson, text, list } from "../fixtures/runtime-image-startup/wire.ts";
 import { renderProbe } from "./runtime-image-startup-support.ts";

@@ -1,4 +1,5 @@
-import { openShellWorkspaceProtocol } from "./openshell-workspace-protocol.mjs";
+import { completeOpenShellGatewayClient } from "./openshell-gateway-client.ts";
+import { openShellWorkspaceProtocol } from "./openshell-workspace-protocol.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 
@@ -29,7 +30,7 @@ export function openShellSandbox(t, overrides = {}, gateway = {}) {
     },
   };
   const backend = createOpenShellBackend(definition, {
-    gatewayClient: openShellWorkspaceProtocol(),
+    gatewayClient: completeOpenShellGatewayClient(openShellWorkspaceProtocol()),
   });
   t.after(() => backend.client.close());
   const sandboxDriver = new OpenShellSandboxDriver(

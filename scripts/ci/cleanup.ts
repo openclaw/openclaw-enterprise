@@ -21,7 +21,7 @@ import {
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withStateLock } from "./state-lock.ts";
-import { runPostgresAdmin } from "./postgres-admin.ts";
+import { quoteIdentifier, runPostgresAdmin } from "./postgres-admin.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
@@ -419,13 +419,6 @@ function composeArgs(resource: CleanupResource, state: CleanupState, ...args: st
     throw new Error("Refusing to clean developer PostgreSQL port 55432.");
   }
   return ["compose", "-f", resource.composeFile, "-p", resource.name, ...args];
-}
-
-function quoteIdentifier(value: string) {
-  if (!/^[a-z0-9_]+$/.test(value)) {
-    throw new Error(`Unsafe PostgreSQL identifier: ${value}`);
-  }
-  return `"${value.replaceAll('"', '""')}"`;
 }
 
 async function cleanupComposePostgres(

@@ -12,7 +12,7 @@ import {
   createAdmittedRuntimeImageConfiguration,
   runGatewaySmoke,
   reviewedCodexSeccompSecurityOptions,
-} from "../helpers/runtime-image-startup.mjs";
+} from "../helpers/runtime-image-startup.ts";
 import { jsonLogEntries } from "../helpers/runtime-image-gateway-observations.ts";
 import { verifyRuntimeSeccompRecord } from "./runtime-image-seccomp-case.ts";
 import { verifyRuntimeCodexAuthMount } from "./runtime-image-codex-auth-mount-case.ts";

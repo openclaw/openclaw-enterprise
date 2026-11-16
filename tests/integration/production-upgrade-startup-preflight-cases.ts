@@ -24,7 +24,7 @@ import {
   skipWithoutHelm,
 } from "../helpers/production-upgrade-recovery-tools.ts";
 import { registerPreflightCleanupTests } from "../helpers/production-upgrade-preflight-cleanup.ts";
-import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { registerUpgradePreflightDraftBudgetTest } from "./production-upgrade-preflight-draft-budget.ts";
 

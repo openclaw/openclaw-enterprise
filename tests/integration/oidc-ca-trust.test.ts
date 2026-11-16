@@ -17,7 +17,7 @@ import {
   loginSecret,
 } from "../helpers/human-login-transport.ts";
 import { listen } from "../helpers/listen.ts";
-import { renderProductionChart } from "../helpers/production-chart.mjs";
+import { renderProductionChart } from "../helpers/production-chart.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import {
   assembler,
@@ -66,11 +66,10 @@ test(
     }
     // Render with the private CA settings enabled so comparison includes both embedded programs.
     const values = { ...oidcValues, ...caValues, ...gatewayValues };
-    const source: unknown = await renderProductionChart(values);
-    const packaged: unknown = await renderProductionChart(values, { chartDirectory: archive });
-    const renderResult = Type.Object({ stdout: Type.String({ minLength: 1 }) });
-    assert.ok(Check(renderResult, source), "Expected Helm to render the source chart");
-    assert.ok(Check(renderResult, packaged), "Expected Helm to render the packaged chart");
+    const source = await renderProductionChart(values);
+    const packaged = await renderProductionChart(values, { chartDirectory: archive });
+    assert.ok(source.stdout.length > 0, "Expected Helm to render the source chart");
+    assert.ok(packaged.stdout.length > 0, "Expected Helm to render the packaged chart");
     assert.equal(packaged.stdout, source.stdout);
   },
 );

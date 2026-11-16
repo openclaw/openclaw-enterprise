@@ -5,7 +5,7 @@ import {
   DependencyUnavailableError,
   ResourceConflictError,
 } from "../../packages/occ/src/index.ts";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import {
   administrator,
   auditActions,

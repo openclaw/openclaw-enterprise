@@ -4,7 +4,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { request } from "node:https";
 import { request as controlRequest } from "node:http";
-import test, { type TestContext } from "node:test";
+import test from "node:test";
 import type {
   OpenRepositorySessionInput,
   OpenRepositorySessionResult,
@@ -17,8 +17,6 @@ import {
   type RepositorySessionRepository,
 } from "../../packages/occ/src/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
-import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
-import type { Clock } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type {
   RepositoryCredentialBoundSessionInput,
   SessionStatus,
@@ -28,32 +26,19 @@ import { servePrivateRepositoryRequest } from "../../apps/controller/src/backend
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
-import { seedSessionRevision } from "../conformance/repository-sessions.contract.mjs";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import type { startRegistryProviderFixtures } from "../fixtures/repository-credentials/registry/provider.ts";
-import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
-import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
-import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.mjs";
+import { seedSessionRevision } from "../conformance/repository-sessions.contract.ts";
+import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.ts";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
+import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.ts";
+import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { registerBrokerReceiptFencingCase } from "./postgres-repository-broker-receipt-fencing-cases.ts";
 import { registerBrokerReceiptShutdownCase } from "./postgres-repository-broker-receipt-shutdown-cases.ts";
 
 type AttemptInput = Parameters<RepositorySessionRepository["createAttempt"]>[0];
 type BrokerProtocol = Extract<AttemptInput["brokerProtocol"], 1 | 3>;
 type CreatedSession = Extract<OpenRepositorySessionResult, { kind: "created" }>;
-type RegistryFixture = {
-  backendId: string;
-  registry: unknown;
-  config: unknown;
-  tls: unknown;
-  listeners: unknown;
-  service: unknown;
-  repositories: Awaited<ReturnType<typeof startRegistryProviderFixtures>>["repositories"];
-  restart(): Promise<void>;
-};
-
 type DiscoveryResponse = {
   status: number | undefined;
   contentType: string | undefined;
@@ -110,7 +95,7 @@ test(
   "confirmed broker disposal survives service restart in PostgreSQL",
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
-    const resources: Pick<TestContext, "after"> = createTestResourceScope(t, undefined);
+    const resources = createTestResourceScope(t);
     const pool = testPool(resources, { connectionString: databaseUrl, max: 4 });
     // The broker submits terminal receipts during shutdown, while both listeners are alive.
     const authorities: {
@@ -121,28 +106,27 @@ test(
     resources.after(() => authorities.prepared?.close());
     const state = new PostgresPlatformState(pool);
     const namespaceId = `ns_${randomUUID()}`;
-    const clock: Clock = createControlledClock();
-    // The fixture selects source or emitted service modules at runtime.
-    const fixture: RegistryFixture | undefined = await startRegistryCredentialServiceFixture(
-      resources,
-      {
-        namespaceId,
-        clock,
-        autoOpen: false,
-        gateway: { listen: "127.0.0.1:0" },
+    const fixture = await startRegistryCredentialServiceFixture(resources, {
+      namespaceId,
+      autoOpen: false,
+      gateway: { listen: "127.0.0.1:0" },
+    });
+    const {
+      clock,
+      config: {
+        gateway: { controlSocket },
       },
-    );
-    assert.ok(fixture);
-    const controlSocket = asRecord(asRecord(fixture.config)?.gateway)?.controlSocket;
-    assert.ok(typeof controlSocket === "string");
-    const ca = asRecord(fixture.tls)?.ca;
-    assert.ok(Buffer.isBuffer(ca));
+      tls: { ca },
+    } = fixture;
     const repository = fixture.repositories[0];
     assert.ok(repository);
     const discover = (opened: CreatedSession) => {
-      const port = asRecord(asRecord(fixture.listeners)?.address)?.port;
-      assert.ok(typeof port === "number");
-      return requestGitDiscovery(port, repository.repository, ca, opened.files);
+      return requestGitDiscovery(
+        fixture.listeners.address.port,
+        repository.repository,
+        ca,
+        opened.files,
+      );
     };
     const client = new UnixRepositoryCredentialControlClient({ controlSocket });
     const backend = { id: fixture.backendId, client, drivers: { repo: "repository-credentials" } };
@@ -150,7 +134,7 @@ test(
     const durationSeconds = 3600;
     const policy = new GitHubRepositoryPolicy(
       { driverId: backend.drivers.repo, backendId: backend.id },
-      validateGitHubRepositoryRegistry(fixture.registry, backend.id),
+      fixture.registry,
       { sessionDurationSeconds: durationSeconds },
     );
     const binding = policy.resolve({
@@ -295,16 +279,10 @@ test(
       ),
       { code: "23514" },
     );
-    const disposals: unknown[] = [];
-    const service = asRecord(fixture.service);
-    assert.ok(service && typeof service.observeDisposal === "function");
-    const subscription: unknown = service.observeDisposal((status: unknown): void => {
+    const disposals: SessionStatus[] = [];
+    const stopObserving = fixture.service.observeDisposal((status) => {
       disposals.push(status);
     });
-    assert.ok(typeof subscription === "function");
-    const stopObserving = (): void => {
-      subscription();
-    };
     t.after(stopObserving);
     // Lose the close response body at the real control socket. Recovery must use
     // the durable observation, without needing the caller to receive the result.
@@ -354,7 +332,7 @@ test(
     );
     await fixture.restart();
     assert.deepEqual(
-      disposals.map((status) => asRecord(status)?.sessionId),
+      disposals.map((status) => status.sessionId),
       [sessionId],
       "repeated close and shutdown must publish this session's disposal exactly once",
     );

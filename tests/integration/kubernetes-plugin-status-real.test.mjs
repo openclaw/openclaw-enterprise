@@ -1,12 +1,9 @@
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
-import { promisify } from "node:util";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { withStubbedProviderEndpoint } from "../helpers/harness-configuration.mjs";
 import {
@@ -20,8 +17,8 @@ import {
   retryKubectlWrite,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.ts";
+import { registerPluginStatusObservationCases } from "./kubernetes-plugin-status-observation-cases.ts";
 
-const execute = promisify(execFile);
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
 const fixtureImage = process.env.OCC_TEST_KUBERNETES_IMAGE;
@@ -33,8 +30,6 @@ const requiresKubernetes = {
 };
 
 const pluginId = "occ-plugin:diffs";
-const pluginStatusPort = 18791;
-const pluginStatusPath = "/openclaw/plugin-runtime/status";
 const transportSecretPrefix = "transport";
 const pluginStatusProxyCidrs = parsePluginStatusProxyCidrs(
   process.env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS,
@@ -59,11 +54,12 @@ function parsePluginStatusProxyCidrs(value) {
   });
 }
 
-const { kubectl, kubectlArguments, resources, waitFor } = createKubernetesClient({
+const kubernetes = createKubernetesClient({
   selection: { kubeconfigPath, kubernetesContext },
   waitTimeoutMs: 180_000,
   waitIntervalMs: 500,
 });
+const { kubectl, waitFor } = kubernetes;
 
 function isKubernetesObjectConflict(error) {
   return (
@@ -186,10 +182,6 @@ function namespace(label) {
     status: "ready",
     createdAt: new Date().toISOString(),
   };
-}
-
-function gatewayName(agentId) {
-  return `gateway-${hash(agentId)}`;
 }
 
 function pluginRevisionState() {
@@ -377,307 +369,12 @@ async function createStatusCandidate(label, context) {
   };
 }
 
-async function nonServerNodeName() {
-  const nodes = JSON.parse(await kubectl("get", "nodes", "-o", "json")).items ?? [];
-  const worker = nodes.find((node) => {
-    const labels = node.metadata?.labels ?? {};
-    const controlPlane =
-      Object.hasOwn(labels, "node-role.kubernetes.io/control-plane") ||
-      Object.hasOwn(labels, "node-role.kubernetes.io/master");
-    const unschedulable = node.spec?.unschedulable === true;
-    const ready = node.status?.conditions?.some(
-      ({ type, status }) => type === "Ready" && status === "True",
-    );
-    return !controlPlane && !unschedulable && ready;
-  });
-  assert.ok(
-    worker,
-    "real plugin status proxy tests require a schedulable non-server k3d worker node.",
-  );
-  return worker.metadata.name;
-}
-
-async function scheduleGatewayOnNonServerNode(fixture) {
-  const nodeName = await nonServerNodeName();
-  fixture.driver = createDriver({ nodeSelector: { "kubernetes.io/hostname": nodeName } });
-  fixture.targetNodeName = nodeName;
-  await prepareRevisionEventually(fixture);
-  await waitForGatewayRollout(fixture, "initial-rollout");
-}
-
-async function waitForGatewayRollout(fixture, stage) {
-  try {
-    await kubectl(
-      "rollout",
-      "status",
-      `deployment/${gatewayName(fixture.agentId)}`,
-      "--namespace",
-      fixture.namespaceName,
-      "--timeout=180s",
-    );
-  } catch (error) {
-    error.openclawCiDiagnostic = { kind: "kubernetes-plugin-status", stage };
-    try {
-      // Retain only bounded Pod lifecycle fields. The CI reporter independently
-      // allowlists these values; raw Pod data and exception text stay private.
-      error.openclawCiDiagnostic.pods = await gatewayPodDiagnostics(fixture);
-    } catch {
-      // Failed diagnostics must preserve the original rollout failure.
-    }
-    throw error;
-  }
-}
-
-async function gatewayPodDiagnostics(fixture) {
-  const { stdout } = await execute(
-    "kubectl",
-    kubectlArguments([
-      "get",
-      "pods",
-      "--namespace",
-      fixture.namespaceName,
-      "--selector",
-      `openclaw.dev/agent=${fixture.agentId},openclaw.dev/revision=${fixture.candidate.id},openclaw.dev/workload-role=gateway`,
-      "--request-timeout=10s",
-      "-o",
-      "json",
-    ]),
-    { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 },
-  );
-  return JSON.parse(stdout)
-    .items.slice(0, 3)
-    .map((pod) => ({
-      phase: pod.status?.phase,
-      ready: isReadyPod(pod),
-      scheduled: pod.status?.conditions?.some(
-        ({ type, status }) => type === "PodScheduled" && status === "True",
-      ),
-      containers: [
-        ...(pod.status?.initContainerStatuses ?? []),
-        ...(pod.status?.containerStatuses ?? []),
-      ]
-        .filter(({ name }) => ["gateway", "prepare-private-state"].includes(name))
-        .slice(0, 2)
-        .map((container) => ({
-          name: container.name,
-          restartCount: container.restartCount,
-          exitCode:
-            container.state?.terminated?.exitCode ?? container.lastState?.terminated?.exitCode,
-          waitingReason: container.state?.waiting?.reason,
-          terminatedReason:
-            container.state?.terminated?.reason ?? container.lastState?.terminated?.reason,
-        })),
-    }));
-}
-
-function isReadyPod(pod) {
-  return pod.status?.conditions?.some(({ type, status }) => type === "Ready" && status === "True");
-}
-
-async function exactGatewayPods(namespaceName, candidate) {
-  return resources(
-    "pods",
-    namespaceName,
-    "--selector",
-    `openclaw.dev/agent=${candidate.agentId},openclaw.dev/revision=${candidate.id},openclaw.dev/workload-role=gateway`,
-  );
-}
-
-async function pluginRuntimeStatus(namespaceName, podName) {
-  const rawPath = `/api/v1/namespaces/${namespaceName}/pods/${podName}:${pluginStatusPort}/proxy${pluginStatusPath}`;
-  const { stdout } = await execute(
-    "kubectl",
-    [
-      "--kubeconfig",
-      kubeconfigPath,
-      "--context",
-      kubernetesContext,
-      "get",
-      "--request-timeout=10s",
-      "--raw",
-      rawPath,
-    ],
-    { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 },
-  );
-  return JSON.parse(stdout);
-}
-
-async function waitForReadyPluginStatus(fixture) {
-  return waitFor("ready plugin runtime status from the exact gateway Pod", async () => {
-    const observation = await prepareRevisionEventually(fixture);
-    // Pod status can become ready after this earlier Driver observation.
-    if (!observation.ready) {
-      return undefined;
-    }
-    const pods = (await exactGatewayPods(fixture.namespaceName, fixture.candidate)).filter(
-      (pod) => pod.metadata.deletionTimestamp === undefined && isReadyPod(pod),
-    );
-    if (pods.length !== 1) {
-      return undefined;
-    }
-    const pod = pods[0];
-    if (fixture.targetNodeName !== undefined && pod.spec?.nodeName !== fixture.targetNodeName) {
-      return undefined;
-    }
-    const status = await pluginRuntimeStatus(fixture.namespaceName, pod.metadata.name).catch(
-      () => undefined,
-    );
-    if (status?.phase !== "ready") {
-      return undefined;
-    }
-    return { observation, pod, status };
-  }).catch(async (error) => {
-    error.openclawCiDiagnostic = { kind: "kubernetes-plugin-status", stage: "ready-status" };
-    error.openclawCiDiagnostic.pods = await gatewayPodDiagnostics(fixture).catch(() => undefined);
-    throw error;
-  });
-}
-
-async function waitForReadyPluginWarning(fixture, warning) {
-  return waitFor("ready plugin runtime warning from the exact gateway Pod", async () => {
-    const observation = await prepareRevisionEventually(fixture);
-    // Require Driver readiness as well as the subsequent Pod and plugin checks.
-    if (!observation.ready) {
-      return undefined;
-    }
-    const pods = (await exactGatewayPods(fixture.namespaceName, fixture.candidate)).filter(
-      (pod) => pod.metadata.deletionTimestamp === undefined && isReadyPod(pod),
-    );
-    if (pods.length !== 1) {
-      return undefined;
-    }
-    const pod = pods[0];
-    if (fixture.targetNodeName !== undefined && pod.spec?.nodeName !== fixture.targetNodeName) {
-      return undefined;
-    }
-    const status = await pluginRuntimeStatus(fixture.namespaceName, pod.metadata.name).catch(
-      () => undefined,
-    );
-    if (status?.phase !== "ready") {
-      return undefined;
-    }
-    if (JSON.stringify(status.failures) !== JSON.stringify([warning])) {
-      return undefined;
-    }
-    return { observation, pod, status };
-  }).catch(async (error) => {
-    error.openclawCiDiagnostic = { kind: "kubernetes-plugin-status", stage: "warning-status" };
-    error.openclawCiDiagnostic.pods = await gatewayPodDiagnostics(fixture).catch(() => undefined);
-    throw error;
-  });
-}
-
-async function patchGatewayEnvironment(namespaceName, agentId, env) {
-  await kubectl(
-    "patch",
-    "deployment",
-    gatewayName(agentId),
-    "--namespace",
-    namespaceName,
-    "--type",
-    "strategic",
-    "--patch",
-    JSON.stringify({
-      spec: {
-        template: {
-          spec: {
-            containers: [{ name: "gateway", env }],
-          },
-        },
-      },
-    }),
-  );
-}
-
-async function readGatewayOpenClawConfig(namespaceName, podName) {
-  return JSON.parse(
-    await kubectl(
-      "exec",
-      podName,
-      "--namespace",
-      namespaceName,
-      "--",
-      "cat",
-      "/home/node/.openclaw/openclaw.json",
-    ),
-  );
-}
-
-test(
-  "real Kubernetes Compute reads plugin runtime status from the exact gateway Pod",
-  { ...requiresKubernetes, timeout: 360_000 },
-  async (context) => {
-    await assertPrerequisites();
-    const fixture = await createStatusCandidate("plugin-status", context);
-    await scheduleGatewayOnNonServerNode(fixture);
-
-    const first = await waitForReadyPluginStatus(fixture);
-    assert.equal(first.pod.spec.nodeName, fixture.targetNodeName);
-    assert.equal(first.observation.ready, true);
-    assert.equal(first.observation.warnings, undefined);
-    assert.equal(first.status.revisionId, fixture.candidate.id);
-    assert.equal(first.status.container, "gateway");
-    assert.equal(first.status.podUid, first.pod.metadata.uid);
-    assert.match(first.status.startupId, /\S/);
-    assert.equal(first.status.phase, "ready");
-    assert.deepEqual(first.status.successfulPluginIds, [pluginId]);
-    assert.deepEqual(first.status.failures, []);
-
-    await kubectl(
-      "delete",
-      "pod",
-      first.pod.metadata.name,
-      "--namespace",
-      fixture.namespaceName,
-      "--wait=false",
-    );
-    const restarted = await waitForReadyPluginStatus(fixture);
-    assert.notEqual(restarted.pod.metadata.uid, first.pod.metadata.uid);
-    assert.equal(restarted.pod.spec.nodeName, fixture.targetNodeName);
-    assert.equal(restarted.status.revisionId, fixture.candidate.id);
-    assert.equal(restarted.status.container, "gateway");
-    assert.equal(restarted.status.podUid, restarted.pod.metadata.uid);
-    assert.notEqual(restarted.status.podUid, first.status.podUid);
-    assert.match(restarted.status.startupId, /\S/);
-    assert.equal(restarted.status.phase, "ready");
-    assert.deepEqual(restarted.status.successfulPluginIds, [pluginId]);
-    assert.deepEqual(restarted.status.failures, []);
-    assert.equal(restarted.observation.ready, true);
-  },
-);
-
-test(
-  "real Kubernetes Compute reports plugin install warnings and disables failed plugin config",
-  { ...requiresKubernetes, timeout: 360_000 },
-  async (context) => {
-    await assertPrerequisites();
-    const fixture = await createStatusCandidate("plugin-status-warning", context);
-    await scheduleGatewayOnNonServerNode(fixture);
-    const ready = await waitForReadyPluginStatus(fixture);
-    assert.equal(ready.pod.spec.nodeName, fixture.targetNodeName);
-    const warning = { pluginId, code: "PLUGIN_INSTALL_FAILED" };
-
-    await patchGatewayEnvironment(fixture.namespaceName, fixture.agentId, [
-      { name: "OPENCLAW_FIXTURE_DIFFS_INSTALL_RESULT", value: "fail" },
-    ]);
-    // The environment patch already replaces the Pod. Let that rollout finish
-    // before reconciliation observes the new startup's injected install failure.
-    await waitForGatewayRollout(fixture, "warning-rollout");
-
-    const failedInstall = await waitForReadyPluginWarning(fixture, warning);
-    assert.notEqual(failedInstall.pod.metadata.uid, ready.pod.metadata.uid);
-    assert.equal(failedInstall.pod.spec.nodeName, fixture.targetNodeName);
-    assert.equal(failedInstall.observation.ready, true);
-    assert.deepEqual(failedInstall.observation.warnings, [warning]);
-    assert.equal(failedInstall.status.revisionId, fixture.candidate.id);
-    assert.deepEqual(failedInstall.status.successfulPluginIds, []);
-    assert.deepEqual(failedInstall.status.failures, [warning]);
-
-    const effective = await readGatewayOpenClawConfig(
-      fixture.namespaceName,
-      failedInstall.pod.metadata.name,
-    );
-    assert.deepEqual(effective.plugins.entries.diffs, { enabled: false });
-    assert.equal(effective.tools?.alsoAllow?.includes("diffs") ?? false, false);
-  },
-);
+registerPluginStatusObservationCases({
+  kubernetes,
+  requiresKubernetes,
+  pluginId,
+  assertPrerequisites,
+  createStatusCandidate,
+  createDriver,
+  prepareRevisionEventually,
+});

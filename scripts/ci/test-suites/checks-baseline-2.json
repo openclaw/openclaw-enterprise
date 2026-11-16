@@ -10,6 +10,7 @@
     "tests/integration/ci-prepare-k3d.test.ts",
     "tests/integration/ci-prepare-image-cache.test.ts",
     "tests/integration/ci-prepare.test.mjs",
+    "tests/integration/ci-prepare-lane-action.test.ts",
     "tests/conformance/repository-credentials-source-boundary.test.ts",
     "tests/conformance/startup-environment-boundary.test.ts",
     "tests/integration/repository-credentials-admission.test.mjs",
@@ -39,6 +40,7 @@
     "tests/integration/model-provider.test.ts",
     "tests/integration/repository-credentials-service-loss.test.ts",
     "tests/integration/ci-runner.test.mjs",
+    "tests/integration/ci-runner-native-child.test.ts",
     "tests/integration/ci-runner-process-ownership.test.ts",
     "tests/integration/ci-runner-openshell-progress.test.ts",
     "tests/integration/ci-runner-case-enforcement.test.ts",
@@ -86,11 +88,13 @@
     "tests/integration/qa-fixture-inputs.test.mjs",
     "tests/integration/compose-network.test.ts",
     "tests/integration/qa-repository-installation.test.ts",
+    "tests/integration/qa-failure-diagnostics.test.ts",
     "tests/integration/repository-runtime-materialization.test.ts",
     "tests/conformance/repository-credentials-contracts.test.ts",
     "tests/integration/plugin-driver-startup.test.ts",
     "tests/integration/repository-credentials-config.test.ts",
-    "tests/integration/kubernetes-peer-status.test.mjs",
+    "tests/integration/qa-repository-remote-cleanup.test.ts",
+    "tests/integration/kubernetes-peer-status.test.ts",
     "tests/conformance/repository-credentials-lifecycle.test.ts",
     "tests/integration/ssh-compute-startup.test.ts",
     "tests/integration/oidc-login-transport.test.ts",
@@ -109,8 +113,8 @@
     "tests/integration/worker-shutdown.test.ts",
     "tests/conformance/postgres-transaction-unknown-commit.test.ts",
     "tests/integration/oidc-id-token.test.ts",
-    "tests/integration/repository-credentials-shutdown.test.mjs",
-    "tests/conformance/repository-transactions.test.mjs",
+    "tests/integration/repository-credentials-shutdown.test.ts",
+    "tests/conformance/repository-transactions.test.ts",
     "tests/integration/google-id-token.test.ts",
     "tests/integration/first-agent-startup.test.ts",
     "tests/conformance/repository-sessions-memory.test.ts",
@@ -209,10 +213,22 @@
       "path": "tests/integration/qa-repository-installation.test.ts"
     },
     {
+      "path": "tests/integration/qa-failure-diagnostics.test.ts"
+    },
+    {
       "path": "tests/integration/github-app-observer.test.ts"
     },
     {
       "path": "tests/integration/dev-codex-seccomp-failure.test.ts"
+    },
+    {
+      "path": "tests/integration/qa-repository-remote-cleanup.test.ts",
+      "expectedTests": [
+        "repository cleanup reconciles an unknown write and removes only the owned ref",
+        "repository cleanup retains the ref and PR on ownership mismatch",
+        "repository cleanup rejects a malformed PR number before mutation",
+        "repository cleanup preserves a concurrent ref update when Git refuses its stale lease"
+      ]
     },
     {
       "path": "tests/integration/first-agent-startup.test.ts",
@@ -269,6 +285,13 @@
         "complete lifecycle restricts manifest selection before effects",
         "complete lifecycle losing an attempt claim cannot run phases or clean its winner",
         "complete lifecycle owns detached test groups after deadline or coordinator loss"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-runner-native-child.test.ts",
+      "expectedTests": [
+        "native child query retains only an observed stage from its own failed exec",
+        "runner reports a native child stage only on the canonical failed topology case"
       ]
     },
     {
@@ -397,6 +420,13 @@
       "path": "tests/integration/ci-prepare.test.mjs"
     },
     {
+      "path": "tests/integration/ci-prepare-lane-action.test.ts",
+      "expectedTests": [
+        "focused CI selection fails before tool setup or lane preparation",
+        "installer cache selection covers whole lanes and preserves focused image selection"
+      ]
+    },
+    {
       "path": "tests/integration/ci-prepare-k3d.test.ts"
     },
     {
@@ -508,7 +538,7 @@
       "path": "tests/integration/plugin-driver-real-preflight.test.ts"
     },
     {
-      "path": "tests/conformance/repository-transactions.test.mjs"
+      "path": "tests/conformance/repository-transactions.test.ts"
     },
     {
       "path": "tests/conformance/postgres-transaction-commit.test.mjs"
@@ -636,7 +666,7 @@
       "path": "tests/integration/repository-receipt-observation.test.ts"
     },
     {
-      "path": "tests/integration/repository-credentials-shutdown.test.mjs"
+      "path": "tests/integration/repository-credentials-shutdown.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-router.test.ts"
@@ -704,7 +734,7 @@
       ]
     },
     {
-      "path": "tests/integration/kubernetes-peer-status.test.mjs",
+      "path": "tests/integration/kubernetes-peer-status.test.ts",
       "expectedTests": [
         "real peer-status HTTPS transport authenticates its revision and verifies server trust"
       ]
@@ -863,7 +893,8 @@
       "path": "tests/integration/workspace-gateway-host-route.test.ts",
       "expectedTests": [
         "Linux Gateway routes reuse distinct bound ports and preserve the HTTPS Service target",
-        "Gateway Service mapping failure retains forwarder cleanup and reports shutdown failure"
+        "Gateway Service mapping failure retains forwarder cleanup and reports shutdown failure",
+        "Gateway relay rejects a malformed HTTPS Service target before starting a forwarder"
       ]
     }
   ]

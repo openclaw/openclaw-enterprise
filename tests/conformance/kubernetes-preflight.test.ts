@@ -22,7 +22,7 @@ import {
   createTestKubernetesComputeDriver,
 } from "../helpers/kubernetes-compute.mjs";
 import { refusingPort } from "../helpers/available-port.ts";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { jsonChunkDestination } from "../helpers/json-lines.mjs";
 

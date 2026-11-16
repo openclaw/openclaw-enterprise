@@ -138,13 +138,13 @@ the variable. For a custom Codex Responses endpoint, use:
   --base-url https://openrouter.ai/api/v1 --model-id z-ai/glm-5.3-flash
 ```
 
-`./scripts/k3d info` shows connections; `reset` retains images.
-Fresh preparation pins images against kubelet collection. Recreate older
-environments with `./scripts/k3d down --harness codex`, then reprepare (`openclaw`
-for that harness). This deletes that environment; use before image changes or
-after preparation failures. Default kubeconfig/context and unrelated resources
-stay unchanged. `OCC_K3D_CONTAINER_ENGINE` selects `docker`/`podman`;
-`OCC_K3D_STATE_DIR` sets its directory.
+`./scripts/k3d info` shows connections. Reset retains images. After namespace
+removal, duplicate journal IDs stop database cleanup and preserve the journal.
+Preparation pins images against kubelet collection. To replace older environments, change images,
+or recover from failed preparation, delete the environment with
+`./scripts/k3d down --harness codex` (or `openclaw`), then prepare again.
+Default kubeconfig, context and unrelated resources stay intact.
+`OCC_K3D_CONTAINER_ENGINE` selects `docker`/`podman`; `OCC_K3D_STATE_DIR` selects its directory.
 See [local k3d image upgrades](../guides/deploy/local-k3d-image-upgrade.md).
 
 ### Run the real-runtime suite directly

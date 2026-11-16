@@ -12,7 +12,7 @@ import type { createTestConfigurationDriver } from "../helpers/configuration-dri
 import { occLogLine } from "../helpers/occ-log-line.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import type { createProvisioningFixture } from "./postgres-agent-provisioning-fixture.ts";
 import { createRuntimeComputeDriver } from "./postgres-agent-provisioning-transport-fixture.ts";
 

@@ -33,7 +33,7 @@ import {
   runPreparationFailureCase,
   type WorkResultRow,
 } from "../helpers/postgres-worker-revision-scenarios.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 type AgentIdentity = Pick<Agent, "id">;
 type RevisionIdentity = Pick<WorkIdentity, "id">;

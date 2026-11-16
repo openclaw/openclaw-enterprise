@@ -25,14 +25,14 @@ import {
   registerAndSelectDrivers,
 } from "../helpers/development.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { authorizedPrincipal } from "../helpers/development-iam-state.ts";
 import {
-  authorizedPrincipal,
   createBackendWorkerDrivers,
   databaseUrl,
   ensureInstallation,
   requiresPostgres,
 } from "../helpers/postgres-backend-state.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 type WorkRow = {
   state: ControllerWorkState;
