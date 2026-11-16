@@ -63,7 +63,12 @@ export function registerPolicyCases(): void {
       },
       UpdateConfig(call, callback) {
         calls.push(["update", call.request]);
-        callback(null, { version: 8 });
+        callback(null, {
+          version: 8,
+          ...(calls.filter(([operation]) => operation === "update").length === 1
+            ? { policy_hash: "a".repeat(64) }
+            : {}),
+        });
       },
       GetDraftPolicy(call, callback) {
         calls.push(["draft", call.request]);
@@ -114,8 +119,11 @@ export function registerPolicyCases(): void {
       expectedResourceVersion: "9007199254740993",
       requestId: "79962864-9cdc-4b12-9561-218b42d004b2",
     };
-    await client.updatePolicy(update, AbortSignal.timeout(2000));
-    await client.updatePolicy(update, AbortSignal.timeout(2000));
+    assert.deepEqual(await client.updatePolicy(update, AbortSignal.timeout(2000)), {
+      policyVersion: 8,
+      sourcePolicyHash: "a".repeat(64),
+    });
+    assert.equal(await client.updatePolicy(update, AbortSignal.timeout(2000)), undefined);
     const [, firstUpdate, secondUpdate] = calls;
     assert.ok(firstUpdate?.[0] === "update" && secondUpdate?.[0] === "update");
     assert.deepEqual(

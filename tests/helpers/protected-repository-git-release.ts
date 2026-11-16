@@ -57,6 +57,7 @@ export function protectedRepositoryGitRelease(
     }),
     getSandbox: async () => ({
       id: sandboxId,
+      resourceVersion: "1",
       annotations: Object.fromEntries(
         Object.entries({
           namespace: context.namespace.id,

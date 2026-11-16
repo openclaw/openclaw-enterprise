@@ -1,4 +1,8 @@
 import type {
+  ProtectedDownloadDestination,
+  ProtectedDownloadLimits,
+} from "../../sandbox-policy.ts";
+import type {
   CredentialProxyBinding,
   CredentialProxyExchange,
   EgressExchangeOwner,
@@ -200,6 +204,8 @@ export interface EgressInstallation {
   readonly sandboxId: string;
   readonly sender: EgressRef;
   readonly installedAt: string;
+  /** Loaded provider version for a confirmed download edit. The admitted plan stays immutable. */
+  readonly downloadPolicyVersion?: number;
   /** Adapter-verified installation fence. Historical evidence must be revalidated for each use. */
   readonly enforcement: {
     readonly instanceId: string;
@@ -444,10 +450,93 @@ export interface CredentialPolicyWithdrawalOptions {
   ) => Promise<"withdrawn" | "pending" | "retire-runtime">;
 }
 
+export interface ProtectedDownloadPolicyContext extends ProxyRevisionContext {
+  /** Validated, current Installation startup configuration supplied by OCC. */
+  readonly protectedDownloadLimits: ProtectedDownloadLimits;
+}
+
+/** Bounded identities for the last independently confirmed composition. */
+export interface ProtectedDownloadPolicyFence {
+  readonly sandboxId: string;
+  readonly instanceId: string;
+  readonly configurationId: string;
+  readonly peer:
+    { readonly keyId: string } | { readonly repositoryGitRecipient: RepositoryGitRecipient };
+  /** Digest of the validated Installation limits, independently derived by both Drivers. */
+  readonly installationLimitsHash: string;
+  readonly providerResourceVersion: string;
+  readonly policyVersion: number;
+  readonly sourcePolicyHash: string;
+  readonly effectivePolicyHash: string;
+}
+
+export type ProtectedDownloadPolicyUnavailable =
+  { readonly state: "unsupported" } | { readonly state: "unconfirmed" };
+
+export type ProtectedDownloadPolicyPreparation =
+  | ProtectedDownloadPolicyUnavailable
+  | { readonly state: "ready"; readonly fence: ProtectedDownloadPolicyFence };
+
+/**
+ * OCC persists this intent before dispatch and serializes it with reduction and
+ * retirement for the admitted revision. An unknown outcome keeps custody of the
+ * original operation until it can be confirmed or the provider proves no write.
+ */
+export interface ProtectedDownloadPolicyChange {
+  readonly operationId: string;
+  readonly expected: ProtectedDownloadPolicyFence;
+  readonly previous: readonly ProtectedDownloadDestination[];
+  readonly desired: readonly ProtectedDownloadDestination[];
+  /** Hash of the exact candidate source using the selected provider's canonicalization. */
+  readonly desiredSourcePolicyHash: string;
+}
+
+/** Provider commit receipt returned by apply or an authenticated read of the original operation. */
+export interface ProtectedDownloadPolicyWrite {
+  readonly state: "committed";
+  readonly operationId: string;
+  readonly sandboxId: string;
+  readonly policyVersion: number;
+  readonly sourcePolicyHash: string;
+}
+
+/** Confirmation of the exact post-update source and enforcing peer. */
+export interface ProtectedDownloadPolicyObservation extends ProtectedDownloadPolicyFence {
+  readonly state: "confirmed";
+  readonly operationId: string;
+}
+
 export interface CredentialProxyDriver extends Driver {
   readonly capability: "credential_proxy";
   readonly sourceControl: CredentialSourceControl;
   readonly policyReduction?: CredentialPolicyReducer;
+  /** The paired Sandbox must expose the same version and both must qualify the installation. */
+  readonly protectedDownloadPolicy?: {
+    readonly version: 1;
+    /**
+     * Verify the admitted baseline and bind the current peer key or exact Git recipient.
+     * An empty previous set is valid only if admission and current enforcement agree.
+     * Bind the Installation limits and check the requested destinations against them.
+     */
+    prepare(
+      context: ProtectedDownloadPolicyContext,
+      previous: readonly ProtectedDownloadDestination[],
+      desired: readonly ProtectedDownloadDestination[],
+    ): Promise<ProtectedDownloadPolicyPreparation>;
+    /**
+     * Independently authenticate the receipt against the provider and compare it with
+     * the durable intent and fresh enforcement. A receipt must bind the original
+     * operation, immutable Sandbox, assigned version and exact candidate source hash.
+     * Confirm only the desired composition with its admitted routes and recipient preserved.
+     * Revalidate the Installation limits against the original intent. Missing,
+     * unauthenticated, or mismatched evidence is unconfirmed.
+     */
+    verify(
+      context: ProtectedDownloadPolicyContext,
+      change: ProtectedDownloadPolicyChange,
+      receipt: ProtectedDownloadPolicyWrite,
+    ): Promise<ProtectedDownloadPolicyObservation | ProtectedDownloadPolicyUnavailable>;
+  };
   /** API process: bind the installed transport's exchange owner once, before accepting requests. */
   bindExchange?(
     createCredentialProxy: (owner: EgressExchangeOwner) => CredentialProxyExchange,
@@ -459,6 +548,13 @@ export interface CredentialProxyDriver extends Driver {
     context: ProxyRevisionContext,
     prepared: ProxyWiring,
   ): Promise<EgressInstallation | undefined>;
+  /** Independently read the exact loaded signed-exchange enforcement at this provider version.
+   * Required for live download edits. Repository Git has a separate route publication contract. */
+  observeDownloadEnforcement?(
+    context: ProxyRevisionContext,
+    sandboxId: string,
+    policyVersion: number,
+  ): Promise<EgressInstallation["enforcement"] | undefined>;
   /** Query the counterpart again; persisted installation records are not readiness leases. */
   verifyInstallation(
     context: ProxyRevisionContext,

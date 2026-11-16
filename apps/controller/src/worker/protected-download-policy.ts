@@ -1,0 +1,389 @@
+import { isDeepStrictEqual } from "node:util";
+import {
+  validProtectedDownloadApplication,
+  validProtectedDownloadReceipt,
+  validProtectedDownloadPolicyFence,
+  type EgressInstallation,
+  type Agent,
+  type AgentRevision,
+  type ComputeDriver,
+  type Namespace,
+  type ProtectedDownloadLimits,
+  type ProtectedDownloadPolicyChange,
+  type ProtectedDownloadPolicyWrite,
+  type SandboxPolicy,
+  type SandboxDriver,
+  type CredentialProxyDriver,
+  type ProtectedDownloadPolicyContext,
+} from "@openclaw-enterprise/contracts";
+import {
+  prepareProtectedDownloadPair,
+  protectedDownloadDriverPair,
+  projectProtectedDownloadEdit,
+  protectedDownloadLimitsHash,
+  protectedDownloadPeerMatches,
+  protectedDownloadSourcesCurrent,
+  protectedDownloadProfileCurrent,
+  protectedDownloadChangeAdmitted,
+  protectedDownloadTargetMatches,
+  type InstalledDriver,
+  type PlatformUnitOfWork,
+} from "@openclaw-enterprise/occ";
+
+type Application = Extract<
+  NonNullable<SandboxPolicy["application"]>,
+  { kind: "protected_downloads" }
+>;
+
+type Result =
+  | { state: "failed"; reason: string }
+  | { state: "pending"; acknowledgedWrite?: ProtectedDownloadPolicyWrite }
+  | { state: "not-applied"; reason: string }
+  | { state: "dispatch" }
+  | {
+      state: "applied";
+      policy: SandboxPolicy;
+      predecessor: EgressInstallation;
+      successor: EgressInstallation;
+    };
+
+export async function reconcileProtectedDownload(
+  options: {
+    installationId: string;
+    compute: ComputeDriver;
+    protectedDriver?: InstalledDriver;
+    protectedDownloads?: ProtectedDownloadLimits;
+  },
+  unit: PlatformUnitOfWork,
+  namespace: Namespace,
+  agent: Agent,
+  revision: AgentRevision | undefined,
+  policy: SandboxPolicy,
+  application: Application,
+  signal: AbortSignal,
+  authorize: () => Promise<{ allowed: boolean; deadlineReached: boolean }>,
+  dispatch?: { id: string | undefined; markProviderCall(): void },
+): Promise<Result> {
+  const unsupported = { state: "failed", reason: "SANDBOX_POLICY_UNSUPPORTED" } as const;
+  const uncertain = { state: "pending" } as const;
+  const denied = { state: "failed", reason: "AUTHORIZATION_DENIED" } as const;
+  const limits = options.protectedDownloads;
+  const owner = options.protectedDriver;
+  const pair = owner && protectedDownloadDriverPair(owner);
+  if (!limits || !owner || !pair || !options.compute.resolveSandboxNamespace) {
+    return unsupported;
+  }
+  const { proxy, sandboxPolicy: sandbox, proxyPolicy: verifier } = pair;
+  if (
+    !revision ||
+    !revision.egressPlan ||
+    !agent.sandboxPolicyEditing ||
+    !validProtectedDownloadApplication(application) ||
+    application.policyVersion !== policy.version
+  ) {
+    return { state: "failed", reason: "SANDBOX_POLICY_VALIDATION_FAILED" };
+  }
+  const plan = revision.egressPlan;
+  const desired = application.desiredDownloadDestinations;
+  if (
+    application.expected.installationLimitsHash !== protectedDownloadLimitsHash(limits) ||
+    !protectedDownloadChangeAdmitted(
+      limits,
+      revision,
+      application,
+      application.previousDownloadDestinations,
+      desired,
+      policy.approvedDownloadDestinations ?? [],
+    )
+  ) {
+    return { state: "failed", reason: "SANDBOX_POLICY_CEILING_CHANGED" };
+  }
+  const projection = projectProtectedDownloadEdit(
+    {
+      ...policy,
+      downloadDestinations: application.priorDesiredDownloadDestinations,
+      approvedDownloadDestinations: application.priorApprovedDownloadDestinations,
+    },
+    application.previousDownloadDestinations,
+    application,
+    limits.delegatedDestinations ?? [],
+  );
+  if (
+    projection.status !== "changed" ||
+    !isDeepStrictEqual(projection.target, desired) ||
+    !isDeepStrictEqual(
+      projection.policy.downloadDestinations ?? [],
+      policy.downloadDestinations ?? [],
+    ) ||
+    !isDeepStrictEqual(
+      projection.policy.approvedDownloadDestinations ?? [],
+      policy.approvedDownloadDestinations ?? [],
+    )
+  ) {
+    return { state: "failed", reason: "SANDBOX_POLICY_VALIDATION_FAILED" };
+  }
+  if (!(await protectedDownloadProfileCurrent(proxy, plan, signal))) {
+    return unsupported;
+  }
+  const installed = await unit.credentialSources.findRevisionEgressInstallation(
+    namespace.id,
+    revision.id,
+  );
+  if (
+    !installed ||
+    !protectedDownloadTargetMatches(
+      options.installationId,
+      namespace,
+      agent,
+      revision,
+      owner,
+      options.compute,
+      installed,
+    ) ||
+    !protectedDownloadPeerMatches(installed, application.expected.peer) ||
+    installed.sandboxId !== application.expected.sandboxId ||
+    installed.enforcement.instanceId !== application.expected.instanceId ||
+    installed.enforcement.configurationId !== application.expected.configurationId ||
+    installed.enforcement.policyHash !== application.expected.effectivePolicyHash ||
+    (installed.downloadPolicyVersion ?? plan.generation) !== application.expected.policyVersion ||
+    (policy.applied?.kind === "protected_downloads" && policy.applied.revisionId === revision.id
+      ? !isDeepStrictEqual(
+          {
+            ...policy.applied.fence,
+            installationLimitsHash: application.expected.installationLimitsHash,
+          },
+          application.expected,
+        ) ||
+        !isDeepStrictEqual(
+          policy.applied.confirmedDownloadDestinations,
+          application.previousDownloadDestinations,
+        )
+      : application.previousDownloadDestinations.length !== 0)
+  ) {
+    return uncertain;
+  }
+  if (!(await protectedDownloadSourcesCurrent(unit.credentialSources, revision))) {
+    return uncertain;
+  }
+  const context = {
+    namespace: await options.compute.resolveSandboxNamespace(namespace),
+    revision,
+    plan,
+    signal,
+    protectedDownloadLimits: limits,
+  };
+  const change: ProtectedDownloadPolicyChange = {
+    operationId: application.id,
+    desiredSourcePolicyHash: application.desiredSourcePolicyHash,
+    expected: application.expected,
+    previous: application.previousDownloadDestinations,
+    desired,
+  };
+  if (application.writeState === "prepared" || dispatch?.id === application.id) {
+    if (!dispatch) {
+      return uncertain;
+    }
+    if (
+      !(await unit.sandboxPolicies.protectedDownloadTargetAvailable(
+        namespace.id,
+        agent.id,
+        revision.id,
+        change.expected.sandboxId,
+        change.expected.instanceId,
+      ))
+    ) {
+      return uncertain;
+    }
+    const qualification = await prepareProtectedDownloadPair(
+      context,
+      pair,
+      installed,
+      policy.applied,
+      desired,
+    );
+    if (qualification.state === "unsupported") {
+      return unsupported;
+    }
+    if (
+      qualification.state !== "ready" ||
+      qualification.prepared.sourcePolicyHash !== change.desiredSourcePolicyHash ||
+      !isDeepStrictEqual(qualification.prepared.fence, change.expected) ||
+      !isDeepStrictEqual(qualification.previous, change.previous)
+    ) {
+      return uncertain;
+    }
+    if (
+      !(await protectedDownloadSourcesCurrent(unit.credentialSources, revision)) ||
+      !(await protectedDownloadProfileCurrent(proxy, plan, signal))
+    ) {
+      return uncertain;
+    }
+    const authorization = await authorize();
+    if (!authorization.allowed) {
+      return denied;
+    }
+    if (authorization.deadlineReached) {
+      return { state: "failed", reason: "SANDBOX_POLICY_UNCONFIRMED" };
+    }
+    signal.throwIfAborted();
+    if (application.writeState === "prepared") {
+      return { state: "dispatch" };
+    }
+    dispatch.markProviderCall();
+    const result = await sandbox.apply(context, change, qualification.prepared);
+    if (
+      result.state === "not-applied" &&
+      (result.reason === "conflict" || result.reason === "refused")
+    ) {
+      return { state: "not-applied", reason: "SANDBOX_POLICY_PROVIDER_FAILED" };
+    }
+    if (result.state !== "committed" || !matchesIntent(change, result)) {
+      return uncertain;
+    }
+    return { state: "pending", acknowledgedWrite: result };
+  }
+
+  const evidence = await observeOriginalDownload(
+    context,
+    change,
+    application.acknowledgedWrite,
+    sandbox,
+    verifier,
+  );
+  if (!evidence) {
+    return uncertain;
+  }
+  const { fence, write } = evidence;
+  const enforcement = await pair.observeEnforcement.call(
+    proxy,
+    context,
+    fence.sandboxId,
+    fence.policyVersion,
+  );
+  if (
+    !enforcement ||
+    !isDeepStrictEqual(enforcement, {
+      ...installed.enforcement,
+      configurationId: fence.configurationId,
+      policyHash: fence.effectivePolicyHash,
+    })
+  ) {
+    return uncertain;
+  }
+  const successor = { ...installed, enforcement, downloadPolicyVersion: fence.policyVersion };
+  if (!(await proxy.verifyInstallation(context, successor))) {
+    return uncertain;
+  }
+  const receipt = {
+    kind: "protected_downloads" as const,
+    operationId: write.operationId,
+    revisionId: revision.id,
+    policyVersion: policy.version,
+    providerVersion: String(fence.policyVersion),
+    appliedAt: new Date().toISOString(),
+    confirmedDownloadDestinations: desired,
+    fence,
+  };
+  if (!validProtectedDownloadReceipt(receipt)) {
+    return uncertain;
+  }
+  if (
+    !(await protectedDownloadSourcesCurrent(unit.credentialSources, revision)) ||
+    !(await protectedDownloadProfileCurrent(proxy, plan, signal))
+  ) {
+    return uncertain;
+  }
+  if (!(await authorize()).allowed) {
+    return denied;
+  }
+  signal.throwIfAborted();
+  const current = protectedDownloadDriverPair(owner);
+  if (
+    current?.sandboxPolicy !== sandbox ||
+    current.proxyPolicy !== verifier ||
+    current.observeEnforcement !== pair.observeEnforcement
+  ) {
+    return unsupported;
+  }
+  const { reason: _reason, ...operation } = application;
+  return {
+    state: "applied",
+    predecessor: installed,
+    successor,
+    policy: {
+      ...policy,
+      applied: receipt,
+      application: {
+        ...operation,
+        state: "applied",
+        acknowledgedWrite: write,
+        providerVersion: receipt.providerVersion,
+      },
+    },
+  };
+}
+
+function matchesIntent(
+  change: ProtectedDownloadPolicyChange,
+  write: ProtectedDownloadPolicyWrite,
+): boolean {
+  return (
+    Number.isInteger(write.policyVersion) &&
+    write.policyVersion > change.expected.policyVersion &&
+    write.policyVersion <= 0xffffffff &&
+    isDeepStrictEqual(write, {
+      state: "committed",
+      operationId: change.operationId,
+      sandboxId: change.expected.sandboxId,
+      policyVersion: write.policyVersion,
+      sourcePolicyHash: change.desiredSourcePolicyHash,
+    })
+  );
+}
+
+/** A committed operation identifies a past write even when its policy is no longer loaded. */
+export async function readOriginalDownloadWrite(
+  context: ProtectedDownloadPolicyContext,
+  change: ProtectedDownloadPolicyChange,
+  acknowledgedWrite: ProtectedDownloadPolicyWrite | undefined,
+  sandbox: Pick<NonNullable<SandboxDriver["protectedDownloadPolicy"]>, "readReceipt">,
+) {
+  const write = acknowledgedWrite ?? (await sandbox.readReceipt(context, change));
+  return write.state === "committed" && matchesIntent(change, write) ? write : undefined;
+}
+
+async function observeOriginalDownload(
+  context: ProtectedDownloadPolicyContext,
+  change: ProtectedDownloadPolicyChange,
+  acknowledgedWrite: ProtectedDownloadPolicyWrite | undefined,
+  sandbox: Pick<NonNullable<SandboxDriver["protectedDownloadPolicy"]>, "readReceipt" | "observe">,
+  verifier: Pick<NonNullable<CredentialProxyDriver["protectedDownloadPolicy"]>, "verify">,
+) {
+  const write = await readOriginalDownloadWrite(context, change, acknowledgedWrite, sandbox);
+  if (!write) {
+    return undefined;
+  }
+  const observed = await sandbox.observe(context, change, write);
+  if (
+    observed.state !== "confirmed" ||
+    observed.operationId !== write.operationId ||
+    observed.sandboxId !== write.sandboxId ||
+    observed.instanceId !== change.expected.instanceId ||
+    !isDeepStrictEqual(observed.peer, change.expected.peer) ||
+    observed.installationLimitsHash !== change.expected.installationLimitsHash ||
+    observed.providerResourceVersion === change.expected.providerResourceVersion ||
+    observed.policyVersion !== write.policyVersion ||
+    observed.sourcePolicyHash !== write.sourcePolicyHash
+  ) {
+    return undefined;
+  }
+  const { state: _state, operationId, ...fence } = observed;
+  if (!validProtectedDownloadPolicyFence(fence)) {
+    return undefined;
+  }
+  const verified = await verifier.verify(context, change, write);
+  if (!isDeepStrictEqual(verified, observed)) {
+    return undefined;
+  }
+  return { write, fence };
+}

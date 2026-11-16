@@ -1,7 +1,7 @@
 # Review policy denials and change one Agent's network access
 
 Open an Agent in the OCE console, select its running version, and choose
-**Policy denials**. You need the Agent's existing Sandbox log permissions to see
+**Network policy**. You need the Agent's existing Sandbox log permissions to see
 observed denials. A version that runs without a Sandbox records none, and the tab
 says so. On an Installation that selects no Sandbox Driver, the tab says that
 instead, and policy changes, including turning editing on, are refused. Policy reads and changes have independent permissions; see the
@@ -83,6 +83,106 @@ GitHub goes only through the Git route, so save, binding, deploy and apply refus
 it and name the grant. After a timeout or unconfirmed
 application, refresh and inspect the recorded state before another explicit
 request; do not assume the provider rejected the change.
+
+## Find the host rule for an unlisted archive
+
+On the running Agent’s **Network policy** tab, paste the full archive URL into
+**Search destinations** under **Protected downloads**. Choose **All live rule
+states** if the filter hides the host rule. If the message points to an
+all-paths host rule, choose **Show host rules**. The search changes to the URL’s
+scheme, hostname, and port and keeps the selected filter. Read **Live rule status**
+on the **All paths** row to see what the live receipt confirms.
+
+## Check access after disabling a protected download
+
+On the running Agent’s **Network policy** tab, search for the hostname or archive
+path under **Protected downloads**, then choose **Disable** on the exact rule.
+Wait for **Live rules confirmed**. **Requested** now shows **Off** for that rule.
+If **Live rule status** shows **Covered by host**, the current revision’s receipt
+still includes a rule for all paths on the named host. Withdrawing the archive’s
+approval also leaves that broader rule in effect.
+
+To remove the live host rule, review the downloads that depend on it before
+disabling it. Wait for confirmation. Launch policy can still allow downloads.
+Ask an operator with OpenShell `sandbox:read` and Workspace role `user` to
+check the running revision’s create-time policy. Read `sandbox.spec.policy`
+in the raw OpenShell `GetSandbox` RPC response for that revision’s Sandbox. **Read-only Installation
+defaults** shows defaults and may differ from the launch policy. On a supporting
+Sandbox and Credential Proxy pair, try a fresh connection from the same shell
+to verify the outcome. An existing transfer may finish.
+
+**Change not applied** means the controller restored the previous approved and
+requested destinations. Receipt details retains the failed request.
+When authorization failed, check the requester’s Agent `manage_policy` and
+SandboxPolicy `read` and `update` grants. Approval and withdrawal also need
+Installation `administer`. After restoring access, submit the change again.
+
+For **Change unconfirmed** or **Pending confirmation**, refresh and open
+**Receipt details**. Match the revision and **Request operation** to the receipt.
+If no receipt confirms that operation, ask an operator to reconcile it before
+making another change. See [protected download approvals and status](../../reference/sandbox-policies.md#downloads-on-a-running-protected-agent).
+
+## Automate protected download changes
+
+Give a Namespace service principal `read` and `manage_policy` on the Agent and
+`read` and `update` on its SandboxPolicy. Authenticate with its `x-api-key` header.
+[Issue a service key](../../reference/authentication/service-api-keys.md#issue-a-service-key).
+
+1. Read `GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking`.
+   Check that `data.editingEnabled` is true, `data.protectedDownloads.state` is
+   `verified`, and no application is pending. Copy `data.policy.version` and
+   `data.protectedDownloads.revisionId`.
+2. POST to the same URL with `/apply` appended. Use the version as `expectedVersion`,
+   the revision as `revisionId`, and one `downloadChange` with an exact destination.
+   Use `enable` for an Agent-approved or Installation-delegated destination.
+   Use `disable` to turn off an existing rule. Disabling preserves the approval.
+   If `data.protectedDownloads.canApprove` is false, ask an Installation
+   administrator with the policy permissions to approve a new destination or
+   withdraw its approval. [Request example](../../reference/sandbox-policies.md#downloads-on-a-running-protected-agent).
+3. Keep `data.application.id` from HTTP 202. Poll the GET while that application
+   is pending. If it fails, inspect its reason. On success, match the
+   `operationId` and `revisionId` in `data.policy.applied` to your request.
+   Check the receipt's `confirmedDownloadDestinations`, then try a fresh
+   connection from the Agent.
+
+If the POST response was lost, compare `data.policy.application` to the intended
+revision, next policy version (`expectedVersion + 1`), action, destination and
+requester. If another request could also match or a later request replaced it, use the
+[`openclaw.agents.sandbox_policy.apply` audit event](audit-log.md#access-and-limitations)
+to identify the original operation before writing again.
+
+## Retire a protected download edit before upgrade
+
+Run the [candidate preflight](../deploy/production-upgrade.md#rehearse-before-the-maintenance-window)
+with the previous API and worker still running. Its migration Job runs
+`scripts/migrate-production.mjs --check` before writers stop. If the check reports
+a protected download edit, record the Namespace, Agent, revision, and operation IDs.
+
+1. Keep the previous controller, database, and original Sandbox available. On the
+   Agent's **Network policy** tab, refresh **Protected downloads** and open **Receipt details**.
+   Match **Receipt operation** and its revision to the reported IDs. If a follow-on
+   is pending or unconfirmed, match **Request operation** to the reported ID and wait
+   for the receipt for that same operation. An earlier confirmation cannot settle it.
+   For retained work, the previous worker reads the superseded operation separately.
+   Ask your platform operator to match the successful
+   `openclaw.agents.sandbox_policy.reconciliation` audit event to both reported IDs
+   through [approved audit access](audit-log.md#access-and-limitations).
+2. A 0079 controller cannot confirm its current operation after permanent failure.
+   Keep the original runtime and database and give the IDs to the Driver and release
+   maintainers. If they supply a qualified intermediate release through 0080 that
+   supports this Driver pair, use its normal upgrade procedure and let its worker
+   confirm the original request. If the Sandbox or its receipt is unavailable, keep
+   the upgrade on hold for compatible recovery. Refresh reads status. Resubmitting
+   the edit creates a different operation.
+3. After settlement, use **Stop Agent** on the previous release. Wait until the Agent
+   has no active revision. An accepted stop can still be cleaning up the original
+   Sandbox. A completed deployment that already replaced the reported revision also
+   satisfies retirement. Check replacement Driver support before stopping an Agent
+   that must resume service.
+4. Repeat the candidate preflight for each reported operation. When the migration Job
+   exits successfully with `migration.checked`, follow the [production upgrade procedure](../deploy/production-upgrade.md).
+   To resume a stopped Agent, [deploy a new version](../../reference/agents/deployment.md#stop-and-resume).
+   Verify a signed model request, then enable the saved downloads intended for that revision.
 
 ## CLI
 

@@ -174,7 +174,7 @@ type WireMethods = {
       expected_resource_version?: string;
       request_id?: string;
     },
-    { version?: number },
+    { version?: number; policy_hash?: string },
   ];
   GetDraftPolicy: [
     ScopedSandbox & { status_filter?: string },

@@ -86,6 +86,99 @@ Policies are created and removed with the Agent; there is no standalone
 create/delete or policy-reference API. Exact policy AccessBindings and
 Restrictions are removed with their policy.
 
+## Downloads on a running protected Agent
+
+Enable [Installation download settings](configuration.md#protected-downloads).
+The Sandbox and Credential Proxy must confirm effective rules on the running
+revision. Stock OpenShell 0.1.8 lacks this Driver pair.
+
+Live edits require a Credential Proxy that verifies the signed-model installation.
+Protected Git and credential-reduction revisions refuse edits before writing.
+Choose a destination no other live or launch rule permits. From the same
+protected shell, verify a fresh download after approval and denial after
+withdrawal. Verify a signed model request after each change.
+
+Enable policy editing under **Network policy**. In **Protected downloads**, choose
+**Add destination**, enter the hostname, then choose **Allow download**.
+HTTPS defaults to 443. Shared hosts require an exact archive path.
+HTTP/80 requires a listed mirror. Verify package signatures and checksums.
+
+Search or filter by live rule state. **Requested** shows the saved rule and
+Agent approval. **Live rule status** describes the revision’s receipt.
+[Check the launch policy](../guides/topics/agent-sandbox-policy.md#check-access-after-disabling-a-protected-download)
+for other download access. Installation administrators can approve eligible
+HTTPS hosts per Agent. Delegated editors can enable or disable approved destinations.
+
+Disabling an exact path removes its desired rule and keeps its Agent approval.
+If the Sandbox confirms the removal and a whole-host rule remains for the same
+scheme, hostname, and port, that rule still covers the path. The approved entry
+shows **Covered by host** and the broader URL. To remove this live coverage,
+disable the covering rule and wait for confirmation. Choose **Withdraw approval** under
+**More actions** to remove the Agent approval and any access that depends on it.
+Existing transfers can finish.
+
+For failed changes, `application.writeState: prepared` means the change did
+not apply. A dispatched or missing phase leaves the outcome unconfirmed.
+Rows that say **at last confirmation** describe this revision’s latest receipt. After a conflict or
+lost response, refresh and [match the request and receipt](../guides/topics/agent-sandbox-policy.md#check-access-after-disabling-a-protected-download)
+before editing again. **Receipt details** shows operation IDs, policy versions,
+and timestamps across revisions.
+Only the request's revision shows **Change** and **Reason** in **Receipt details**
+and the reason in **Policy details**. A later receipt cannot confirm your request.
+Test new Agent connections to verify Sandbox and Credential Proxy enforcement.
+
+After a revision replacement, the Agent keeps its saved destinations and
+approvals. When the new revision passes verification and has no receipt,
+the card shows **No live edit confirmed**. Choose **Enable** to enable the
+entry, or **Remove from desired** to remove it from the Agent’s saved list.
+
+[Automate protected download changes](../guides/topics/agent-sandbox-policy.md#automate-protected-download-changes)
+through the networking `apply` endpoint. An administrator can approve this
+destination after reading policy version 3 and the active revision ID.
+
+```json
+{
+  "expectedVersion": 3,
+  "revisionId": "rev_11111111-1111-4111-8111-111111111111",
+  "downloadChange": {
+    "action": "approve-and-enable",
+    "destination": { "scheme": "https", "host": "registry.npmjs.org", "port": 443 }
+  }
+}
+```
+
+HTTP 202 means the change was queued. Read the policy again to see whether
+the current revision confirmed it.
+
+### Protected download limits
+
+The [Installation `protectedDownloads` block](configuration.md#protected-downloads)
+sets which executable paths and destinations are eligible. `executablePaths`
+accepts unique literal paths of up to 512 characters. The Driver pair must match
+the path exactly. Use letters, digits, and `_+.@-` in executable path segments.
+The five optional lists accept unique entries and can be omitted or empty.
+Unknown fields fail startup.
+
+| Field                   | What it allows or excludes                                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `reservedHosts`         | Excludes these hostnames. Credential route hosts are also excluded.                                                            |
+| `httpMirrors`           | Allows HTTP on port `80` for these hosts.                                                                                      |
+| `sharedArchiveHosts`    | Restricts these hosts to the exact HTTPS objects in `sharedArchiveObjects`.                                                    |
+| `sharedArchiveObjects`  | Lists objects as `{ scheme: https, host, port: 443, path }`. The host must appear in `sharedArchiveHosts`.                     |
+| `delegatedDestinations` | Delegates eligible destinations to policy editors. Each entry has `scheme`, `host`, and `port`, with an optional exact `path`. |
+
+`reservedHosts`, `httpMirrors`, and `sharedArchiveHosts` must be disjoint. All
+hostnames must be exact lowercase public DNS names of up to 253 characters.
+Use `https` with port `443`, or `http` with port `80` for a listed mirror. A
+destination without `path` covers the entire host on that scheme and port.
+An exact `path` starts with `/` and can contain up to 2,048 characters. Use
+letters, digits, and `._~+:@-` in path segments. Omit escapes, query strings,
+fragments, and empty, `.` or `..` segments. Shared archive hosts require a
+listed exact path.
+An Agent can save up to 32 approved destinations and 32 desired destinations.
+Installation delegation permits edits within its scope. Access starts after
+the editor enables a destination and the running revision confirms it.
+
 ## Desired and applied versions
 
 Saving additions requires `expectedVersion` and advances the desired policy
@@ -158,7 +251,7 @@ on its OIDC gateway; these permissions are separate from OCE resource authority.
 
 ## Denials and recommendations
 
-The console's **Policy denials** tab uses the existing bounded, exact-revision
+The console's **Network policy** tab uses the existing bounded, exact-revision
 Sandbox log path and its `read_logs`/administration rules. Typed metadata is
 optional. Recognized OpenShell records are parsed by the Driver; OCC validates,
 redacts, and applies the normal output and retention limits. Unknown fields stay

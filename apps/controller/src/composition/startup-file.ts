@@ -118,6 +118,7 @@ export async function startupConfiguration(
       "observability",
       "runtime",
       "sandboxNetworkPolicyCeiling",
+      "protectedDownloads",
       "iam",
     ],
     "Installation startup configuration",

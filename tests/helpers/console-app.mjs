@@ -520,6 +520,7 @@ export async function createConsoleAppFixture(t, options = {}) {
           ? {}
           : { pluginSourceReader: options.pluginSourceReader }),
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
+        protectedDownloads: options.protectedDownloads,
         driverConfigurations: options.driverConfigurations,
         ...(options.now === undefined ? {} : { now: options.now }),
         recordOperations: options.recordOperations ?? false,

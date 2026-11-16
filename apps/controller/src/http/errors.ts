@@ -43,6 +43,7 @@ import {
   ResourceConflictError,
   ResourceStateConflictError,
   RetryLaterError,
+  ProtectedDownloadUnchangedError,
   ProtectedExecutionNetworkPolicyError,
   RepositoryBindingSelectionError,
   RepositoryGitProfileUnsupportedError,
@@ -963,6 +964,9 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     // Finding 2199: raised only after the deploy grant, with a fixed message naming the
     // Installation capability and the supported alternatives.
     return failure(409, RepositoryGitSenderUnqualifiedError.code, error.message);
+  }
+  if (error instanceof ProtectedDownloadUnchangedError) {
+    return failure(409, "SANDBOX_POLICY_DOWNLOAD_UNCHANGED", error.message);
   }
   if (error instanceof ProtectedExecutionNetworkPolicyError) {
     // Finding 2053: raised only after the caller's policy or deploy grants, with a fixed message.

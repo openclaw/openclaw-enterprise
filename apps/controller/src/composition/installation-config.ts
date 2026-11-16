@@ -32,6 +32,8 @@ import {
   PERMISSION_ACTIONS,
   RESOURCE_KINDS,
   validateSandboxNetworkGrants,
+  parseProtectedDownloadLimits,
+  type ProtectedDownloadLimits,
 } from "@openclaw-enterprise/contracts";
 import type { SandboxNetworkGrant } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
@@ -146,6 +148,7 @@ export interface SelectedDriverConfiguration<T = ConfigurationRecord> {
 
 export interface InstallationStartupConfiguration {
   readonly repository?: SelectedDriverConfiguration;
+  readonly protectedDownloads?: ProtectedDownloadLimits;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   /** RFC-0026 configured Roles, Groups, and Group bindings; see the configuration reference. */
   readonly iam?: InstallationIAMConfiguration;
@@ -208,12 +211,16 @@ export function installationControllerOptions(
   ControllerOptions,
   | "driverConfigurations"
   | "sandboxNetworkPolicyCeiling"
+  | "protectedDownloads"
   | "iamConfiguration"
   | "nativeWorkerSupport"
   | "credentialProxyCapacity"
 > {
   return {
     driverConfigurations: installationDriverConfigurations(installation),
+    ...(installation?.protectedDownloads && {
+      protectedDownloads: installation.protectedDownloads,
+    }),
     sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
     ...(installation?.iam === undefined ? {} : { iamConfiguration: installation.iam }),
     ...(installation?.runtime === undefined
@@ -861,6 +868,7 @@ export async function loadInstallationConfiguration(options: {
     configuration.occ === undefined &&
     configuration.drivers === undefined &&
     configuration.backend === undefined &&
+    configuration.protectedDownloads === undefined &&
     configuration.presets === undefined
   ) {
     return undefined;
@@ -874,6 +882,10 @@ export async function loadInstallationConfiguration(options: {
   if (sandboxNetworkPolicyCeiling !== undefined) {
     validateSandboxNetworkGrants(sandboxNetworkPolicyCeiling, "/sandboxNetworkPolicyCeiling");
   }
+  const protectedDownloads =
+    configuration.protectedDownloads === undefined
+      ? undefined
+      : parseProtectedDownloadLimits(configuration.protectedDownloads);
   const observability = observabilityConfiguration(configuration.observability);
   const iamSettings = iamConfiguration(configuration.iam);
   const runtime = runtimeConfiguration(configuration.runtime);
@@ -1313,6 +1325,7 @@ export async function loadInstallationConfiguration(options: {
   }
   const installation = Object.freeze({
     occ: Object.freeze({ cluster }),
+    ...(protectedDownloads && { protectedDownloads }),
     ...(sandboxNetworkPolicyCeiling === undefined ? {} : { sandboxNetworkPolicyCeiling }),
     ...(iamSettings === undefined ? {} : { iam: iamSettings }),
     presets: Object.freeze({ includeDefaults }),

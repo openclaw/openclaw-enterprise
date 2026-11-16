@@ -396,6 +396,11 @@ export interface OpenShellPolicyStatus {
   readonly policy: Readonly<Record<string, unknown>>;
 }
 
+export interface OpenShellPolicyWriteReceipt {
+  readonly policyVersion: number;
+  readonly sourcePolicyHash: string;
+}
+
 export interface OpenShellGatewayClient
   extends OpenShellSandboxLogReader, OpenShellSandboxObserver {
   getPolicyStatus?(
@@ -409,7 +414,7 @@ export interface OpenShellGatewayClient
       readonly requestId: string;
     },
     signal: AbortSignal,
-  ): Promise<void>;
+  ): Promise<OpenShellPolicyWriteReceipt | void>;
   getPolicyDrafts?(
     request: OpenShellPolicyRequest,
     signal: AbortSignal,
@@ -1479,11 +1484,11 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       readonly requestId: string;
     },
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<OpenShellPolicyWriteReceipt | void> {
     if (!/^[1-9][0-9]*$/.test(request.expectedResourceVersion)) {
       throw new OpenShellGatewayFailure("A nonzero expected resource version is required.");
     }
-    await this.unary(
+    const response = await this.unary(
       "UpdateConfig",
       {
         sandbox: request.sandbox,
@@ -1494,6 +1499,17 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       },
       signal,
     );
+    if (
+      typeof response.version === "number" &&
+      Number.isInteger(response.version) &&
+      response.version > 0 &&
+      response.version <= 0xffffffff &&
+      typeof response.policy_hash === "string" &&
+      /^[0-9a-f]{64}$/.test(response.policy_hash)
+    ) {
+      return { policyVersion: response.version, sourcePolicyHash: response.policy_hash };
+    }
+    // Legacy callers only require RPC completion. A partial acknowledgement carries no receipt.
   }
 
   async getPolicyDrafts(

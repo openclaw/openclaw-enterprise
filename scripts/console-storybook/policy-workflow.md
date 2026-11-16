@@ -67,6 +67,66 @@ binaries and endpoints. On a phone, the long path wraps inside the code block.
     retains the draft and offers no Save action. In **Policy Unconfirmed Save**,
     use the combined action and refresh before making another change.
 
+## Manage protected downloads
+
+Open **Pages/Agent detail → Protected Downloads stay covered by a host rule**.
+
+1. In **Protected downloads**, search for `no-match` and check that
+   **No listed destinations match your search** appears. Clear **Search destinations**
+   to see the host and `/releases/tool.tar.gz` again. Both show **Enabled** under
+   **Live rule status**. Under **Filter destinations**, choose **No confirmed live rule**
+   to see the approved mirror. Choose **All live rule states** to return to the full list.
+2. Under **Filter destinations**, choose **Enabled or covered**. Paste
+   `https://downloads.example.org/releases/unlisted-tool.tar.gz` into **Search
+   destinations**. The message points to the all-paths host rule. Choose **Show host rules**. The search changes to
+   `https://downloads.example.org:443` and the filter stays on **Enabled or covered**.
+   Check that the **All paths** row shows **Enabled** under **Live rule status**.
+   Clear the search and choose **All live rule states**.
+3. Paste `https://downloads.example.org/releases/tool.tar.gz` into **Search
+   destinations**. Only the exact archive appears. In **Live rule status**, check for
+   **Also covered by host · https://downloads.example.org:443**. Choose
+   **Disable** on that row and wait for **Live rules confirmed**. The archive keeps its
+   Agent approval and shows **Covered by host** with `https://downloads.example.org:443`.
+4. Open **More actions** (⋯) on the same archive and choose **Withdraw approval**.
+   Wait for **Live rules confirmed**, then choose **Refresh**. The archive shows **Off**,
+   **No Agent approval**, and **Covered by host**. Clear the search to see
+   **Enabled** on the host rule that still permits the archive.
+5. Choose **Add destination**. Enter `artifacts.example.net` in **Hostname**,
+   keep HTTPS, leave **Exact archive path** empty, and choose **Allow download**.
+   Wait for **Live rules confirmed**. Open **Receipt details** to see the change.
+6. On the new destination, open **More actions** (⋯) and choose **Withdraw approval**.
+   Wait for **Live rules confirmed**. The added destination disappears and
+   `downloads.example.org` stays **Enabled**. Choose **Reset story** to repeat.
+
+In **Protected Downloads are read-only for a viewer**, inspect the destinations
+and receipt, filter for `tool.tar.gz`, and choose **Refresh** in **Protected downloads**.
+The archive stays visible and the Protected downloads section offers no changes.
+
+In **Protected Downloads after revision replacement**, both destinations show
+**No live rule confirmed**. The section shows **No live edit confirmed** and
+explains where to check launch policy. Open **Receipt details**. Check that the revision 6
+request and receipt show their operation IDs, versions, request state, and
+timestamps. The request's **Change** and **Reason** are absent. Enable the host on
+revision 7 and wait for **Live rules confirmed**. The host shows **Enabled** and the archive
+shows **Covered by host**. **Receipt details** names revision 7 and shows the
+request's **Change** with the enable action and host destination.
+
+In **Protected Downloads with no live destinations**, check that the empty list
+says **No destinations listed for live editing** and the guidance for checking
+launch policy stays visible.
+
+In **Protected Downloads authorization fails before dispatch**, add
+`artifacts.example.net` and choose **Allow download**. **Change not applied**
+lists the grants an administrator must check before the requester submits again.
+Repeat the same request in **Protected Downloads authorization fails after
+dispatch**. **Change unconfirmed** directs the operator to the original request
+in **Receipt details** before making another change.
+
+These scenarios simulate policy responses. Use the live workflow to verify
+download enforcement.
+
+## Review other network policy states
+
 In **Unicode executable path remains complete**, copy the full path from the
 **View network limits** on the page, then close the limits dialog. Select
 **Review suggestion**, then paste that path into **Executable path**. Confirm it keeps the final `/tool`. The path has

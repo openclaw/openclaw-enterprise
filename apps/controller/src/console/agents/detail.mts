@@ -902,7 +902,7 @@ export async function renderAgentDetail(
   if (selected === "draft") {
     tabLabels.push(["repositories", "Repositories"], ["credentials", "Credentials"]);
   }
-  tabLabels.push(["workspace", "Workspace files"], ["policy", "Policy denials"]);
+  tabLabels.push(["workspace", "Workspace files"], ["policy", "Network policy"]);
   tabLabels.push(["deployment", "Deployment"]);
   if (selected !== "draft") {
     tabLabels.push(["logs", "Logs"]);

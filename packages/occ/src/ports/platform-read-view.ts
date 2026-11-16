@@ -8,7 +8,13 @@ export function createPlatformReadView(
   lifetime: RepositoryTransactionLifetime,
 ): PlatformReadView {
   return Object.freeze({
-    sandboxPolicies: bindRepository(repositories.sandboxPolicies, lifetime, ["find"]),
+    sandboxPolicies: bindRepository(repositories.sandboxPolicies, lifetime, [
+      "find",
+      "canRetainProtectedDownloadRecovery",
+      "protectedDownloadTargetAvailable",
+      "nextProtectedDownloadRecovery",
+      "findProtectedDownloadRecovery",
+    ]),
     operations: bindRepository(repositories.operations, lifetime, [
       "list",
       "findWork",

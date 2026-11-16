@@ -927,6 +927,10 @@ test(
         assert.equal(returned.application.revisionId, revision.id);
         assert.equal(returned.application.policyVersion, version);
         assert.equal(returned.application.requestedBy, principal.id);
+        assert.ok(!Object.hasOwn(returned.application, "writeState"));
+        const reread = await inject("GET", path);
+        assert.equal(reread.statusCode, 200, reread.body);
+        assert.deepEqual(reread.json().data.policy.application, returned.application);
         const stored = await readPolicy();
         assert.equal(stored.application.id, returned.application.id);
         assert.equal(stored.version, version);
@@ -1254,6 +1258,15 @@ test(
       200,
     );
     const previous = (await inject("GET", path)).json().data.policy;
+    const previousStored = await state.read((view) =>
+      view.sandboxPolicies.find(namespace.id, agent.id),
+    );
+    assert.ok(previousStored);
+    assert.deepEqual(previous, {
+      ...previousStored,
+      approvedDownloadDestinations: [],
+      downloadDestinations: [],
+    });
     const jobs = await pool.query(
       "SELECT count(*) AS count FROM occ.controller_work WHERE namespace_id=$1",
       [namespace.id],
@@ -1363,7 +1376,7 @@ test(
     assert.equal(Object.hasOwn(unreadableEdits.json(), "data"), false);
     assert.deepEqual(
       await state.read((view) => view.sandboxPolicies.find(namespace.id, agent.id)),
-      previous,
+      previousStored,
     );
     // Update alone still saves. Apply returns the saved policy, so read is required even when
     // the saved version has no additions to admit.

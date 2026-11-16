@@ -1,6 +1,7 @@
 import { STATUS_CODES } from "node:http";
 import {
   parameterExamples,
+  protectedDownloadApprovalExample,
   requestExamples,
   responseExamples,
   errorExamples,
@@ -108,7 +109,17 @@ export function documentApiExamples<T>(document: T): T {
         if (!Object.hasOwn(requestExamples, name)) {
           throw new Error(`Missing request example: ${name}`);
         }
-        content.examples = example(lookup(requestExamples, name), "Example request");
+        const value = lookup(requestExamples, name);
+        content.examples =
+          name === "applyAgentSandboxPolicy"
+            ? {
+                ...example(value, "Apply the saved ordinary network rules"),
+                protectedDownload: {
+                  summary: "Approve and enable an HTTPS download for a protected Agent",
+                  value: protectedDownloadApprovalExample,
+                },
+              }
+            : example(value, "Example request");
       }
       const responses = record(operation.responses, `${name} responses`);
       for (const [status, rawResponse] of Object.entries(responses)) {

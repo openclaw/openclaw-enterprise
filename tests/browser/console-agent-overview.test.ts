@@ -3836,7 +3836,7 @@ test("Share Agent is on the Access tab, not the overview", async (t) => {
     "Plugins",
     "Channels",
     "Workspace files",
-    "Policy denials",
+    "Network policy",
     "Deployment",
     "Logs",
     "Access",

@@ -169,10 +169,7 @@ export function postgresRepositorySessions(
         if (requestId === undefined) {
           await client.query(insert, parameters);
         } else {
-          await client.query(enqueueWithAuditSql(`${insert} RETURNING *`, 6), [
-            ...parameters,
-            requestId,
-          ]);
+          await client.query(enqueueWithAuditSql(insert, 6), [...parameters, requestId]);
         }
       }
       await client.query(

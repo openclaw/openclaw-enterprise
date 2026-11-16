@@ -37,6 +37,12 @@ type PolicyState =
   | "loading"
   | "noCredential"
   | "protected"
+  | "protectedDownloadCoverage"
+  | "protectedDownloadViewer"
+  | "protectedDownloadEmpty"
+  | "protectedDownloadPreviousRevision"
+  | "protectedDownloadDeniedBeforeDispatch"
+  | "protectedDownloadDeniedAfterDispatch"
   | "withheldOne"
   | "withheldMany";
 
@@ -64,6 +70,9 @@ type AgentDetailPolicyScenario = {
   policyKeepPending?: boolean;
   policyAdminDenied?: true;
   policyCeiling?: SandboxNetworkGrant[];
+  readOnlyPermissionSummary?: true;
+  agentPermissionSummary?: Record<string, boolean | readonly string[]>;
+  sessionUser?: { id: string; name: string; email: string };
 };
 
 type PolicyEntry = [id: string, scenario: AgentDetailPolicyScenario];
@@ -137,6 +146,36 @@ export function createAgentDetailPolicyScenarios({
       "Policy logs unavailable without runtime credentials",
     ],
     ["policyDenialsProtected", "protected", "Protected execution refuses network policy additions"],
+    [
+      "protectedDownloadCoverage",
+      "protectedDownloadCoverage",
+      "Protected Downloads stay covered by a host rule",
+    ],
+    [
+      "protectedDownloadViewer",
+      "protectedDownloadViewer",
+      "Protected Downloads are read-only for a viewer",
+    ],
+    [
+      "protectedDownloadEmpty",
+      "protectedDownloadEmpty",
+      "Protected Downloads with no live destinations",
+    ],
+    [
+      "protectedDownloadPreviousRevision",
+      "protectedDownloadPreviousRevision",
+      "Protected Downloads after revision replacement",
+    ],
+    [
+      "protectedDownloadDeniedBeforeDispatch",
+      "protectedDownloadDeniedBeforeDispatch",
+      "Protected Downloads authorization fails before dispatch",
+    ],
+    [
+      "protectedDownloadDeniedAfterDispatch",
+      "protectedDownloadDeniedAfterDispatch",
+      "Protected Downloads authorization fails after dispatch",
+    ],
     [
       "policyDenialsWithheldOne",
       "withheldOne",
@@ -242,6 +281,89 @@ export function createAgentDetailPolicyScenarios({
                   "Open Manage rules. The protected execution notice is visible, adding and editing are disabled, and live application is unavailable.",
                   "A rule saved before protected execution applied blocks every protected deploy. Choose Remove saved network rules, review the removal, then Save for later and confirm the saved policy is empty.",
                 ],
+              }
+            : {}),
+          ...(state === "protectedDownloadCoverage"
+            ? {
+                description:
+                  "An Installation administrator can manage downloads. A confirmed host rule still covers an archive after the administrator disables its exact rule.",
+                steps: [
+                  "In Protected downloads, search for no-match and check that No listed destinations match your search appears. Clear the search. The host and /releases/tool.tar.gz both show Enabled under Live rule status.",
+                  "Under Filter destinations, choose No confirmed live rule. The approved mirror appears with Enable. Choose All live rule states to return to the full list.",
+                  "Choose Enabled or covered under Filter destinations, then paste https://downloads.example.org/releases/unlisted-tool.tar.gz into Search destinations. Choose Show host rules. The search changes to https://downloads.example.org:443 and the All paths row shows Enabled. Clear the search and choose All live rule states.",
+                  "Choose Disable on the archive row. Wait for Live rules confirmed. The archive still has Agent approval and shows Covered by host with https://downloads.example.org:443. The host stays Enabled.",
+                  "Choose Add destination. Enter artifacts.example.net, keep HTTPS, leave Exact archive path empty, and choose Allow download. Wait for Live rules confirmed and open Receipt details to see the change.",
+                  "For artifacts.example.net, open the More actions menu (⋯) and choose Withdraw approval. Wait for Live rules confirmed. Check that the added destination disappears and downloads.example.org stays Enabled. Reset story to repeat.",
+                ],
+                gap: "Simulated Console and policy responses. Use the live workflow to verify download enforcement.",
+              }
+            : {}),
+          ...(state === "protectedDownloadViewer"
+            ? {
+                readOnlyPermissionSummary: true,
+                sessionUser: {
+                  id: "storybook-viewer",
+                  name: "Demo Viewer",
+                  email: "viewer@example.com",
+                },
+                agentPermissionSummary: {
+                  update: false,
+                  deploy: false,
+                  operate: false,
+                  delete: false,
+                  administer: false,
+                  configurationUpdate: false,
+                  configurationRead: true,
+                  configurationSecretsOperate: false,
+                  configurationSecretsOperateDeniedBindings: [],
+                  agentSourcesOperate: false,
+                  sandboxPolicyRead: true,
+                  readLogs: false,
+                },
+                description:
+                  "A viewer can read the Agent's download policy and receipts. The viewer has no policy edit or Installation administration grant.",
+                steps: [
+                  "In Protected downloads, inspect both destinations and open Receipt details. Search for tool.tar.gz to isolate the archive.",
+                  "Choose Refresh in Protected downloads. Confirm that the archive stays visible and that Protected downloads offers no Add destination, Enable, Disable, or Withdraw approval actions.",
+                ],
+                gap: "Simulated Console permission responses. The API authorizes changes in a live Installation.",
+              }
+            : {}),
+          ...(state === "protectedDownloadEmpty"
+            ? {
+                description: "This revision is verified and the Agent has no saved destinations.",
+                steps: [
+                  "In Protected downloads, check No live edit confirmed and No destinations listed for live editing. Read the guidance for checking the running Sandbox’s create-time policy.",
+                ],
+                gap: "Simulated Console and policy responses.",
+              }
+            : {}),
+          ...(state === "protectedDownloadPreviousRevision"
+            ? {
+                description:
+                  "Revision 7 passed its readiness checks after replacing revision 6. The Agent retains its approved and desired destinations, with a receipt for revision 6.",
+                steps: [
+                  "In Protected downloads, check No live edit confirmed and No live rule confirmed on both rows. Read the guidance for checking the running Sandbox’s create-time policy. Open Receipt details. Check the revision 6 operation IDs, versions, request state, and timestamps. Change and Reason are absent.",
+                  "Choose Enable on the host row and wait for Live rules confirmed. Check that the host shows Enabled and the archive shows Covered by host. Receipt details names revision 7 and shows the enable action and host destination under Change.",
+                ],
+                gap: "Simulated revision replacement and policy responses. Use the live workflow to verify download enforcement.",
+              }
+            : {}),
+          ...(state === "protectedDownloadDeniedBeforeDispatch" ||
+          state === "protectedDownloadDeniedAfterDispatch"
+            ? {
+                description:
+                  state === "protectedDownloadDeniedBeforeDispatch"
+                    ? "The requester loses permission before the controller sends a download change to the provider."
+                    : "The requester loses permission after the controller records dispatch. The outcome remains uncertain.",
+                steps: [
+                  "Choose Add destination. Enter artifacts.example.net, keep HTTPS, and choose Allow download.",
+                  state === "protectedDownloadDeniedBeforeDispatch"
+                    ? "When Change not applied appears, read which grants an administrator must check before the requester submits again."
+                    : "When Change unconfirmed appears, check that the guidance directs the operator to the original operation before another change.",
+                  "Open Receipt details to find the request ID and AUTHORIZATION_DENIED reason. Choose Reset story to repeat.",
+                ],
+                gap: "Simulated policy responses for both stages of an authorization failure.",
               }
             : {}),
           ...(state === "ceilingDenied"

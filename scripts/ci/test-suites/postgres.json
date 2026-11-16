@@ -21,6 +21,7 @@
         "OCC_TEST_CANDIDATE_CONTROLLER_REVISION"
       ],
       "expectedTests": [
+        "Canonical migration refuses a serving protected download edit until settlement and retirement",
         "Separate database deployment verifies the exact candidate history without applying pending SQL",
         "Logical restore preserves reviewed canonical and Provider migration histories",
         "An authenticated user can browse revisions retained across the Harness settings migration",

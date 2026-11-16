@@ -1,5 +1,14 @@
 import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
-import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
+import type {
+  EgressInstallation,
+  ProtectedDownloadPolicyChange,
+  ProtectedDownloadPolicyContext,
+  ProtectedDownloadPolicyObservation,
+  ProtectedDownloadPolicyPreparation,
+  ProtectedDownloadPolicyUnavailable,
+  ProtectedDownloadPolicyWrite,
+  ProxyWiring,
+} from "../credential-proxy/index.ts";
 import type { RepositoryWorkerRestartDisposition } from "../compute/index.ts";
 import type { Driver } from "../index.ts";
 import type {
@@ -193,6 +202,15 @@ export type HarnessExecutionModeSupport =
   | { readonly supported: true; readonly reason?: never }
   | { readonly supported: false; readonly reason?: string };
 
+export interface ProtectedDownloadSandboxPreparation extends Extract<
+  ProtectedDownloadPolicyPreparation,
+  { state: "ready" }
+> {
+  /** Provider-canonical candidate source. Keep in memory. */
+  readonly source: Readonly<Record<string, unknown>>;
+  readonly sourcePolicyHash: string;
+}
+
 export interface SandboxDriver extends Driver {
   /**
    * OpenClaw mode support, set in the constructor from Driver identity and Installation settings.
@@ -202,6 +220,58 @@ export interface SandboxDriver extends Driver {
     readonly openclaw: Readonly<Record<HarnessExecutionMode, HarnessExecutionModeSupport>>;
   };
   readonly repositoryAccess?: SandboxRepositoryAccess;
+  /** Requires the same version and live qualification from the selected Credential Proxy. */
+  readonly protectedDownloadPolicy?: {
+    readonly version: 1;
+    /**
+     * Check the desired destinations against the current Installation limits.
+     * Compile the candidate from admitted inputs and check the current baseline and peer.
+     */
+    prepare(
+      context: ProtectedDownloadPolicyContext,
+      previous: ProtectedDownloadPolicyChange["previous"],
+      desired: ProtectedDownloadPolicyChange["desired"],
+    ): Promise<ProtectedDownloadSandboxPreparation | ProtectedDownloadPolicyUnavailable>;
+    /**
+     * Dispatch the journaled operation once. The provider must check immutable Sandbox
+     * ID, CAS, authenticated instance and configuration, and loaded policy version
+     * atomically with the mutation. Persist the operation and its receipt with the
+     * revision. Match the current Installation limits, prepared fence, and candidate
+     * hash to the journaled intent.
+     * Reject a replacement even if it has the same name and CAS.
+     * Return not-applied only for a provider-proven pre-effect refusal or conflict.
+     * An uncertain result requires read-only reconciliation of the original operation.
+     */
+    apply(
+      context: ProtectedDownloadPolicyContext,
+      change: ProtectedDownloadPolicyChange,
+      prepared: ProtectedDownloadSandboxPreparation,
+    ): Promise<
+      | ProtectedDownloadPolicyWrite
+      | ProtectedDownloadPolicyUnavailable
+      | { readonly state: "not-applied"; readonly reason: "conflict" | "refused" }
+    >;
+    /**
+     * Read the authenticated commit record by original operation ID and immutable
+     * Sandbox ID. Check its assigned policy version and hash against the original
+     * intent. Missing proof stays unconfirmed. A latest-policy read and mutation
+     * replay cannot supply this receipt.
+     */
+    readReceipt(
+      context: ProtectedDownloadPolicyContext,
+      change: ProtectedDownloadPolicyChange,
+    ): Promise<ProtectedDownloadPolicyWrite | ProtectedDownloadPolicyUnavailable>;
+    /**
+     * Authenticate the receipt against the provider and compare it with the original
+     * intent, current Installation limits and a fresh effective witness for that
+     * Sandbox and policy version.
+     */
+    observe(
+      context: ProtectedDownloadPolicyContext,
+      change: ProtectedDownloadPolicyChange,
+      receipt: ProtectedDownloadPolicyWrite,
+    ): Promise<ProtectedDownloadPolicyObservation | ProtectedDownloadPolicyUnavailable>;
+  };
   /** Explicit support; a networking facet alone never grants editable policy. */
   readonly networkPolicy?: {
     readonly wildcards: boolean;

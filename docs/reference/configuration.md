@@ -33,33 +33,24 @@ or Agent configuration.
 
 ## Installation startup configuration
 
-Set `OCC_CONFIG_PATH` to the absolute path of a trusted YAML file. Production
-requires this setting; development can omit it to retain its existing local
-defaults. When provided, both API and worker processes must read the same file.
-The [production Kubernetes deployment guide](../guides/deploy/production-installation.md#configure-the-installation)
-owns the complete bundled-Driver Installation example, including immutable
-images, workload isolation, and projected ServiceAccount credentials. The
-[Driver package installation guide](drivers/selection.md#select-the-installed-driver)
-owns the installed IAM, Compute, and Configuration selection contract. The
-[Backend reference](backends.md) defines the optional `backend` array and its
-required related Driver membership. Backend configuration never enters native
-Agent Configuration documents. The optional `presets.includeDefaults` boolean
-adds bundled Agent Presets to Namespaces; it defaults to `false`. A
-`presets.files` entry named like a bundled default replaces that default with a
-startup warning. See
-[Preset initialization](presets.md#installation-defaults) for permissions,
-restart behavior, and preservation of existing copies.
+Set `OCC_CONFIG_PATH` to the absolute path of a trusted YAML file that both the
+API and worker read. Production requires it. Development can omit it to use
+local defaults. See the [bundled-Driver example](../guides/deploy/production-installation.md#configure-the-installation)
+and [installed Driver selection](drivers/selection.md#select-the-installed-driver).
+The optional [`backend` array](backends.md) requires related Drivers and stays
+outside native Agent Configuration. `presets.includeDefaults` adds bundled
+Agent Presets to Namespaces and defaults to `false`. A same-name `presets.files`
+entry replaces a bundled default with a startup warning. See
+[Preset initialization](presets.md#installation-defaults).
 
 OCC resolves its persisted singleton Installation internally; Configuration and
 Secret Driver operations do not include Installation management. Installed
 Drivers remain trusted, unsandboxed controller code. Invalid production YAML,
 unsupported settings, and unavailable Drivers stop startup before requests run.
 
-The optional `sandboxNetworkPolicyCeiling` array delegates bounded per-Agent
-network additions. It grants no default access; an absent or empty array delegates
-none. See
-[Sandbox policies](sandbox-policies.md#authority-and-admission) for
-its grant schema and authorization boundaries.
+`sandboxNetworkPolicyCeiling` limits per-Agent network additions and grants no
+default access. An absent or empty array delegates no additions. See the
+[ceiling schema and permissions](sandbox-policies.md#authority-and-admission).
 
 The optional `iam` block declares the
 [Default users](authorization/default-users.md#installation-iam-configuration)
@@ -101,6 +92,22 @@ only for a separately selected custom image with automatic required worker
 placement and node-local inference. It does not add runtime features or waive
 the required provisioning SandboxDriver and its containment facets. See
 [Native worker support](harness-execution.md#native-worker-support).
+
+### Protected downloads
+
+Enable editing with this top-level block and a supporting Driver pair. Omit the
+block to keep editing off. Missing or empty `executablePaths` fails startup.
+Include the Driver pair's exact, absolute download client path.
+
+```yaml
+protectedDownloads:
+  executablePaths:
+    - /usr/bin/curl
+```
+
+Optional fields include `reservedHosts`, `httpMirrors`, `sharedArchiveHosts`,
+`sharedArchiveObjects`, and `delegatedDestinations`. See
+[protected download limits](sandbox-policies.md#protected-download-limits).
 
 ## Create, read, update, and delete
 
