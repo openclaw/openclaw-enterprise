@@ -14,7 +14,7 @@ export function parseAuthorizationUrl(value: string): URL {
 }
 
 export async function readProviderRequestBody(request: IncomingMessage): Promise<string> {
-  const chunks: AsyncIterable<unknown> = request;
+  const chunks: AsyncIterable<unknown, unknown, undefined> = request;
   let body = "";
   for await (const chunk of chunks) {
     if (typeof chunk !== "string" && !Buffer.isBuffer(chunk)) {
