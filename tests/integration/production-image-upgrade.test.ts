@@ -409,25 +409,26 @@ esac
   );
 
   // The deadline runner launches OCC. Let real Python enforce its process
-  // timeout instead of substituting the fixture's Installation document.
+  // timeout. Resolve its path separately so Python's children still use the fixture tools.
   await writeCommand(
     bin,
     "python3",
-    `if [[ "$1" == - && "$2" =~ ^[1-9][0-9]*$ && "$4" == "$(dirname "$0")/occ" ]]; then
+    `real_python=$(PATH="$(getconf PATH)" command -v python3)
+if [[ "$1" == - && "$2" =~ ^[1-9][0-9]*$ && "$4" == "$(dirname "$0")/occ" ]]; then
   if [[ " $* " == *" agent deployment-status "* ]]; then
     printf 'replacement-status-budget %s\\n' "$2" >>"$COMMAND_LOG"
   fi
-  command -p python3 "$@"
+  "$real_python" "$@"
 elif [[ "$1" == scripts/upgrade-dispatch-state.py || "$1" == scripts/upgrade-helm-state.py ||
       "$1" == scripts/upgrade-preflight-state.py ||
       ( "$1" == - && "$4" == */oce-upgrade-preflight-* ) ||
       ( "$1" == - && ( "$2" == deploy/helm/openclaw-enterprise ||
         "$2" == "$UPGRADE_TEST_KUBECONFIG" || "$2" == */parameters.json ) ) ]]; then
-  command -p python3 "$@"
+  "$real_python" "$@"
 elif (($# == 3)); then
   printf '%s\\n' '${"e".repeat(64)}'
 elif [[ "$1" == "-c" && "$2" != *b64decode* ]]; then
-  command -p python3 "$@"
+  "$real_python" "$@"
 else
   cat >/dev/null
   cat "$LIVE_INSTALLATION_FILE"
