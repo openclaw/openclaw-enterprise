@@ -173,12 +173,12 @@ Do not reuse this approval if the host, Worker, mount or revision changes.
 ## Verify one chat and the file node
 
 Use the original `ready.json` digest to start the
-[host ingress](../ingress/README.md) on its approved TLS route. Once the original
-relay Pod and Worker are running, verify on the selected CNI that the Worker can
-reach the relay on TCP 8443. Verify that both the Worker and Box host can reach the
-private Gateway hostname and published port.
-Check that an unselected Pod cannot use the relay and an unrelated source cannot
-reach Envoy. If source NAT or a node-traffic exemption admits a denied source,
+[host ingress](../ingress/README.md) on its approved TLS route. Wait until the
+original relay Pod is the Service's sole ready EndpointSlice endpoint. On the
+selected CNI, verify that the Worker can reach that Service on TCP 8443 and an
+unselected Pod is denied at the same Service address and port. Check that both
+the Worker and Box host can reach the private Gateway hostname and published
+port, and an unrelated source cannot reach Envoy. If source NAT or a node-traffic exemption admits a denied source,
 stop and use a placement that preserves these boundaries before submitting work.
 Wait until the Worker observes the native Harness and its actual enrolled node and
 activates that revision. Record the final Gateway and relay Pod UIDs and
