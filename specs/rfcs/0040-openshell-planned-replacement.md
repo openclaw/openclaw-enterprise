@@ -42,12 +42,12 @@ the existing stop path when equivalence cannot be established. Recheck
 authority and both process identities on every reconciliation. Loss of
 identity or authority ends the wait.
 
-Bind the final completion observation to the same executor instance and
-Gateway process as the handoff. A separate identity check before the handoff
-leaves a restart window. A recorded result already delivered by the original
-turn remains valid. Without that receipt or an instance-bound completion
-observation at commitment, use the existing stop path and report any
-interruption. The successor cannot certify that the predecessor finished.
+At handoff commitment, require a completion observation that covers every
+admitted operation and final delivery under the same live lease, Gateway
+process, and executor instance. A receipt confirms delivery only for the turn
+it identifies. If the executor changes, keep that receipt and discard the
+stale completion observation. Use the existing stop path and report any
+unfinished work as interrupted.
 
 ## Stop and delivery
 
@@ -70,10 +70,11 @@ result is still available.
    cutover observe an original parent waiting on its identified child. Repeat
    with an original command that has a live process handle. In both cases verify
    one start, one completion, and one delivered original result before stop.
-2. Replace only the executor behind a stable endpoint, including between the
-   last poll and handoff commitment. Verify
-   that the new executor cannot inherit the old identity or execute the old tool.
-   Repeat with revoked authority and a changed egress policy.
+2. Deliver one turn and leave a second command running. Replace only the
+   executor behind its stable endpoint between the last poll and commitment.
+   Verify that the delivered receipt remains valid, Compute rejects the old
+   completion observation, and the existing stop path reports the command's
+   interruption without replay. Repeat with revoked authority and changed egress.
 3. Exceed the real 30-minute limit, including a worker restart during the wait.
    Verify the original deadline, forced progress and an idle Agent's independent
    upgrade. Verify an explicit retry of a rejected message executes once.
