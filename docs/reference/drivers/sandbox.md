@@ -241,7 +241,7 @@ Startup validates Sandbox facets. Namespace and workload removal share one clean
 
 Dedicated native OpenClaw requires `provisionHarness` and all three containment facets. Other dedicated Harnesses may use fewer facets or omit the Sandbox.
 
-An optional positive `maintenanceIntervalMs` schedules active-revision checks. During those checks, `existingHarnessOnly` requires the provider to report a missing Harness without recreating it.
+An optional positive `maintenanceIntervalMs` schedules active-revision checks and requires `provisionHarness`. During those checks, `existingHarnessOnly` requires the provider to report a missing Harness without recreating it.
 
 ```mermaid
 sequenceDiagram
