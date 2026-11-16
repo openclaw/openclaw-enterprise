@@ -33,7 +33,7 @@ import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import {
   seedSessionRevision,
   sessionAttempt,
-} from "../conformance/repository-sessions.contract.mjs";
+} from "../conformance/repository-sessions.contract.ts";
 import {
   serviceConfigurationData,
   githubTokenConfigurationData,

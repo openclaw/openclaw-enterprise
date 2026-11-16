@@ -26,7 +26,7 @@ import { servePrivateRepositoryRequest } from "../../apps/controller/src/backend
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
-import { seedSessionRevision } from "../conformance/repository-sessions.contract.mjs";
+import { seedSessionRevision } from "../conformance/repository-sessions.contract.ts";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.ts";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";

@@ -20,7 +20,7 @@ import {
 } from "../helpers/credential-source-owner-upgrade.ts";
 import { request, startController } from "../helpers/postgres-platform-state.ts";
 import { assertPopulatedUpgradeReturn } from "../helpers/populated-upgrade-return.ts";
-import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.mjs";
+import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.ts";
 import {
   catalogDigest,
   initialSchemaState,

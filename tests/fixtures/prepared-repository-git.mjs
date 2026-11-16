@@ -26,7 +26,7 @@ import {
 import {
   seedSessionRevision,
   sessionAttempt,
-} from "../conformance/repository-sessions.contract.mjs";
+} from "../conformance/repository-sessions.contract.ts";
 import { socketDirectory } from "../helpers/socket-directory.ts";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";

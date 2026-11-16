@@ -6,13 +6,10 @@ import {
 } from "../../../packages/occ/src/index.ts";
 import { startRepositoryReceiptServer } from "../../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import type { ServiceConfig } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
-import type { RepositorySessionCaseBuilders } from "../../conformance/repository-session-state-cases.ts";
 import {
   seedSessionRevision,
   sessionAttempt,
-} from "../../conformance/repository-sessions.contract.mjs";
-
-const buildAttempt: RepositorySessionCaseBuilders["sessionAttempt"] = sessionAttempt;
+} from "../../conformance/repository-sessions.contract.ts";
 
 interface ReceiptFixture {
   readonly namespaceId?: string | undefined;
@@ -51,7 +48,7 @@ export async function startReceiptState(
     prepare(admissionId: string, repositoryRef: string, durationSeconds: number) {
       return state.transact((unit) =>
         unit.repositorySessions.createAttempt(
-          buildAttempt(revision, {
+          sessionAttempt(revision, {
             admissionId,
             repositoryRef,
             durationSeconds,
