@@ -127,11 +127,13 @@ import {
 } from "./kubernetes-account-secret-cases.ts";
 import {
   checkCanonicalGatewayChannelSecret,
+  checkDedicatedModelCredentialPreparation,
   checkExactAccountTokenEgress,
   checkExactSandboxCredentialWithdrawal,
   checkExternalChatgptCredentialDelivery,
   checkPairedCredentialSourceAuthentication,
   checkPodModelCredentialPlacement,
+  checkStoppedRevisionCredentialCleanup,
 } from "./kubernetes-credential-delivery-cases.ts";
 import {
   checkDedicatedPredecessorPolicyRetirement,
@@ -9218,192 +9220,14 @@ for (const embedded of [true, false]) {
     checkWorkspaceInitializerTimestamps(embedded));
 }
 
-for (const method of ["api_key", "codex_pat"]) {
-  test(`dedicated ${method} preparation shares the tenant namespace while separating Gateway state and credentials`, async () => {
-    const fixture = workspaceSetupFixture(false);
-    const { driver, revision, namespace, context, objects, records } = fixture;
-    revision.harnessAuth = { ...revision.harnessAuth, method };
-    context.harnessAuth = { ...context.harnessAuth, method };
-    admitRevisionHarness(driver, revision);
-    const modelEnvironment = method === "api_key" ? "OPENAI_API_KEY" : "CODEX_ACCESS_TOKEN";
-    const cp = kubernetesNamespaceName(tenant.id);
-    const channel = {
-      ...driver.manifest(
-        "v1",
-        "Secret",
-        "channel-source",
-        { namespaceId: tenant.id },
-        { name: cp, plane: "execution" },
-      ),
-      data: { value: Buffer.from("fixture-channel-token").toString("base64") },
-    };
-    channel.metadata.uid = "channel-source-uid";
-    objects.set(`Secret:${cp}:channel-source`, channel);
-    const source = { kind: "secret", namespaceId: tenant.id, id: "sec_channel" };
-    revision.secretDriverId = "kubernetes-secret";
-    revision.secretBindings = { SLACK_BOT_TOKEN: { source } };
-    context.secretEnvironment = [
-      {
-        name: "SLACK_BOT_TOKEN",
-        namespaceId: tenant.id,
-        agentId: revision.agentId,
-        secretId: source.id,
-        backendRef: {
-          name: "channel-source",
-          namespaceName: cp,
-          key: "value",
-          uid: channel.metadata.uid,
-        },
-      },
-    ];
-    await driver.prepareRevision(revision, context);
-    const gatewayNamespace = kubernetesNamespaceName(tenant.id);
-    assert.equal(gatewayNamespace, namespace);
-    const values = [...objects.values()];
-    const gateway = values.find(
-      ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("gateway-"),
-    );
-    const harness = values.find(
-      ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("agent-"),
-    );
-    const configurationName = gateway.spec.template.spec.volumes.find(
-      ({ name }) => name === "openclaw-configuration",
-    ).configMap.name;
-    const configuration = values.find(
-      ({ kind, metadata }) => kind === "ConfigMap" && metadata.name === configurationName,
-    );
-    const callback = JSON.parse(configuration.data["openclaw.json"]).plugins.entries.codex.config
-      .appServer.nativeHookRelay;
-    assert.deepEqual(callback, {
-      url:
-        driver.getGatewayEndpoint(revision).replace(/^wss:/, "https:") +
-        "/node/__openclaw__/native-hook",
-      credentialDirectory: "/home/node/.oce-native-hooks",
-    });
-    assert.equal(gateway.metadata.namespace, gatewayNamespace);
-    assert.equal(harness.metadata.namespace, namespace);
-    assert.equal(gateway.spec.template.spec.automountServiceAccountToken, false);
-    assert.equal(
-      gateway.spec.template.spec.volumes.some(({ name }) => name === "openclaw-service-principal"),
-      false,
-    );
-    const env = Object.fromEntries(
-      gateway.spec.template.spec.containers[0].env.map((item) => [item.name, item]),
-    );
-    assert.equal(
-      env.APP_SERVER_URL.value,
-      `ws://agent-${digest(revision.agentId)}.${namespace}.svc:18790`,
-    );
-    assert.equal(env.OPENAI_API_KEY, undefined);
-    const copied = values.find(
-      ({ kind, metadata }) =>
-        kind === "Secret" &&
-        metadata.namespace === gatewayNamespace &&
-        metadata.name.startsWith("transport-"),
-    );
-    assert.deepEqual(Object.keys(copied.data), ["app-server-token"]);
-    assert.equal(env.APP_SERVER_TOKEN.valueFrom.secretKeyRef.name, copied.metadata.name);
-    assert.deepEqual(env.SLACK_BOT_TOKEN.valueFrom.secretKeyRef, {
-      name: "channel-source",
-      key: "value",
-      optional: false,
-    });
-    const material = values.find(
-      ({ kind, metadata }) =>
-        kind === "Secret" &&
-        metadata.namespace === namespace &&
-        metadata.name.startsWith("harness-secrets-"),
-    );
-    assert.deepEqual(Object.keys(material.data).sort(), [modelEnvironment, "app-server-token"]);
-    assert.equal(JSON.stringify(harness).includes("channel-source"), false);
-    assert.equal(JSON.stringify(harness).includes("gateway-password"), false);
-    const model = objects.get(`Secret:${cp}:occ-model-key`);
-    assert.equal(material.data[modelEnvironment], model.data.value);
-    const writesBefore = records.length;
-    model.metadata.uid = "replaced-model-source";
-    await assert.rejects(
-      driver.prepareRevision(revision, context),
-      /credential source identity changed/,
-    );
-    assert.equal(
-      records.slice(writesBefore).some(({ kind }) => kind === "Deployment"),
-      false,
-    );
-    const gatewayClaim = values.find(
-      ({ kind, metadata }) =>
-        kind === "PersistentVolumeClaim" && metadata.name.startsWith("gateway-state-"),
-    );
-    const harnessClaim = values.find(
-      ({ kind, metadata }) =>
-        kind === "PersistentVolumeClaim" && metadata.name.startsWith("workspace-"),
-    );
-    assert.equal(gatewayClaim.metadata.namespace, gatewayNamespace);
-    assert.equal(harnessClaim.metadata.namespace, namespace);
-    for (const record of records.filter((item) => item.kind !== "Secret")) {
-      assert.equal(JSON.stringify(record).includes("test-transport"), false);
-    }
-    const policies = driver
-      .agentNetworkPolicies(revision, { name: namespace, plane: "execution" })
-      .map(({ resource }) => resource);
-    const egress = policies.find((item) => item.metadata.name.startsWith("allow-gateway-agent-"));
-    const ingress = policies.find((item) => item.metadata.name.startsWith("allow-agent-runtime-"));
-    assert.equal(egress.metadata.namespace, gatewayNamespace);
-    assert.equal(ingress.metadata.namespace, namespace);
-    assert.deepEqual(egress.spec.egress[0].to[0].namespaceSelector.matchLabels, {
-      "kubernetes.io/metadata.name": namespace,
-    });
-    assert.deepEqual(ingress.spec.ingress[0].from[0].namespaceSelector.matchLabels, {
-      "kubernetes.io/metadata.name": gatewayNamespace,
-    });
-    assert.equal(
-      egress.spec.egress[0].to[0].podSelector.matchLabels["openclaw.dev/revision"],
-      revision.id,
-    );
-    assert.equal(
-      ingress.spec.ingress[0].from[0].podSelector.matchLabels["openclaw.dev/agent"],
-      revision.agentId,
-    );
-  });
+for (const method of /** @type {const} */ (["api_key", "codex_pat"])) {
+  test(`dedicated ${method} preparation shares the tenant namespace while separating Gateway state and credentials`, () =>
+    checkDedicatedModelCredentialPreparation(method));
 }
 
 for (const embedded of [true, false]) {
-  test(`Kubernetes ${embedded ? "embedded" : "dedicated"} stop removes the stopped revision's credential copies and snapshots`, async () => {
-    const { driver, revision, namespace, context, objects } = workspaceSetupFixture(embedded);
-    revision.harnessAuth = { ...revision.harnessAuth, method: "api_key" };
-    context.harnessAuth = { ...context.harnessAuth, method: "api_key" };
-    await driver.prepareRevision(revision, context);
-    const revisionSuffix = `${digest(revision.agentId)}-${digest(revision.id)}`;
-    const revisionScoped = () =>
-      [...objects.values()]
-        .filter(
-          ({ kind, metadata }) =>
-            (kind === "Secret" || kind === "ConfigMap") &&
-            metadata.name.endsWith(digest(revision.id)),
-        )
-        .map(({ kind, metadata }) => `${kind}:${metadata.name}`)
-        .sort();
-    assert.ok(
-      revisionScoped().includes(`Secret:harness-secrets-${revisionSuffix}`),
-      "preparation projects the model credential into a per-revision Secret",
-    );
-    assert.ok(
-      revisionScoped().includes(
-        `ConfigMap:gateway-${digest(revision.agentId)}-rev-${digest(revision.id)}`,
-      ),
-    );
-    await driver.stopRevision(revision);
-    // A stopped revision keeps no copy of its credentials; preparing it again re-projects them.
-    assert.deepEqual(revisionScoped(), []);
-    assert.ok(objects.has(`Namespace::${namespace}`));
-    assert.ok(
-      [...objects.values()].some(
-        ({ kind, metadata }) => kind === "Secret" && metadata.name === "occ-model-key",
-      ),
-      "the canonical control-plane source is retained",
-    );
-    await driver.prepareRevision(revision, context);
-    assert.ok(revisionScoped().includes(`Secret:harness-secrets-${revisionSuffix}`));
-  });
+  test(`Kubernetes ${embedded ? "embedded" : "dedicated"} stop removes the stopped revision's credential copies and snapshots`, () =>
+    checkStoppedRevisionCredentialCleanup(embedded));
 }
 
 test(
