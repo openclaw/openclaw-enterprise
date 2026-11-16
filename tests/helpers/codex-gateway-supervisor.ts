@@ -337,7 +337,7 @@ export async function startCodexGatewaySupervisor(
           spawnSync(command: string, args: readonly string[], options: SpawnOptions) {
             fixture.validationCalls.push({
               command,
-              args: Array.from(args),
+              args: structuredClone(args),
               readOnly: options?.env?.OPENCLAW_CONFIG_READONLY,
             });
             return fixture.validation;
