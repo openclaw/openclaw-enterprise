@@ -76,15 +76,25 @@ const deploymentSpec = Type.Object({
     }),
   }),
 });
-const stringList = Type.Array(Type.String());
-const roleRule = Type.Object({
-  apiGroups: Type.Optional(stringList),
-  resources: Type.Optional(stringList),
-  verbs: stringList,
-  resourceNames: Type.Optional(stringList),
-  nonResourceURLs: Type.Optional(stringList),
+const requiredStrings = Type.Array(Type.String(), { minItems: 1 });
+const emptyOrOmitted = Type.Optional(Type.Tuple([]));
+const resourceRule = Type.Object({
+  apiGroups: requiredStrings,
+  resources: requiredStrings,
+  verbs: requiredStrings,
+  resourceNames: Type.Optional(Type.Array(Type.String())),
+  nonResourceURLs: emptyOrOmitted,
 });
-const ruleList = Type.Array(roleRule);
+const urlRule = Type.Object({
+  nonResourceURLs: requiredStrings,
+  verbs: requiredStrings,
+  apiGroups: emptyOrOmitted,
+  resources: emptyOrOmitted,
+  resourceNames: emptyOrOmitted,
+});
+const roleRule = Type.Union([resourceRule, urlRule]);
+const roleRulesSchema = Type.Array(resourceRule);
+const clusterRoleRulesSchema = Type.Array(roleRule);
 type RoleRule = Static<typeof roleRule>;
 const logRoles = ["oce-openclaw-tenant-api", "oce-openclaw-gateway-observer"];
 
@@ -142,7 +152,8 @@ function roleRules(role: ChartResource): RoleRule[] | undefined {
   if (role.rules === undefined) {
     return undefined;
   }
-  assert.ok(Check(ruleList, role.rules), `Unexpected rules in ${role.kind}/${role.metadata.name}`);
+  const schema = role.kind === "Role" ? roleRulesSchema : clusterRoleRulesSchema;
+  assert.ok(Check(schema, role.rules), `Unexpected rules in ${role.kind}/${role.metadata.name}`);
   return role.rules;
 }
 
@@ -155,7 +166,7 @@ function clusterRoleRules(objects: ChartResource[], name: string): RoleRule[] {
 }
 
 function isLogRule({ resources = [] }: RoleRule): boolean {
-  return resources.includes("pods/log") || resources.includes("events");
+  return resources.some((resource) => resource === "pods/log" || resource === "events");
 }
 
 export function registerSandboxIngressCase(sandboxValues: ChartValues): void {
