@@ -342,6 +342,7 @@
     "tests/integration/public-github-read-http.test.mjs": 6500,
     "tests/integration/qa-fixture-inputs.test.mjs": 5900,
     "tests/integration/qa-repository-installation.test.ts": 600,
+    "tests/integration/qa-repository-remote-cleanup.test.ts": 3500,
     "tests/integration/repository-credentials-admission.test.mjs": 3700,
     "tests/integration/repository-credentials-client-config.test.ts": 6900,
     "tests/integration/repository-credentials-config.test.ts": 300,
