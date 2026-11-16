@@ -259,11 +259,11 @@ async function runNativeStartup(
   loadPreparation: () => Preparation,
 ): Promise<NativeStartupReceipt> {
   const assert: typeof import("node:assert/strict") = (await import("node:assert/strict")).default;
-  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const { mkdirSync, mkdtempSync, writeFileSync } = await import("node:fs");
   const { spawn, spawnSync } = await import("node:child_process");
   const { createHash, randomBytes } = await import("node:crypto");
 
-  const home = "/tmp/native-codex-proof";
+  const home = mkdtempSync("/tmp/native-codex-proof-");
   const workspace = "/home/node/workspace";
   const credential = randomBytes(32).toString("hex");
   process.env.CODEX_HOME = home;
@@ -271,7 +271,6 @@ async function runNativeStartup(
   process.env.APP_SERVER_TOKEN = credential;
   process.env.OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS = "30000";
   process.env.OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS = "60000";
-  mkdirSync(home, { recursive: true });
   mkdirSync(workspace, { recursive: true });
   writeFileSync(
     home + "/config.toml",
