@@ -923,12 +923,12 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         requirements: data.requirements,
         ...(data.workspaceVolume === undefined ? {} : { workspaceVolume: data.workspaceVolume }),
       });
-      if (
+      const conflicting = () =>
         pending !== undefined &&
         (!sameOwner(pending.view.owner, supplied) ||
           pending.view.requirementsDigest !== requirementsDigest ||
-          pending.requirements !== exact)
-      ) {
+          pending.requirements !== exact);
+      if (conflicting()) {
         reply(response, 409, { error: "pending_admission_conflict" });
         return;
       }
@@ -937,31 +937,38 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         const inference = inferenceRoute(plan);
         if (inference !== undefined) {
           await assertPinnedResolution(inference);
-          // Another request may have recorded the pending admission during the lookup.
-          if (shuttingDown || pending !== undefined) {
+          if (shuttingDown) {
+            reply(response, 503, { error: "host_stopping" });
+            return;
+          }
+          // Another request may have recorded the pending admission during the lookup: an
+          // identical request shares it, any other conflicts.
+          if (conflicting()) {
             reply(response, 409, { error: "pending_admission_conflict" });
             return;
           }
         }
-        const workspaceNode = approvedWorkspaceNode(plan);
-        const view: Pending = {
-          version: 1,
-          owner: supplied,
-          requirementsDigest,
-          profileSha256: profileDigest(data.requirements),
-          image: config.image,
-          commandSha256: digest(plan.command),
-          ...(workspaceNode === undefined ? {} : { workspaceNode }),
-          ...(inference === undefined ? {} : { controlledInference: routeView(inference) }),
-          counts: {
-            environment: Object.keys(plan.environment).length,
-            files: plan.files?.length ?? 0,
-            mounts: config.mountIdentities.size,
-          },
-          controller,
-        };
-        durableRecord(config.runtimeDir, "pending.json", view);
-        pending = { view, requirements: exact };
+        if (pending === undefined) {
+          const workspaceNode = approvedWorkspaceNode(plan);
+          const view: Pending = {
+            version: 1,
+            owner: supplied,
+            requirementsDigest,
+            profileSha256: profileDigest(data.requirements),
+            image: config.image,
+            commandSha256: digest(plan.command),
+            ...(workspaceNode === undefined ? {} : { workspaceNode }),
+            ...(inference === undefined ? {} : { controlledInference: routeView(inference) }),
+            counts: {
+              environment: Object.keys(plan.environment).length,
+              files: plan.files?.length ?? 0,
+              mounts: config.mountIdentities.size,
+            },
+            controller,
+          };
+          durableRecord(config.runtimeDir, "pending.json", view);
+          pending = { view, requirements: exact };
+        }
       }
       const allowed =
         config.approvalDir === undefined || isApproved(config.approvalDir, pending.view);
@@ -1031,6 +1038,11 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         await assertPinnedResolution(config.controlledInference);
         if (shuttingDown || attempted || current !== undefined) {
           reply(response, 409, { error: "execution_already_attempted" });
+          return;
+        }
+        // The operator may withdraw approval.json while the lookup runs.
+        if (config.approvalDir !== undefined && !isApproved(config.approvalDir, pending.view)) {
+          reply(response, 409, { error: "owner_admission_not_approved" });
           return;
         }
       }
