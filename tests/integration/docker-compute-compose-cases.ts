@@ -111,6 +111,8 @@ function composeEnvironment(): NodeJS.ProcessEnv {
   return {
     ...process.env,
     ...browserEnvironment,
+    // Keep Docker Compose's project image tags deterministic for teardown.
+    COMPOSE_COMPATIBILITY: "0",
     // No Agent can deploy on Docker Compute, so these cases need no model credential.
     OPENAI_API_KEY: "",
     OPENAI_API_KEY_FILE: undefined,
