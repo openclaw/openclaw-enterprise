@@ -425,6 +425,20 @@ process.exit(73);
         calls.filter(({ args }) => args[0] === "tag").length,
         scenario === "engine-tag-failed" ? 2 : 0,
       );
+      if (scenario === "engine-bad-metadata") {
+        // BuildKit must report a scalar digest before the lane can inspect a cached image.
+        assert.equal(
+          calls.filter(
+            ({ args }) =>
+              args[0] === "image" && args[1] === "inspect" && args[4]?.startsWith("sha256:"),
+          ).length,
+          0,
+        );
+      }
+      for (const { args } of calls.filter(({ args }) => args.includes("--metadata-file"))) {
+        const metadata = string(args[args.indexOf("--metadata-file") + 1], "probe metadata path");
+        await assert.rejects(stat(dirname(metadata)), { code: "ENOENT" });
+      }
       if (env.RUNNER_TEMP !== undefined) {
         // No probe build ran without a metadata directory.
         assert.equal(
@@ -1024,6 +1038,8 @@ process.exit(73);
     for (const input of [
       ".dockerignore",
       "scripts/ci/prepare.mjs",
+      "scripts/ci/image-build-cache.ts",
+      "scripts/ci/fixture-support-images.ts",
       "scripts/ci/test-suites.ts",
       "scripts/ci/openshell-full-integration.ts",
       "scripts/ci/resource-names.ts",

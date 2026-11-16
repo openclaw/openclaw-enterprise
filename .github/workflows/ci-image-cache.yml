@@ -35,6 +35,8 @@ on:
       - scripts/ci/download-pinned.sh
       - scripts/ci/prepare.mjs
       - scripts/ci/prepare-command.ts
+      - scripts/ci/image-build-cache.ts
+      - scripts/ci/fixture-support-images.ts
       - scripts/ci/k3d-preparation.ts
       - scripts/ci/k3d-image-admission.ts
       - scripts/ci/test-suites.ts
