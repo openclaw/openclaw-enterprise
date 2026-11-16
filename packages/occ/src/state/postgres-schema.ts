@@ -796,7 +796,7 @@ export const agentRevisions = occSchema.table(
         AND (${table.admittedSpec} #>> '{harness,mode}') IN ('embedded', 'dedicated')
         AND jsonb_typeof(${table.admittedSpec}->'compute') = 'object'
         AND ((${table.admittedSpec}->'compute') ?& ARRAY['id', 'implementation'])
-        AND ((${table.admittedSpec}->'compute') - 'id' - 'implementation' - 'admission') = '{}'::jsonb
+        AND ((${table.admittedSpec}->'compute') - 'id' - 'implementation' - 'admission' - 'runtimeInputs') = '{}'::jsonb
         AND jsonb_typeof(${table.admittedSpec} #> '{compute,id}') = 'string'
         AND COALESCE(btrim(${table.admittedSpec} #>> '{compute,id}'), '') <> ''
         AND jsonb_typeof(${table.admittedSpec} #> '{compute,implementation}') = 'string'
@@ -806,6 +806,12 @@ export const agentRevisions = occSchema.table(
           OR (jsonb_typeof(${table.admittedSpec} #> '{compute,admission}') = 'string'
               AND char_length(${table.admittedSpec} #>> '{compute,admission}') BETWEEN 1 AND 1024
               AND (${table.admittedSpec} #>> '{compute,admission}') ~ '^[ -~]+$')
+        )
+        AND (
+          NOT ((${table.admittedSpec}->'compute') ? 'runtimeInputs')
+          OR (jsonb_typeof(${table.admittedSpec} #> '{compute,runtimeInputs}') = 'string'
+              AND char_length(${table.admittedSpec} #>> '{compute,runtimeInputs}') BETWEEN 1 AND 4096
+              AND (${table.admittedSpec} #>> '{compute,runtimeInputs}') ~ '^[ -~]+$')
         )
         AND (
           NOT (${table.admittedSpec} ? 'sandbox_driver_id')

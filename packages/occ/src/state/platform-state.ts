@@ -1082,7 +1082,7 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     revision.compute === null ||
     Array.isArray(revision.compute) ||
     Object.keys(revision.compute).some(
-      (key) => !["id", "implementation", "admission"].includes(key),
+      (key) => !["id", "implementation", "admission", "runtimeInputs"].includes(key),
     ) ||
     !Object.hasOwn(revision.compute, "id") ||
     !Object.hasOwn(revision.compute, "implementation") ||
@@ -1091,6 +1091,9 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     (revision.compute.admission !== undefined &&
       (typeof revision.compute.admission !== "string" ||
         !/^[\x20-\x7e]{1,1024}$/.test(revision.compute.admission))) ||
+    (revision.compute.runtimeInputs !== undefined &&
+      (typeof revision.compute.runtimeInputs !== "string" ||
+        !/^[\x20-\x7e]{1,4096}$/.test(revision.compute.runtimeInputs))) ||
     (revision.sandboxDriverId !== undefined && !isNonEmptyString(revision.sandboxDriverId)) ||
     (revision.secretDriverId !== undefined && !isNonEmptyString(revision.secretDriverId)) ||
     Object.hasOwn(revision, "serviceAccount") ||

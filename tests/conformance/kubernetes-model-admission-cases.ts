@@ -330,7 +330,7 @@ export function renderDedicatedCodexSeccompProfile() {
       role,
       ownership,
       { name: namespace, plane: "execution" },
-      `${role}:local`,
+      { runtime: `${role}:local`, workspaceSetup: options().images.gateway },
       role,
       role,
       {},
