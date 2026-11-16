@@ -293,7 +293,7 @@
     "tests/integration/postgres-production-wireup.test.ts": 16300,
     "tests/integration/postgres-protected-credential-free.test.mjs": 2400,
     "tests/integration/postgres-protected-git-recipient-custody.test.ts": 8600,
-    "tests/integration/postgres-repository-broker-receipts.test.mjs": 1900,
+    "tests/integration/postgres-repository-broker-receipts.test.ts": 1900,
     "tests/integration/postgres-repository-sessions.test.ts": 1000,
     "tests/integration/postgres-repository-transactions.test.ts": 500,
     "tests/integration/postgres-restart-recovery.test.ts": 4100,
