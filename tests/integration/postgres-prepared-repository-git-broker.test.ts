@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { request, Agent, type RequestOptions } from "node:https";
 import { randomUUID } from "node:crypto";
-import { createServer as createHttpServer, type IncomingMessage } from "node:http";
+import {
+  createServer as createHttpServer,
+  type IncomingMessage,
+  type OutgoingHttpHeaders,
+} from "node:http";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
 import { connect, createServer as createTcpServer } from "node:net";
 import { readFile, writeFile } from "node:fs/promises";
@@ -45,7 +49,7 @@ type BrokerInput = Parameters<
 >[0];
 type BrokerRequest = {
   method?: string;
-  headers?: RequestOptions["headers"];
+  headers?: OutgoingHttpHeaders;
   body?: string | Buffer | undefined;
   beforeBody?: () => Promise<void>;
 };
