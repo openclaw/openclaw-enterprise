@@ -11,7 +11,7 @@ import {
 import { selectRegisteredRepositoryGitCustody } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
 import { fixtureInstallationId } from "../fixtures/repository-credentials/github.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 
 // Exercise the real prepared owner with isolated rows at the clock boundary. Only these
 // controls move stored test timestamps; the standing OpenShell transfer test waits for expiry.

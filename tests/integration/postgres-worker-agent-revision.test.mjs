@@ -32,7 +32,7 @@ import {
   seedBackendBinding,
 } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
-import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
+import { withNamespaceLockHeld } from "../helpers/postgres-locks.ts";
 import {
   assertFailedDeployment,
   runPreparationFailureCase,

@@ -13,7 +13,7 @@ import {
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { occLogLine } from "../helpers/occ-log-line.ts";
-import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
+import { withNamespaceLockHeld } from "../helpers/postgres-locks.ts";
 import { removeAccessBindings } from "../helpers/postgres-worker-revision-support.mjs";
 
 import {
@@ -888,30 +888,23 @@ export function registerWithdrawalCases({ setup, revisionTest }: CredentialSourc
       // withdrawal row or the Agent yet, or the two transactions deadlock.
       try {
         await lastAttempt.promise;
-        await withNamespaceLockHeld(
-          fixture.observerPool,
-          fixture.namespace.id,
-          async (lock: {
-            waitForBlocked(description: string): Promise<unknown>;
-            assertNotHeld(sql: string, params: string[], message: string): Promise<void>;
-          }) => {
-            lastAttemptReleased.resolve();
-            // The worker has one connection, and its next transaction is the final pass's.
-            await lock.waitForBlocked("the worker's real wait on the Namespace lock");
-            await lock.assertNotHeld(
-              `SELECT state FROM occ.credential_withdrawals
+        await withNamespaceLockHeld(fixture.observerPool, fixture.namespace.id, async (lock) => {
+          lastAttemptReleased.resolve();
+          // The worker has one connection, and its next transaction is the final pass's.
+          await lock.waitForBlocked("the worker's real wait on the Namespace lock");
+          await lock.assertNotHeld(
+            `SELECT state FROM occ.credential_withdrawals
            WHERE namespace_id = $1 AND revision_id = $2 AND credential_source_id = $3
            FOR UPDATE NOWAIT`,
-              [fixture.namespace.id, active.id, sourceId],
-              "a worker waiting for the Namespace must not already hold the withdrawal row",
-            );
-            await lock.assertNotHeld(
-              "SELECT id FROM occ.agents WHERE namespace_id = $1 AND id = $2 FOR UPDATE NOWAIT",
-              [fixture.namespace.id, owner.id],
-              "a worker waiting for the Namespace must not already hold the Agent",
-            );
-          },
-        );
+            [fixture.namespace.id, active.id, sourceId],
+            "a worker waiting for the Namespace must not already hold the withdrawal row",
+          );
+          await lock.assertNotHeld(
+            "SELECT id FROM occ.agents WHERE namespace_id = $1 AND id = $2 FOR UPDATE NOWAIT",
+            [fixture.namespace.id, owner.id],
+            "a worker waiting for the Namespace must not already hold the Agent",
+          );
+        });
         await fixture.work(withdrawal, "failed_permanent");
       } finally {
         lastAttemptReleased.resolve();

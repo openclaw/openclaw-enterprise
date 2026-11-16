@@ -3,7 +3,7 @@ import test, { type TestContext } from "node:test";
 import type { Pool } from "pg";
 import type { AuditEvent } from "../../packages/contracts/src/index.ts";
 import type { PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import {
   assertConsoleSignIn,

@@ -19,7 +19,7 @@ import { administrativeActor } from "../helpers/administrative-actor.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
-import { waitForLockHolder, waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockHolder, waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { waitUntil, within } from "../helpers/wait-for.mjs";
 
 function sessionRecord(userId: string) {
