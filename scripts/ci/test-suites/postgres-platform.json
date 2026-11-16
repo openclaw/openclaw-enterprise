@@ -22,7 +22,7 @@
     "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
     "tests/integration/postgres-default-users.test.ts",
     "tests/integration/postgres-agent-runtime-logs.test.ts",
-    "tests/integration/postgres-repository-broker-receipts.test.mjs",
+    "tests/integration/postgres-repository-broker-receipts.test.ts",
     "tests/integration/postgres-worker-stale-claim.test.ts",
     "tests/integration/postgres-worker-audit.test.ts",
     "tests/integration/postgres-namespace-iam-policy.test.ts",
@@ -389,7 +389,7 @@
       "path": "tests/integration/postgres-repository-sessions.test.ts"
     },
     {
-      "path": "tests/integration/postgres-repository-broker-receipts.test.mjs",
+      "path": "tests/integration/postgres-repository-broker-receipts.test.ts",
       "expectedTests": [
         "only the reserving broker generation fences its own reservation",
         "memory",
