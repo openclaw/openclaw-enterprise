@@ -511,6 +511,39 @@ else
   fi
 fi
 
+# Refuse retained PostgreSQL storage rather than minting an unregistered replacement key.
+if ! engine volume ls --format '{{.Name}}' >"$temporary_directory/volume-names"; then
+  fail "configuration" "could not inspect retained PostgreSQL storage"
+fi
+if ! python3 - "$compose_config" "$temporary_directory/volume-names" "${compose_args[@]}" <<'PY'
+import json
+import os
+import pathlib
+import sys
+config = json.loads(pathlib.Path(sys.argv[1]).read_text())
+existing = set(pathlib.Path(sys.argv[2]).read_text().splitlines())
+project = os.environ.get("COMPOSE_PROJECT_NAME") or config.get("name")
+args = iter(sys.argv[3:])
+for arg in args:
+    if arg in ("-p", "--project-name"):
+        project = next(args)
+    elif arg.startswith("--project-name="):
+        project = arg.split("=", 1)[1]
+    elif arg.startswith("-p") and len(arg) > 2:
+        project = arg[2:]
+volumes = config.get("volumes", {})
+for mount in config.get("services", {}).get("postgres", {}).get("volumes", []):
+    source = mount.split(":", 1)[0] if isinstance(mount, str) else mount.get("source")
+    if source in volumes:
+        declaration = volumes[source] or {}
+        name = declaration.get("name") or (source if declaration.get("external") else f"{project}_{source}")
+        if name in existing:
+            raise SystemExit(1)
+PY
+then
+  fail "configuration" "PostgreSQL storage already exists. Use the retained client-key.json to access the Installation; see docs/guides/operate/local-setup-troubleshooting.md. Do not generate replacement credentials for this project."
+fi
+
 compose_analysis="$temporary_directory/compose-analysis"
 compose_analysis_error="$temporary_directory/compose-analysis.err"
 if ! "$occ_cli" dev analyze-compose --profile docker <"$compose_config" >"$compose_analysis" 2>"$compose_analysis_error"; then
@@ -730,37 +763,8 @@ if [ "$startup_ready" -ne 1 ]; then
   fail "readiness" "worker readiness probe did not pass within ${STARTUP_TIMEOUT_SECONDS}s" "${compose_diagnostic[@]}" logs worker
 fi
 
-if [ -e "$key_output" ] || [ -L "$key_output" ]; then
-  usage_error "key output" "destination already exists"
-fi
-key_copy_temp="$(mktemp "$(dirname "$key_output")/.dev-up-service-key.XXXXXXXXXX")"
-chmod 600 "$key_copy_temp"
-python3 - "$credential_directory/client-key.json" "$key_copy_temp" <<'PY'
-import pathlib
-import sys
-pathlib.Path(sys.argv[2]).write_bytes(pathlib.Path(sys.argv[1]).read_bytes())
-PY
-chmod 600 "$key_copy_temp"
-if ! python3 - "$key_copy_temp" "$key_output" <<'PY'
-import os
-import pathlib
-import shutil
-import sys
-
-source = pathlib.Path(sys.argv[1])
-destination = pathlib.Path(sys.argv[2])
-with source.open("rb") as reader:
-    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "wb") as writer:
-        shutil.copyfileobj(reader, writer)
-PY
-then
-  fail "key output" "destination already exists; copied key remains at $key_copy_temp"
-fi
-rm -f -- "$key_copy_temp"
-
 installation_response="$temporary_directory/installation-response.json"
-if ! OCC_URL="$api_url" OCC_SERVICE_KEY_FILE="$key_output" "$occ_cli" installation get --output json >"$installation_response"; then
+if ! OCC_URL="$api_url" OCC_SERVICE_KEY_FILE="$credential_directory/client-key.json" "$occ_cli" installation get --output json >"$installation_response"; then
   fail "authorization" "occ could not read the Installation" "$occ_cli" installation get --output json
 fi
 
@@ -779,6 +783,26 @@ PY
 )"; then
   match_error="$(cat "$temporary_directory/installation-match.err" 2>/dev/null || true)"
   fail "authorization" "${match_error:-API did not return an Installation ID}" "$occ_cli" installation get --output json
+fi
+
+# Publish only a credential whose authenticated Installation read succeeded.
+if ! python3 - "$credential_directory/client-key.json" "$key_output" <<'PY'
+import os
+import pathlib
+import sys
+import tempfile
+source = pathlib.Path(sys.argv[1]).read_bytes()
+destination = pathlib.Path(sys.argv[2])
+fd, temporary = tempfile.mkstemp(prefix=".verified-bootstrap-", dir=destination.parent)
+try:
+    with os.fdopen(fd, "wb") as output:
+        output.write(source)
+    os.link(temporary, destination)
+finally:
+    os.unlink(temporary)
+PY
+then
+  fail "key output" "could not exclusively publish the verified key; retained input bundle is unchanged"
 fi
 
 cleanup_environment=("OCC_DEVELOPMENT_COMPUTE_DRIVER=docker" "OCC_DEVELOPMENT_CONTAINER_ENGINE=$container_engine")

@@ -622,7 +622,10 @@ test("dev-up preserves its precreated key when the authenticated installation ch
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /authorization failed: occ could not read the Installation/);
   assert.doesNotMatch(result.stdout + result.stderr, new RegExp(serviceKey));
-  const retained = JSON.parse(await readFile(keyOutput, "utf8"));
+  await assert.rejects(readFile(keyOutput), { code: "ENOENT" });
+  const bundle = result.stdout.match(/^Bootstrap input files: (.+)$/m)?.[1];
+  assert.ok(bundle);
+  const retained = JSON.parse(await readFile(join(bundle, "client-key.json"), "utf8"));
   assert.match(retained.data.key, /^occ_[A-Za-z0-9_-]{43}$/);
   assert.ok(!(result.stdout + result.stderr).includes(retained.data.key));
 });
@@ -638,9 +641,24 @@ test("dev-up rejects an Installation response without its server-owned ID", asyn
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /API did not return an Installation ID/);
-  const retained = JSON.parse(await readFile(keyOutput, "utf8"));
-  assert.match(retained.data.key, /^occ_[A-Za-z0-9_-]{43}$/);
-  assert.ok(!(result.stdout + result.stderr).includes(retained.data.key));
+  await assert.rejects(readFile(keyOutput), { code: "ENOENT" });
+});
+
+test("dev-up refuses retained PostgreSQL storage before starting Compose", async (t) => {
+  const fixture = await createFixture(t, { scenario: "postgres-volume-exists" });
+  const keyOutput = join(fixture.directory, "unregistered-key.json");
+  const result = await runDevUp(
+    ["--key-output", keyOutput, "--", ...composeOptions(fixture)],
+    fixture.env,
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /PostgreSQL storage already exists.*retained client-key.json/);
+  await assert.rejects(readFile(keyOutput), { code: "ENOENT" });
+  const calls = await readEngineInvocations(fixture.dockerLog);
+  assert.equal(
+    calls.some(({ args }) => args[0] === "compose" && args.includes("up")),
+    false,
+  );
 });
 
 // Container engine selection and Compose file arguments

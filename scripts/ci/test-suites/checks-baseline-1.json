@@ -651,6 +651,7 @@
         "dev-up fails closed when bootstrap exits unsuccessfully",
         "dev-up fails closed when the worker exits before readiness",
         "dev-up preserves its precreated key when the authenticated installation check is rejected",
+        "dev-up refuses retained PostgreSQL storage before starting Compose",
         "dev-up rejects an Installation response without its server-owned ID",
         "development cleanup without selectors stops Docker when no state is recorded",
         "development cleanup without selectors refuses an unusable state directory",

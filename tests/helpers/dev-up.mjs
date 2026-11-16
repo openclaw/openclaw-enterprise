@@ -298,6 +298,12 @@ function engineCommand(fake, { args, env }, { stdout, exit }) {
   if (args[0] === "build") {
     exit(0);
   }
+  if (args[0] === "volume" && args[1] === "ls") {
+    if (scenario === "postgres-volume-exists") {
+      stdout("oce-dev-up-test_occ_postgres_data\n");
+    }
+    exit(0);
+  }
   if (args[0] === "inspect") {
     stdout(JSON.stringify({ image: "bootstrap-image", user: "1000:1000" }));
     exit(0);
@@ -719,7 +725,7 @@ async function writeFakeCommand(fake, path, command) {
 
 /**
  * @typedef {"docker" | "podman"} ContainerEngine
- * @typedef {"success" | "bootstrap-failed" | "worker-exited" | "worker-timeout" | "api-unauthorized" | "api-mismatch"} StartupScenario
+ * @typedef {"success" | "bootstrap-failed" | "worker-exited" | "worker-timeout" | "api-unauthorized" | "api-mismatch" | "postgres-volume-exists"} StartupScenario
  * @typedef {{
  *   engine?: ContainerEngine,
  *   scenario?: StartupScenario,
