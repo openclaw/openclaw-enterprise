@@ -3,35 +3,85 @@ import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { setTimeout } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import { openShellSandboxLogReader } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 
-/**
- * Require HTTP 403; never export Git's potentially sensitive error. Nonzero codes
- * describe observed error text, not its cause: 1 access succeeded, 2 unclassified,
- * 10 DNS, 11 connection, 12 TLS verification, 13 other HTTP, 14 timeout.
- */
-export function gitHttp403Command(git) {
+import type {
+  OpenShellSandboxLogLine,
+  OpenShellSandboxLogReader,
+  OpenShellSandboxLogsResponse,
+} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+
+/** Keep raw Git errors inside the workload and emit only the observed denial category. */
+export function gitRemovalDenialCommand(
+  git: string,
+): [command: "sh", option: "-ceu", script: string] {
   return [
     "sh",
     "-ceu",
-    "if error=$(LC_ALL=C " +
+    "set +e; error=$(" +
       git +
-      ' 2>&1); then exit 1; fi; case "$error" in ' +
-      '*"returned error: 403"*|*"response 403"*) exit 0 ;; ' +
-      '*"Could not resolve host"*|*"Could not resolve proxy"*) exit 10 ;; ' +
-      '*"Failed to connect"*|*"Could not connect to server"*) exit 11 ;; ' +
-      '*"SSL certificate problem"*|*"SSL certificate OpenSSL verify result:"*|*"server certificate verification failed"*) exit 12 ;; ' +
-      '*"returned error: "*|*"HTTP code "*) exit 13 ;; ' +
-      '*"Operation timed out"*|*"Connection timed out"*|*"Operation too slow"*) exit 14 ;; ' +
-      "*) exit 2 ;; esac",
+      ' 2>&1); status=$?; set -e; test "$status" -ne 0; test "$status" -ne 126; test "$status" -ne 127; case "$error" in *"returned error: 403"*|*"response 403"*) printf signed ;; *) printf transport ;; esac',
   ];
 }
 
+export function gitRemovalDenialCategory(result: unknown): "signed" | "transport" {
+  assert.ok(
+    result !== null &&
+      typeof result === "object" &&
+      "stdout" in result &&
+      Buffer.isBuffer(result.stdout),
+    "Git denial command did not return stdout",
+  );
+  const category = result.stdout.toString("utf8");
+  assert.ok(category === "signed" || category === "transport", "invalid Git denial category");
+  return category;
+}
+
+// The observer also refuses malformed field values supplied directly in receipt tests.
+// The real gRPC reader has already decoded these fields as strings.
+interface ObservedLogLine extends Omit<OpenShellSandboxLogLine, "fields"> {
+  readonly fields: Readonly<Record<string, unknown>>;
+}
+
+interface GitDenialOptions {
+  readonly gatewayClient: {
+    getSandboxLogs(
+      ...args: Parameters<OpenShellSandboxLogReader["getSandboxLogs"]>
+    ): Promise<
+      Omit<OpenShellSandboxLogsResponse, "lines"> & { readonly lines: readonly ObservedLogLine[] }
+    >;
+  };
+  readonly workspace: string;
+  readonly sandbox: string;
+  readonly sandboxId: string;
+  readonly supervisor: unknown;
+  readonly readSupervisor: () => Promise<unknown>;
+  readonly executable: string;
+  readonly signal: AbortSignal;
+}
+
+interface GitDenialInterval {
+  readonly startedAt: number;
+  readonly endedAt: number;
+  readonly markerHost: string;
+  readonly markerEndedAt: number;
+}
+
+export type GitDenialFailureStage =
+  | "input"
+  | "supervisor-identity"
+  | "log-read"
+  | "log-history"
+  | "event-time"
+  | "dns-marker"
+  | "policy-pair"
+  | "evidence-wait"
+  | "evidence-deadline";
+
 // Only stages assigned by this observer can reach the installed test's safe report.
 // Preserve the original error for direct callers without exporting its message.
-const failureStages = new WeakMap();
+const failureStages = new WeakMap<object, GitDenialFailureStage>();
 
-export function openShellGitDenialFailureStage(error) {
+export function openShellGitDenialFailureStage(error: unknown): GitDenialFailureStage | undefined {
   return error !== null && typeof error === "object" ? failureStages.get(error) : undefined;
 }
 
@@ -46,7 +96,7 @@ const executables = new Set([
   "/usr/libexec/git-core/git-remote-http",
 ]);
 
-function fingerprint(line) {
+function fingerprint(line: ObservedLogLine): string {
   const { fields, ...metadata } = line;
   return createHash("sha256")
     .update(
@@ -55,7 +105,7 @@ function fingerprint(line) {
     .digest("hex");
 }
 
-function eventTime(value) {
+function eventTime(value: string | null) {
   // The real gRPC adapter emits UTC with nine fractional digits. Reject date
   // normalization, but compare millisecond buckets so the final bucket survives.
   assert.ok(
@@ -69,10 +119,10 @@ function eventTime(value) {
       new Date(time).toISOString() === `${value.slice(0, 23)}Z`,
     "Git denial has an invalid event time",
   );
-  return time;
+  return { milliseconds: time, timestamp: value };
 }
 
-function policyWarning(line) {
+function policyWarning(line: ObservedLogLine): boolean {
   if (
     line.source !== "sandbox" ||
     line.level !== "WARN" ||
@@ -90,10 +140,13 @@ function policyWarning(line) {
   // hostname, different port, or malformed address as the staged TCP destination.
   const ipv4 = /^([^:[\]]+):443$/.exec(destination);
   const ipv6 = /^\[([0-9a-fA-F:.]+)\]:443$/.exec(destination);
-  return (ipv4 !== null && isIP(ipv4[1]) === 4) || (ipv6 !== null && isIP(ipv6[1]) === 6);
+  return (
+    (ipv4?.[1] !== undefined && isIP(ipv4[1]) === 4) ||
+    (ipv6?.[1] !== undefined && isIP(ipv6[1]) === 6)
+  );
 }
 
-function appendedIndex(baseline, current) {
+function appendedIndex(baseline: readonly string[], current: readonly string[]): number {
   const anchor = baseline.at(-1);
   if (anchor === undefined) {
     assert.ok(current.length < ringSize, "Git denial lost its empty baseline");
@@ -115,7 +168,7 @@ function appendedIndex(baseline, current) {
   return appendedAt;
 }
 
-function stagedDenial(line) {
+function stagedDenial(line: ObservedLogLine): boolean {
   return (
     line.message === "Denied staged transparent connection" ||
     (line.message.startsWith("NET:OPEN ") && line.message.includes("[reason:transparent_tcp_"))
@@ -139,15 +192,21 @@ export function createOpenShellGitDenial({
   readSupervisor,
   executable,
   signal,
-}) {
+}: GitDenialOptions) {
   assert.ok(executables.has(executable), "unsupported Git HTTPS executable");
   assert.ok(
-    workspace && sandbox && sandboxId && supervisor.sandboxId === sandboxId,
+    workspace &&
+      sandbox &&
+      sandboxId &&
+      supervisor !== null &&
+      typeof supervisor === "object" &&
+      "sandboxId" in supervisor &&
+      supervisor.sandboxId === sandboxId,
     "Git denial requires the selected Sandbox identity",
   );
   const identity = structuredClone(supervisor);
-  const reader = openShellSandboxLogReader(gatewayClient);
-  const snapshots = new WeakMap();
+  const getSandboxLogs = gatewayClient.getSandboxLogs.bind(gatewayClient);
+  const snapshots = new WeakMap<object, readonly string[]>();
   const message = `NET:OPEN [MED] DENIED ${executable}(0) -> github.com:443 [reason:${reason}]`;
 
   async function sameSupervisor() {
@@ -158,9 +217,9 @@ export function createOpenShellGitDenial({
     );
   }
 
-  async function read(timeoutMs) {
+  async function read(timeoutMs: number) {
     const readSignal = AbortSignal.any([signal, AbortSignal.timeout(Math.min(timeoutMs, 5000))]);
-    const { lines, bufferTotal } = await reader.getSandboxLogs(
+    const { lines, bufferTotal } = await getSandboxLogs(
       { workspace, sandbox, lines: ringSize },
       readSignal,
     );
@@ -176,7 +235,7 @@ export function createOpenShellGitDenial({
   }
 
   return Object.freeze({
-    async snapshot() {
+    async snapshot(): Promise<object> {
       await sameSupervisor();
       const { fingerprints } = await read(5000);
       const anchor = fingerprints.at(-1);
@@ -190,10 +249,14 @@ export function createOpenShellGitDenial({
       return snapshot;
     },
 
-    async expectAfter(before, { startedAt, endedAt, markerHost, markerEndedAt }) {
-      let stage = "input";
+    async expectAfter(
+      before: object,
+      { startedAt, endedAt, markerHost, markerEndedAt }: GitDenialInterval,
+    ) {
+      let stage: GitDenialFailureStage = "input";
       try {
-        assert.ok(snapshots.has(before), "Git denial requires its own baseline");
+        const baseline = snapshots.get(before);
+        assert.ok(baseline, "Git denial requires its own baseline");
         assert.ok(
           Number.isSafeInteger(startedAt) &&
             Number.isSafeInteger(endedAt) &&
@@ -211,8 +274,7 @@ export function createOpenShellGitDenial({
           "Git denial requires a unique DNS marker host",
         );
         const markerMessage = `NET:REFUSE [MED] DENIED ${markerHost} [reason:policy_dns_ineligible]`;
-        const baseline = snapshots.get(before);
-        let previous = [];
+        let previous: readonly string[] = [];
         const deadline = performance.now() + 20_000;
         while (performance.now() < deadline) {
           stage = "supervisor-identity";
@@ -235,13 +297,14 @@ export function createOpenShellGitDenial({
           let count = 0;
           let pending = false;
           let observedMarker = false;
-          let lastGitTime;
+          let lastGitTime: string | undefined;
           // Examine every staged denial, including other executables and evaluator
           // errors. Interleaved warnings must not lend their reason to a Git OCSF
           // event. Only a trailing valid warning may await the next pushed batch.
           for (let index = appendedAt; index < lines.length; index += 1) {
             stage = "event-time";
             const warning = lines[index];
+            assert.ok(warning, "Git denial log ring contains a missing record");
             if (warning.message === markerMessage) {
               const time = eventTime(warning.time);
               stage = "dns-marker";
@@ -250,10 +313,10 @@ export function createOpenShellGitDenial({
                   warning.source === "sandbox" &&
                   warning.level === "OCSF" &&
                   warning.target === "ocsf" &&
-                  time >= endedAt &&
-                  time <= markerEndedAt &&
+                  time.milliseconds >= endedAt &&
+                  time.milliseconds <= markerEndedAt &&
                   lastGitTime !== undefined &&
-                  lastGitTime <= warning.time,
+                  lastGitTime <= time.timestamp,
                 "Git denial DNS marker is invalid or precedes its evidence",
               );
               observedMarker = true;
@@ -263,7 +326,7 @@ export function createOpenShellGitDenial({
               continue;
             }
             const warningTime = eventTime(warning.time);
-            if (warningTime < startedAt || warningTime > endedAt) {
+            if (warningTime.milliseconds < startedAt || warningTime.milliseconds > endedAt) {
               continue;
             }
             stage = "dns-marker";
@@ -289,12 +352,14 @@ export function createOpenShellGitDenial({
             const time = eventTime(line.time);
             stage = "policy-pair";
             assert.ok(
-              warningTime <= time && time <= endedAt && warning.time <= line.time,
+              warningTime.milliseconds <= time.milliseconds &&
+                time.milliseconds <= endedAt &&
+                warningTime.timestamp <= time.timestamp,
               "Git denial has competing or unpaired staged records",
             );
             count += 1;
-            if (lastGitTime === undefined || lastGitTime < line.time) {
-              lastGitTime = line.time;
+            if (lastGitTime === undefined || lastGitTime < time.timestamp) {
+              lastGitTime = time.timestamp;
             }
             index += 1;
           }

@@ -899,7 +899,7 @@
         "Git denial receipt refuses foreign, incomplete, and ambiguous log histories",
         "Git denial receipt rejects normalized or noncanonical event dates",
         "Git denial receipt refuses a replaced supervisor before or during the read",
-        "Git denial command retains non-403 failure categories without output"
+        "Git removal denial command reports only signed or transport failures"
       ]
     },
     {
