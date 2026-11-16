@@ -98,7 +98,8 @@ The profile uses the existing Sandbox members `provisionHarness`, `harnessEndpoi
 
 | Member or behaviour | Owner of the decision |
 |---|---|
-| `SandboxDriver.harnessTransportCredential?: "verifier"`: Compute delivers the transport verifier, never the raw bearer, to a provider-owned dedicated Harness | this RFC (smallest piece, can land first) |
+| `SandboxDriver.harnessTransportCredential?: "verifier"`: Compute delivers the transport verifier, never the raw bearer, to a provider-owned dedicated Harness | this RFC ([#6345](https://github.com/openclaw/openclaw-enterprise/pull/6345)) |
+| `SandboxDriver.maintenanceIntervalMs?` with `existingHarnessOnly` on the Compute revision and Sandbox Harness contexts: periodic maintenance of an active revision reports a missing Harness and never recreates it; a Driver that declares the interval must implement `provisionHarness` | this RFC ([#6098](https://github.com/openclaw/openclaw-enterprise/pull/6098)) |
 | `SandboxHarnessEndpoint.externalWorkspaceOwner.generationSha256` + Gateway external-sandbox turn policy | RFC-0030 |
 | Protected workspace capability, first-choice pin, consumer acknowledgment, bootstrap Gateway for the first node setup | RFC-0031, RFC-0023 amendment |
 | One package registration with `sandbox`, `credential_gateway` and `credential_proxy` views | RFC-0016 amendment |
@@ -238,7 +239,7 @@ fixture package (kit) or a real host (installed).
 
 ## Delivery and verification
 
-1. Verifier-only transport, with its validator and kit case (small, inert unless declared).
+1. Verifier-only transport, with its validator and kit case (small, inert unless declared). Maintenance cadence for an active provider Harness (#6098) is equally inert unless declared.
 2. RFC-0030 implementation with the generic names, the upstream OpenClaw change, and the public node-launch export.
 3. RFC-0023 amendment implementation (first-choice pin, consumer acknowledgment, bootstrap Gateway), then the paired
    registration of the RFC-0016 amendment.
