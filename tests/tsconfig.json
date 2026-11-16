@@ -208,6 +208,7 @@
     "helpers/runtime-image-model-probe.ts",
     "helpers/runtime-image-native-download-clients.ts",
     "helpers/runtime-image-memory.ts",
+    "helpers/runtime-image-startup.ts",
     "helpers/runtime-image-gateway-restart.ts",
     "helpers/runtime-model-probe-observation.ts",
     "helpers/production-tui-otel.ts",
