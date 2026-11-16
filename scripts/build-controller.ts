@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 // Resolve the source checkout, even when the caller starts outside the repository.
 const repository = fileURLToPath(new URL("../", import.meta.url));
 const [engine = "docker", ...args] = process.argv.slice(2);
-if (!["docker", "podman"].includes(engine)) {
-  throw new Error("Usage: node scripts/build-controller.mjs [docker|podman] [build options]");
+if (engine !== "docker" && engine !== "podman") {
+  throw new Error("Usage: node scripts/build-controller.ts [docker|podman] [build options]");
 }
 const revision = execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
   cwd: repository,

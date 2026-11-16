@@ -50,7 +50,7 @@ Gateway/Agent pairs before creating state. `prepareK3dRuntimeImages` imports the
 selected artifact or builds source when both are absent; selected pairs retain their immutable references.
 Controller build selection is independent.
 
-`scripts/ci/prepare.mjs:imageBuildArgs` restores read-only caches, including
+`scripts/ci/image-build-cache.ts:imageBuildArgs` restores read-only caches, including
 `k3d-otel`. `prepareLane` primes selected `sourceBuildFiles`;
 each OpenShell lane builds its stack. Tests inherit builder and epoch,
 not cache credentials; installers still build source.
@@ -201,9 +201,9 @@ not include tenant workloads or complete Pod specifications.
 
 The runtime image recipe pins compatible OpenClaw, Codex-plugin and Slack-plugin releases together with the Codex app-server version required by the plugin. Image startup smoke verifies fresh-home plugin loading, actual app-server initialization, and nested Codex home ownership for generated images and credential files before credentialed tests. Routing additionally requires the Gateway identity-scope contract; embedded continuity requires outgoing media to remain visible through history and artifact APIs across Pod replacement. Image builds alone prove none of these outcomes.
 
-`scripts/ci/prepare.mjs:reuseEngineImage` asks BuildKit whether the restored cache
-resolves to an image already in the engine; a cache miss builds it. In CI, the
-probe and subsequent build share the remaining `CI_RUNNER_DEADLINE_MS` budget,
+`scripts/ci/image-build-cache.ts:reuseEngineImage` uses BuildKit's scalar
+SHA-256 config digest to inspect the engine. A failed reuse probe falls back to
+the build. In CI, both share the remaining `CI_RUNNER_DEADLINE_MS` budget,
 reserving three minutes for preparation and tests. Exhaustion reports `Image
 build out of lane time`, starts no further build, and leaves owned-tag removal to
 job cleanup. Local runs and main's cache warmer have no lane deadline. The warmer
