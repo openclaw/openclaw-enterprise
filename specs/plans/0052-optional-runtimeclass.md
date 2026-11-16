@@ -5,7 +5,7 @@ rfc: ../rfcs/0040-runtimeclass-agnostic-deployment.md
 # Implementation plan: remove OCE RuntimeClass configuration and the PSA exemption
 
 - **ID:** TASK-0052
-- **Delivery status:** Planned
+- **Delivery status:** In progress
 - **Owner:** OCE deployment and OpenShell Sandbox Driver maintainers
 - **Authority:** [Platform architecture](../../docs/design.md#implementation-status) and [OpenShell Sandbox Driver](../../docs/reference/drivers/openshell-sandbox.md)
 - **Source baseline:** `81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92`
@@ -145,16 +145,16 @@ inspection supports the assumption but does not replace no-exemption live proof.
 
 ## Verification
 
-Product checks are planned, not executed by this documentation task.
+Required proof is listed below; executed checks and gaps are recorded afterward.
 
-| Required outcome | Real proof |
-| --- | --- |
-| OCE has no RuntimeClass configuration | Real Driver registration accepts class-free input and rejects both removed keys. Render paired inputs and real charts; inspect requests, gateway values, preparation Pods, and launcher/CI arguments. Audit remaining references for upstream protocol or historical ownership. |
-| No-exemption deployment works | Use fresh disposable loopback k3d with no RuntimeClass objects, no custom PSA exemption, restricted tenant namespaces, and enforcing NetworkPolicies. Helm-install paired templates and OCC/PostgreSQL. Deploy real Codex and native OpenClaw Agents through the API and durable worker; prove model turns, native workspace preparation, reconciliation/adoption, and cleanup. |
-| Both development modes work | Extend existing `local-first-agent-openshell-real.test.mjs`, `local-first-agent-openshell-k3d-real.test.mjs`, and relevant `dev-up` coverage. Neither startup path mounts an admission file or supplies its API server flag. |
-| PSA remains effective | Real privileged and forbidden-capability Pods are rejected in the tenant namespace while actual OpenShell workloads are admitted. Retain network and filesystem enforcement checks. |
-| Independent sizing still works | Retain installation and per-Agent CPU/memory override coverage, including invalid quantities and effective request/limit checks. |
-| CI runs the proof | Update OpenShell and launcher lane descriptors; audit selection. Run focused integrations, Go checks, typecheck, lint, formatting, workspace isolation, and docs checks. Register new erasable-TypeScript tests in CI. |
+| Required outcome                      | Real proof                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OCE has no RuntimeClass configuration | Real Driver registration accepts class-free input and rejects both removed keys. Render paired inputs and real charts; inspect requests, gateway values, preparation Pods, and launcher/CI arguments. Audit remaining references for upstream protocol or historical ownership.                                                                                                 |
+| No-exemption deployment works         | Use fresh disposable loopback k3d with no RuntimeClass objects, no custom PSA exemption, restricted tenant namespaces, and enforcing NetworkPolicies. Helm-install paired templates and OCC/PostgreSQL. Deploy real Codex and native OpenClaw Agents through the API and durable worker; prove model turns, native workspace preparation, reconciliation/adoption, and cleanup. |
+| Both development modes work           | Extend existing `local-first-agent-openshell-real.test.mjs`, `local-first-agent-openshell-k3d-real.test.mjs`, and relevant `dev-up` coverage. Neither startup path mounts an admission file or supplies its API server flag.                                                                                                                                                    |
+| PSA remains effective                 | Real privileged and forbidden-capability Pods are rejected in the tenant namespace while actual OpenShell workloads are admitted. Retain network and filesystem enforcement checks.                                                                                                                                                                                             |
+| Independent sizing still works        | Retain installation and per-Agent CPU/memory override coverage, including invalid quantities and effective request/limit checks.                                                                                                                                                                                                                                                |
+| CI runs the proof                     | Update OpenShell and launcher lane descriptors; audit selection. Run focused integrations, Go checks, typecheck, lint, formatting, workspace isolation, and docs checks. Register new erasable-TypeScript tests in CI.                                                                                                                                                          |
 
 Live proof needs the [Kubernetes prerequisites](../../docs/testing/kubernetes.md),
 a compatible default node runtime, approved immutable images, authorized model
@@ -165,19 +165,47 @@ skipped cases leave proof incomplete; do not replace dependencies with mocks.
 
 ## Blockers and delivery record
 
-- **Before implementation:** submit the Driver contract RFC for human review.
-- **Before completion:** pass no-exemption Agent and launcher workflows. No
-  replacement admission policy is planned.
-- **Planning only:** no runtime or chart behavior changed. Record implementation
-  commits, results, limits, and current-documentation links before completion.
-- **Plan checks:** all 18 local link targets and whitespace checks pass.
-  Repository docs, spec, length, formatting, and workspace validation remain
-  blocked by missing dependencies. Approximate length is 1,400 words; the
-  repository word-count check remains pending. No product tests run.
+- RFC-0040 was submitted in [PR #6335](https://github.com/openclaw/openclaw-enterprise/pull/6335)
+  at `edbe5ec43` before implementation. Its decision remains Proposed.
+- Implementation removes both Driver settings, emitted class fields, development
+  and CI class creation, handler requirements, and API server PSA exemption setup.
+  CI now checks privileged and forbidden-capability rejection without an exemption.
+  The upstream wire schema and sanitized provider error recognition remain protocol
+  concerns, not OCE placement configuration.
+- Current owners updated: OpenShell/Compute references, Kubernetes/EKS and remote
+  Harness guides, paired snippets, three affected flow pages, and testing guides.
+  No public API or supported environment-variable cheat-sheet inventory changed;
+  removed test selectors belonged to CI descriptors. No image pins changed.
+- `pnpm typecheck`, `pnpm lint`, `pnpm check:workspace`, formatting, and CI suite
+  selection audit pass against the implementation worktree based on `edbe5ec43`.
+  `go test ./internal/occdev` passes. `pnpm docs:check` validates 352 pages,
+  5,880 links, and 127 specifications; no page exceeds its allowed hard limit.
+- Focused integration commands selecting Sandbox startup, configuration, workspace,
+  Codex, IPv6, CI OpenShell/preparation, and adjacent admission/registration cases
+  report **575 passed, 0 failed, 8 skipped**. Skips require native runtime or
+  production controller images. These prove composed source and harness behavior,
+  not a real OpenShell deployment.
+- Full conformance reports **3692 passed, 3 failed**: repository-credential container
+  tests find host `/usr/bin/gh` 2.97.0 instead of pinned 2.103.2. A focused retry
+  selecting the installed 2.103.2 binary then fails because `node:24-bookworm` is
+  absent locally. These unrelated fixture prerequisites remain unresolved.
+- Required no-exemption model turns and both live launcher workflows remain
+  **unverified**: authorized model credentials, selected runtime/controller images,
+  and disposable database inputs are not configured. No integration waiver is
+  assumed; keep delivery In progress and the PR draft until proof is complete.
+- Main provisioning and development flow validators pass. The CI-preparation
+  companion remains a linked fragment, not a standalone flow; the standalone
+  validator reports its pre-existing missing top-level sections. Keep long current
+  references/flows together because each owns a complete existing workflow;
+  remove repetition rather than split this change into competing behavior owners.
 
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-16: Submitted RFC-0040, implemented removal, and recorded source checks
+  and remaining live-proof prerequisites in PR #6335; baseline `edbe5ec43`;
+  session `01a1e535-91ca-7273-913f-aaacfd69c1c2`.
 
 - 2026-11-16: Revised at the user's direction to remove OCE RuntimeClass ownership
   completely, including installation and per-Agent options. Baseline

@@ -24,10 +24,7 @@ mock.module("../../scripts/ci/openshell.ts", {
     prepareOpenShellClusterBootstrap: async () => ({
       k3sImage,
       kubectl,
-      runtimeClass: "openshell-sandbox",
-      runtimeHandler: "runc",
     }),
-    prepareOpenShellPodSecurityAdmission: async () => ({ k3dArgs: [] }),
     prepareOpenShell: async ({
       cluster,
       registerImage,

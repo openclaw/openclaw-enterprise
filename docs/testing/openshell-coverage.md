@@ -274,7 +274,7 @@ PostgreSQL and the queued worker. It renders gateway configuration without
 installing gateway workloads. Selected Drivers create the gateway, signing key,
 and Workspace. The test checks zero persisted Agents, actual Pod readiness,
 gateway health, Workspace ownership, and distinct resources for a later Namespace.
-Operator-installed CRDs, RuntimeClass, RBAC and Envoy Agent routing are prerequisites.
+Prerequisites: operator-installed CRDs, RBAC and Envoy Agent routing. Retain restricted tenant PSA; OCE configures no RuntimeClass or exemption.
 They do not create the namespace-owned OpenShell gateway or Workspace.
 
 Select `OCC_TEST_NAMESPACE_OPENSHELL_REAL=1` with the prepared `openshell` lane

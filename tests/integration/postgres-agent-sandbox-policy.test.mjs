@@ -35,7 +35,6 @@ async function createPolicyApp(t, recordOperations = false, { laxDriver = false 
   const sandboxConfiguration = {
     gateway: { workspaceMode: "operator" },
     kubernetes: {
-      runtimeClassName: "openshell-sandbox",
       serviceAccount: { mode: "gatewayConfigured" },
       sandboxDataMount: {
         subPath: "workspace",

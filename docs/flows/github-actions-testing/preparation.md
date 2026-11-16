@@ -1,3 +1,9 @@
+---
+created: 2026-09-09
+updated: 2026-11-16
+last_updated_session: 01a1e535-91ca-7273-913f-aaacfd69c1c2
+---
+
 # CI resource preparation
 
 [Parent flow](../github-actions-testing.md).
@@ -235,13 +241,14 @@ Gateway v1.6.7 controllers and creates a private test CA. It imports immutable
 controller and runtime references so OCC can reach Envoy through its ClusterIP
 Service.
 
-OpenShell preparation uses digest-pinned K3s v1.36.4 with `runc`, installs
-matching kubectl and Agent Sandbox resources, obtains the OpenShell CLI and chart,
-and imports gateway, sandbox, and supervisor images. During cluster creation,
-k3d mounts the private admission file read-only on the server. The file exempts
-only the selected RuntimeClass. It exempts no namespaces or users. The API must reject a violating ordinary Pod in a restricted
-namespace and admit it with the selected class. A smoke Pod checks that the class
-runs. The full lane checks filesystem, privilege, and binary-scoped Layer 7
+OpenShell preparation uses digest-pinned K3s v1.36.4, installs matching kubectl
+and Agent Sandbox resources, obtains the OpenShell CLI and chart, and imports
+gateway, sandbox, and supervisor images. `prepareOpenShellClusterBootstrap` returns
+only the pinned node image and kubectl selection; `createK3dPreparation` creates
+the cluster without an OCE admission file or API server admission override.
+`prepareOpenShell` requires PSA to reject a violating Pod in a restricted namespace
+and runs a smoke Pod on the default node runtime. OCE creates no RuntimeClass or
+PSA exemption. The full lane checks filesystem, privilege, and binary-scoped Layer 7
 network policy enforcement by the supervisor. The Harness and supervisor receive
 neither `SYS_PTRACE` nor `DAC_READ_SEARCH`.
 

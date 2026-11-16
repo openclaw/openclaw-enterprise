@@ -332,7 +332,6 @@ export function registerConnectedEgressInputPreflightCases(): void {
       controllerSelector: "app=controller",
       openShellGatewayNamespace: "openshell",
       openShellGatewaySelector: "app=gateway",
-      runtimeClass: "openshell",
       oceCommit: "a".repeat(40),
       harnessCommit: "d".repeat(40),
       supplierCommit: "b".repeat(40),

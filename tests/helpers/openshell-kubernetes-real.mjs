@@ -637,7 +637,6 @@ export function createOpenShellInstallationConfiguration({
   platformNamespace,
   gatewayImage,
   codexImage,
-  openShellRuntimeClass = "openshell-sandbox",
   cluster,
 }) {
   const configuration = createKubernetesInstallationConfiguration({
@@ -707,7 +706,6 @@ export function createOpenShellInstallationConfiguration({
         networkPolicyResources: [],
       },
       kubernetes: {
-        runtimeClassName: openShellRuntimeClass,
         // Match the Compute-owned Harness budget. The cluster's 1 GiB default
         // can OOM-kill a real worker while it installs the Gateway bundle.
         agentResources: structuredClone(
@@ -945,7 +943,7 @@ export function openShellGatewayNetworkPolicies(namespace, apiPeers) {
  *   codexCommandGraceMs?: number | undefined,
  *   modelAtCapacityRetry?: Parameters<typeof retryModelAtCapacity>[1],
  *   openShellGatewayImage?: string | undefined, openShellSandboxImage?: string | undefined,
- *   openShellSupervisorImage?: string | undefined, openShellRuntimeClass?: string | undefined,
+ *   openShellSupervisorImage?: string | undefined,
  *   openShellHelmPath?: string | undefined, openShellHelmChart?: string | undefined,
  *   openShellWorkspaceHelmChart?: string | undefined, openShellChartVersion?: string | undefined,
  *   commandTimeoutMs?: number | undefined, signal?: AbortSignal | undefined,
@@ -965,7 +963,6 @@ export function createOpenShellKubernetesFixture({
   openShellGatewayImage,
   openShellSandboxImage,
   openShellSupervisorImage,
-  openShellRuntimeClass = "openshell-sandbox",
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
@@ -1060,7 +1057,6 @@ export function createOpenShellKubernetesFixture({
       maxBuffer: 1024 * 1024,
     });
     const kubeconfig = await base.validatePrerequisites();
-    await kubectl("get", "runtimeclass", openShellRuntimeClass, "-o", "json");
     const resources = await kubectl("api-resources", "--api-group=agents.x-k8s.io", "-o", "name");
     assert.match(
       resources,
@@ -1270,7 +1266,6 @@ export function createOpenShellKubernetesFixture({
         "--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
         "--set=workspaceResources.enabled=false",
         "--set=podSecurityContext.seccompProfile.type=RuntimeDefault",
-        `--set-string=server.defaultRuntimeClassName=${openShellRuntimeClass}`,
         ...chartImageValues("gateway.image", openShellGatewayImage),
         ...chartImageValues("sandboxRuntime.image", openShellSandboxImage),
         ...chartImageValues("supervisor.image", openShellSupervisorImage),
@@ -1680,11 +1675,7 @@ export function createOpenShellKubernetesFixture({
   }
 
   function assertApprovedOpenShellPrivileges(pod) {
-    assert.equal(
-      pod.spec.runtimeClassName,
-      openShellRuntimeClass,
-      "OpenShell Pods must use the trusted RuntimeClass selected for the admission exemption.",
-    );
+    assert.equal(pod.spec.runtimeClassName, undefined, "OCE must not select a runtime class.");
     const initCapabilities = new Set(
       (pod.spec.initContainers ?? []).flatMap(
         (container) => container.securityContext?.capabilities?.add ?? [],

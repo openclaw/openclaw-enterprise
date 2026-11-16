@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: sjenning
 ---
 
@@ -9,6 +9,7 @@ author: sjenning
 - **ID:** RFC-0040
 - **Created:** 2026-11-16
 - **Last updated:** 2026-11-16
+- **RFC and implementation PR:** [#6335](https://github.com/openclaw/openclaw-enterprise/pull/6335)
 - **Implementation plan:** [TASK-0052](../plans/0052-optional-runtimeclass.md)
 - **Related:** [RFC-0038](0038-operator-scratch-volumes.md), [OpenShell Sandbox Driver](../../docs/reference/drivers/openshell-sandbox.md)
 
@@ -107,9 +108,11 @@ RFC-0038's OCE-owned per-Agent RuntimeClass selection, not its resource sizing.
 ## Delivery and verification
 
 [TASK-0052](../plans/0052-optional-runtimeclass.md) owns implementation order,
-checks, and results. Submission permits implementation alongside RFC review,
-subject to specific holds. Missing cluster, database, image, or model prerequisites
-leave AC-2 through AC-4 unverified. No live proof has run for this proposal.
+checks, and results. Submitted in PR #6335 before implementation. Configuration,
+provisioning, and exemption removal are implemented on that branch; focused
+integration and source checks pass. Missing selected images, database inputs,
+and model credentials leave AC-2 through AC-4 live proof incomplete. No live
+Agent proof has run for this proposal. Decision status remains Proposed.
 
 ## Rationale and alternatives
 
