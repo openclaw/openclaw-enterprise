@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { createServer } from "node:tls";
 import { chromium } from "playwright";
+import { consoleAssetPaths } from "../../apps/controller/src/console-assets.ts";
 import { prepareQaConsoleTheme } from "./qa-installation.mjs";
 import { waitFor } from "./qa-wait.ts";
 import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.ts";
@@ -14,6 +15,7 @@ import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-ch
 // Failure evidence uses fixed resource classes and error names, never page content or URLs.
 function consoleLoginDiagnostics(f, page) {
   const origin = new URL(f.consoleUrl).origin;
+  const assetIds = new Map([...consoleAssetPaths()].map((path, index) => [path, index]));
   const resources = [];
   const pageErrors = [];
   let navigationStatus = null;
@@ -27,19 +29,40 @@ function consoleLoginDiagnostics(f, page) {
       "/api/auth/providers": "providers",
       "/api/auth/sign-in/email": "sign-in",
     }[url.pathname];
-    return (
+    const resource =
       endpoint ??
-      { document: "document", script: "script", stylesheet: "stylesheet" }[request.resourceType()]
-    );
+      { document: "document", script: "script", stylesheet: "stylesheet" }[request.resourceType()];
+    return resource === undefined
+      ? undefined
+      : { resource, assetId: assetIds.get(url.pathname) ?? null };
   };
   const retain = (request, status) => {
     const resource = classify(request);
-    if (resource !== undefined) {
-      resources.push(status === undefined ? { resource, failed: true } : { resource, status });
-      if (resources.length > 16) {
-        resources.shift();
-      }
+    if (resource === undefined) {
+      return;
     }
+    const important = status === undefined || status >= 400;
+    if (resources.length === 16) {
+      const replace = important
+        ? resources.findIndex((entry) => !entry.failed && entry.status < 400)
+        : -1;
+      if (replace === -1) {
+        return;
+      }
+      resources.splice(replace, 1);
+    }
+    if (status !== undefined) {
+      resources.push({ ...resource, status });
+      return;
+    }
+    const code = request.failure()?.errorText?.replace(/^net::/, "");
+    const failureCode =
+      "ERR_ABORTED ERR_CONNECTION_RESET ERR_CONNECTION_CLOSED ERR_CONNECTION_REFUSED ERR_CONNECTION_TIMED_OUT ERR_TIMED_OUT ERR_HTTP2_PROTOCOL_ERROR ERR_CONTENT_DECODING_FAILED ERR_CONTENT_LENGTH_MISMATCH ERR_EMPTY_RESPONSE ERR_FAILED ERR_NAME_NOT_RESOLVED ERR_SSL_PROTOCOL_ERROR ERR_CERT_AUTHORITY_INVALID ERR_BLOCKED_BY_RESPONSE ERR_BLOCKED_BY_CLIENT ERR_INCOMPLETE_CHUNKED_ENCODING ERR_NETWORK_CHANGED ERR_CONNECTION_ABORTED ERR_SSL_VERSION_OR_CIPHER_MISMATCH"
+        .split(" ")
+        .includes(code)
+        ? code
+        : "other";
+    resources.push({ ...resource, failed: true, failureCode });
   };
   const response = (value) => retain(value.request(), value.status());
   const failed = (request) => retain(request);

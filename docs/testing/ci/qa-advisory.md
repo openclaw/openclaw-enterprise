@@ -369,7 +369,8 @@ Startup failures report elapsed time, the 1,100,000 ms limit, and the observed
 exit code or signal. `timed out` identifies deadline expiry. A later `SIGPIPE`
 can follow teardown closing output pipes. Failure details are redacted; command
 arguments and protected output stay private. Console login failures retain
-[fixed state/status diagnostics](../../../tests/helpers/qa-browser.mjs).
+[fixed state/status diagnostics](../../../tests/helpers/qa-browser.mjs). Asset IDs
+index `consoleAssetPaths()`.
 
 The `startup timings` JSON contains at most 64 recognized CLI timings and an
 omitted-record count. Each reports stage, elapsed milliseconds and failure status
