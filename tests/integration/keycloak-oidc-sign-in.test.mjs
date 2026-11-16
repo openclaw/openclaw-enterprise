@@ -168,7 +168,7 @@ async function prepareInstallationFixture(t) {
   const recoveryAccount = record(admin.rows[0]);
   const adminId = text(recoveryAccount.id);
   const endpoints = {
-    issuer,
+    issuer: text(issuer),
     authorizationUrl: `${issuer}/protocol/openid-connect/auth`,
     tokenUrl: `${issuer}/protocol/openid-connect/token`,
     jwksUrl: `${issuer}/protocol/openid-connect/certs`,
