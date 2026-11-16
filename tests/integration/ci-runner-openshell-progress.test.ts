@@ -843,7 +843,10 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
     const partialLine = "partialLine" in control ? control.partialLine : undefined;
     const interruptedNames = "interruptedNames" in control ? control.interruptedNames : undefined;
     await t.test(label, async () => {
-      const chunks = await Array.fromAsync(reporter([fileStart, ...events]));
+      let stdout = "";
+      for await (const chunk of reporter([fileStart, ...events])) {
+        stdout += chunk;
+      }
       const evidence: FileEvidence = {
         measurements: [],
         testRunExercised: false,
@@ -853,7 +856,7 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
       const issues: Parameters<typeof readFileEvidence>[3] = [];
       readFileEvidence(
         {
-          stdout: chunks.join("") + (partialLine ?? ""),
+          stdout: stdout + (partialLine ?? ""),
           status: deadline ? null : 1,
           signal: deadline ? "SIGTERM" : null,
           ...(deadline ? { error: { code: "ETIMEDOUT" } } : {}),
@@ -874,7 +877,7 @@ test("CI binds upstream replacement progress to the case cutoff", async (t) => {
       assert.deepEqual(evidence.openShellReplacement, checkpoint);
       assert.equal(evidence.unfinishedStage, unfinishedStage);
       assert.equal(evidence.tests.length, deadline ? 0 : 1);
-      assert.doesNotMatch(chunks.join(""), /private-checkpoint-canary/u);
+      assert.doesNotMatch(stdout, /private-checkpoint-canary/u);
       for (const test of evidence.tests) {
         assert.equal(test.status, "failed");
         const failureType = timedOut ? "testTimeoutFailure" : undefined;
