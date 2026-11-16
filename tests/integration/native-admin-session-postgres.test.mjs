@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
 
-import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { injectJson as inject } from "../helpers/inject-json.mjs";
 import { waitFor, waitUntil } from "../helpers/wait-for.ts";
 import {
@@ -24,6 +23,11 @@ import {
   assertNativeWebSocketRejected,
   assertSocketClosesAfterMutation,
 } from "../helpers/native-admin-postgres.ts";
+import {
+  registerLeaseDependencyCases,
+  registerLeaseIndependentCookieCase,
+  registerLeaseReplacementAndRevocationCases,
+} from "./native-admin-session-lease-cases.ts";
 
 async function waitForAuditActions(pool, namespaceId, agentId, actions) {
   let remaining = actions;
@@ -509,39 +513,15 @@ test(
   },
 );
 
-for (const { dependency, owner, method } of [
-  { dependency: "an IAM", owner: "iamDriver", method: "authorize" },
-  { dependency: "an identity lookup", owner: "iamDriver", method: "lookupIdentity" },
-  { dependency: "a State", owner: "state", method: "read" },
-]) {
-  test(
-    `PostgreSQL native admin WebSocket lease closes as a dependency failure during ${dependency} outage`,
-    { ...requiresPostgres, timeout: 30_000 },
-    async (t) => {
-      const scenario = await openNativeAdminSocketScenario(t, "iam-outage");
-      // The replica holding the socket loses a dependency at the next lease renewal. An outage
-      // is not a revocation: the close names a dependency failure and writes no denial audit.
-      const target = scenario.apiB[owner];
-      const original = target[method];
-      t.after(() => {
-        target[method] = original;
-      });
-      const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
-        target[method] = async () => {
-          throw new Error(`${dependency} outage`);
-        };
-      });
-      t.diagnostic(`${dependency} outage closed native admin WebSocket in ${closedAfterMs}ms`);
-      await assertSocketAuditCloseReason(scenario, "dependency_failure");
-      const denials = await scenario.apiA.pool.query(
-        `SELECT count(*)::int AS count FROM occ.audit_events
-        WHERE namespace_id = $1 AND resource_id = $2 AND kind = 'authorization_denial'`,
-        [scenario.namespace.id, scenario.agent.id],
-      );
-      assert.equal(denials.rows[0].count, 0);
-    },
-  );
-}
+const leaseDependencies = {
+  openNativeAdminSocketScenario,
+  assertSocketAuditCloseReason,
+  async assertRevokedHttp(scenario) {
+    await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
+  },
+};
+
+registerLeaseDependencyCases(leaseDependencies);
 
 test(
   "PostgreSQL native admin WebSocket lease closes at the next renewal after Agent stop",
@@ -563,122 +543,7 @@ test(
   },
 );
 
-test(
-  "PostgreSQL native admin WebSocket lease closes at the next renewal after active revision replacement",
-  { ...requiresPostgres, timeout: 30_000 },
-  async (t) => {
-    const scenario = await openNativeAdminSocketScenario(t, "revision");
-    let nextRevision;
-    const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
-      nextRevision = await scenario.apiA.controller.deployAgent(
-        scenario.principal.id,
-        { namespaceId: scenario.namespace.id, agentId: scenario.agent.id },
-        resolveApprovedHarness,
-      );
-      assert.notEqual(nextRevision.id, scenario.revision.id);
-      await scenario.apiA.state.transact((unit) =>
-        unit.agents.compareAndSetActiveRevision(
-          scenario.namespace.id,
-          scenario.agent.id,
-          scenario.revision.id,
-          nextRevision.id,
-        ),
-      );
-    });
-    t.diagnostic(`active revision replacement closed native admin WebSocket in ${closedAfterMs}ms`);
-    await assertSocketAuditCloseReason(scenario, "revision_changed");
-    assert.ok(nextRevision, "revision replacement must create a successor revision");
-
-    const reconnectedHttp = await nativeGet(
-      scenario.apiB,
-      scenario.native,
-      scenario.nativeCookie,
-      "/after-revision",
-    );
-    assert.equal(reconnectedHttp.statusCode, 200, reconnectedHttp.body);
-    const reopened = await openNativeWebSocket(
-      scenario.port,
-      scenario.native,
-      scenario.nativeCookie,
-      "/session/reconnected",
-    );
-    t.after(() => reopened.destroy());
-    const latestConnect = await waitFor(
-      "reconnected WebSocket audit on replacement revision",
-      async () => {
-        const result = await scenario.apiA.pool.query(
-          `SELECT details
-           FROM occ.audit_events
-          WHERE namespace_id = $1
-            AND resource_kind = 'agent'
-            AND resource_id = $2
-            AND action = 'openclaw.agents.native_admin.websocket.connect'
-            AND details->'nativeAdmin'->>'revisionId' = $3
-          ORDER BY occurred_at DESC, id DESC
-          LIMIT 1`,
-          [scenario.namespace.id, scenario.agent.id, nextRevision.id],
-        );
-        return result.rows[0];
-      },
-      5_000,
-    );
-    assert.equal(
-      latestConnect.details.nativeAdmin.revisionId,
-      nextRevision.id,
-      "shared session reconnect must bind the current active revision",
-    );
-  },
-);
-
-test(
-  "PostgreSQL native admin WebSocket closes on API shutdown and disabled redeploy denies reuse",
-  { ...requiresPostgres, timeout: 30_000 },
-  async (t) => {
-    const scenario = await openNativeAdminSocketScenario(t, "shutdown-disabled");
-    const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
-      await scenario.apiB.app.close();
-    });
-    t.diagnostic(`API shutdown closed native admin WebSocket in ${closedAfterMs}ms`);
-    await assertSocketAuditCloseReason(scenario, "shutdown");
-
-    const disabledApi = await createApi(t, "shutdown-disabled-off", scenario.upstream.port, {
-      nativeAdminEnabled: false,
-    });
-    t.after(() => disabledApi.app.close());
-    const denied = await nativeGet(disabledApi, scenario.native, scenario.nativeCookie);
-    assert.equal(denied.statusCode, 403, denied.body);
-  },
-);
-
-// These cases exercise real PostgreSQL sessions, IAM and OCC relay admission. The HTTPS
-// peer is a transport fixture; native method/scope enforcement has separate runtime proof.
-for (const change of ["operate-revoked", "account-disabled"]) {
-  test(
-    `PostgreSQL chat socket closes when ${change}`,
-    { ...requiresPostgres, timeout: 30_000 },
-    async (t) => {
-      const scenario = await openNativeAdminSocketScenario(t, change, { mode: "chat" });
-      await assertSocketClosesAfterMutation(scenario.socket, async () => {
-        if (change === "operate-revoked") {
-          await scenario.apiA.pool.query(`DELETE FROM occ.iam_access_bindings WHERE role_id = $1`, [
-            scenario.operator.roleId,
-          ]);
-        } else {
-          const changed = await scenario.apiA.pool.query(
-            `UPDATE occ.human_authentication_accounts SET disabled = true, version = version + 1 WHERE user_id = $1`,
-            [scenario.operator.account.id],
-          );
-          assert.equal(changed.rowCount, 1, "the guarded account must exist before disabling it");
-        }
-      });
-      await assertSocketAuditCloseReason(
-        scenario,
-        change === "operate-revoked" ? "authorization_denied" : "session_invalid",
-      );
-      await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
-    },
-  );
-}
+registerLeaseReplacementAndRevocationCases(leaseDependencies);
 
 test(
   "PostgreSQL admin downgrade closes the old socket and reconnects only through chat",
@@ -702,27 +567,4 @@ test(
   },
 );
 
-test(
-  "PostgreSQL reconnect uses the new cookie while the original chat socket keeps its session",
-  { ...requiresPostgres, timeout: 30_000 },
-  async (t) => {
-    const scenario = await openNativeAdminSocketScenario(t, "cookie-change", { mode: "chat" });
-    const next = await createAgentPermissionSession(
-      scenario.apiA,
-      scenario.namespace.id,
-      scenario.agent.id,
-      "new-browser-account",
-      ["operate"],
-    );
-    const socket = await openNativeWebSocket(scenario.port, scenario.native, next.session.cookie);
-    t.after(() => socket.destroy());
-    // Deleting the original session closes only its socket, even after another account connects.
-    await assertSocketClosesAfterMutation(scenario.socket, () =>
-      scenario.apiA.pool.query(`DELETE FROM occ.session WHERE id = $1`, [
-        scenario.parentSession.id,
-      ]),
-    );
-    await assertSocketAuditCloseReason(scenario, "session_invalid");
-    assert.equal(socket.destroyed, false);
-  },
-);
+registerLeaseIndependentCookieCase(leaseDependencies);
