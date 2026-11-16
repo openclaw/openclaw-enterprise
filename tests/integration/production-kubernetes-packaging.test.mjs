@@ -428,27 +428,24 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
     "public-ingress",
   );
   assert.deepEqual(publicRule.ports, [{ protocol: "TCP", port: 8443 }]);
-  await assert.rejects(
-    render({ ...sandboxValues, "gatewayRouting.sandbox.domain": "127.1" }),
-    /gatewayRouting\.sandbox\.domain must be a DNS hostname usable after an Agent label/,
-  );
-  await assert.rejects(
-    render({ ...sandboxValues, "gatewayRouting.sandbox.domain": "api.0x10" }),
-    /gatewayRouting\.sandbox\.domain must be a DNS hostname usable after an Agent label/,
-  );
-  await assert.rejects(
-    render({ ...sandboxValues, "gatewayRouting.sandbox.domain": "api.123" }),
+  function assertDomainRejected(domain, expected) {
+    return assert.rejects(
+      render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain }),
+      expected,
+    );
+  }
+
+  const invalidAgentDomainMessage =
+    /gatewayRouting\.sandbox\.domain must be a DNS hostname usable after an Agent label/;
+  await assertDomainRejected("127.1", invalidAgentDomainMessage);
+  await assertDomainRejected("api.0x10", invalidAgentDomainMessage);
+  await assertDomainRejected(
+    "api.123",
     /gatewayRouting\.sandbox\.domain must be .*Agent label; use a DNS suffix/,
   );
-  await assert.rejects(
-    render({ ...sandboxValues, "gatewayRouting.sandbox.domain": "999.1.2.3" }),
-    /gatewayRouting\.sandbox\.domain must be a DNS hostname usable after an Agent label/,
-  );
+  await assertDomainRejected("999.1.2.3", invalidAgentDomainMessage);
   for (const domain of ["example.invalid", "preview.example.invalid"]) {
-    await assert.rejects(
-      render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain }),
-      /outside the OCE shared session cookie domain/,
-    );
+    await assertDomainRejected(domain, /outside the OCE shared session cookie domain/);
   }
   await assert.rejects(
     render({ ...sandboxValues, "gatewayRouting.sandbox.listenerPort": "10443" }),
@@ -502,14 +499,11 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
     `${"a".repeat(64)}.test`,
     "localhost",
   ]) {
-    await assert.rejects(
-      render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain }),
-      /must be a DNS hostname/,
-    );
+    await assertDomainRejected(domain, /must be a DNS hostname/);
   }
   for (const domain of [overlongDomain, hostnameLimitDomain]) {
-    await assert.rejects(
-      render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain }),
+    await assertDomainRejected(
+      domain,
       /must not exceed 214 characters, leaving room for the agent-<32 hex>\. prefix/,
     );
   }
