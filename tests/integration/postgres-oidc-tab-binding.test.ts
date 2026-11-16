@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import test, { type TestContext } from "node:test";
+import test from "node:test";
 import {
   fakeOidc,
   fixtureOidcIssuer,
   oidcUpgradeSettings,
 } from "../helpers/production-sign-in.mjs";
-import { proveTabBinding } from "../helpers/tab-binding.mjs";
+import { proveTabBinding } from "../helpers/tab-binding.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const clientId = "tabs-oidc-client";
@@ -21,14 +21,14 @@ test(
   requiresPostgres,
   async (t) => {
     assert.ok(databaseUrl);
-    let idp: ReturnType<typeof fakeOidc> | undefined;
+    let idp: { authorize(url: string, authorization: { subject: string }): string } | undefined;
     await proveTabBinding(t, databaseUrl, {
       name: "oidc",
       title: label,
-      start: (context: TestContext) => {
+      start: (context) => {
         idp = fakeOidc(context, { clientId, clientSecret });
       },
-      settings: (recoveryUserId: string) =>
+      settings: (recoveryUserId) =>
         oidcUpgradeSettings(recoveryUserId, fixtureOidcIssuer, { displayName: label }),
       secrets: {
         "occ-auth/secret": "tabs-oidc-binding-auth-test-secret-at-least-32-bytes",
@@ -37,7 +37,7 @@ test(
       },
       subject: aliceSubject,
       authorizationUrl: fixtureOidcIssuer.authorizationUrl,
-      code: (url: string) => {
+      code: (url) => {
         assert.ok(idp, "the provider starts before the browser authorization");
         return idp.authorize(url, { subject: aliceSubject });
       },
