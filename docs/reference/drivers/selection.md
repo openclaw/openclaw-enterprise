@@ -86,6 +86,10 @@ With bundled Kubernetes Compute, select the trusted package under
 same Driver ID and its `configuration` to `{}`. Configure the package once,
 under `drivers.sandbox.configuration`. The API and worker each load one
 registration and check its identity against the Agent revision.
+The package runs with the worker authority described above, in the process that holds
+the GitHub App key and custody key ([Helm](#supply-protected-git-credentials-with-helm)),
+so your review of it is the boundary for those keys. OCC still keeps the token out of
+the Agent and its Sandbox, authorizes each request and enforces withdrawal.
 
 For protected Git, match `repository.id` to the GitHub Backend's `drivers.repo`
 policy member. Set `repository.configuration.sessionDurationSeconds` and
@@ -94,6 +98,13 @@ from the Installation. External senders also omit `repository.openShell`.
 No native control socket or broker CA is required. The Driver supplies Sandbox
 repository access and `bindRepositoryGit`. Compute verifies the installed
 recipient before release.
+
+Protected Git material is prepared: the worker mints a repository-scoped installation
+token through the Token Service before any request and stores it encrypted. The sender
+reads that material and asks OCC to authorize each request, so the registry grant
+decides the push ref, pull request base and draft allowance. Keep no token cache, ref
+rule or draft record in the sender. Request-time exchange through `bindExchange`
+resolves material per request and does not cover repository Git.
 
 | Admission | Required behavior                                                                                                                                                                                                                             |
 | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
