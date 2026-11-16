@@ -559,6 +559,7 @@ async function buildStaticEgressFixture(
     });
   }
   const providerRequests = [];
+  /** @type {{ status: number, body?: unknown, contentType?: string, rawBody?: string | Buffer, trailers?: import("node:http").OutgoingHttpHeaders }} */
   let providerResponse = { status: 200, body: { output: "fixture answer" } };
   const createProvider = providerServer === undefined ? createHttpsServer : providerServer;
   const provider = createProvider({ key, cert }, async (request, response) => {
@@ -1093,6 +1094,7 @@ async function buildStaticEgressFixture(
       next,
       challenge,
       received,
+      /** @param {ReturnType<typeof capture>} captured */
       opening(captured, privateKey = exchangeKeys.privateKey, boundChallenge = challenge) {
         const encoded =
           definition["openshell.middleware.v1.HttpCredentialResolveRequest"].serialize(captured);
@@ -1113,6 +1115,8 @@ async function buildStaticEgressFixture(
   // owns the simulated downstream and gates synthetic provider access on the echoed custody.
   const exchangeByHandle = new Map();
   const exchangeByRequest = new WeakMap();
+  /** @param {ReturnType<typeof capture>} captured
+   * @param {ReturnType<typeof metadata>} [peer] */
   async function resolve(captured, peer) {
     const exchange = await beginExchange(peer);
     exchange.stream.write(exchange.opening(captured));
@@ -1229,9 +1233,13 @@ async function buildStaticEgressFixture(
     },
     providerRequests,
     provider,
-    async exchangeResponse(response, request) {
+    /** @param {typeof providerResponse} [response]
+     * @param {Record<string, unknown>} [request]
+     * @param {ReturnType<typeof metadata>} [peer]
+     * @returns {Promise<unknown>} */
+    async exchangeResponse(response = providerResponse, request, peer) {
       const captured = capture(request);
-      const { ready } = await resolve(captured);
+      const { ready } = await resolve(captured, peer);
       assert.ok(ready, "authority resolved this operation");
       assert.ok((await authorize(permitRequest(captured, ready))).allowed);
       const before = providerRequests.length;

@@ -32,8 +32,7 @@ import { requestId } from "../helpers/static-egress-request-id.ts";
 import { staticEgressFixture, wireTime } from "../helpers/static-egress.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
-// The fixture's dynamic gRPC client has no generated declarations. Narrow only the
-// fields these cases observe, and keep the ready message intact for the actual send.
+// The dynamic gRPC client has no generated declarations for the resolve reply.
 function resolvedWire(value: unknown) {
   const reply = asRecord(value);
   assert.ok(reply, "expected an authority resolve reply");
@@ -189,15 +188,8 @@ export function registerStaticEgressRequestCapacityCases(): void {
       start = Date.now();
       for (let i = 0; i < operations; i += 1) {
         elapsed += step;
-        const captured = f.capture();
-        const ready = resolvedWire(await f.resolve(captured, peer)).ready;
-        assert.ok(ready, `sequential operation ${i} should resolve`);
-        const authorization = asRecord(await f.authorize(f.permitRequest(captured, ready)));
-        assert.ok(asRecord(authorization?.allowed));
-        const protectedResponse = asRecord(
-          await f.protect(captured, await f.send(captured, ready)),
-        );
-        assert.ok(Buffer.isBuffer(protectedResponse?.body));
+        const protectedResponse = asRecord(await f.exchangeResponse(undefined, undefined, peer));
+        assert.ok(Buffer.isBuffer(protectedResponse?.body), `sequential operation ${i}`);
       }
       assert.equal(f.providerRequests.length, operations);
       assert.ok(
