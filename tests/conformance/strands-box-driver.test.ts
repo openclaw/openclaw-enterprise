@@ -25,11 +25,11 @@ import type {
   Namespace,
   SandboxHarnessContext,
 } from "../../packages/contracts/src/index.ts";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
+import { listen } from "../helpers/listen.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const driverSource = join(root, "deploy/examples/strands-box/driver");

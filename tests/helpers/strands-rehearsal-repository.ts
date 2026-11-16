@@ -10,7 +10,7 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { connect } from "node:tls";
 import { promisify } from "node:util";
-import { certificateAuthority, signedLeaf } from "./certificates.mjs";
+import { certificateAuthority, signedLeaf } from "./certificates.ts";
 import { temporaryDirectory } from "./temporary-directory.ts";
 
 const execute = promisify(execFile);

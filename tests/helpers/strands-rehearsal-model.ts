@@ -4,8 +4,8 @@ import { readFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { text } from "node:stream/consumers";
 import type { TestContext } from "node:test";
-import { listen } from "../fixtures/repository-credentials/process.mjs";
-import { harnessTlsFixture } from "./harness-tls.mjs";
+import { listen } from "../fixtures/repository-credentials/process.ts";
+import { harnessTlsFixture } from "./harness-tls.ts";
 
 // The caller owns the runtime and must stop it before this fixture's cleanup.
 // Only model responses are controlled; the runtime must retain the conversation.

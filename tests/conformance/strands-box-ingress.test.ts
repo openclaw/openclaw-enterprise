@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createFixedIngress } from "../../deploy/examples/strands-box/ingress/host-ingress.ts";
 import { createFixedRelay, probeNative } from "../../deploy/examples/strands-box/ingress/relay.ts";
-import { certificateAuthority, signedLeaf } from "../helpers/certificates.mjs";
+import { certificateAuthority, signedLeaf } from "../helpers/certificates.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const authority = "box-harness.pilot.svc.cluster.local";

@@ -50,7 +50,7 @@ OCC_TEST_STRANDS_SENDER_REHEARSAL=1 \
 For the existing runner's result accounting, choose fresh result paths:
 
 ```sh
-node scripts/ci/run-tests.mjs run strands-sender \
+node scripts/ci/run-tests.ts run strands-sender \
   --state "$RUN/state.json" --results "$RUN/results.json"
 ```
 

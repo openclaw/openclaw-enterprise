@@ -19,7 +19,7 @@ import type {
   CurrentGitRecipient,
   GitReceipt,
 } from "../../deploy/examples/strands-box/git/index.ts";
-import { signedLeaf } from "./certificates.mjs";
+import { signedLeaf } from "./certificates.ts";
 import { strandsRepositoryOriginFixture } from "./strands-rehearsal-repository.ts";
 
 const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");

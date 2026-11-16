@@ -22,13 +22,13 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { PostgresWorkQueue } from "../../packages/occ/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { cleanupNamespaces } from "../helpers/postgres-backend-state.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
+import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const driverSource = join(repository, "deploy/examples/strands-box/driver");

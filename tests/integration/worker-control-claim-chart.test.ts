@@ -7,7 +7,7 @@ import {
   chartTooling,
   parseProductionChart,
   renderProductionChart,
-} from "../helpers/production-chart.mjs";
+} from "../helpers/production-chart.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const tooling = await chartTooling();

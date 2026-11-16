@@ -115,7 +115,7 @@ async function main() {
     const resultPath = join(directory, selection.name + ".json");
     const log = await open(join(directory, selection.name + ".log"), "wx", 0o600);
     const args = [
-      "scripts/ci/run-tests.mjs",
+      "scripts/ci/run-tests.ts",
       "run",
       selection.lane,
       "--state",

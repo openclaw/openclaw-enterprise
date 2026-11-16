@@ -7,7 +7,7 @@ import type { TestContext } from "node:test";
 import {
   cleanEnvironment,
   temporaryDirectory,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 
 import { strandsRehearsalModel } from "./strands-rehearsal-model.ts";
 
