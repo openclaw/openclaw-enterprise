@@ -321,7 +321,7 @@ REPOSITORY_CREDENTIALS_LIVE=1 \
 REPOSITORY_CREDENTIALS_LIVE_AUTHORIZED=1 \
 REPOSITORY_CREDENTIALS_LIVE_CONTROL_SOCKET=/run/credential-service/control.sock \
 REPOSITORY_CREDENTIALS_LIVE_CA=/run/credential-service/public-ca.pem \
-  node --test tests/integration/repository-credentials-live.test.mjs
+  node --test tests/integration/repository-credentials-live.test.ts
 ```
 
 This exercises a real provider through the development-token sender, not OCC Agent
