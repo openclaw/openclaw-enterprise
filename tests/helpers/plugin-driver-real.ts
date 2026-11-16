@@ -52,8 +52,8 @@ import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
-  startWorkspaceGatewayHostRelay,
 } from "./envoy-workspace-gateway.mjs";
+import { startWorkspaceGatewayHostRelay } from "./workspace-gateway-host-relay.ts";
 import {
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
@@ -741,13 +741,12 @@ export async function createPluginDriverRealFixture(
     };
     await ensureEnvoyGatewayControllers(helpers);
     const plan = await createEnvoyWorkspaceGatewayPlan(context, { platformNamespace }, helpers);
-    const endpointPort: unknown = await startWorkspaceGatewayHostRelay(context, plan, {
+    const endpointPort = await startWorkspaceGatewayHostRelay(context, plan, {
       ...helpers,
       gatewayImage,
     });
     const { gatewayAuth } = plan.nativeOptions;
     const trustedProxies: unknown = gatewayAuth.trustedProxies;
-    assert.ok(typeof endpointPort === "number", "the Gateway relay must return its bound port");
     assert.ok(
       Check(Type.Array(Type.String()), trustedProxies),
       "the Gateway must supply trusted proxy CIDRs",
