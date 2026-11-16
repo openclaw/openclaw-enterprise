@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -70,7 +70,7 @@ const LABEL_COMPOSE_SERVICE = podmanSelected
 
 interface ComposeOptions {
   withLogging?: boolean;
-  removeApplicationImage?: boolean;
+  removeApplicationImages?: boolean;
 }
 
 type ExecutionMode = (typeof executionModes)[number];
@@ -269,7 +269,12 @@ async function cleanupProject(
 ) {
   const commandOptions = { env, secrets };
   const projectLabels = labelFilters([[LABEL_COMPOSE_PROJECT, project]]);
-  const applicationImage = `${project}-application`;
+  const applicationServices = podmanSelected
+    ? ["application"]
+    : ["bootstrap", "controller", "migrate", "worker"];
+  const imageTags = options.removeApplicationImages
+    ? applicationServices.map((service) => `${project}-${service}:latest`)
+    : [];
   const scopes = [
     { name: "Compose project", labels: projectLabels },
     ...[...namespaceIds].map((namespaceId) => ({
@@ -300,24 +305,22 @@ async function cleanupProject(
       await docker([...remove, ...ids], commandOptions).catch(() => {});
     }
   }
-  if (options.removeApplicationImage === true) {
-    await docker(["image", "rm", applicationImage], commandOptions).catch(() => {});
+  for (const tag of imageTags) {
+    await docker(["image", "rm", tag], commandOptions).catch(() => {});
   }
   const checks = resources.map(async ({ name, list }) => {
     const remaining = await dockerLines(list, commandOptions);
     assert.deepEqual(remaining, [], `test teardown must remove owned ${name}`);
   });
-  if (options.removeApplicationImage === true) {
-    checks.push(
-      (async () => {
-        const remaining = await dockerLines(
-          ["image", "ls", "-q", "--filter", `reference=${applicationImage}`],
-          commandOptions,
-        );
-        assert.deepEqual(remaining, [], "test teardown must remove the Podman application image");
-      })(),
-    );
-  }
+  checks.push(
+    ...imageTags.map(async (tag) => {
+      const remaining = await dockerLines(
+        ["image", "ls", "-q", "--filter", `reference=${tag}`],
+        commandOptions,
+      );
+      assert.deepEqual(remaining, [], `test teardown must remove the run-owned image ${tag}`);
+    }),
+  );
   throwCleanupFailures(await Promise.allSettled(checks), "Compose project inventory is not clean.");
 }
 
@@ -433,7 +436,7 @@ async function copyBootstrapServiceKey({
     timeoutMs: 60_000,
     secrets,
   });
-  await chmod(localFile, 0o600);
+  // Engine copy preserves the bootstrap output mode inside the private temporary directory.
   const outputStatus = await stat(localFile);
   assert.equal(outputStatus.mode & 0o777, 0o600);
   const output = parseJson(await readFile(localFile, "utf8"), "Bootstrap service-key file");
@@ -866,7 +869,7 @@ export async function composeDevelopmentCase(context: TestContext): Promise<void
   const loggingMetricsPort = otelLogs.enabled ? await availablePort() : undefined;
   const composeOptions = {
     withLogging: otelLogs.enabled,
-    removeApplicationImage: podmanSelected,
+    removeApplicationImages: true,
   };
   const env: NodeJS.ProcessEnv = {
     ...composeEnvironment(),
