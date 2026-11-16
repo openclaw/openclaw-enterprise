@@ -13,14 +13,14 @@ import {
   fixtureInstallationId,
   fixtureRepositoryId,
   fixtureRepository,
-} from "../fixtures/repository-credentials/github.mjs";
+  listenOnNewOrigin,
+} from "../fixtures/repository-credentials/github.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import {
   captureMetadata,
   callFixture,
   dispatchMetadata,
-  listenOnNewOrigin,
   readPreparedEvidence,
   raceMaintenance,
   wireTime,

@@ -8,7 +8,7 @@ import {
 import { request } from "node:https";
 import { createControlledClock } from "./clock.mjs";
 import { createTlsMaterial } from "./process.mjs";
-import { startGitHubFixture } from "./github.mjs";
+import { startGitHubFixture } from "./github.ts";
 import { startGitSmartHttpFixture } from "./git.mjs";
 import { createResourceScope, createTestResourceScope, type FixtureOwner } from "./resources.ts";
 import { socketDirectory } from "../../helpers/socket-directory.mjs";

@@ -19,7 +19,7 @@ import { connect, createServer as createTcpServer } from "node:net";
 import { connect as connectTls } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 import { gzipSync } from "node:zlib";
-import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
+import { fixtureRepository } from "../fixtures/repository-credentials/github.ts";
 import { listen } from "../fixtures/repository-credentials/process.mjs";
 import {
   eventually,
