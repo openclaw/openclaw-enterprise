@@ -284,7 +284,7 @@ if printf '%s' "$*" | grep -q 'scripts/ci/prepare.mjs'; then
   printf '%s\n' '${preparedModel === undefined ? "" : `OCC_TEST_OPENAI_MODEL=${preparedModel}`}' '${preparedBaseUrl === undefined ? "" : `${selectedHarness === "openclaw" ? "OCC_TEST_OPENSHELL_MODEL_BASE_URL" : "OCC_TEST_CODEX_OPENAI_BASE_URL"}=${preparedBaseUrl}`}' >> '${join(state, "env")}'
   exit 0
 fi
-if printf '%s' "$*" | grep -q 'scripts/ci/reset-k3d-model.mjs'; then touch '${resetCalled}'; exit 0; fi
+if printf '%s' "$*" | grep -q 'scripts/ci/reset-k3d-model.ts'; then touch '${resetCalled}'; exit 0; fi
 if [ "$1" = scripts/ci/cleanup.ts ]; then rm -f '${join(state, "state.json")}'; exit 0; fi
 /usr/bin/env -i PATH=/usr/bin:/bin INVOCATION='${invocation}' \
   DOCKER_HOST="\${DOCKER_HOST:-}" OCC_DOCKER_BIN="$OCC_DOCKER_BIN" \
