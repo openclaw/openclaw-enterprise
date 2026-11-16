@@ -1,12 +1,15 @@
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { join } from "node:path";
-import { createOidcProvider } from "./oidc-provider.mjs";
+import type { OidcProviderConfig } from "./oidc-provider-material.ts";
+import { createOidcProvider } from "./oidc-provider.ts";
 
 // Test-only IdP: grants its single synthetic subject without a login screen. Keep it
 // on the disposable test network. No controller or real identity state lives here.
-export async function startOidcProvider(directory, { host = "127.0.0.1", port = 0 } = {}) {
-  const config = JSON.parse(await readFile(join(directory, "config.json"), "utf8"));
+export async function startOidcProvider(directory: string, { host = "127.0.0.1", port = 0 } = {}) {
+  const config = JSON.parse(
+    await readFile(join(directory, "config.json"), "utf8"),
+  ) as OidcProviderConfig;
   const provider = createOidcProvider({ ...config, issuer: config, recordHistory: false });
   const origin = new URL(config.issuer).origin;
   const server = createServer({
@@ -22,7 +25,7 @@ export async function startOidcProvider(directory, { host = "127.0.0.1", port = 
         response.writeHead(400).end();
         return;
       }
-      const url = new URL(request.url, origin);
+      const url = new URL(String(request.url), origin);
       if (request.method === "GET" && url.pathname === "/.well-known/openid-configuration") {
         response.writeHead(200, { "content-type": "application/json" }).end(
           JSON.stringify({
@@ -42,6 +45,7 @@ export async function startOidcProvider(directory, { host = "127.0.0.1", port = 
       }
       if (request.method === "GET" && url.pathname === "/authorize") {
         const query = url.searchParams;
+        const state = query.get("state");
         if (
           new Set(query.keys()).size !== [...query.keys()].length ||
           query.get("client_id") !== config.clientId ||
@@ -51,7 +55,7 @@ export async function startOidcProvider(directory, { host = "127.0.0.1", port = 
           query.get("code_challenge_method") !== "S256" ||
           !/^[A-Za-z0-9_-]{43}$/.test(query.get("code_challenge") ?? "") ||
           !query.get("nonce") ||
-          !query.get("state")
+          !state
         ) {
           response.writeHead(400).end();
           return;
@@ -59,12 +63,12 @@ export async function startOidcProvider(directory, { host = "127.0.0.1", port = 
         const code = provider.authorize(url, { subject: config.subject });
         const callback = new URL(config.redirectUri);
         callback.searchParams.set("code", code);
-        callback.searchParams.set("state", query.get("state"));
+        callback.searchParams.set("state", state);
         response.writeHead(302, { location: callback.href }).end();
         return;
       }
       let body = "";
-      for await (const chunk of request) {
+      for await (const chunk of request as AsyncIterable<Buffer>) {
         body += chunk.toString("utf8");
         if (Buffer.byteLength(body) > 16_384) {
           response.writeHead(413).end();
@@ -73,8 +77,8 @@ export async function startOidcProvider(directory, { host = "127.0.0.1", port = 
       }
       const result = await provider.answer(
         new Request(url, {
-          method: request.method,
-          headers: request.headers,
+          method: request.method ?? "GET",
+          headers: Object.entries(request.headers).map(([name, value]) => [name, String(value)]),
           ...(request.method === "GET" || request.method === "HEAD" ? {} : { body }),
         }),
       );
@@ -91,12 +95,12 @@ export async function startOidcProvider(directory, { host = "127.0.0.1", port = 
   const close = async () => {
     server.closeAllConnections();
     if (server.listening) {
-      await new Promise((resolve, reject) =>
+      await new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
       );
     }
   };
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, host, () => {
       server.off("error", reject);
@@ -108,12 +112,21 @@ export async function startOidcProvider(directory, { host = "127.0.0.1", port = 
 
 // Node identifies the entrypoint even through projected-volume symlinks.
 if (import.meta.main) {
-  const { server, close } = await startOidcProvider(process.argv[2], {
+  const directory = process.argv[2];
+  if (directory === undefined) {
+    throw new Error("OIDC provider material directory is required");
+  }
+  const { server, close } = await startOidcProvider(directory, {
     host: process.env.OIDC_LISTEN_HOST ?? "127.0.0.1",
     port: Number(process.env.OIDC_LISTEN_PORT ?? "0"),
   });
-  process.stdout.write(JSON.stringify({ ready: true, port: server.address().port }) + "\n");
-  for (const signal of ["SIGTERM", "SIGINT"]) {
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    await close();
+    throw new Error("OIDC provider did not open a TCP listener");
+  }
+  process.stdout.write(JSON.stringify({ ready: true, port: address.port }) + "\n");
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
     process.once(signal, () => {
       void close();
     });

@@ -1,36 +1,81 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, type KeyObject, type webcrypto } from "node:crypto";
+import type { OidcTokenAuth } from "../../apps/controller/src/auth/oidc.ts";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
 
-/**
- * A local stand-in for one OIDC issuer's token and JWKS URLs. Only fetches to the issuer's origin are answered here. It plays the IdP the
- * way fakeGoogle plays Google: `authorize(url, options)` captures the authorization
- * request and returns a one-use code for `subject` (`codeLength` pads it, as Entra's long
- * codes do); /token checks the client credentials (post or basic, per `tokenAuth`), code,
- * redirect URI and S256 verifier, then returns an RS256 ID token for `issuer.issuer`
- * echoing the nonce. Per-code `claims` override ID-token claims; `key: "foreign"` signs
- * with an unpublished key. `rotate()` replaces the published key. `issuer` may be
- * reassigned to model an issuer change, and `tokenAuth`
- * to switch the credential method. Modes: "up", "error" (503), and "hang" (until cancellation). It proves OCE
- * against its own reading of OIDC, not any IdP's behaviour.
- */
+export interface OidcIssuerEndpoints {
+  issuer: string;
+  authorizationUrl: string;
+  tokenUrl: string;
+  jwksUrl: string;
+}
+
+export interface OidcProviderOptions {
+  clientId: string;
+  clientSecret: string;
+  issuer: OidcIssuerEndpoints;
+  tokenAuth?: OidcTokenAuth;
+  recordHistory?: boolean;
+}
+
+type RequestFields = Record<string, string | undefined>;
+type ProviderMode = "up" | "error" | "hang";
+
+interface SigningKey {
+  kid: string;
+  privateKey: KeyObject;
+  jwk: webcrypto.JsonWebKey & { kid: string; alg: string; use: string };
+}
+
+type GrantSigner = "published" | "foreign";
+
+interface AuthorizationOptions {
+  subject: string;
+  claims?: Record<string, unknown>;
+  key?: GrantSigner;
+  codeLength?: number;
+}
+
+interface AuthorizationGrant {
+  request: RequestFields;
+  subject: string;
+  claims: Record<string, unknown>;
+  signer: GrantSigner;
+  key: SigningKey;
+}
+
+interface OidcProvider {
+  mode: ProviderMode;
+  requests: number;
+  issuer: OidcIssuerEndpoints;
+  tokenAuth: OidcTokenAuth;
+  authorizations: RequestFields[];
+  tokens: RequestFields[];
+  readonly jwks: { keys: SigningKey["jwk"][] };
+  rotate(): void;
+  authorize(url: string | URL, options: AuthorizationOptions): string;
+  answer(request: Request): Promise<Response>;
+}
+
+// Shares one-use grants and signing keys between in-process sign-in and the
+// disposable HTTPS issuer. Each grant retains the signing key in use when issued.
 export function createOidcProvider({
   clientId,
   clientSecret,
   issuer,
   tokenAuth = "client_secret_post",
   recordHistory = true,
-}) {
+}: OidcProviderOptions): OidcProvider {
   let generation = 0;
-  let key = rsaSigningKey(`fixture-oidc-kid-${generation}`);
-  const foreign = rsaSigningKey("fixture-oidc-foreign");
-  const codes = new Map();
-  const pendingRequests = new Set();
-  const fixture = {
+  let key: SigningKey = rsaSigningKey(`fixture-oidc-kid-${generation}`);
+  const foreign: SigningKey = rsaSigningKey("fixture-oidc-foreign");
+  const codes = new Map<string, AuthorizationGrant>();
+  const pendingRequests = new Set<Request>();
+  const fixture: OidcProvider = {
     mode: "up",
     requests: 0,
     issuer,
     tokenAuth,
-    authorizations: /** @type {Record<string, string>[]} */ ([]),
+    authorizations: [],
     tokens: [],
     get jwks() {
       return { keys: [key.jwk] };
@@ -49,8 +94,9 @@ export function createOidcProvider({
       codes.set(code, { request, subject, claims, signer, key });
       return code;
     },
+    answer,
   };
-  function idToken({ request, subject, claims, signer, key: issuedWith }) {
+  function idToken({ request, subject, claims, signer, key: issuedWith }: AuthorizationGrant) {
     const now = Math.floor(Date.now() / 1000);
     const payload = {
       iss: fixture.issuer.issuer,
@@ -63,12 +109,12 @@ export function createOidcProvider({
     };
     return idTokenSigner(signer === "foreign" ? foreign : issuedWith)(payload);
   }
-  const json = (status, body) =>
+  const json = (status: number, body: object) =>
     new Response(JSON.stringify(body), {
       status,
       headers: { "content-type": "application/json" },
     });
-  async function answer(request) {
+  async function answer(request: Request): Promise<Response> {
     fixture.requests += 1;
     if (fixture.mode === "hang") {
       const { signal } = request;
@@ -76,7 +122,7 @@ export function createOidcProvider({
       // Keep the Request and its dependent signal alive until cancellation reaches it.
       pendingRequests.add(request);
       try {
-        return await new Promise((_, reject) => {
+        return await new Promise<never>((_, reject) => {
           signal.addEventListener("abort", () => reject(signal.reason), { once: true });
         });
       } finally {
@@ -121,7 +167,7 @@ export function createOidcProvider({
       !credentials ||
       grant === undefined ||
       grant.request.client_id !== clientId ||
-      !grant.request.scope.split(" ").includes("openid") ||
+      !grant.request.scope?.split(" ").includes("openid") ||
       grant.request.code_challenge_method !== "S256" ||
       challenge === undefined ||
       grant.request.code_challenge !== challenge ||
@@ -136,6 +182,5 @@ export function createOidcProvider({
       id_token: idToken(grant),
     });
   }
-  fixture.answer = answer;
   return fixture;
 }

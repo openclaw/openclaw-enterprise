@@ -93,17 +93,17 @@ node --test tests/integration/oidc-provider.test.ts
 ```
 
 The HTTPS fixture and the `fakeOidc` fetch adapter share the
-[OIDC protocol handler](../../tests/helpers/oidc-provider.mjs). The fixture grants
+[OIDC protocol handler](../../tests/helpers/oidc-provider.ts). The fixture grants
 one synthetic subject without a login screen; keep it on a disposable test network.
 These checks exercise the fixture, not a real identity provider or installed OCE
 sign-in.
 
-[Create run-owned material](../../tests/helpers/oidc-provider-material.mjs) once
+[Create run-owned material](../../tests/helpers/oidc-provider-material.ts) once
 per rehearsal and retain it across controller replacements. It generates the
 client, subject, and TLS material in a private subdirectory and removes partial
 output if setup fails. Stop provider users before calling its returned `dispose`.
 
-The [server entrypoint](../../tests/helpers/oidc-provider-server.mjs) takes that
+The [server entrypoint](../../tests/helpers/oidc-provider-server.ts) takes that
 material directory as its argument. `OIDC_LISTEN_HOST` and `OIDC_LISTEN_PORT`
 default to loopback and an ephemeral port; select the disposable network's bind
 address and port explicitly for a packaged fixture. The caller owns stopping the
