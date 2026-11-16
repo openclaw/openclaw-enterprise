@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, open, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -438,10 +438,16 @@ async function copyBootstrapServiceKey({
     timeoutMs: 60_000,
     secrets,
   });
-  // Engine copy preserves the bootstrap output mode inside the private temporary directory.
-  const outputStatus = await stat(localFile);
-  assert.equal(outputStatus.mode & 0o777, 0o600);
-  const output = parseJson(await readFile(localFile, "utf8"), "Bootstrap service-key file");
+  // Verify the mode on the same copied file that supplies the CLI credential.
+  const copiedKey = await open(localFile, "r");
+  let output: unknown;
+  try {
+    const outputStatus = await copiedKey.stat();
+    assert.equal(outputStatus.mode & 0o777, 0o600);
+    output = parseJson(await copiedKey.readFile("utf8"), "Bootstrap service-key file");
+  } finally {
+    await copiedKey.close();
+  }
   const record = asRecord(output);
   assert.ok(record, "bootstrap service-key output must be JSON");
   const data = asRecord(record.data);
