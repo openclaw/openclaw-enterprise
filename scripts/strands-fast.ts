@@ -130,8 +130,11 @@ async function main() {
     try {
       // Each existing runner owns its test processes, state file and teardown.
       // Separate state files prevent preparation/cleanup locks from interfering.
+      // A separate process group keeps a terminal interrupt (sent to the whole
+      // foreground group) away from the runner, so its tests finish cleanup.
       const child = spawn(process.execPath, args, {
         cwd: root,
+        detached: true,
         env: { ...process.env, OCC_TEST_STANDING_GIT_CODEX: codex },
         stdio: ["ignore", log.fd, log.fd],
       });
@@ -142,11 +145,27 @@ async function main() {
     } finally {
       await log.close();
     }
-    const result = JSON.parse(await readFile(resultPath, "utf8")) as LaneResult;
-    assert(
-      result.version === 1 && result.command === "run" && result.lane === selection.lane,
-      "unexpected runner receipt",
-    );
+    let result: LaneResult;
+    try {
+      result = JSON.parse(await readFile(resultPath, "utf8")) as LaneResult;
+      assert(
+        result.version === 1 && result.command === "run" && result.lane === selection.lane,
+        "unexpected runner receipt",
+      );
+    } catch (error) {
+      // Keep the summary: a runner that stopped without a readable receipt is a failed selection.
+      const elapsedMs = Math.round(performance.now() - selectedAt);
+      const reason = error instanceof Error ? error.message : String(error);
+      console.log(`${selection.name}: FAIL, no readable receipt (exit ${exit}), ${elapsedMs} ms`);
+      return {
+        name: selection.name,
+        passed: false,
+        elapsedMs,
+        resultPath,
+        exit,
+        receiptError: reason,
+      };
+    }
     const passed =
       exit === 0 &&
       result.exitCode === 0 &&
@@ -225,8 +244,9 @@ async function main() {
       : null,
     p90Ms: times[Math.ceil(times.length * 0.9) - 1] ?? null,
     runs,
-    proof:
-      "Real sender, Git, mutual TLS and native Codex conversation; controlled material authority and origins. No Box or installed-cluster qualification.",
+    proof: passed
+      ? "Real sender, Git, mutual TLS and native Codex conversation; controlled material authority and origins. No Box or installed-cluster qualification."
+      : "None: a selection failed, lacked a receipt or was interrupted. Inspect the original receipts and logs.",
   };
   await writeFile(join(output, "summary.json"), JSON.stringify(summary, null, 2) + "\n", {
     flag: "wx",
