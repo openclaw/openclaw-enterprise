@@ -1,3 +1,4 @@
+import { AGENT_CHAT_BODY_LIMIT, relayAgentChat } from "./http/agent-chat.ts";
 import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
 import { createAgentAuditReader } from "./http/agent-audit.ts";
 import swagger from "@fastify/swagger";
@@ -226,6 +227,7 @@ export interface ControllerAppOptions {
   readonly discoverMcpAuthorization?: typeof discoverMcpAuthorization;
   readonly readManagedMcpToolNames?: typeof listManagedMcpToolNames;
   readonly nativeAdmin?: NativeAdminAccessConfig;
+  /** Private Agent gateway transport credential, shared by native browser and HTTP chat relays. */
   readonly nativeAdminGatewayApiKey?: () => Promise<string>;
   /**
    * How often a native admin WebSocket rechecks its admission (default 25 s). The server
@@ -1978,7 +1980,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }),
   };
 
+  const chatBodyDeadlines = new WeakMap<FastifyRequest, ReturnType<typeof setTimeout>>();
   app.addHook("onRequest", async (request, reply) => {
+    if (request.routeOptions.url === "/agents/:agentId/chat") {
+      const timer = setTimeout(() => {
+        if (!reply.sent) {
+          reply.header("connection", "close");
+          reply.raw.once("finish", () => request.raw.destroy());
+          void reply.code(408).send({
+            error: { code: "REQUEST_TIMEOUT", message: "The request body deadline expired." },
+            meta: { requestId: request.id },
+          });
+        }
+      }, 60_000);
+      chatBodyDeadlines.set(request, timer);
+      request.raw.once("end", () => clearTimeout(timer));
+      request.raw.once("aborted", () => clearTimeout(timer));
+    }
     requestStartedAt.set(request, process.hrtime.bigint());
     responseHeaders(reply, request.id);
     if (await nativeAdmin.interceptHttp(request, reply)) {
@@ -1997,6 +2015,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   app.addHook("onResponse", async (request, reply) => {
+    clearTimeout(chatBodyDeadlines.get(request));
     const startedAt = requestStartedAt.get(request);
     const durationMs =
       startedAt === undefined ? undefined : Number(process.hrtime.bigint() - startedAt) / 1_000_000;
@@ -2229,6 +2248,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     contexts.set(request, context);
     if (
       admitted.method === "api_key" &&
+      operation.operationId !== "chatWithAgent" &&
       admitted.admittedScope.namespaceId !== undefined &&
       admitted.admittedScope.namespaceId !== (request.params as Record<string, unknown>).namespaceId
     ) {
@@ -2286,7 +2306,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     operation: OccApiRoute,
   ): Promise<void> {
     const admitted = admissions.get(request);
-    if (controller === undefined || admitted?.method !== "session") {
+    if (
+      operation.operationId === "chatWithAgent" ||
+      controller === undefined ||
+      admitted?.method !== "session"
+    ) {
       return perform(request, reply, operation);
     }
     const { session } = admitted;
@@ -2304,6 +2328,40 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const context = contexts.get(request);
     if (!context) {
       throw dependencyUnavailable();
+    }
+    if (operation.operationId === "chatWithAgent") {
+      const admission = admissions.get(request);
+      if (controller === undefined || admission === undefined) {
+        throw dependencyUnavailable();
+      }
+      // Derive the audit target from storage; no Namespace is accepted in this route's input.
+      const params = request.params as Record<string, string>;
+      const reference = await controller.resolveAgentReference(
+        (agent) => agent.id === params.agentId,
+      );
+      if (reference !== undefined) {
+        params.namespaceId = reference.namespaceId;
+      }
+      return relayAgentChat({
+        installationId,
+        controller,
+        request,
+        reply,
+        context,
+        admission,
+        factory,
+        auditSink: options.auditSink,
+        gatewayApiKey: options.nativeAdminGatewayApiKey,
+        auditFailure: (error) =>
+          logRequestAuditFailure(request, operation, operation.action, error),
+        reauthenticate: async () => {
+          await admit(request, operation);
+          await resolveIdentity(request, operation);
+          if (contexts.get(request)?.actorId !== context.actorId) {
+            throw dependencyUnavailable();
+          }
+        },
+      });
     }
     const params = request.params as Record<string, string>;
     const body = request.body as Record<string, unknown> | undefined;
@@ -4870,6 +4928,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         method: operation.method as HTTPMethods,
         url: operation.path,
         ...(routeAuditSink === undefined ? {} : { config: { auditManagementRequest: true } }),
+        ...(operation.operationId === "chatWithAgent" ? { bodyLimit: AGENT_CHAT_BODY_LIMIT } : {}),
         ...(operation.operationId === "putAgentWorkspaceFile"
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
           : operation.operationId === "createAgent" ||
@@ -4907,7 +4966,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           }
           const unstorable =
             unstorableTextFailure("params", request.params) ??
-            unstorableTextFailure("body", request.body);
+            (operation.operationId === "chatWithAgent"
+              ? undefined
+              : unstorableTextFailure("body", request.body));
           if (unstorable !== undefined) {
             throw unstorable;
           }

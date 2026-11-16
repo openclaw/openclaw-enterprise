@@ -1,0 +1,53 @@
+# Verify Agent HTTP chat
+
+Run the `http-chat` scenario through the [regular QA matrix](ci/qa-advisory.md).
+It provisions real Agents through Fastify, PostgreSQL and IAM, then calls the
+private Kubernetes proxy and pinned runtime. It does not use fake completions.
+
+## Select the scenario
+
+Prepare the [Kubernetes test tools](kubernetes.md), source-built QA images and
+an authorized model credential in an owner-readable file. Keep it out of logs,
+command arguments, the controller and a separate Gateway. The QA workflow sends
+it through the Secret API to the selected Agent-owned Harness.
+
+```bash
+OCC_TEST_QA_MATRIX=1 \
+OCC_TEST_QA_SCENARIOS=http-chat \
+OCC_TEST_QA_INSTALLATION=kubernetes \
+OCC_TEST_QA_PRESET=OpenClaw \
+OCC_TEST_QA_OPENAI_KEY_FILE=/private/path/model-key \
+OCC_TEST_QA_OPENAI_MODEL=your-authorized-model \
+  node --test tests/integration/qa-matrix-real.test.mjs
+```
+
+Use `OCC_TEST_QA_INSTALLATION=compose` to host OCC outside Kubernetes while
+keeping Agent Compute in Kubernetes. Select `Codex` and set
+`OCC_TEST_QA_CODEX_MODEL` to test the dedicated Codex Harness with API-key auth.
+The matrix owns disposable resources and cleanup; preserve unrelated clusters,
+services and the default kubeconfig. Do not use a shared database.
+
+## Checks and evidence
+
+An exclusive `http-chat` selection disables Installation native browser access.
+Each Agent also disables browser chat and omits the HTTP endpoint opt-in. It checks:
+
+- Human and service JSON/SSE, with a tool-created file read independently from
+  the selected Harness Pod and then removed.
+- Fresh requests, explicit continuation, principal/Agent separation and service-key rotation.
+- Private-route method/path restrictions, direct Gateway authority rejection,
+  and NetworkPolicy rejection of a Pod without Agent identity.
+- Authentication, exact-Agent access, reserved headers/model, request size and body deadline,
+  explicit opt-out and stopped-Agent status.
+- Service-key revocation, replacement and stop during a native SSE response,
+  with no success terminator after interruption. Tool rollback is not claimed.
+
+The [admission integration test](../../tests/integration/agent-http-chat.test.ts)
+uses real Fastify authentication and native IAM without a real runtime. It proves
+only admission and capability ordering. It does not replace credentialed QA.
+
+Record the tested commit, images, mode, pass/fail/skip results and cleanup with
+the [implementation plan](../../specs/plans/0040-agent-chat-completions.md#verification).
+The plan tracks the complete RFC acceptance criteria, including remaining
+network isolation, deadline, audit and topology qualification. Do not report
+those outcomes as passed merely because a narrower scenario succeeds.

@@ -107,6 +107,7 @@ import type {
   AgentRuntimeCredentialStatus,
   ComputeAgentProvisioningInput,
   ComputeDriver,
+  AgentChatCompletionsResolution,
   ComputeAgentBinding,
   ComputeAgentRevisionBinding,
   ComputePendingReason,
@@ -5029,6 +5030,56 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return url.href;
   }
 
+  getChatCompletionsEndpoint(revision: AgentRevision): AgentChatCompletionsResolution {
+    const gateway = asRecord(revision.configuration.gateway);
+    const auth = asRecord(gateway?.auth);
+    const trustedProxy = asRecord(auth?.trustedProxy);
+    const requiredHeaders = trustedProxy?.requiredHeaders;
+    const agents = asRecord(revision.configuration.agents);
+    const entries = Object.keys(asRecord(agents?.entries) ?? {});
+    const configuredTarget = asRecord(asRecord(agents?.defaults)?.systemAgent)?.agentId;
+    let target: string | undefined;
+    if (revision.harness.mode === "dedicated") {
+      // Dedicated Harness admission already binds workspace execution to native main.
+      target = "main";
+    } else if (typeof configuredTarget === "string") {
+      target = configuredTarget.trim().toLowerCase();
+    } else if (entries.length === 1) {
+      target = entries[0]!.toLowerCase();
+    } else if (entries.length === 0) {
+      target = "main";
+    }
+    if (
+      this.options.executionCluster !== undefined ||
+      this.options.runtime === undefined ||
+      auth?.mode !== "trusted-proxy" ||
+      trustedProxy?.userHeader !== TRUSTED_PROXY_HEADER ||
+      !Array.isArray(trustedProxy.allowUsers) ||
+      !trustedProxy.allowUsers.includes(TRUSTED_PROXY_IDENTITY) ||
+      !Array.isArray(requiredHeaders) ||
+      !requiredHeaders.some(
+        (header) =>
+          typeof header === "string" && header.toLowerCase() === TRUSTED_PROXY_SCOPES_HEADER,
+      ) ||
+      target === undefined ||
+      !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(target)
+    ) {
+      return { status: "unsupported" };
+    }
+    const chat = asRecord(asRecord(asRecord(gateway?.http)?.endpoints)?.chatCompletions);
+    if (chat?.enabled === false) {
+      return { status: "disabled" };
+    }
+    const endpoint = this.getGatewayEndpoint(revision);
+    if (chat?.enabled !== true || endpoint === undefined) {
+      return { status: "unavailable" };
+    }
+    const url = new URL(endpoint);
+    url.protocol = "https:";
+    url.pathname = `/http-chat${url.pathname}/revisions/${revision.id}/v1/chat/completions`;
+    return { status: "available", url: url.href, model: `openclaw:${target}` };
+  }
+
   async getAgentRuntimeCredentialStatus(
     binding: ComputeAgentBinding,
   ): Promise<AgentRuntimeCredentialStatus> {
@@ -9117,6 +9168,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
     unknownPredecessor = false,
   ): Promise<void> {
     const gatewayNamespace = this.gatewayNamespace(revision, namespace);
+    const chatName = `chat-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
+    const chatOwnership = {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+    };
+    if (this.options.gatewayRouting !== undefined) {
+      await this.deleteGatewayRoute(chatName, chatOwnership, gatewayNamespace, revision.id);
+      await this.deleteOwnedNamespacedResource(
+        "Service",
+        chatName,
+        chatOwnership,
+        gatewayNamespace,
+      );
+    }
     if (unknownPredecessor || this.hasPublicGithubReadAdmission(revision)) {
       await this.deleteOwnedNamespacedResource(
         "NetworkPolicy",
@@ -9426,7 +9492,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   private async deleteOwnedNamespacedResource(
-    kind: "ConfigMap" | "ServiceAccount" | "NetworkPolicy" | "Secret",
+    kind: "ConfigMap" | "ServiceAccount" | "NetworkPolicy" | "Secret" | "Service",
     name: string,
     ownership: Ownership,
     namespace: KubernetesNamespaceAddress,
@@ -9449,6 +9515,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
           await clients.core.deleteNamespacedSecret(request);
         } else if (kind === "ServiceAccount") {
           await clients.core.deleteNamespacedServiceAccount(request);
+        } else if (kind === "Service") {
+          await clients.core.deleteNamespacedService(request);
         } else {
           await clients.networking.deleteNamespacedNetworkPolicy(request);
         }
@@ -13691,6 +13759,25 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       configuration,
       (setting, requirement) => new GatewaySettingFailure(setting, requirement),
     );
+    const http = asRecord(gateway.http);
+    const endpoints = asRecord(http?.endpoints);
+    const chat = asRecord(endpoints?.chatCompletions);
+    for (const [setting, value, record] of [
+      ["gateway.http", gateway.http, http],
+      ["gateway.http.endpoints", http?.endpoints, endpoints],
+      ["gateway.http.endpoints.chatCompletions", endpoints?.chatCompletions, chat],
+    ] as const) {
+      if (value !== undefined && record === undefined) {
+        throw new GatewaySettingFailure(setting, "must be an object");
+      }
+    }
+    if (chat?.enabled !== undefined && typeof chat.enabled !== "boolean") {
+      throw new GatewaySettingFailure(
+        "gateway.http.endpoints.chatCompletions.enabled",
+        "must be a boolean",
+      );
+    }
+    const chatEnabled = chat?.enabled !== false;
     const authRecord = asRecord(gateway.auth);
     if (gateway.auth !== undefined && authRecord === undefined) {
       throw new GatewaySettingFailure("gateway.auth", "must be an object");
@@ -13877,6 +13964,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       ...configuration,
       gateway: {
         ...gateway,
+        http: {
+          ...http,
+          endpoints: { ...endpoints, chatCompletions: { ...chat, enabled: chatEnabled } },
+        },
         // Omitted and auto resolve to loopback unless OpenClaw detects a container,
         // and containerd on cgroup v2 leaves no marker it recognizes (finding 996).
         bind: gateway.bind === "custom" ? "custom" : "lan",
@@ -13887,7 +13978,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           mode: "trusted-proxy",
           trustedProxy: {
             ...trustedProxy,
-            ...(admitsHumans || this.options.gatewayRouting !== undefined
+            ...(chatEnabled || admitsHumans || this.options.gatewayRouting !== undefined
               ? { requiredHeaders: requiredHeadersWithScopes }
               : {}),
             userHeader: TRUSTED_PROXY_HEADER,
@@ -14393,6 +14484,79 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const service = await this.getOwned("Service", name, namespace, ownership);
     if (service === undefined) {
       return;
+    }
+    const chatEndpoint = this.getChatCompletionsEndpoint(revision);
+    if (chatEndpoint.status === "available") {
+      const chatName = `chat-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
+      const chatOwnership = { ...ownership, revisionId: revision.id };
+      const chatService = this.service(chatName, chatOwnership, namespace, {
+        ...this.gatewayServiceSelector(revision, name),
+        "openclaw.dev/revision": revision.id,
+      });
+      await this.reconcile(chatService, chatOwnership, namespace);
+      const routing = this.options.gatewayRouting;
+      const chatRoute = this.manifest(
+        GATEWAY_API_VERSION,
+        "HTTPRoute",
+        chatName,
+        chatOwnership,
+        namespace,
+      );
+      await this.reconcile(
+        {
+          ...chatRoute,
+          metadata: {
+            ...chatRoute.metadata,
+            annotations: {
+              ...chatRoute.metadata.annotations,
+              [AGENT_REVISION_ID_ANNOTATION]: revision.id,
+              [AGENT_REVISION_ANNOTATION]: String(revision.revision),
+            },
+          },
+          spec: {
+            hostnames: [this.gatewayRoutingHostname(routing)],
+            parentRefs: [
+              {
+                group: "gateway.networking.k8s.io",
+                kind: "Gateway",
+                namespace: routing.gatewayNamespace,
+                name: routing.gatewayName,
+                sectionName: GATEWAY_LISTENER_SECTION,
+              },
+            ],
+            rules: [
+              {
+                matches: [
+                  {
+                    method: "POST",
+                    path: { type: "Exact", value: new URL(chatEndpoint.url).pathname },
+                  },
+                ],
+                filters: [
+                  {
+                    type: "URLRewrite",
+                    urlRewrite: {
+                      path: { type: "ReplaceFullPath", replaceFullPath: "/v1/chat/completions" },
+                    },
+                  },
+                  this.gatewayRouteHeaderFilter("chat"),
+                ],
+                timeouts: { request: "660s", backendRequest: "600s" },
+                backendRefs: [
+                  {
+                    group: "",
+                    kind: "Service",
+                    name: chatName,
+                    port: this.options.network.gatewayPort,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        chatOwnership,
+        namespace,
+      );
     }
     const route = this.gatewayRoute(revision, ownership, namespace, service);
     if (route !== undefined) {

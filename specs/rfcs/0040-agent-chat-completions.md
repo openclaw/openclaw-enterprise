@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: kevinlin-openai
 ---
 
@@ -325,8 +325,8 @@ these outcomes.
 
 ## Delivery and verification
 
-After RFC submission, prepare an implementation plan for runtime qualification,
-the Compute capability, OCC admission/relay, and real Agent workflow coverage.
+The [implementation plan](../plans/0040-agent-chat-completions.md) covers runtime
+qualification, the Compute capability, OCC admission/relay, and real Agent workflow coverage.
 Update the owning API/OpenAPI contract and generated API cheat sheet, Agent and
 Compute references, operator guide, runtime flow, and QA documentation with the
 implementation. Review the permissions cheat sheet for the added use of `operate`.
