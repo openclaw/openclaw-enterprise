@@ -121,7 +121,7 @@
     "tests/conformance/console-agent-name-runs.test.ts",
     "tests/conformance/console-json-errors.test.ts",
     "tests/integration/bootstrap-output.test.ts",
-    "tests/conformance/slack-configuration.test.mjs",
+    "tests/conformance/slack-configuration.test.ts",
     "tests/integration/slack-destination.test.ts",
     "tests/conformance/console-gateway-safety.test.ts",
     "tests/conformance/grafana-overview-dashboard.test.ts",
@@ -381,7 +381,7 @@
       "path": "tests/conformance/secret-occ.test.ts"
     },
     {
-      "path": "tests/conformance/slack-configuration.test.mjs"
+      "path": "tests/conformance/slack-configuration.test.ts"
     },
     {
       "path": "tests/integration/slack-destination.test.ts"

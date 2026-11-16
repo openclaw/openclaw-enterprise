@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import type {
+  OpenClawConfigurationDocument,
+  OpenClawConfigurationValue,
+  SecretBinding,
+} from "../../packages/contracts/src/index.ts";
+import { isRecord } from "../../apps/controller/src/console/channels/shared-ui.mts";
 import { slack } from "../../apps/controller/src/console/channels/slack.mts";
 import { missingChannelCredentialGroups } from "../../apps/controller/src/console/agents/credentials.mjs";
 import {
@@ -15,16 +21,48 @@ const fields = {
   "#slack-allowed-user-ids": { value: "UEXAMPLE" },
   "#slack-channel-access": { value: "selected" },
   "#slack-require-mention": { checked: true },
-  "#slack-dm-policy": { value: "", dataset: {} },
+  "#slack-dm-policy": { value: "" },
   "#slack-dm-user-ids": { value: "" },
   "#slack-enabled": { checked: true },
 };
-const body = { querySelector: (selector) => fields[selector] };
+const form = {
+  querySelector(selector: string) {
+    assert.ok(Object.hasOwn(fields, selector), `unexpected Slack form selector: ${selector}`);
+    return fields[selector as keyof typeof fields];
+  },
+};
+// This adapter supplies only the controls read by updatedValues. Browser tests exercise the DOM.
+const body = form as unknown as HTMLFormElement;
+
+function configurationRecord(value: unknown, setting: string): Record<string, unknown> {
+  assert.ok(isRecord(value), `${setting} must be an object`);
+  return value;
+}
+
+function slackConfig(values: unknown): Record<string, unknown> {
+  const channels = configurationRecord(configurationRecord(values, "values").channels, "channels");
+  return configurationRecord(channels.slack, "channels.slack");
+}
+
+function env(id: string) {
+  return { source: "env", provider: "default", id };
+}
+
+function bound(...keys: string[]) {
+  return {
+    secretBindings: Object.fromEntries(
+      keys.map((key): [string, SecretBinding] => [
+        key,
+        { source: { kind: "secret", namespaceId: "ns_1", id: `sec_${key}` } },
+      ]),
+    ),
+  };
+}
 
 test("new Slack configuration defaults to threaded replies without changing existing reply policy", () => {
-  const created = slack.updatedValues({}, body);
-  assert.equal(created.channels.slack.replyToMode, undefined);
-  assert.deepEqual(created.channels.slack.replyToModeByChatType, { channel: "all" });
+  const created = slackConfig(slack.updatedValues({}, body));
+  assert.equal(created.replyToMode, undefined);
+  assert.deepEqual(created.replyToModeByChatType, { channel: "all" });
   for (const policy of [
     {},
     { replyToMode: "off" },
@@ -42,32 +80,30 @@ test("new Slack configuration defaults to threaded replies without changing exis
       },
     };
     const original = structuredClone(values);
-    const updated = slack.updatedValues(values, body).channels.slack;
+    const updated = slackConfig(slack.updatedValues(values, body));
     // Editing an existing block must preserve even the absence of a reply setting.
     assert.equal(updated.replyToMode, policy.replyToMode);
     assert.deepEqual(updated.replyToModeByChatType, policy.replyToModeByChatType);
-    assert.equal(updated.channels.CEXAMPLE.replyToMode, "off");
+    const channels = configurationRecord(updated.channels, "channels.slack.channels");
+    assert.equal(configurationRecord(channels.CEXAMPLE, "CEXAMPLE").replyToMode, "off");
     assert.deepEqual(values, original);
   }
 });
 
 test("bundled Slack presets supply threaded replies", async () => {
-  for (const name of ["swe-preset"]) {
-    const preset = JSON.parse(
-      await readFile(new URL(`../../deploy/presets/${name}.json`, import.meta.url), "utf8"),
-    );
-    assert.equal(preset.template.configuration.values.channels.slack.replyToMode, undefined, name);
-    assert.deepEqual(
-      preset.template.configuration.values.channels.slack.replyToModeByChatType,
-      { channel: "all" },
-      name,
-    );
-  }
+  const preset: unknown = JSON.parse(
+    await readFile(new URL("../../deploy/presets/swe-preset.json", import.meta.url), "utf8"),
+  );
+  const template = configurationRecord(configurationRecord(preset, "preset").template, "template");
+  const configuration = configurationRecord(template.configuration, "template.configuration");
+  const bundled = slackConfig(configuration.values);
+  assert.equal(bundled.replyToMode, undefined);
+  assert.deepEqual(bundled.replyToModeByChatType, { channel: "all" });
 });
 
 test("the Slack editor steers named accounts away from the default account's token names", () => {
   const support = slack.support({ channels: { slack: { accounts: { work: {} } } } });
-  assert.equal(support.supported, false);
+  assert.ok(!support.supported);
   // OpenClaw starts an implicit default account from SLACK_APP_TOKEN/SLACK_BOT_TOKEN.
   assert.match(
     support.reason,
@@ -81,7 +117,7 @@ test("the Slack editor steers named accounts away from the default account's tok
 test("the Slack editor names a bot token it cannot edit the way Configuration save does", () => {
   const inline = "holds a credential value inline, where a reference is required";
   const reference = "uses a credential reference this editor does not write";
-  for (const [botToken, form] of [
+  const tokens: readonly (readonly [token: unknown, diagnostic: string])[] = [
     ["xoxb-pasted", inline],
     // A `$` before a name the runtime does not read, an escape, and blank text are no reference.
     ["$xoxbSECRET", inline],
@@ -95,11 +131,12 @@ test("the Slack editor names a bot token it cannot edit the way Configuration sa
     ["${slack_bot_token}", reference],
     [{ source: "file", provider: "default", id: "/slack/bot" }, reference],
     [{ value: "xoxb-pasted" }, "holds an object the Slack Channel Driver cannot read"],
-  ]) {
+  ];
+  for (const [botToken, form] of tokens) {
     const support = slack.support({
       channels: { slack: { appToken: "${SLACK_APP_TOKEN}", botToken } },
     });
-    assert.equal(support.supported, false, JSON.stringify(botToken));
+    assert.ok(!support.supported, JSON.stringify(botToken));
     assert.equal(
       support.reason,
       `Slack bot token ${form}. To edit Slack here, set botToken to \${SLACK_BOT_TOKEN} in the Configuration JSON.`,
@@ -109,15 +146,6 @@ test("the Slack editor names a bot token it cannot edit the way Configuration sa
 });
 
 test("the deploy gate requires a named Slack account's own keys, not the default account's", () => {
-  const env = (id) => ({ source: "env", provider: "default", id });
-  const bound = (...keys) => ({
-    secretBindings: Object.fromEntries(
-      keys.map((key) => [
-        key,
-        { source: { kind: "secret", namespaceId: "ns_1", id: `sec_${key}` } },
-      ]),
-    ),
-  });
   const named = {
     channels: {
       slack: {
@@ -151,15 +179,9 @@ test("the deploy gate requires a named Slack account's own keys, not the default
 // asked for SLACK_APP_TOKEN and SLACK_BOT_TOKEN instead and held Deploy for a Configuration OCC
 // deploys (finding 2526).
 test("the deploy gate requires the keys the default Slack account's tokens name", () => {
-  const bound = (...keys) => ({
-    secretBindings: Object.fromEntries(
-      keys.map((key) => [
-        key,
-        { source: { kind: "secret", namespaceId: "ns_1", id: `sec_${key}` } },
-      ]),
-    ),
+  const slackWith = (slack: OpenClawConfigurationDocument) => ({
+    channels: { slack: { enabled: true, ...slack } },
   });
-  const slackWith = (slack) => ({ channels: { slack: { enabled: true, ...slack } } });
   const acme = slackWith({ appToken: "${ACME_SLACK_APP}", botToken: "${ACME_SLACK_BOT}" });
   assert.deepEqual(
     missingChannelCredentialGroups(acme, bound("ACME_SLACK_APP", "ACME_SLACK_BOT")),
@@ -175,7 +197,7 @@ test("the deploy gate requires the keys the default Slack account's tokens name"
   );
   // An env SecretRef names its key too; a token with no key keeps the standard name.
   const mixed = slackWith({
-    botToken: { source: "env", provider: "default", id: "ACME_SLACK_BOT" },
+    botToken: env("ACME_SLACK_BOT"),
   });
   assert.deepEqual(missingChannelCredentialGroups(mixed, bound("ACME_SLACK_BOT")), [
     "Slack Secret bindings (SLACK_APP_TOKEN)",
@@ -201,7 +223,7 @@ test("the deploy gate requires the keys the default Slack account's tokens name"
     ["xapp-${ACME_SLACK_APP}", "ACME_SLACK_APP"],
     ["$ACME_SLACK_APP", "ACME_SLACK_APP"],
     ["$SLACK_APP_TOKEN", "SLACK_APP_TOKEN"],
-  ]) {
+  ] as const) {
     const httpWithApp = slackWith({ mode: "http", appToken, botToken: "${SLACK_BOT_TOKEN}" });
     assert.notDeepEqual(missingChannelCredentialGroups(httpWithApp, bound("SLACK_BOT_TOKEN")), []);
     assert.deepEqual(
@@ -223,72 +245,96 @@ test("the deploy gate requires the keys the default Slack account's tokens name"
 
 // Deploy delivers what Configuration save and deployment admission accept, so the gate must never
 // wait for fewer bindings than they require: every name the Slack settings reference, the signing
-// secret, user token and relay token included (finding 2554). For each shape this collects the
-// names save requires from its own refusals, then leaves each one unbound, with the standard pair
-// bound, and expects the gate to hold Deploy.
+// secret, user token and relay token included (finding 2554). Record the keys save looks up, then
+// leave each one unbound while providing every other binding and check the Deploy diagnostic.
 test("the deploy gate holds every Slack binding Configuration save requires", () => {
-  const env = (id) => ({ source: "env", provider: "default", id });
-  const shapes = [
-    { appToken: "${SLACK_APP_TOKEN}", botToken: "${SLACK_BOT_TOKEN}" },
+  const cases: readonly {
+    shape: OpenClawConfigurationDocument;
+    keys: readonly string[];
+    formKeys?: readonly string[];
+  }[] = [
     {
-      appToken: "${SLACK_APP_TOKEN}",
-      botToken: "${SLACK_BOT_TOKEN}",
-      signingSecret: "${SLACK_SIGNING_SECRET}",
-      userToken: "$SLACK_USER_TOKEN",
-      relay: { authToken: "${SLACK_RELAY_TOKEN:-}" },
+      shape: { appToken: "${SLACK_APP_TOKEN}", botToken: "${SLACK_BOT_TOKEN}" },
+      keys: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+      formKeys: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
     },
-    { mode: "http", botToken: "${SLACK_BOT_TOKEN}", signingSecret: env("SLACK_SIGNING_SECRET") },
-    { mode: "http", appToken: "xapp-${ACME_APP}", botToken: env("ACME_BOT") },
-    { appToken: "${ACME_APP}", botToken: "${ACME_BOT}", userToken: "${ACME_USER:-x}" },
-    // Outside a secret-input field, a fallback needs no binding; an env SecretRef always does.
-    { botToken: "${SLACK_BOT_TOKEN}", replyToMode: "${REPLY_MODE:-all}", extra: env("ACME_EXTRA") },
     {
-      accounts: {
-        work: {
-          appToken: "${WORK_APP}",
-          botToken: env("WORK_BOT"),
-          signingSecret: "$WORK_SIGNING",
-          relay: { authToken: "${WORK_RELAY}" },
-        },
-        off: { enabled: false, appToken: "${OFF_APP}", botToken: "${OFF_BOT}" },
+      shape: {
+        appToken: "${SLACK_APP_TOKEN}",
+        botToken: "${SLACK_BOT_TOKEN}",
+        signingSecret: "${SLACK_SIGNING_SECRET}",
+        userToken: "$SLACK_USER_TOKEN",
+        relay: { authToken: "${SLACK_RELAY_TOKEN:-}" },
       },
+      keys: [
+        "SLACK_APP_TOKEN",
+        "SLACK_BOT_TOKEN",
+        "SLACK_SIGNING_SECRET",
+        "SLACK_USER_TOKEN",
+        "SLACK_RELAY_TOKEN",
+      ],
+      formKeys: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
+    },
+    {
+      shape: {
+        mode: "http",
+        botToken: "${SLACK_BOT_TOKEN}",
+        signingSecret: env("SLACK_SIGNING_SECRET"),
+      },
+      keys: ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET"],
+    },
+    {
+      shape: { mode: "http", appToken: "xapp-${ACME_APP}", botToken: env("ACME_BOT") },
+      keys: ["ACME_APP", "ACME_BOT"],
+    },
+    {
+      shape: { appToken: "${ACME_APP}", botToken: "${ACME_BOT}", userToken: "${ACME_USER:-x}" },
+      keys: ["ACME_APP", "ACME_BOT", "ACME_USER"],
+    },
+    {
+      // Outside a secret-input field, a fallback needs no binding; an env SecretRef always does.
+      shape: {
+        botToken: "${SLACK_BOT_TOKEN}",
+        replyToMode: "${REPLY_MODE:-all}",
+        extra: env("ACME_EXTRA"),
+      },
+      keys: ["SLACK_BOT_TOKEN", "ACME_EXTRA"],
+      formKeys: ["SLACK_BOT_TOKEN"],
+    },
+    {
+      shape: {
+        accounts: {
+          work: {
+            appToken: "${WORK_APP}",
+            botToken: env("WORK_BOT"),
+            signingSecret: "$WORK_SIGNING",
+            relay: { authToken: "${WORK_RELAY}" },
+          },
+          off: { enabled: false, appToken: "${OFF_APP}", botToken: "${OFF_BOT}" },
+        },
+      },
+      keys: ["WORK_APP", "WORK_BOT", "WORK_SIGNING", "WORK_RELAY", "OFF_APP", "OFF_BOT"],
     },
   ];
-  const binding = (key) => ({ source: { kind: "secret", namespaceId: "ns_1", id: `sec_${key}` } });
-  for (const shape of shapes) {
+  for (const { shape, keys, formKeys = [] } of cases) {
     const values = { channels: { slack: { enabled: true, ...shape } } };
-    const required = new Set();
-    for (;;) {
-      let missing;
-      try {
-        requireChannelSecretBindings(
-          values,
-          enabledChannelEntries(values),
-          (name) => required.has(name),
-          (_setting, requirement) => new Error(requirement),
-        );
-      } catch (error) {
-        missing = /^references (\S+) without a Configuration Secret binding/.exec(
-          error.message,
-        )?.[1];
-        assert.ok(missing, error.message);
-      }
-      if (missing === undefined) {
-        break;
-      }
-      required.add(missing);
-    }
-    assert.ok(required.size > 0, JSON.stringify(shape));
-    for (const name of required) {
-      const keys = [...required, "SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"].filter(
-        (key) => key !== name,
-      );
-      const configuration = {
-        secretBindings: Object.fromEntries(keys.map((key) => [key, binding(key)])),
-      };
-      assert.notDeepEqual(
-        missingChannelCredentialGroups(values, configuration),
-        [],
+    const visited = new Set<string>();
+    requireChannelSecretBindings(
+      values,
+      enabledChannelEntries(values),
+      (name) => {
+        visited.add(name);
+        return true;
+      },
+      (_setting, requirement) => new Error(requirement),
+    );
+    assert.deepEqual(visited, new Set(keys), JSON.stringify(shape));
+    const available = ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", ...keys];
+    assert.deepEqual(missingChannelCredentialGroups(values, bound(...available)), []);
+    for (const name of keys) {
+      assert.deepEqual(
+        missingChannelCredentialGroups(values, bound(...available.filter((key) => key !== name))),
+        [formKeys.includes(name) ? "Slack Secret bindings" : `Slack Secret bindings (${name})`],
         `${name} unbound: ${JSON.stringify(shape)}`,
       );
     }
@@ -299,7 +345,7 @@ test("the deploy gate holds every Slack binding Configuration save requires", ()
 // (finding 3191). The session.dmScope fill must follow exactly the channels that start a
 // channel runtime and need Secret bindings.
 test("the session.dmScope fill follows enabledChannelEntries", () => {
-  for (const channels of [
+  const channelCases: readonly (OpenClawConfigurationValue | undefined)[] = [
     undefined,
     {},
     [],
@@ -312,10 +358,12 @@ test("the session.dmScope fill follows enabledChannelEntries", () => {
     { slack: true },
     { slack: null },
     { defaults: {}, slack: { enabled: false }, msteams: {} },
-  ]) {
-    const values = channels === undefined ? {} : { channels };
+  ];
+  for (const channels of channelCases) {
+    const values: OpenClawConfigurationDocument = channels === undefined ? {} : { channels };
+    const admitted = admitGatewaySecurityDefaults(values).session;
     assert.equal(
-      admitGatewaySecurityDefaults(values).session?.dmScope !== undefined,
+      isRecord(admitted) && admitted.dmScope !== undefined,
       enabledChannelEntries(values).length > 0,
       JSON.stringify(channels),
     );

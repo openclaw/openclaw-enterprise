@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { slackApi } from "./harness-topology-k3d-real.mjs";
+import { asRecord } from "../../packages/utils/src/objects.ts";
+import {
+  slackApi,
+  type SlackIdentity,
+  type SlackMessage,
+  type SlackRequests,
+} from "./slack-web-api.ts";
 
-export function assertSlackChannelDestination(response, channelId) {
-  const channel = response?.channel;
+export function assertSlackChannelDestination(response: unknown, channelId: string): void {
+  const channel = asRecord(asRecord(response)?.channel);
   const flags = ["is_channel", "is_group", "is_private"];
   const validFlags =
-    channel !== null &&
-    typeof channel === "object" &&
-    !Array.isArray(channel) &&
+    channel !== undefined &&
     flags.every((flag) => !(flag in channel) || typeof channel[flag] === "boolean");
   // Both channel shapes need explicit IM and MPIM exclusions below.
   const modern = channel?.is_channel === true && channel?.is_group !== true;
@@ -31,9 +35,16 @@ export function assertSlackChannelDestination(response, channelId) {
   }
 }
 
-export async function allMessages(method, token, params) {
-  const messages = [];
-  let cursor;
+type MessageMethod = "conversations.history" | "conversations.replies";
+type MessageQuery = {
+  [Method in MessageMethod]: [method: Method, token: string, params: SlackRequests[Method][0]];
+}[MessageMethod];
+
+export async function allMessages(
+  ...[method, token, params]: MessageQuery
+): Promise<SlackMessage[]> {
+  const messages: SlackMessage[] = [];
+  let cursor: string | undefined;
   do {
     const page = await slackApi(method, token, {
       ...params,
@@ -47,7 +58,7 @@ export async function allMessages(method, token, params) {
   return messages;
 }
 
-export function assertSlackBotAuthor(message, identity) {
+export function assertSlackBotAuthor(message: SlackMessage, identity: SlackIdentity): void {
   assert.match(identity.bot_id ?? "", /^B[A-Z0-9]+$/, "auth.test must identify the expected bot");
   assert.match(message.bot_id ?? "", /^B[A-Z0-9]+$/, "the Slack message must identify its bot");
   assert.equal(message.bot_id, identity.bot_id, "the expected bot must author the Slack message");
@@ -58,21 +69,27 @@ export function assertSlackBotAuthor(message, identity) {
   }
 }
 
+interface DeliveryCheck<Native> {
+  readonly slack: { readonly channelId: string; readonly senderBotToken: string };
+  readonly gatewayIdentity: SlackIdentity;
+  readonly senderIdentity: SlackIdentity;
+  readonly nativeEvidence: (nonce: string) => Native | PromiseLike<Native>;
+  readonly replyMode?: "thread" | "root";
+  readonly observationMs?: number;
+}
+
 // Only the reads are polled. A lost ingress event is a failure, never a reason
 // to resend the mutation and accidentally prove a different conversation.
-export async function verifySingleSlackDelivery({
+export async function verifySingleSlackDelivery<Native>({
   slack,
   gatewayIdentity,
   senderIdentity,
   nativeEvidence,
   replyMode = "thread",
   observationMs = 60_000,
-}) {
-  assert.match(
-    gatewayIdentity.bot_id ?? "",
-    /^B[A-Z0-9]+$/,
-    "auth.test must identify the expected bot",
-  );
+}: DeliveryCheck<Native>) {
+  const botId = gatewayIdentity.bot_id ?? "";
+  assert.match(botId, /^B[A-Z0-9]+$/, "auth.test must identify the expected bot");
   assert.notEqual(gatewayIdentity.user_id, senderIdentity.user_id);
   assert.equal(gatewayIdentity.team_id, senderIdentity.team_id);
   assert.ok(observationMs >= 60_000 && observationMs <= 300_000);
@@ -84,8 +101,8 @@ export async function verifySingleSlackDelivery({
   assert.equal(sent.channel, slack.channelId);
   assert.match(sent.ts, /^\d+\.\d+$/);
   const deadline = Date.now() + 240_000;
-  let firstObserved;
-  let response;
+  let firstObserved: number | undefined;
+  let response: SlackMessage | undefined;
   while (Date.now() < (firstObserved ? firstObserved + observationMs : deadline)) {
     const roots = await allMessages("conversations.history", slack.senderBotToken, {
       channel: slack.channelId,
@@ -109,7 +126,7 @@ export async function verifySingleSlackDelivery({
     const intended = matches[0];
     if (intended) {
       assertSlackBotAuthor(intended, gatewayIdentity);
-      assert.equal(intended.text.trim(), nonce);
+      assert.equal(intended.text?.trim(), nonce);
       if (replyMode === "thread") {
         assert.equal(
           intended.thread_ts,
@@ -141,7 +158,7 @@ export async function verifySingleSlackDelivery({
   return {
     nonce,
     channel: slack.channelId,
-    botId: gatewayIdentity.bot_id,
+    botId,
     senderId: senderIdentity.user_id,
     originalThreadTs: sent.ts,
     responseTs: response.ts,
