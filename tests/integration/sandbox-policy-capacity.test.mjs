@@ -7,11 +7,11 @@ import { loadInstallationConfiguration } from "../../apps/controller/src/composi
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
-import { partialWrite } from "../helpers/partial-write-authorization.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
+import { partialWrite } from "../helpers/partial-write-authorization.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.mjs";
+import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.ts";
 
 const grants = (count) =>
   Array.from({ length: count }, (_, i) => ({
@@ -105,25 +105,34 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
   const enabled = await fixture.request("PATCH", `${path}/editing`, { body: { enabled: true } });
   assert.equal(enabled.status, 200, JSON.stringify(enabled.body));
-  const previous = await fixture.request("GET", path);
+  const previous = await fixture.request("GET", path, { timeout: 30_000 });
   assert.equal(previous.status, 200, JSON.stringify(previous.body));
+  const unknownFacet = await fixture.request(
+    "POST",
+    `${path.replace("/networking", "/unknown")}/validate`,
+    { body: {} },
+  );
+  assert.equal(unknownFacet.status, 400, JSON.stringify(unknownFacet.body));
+  assert.equal(unknownFacet.body.error.code, "INVALID_REQUEST");
   const additions = grants(16_384);
   const body = { expectedVersion: previous.data.policy.version, additions };
   assert.ok(Buffer.byteLength(JSON.stringify(body)) > 64 * 1024);
-  const preview = await fixture.request("POST", `${path}/validate`, { body });
+  const preview = await fixture.request("POST", `${path}/validate`, { body, timeout: 30_000 });
   assert.equal(preview.status, 200, JSON.stringify(preview.body));
   assert.equal(preview.data.success, true, JSON.stringify(preview.body));
-  const saved = await fixture.request("PUT", path, { body });
+  const saved = await fixture.request("PUT", path, { body, timeout: 30_000 });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   assert.deepEqual(saved.data.additions, additions);
-  const read = await fixture.request("GET", path);
+  const read = await fixture.request("GET", path, { timeout: 30_000 });
   assert.deepEqual(read.data.policy.additions, additions);
   const excess = [...additions, { ...additions[0], id: "one-too-many" }];
   const invalid = await fixture.request("PUT", path, {
+    timeout: 30_000,
     body: { expectedVersion: saved.data.version, additions: excess },
   });
   assert.equal(invalid.status, 400, JSON.stringify(invalid.body));
   const excessPreview = await fixture.request("POST", `${path}/validate`, {
+    timeout: 30_000,
     body: { expectedVersion: saved.data.version, additions: excess },
   });
   assert.equal(excessPreview.status, 200);
@@ -134,11 +143,23 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
     { ...additions.at(-1), ports: [{ from: 444, to: 443 }] },
   ]) {
     const refused = await fixture.request("POST", `${path}/validate`, {
+      timeout: 30_000,
       body: { expectedVersion: saved.data.version, additions: [...additions.slice(0, -1), last] },
     });
     assert.equal(refused.status, 200, JSON.stringify(refused.body));
     assert.equal(refused.data.success, false);
   }
+  // More invalid rules than the response allows must remain a useful refusal, not a 500.
+  const outside = await fixture.request("POST", `${path}/validate`, {
+    body: {
+      expectedVersion: saved.data.version,
+      additions: grants(33).map((grant) => ({ ...grant, host: "outside.example.org" })),
+    },
+  });
+  assert.equal(outside.status, 200, JSON.stringify(outside.body));
+  assert.equal(outside.data.success, false);
+  assert.equal(outside.data.error.details.length, 32);
+  assert.ok(outside.data.error.details.every((detail) => detail.code === "OUTSIDE_CEILING"));
   // Both grants must be checked before buffering a partially delivered large body.
   for (const manage of [false, true]) {
     const member = await fixture.createNamespaceMember(`policy-capacity-${manage}`, namespace.id, [
@@ -203,7 +224,7 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
     timeout: 30_000,
   });
   assert.equal(application.response.status, 202, application.text);
-  const appliedView = await fixture.request("GET", runningPath);
+  const appliedView = await fixture.request("GET", runningPath, { timeout: 30_000 });
   assert.deepEqual(appliedView.data.policy.additions, additions);
   assert.equal(appliedView.data.policy.application.state, "pending");
   // Apply additionally needs policy read authority, checked before an incomplete body.
@@ -234,22 +255,26 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
   // Hold the limiter's clock still while proving burst admission: slow CI must not refill it.
   const budgetNow = performance.now();
   const rateClock = t.mock.method(performance, "now", () => budgetNow);
+  const burstMember = await fixture.createNamespaceMember("policy-rate-burst", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["manage_policy", "agent"],
+    ["update", "sandbox_policy"],
+  ]);
+  const burstSession = await fixture.signIn(burstMember.credentials);
   const bursts = await Promise.all(
-    Array.from({ length: 100 }, () =>
+    Array.from({ length: 11 }, () =>
       fixture.request("POST", `${path}/validate`, {
+        session: burstSession,
         body: { expectedVersion: saved.data.version, additions: [] },
       }),
     ),
   );
+  assert.equal(bursts.filter((result) => result.status === 200).length, 10);
   const limited = bursts.find(
     (result) => result.body.error?.code === "SANDBOX_POLICY_RATE_LIMITED",
   );
   assert.ok(limited, "policy preview must bound repeated admission work");
-  assert.ok(
-    bursts.some((result) => result.status === 429 && result.body.error?.code === "RATE_LIMITED"),
-    "identity resolution must also have a finite request budget",
-  );
-  assert.equal(limited.body.error.code, "SANDBOX_POLICY_RATE_LIMITED");
   assert.ok(Number(limited.headers.get("retry-after")) >= 1);
   for (const target of [path, path.replace(agent.id, otherAgent.id)]) {
     const refused = await partialWrite({
@@ -257,24 +282,34 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
       transportOrigin: `http://127.0.0.1:${fixture.app.server.address().port}`,
       method: "PUT",
       path: target,
-      session: adminSession,
+      session: burstSession,
       declaredBytes: 2 * 1024 * 1024,
       bodyPrefix: '{"expectedVersion":2,"additions":[{"id":"',
     });
     assert.notEqual(refused, null, "rate-limited save waited for the unfinished body");
     assert.equal(refused.status, 429, JSON.stringify(refused.body));
+    assert.equal(refused.body.error.code, "SANDBOX_POLICY_RATE_LIMITED");
   }
   const applyLimited = await partialWrite({
     origin: fixture.origin,
     transportOrigin: `http://127.0.0.1:${fixture.app.server.address().port}`,
     method: "POST",
     path: `${runningPath}/apply`,
-    session: adminSession,
+    session: burstSession,
     declaredBytes: 2 * 1024 * 1024,
     bodyPrefix: '{"additions":[{"id":"',
   });
   assert.notEqual(applyLimited, null, "rate-limited apply waited for its body");
   assert.equal(applyLimited.status, 429, JSON.stringify(applyLimited.body));
+  assert.equal(applyLimited.body.error.code, "SANDBOX_POLICY_RATE_LIMITED");
+  // Exhaust the independent early identity budget only after proving the policy bucket.
+  await Promise.all(
+    Array.from({ length: 61 }, () =>
+      fixture.request("POST", `${path}/validate`, {
+        body: { expectedVersion: saved.data.version, additions: [] },
+      }),
+    ),
+  );
   const configurationLimited = await partialWrite({
     origin: fixture.origin,
     transportOrigin: `http://127.0.0.1:${fixture.app.server.address().port}`,
@@ -308,7 +343,7 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
   });
   assert.equal(independent.status, 200, JSON.stringify(independent.body));
   assert.equal(independent.data.success, true);
-  const unchanged = await fixture.request("GET", path);
+  const unchanged = await fixture.request("GET", path, { timeout: 30_000 });
   assert.equal(unchanged.data.policy.version, saved.data.version);
   assert.deepEqual(unchanged.data.policy.additions, additions);
 });

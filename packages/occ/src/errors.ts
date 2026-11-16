@@ -181,6 +181,17 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   }
 }
 
+/** The database did not accept required audit evidence in the current transaction. */
+export class AuditAppendUnavailableError extends DependencyUnavailableError {
+  readonly reasonCode: "AUDIT_CAPACITY_EXCEEDED" | undefined;
+
+  constructor(reasonCode?: "AUDIT_CAPACITY_EXCEEDED") {
+    super("The platform audit write failed.");
+    this.name = "AuditAppendUnavailableError";
+    this.reasonCode = reasonCode;
+  }
+}
+
 /** A failed private runtime diagnostics transport read, without supplier details. */
 export class RuntimeDiagnosticsTransportError extends DependencyUnavailableError {
   constructor() {

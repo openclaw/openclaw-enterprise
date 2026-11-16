@@ -1,5 +1,5 @@
 import { retryWriteBudget } from "./write-budget-retry.ts";
-import { openShellNamespaceObjects } from "./openshell-workspace-protocol.mjs";
+import { openShellNamespaceObjects } from "./openshell-workspace-protocol.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import assert from "node:assert/strict";
@@ -25,6 +25,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
   AgentResponse,
   ConfigurationResponse,
+  InstallationResponse,
   NamespaceResponse,
   SecretResponse,
 } from "../../packages/contracts/src/api/resources.ts";
@@ -36,10 +37,25 @@ import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { reservePort } from "./available-port.ts";
-import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
+import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.ts";
 import { createConsoleFixtureTransport } from "./console-fixture-transport.ts";
 import { createFixtureResponse } from "./console-fixture-response.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
+
+/**
+ * @typedef {{
+ *   email?: string,
+ *   password?: string,
+ *   name?: string | undefined,
+ *   rememberMe?: boolean | undefined,
+ *   origin?: string | undefined,
+ *   path?: string | undefined,
+ *   fetch?: ((request: Request) => Promise<Response>) | undefined,
+ *   headers?: Record<string, string> | undefined,
+ * }} SignInOverrides
+ */
+/** @typedef {{response: Response, setCookie: string[], cookie: string, origin: string}} ConsoleSession */
+/** @typedef {string | ConsoleSession | {cookie: string, origin?: string | undefined}} RequestSession */
 
 export const backendFixtures = Object.freeze([
   Object.freeze({
@@ -245,10 +261,10 @@ export async function startHttpsIngress({
   return {
     cert,
     async close() {
-      ingress.closeAllConnections();
-      await new Promise((resolve, reject) =>
-        ingress.close((error) => (error ? reject(error) : resolve())),
-      );
+      await new Promise((resolve, reject) => {
+        ingress.close((error) => (error ? reject(error) : resolve()));
+        ingress.closeAllConnections();
+      });
     },
   };
 }
@@ -277,7 +293,7 @@ export function fileConsoleApp(options = {}) {
  * Keep object-typed wrappers and keyed options extracted with Parameters compatible.
  * @param {import("./console-file-app.ts").CleanupRegistrar} t
  * @template {object | Record<string, unknown>} [Options=object]
- * @param {Options & {auditSink?: InMemoryAuditSink, https?: boolean, ingressTLS?: {key: Buffer, cert: Buffer}}} [options]
+ * @param {Options & {auditSink?: InMemoryAuditSink, durableRequestAuditSink?: InMemoryAuditSink, https?: boolean, ingressTLS?: {key: Buffer, cert: Buffer}}} [options]
  */
 export async function createConsoleAppFixture(t, options = {}) {
   const auditSink = options.auditSink ?? new InMemoryAuditSink();
@@ -346,6 +362,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   };
   // These grant-free accounts are fixture setup. Accounts added later through
   // createAccountWithPolicy are also shareable, because State resolves identities live.
+  /** @type {{credentials: typeof credentials, principal: typeof seed.principal}[]} */
   const provisionedAccounts = [];
   for (const label of options.provisionedPeople ?? []) {
     const personCredentials = {
@@ -448,6 +465,9 @@ export async function createConsoleAppFixture(t, options = {}) {
     auth,
     iamDriver,
     auditSink,
+    ...(options.durableRequestAuditSink === undefined
+      ? {}
+      : { durableRequestAuditSink: options.durableRequestAuditSink }),
     development: {
       enabled: true,
       installationId,
@@ -547,6 +567,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   const cleanupBeforeAppClose = [];
   let appClosed = false;
 
+  /** @param {() => void | Promise<void>} cleanup */
   function registerCleanupBeforeAppClose(cleanup) {
     cleanupBeforeAppClose.push(cleanup);
   }
@@ -606,6 +627,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     return payload;
   }
 
+  /** @param {SignInOverrides} [overrides] @returns {Promise<ConsoleSession>} */
   async function signIn(overrides = {}) {
     return signInWithEmailPassword({
       origin,
@@ -620,15 +642,20 @@ export async function createConsoleAppFixture(t, options = {}) {
   /**
    * @param {string} method
    * @param {string} path
-   * @param {{session?: typeof adminSession | null, headers?: Record<string, string>, body?: unknown}} [options]
+   * @param {{session?: RequestSession | null | undefined, headers?: Record<string, string>, body?: unknown, timeout?: number}} [options]
    */
-  async function request(method, path, { session = adminSession, headers = {}, body } = {}) {
+  async function request(
+    method,
+    path,
+    { session = adminSession, headers = {}, body, timeout } = {},
+  ) {
     const result = await rawRequest(method, path, {
       headers:
         session === null
           ? headers
           : authenticatedHeaders(session, { origin: new URL(authBaseURL).origin, ...headers }),
       body,
+      ...(timeout === undefined ? {} : { timeout }),
     });
     const payload = result.response.status === 204 ? {} : parseJson(result);
     return {
@@ -641,10 +668,10 @@ export async function createConsoleAppFixture(t, options = {}) {
 
   async function bootstrap(name = "Console test Installation") {
     const result = await request("POST", "/installation/bootstrap", { body: { name } });
-    assert.equal(result.status, 201);
-    return result.data;
+    return fixtureResponse(result, 201, InstallationResponse, "bootstrap Installation").data;
   }
 
+  /** @param {string} name @param {{ready?: boolean}} [options] */
   async function createNamespace(name, { ready = false } = {}) {
     const result = await request("POST", "/namespaces", { body: { name } });
     const namespace = fixtureResponse(result, 201, NamespaceResponse, "create Namespace").data;
@@ -656,6 +683,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     return namespace;
   }
 
+  /** @param {string} namespaceId */
   async function makeNamespaceReady(namespaceId) {
     assert.ok(controller, "bootstrap must create the controller before Namespace lifecycle runs");
     const updated = await controller.handleNamespaceLifecycle(
@@ -667,6 +695,10 @@ export async function createConsoleAppFixture(t, options = {}) {
     return updated;
   }
 
+  /**
+   * @param {string} namespaceId
+   * @param {object} [values]
+   */
   async function createConfiguration(namespaceId, values = {}, options = {}) {
     const configuration = await retryWriteBudget(() =>
       request("POST", `/namespaces/${namespaceId}/configurations`, {
@@ -682,6 +714,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     return fixtureResponse(configuration, 201, ConfigurationResponse, "create Configuration").data;
   }
 
+  /**
+   * @param {string} namespaceId
+   * @param {string} configurationId
+   * @param {object} [values]
+   */
   async function updateConfiguration(namespaceId, configurationId, values = {}, options = {}) {
     const configuration = await request(
       "PATCH",
@@ -695,8 +732,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         },
       },
     );
-    assert.equal(configuration.status, 200);
-    return configuration.data;
+    return fixtureResponse(configuration, 200, ConfigurationResponse, "update Configuration").data;
   }
 
   // The listed bindings createAgent adds for each Agent's model credential (finding 2260).
@@ -783,6 +819,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     return binding.data;
   }
 
+  /**
+   * @param {string} namespaceId
+   * @param {string} name
+   * @param {object} [values]
+   */
   async function createAgent(namespaceId, name, values = {}, options = {}) {
     const configuration = await createConfiguration(namespaceId, values, {
       secretBindings: options.secretBindings,
@@ -833,6 +874,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     return created;
   }
 
+  /**
+   * @param {string} namespaceId
+   * @param {string} agentId
+   * @param {unknown} body
+   */
   async function updateAgent(namespaceId, agentId, body) {
     const agent = await request("PATCH", `/namespaces/${namespaceId}/agents/${agentId}`, {
       body,
@@ -849,6 +895,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     },
   );
 
+  /**
+   * @param {string} namespaceId
+   * @param {string} name
+   * @param {string} value
+   */
   async function createSecret(namespaceId, name, value) {
     const secret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
       body: { name, value },

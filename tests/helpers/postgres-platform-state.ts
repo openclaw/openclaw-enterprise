@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { Pool } from "pg";
 import { Check } from "typebox/value";
 
 import {
   ErrorResponse,
+  Meta,
   type AgentResponse,
   type ConfigurationResponse,
   type CreateAgentBody,
@@ -15,7 +17,7 @@ import {
   type OpenClawConfigurationDocument,
   type SecretResponse,
 } from "../../packages/contracts/src/index.ts";
-import { verifyPlatformStateStoreContract } from "../conformance/platform-state-store.contract.mjs";
+import { verifyPlatformStateStoreContract } from "../conformance/platform-state-store.contract.ts";
 import { admittedConfiguration } from "./admitted-configuration.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
 import { reservePort, reservedPortArgs } from "./available-port.ts";
@@ -23,7 +25,7 @@ import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { createConsoleFixtureTransport, fetchLoopback } from "./console-fixture-transport.ts";
 import { jsonRequestInit } from "./inject-json.mjs";
 import { jsonLines as parseJsonLines } from "./json-lines.mjs";
-import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
+import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
 import {
   cleanupKubernetesNamespaces,
   createKubernetesStartupEnvironment,
@@ -31,7 +33,7 @@ import {
 } from "./postgres-platform-kubernetes.ts";
 import { stopProcess } from "./stop-process.mjs";
 import { temporaryDirectory } from "./temporary-directory.ts";
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 
 type Configuration = ConfigurationResponse["data"];
 type Agent = AgentResponse["data"];
@@ -304,29 +306,66 @@ async function startController(
   child.stderr.on("data", (chunk: string) => (output += chunk));
 
   const origin = `http://127.0.0.1:${port}`;
-  const transport = createConsoleFixtureTransport(browserOrigin, origin);
-  const session = await waitFor<Session>(
-    () => `the durable OCC subprocess to become ready:\n${output}`,
-    async () => {
-      assert.equal(child.exitCode, null, `The durable OCC subprocess exited early:\n${output}`);
-      try {
-        return await signInWithEmailPassword({
-          fetch: (input, init) => transport.fetchThroughLoopback(new Request(input, init)),
-          origin: browserOrigin,
-          email: adminEmail,
-          password: adminPassword,
-          rememberMe: undefined,
-        });
-      } catch {
-        return undefined;
-      }
-    },
-    { timeoutMs: 15_000, intervalMs: 40 },
-  );
+  const session = await waitForControllerSignIn(origin, child, () => output);
   // Only the child can sign in, so it has bound the port; the reservation would otherwise
   // keep taking (and resetting) a share of the connections.
   await reservation.release();
   return { child, origin, session, output: () => output };
+}
+
+export async function waitForControllerSignIn(
+  origin: string,
+  child: Pick<ChildProcess, "exitCode" | "signalCode">,
+  output: () => string,
+  signInTimeoutMs = 15_000,
+): Promise<Session> {
+  const transport = createConsoleFixtureTransport(browserOrigin, origin);
+  let lastSignInStatus: number | undefined;
+  const controller = new AbortController();
+  const signInSignal = controller.signal;
+  const timer = setTimeout(() => controller.abort(), signInTimeoutMs);
+  try {
+    for (;;) {
+      assert.equal(
+        child.exitCode ?? child.signalCode,
+        null,
+        `The durable OCC subprocess exited early:\n${output()}`,
+      );
+      if (signInSignal.aborted) {
+        const observation =
+          lastSignInStatus === undefined ? "no HTTP response" : `HTTP ${lastSignInStatus}`;
+        assert.fail(
+          `Timed out waiting for the durable OCC subprocess to become ready:\n${output()}\nLast sign-in attempt: ${observation}.`,
+        );
+      }
+      const session = await signInWithEmailPassword({
+        fetch: async (input, init) => {
+          lastSignInStatus = undefined;
+          const request = new Request(input, { ...init, signal: signInSignal });
+          // Retain the Request until transport settles so its dependent signal stays live.
+          const response = await transport.fetchThroughLoopback(request).finally(() => {
+            request.signal.throwIfAborted();
+          });
+          lastSignInStatus = response.status;
+          return response;
+        },
+        origin: browserOrigin,
+        email: adminEmail,
+        password: adminPassword,
+        rememberMe: undefined,
+      }).catch(() => undefined);
+      if (session && !signInSignal.aborted) {
+        return session;
+      }
+      await delay(40, undefined, { signal: signInSignal }).catch((error: unknown) => {
+        if (!signInSignal.aborted) {
+          throw error;
+        }
+      });
+    }
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function spawnWorker(context: TestContext, { kubernetesDrivers = false } = {}) {
@@ -427,12 +466,18 @@ async function request<Data = unknown>(
     "expected a JSON response envelope",
   );
   const envelope = payload as Record<string, unknown>;
-  const { error } = envelope;
+  const { error, meta } = envelope;
   assert.ok(
     error === undefined || Check(ErrorResponse.properties.error, error),
     "invalid API error envelope",
   );
-  return { status: response.status, data: envelope.data as Data, error };
+  const requestId =
+    typeof meta === "object" && meta !== null && "requestId" in meta ? meta.requestId : undefined;
+  assert.ok(
+    requestId === undefined || Check(Meta.properties.requestId, requestId),
+    "invalid API request ID",
+  );
+  return { status: response.status, data: envelope.data as Data, error, requestId };
 }
 
 async function createDurableController(pool: Pool) {

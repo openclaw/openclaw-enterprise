@@ -17,7 +17,7 @@ import {
   testPool,
   withPool,
 } from "../helpers/postgres-database.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
 const options = { ...requiresPostgres, timeout: 30_000 };

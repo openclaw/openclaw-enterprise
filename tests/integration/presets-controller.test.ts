@@ -35,6 +35,7 @@ import {
   type PresetSummary,
   type PresetDraftTemplate,
   type PresetWire,
+  type ResourceRef,
   renderPresetTemplate,
   validatePresetTemplate,
 } from "../../packages/contracts/src/index.ts";
@@ -49,13 +50,13 @@ import {
 import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { bindRole, grantRole, restrict } from "../helpers/iam-grants.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { bindRole, grantRole, restrict } from "../helpers/iam-grants.ts";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import {
   assertWriteAuthorizationDenial,
   partialWrite,
-} from "../helpers/partial-write-authorization.mjs";
+} from "../helpers/partial-write-authorization.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { retryWriteBudget } from "../helpers/write-budget-retry.ts";
 import {
@@ -665,7 +666,7 @@ describe("Presets", { concurrency: 2 }, () => {
         existing.id,
       ],
     ] as const) {
-      const target = { kind: "preset", id: targetId, namespaceId: namespace.id };
+      const target: ResourceRef = { kind: "preset", id: targetId, namespaceId: namespace.id };
       const small = await fixture.request(method, path, {
         session,
         body: { name: "Unauthorized", template: {} },
@@ -679,7 +680,7 @@ describe("Presets", { concurrency: 2 }, () => {
       const auditStart = fixture.audit.events.length;
       const address = fixture.app.server.address();
       assert.ok(address !== null && typeof address !== "string");
-      const refused: unknown = await partialWrite({
+      const refused = await partialWrite({
         origin: fixture.origin,
         transportOrigin: `http://127.0.0.1:${address.port}`,
         method,
@@ -689,10 +690,12 @@ describe("Presets", { concurrency: 2 }, () => {
         bodyPrefix:
           '{"name":"Unread","template":{"variables":{"guidance":{"type":"string","default":"',
       });
-      assert.notEqual(refused, null, `${method}: the controller waited for the unread body`);
-      const partial = record(refused);
-      assert.equal(partial.status, 403, `${method}: ${JSON.stringify(partial.body)}`);
-      assert.deepEqual(field(partial.body, "error"), forbidden[method], method);
+      assert.ok(refused, `${method}: the controller waited for the unread body`);
+      assert.deepEqual(
+        fixture.fixtureResponse(refused, 403, ErrorResponse, method).error,
+        forbidden[method],
+        method,
+      );
       // The refusal keeps its audit row, naming the exact grant the write itself checks.
       assertWriteAuthorizationDenial(
         fixture.audit.events.slice(auditStart),

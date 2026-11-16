@@ -11,7 +11,7 @@ import {
   downloadPinnedArtifact,
   fetchPinnedBytes,
   isTransientFetchError,
-} from "../../scripts/ci/routing.mjs";
+} from "../../scripts/ci/routing.ts";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 

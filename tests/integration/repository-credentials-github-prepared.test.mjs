@@ -13,8 +13,8 @@ import {
   fixtureRepository,
   fixtureRepositoryId,
   fixtureInstallationId,
-} from "../fixtures/repository-credentials/github.mjs";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+} from "../fixtures/repository-credentials/github.ts";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 
 // The trusted consumer injects only committed bytes into a real loopback request.
 function readRepository(github, material) {

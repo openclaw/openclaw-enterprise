@@ -1,6 +1,6 @@
 ---
 created: 2026-10-15
-updated: "2026-11-13"
+updated: "2026-11-16"
 last_updated_session: "01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd"
 ---
 
@@ -40,18 +40,15 @@ graph TD
   V --> R["Record applied<br/>or unconfirmed failure"]
 ```
 
-The solid arrows trace source paths, not a claim that all providers are verified.
+Arrows trace source paths; provider verification remains separate.
 
 ## Execution Trace
 
 ### 1. Admit and persist desired additions
 
-`internal/occcli/agent_policy.go:agentPolicyCommand` declares JSON and YAML
-output for each policy subcommand. `internal/occcli/cli.go:validateOptions` selects JSON only when `--output` is
-omitted and refuses unsupported explicit formats before any request. It then
-prints the acknowledged result through
-`internal/occcli/output.go:printStructured`. A successful mutation therefore
-returns its result without a later table-format error.
+`internal/occcli/agent_policy.go:agentPolicyCommand` declares JSON/YAML output.
+`validateOptions` selects JSON by default and rejects unsupported formats before
+requests; `printStructured` prints acknowledged results.
 
 `OpenClawController.discoverConfigurations` filters registry contributions by the
 server-selected Driver, scope, and resource-owner read authority. Installation
@@ -60,20 +57,17 @@ Agent discovery and policy GET
 use the same descriptor with owner-generated facet action URLs and current
 availability. The registry never selects a Driver from submitted additions.
 
-The policy write hook in `apps/controller/src/index.ts` charges a replica-local
-budget keyed by verified admission method, issuer, and subject before IAM lookup.
-Preset and Configuration writes share this early budget. Policy writes then
-resolve the principal, charge their stricter shared principal budget, and call
-`authorizeBeforeBody`. It delegates Agent `manage_policy` and SandboxPolicy
-`update` checks to `OpenClawController.authorizeAgentSandboxPolicyWrite`; apply
-also checks SandboxPolicy `read`. Preview, save, and apply share the body budget;
-admission repeats authorization. Either budget returns 429 and `Retry-After` before body
-reads. [API limits](../reference/api-explorer.md#write-request-limits) and
-[policy limits](../reference/sandbox-policies.md) define their scopes and values.
+The policy write hook in `apps/controller/src/index.ts` budgets verified identities
+before IAM lookup, shared with Preset/Configuration writes. Policy writes resolve
+the principal, charge their shared principal budget, validate the facet and call
+`authorizeBeforeBody`. It checks Agent `manage_policy`, SandboxPolicy `update`,
+and additionally `read` for apply. Admission repeats authorization. Either budget
+returns 429 and `Retry-After` before body reads. See [API limits](../reference/api-explorer.md#write-request-limits)
+and [policy limits](../reference/sandbox-policies.md).
 
 The shared `SandboxNetworkGrantsSchema` bounds policies at 16,384 entries.
 `createSandboxNetworkGrantChecker` indexes executables and hostnames, merges port
-ranges, and checks exact and single-label wildcard hosts. Controller admission and
+ranges, and binary-searches cached exact/wildcard interval unions. Controller admission and
 worker application use this index.
 
 `validateAgentSandboxPolicy` authorizes the exact Agent and policy, checks the
@@ -93,7 +87,7 @@ CLI callers retain the same field and cause without terminal controls.
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
 and checks editing, expected version, pending work, complete ceiling coverage,
 and registry-resolved Driver admission. The saved additions come from the
-admitted snapshot. PostgreSQL's [grant validator](../../migrations/0077_sandbox_policy_capacity.sql) enforces the
+admitted snapshot. PostgreSQL's [grant validator](../../migrations/0079_sandbox_policy_capacity.sql) enforces the
 same finite 16,384-entry bound and individual grant checks before commit.
 While the active or next revision runs under protected
 execution (the Installation selects the Credential Proxy), additions are refused
@@ -135,7 +129,11 @@ authorized editing operation changes this flag.
 `packages/occ/src/state/postgres-state.ts` performs versioned updates. Agent
 creation creates its one policy through a database trigger. Constraints enforce
 ownership, document shape, immutable application identity, version transitions,
-and application revision ownership. Agent deletion cascades policy removal and
+and application revision ownership. The in-memory adapter and the PostgreSQL
+update trigger reject saves that remove a pending application, including saves
+that keep the current policy version. The worker can record the expected provider
+resource version and set the same application to `applied` or `failed`.
+Agent deletion cascades policy removal and
 cleans its exact IAM access.
 
 ### 2. Freeze deployment or enqueue live application
@@ -257,7 +255,8 @@ the policy read, only the network policy card states it; the suggestions card is
 - Compare the application revision with the active Agent revision and inspect
   attributable audit evidence before retrying a stale or unconfirmed request.
 - [PostgreSQL admission integration](../../tests/integration/postgres-agent-sandbox-policy.test.mjs)
-  exercises HTTP/IAM/storage; the [OpenShell runtime lane](../../tests/helpers/openshell-sandbox-workflows.mjs)
+  exercises HTTP/IAM/storage, application-role refusal of pending application
+  removal, and worker settlement; the [OpenShell runtime lane](../../tests/helpers/openshell-sandbox-workflows.mjs)
   owns real enforcement proof. Storybook proves simulated presentation only.
 - [Console batch browser tests](../../tests/browser/console-policy-denials.test.ts)
   cover selection across pages, stable Follow, deduplication, preservation of saved
@@ -277,7 +276,9 @@ the policy read, only the network policy card states it; the suggestions card is
 
 ## Changelog
 
-- 2026-11-13: Trace the Console’s single save-and-apply request and its atomic admission for a running Agent.
+- 2026-11-16 22:21: Reject policy saves that remove a pending application. (authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c - cf0370780b4e885e35ee463033b6926e5d3109ef)
+
+- 2026-11-16: Trace the Console’s single save-and-apply request and its atomic admission for a running Agent.
 
 - 2026-11-11 11:50: Bound identity lookup and classify early write refusals. (01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd - b9a678f1b)
 

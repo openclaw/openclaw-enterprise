@@ -6,8 +6,8 @@ import { ResourceConflictError } from "../../packages/occ/src/index.ts";
 import { discoverMcpAuthorization } from "../../apps/controller/src/connections/mcp-discovery.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { signedInHeaders } from "../helpers/production-sign-in.mjs";
 import {

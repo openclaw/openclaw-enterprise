@@ -2,10 +2,10 @@ import { chmod, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { GitHubRepositoryRegistration } from "../../../../apps/controller/src/drivers/repo/github/access/registry.ts";
-import { fixtureAppId, fixtureInstallationId } from "../github.mjs";
-import { temporaryDirectory } from "../process.mjs";
+import { fixtureAppId, fixtureInstallationId } from "../github.ts";
+import { temporaryDirectory } from "../process.ts";
 
-export type FixtureOwner = { after(cleanup: () => void | Promise<void>): void };
+import type { FixtureOwner } from "../resources.ts";
 
 type NamespaceRegistration = GitHubRepositoryRegistration["namespaces"][number];
 export type RegistryFixtureDefinition = Pick<

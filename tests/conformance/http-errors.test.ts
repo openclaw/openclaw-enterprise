@@ -83,11 +83,9 @@ import {
   AGENT_DELETING,
   AGENT_NAME_CONFLICT,
   agentPrincipalDenied,
-  AUTHORIZATION_HEADER_REFUSED,
   callerDenied,
   CONSOLE_ACCESS_DENIED,
   CREDENTIAL_GATEWAY_NOT_CONFIGURED,
-  CREDENTIAL_REQUIRED,
   CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
@@ -99,10 +97,14 @@ import {
   runtimeLogSourceUnavailable,
   SERVICE_ACCOUNT_BACKEND_MISMATCH,
   SERVICE_ACCOUNT_NO_BACKEND_BINDING,
-  serviceKeyOutsideNamespace,
   storedCredentialSourceConfig,
   dedicatedOpenClawSandboxRefusal,
 } from "../helpers/refusal-text.mjs";
+import {
+  AUTHORIZATION_HEADER_REFUSED,
+  CREDENTIAL_REQUIRED,
+  serviceKeyOutsideNamespace,
+} from "../helpers/request-admission-expectations.ts";
 
 // Text that must never reach a client: the mappings below that answer with fixed text are
 // checked with an error carrying this message.
@@ -135,20 +137,6 @@ type ErrorCase = readonly [
 // AuthorizationDeniedError, so each row also guards the order of the checks in
 // requestFailure: a subclass must keep its own status and text, not its parent's.
 const cases = [
-  [
-    "a policy write budget refusal retains its retryable HTTP status",
-    new RequestFailure(429, "SANDBOX_POLICY_RATE_LIMITED", "Too many network policy requests."),
-    {
-      status: 429,
-      code: "SANDBOX_POLICY_RATE_LIMITED",
-      message: "Too many network policy requests.",
-    },
-  ],
-  [
-    "an early write authorization budget refusal retains its retryable HTTP status",
-    new RequestFailure(429, "RATE_LIMITED", "Too many write requests."),
-    { status: 429, code: "RATE_LIMITED", message: "Too many write requests." },
-  ],
   // 409: conflicts the user can act on.
   [
     "a state conflict names what blocks the operation",
@@ -1258,6 +1246,9 @@ const NOT_PROVISIONING_REFUSALS = [
   "INSTALLATION_EXISTS",
   "METHOD_NOT_ALLOWED",
   "NATIVE_ADMIN_RETURN_RATE_LIMITED",
+  // Pre-body write hooks return these as 429; HTTP capacity coverage owns their behavior.
+  "RATE_LIMITED",
+  "SANDBOX_POLICY_RATE_LIMITED",
   "REPOSITORY_OPTIONS_UNAVAILABLE",
   "UNKNOWN_OUTCOME",
 ];

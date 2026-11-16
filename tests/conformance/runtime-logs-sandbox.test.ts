@@ -1,4 +1,4 @@
-import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.mjs";
+import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { openShellLogDecision } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
 import assert from "node:assert/strict";
@@ -49,7 +49,7 @@ import type {
 } from "../../packages/occ/src/runtime-logs/index.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { denialsDuring } from "../helpers/console-app.mjs";
-import { cpuTimeMs, cpuTimeMsAsync } from "../helpers/cpu-time.mjs";
+import { cpuTimeMs, cpuTimeMsAsync } from "../helpers/cpu-time.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";
 import {
   createRuntimeLogComputeDriver,
@@ -168,8 +168,7 @@ function logOnlyGatewayClient() {
 }
 
 function openShellSandboxDriver(gatewayClient: OpenShellGatewayClient) {
-  const namespaceProtocol: unknown = openShellWorkspaceProtocol();
-  assert.ok(namespaceProtocol !== null && typeof namespaceProtocol === "object");
+  const namespaceProtocol = openShellWorkspaceProtocol();
   const client = new Proxy(gatewayClient, {
     get: (target, property): unknown =>
       property in namespaceProtocol
@@ -1470,8 +1469,7 @@ test("sandbox sanitization stays linear on hostile 32 KiB OCSF lines", async () 
 test("a full Sandbox tail is cut for about the cost of sanitizing it once", async () => {
   // A 1000-line tail of 1 KiB policy decisions is twice what one 512 KiB page may
   // carry. Choosing the cut must not sanitize the tail again for each candidate
-  // prefix. Both costs are process CPU time, min of 3, so the bound holds on slow
-  // or loaded runners.
+  // prefix. Both costs use process CPU time to exclude time waiting for the CPU.
   const {
     createRuntimeLogCursorCodec,
     readSandboxLogPage,

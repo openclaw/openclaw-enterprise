@@ -86,6 +86,16 @@ limits each grant to 1024 distinct ports. These writes also share the
 [early authorization budget](api-explorer.md#write-request-limits) with Preset and
 Configuration writes.
 
+The Helm deployment mounts the complete trusted startup document from one
+Kubernetes Secret shared by the API, worker and upgrade preflight. Its decoded
+data must fit Kubernetes' 1 MiB Secret limit, including all other startup fields.
+This byte limit can bind before the 16,384-entry schema limit; there is no fixed
+Helm entry count because executable paths, hostnames and port lists vary. Compact
+the document and measure its UTF-8 bytes before creating the Secret. For example,
+the 16,384-rule startup fixture's ceiling alone is 1,780,053 bytes and does not
+fit this deployment path. The file-based startup test proves schema capacity,
+not deployment of that fixture through Helm. See [Kubernetes Secret limits](https://kubernetes.io/docs/concepts/configuration/secret/#size-limit).
+
 Default rules, generated workspace access, model credential delivery, and Compute
 isolation remain controlled by their existing owners. Users cannot submit
 arbitrary provider policy YAML, alter defaults, share policies, or change their
@@ -113,6 +123,9 @@ application with its requester, operation ID, snapshot, and expected provider
 resource version. The worker rechecks authority, ownership, lifecycle, and the
 current ceiling before effects. It preserves defaults from the admitted revision.
 A concurrent provider update causes a conflict instead of an overwrite.
+OCC rejects a save that removes a pending application. After the worker records
+`applied` or `failed`, a save that advances the policy to its next version can
+clear the application record.
 
 `pending` means enforcement is unconfirmed. `applied` requires the provider's
 complete desired policy to match the admitted candidate and its active, loaded

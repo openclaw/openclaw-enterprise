@@ -4,14 +4,14 @@ import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { text } from "node:stream/consumers";
-import { appModule } from "../fixtures/repository-credentials/runtime.mjs";
-import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
-import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
-import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
+import { appModule } from "../fixtures/repository-credentials/runtime.ts";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
+import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.ts";
+import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
 import {
   observeTlsOrigin,
   receiveThroughFin,
-} from "../fixtures/repository-credentials/socket-observer.mjs";
+} from "../fixtures/repository-credentials/socket-observer.ts";
 
 const { createRoutePolicy } = await appModule("drivers/repo/github/access/routes");
 const { createUpstreamSender } = await appModule("drivers/repo/access/transport/upstream");
@@ -162,7 +162,7 @@ test(
     await t.test("two client processes receive only configured identity", async () => {
       const start = observed.connections.length;
       const observer = new URL(
-        "../fixtures/repository-credentials/socket-observer.mjs",
+        "../fixtures/repository-credentials/socket-observer.ts",
         import.meta.url,
       );
       const script = `import { receiveThroughFin } from ${JSON.stringify(observer.href)};

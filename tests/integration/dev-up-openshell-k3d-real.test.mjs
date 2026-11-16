@@ -11,7 +11,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { verifyPreloadedAgentSandbox } from "../../scripts/ci/agent-sandbox.ts";
-import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
+import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.ts";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
@@ -21,7 +21,7 @@ import {
 } from "../helpers/openshell-owner-session.mjs";
 import { firstAgentComposeImages } from "../helpers/local-first-agent-stack.mjs";
 import { localOpenShellGatewayOptions } from "../helpers/local-openshell-gateway.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import { availablePort } from "../helpers/available-port.ts";
 import { attachDevUpStartupDisposition } from "../helpers/dev-up-startup-disposition.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
 
@@ -521,7 +521,7 @@ test(
         execute(
           process.execPath,
           [
-            join(repository, "scripts", "first-agent.mjs"),
+            join(repository, "scripts", "first-agent.ts"),
             `dependency-${suffix}`,
             "--harness",
             "codex",

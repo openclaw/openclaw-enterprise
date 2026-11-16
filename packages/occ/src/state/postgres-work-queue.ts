@@ -9,6 +9,7 @@ import {
   repositoryRemovalWorkKey,
 } from "../repository-withdrawal.ts";
 import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
+import { CONTROLLER_WORK_AUDIT_ACTIONS } from "@openclaw-enterprise/contracts";
 import { randomUUID } from "node:crypto";
 import {
   CREDENTIAL_WITHDRAWAL_TARGET,
@@ -58,6 +59,8 @@ export interface PostgresQueryClient {
 
 export interface ClaimRequest {
   readonly claimToken?: string;
+  /** Require an audit append in the same database statement as the claim. */
+  readonly recordAudit?: boolean;
 }
 
 export interface RecoveryRequest {
@@ -83,6 +86,7 @@ export interface PostgresWorkQueueOptions {
   readonly claimRaceRetries?: number;
   readonly random?: () => number;
   readonly workKind?: "all" | "namespace";
+  readonly controlPlaneAuditEnabled?: boolean;
 }
 
 interface WorkRow {
@@ -104,6 +108,7 @@ interface WorkRow {
   readonly available_at: Date | string;
   readonly attempt_count: number;
   readonly claim_token: string | null;
+  readonly audit_attempt_id: string | null;
   readonly lease_expires_at: Date | string | null;
   readonly lease_active?: boolean;
   readonly age_ms?: number;
@@ -589,6 +594,7 @@ export function asWork(value: unknown): ControllerWork {
     availableAt: asDate(row.available_at),
     attemptCount: row.attempt_count,
     ...(row.claim_token === null ? {} : { claimToken: row.claim_token }),
+    ...(row.audit_attempt_id == null ? {} : { auditAttemptId: `aud_${row.audit_attempt_id}` }),
     ...(row.lease_expires_at === null ? {} : { leaseExpiresAt: asDate(row.lease_expires_at) }),
     ...(typeof row.lease_active === "boolean" ? { leaseActive: row.lease_active } : {}),
     ...(row.completed_at === null ? {} : { completedAt: asDate(row.completed_at) }),
@@ -650,14 +656,21 @@ const FAIL_EXHAUSTED_NAMESPACES_SQL = `
   )`;
 
 /**
- * Queue transitions append `reconcile` evidence in the same statement. `filter` narrows which
+ * Queue transitions append evidence in the same statement. `filter` narrows which
  * transitioned rows get a row; it is appended to the evidence SELECT's WHERE clause. A failure
  * that ends the work item (`failed_permanent`) also carries `final: true`, so it differs from a
  * retry with the same reason code.
- * `reasonCode` and `details` are raw SQL expressions: pass parameters or constants, never input.
- * `details` (a jsonb expression) adds fields to the evidence details.
+ * Options are SQL expressions supplied by the queue. `details` adds fields to the evidence.
  */
-const insertEvidenceCteSql = (filter = "", reasonCode = "$4::text", details = "'{}'::jsonb") => `
+const insertEvidenceCteSql = ({
+  filter = "",
+  reasonCode = "$4::text",
+  details = "'{}'::jsonb",
+  action = "'reconcile'",
+  outcome = "$3::text",
+  id = "'aud_' || gen_random_uuid()::text",
+  correlatedAttempt = "transitioned.audit_attempt_id",
+} = {}) => `
   evidence_targets AS (
     SELECT transitioned.*,
       CASE WHEN ${repositoryCleanupSql("transitioned")} THEN
@@ -665,35 +678,46 @@ const insertEvidenceCteSql = (filter = "", reasonCode = "$4::text", details = "'
           transitioned.idempotency_key
           from '${REPOSITORY_CLEANUP_KEY_PATTERN}'
         )
-      END AS repository_cleanup_revision_id
+      END AS repository_cleanup_revision_id,
+      COALESCE(transitioned.agent_id, provisioning.agent_id) AS audit_agent_id
     FROM transitioned
+    LEFT JOIN occ.agent_provisioning_work AS provisioning
+      ON transitioned.audit_attempt_id IS NOT NULL
+      AND transitioned.work_kind = 'provisioning'
+      AND provisioning.work_id = transitioned.idempotency_key
+      AND provisioning.namespace_id = transitioned.namespace_id
+      AND provisioning.actor_id = transitioned.actor_id
   ), evidence AS (
     INSERT INTO occ.audit_events (
       id, occurred_at, kind, actor_id, action, namespace_id,
       resource_kind, resource_id, outcome, details
     )
     SELECT
-      'aud_' || gen_random_uuid()::text,
+      ${id},
       clock_timestamp(),
       'mutation',
       transitioned.actor_id,
-      'reconcile',
+      ${action},
       transitioned.namespace_id,
       CASE
         WHEN transitioned.revision_id IS NOT NULL
           OR transitioned.repository_cleanup_revision_id IS NOT NULL THEN 'agent_revision'
-        WHEN transitioned.agent_id IS NOT NULL THEN 'agent'
+        WHEN transitioned.audit_agent_id IS NOT NULL THEN 'agent'
         ELSE 'namespace'
       END,
       COALESCE(
         transitioned.revision_id,
         transitioned.repository_cleanup_revision_id,
-        transitioned.agent_id,
+        transitioned.audit_agent_id,
         transitioned.namespace_id
       ),
-      $3::text,
+      ${outcome},
       jsonb_build_object('reasonCode', ${reasonCode}, 'attemptCount', transitioned.attempt_count,
         'workId', transitioned.idempotency_key)
+        || CASE WHEN ${correlatedAttempt} IS NOT NULL THEN
+          jsonb_strip_nulls(jsonb_build_object('attemptId', 'aud_' || ${correlatedAttempt}::text,
+            'workState', transitioned.state, 'agentId', transitioned.audit_agent_id))
+          ELSE '{}'::jsonb END
         || CASE WHEN transitioned.state = 'failed_permanent'
              THEN jsonb_build_object('final', true) ELSE '{}'::jsonb END
         || ${details}
@@ -704,19 +728,34 @@ const insertEvidenceCteSql = (filter = "", reasonCode = "$4::text", details = "'
 const INSERT_EVIDENCE_CTE_SQL = insertEvidenceCteSql();
 const INSERT_EVIDENCE_SQL = `${INSERT_EVIDENCE_CTE_SQL}
   SELECT transitioned.* FROM transitioned`;
+const INSERT_CLAIM_EVIDENCE_CTE_SQL = insertEvidenceCteSql({
+  action: `'${CONTROLLER_WORK_AUDIT_ACTIONS.claimed}'`,
+  outcome: "'success'",
+  reasonCode: "'WORK_CLAIMED'",
+  id: "'aud_' || transitioned.audit_attempt_id::text",
+});
+export function enqueueWithAuditSql(insert: string, requestIdParameter: number): string {
+  const evidence = insertEvidenceCteSql({
+    action: `'${CONTROLLER_WORK_AUDIT_ACTIONS.queued}'`,
+    outcome: "'success'",
+    reasonCode: "'WORK_QUEUED'",
+    details: `jsonb_strip_nulls(jsonb_build_object('agentId', transitioned.agent_id,
+      '__occAuditMetadata', jsonb_build_object('schemaVersion', 1, 'source', 'occ',
+        'requestId', $${requestIdParameter}::text)))`,
+  });
+  return `WITH transitioned AS (${insert}), ${evidence} SELECT transitioned.* FROM transitioned`;
+}
 /**
  * A deployment waiting for its runtime defers every few seconds with the same code. Only a
  * change is recorded: a deferral whose outcome and reason code match the latest evidence for the
- * same revision work item adds no row. Retries, failures, and completions are always recorded.
+ * same revision work item adds no reconciliation progress row. Audited claims still get a
+ * `deferred` record. Retries, failures, and completions are always recorded.
  * The lookup matches the `audit_events_work_attempt_idx` partial index, which covers revision
  * work only; other callers that know a deferral repeats one already recorded pass `$9` false.
  * `$11` true records a repeat too, so its time shows the work is still retrying; `$10` names the
  * refusal a refused-candidate stop waits to publish, and `$12` marks a stop that yielded.
  */
-const INSERT_DEFER_EVIDENCE_SQL = `${insertEvidenceCteSql(
-  `
-      AND $9::boolean
-      AND ($11::boolean OR NOT EXISTS (
+const hasNewDeferralEvidenceSql = `($9::boolean AND ($11::boolean OR NOT EXISTS (
         SELECT 1 FROM (
           SELECT prior.outcome, prior.details->>'reasonCode' AS reason_code
           FROM occ.audit_events AS prior
@@ -730,11 +769,14 @@ const INSERT_DEFER_EVIDENCE_SQL = `${insertEvidenceCteSql(
           LIMIT 1
         ) AS latest
         WHERE latest.outcome = $3::text AND latest.reason_code = $4::text
-      ))`,
-  "$4::text",
-  `CASE WHEN $10::text IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('refusal', $10::text) END
+      )))`;
+const INSERT_DEFER_EVIDENCE_SQL = `${insertEvidenceCteSql({
+  filter: `AND (transitioned.audit_attempt_id IS NOT NULL OR ${hasNewDeferralEvidenceSql})`,
+  action: `CASE WHEN ${hasNewDeferralEvidenceSql} THEN 'reconcile'
+    ELSE '${CONTROLLER_WORK_AUDIT_ACTIONS.deferred}' END`,
+  details: `CASE WHEN $10::text IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('refusal', $10::text) END
      || CASE WHEN $12::boolean THEN jsonb_build_object('stopYielded', true) ELSE '{}'::jsonb END`,
-)}
+})}
   SELECT transitioned.* FROM transitioned`;
 const SETTLE_PROVISIONING_FAILURE_SQL = `
   settled_provisioning_failures AS (
@@ -762,6 +804,7 @@ export class PostgresWorkQueue {
   private readonly claimRaceRetries: number;
   private readonly random: () => number;
   private readonly workKind: "all" | "namespace";
+  private readonly controlPlaneAuditEnabled: boolean;
 
   constructor(client: PostgresQueryClient, options: PostgresWorkQueueOptions = {}) {
     this.client = client;
@@ -778,13 +821,14 @@ export class PostgresWorkQueue {
       "Maximum controller work claim races",
     );
     this.random = options.random ?? Math.random;
+    this.controlPlaneAuditEnabled = options.controlPlaneAuditEnabled === true;
     this.workKind = options.workKind ?? "all";
     if (this.workKind !== "all" && this.workKind !== "namespace") {
       throw new ScopeViolationError("The controller work kind must be all or namespace.");
     }
   }
 
-  async enqueue(input: EnqueueWork): Promise<ControllerWork> {
+  async enqueue(input: EnqueueWork, requestId?: string): Promise<ControllerWork> {
     const idempotencyKey = nonempty(input.idempotencyKey, "Controller work idempotency key");
     const kind = input.kind ?? "lifecycle";
     if (kind !== "lifecycle" && kind !== "provisioning") {
@@ -841,8 +885,7 @@ export class PostgresWorkQueue {
     }
     const availableAt = input.availableAt === undefined ? null : asDate(input.availableAt);
 
-    const inserted = await this.client.query(
-      `INSERT INTO occ.controller_work (
+    const insert = `INSERT INTO occ.controller_work (
          work_kind, idempotency_key, namespace_id, agent_id, revision_id, actor_id, namespace_target,
          agent_target,
          state, available_at, attempt_count, created_at, updated_at
@@ -852,19 +895,25 @@ export class PostgresWorkQueue {
          clock_timestamp(), clock_timestamp()
        )
        ON CONFLICT (idempotency_key) DO NOTHING
-       RETURNING *`,
-      [
-        kind,
-        idempotencyKey,
-        namespaceId,
-        agentId,
-        revisionId,
-        actorId,
-        namespaceTarget,
-        agentTarget,
-        availableAt,
-      ],
-    );
+       RETURNING *`;
+    const parameters = [
+      kind,
+      idempotencyKey,
+      namespaceId,
+      agentId,
+      revisionId,
+      actorId,
+      namespaceTarget,
+      agentTarget,
+      availableAt,
+    ];
+    const inserted =
+      requestId !== undefined || this.controlPlaneAuditEnabled
+        ? await this.client.query(enqueueWithAuditSql(insert, 10), [
+            ...parameters,
+            requestId ?? null,
+          ])
+        : await this.client.query(insert, parameters);
 
     if (inserted.rows[0] !== undefined) {
       return asWork(inserted.rows[0]);
@@ -1030,31 +1079,41 @@ export class PostgresWorkQueue {
     if (!UUID_V4.test(claimToken)) {
       throw new ScopeViolationError("The controller work claim token must be a version 4 UUID.");
     }
+    const candidate = `WITH candidate AS (
+      SELECT work.idempotency_key
+      FROM occ.controller_work AS work
+      WHERE ${this.claimablePredicate("$2")}
+      ORDER BY work.available_at, work.created_at, work.idempotency_key
+      FOR UPDATE OF work SKIP LOCKED
+      LIMIT 1
+    )`;
+    const recordAudit = input.recordAudit ?? this.controlPlaneAuditEnabled;
+    const transition = `UPDATE occ.controller_work AS work
+      SET state = 'claimed',
+          attempt_count = CASE WHEN ${repositoryCleanupSql("work")}
+            THEN LEAST(work.attempt_count::bigint + 1, $2::integer)::integer
+            ELSE work.attempt_count + 1 END,
+          claim_token = $1::uuid,
+          audit_attempt_id = $4::uuid,
+          lease_expires_at = clock_timestamp() + $3::double precision * interval '1 millisecond',
+          updated_at = clock_timestamp()
+      FROM candidate
+      WHERE work.idempotency_key = candidate.idempotency_key
+      RETURNING work.*, ${CLAIM_AGE_SQL("work")}`;
+    const parameters = [
+      claimToken,
+      this.maxAttempts,
+      this.leaseDurationMs,
+      recordAudit ? randomUUID() : null,
+    ];
+    const claimSql = recordAudit
+      ? `${candidate}, transitioned AS (${transition}), ${INSERT_CLAIM_EVIDENCE_CTE_SQL}
+         SELECT transitioned.* FROM transitioned`
+      : `${candidate} ${transition}`;
 
     for (let attempt = 0; attempt < this.claimRaceRetries; attempt += 1) {
       try {
-        const claimed = await this.client.query(
-          `WITH candidate AS (
-             SELECT work.idempotency_key
-             FROM occ.controller_work AS work
-             WHERE ${this.claimablePredicate("$2")}
-             ORDER BY work.available_at, work.created_at, work.idempotency_key
-             FOR UPDATE OF work SKIP LOCKED
-             LIMIT 1
-           )
-           UPDATE occ.controller_work AS work
-           SET state = 'claimed',
-               attempt_count = CASE WHEN ${repositoryCleanupSql("work")}
-                 THEN LEAST(work.attempt_count::bigint + 1, $2::integer)::integer
-                 ELSE work.attempt_count + 1 END,
-               claim_token = $1::uuid,
-               lease_expires_at = clock_timestamp() + $3::double precision * interval '1 millisecond',
-               updated_at = clock_timestamp()
-           FROM candidate
-           WHERE work.idempotency_key = candidate.idempotency_key
-           RETURNING work.*, ${CLAIM_AGE_SQL("work")}`,
-          [claimToken, this.maxAttempts, this.leaseDurationMs],
-        );
+        const claimed = await this.client.query(claimSql, parameters);
         return claimed.rows[0] === undefined ? undefined : asClaimedWork(claimed.rows[0]);
       } catch (error) {
         const state = sqlState(error);
@@ -1597,16 +1656,15 @@ export class PostgresWorkQueue {
        ), ${continueMaintenanceSql("$5")} ${FAIL_EXHAUSTED_NAMESPACES_SQL},
        ${transferRepositoryCleanupSql(CONTINUING_MAINTENANCE_SOURCE_SQL, "true")}
        ${SETTLE_PROVISIONING_FAILURE_SQL}
-       ${insertEvidenceCteSql(
-         "",
-         `CASE WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_activations)
+       ${insertEvidenceCteSql({
+         reasonCode: `CASE WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_activations)
             THEN '${ACTIVE_REVISION_RECOVERY}'
             WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_predecessor_stops)
             THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
-         `COALESCE((SELECT jsonb_build_object('refusal', stop.refusal)
+         details: `COALESCE((SELECT jsonb_build_object('refusal', stop.refusal)
             FROM recovering_refused_stops AS stop
             WHERE stop.idempotency_key = transitioned.idempotency_key), '{}'::jsonb)`,
-       )}
+       })}
        SELECT transitioned.* FROM transitioned`,
       [
         requestedLimit,
@@ -1651,10 +1709,10 @@ export class PostgresWorkQueue {
        ), ${continueMaintenanceSql("$5")} ${FAIL_EXHAUSTED_NAMESPACES_SQL},
        ${transferRepositoryCleanupSql(CONTINUING_MAINTENANCE_SOURCE_SQL, "true")}
        ${SETTLE_PROVISIONING_FAILURE_SQL}
-       ${insertEvidenceCteSql(
-         "",
-         `CASE WHEN transitioned.state = 'queued' THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
-       )}
+       ${insertEvidenceCteSql({
+         reasonCode: `CASE WHEN transitioned.state = 'queued' THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
+         correlatedAttempt: "NULL::uuid",
+       })}
        SELECT transitioned.* FROM transitioned`,
       [requestedLimit, this.maxAttempts, "failure", "MAX_ATTEMPTS_EXHAUSTED", MAX_BACKOFF_MS],
     );

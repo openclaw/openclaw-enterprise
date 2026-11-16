@@ -11,6 +11,7 @@ const methods = new Set(["get", "post", "put", "patch", "delete", "head", "optio
 const example = (value: unknown, summary: string) => ({ example: { summary, value } });
 const cursorExamples: Record<string, string | undefined> = {
   listAgentRevisions: "v1.1",
+  listAgentAuditEvents: "YXVkaXQtbmV4dC1wYWdl",
   getAgentDeploymentRuntimeLogs: "v1.ZXhhbXBsZQ." + "x".repeat(43),
 };
 const rateLimitCodes: Record<string, string | undefined> = {

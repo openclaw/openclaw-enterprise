@@ -1,8 +1,10 @@
 import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
+import { createAgentAuditReader } from "./http/agent-audit.ts";
 import swagger from "@fastify/swagger";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import { AuditEventFactory, type AuditSink } from "@openclaw-enterprise/audit";
 import {
+  API_REQUEST_AUDIT_ACTIONS,
   AgentDeploymentDiagnosticsResponse,
   AgentRuntimeCredentialResponse,
   AgentRuntimeLogsResponse,
@@ -14,6 +16,7 @@ import {
   ErrorResponse,
   isSecretHarnessAuth,
   isServiceAccountHarnessAuth,
+  isSandboxFacet,
   JsonValue,
   occApiRoutes,
   PluginApproversSchema,
@@ -26,6 +29,7 @@ import {
   SecretResponse,
   type Agent,
   type AgentRuntimeLogsQuery,
+  type ApiRequestAuditObservation,
   type AuditEvent,
   type AuditEventKind,
   type AuthorizationEvidence,
@@ -55,6 +59,7 @@ import {
 } from "@openclaw-enterprise/iam";
 import {
   AgentPrincipalAuthorizationError,
+  AuditAppendUnavailableError,
   AuthorizationDeniedError,
   DeletionRetryOwnedError,
   ComputeProvisioningRefusedError,
@@ -63,6 +68,7 @@ import {
   DeviceAuthorizationScopeMismatchError,
   DeviceAuthorizationStartError,
   NoActiveAgentRevisionError,
+  PostgresCommitOutcomeUnknownError,
   ResourceStateConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
@@ -210,6 +216,9 @@ export interface ControllerAppOptions {
   readonly sandboxDriver?: SandboxDriver;
   readonly resolveHarness: HarnessResolver;
   readonly auditSink: AuditSink;
+  /** Durable sink for required HTTP admission and result records. */
+  readonly durableRequestAuditSink?: AuditSink;
+  readonly agentAuditCursorSecret?: string;
   readonly backendSummaries?: readonly BackendSummary[];
   readonly observabilityUrl?: string;
   readonly development: DevelopmentAdmission;
@@ -1069,6 +1078,9 @@ function permissionDescription(
   permissions: readonly RequiredPermission[],
   operation?: OccApiRoute,
 ): string {
+  if (operation?.operationId === "listAgentAuditEvents") {
+    return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.";
+  }
   if (operation?.operationId === "recoverAgentFirstDeployment") {
     return "Requires deploy permission on the exact Agent and read permission on the reviewed Configuration named in the request path. These current permissions are checked for both receipts and misses. Recovery performs no admission or credential preparation.";
   }
@@ -1414,7 +1426,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   const admissions = new WeakMap<FastifyRequest, AdmittedCaller>();
   const contexts = new WeakMap<FastifyRequest, RequestContext>();
   const requestStartedAt = new WeakMap<FastifyRequest, bigint>();
+  const requestAuditState = new WeakMap<
+    FastifyRequest,
+    {
+      denialObserved: boolean;
+      resultSelected: boolean;
+      readTarget?: ResourceRef;
+      commitOutcomeUnknown?: true;
+    }
+  >();
+  const requestAuditSink = options.durableRequestAuditSink;
   const factory = options.auditEventFactory ?? new AuditEventFactory();
+  const readAgentAudit =
+    options.agentAuditCursorSecret === undefined
+      ? undefined
+      : createAgentAuditReader(options.agentAuditCursorSecret);
   const createAuthAccountOperation = {
     operationId: "createAuthAccount",
     method: "POST",
@@ -1812,8 +1838,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       readonly decisionReason: string;
       readonly reasonCode?: string;
       readonly details: Readonly<Record<string, unknown>>;
+      readonly requireAuditWrite?: true;
     },
   ): Promise<void> {
+    const audit = requestAuditState.get(request);
+    if (audit !== undefined) {
+      audit.denialObserved = true;
+    }
     try {
       await options.auditSink.append(
         event(
@@ -1827,12 +1858,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           authorization,
         ),
       );
-    } catch {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+    } catch (error) {
+      if (audit !== undefined && controller !== undefined) {
+        logRequestAuditFailure(request, operation, auditAction(operation, request), error);
+        if (explanation?.requireAuditWrite !== true) {
+          return;
+        }
+      }
+      throw dependencyUnavailable();
     }
   }
 
@@ -1854,12 +1887,77 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           { outcome: "failure", reasonCode },
         ),
       );
-    } catch {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
+    } catch (error) {
+      if (requestAuditState.has(request) && controller !== undefined) {
+        logRequestAuditFailure(request, operation, auditAction(operation, request), error);
+        return;
+      }
+      throw dependencyUnavailable();
+    }
+  }
+
+  function logRequestAuditFailure(
+    request: FastifyRequest,
+    operation: OccApiRoute,
+    action: string,
+    error: unknown,
+  ): void {
+    let code = "AUDIT_WRITE_FAILED";
+    if (error instanceof PostgresCommitOutcomeUnknownError) {
+      code = "AUDIT_COMMIT_OUTCOME_UNKNOWN";
+    } else if (error instanceof AuditAppendUnavailableError && error.reasonCode !== undefined) {
+      code = error.reasonCode;
+    }
+    app.log.error({
+      event: "http.audit_append_failed",
+      requestId: request.id,
+      action,
+      operationId: operation.operationId,
+      code,
+    });
+  }
+
+  async function appendRequestAudit(
+    sink: AuditSink,
+    request: FastifyRequest,
+    operation: OccApiRoute,
+    observation: ApiRequestAuditObservation,
+  ): Promise<boolean> {
+    const context = contexts.get(request);
+    const resource: ResourceRef = ("readTarget" in observation
+      ? observation.readTarget
+      : undefined) ?? { kind: "installation", id: installationId };
+    try {
+      await sink.append(
+        factory.create({
+          installationId,
+          ...(resource.namespaceId === undefined ? {} : { namespaceId: resource.namespaceId }),
+          kind: "api_request",
+          action: observation.action,
+          outcome: observation.outcome,
+          resource,
+          actor: context === undefined ? { unresolved: true } : { principalId: context.actorId },
+          requestId: request.id,
+          ...(context === undefined ? {} : { admissionDecisionId: context.admissionDecisionId }),
+          ...("reasonCode" in observation ? { reasonCode: observation.reasonCode } : {}),
+          details: {
+            operationId: operation.operationId,
+            method: request.method === "HEAD" ? "HEAD" : operation.method,
+            ...("statusCode" in observation ? { statusCode: observation.statusCode } : {}),
+          },
+        }),
       );
+      return true;
+    } catch (error) {
+      logRequestAuditFailure(request, operation, observation.action, error);
+      return false;
+    }
+  }
+
+  function setAuditReadTarget(request: FastifyRequest, resource: ResourceRef): void {
+    const audit = requestAuditState.get(request);
+    if (audit !== undefined) {
+      audit.readTarget = resource;
     }
   }
 
@@ -1902,6 +2000,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     responseHeaders(reply, request.id);
     if (await nativeAdmin.interceptHttp(request, reply)) {
       return;
+    }
+    if ("auditManagementRequest" in request.routeOptions.config) {
+      requestAuditState.set(request, { denialObserved: false, resultSelected: false });
     }
     const contentLength = request.headers["content-length"];
     if (
@@ -1958,7 +2059,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (
       request.headers[OCC_SERVICE_KEY_HEADER] !== undefined &&
       (operation === createAuthAccountOperation ||
-        operation.operationId === "bootstrapInstallation")
+        operation.operationId === "bootstrapInstallation" ||
+        operation.operationId === "listAgentAuditEvents")
     ) {
       throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
     }
@@ -1970,6 +2072,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
       operation.operationId !== "deleteServiceAccount" &&
       operation.operationId !== "listAgentRevisions" &&
+      operation.operationId !== "listAgentAuditEvents" &&
       operation.operationId !== "recoverAgentFirstDeployment" &&
       operation !== connectionCallbackOperation
     ) {
@@ -2085,11 +2188,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         admitted.admittedScope.namespaceId !== params.namespaceId)
     ) {
       await denial(operation, request, "authorization_denial");
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
 
     admissions.set(request, admitted);
@@ -2098,11 +2197,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   async function resolveIdentity(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
     const admitted = admissions.get(request);
     if (!admitted) {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
     let selected: IAMDriver;
     let identity;
@@ -2122,11 +2217,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
       );
     } catch {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
 
     if (
@@ -2186,6 +2277,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
     const params = request.params as Record<string, string>;
     if (writesSandboxPolicy(operation)) {
+      if (!isSandboxFacet(params.facet)) {
+        throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+      }
       await controller.authorizeAgentSandboxPolicyWrite(
         context.actorId,
         params.namespaceId!,
@@ -2239,11 +2333,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   ): Promise<void> {
     const context = contexts.get(request);
     if (!context) {
-      throw failure(
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "A required platform dependency is unavailable.",
-      );
+      throw dependencyUnavailable();
     }
     const params = request.params as Record<string, string>;
     const body = request.body as Record<string, unknown> | undefined;
@@ -2263,11 +2353,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           context,
         );
         if (!options.createController) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
         const installation: Installation = {
           id: installationId,
@@ -2456,8 +2542,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
     }
     if (operation.operationId === "getNamespace") {
+      const namespace = await controller.getNamespace(context.actorId, namespaceId);
+      setAuditReadTarget(request, {
+        kind: "namespace",
+        id: namespace.id,
+        namespaceId: namespace.id,
+      });
       reply.send({
-        data: await controller.getNamespace(context.actorId, namespaceId),
+        data: namespace,
         meta: { requestId: request.id },
       });
       return;
@@ -2733,6 +2825,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params,
         body,
         namespaceId,
+        setAuditReadTarget: (resource) => setAuditReadTarget(request, resource),
         callerMay: (action, resource) => callerMay(context.actorId, action, resource),
         transactIAM: async (work) => {
           const admitted = admissions.get(request);
@@ -2777,6 +2870,29 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const agentId = params.agentId;
     if (!agentId) {
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+
+    if (operation.operationId === "listAgentAuditEvents") {
+      const admitted = admissions.get(request);
+      if (admitted?.method !== "session") {
+        throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
+      }
+      if (readAgentAudit === undefined) {
+        throw failure(501, "NOT_IMPLEMENTED", "Agent audit is disabled.");
+      }
+      await readAgentAudit({
+        controller,
+        auth: options.auth,
+        session: admitted.session,
+        factory,
+        actorId: context.actorId,
+        admissionDecisionId: admitted.decisionId,
+        namespaceId,
+        agentId,
+        request,
+        reply,
+      });
+      return;
     }
 
     if (operation.operationId === "getAgentCallerPermissions") {
@@ -3056,6 +3172,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
         const writeBody = body as unknown as UpdateWorkspaceFileBody;
         validateWorkspaceFileBody(writeBody);
+        const appendWorkspaceAudit = async (
+          event: AuditEvent,
+          onAbort?: () => Error,
+        ): Promise<void> => {
+          try {
+            await withWorkspaceFileRequestSignal(signal, options.auditSink.append(event), onAbort);
+          } catch (error) {
+            if (requestAuditState.has(request)) {
+              logRequestAuditFailure(request, operation, operation.action, error);
+            }
+            throw error;
+          }
+        };
         let result: ControllerWorkspaceFileWriteResult;
         try {
           if (signal.aborted) {
@@ -3078,14 +3207,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         } catch (error) {
           if (error instanceof ControllerWorkspaceFileUnknownOutcomeError) {
             try {
-              await withWorkspaceFileRequestSignal(
-                signal,
-                options.auditSink.append(
-                  workspaceFileAuditEvent(operation, request, target, context, filename, {
-                    outcome: "failure",
-                    reasonCode: "UNKNOWN_OUTCOME",
-                  }),
-                ),
+              await appendWorkspaceAudit(
+                workspaceFileAuditEvent(operation, request, target, context, filename, {
+                  outcome: "failure",
+                  reasonCode: "UNKNOWN_OUTCOME",
+                }),
                 () => new ControllerWorkspaceFileUnknownOutcomeError(error.message),
               );
             } catch {
@@ -3094,14 +3220,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw failure(503, "UNKNOWN_OUTCOME", error.message);
           }
           try {
-            await withWorkspaceFileRequestSignal(
-              signal,
-              options.auditSink.append(
-                workspaceFileAuditEvent(operation, request, target, context, filename, {
-                  outcome: "failure",
-                  reasonCode: "DEPENDENCY_UNAVAILABLE",
-                }),
-              ),
+            await appendWorkspaceAudit(
+              workspaceFileAuditEvent(operation, request, target, context, filename, {
+                outcome: "failure",
+                reasonCode: "DEPENDENCY_UNAVAILABLE",
+              }),
             );
           } catch {
             throw dependencyUnavailable();
@@ -3110,30 +3233,26 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         }
         if (result.status === "missing") {
           try {
-            await withWorkspaceFileRequestSignal(
-              signal,
-              options.auditSink.append(
-                workspaceFileAuditEvent(operation, request, target, context, filename, {
-                  outcome: "failure",
-                  reasonCode: "FILE_MISSING",
-                }),
-              ),
+            await appendWorkspaceAudit(
+              workspaceFileAuditEvent(operation, request, target, context, filename, {
+                outcome: "failure",
+                reasonCode: "FILE_MISSING",
+              }),
             );
           } catch {
-            throw dependencyUnavailable();
+            if (!requestAuditState.has(request)) {
+              throw dependencyUnavailable();
+            }
           }
           throw failure(404, "NOT_FOUND", "The requested workspace file was not found.");
         }
         if (result.status === "unavailable") {
           try {
-            await withWorkspaceFileRequestSignal(
-              signal,
-              options.auditSink.append(
-                workspaceFileAuditEvent(operation, request, target, context, filename, {
-                  outcome: "failure",
-                  reasonCode: "DEPENDENCY_UNAVAILABLE",
-                }),
-              ),
+            await appendWorkspaceAudit(
+              workspaceFileAuditEvent(operation, request, target, context, filename, {
+                outcome: "failure",
+                reasonCode: "DEPENDENCY_UNAVAILABLE",
+              }),
             );
           } catch {
             throw dependencyUnavailable();
@@ -3141,13 +3260,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           throw dependencyUnavailable();
         }
         try {
-          await withWorkspaceFileRequestSignal(
-            signal,
-            options.auditSink.append(
-              workspaceFileAuditEvent(operation, request, target, context, filename, {
-                outcome: "success",
-              }),
-            ),
+          await appendWorkspaceAudit(
+            workspaceFileAuditEvent(operation, request, target, context, filename, {
+              outcome: "success",
+            }),
             () =>
               new ControllerWorkspaceFileUnknownOutcomeError(
                 "The workspace file was written, but its final audit outcome could not be persisted before the request ended.",
@@ -4506,18 +4622,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       async (request, reply) => {
         const context = contexts.get(request);
         if (!context) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
         if (options.provisionAuthAccount === undefined) {
-          throw failure(
-            503,
-            "DEPENDENCY_UNAVAILABLE",
-            "A required platform dependency is unavailable.",
-          );
+          throw dependencyUnavailable();
         }
 
         const body = request.body as Record<string, unknown> | undefined;
@@ -4768,6 +4876,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       });
     }
     for (const operation of occApiRoutes) {
+      // Bootstrap has its own transactional evidence. Runtime log reads have their own
+      // disclosure gate and can also return a download.
+      const routeAuditSink =
+        operation.operationId === "bootstrapInstallation" ||
+        operation.operationId === "getAgentDeploymentRuntimeLogs"
+          ? undefined
+          : requestAuditSink;
       const permissions = requiredPermissions(operation);
       const schema: DocumentedFastifySchema = {
         ...operation.schema,
@@ -4776,13 +4891,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         description: permissionDescription(permissions, operation),
         tags: [...operation.tags],
         "x-openclaw-permissions": permissions,
-        ...(operation.operationId === "bootstrapInstallation"
+        ...(operation.operationId === "bootstrapInstallation" ||
+        operation.operationId === "listAgentAuditEvents"
           ? { security: [{ sessionCookie: [] }] }
           : {}),
       } as DocumentedFastifySchema;
-      const routeOptions: RouteOptions = {
+      const routeOptions: RouteOptions & {
+        config?: { auditManagementRequest?: true; rateLimit?: RequestRateLimiter };
+      } = {
         method: operation.method as HTTPMethods,
         url: operation.path,
+        ...(routeAuditSink === undefined ? {} : { config: { auditManagementRequest: true } }),
         ...(operation.operationId === "putAgentWorkspaceFile"
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
           : operation.operationId === "createAgent" ||
@@ -4829,13 +4948,75 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...(authorizesBeforeBody(operation)
           ? {}
           : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
-        handler: async (request, reply) => performFenced(request, reply, operation),
+        handler: async (request, reply) => {
+          if (routeAuditSink === undefined) {
+            return performFenced(request, reply, operation);
+          }
+          // Admission here means the request can enter the handler. The handler still
+          // checks the caller's permission for the exact operation and target.
+          if (
+            controller !== undefined &&
+            requestAuditState.has(request) &&
+            !(await appendRequestAudit(routeAuditSink, request, operation, {
+              action: API_REQUEST_AUDIT_ACTIONS.admitted,
+              outcome: "success",
+            }))
+          ) {
+            throw dependencyUnavailable();
+          }
+          if (controller === undefined) {
+            await performFenced(request, reply, operation);
+          } else {
+            await controller.withRequestAuditId(request.id, () =>
+              performFenced(request, reply, operation),
+            );
+          }
+          // Wait for an asynchronous onSend hook when perform called reply.send().
+          return reply;
+        },
+        ...(routeAuditSink === undefined
+          ? {}
+          : {
+              onSend: async (request: FastifyRequest, reply: FastifyReply, payload: unknown) => {
+                const audit = requestAuditState.get(request);
+                if (audit === undefined || audit.resultSelected || controller === undefined) {
+                  return payload;
+                }
+                // A later transport or reply error can re-enter onSend. Record the first selected
+                // response once, including when its append fails.
+                audit.resultSelected = true;
+                const statusCode = reply.statusCode;
+                let outcome: "success" | "denied" | "failure" = "success";
+                if (
+                  statusCode < 500 &&
+                  (audit.denialObserved || statusCode === 401 || statusCode === 403)
+                ) {
+                  outcome = "denied";
+                } else if (statusCode >= 400) {
+                  outcome = "failure";
+                }
+                const readTarget =
+                  outcome === "success" && statusCode === 200 ? audit.readTarget : undefined;
+                // Preserve the selected response if the append fails. The handler may have
+                // committed its change or already denied the request.
+                await appendRequestAudit(routeAuditSink, request, operation, {
+                  action: API_REQUEST_AUDIT_ACTIONS.result,
+                  outcome,
+                  statusCode,
+                  ...(readTarget === undefined ? {} : { readTarget }),
+                  ...(audit.commitOutcomeUnknown === true
+                    ? { reasonCode: "COMMIT_OUTCOME_UNKNOWN" }
+                    : {}),
+                });
+                return payload;
+              },
+            }),
       };
       if (authorizesBeforeBody(operation)) {
         const { handler, ...bodyOptions } = routeOptions;
         const writeOptions = {
           ...bodyOptions,
-          config: { rateLimit: preBodyAuthorizationRateLimit },
+          config: { ...bodyOptions.config, rateLimit: preBodyAuthorizationRateLimit },
           onRequest: async (request: FastifyRequest, reply: FastifyReply) => {
             await admit(request, operation);
             const admitted = admissions.get(request);
@@ -5102,6 +5283,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               decisionReason: "The device login does not belong to the requested scope.",
               reasonCode: "DEVICE_AUTHORIZATION_SCOPE_MISMATCH",
               details: {},
+              requireAuditWrite: true,
             },
           );
         } catch (auditError) {
@@ -5233,7 +5415,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         code: mapped.code,
       });
     }
+    const operation = contexts.get(request)?.operation;
+    const audit = requestAuditState.get(request);
+    if (audit !== undefined && operation !== undefined) {
+      if (error instanceof AuditAppendUnavailableError) {
+        logRequestAuditFailure(request, operation, auditAction(operation, request), error);
+      } else if (error instanceof PostgresCommitOutcomeUnknownError) {
+        audit.commitOutcomeUnknown = true;
+        app.log.error({
+          event: "http.commit_outcome_unknown",
+          requestId: request.id,
+          operationId: operation.operationId,
+          code: "COMMIT_OUTCOME_UNKNOWN",
+        });
+      }
+    }
     canonicalFailure(reply, mapped);
+    return reply;
   });
 
   return app;

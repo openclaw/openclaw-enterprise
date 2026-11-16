@@ -192,51 +192,6 @@ export const SandboxNetworkPolicyConfiguration = Object.freeze({
   },
 });
 
-function hostCovered(host: string, ceiling: string): boolean {
-  if (host === ceiling) {
-    return true;
-  }
-  if (!ceiling.startsWith("*.")) {
-    return false;
-  }
-  const suffix = ceiling.slice(1);
-  return (
-    !host.startsWith("*.") &&
-    host.endsWith(suffix) &&
-    !host.slice(0, -suffix.length).includes(".") &&
-    host.length > suffix.length
-  );
-}
-
-function grantsWithinCeilingCandidates(
-  grants: readonly SandboxNetworkGrant[],
-  ceiling: readonly SandboxNetworkGrant[],
-): boolean {
-  return grants.every((grant) => {
-    // An empty or reversed range names no port, so it can never prove containment.
-    if (grant.ports.length === 0 || grant.ports.some(({ from, to }) => from > to)) {
-      return false;
-    }
-    const ranges = ceiling
-      .filter((limit) => limit.binary === grant.binary && hostCovered(grant.host, limit.host))
-      .flatMap(({ ports }) => ports)
-      .sort((a, b) => a.from - b.from);
-    return grant.ports.every(({ from, to }) => {
-      let next = from;
-      for (const range of ranges) {
-        if (range.from > next) {
-          break;
-        }
-        next = Math.max(next, range.to + 1);
-        if (next > to) {
-          return true;
-        }
-      }
-      return false;
-    });
-  });
-}
-
 /** Snapshot a validated ceiling once; each lookup visits only its exact and single-label hosts. */
 export function createSandboxNetworkGrantChecker(
   ceiling: readonly SandboxNetworkGrant[],
@@ -270,17 +225,52 @@ export function createSandboxNetworkGrantChecker(
       entry.ports = merged;
     }
   }
+  const coverage = new Map<string, readonly { from: number; to: number }[]>();
   return (grant) => {
+    if (grant.ports.length === 0 || grant.ports.some(({ from, to }) => from > to)) {
+      return false;
+    }
     const hosts = binaries.get(grant.binary);
     const exact = hosts?.get(grant.host);
     const dot = grant.host.indexOf(".");
     const wildcard =
       !grant.host.startsWith("*.") && dot > 0 ? hosts?.get(`*${grant.host.slice(dot)}`) : undefined;
-    const candidates = [
-      ...(exact === undefined ? [] : [exact]),
-      ...(wildcard === undefined ? [] : [wildcard]),
-    ];
-    return grantsWithinCeilingCandidates([grant], candidates);
+    if (exact === undefined && wildcard === undefined) {
+      return false;
+    }
+    // Cache only ceiling-owned keys; arbitrary submitted hostnames cannot grow this index.
+    const key = JSON.stringify([grant.binary, exact?.host ?? wildcard!.host]);
+    let ranges = coverage.get(key);
+    if (ranges === undefined) {
+      // Merge the exact/wildcard union once per queried host, never once per grant.
+      const merged: { from: number; to: number }[] = [];
+      for (const range of [...(exact?.ports ?? []), ...(wildcard?.ports ?? [])].sort(
+        (a, b) => a.from - b.from,
+      )) {
+        const previous = merged.at(-1);
+        if (previous !== undefined && range.from <= previous.to + 1) {
+          previous.to = Math.max(previous.to, range.to);
+        } else {
+          merged.push({ ...range });
+        }
+      }
+      ranges = merged;
+      coverage.set(key, ranges);
+    }
+    return grant.ports.every(({ from, to }) => {
+      // Find the last interval starting at or before the requested range.
+      let low = 0;
+      let high = ranges.length;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (ranges[middle]!.from <= from) {
+          low = middle + 1;
+        } else {
+          high = middle;
+        }
+      }
+      return low > 0 && ranges[low - 1]!.to >= to;
+    });
   };
 }
 

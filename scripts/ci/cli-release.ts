@@ -11,7 +11,7 @@ import {
   repository,
   verifyCi,
   verifyEnvironment,
-} from "./container-release.mjs";
+} from "./container-release.ts";
 
 const workflow = ".github/workflows/cli-release.yml";
 const platforms = [

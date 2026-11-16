@@ -8,7 +8,7 @@ author: russellb
 
 - **ID:** RFC-0040
 - **Created:** 2026-11-11
-- **Last updated:** 2026-11-11
+- **Last updated:** 2026-11-16
 - **RFC PR:** https://github.com/openclaw/openclaw-enterprise/pull/5497
 - **Related:** [Sandbox policies](../../docs/reference/sandbox-policies.md)
 
@@ -54,7 +54,10 @@ admission without the previous repeated full-ceiling scans.
 
 The count change does not alter policy ownership, persistence format, version checks,
 application recovery, protected execution, or authorization. Provider byte and
-port limits still apply. No deployed Installation changes merely because this
+port limits still apply. The deployed Helm path mounts the complete trusted
+startup document from one Secret for API, worker and upgrade preflight. That
+document must fit Kubernetes' 1 MiB Secret limit; the entry count alone does not
+establish deployability. See the [supported transport limit](../../docs/reference/sandbox-policies.md). No deployed Installation changes merely because this
 proposal or its implementation is published.
 
 ## Alternatives
@@ -66,8 +69,10 @@ same requested capacity and share their validation contract.
 
 ## Acceptance Criteria
 
-- Installation startup and Agent policy validation accept 16,384 valid entries
-  and reject 16,385.
+- File-based Installation startup and Agent policy validation accept 16,384 valid
+  entries and reject 16,385. Helm startup remains additionally bounded by the
+  complete Secret document's 1 MiB limit; the full-size fixture does not fit it.
+  This PR does not add a larger trusted startup transport.
 - The regular HTTP preview, save and apply paths accept a policy beyond the former
   64 KiB request limit and preserve every submitted rule.
 - PostgreSQL persists 16,384 additions and atomically rejects 16,385 or invalid grants.
