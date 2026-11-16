@@ -42,6 +42,7 @@ interface Reader {
     namespace: string;
     podLabels: Record<string, string>;
     address: string;
+    caBundle: string;
   };
   marker: string;
 }
@@ -557,6 +558,7 @@ export async function proveRetirement(
     );
     assert.ok(!stillSelected.closed(), "selected control stopped during withdrawal");
     const unselected = structuredClone(selected.values);
+    delete unselected.plugins.entries.codex.config.publicGithubRead;
     unselected.plugins.entries.codex.config.appServer.networkProxy!.domains = {};
     await stack.api(
       "PATCH",
@@ -610,8 +612,8 @@ export async function proveRetirement(
       "unselected successor discovered the reader skill",
     );
     log("unselected Gateway and Harness skill: absent");
-    const negative = `const http = require('node:http');
-const req = http.get({host:${JSON.stringify(reader.peer.address)}, port:8080, path:'/repos/example/public-project/pulls/29'}, res => {res.resume(); process.exit(1)});
+    const negative = `const https = require('node:https');
+const req = https.get({host:${JSON.stringify(reader.peer.address)}, port:8080, ca:${JSON.stringify(reader.peer.caBundle)}, path:'/repos/example/public-project/pulls/29'}, res => {res.resume(); process.exit(1)});
 const timer = setTimeout(() => req.destroy(new Error('probe-deadline')), 5000);
 req.on('error', error => { clearTimeout(timer); process.exit(error.message === 'probe-deadline' || ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH'].includes(error.code) ? 0 : 2); });`;
     const controlBeforeNegative = stillSelected.count();
@@ -769,20 +771,36 @@ export async function diagnostics(stack: (LocalSetup & Partial<SmokeStack>) | un
       "get",
       "pods",
       "-o",
-      "jsonpath={.items[*].metadata.name}",
+      "json",
     ]);
-    for (const pod of stdout.split(/\s+/).filter(Boolean)) {
-      await attempt(`platform Pod ${pod} logs`, () =>
-        kubectl(stack, [
-          "-n",
-          stack.state.platformNamespace,
-          "logs",
-          pod,
-          "--all-containers",
-          "--tail",
-          "200",
-        ]),
-      );
+    for (const pod of podList(stdout)) {
+      const spec = wireField(pod, "spec");
+      const initContainers = wireField(spec, "initContainers") ?? [];
+      const containers = wireField(spec, "containers");
+      assert.ok(Array.isArray(initContainers) && Array.isArray(containers));
+      // A waiting later init container makes --all-containers fail before it
+      // returns the earlier installation-check refusal. Read each separately.
+      for (const container of [...initContainers, ...containers]) {
+        const name = wireField(container, "name");
+        assert.ok(typeof name === "string");
+        await attempt(`platform Pod ${pod.metadata.name} ${name} logs`, () =>
+          kubectl(
+            stack,
+            [
+              "-n",
+              stack.state.platformNamespace,
+              "logs",
+              pod.metadata.name,
+              "-c",
+              name,
+              "--tail",
+              "200",
+              "--request-timeout=15s",
+            ],
+            { timeout: 20_000 },
+          ),
+        );
+      }
     }
   } catch (error) {
     process.stdout.write(
