@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-16
-last_updated_session: authoring-run/b6b3a43d-8ed8-4662-b971-6d382b007cd1
+updated: 2026-11-11
+last_updated_session: authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792
 ---
 
 # Harness Execution Topology Flow
@@ -243,20 +243,9 @@ model authentication, the next version repairs it with its own template instead 
 waiting for the predecessor. Repair deletes the embedded predecessor's version Secret
 and ConfigMap copies.
 
-The worker commits `activeRevisionId` by exact compare-and-set before Kubernetes
-activation. For active maintenance requested by the selected Sandbox, it passes
-[`existingHarnessOnly`](../reference/drivers/sandbox.md#admission-and-lifecycle)
-through Compute to `provisionHarness`. `activateRevisionWorkloads` repeats the
-provider check for embedded and dedicated activation before Secret reads or
-workload changes.
-`KubernetesComputeDriver.activateRevision` updates the shared Gateway's
-`Recreate` Deployment and Service. Embedded preparation does not validate credentials,
-so cutover can stop the serving Gateway before replacement
-[startup](native-service-account-credential-delivery.md#5-authenticate-during-runtime-startup)
-validates them. Each Gateway uses that check and CPU-based deadline, at most
-600 seconds. Provider timeouts, rate limits and other failures hold it unready
-until repair and restart or a new deployment. Readiness polling does not repeat model
-requests; worker retries do not restart unchanged Pods. There is no automatic rollback.
+The worker commits `activeRevisionId` by exact compare-and-set before activation. For active maintenance requested by the selected Sandbox, it passes [`existingHarnessOnly`](../reference/drivers/sandbox.md#admission-and-lifecycle) through Compute.
+
+`activateRevisionWorkloads` rechecks the provider before reading Secrets or changing embedded or dedicated workloads. `KubernetesComputeDriver.activateRevision` updates the shared Gateway's `Recreate` Deployment and Service. Embedded cutover can stop the serving Gateway before its replacement [validates credentials](native-service-account-credential-delivery.md#5-authenticate-during-runtime-startup). Gateway readiness uses a CPU-based deadline capped at 600 seconds. Provider failures hold the Gateway unready until repair and restart or redeployment. Polling never repeats model requests. Worker retries preserve unchanged Pods. Rollback is manual.
 Embedded activation deletes predecessor copies on re-render even if the replacement
 never becomes ready. Dedicated predecessor copies remain while its Harness Deployment
 or terminating Pod survives; retirement stops the Harness and removes the artifacts.
@@ -361,8 +350,6 @@ removal.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
-
-- 2026-11-16 23:40: Require a provider-owned Harness for Sandbox maintenance. (authoring-run/b6b3a43d-8ed8-4662-b971-6d382b007cd1 - 1f1d027697)
 
 - 2026-11-14 12:21: Trace active Sandbox maintenance. (authoring-run/dce9f5be-2cf2-41aa-8215-c338ffa2e285 - a411a7eba68705e57330acfd2057083c367cbd9d)
 

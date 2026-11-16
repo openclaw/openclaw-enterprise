@@ -10,8 +10,7 @@ last_verified: "2026-10-27"
 ## Overview
 
 `SandboxDriver` confines an Agent Harness's network, filesystem, or processes.
-OpenClaw Control Plane (OCC) supports this Driver with the bundled
-[Kubernetes Compute Driver](kubernetes-compute.md).
+OCC supports it with [Kubernetes Compute](kubernetes-compute.md).
 The Sandbox can provision a dedicated Harness. Compute owns the gateway,
 workload identity, baseline isolation, routing, and activation.
 
@@ -238,19 +237,11 @@ See [authorization](../authorization.md) and [Harness execution](../harness-exec
 
 ### Admission and lifecycle
 
-Startup validates the selected Sandbox and its declared facets. The shared
-interface has no initializer or destructor; workload and Namespace removal use
-the same cleanup operation with or without an Agent revision.
+Startup validates Sandbox facets. Namespace and workload removal share one cleanup operation. Drivers have no initializer or destructor.
 
-Dedicated native OpenClaw requires a selected Sandbox that implements
-`provisionHarness` and declares networking, filesystem, and process containment.
-Other dedicated Harnesses may use fewer facets or no Sandbox.
+Dedicated native OpenClaw requires `provisionHarness` and all three containment facets. Other dedicated Harnesses may use fewer facets or omit the Sandbox.
 
-An optional positive `maintenanceIntervalMs` schedules checks of active
-revisions bound to the Sandbox. It requires `provisionHarness`; startup refuses
-it otherwise, because Compute recreates a missing Harness that it owns. During
-those checks, `existingHarnessOnly` requires the provider to report a missing
-Harness without recreating it.
+An optional positive `maintenanceIntervalMs` schedules active-revision checks. During those checks, `existingHarnessOnly` requires the provider to report a missing Harness without recreating it.
 
 ```mermaid
 sequenceDiagram
