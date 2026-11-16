@@ -67,7 +67,7 @@ function readCounts(value: unknown): Counts {
   assert(isObject(value), "runner receipt has no test counts");
   const counts: Counts = { passed: 0, failed: 0, skipped: 0, todo: 0, total: 0 };
   for (const key of countKeys) {
-    const count = value[key];
+    const count: unknown = value[key];
     assert(typeof count === "number" && Number.isSafeInteger(count) && count >= 0);
     counts[key] = count;
   }

@@ -167,7 +167,7 @@ RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp
     && git apply /tmp/openclaw-codex-full-access-profile.patch
 # Bind external Codex turn policy to the Compute-owned Box generation and its WSS peer.
 COPY deploy/runtime/openclaw-codex-box-owner.patch /tmp/openclaw-codex-box-owner.patch
-RUN echo 'fab67fe3aa048d3dd152e4e39c00c986888a6d1e64e39358dd36e1f575b36d88  /tmp/openclaw-codex-box-owner.patch' | sha256sum --check --strict \
+RUN echo '9f9319bd3fd27b3a78d364f9dc7d1f0cee3f3afc69fe22f0ba1f0d50c925599f  /tmp/openclaw-codex-box-owner.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-box-owner.patch
 COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 RUN node /tmp/build-runtime-assets.ts inputs /source /inputs \

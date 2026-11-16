@@ -93,7 +93,7 @@ export const SETUP_WRAPPER_COMMAND: readonly string[] = Object.freeze([
   "-e",
 ]);
 export const MANAGED_CONFIGURATION_DIRECTORY = "/etc/openclaw-managed";
-export const EXTERNAL_WORKSPACE_OWNER_DIRECTORY = "/etc/openclaw-box-owner";
+export const EXTERNAL_WORKSPACE_OWNER_DIRECTORY = "/etc/openclaw-external-workspace-owner";
 // Under the Harness HOME; Compute renders the same path into the Gateway's relay config.
 export const NATIVE_HOOK_CREDENTIAL_DIRECTORY = ".oce-native-hooks";
 

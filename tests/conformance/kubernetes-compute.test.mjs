@@ -7133,7 +7133,7 @@ test("provider Harness public trust rejects invalid material and composes with e
     const owner = { ...endpoint, workspaceRoot, externalWorkspaceOwner: { generationSha256 } };
     assert.equal(
       pod.containers[0].volumeMounts.some(({ mountPath }) =>
-        mountPath.startsWith("/etc/openclaw-box-owner/"),
+        mountPath.startsWith("/etc/openclaw-external-workspace-owner/"),
       ),
       false,
     );
@@ -7148,11 +7148,11 @@ test("provider Harness public trust rejects invalid material and composes with e
     const ownerPod = render(owner).spec.template.spec;
     assert.deepEqual(
       ownerPod.containers[0].volumeMounts.filter(({ mountPath }) =>
-        mountPath.startsWith("/etc/openclaw-box-owner/"),
+        mountPath.startsWith("/etc/openclaw-external-workspace-owner/"),
       ),
       ["binding.json", "ca.pem"].map((name) => ({
         name: "harness-trust",
-        mountPath: `/etc/openclaw-box-owner/${name}`,
+        mountPath: `/etc/openclaw-external-workspace-owner/${name}`,
         subPath: name,
         readOnly: true,
       })),

@@ -21,7 +21,7 @@ import {
 const MAX_HEADER_BYTES = 8_192;
 const LEASE_INTERVAL_MS = 500;
 const WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-const BOX_OWNER_HEADER = "x-openclaw-box-owner";
+const WORKSPACE_GENERATION_HEADER = "x-openclaw-external-workspace-generation";
 const CONFIG_FIELDS = [
   "authority",
   "bindAddress",
@@ -214,7 +214,7 @@ function nativeUpgrade(response: IncomingMessage, key: string, generationSha256:
       text += `${name}: ${value}\r\n`;
     }
   }
-  return `${text}${BOX_OWNER_HEADER}: ${generationSha256}\r\n\r\n`;
+  return `${text}${WORKSPACE_GENERATION_HEADER}: ${generationSha256}\r\n\r\n`;
 }
 
 function forward(

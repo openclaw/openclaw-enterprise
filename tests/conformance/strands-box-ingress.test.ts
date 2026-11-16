@@ -107,7 +107,7 @@ async function fixture(t: TestContext) {
       .update(String(key) + magic)
       .digest("base64");
     socket.write(
-      `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\nX-OpenClaw-Box-Owner: native-cannot-supply-owner\r\n\r\n`,
+      `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\nX-OpenClaw-External-Workspace-Generation: native-cannot-supply-owner\r\n\r\n`,
     );
     // Independent native-side frame check. Client text is masked; server reply is not.
     socket.once("data", (frame: Buffer) => {
@@ -222,7 +222,7 @@ test(
 
     const unauthorized = await send(upgrade());
     assert.match(unauthorized, /^HTTP\/1\.1 401 /);
-    assert.doesNotMatch(unauthorized, /x-openclaw-box-owner/i);
+    assert.doesNotMatch(unauthorized, /x-openclaw-external-workspace-generation/i);
     assert.match(await send(upgrade("/", "Bearer wrong")), /^HTTP\/1\.1 401 /);
     assert.deepEqual(f.seen, [
       { path: "/", authorization: undefined },
@@ -249,7 +249,9 @@ test(
     );
     assert.match(response, /^HTTP\/1\.1 101 /);
     assert.deepEqual(
-      [...response.matchAll(/^x-openclaw-box-owner: ([^\r\n]+)\r?$/gim)].map((match) => match[1]),
+      [...response.matchAll(/^x-openclaw-external-workspace-generation: ([^\r\n]+)\r?$/gim)].map(
+        (match) => match[1],
+      ),
       [f.readySha256],
     );
     assert.match(response, /Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK\+xOo=/);

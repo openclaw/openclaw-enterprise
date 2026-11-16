@@ -66,13 +66,10 @@ Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.ts` holds that list, and a test checks it
 against the Dockerfile.
 
-Dedicated Gateways require the supporting source recorded in this recipe and
-validate their effective native configuration before starting. The required
-Gateway tool policy covers core dispatch, automation authority and Codex
-dynamic tools. Older or unknown source images remain unready; source checks
-and configuration validation do not replace runtime qualification.
-The [ordinary Box setup](../examples/strands-box/ordinary-chat/README.md#bind-a-standalone-gateway-to-one-box-execution)
-uses the runtime overlay to verify the selected provider generation on the TLS upgrade.
+Dedicated Gateways validate native configuration and tool policy for core
+dispatch, automation authority, and dynamic Codex tools before startup. Older
+or unknown images stay unready. The [ordinary Box setup](../examples/strands-box/ordinary-chat/README.md#bind-a-standalone-gateway-to-one-box-execution)
+uses the runtime overlay to verify the provider generation on the TLS upgrade.
 
 The Codex adapter preserves namespaced IDs with an explicit native
 provider. For a custom endpoint, OCE compiles its private Gateway model references

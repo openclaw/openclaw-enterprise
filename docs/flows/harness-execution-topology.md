@@ -125,33 +125,25 @@ only beside its storage label.
 The [upgrade requirements](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
 own the operator boundary.
 
-`ensureNamespace` prepares one single-cluster tenant namespace, including adopted
-targets; its storage-role label enables discovery. Two-cluster Gateways retain
-their control-cluster target. Dedicated Gateway and Harness Pods, identities,
-and PVCs remain separate. `deliverGatewaySecrets` validates canonical sources;
-`deliverHarnessAuth` creates selected model/transport projections.
-Transport and Gateway passwords use separate sources across modes. Compute
-retains legacy combined sources for older Pods and copies their password before
-new templates reference the separate source. Concurrent creation adopts only an
-exact-owned, identical password; foreign or conflicting sources fail.
-[Namespaces and isolation](../reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation)
-owns qualified DNS and exact NetworkPolicy/Service selectors. Harness selectors
-include version and network profile; Gateway selectors omit version for stability.
-`deploy/helm/openclaw-execution/templates/routing.yaml` validates DNS and Envoy peer maps
-before rendering NetworkPolicies. Values must be strings or native null; type
-errors identify the setting.
-`runtime.gatewayNodeSelector` places Gateways and private-state initializers.
-`runtime-entrypoints.ts:agentRuntimeReady` and the Docker healthcheck require
-Codex initialization for Compute-owned launches; provider commands remain
-unchanged. See the [readiness contract](../reference/drivers/kubernetes-compute.md#troubleshooting).
+`ensureNamespace` prepares a single-cluster tenant namespace. Its storage-role
+label identifies adopted targets. Split-cluster Gateways keep their control-cluster
+target. Dedicated Gateway and Harness Pods, identities, and PVCs remain separate.
+`deliverGatewaySecrets` validates sources. `deliverHarnessAuth` projects the
+selected model and transport credentials. Compute retains combined sources for
+older Pods and copies their passwords before switching templates. Concurrent
+creation requires an exact ownership and password match.
 
-For a provider-owned ordinary dedicated Codex Harness, an opted-in Sandbox receives
-the transport verifier. The Gateway keeps the bearer. When the provider returns
-an external workspace owner, `KubernetesComputeDriver.reconcileHarnessTrust`
-pins its generation and public CA in revision-owned immutable trust. The
-[Strands Box relay](../../deploy/examples/strands-box/ingress/README.md) preserves
-TLS to the host. The Gateway verifies the pinned generation on the WebSocket
-upgrade before it sends native requests.
+The [networking reference](../reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation)
+owns qualified DNS and exact selectors. Harness selectors include revision
+and network profile. Stable Gateway selectors omit the revision.
+`deploy/helm/openclaw-execution/templates/routing.yaml` refuses DNS and Envoy
+peer-map values other than strings or null. `runtime.gatewayNodeSelector` places
+Gateways and private-state initializers. Compute-owned launches require
+[Codex initialization](../reference/drivers/kubernetes-compute.md#troubleshooting).
+An opted-in ordinary provider receives the verifier and the Gateway keeps the
+bearer. `KubernetesComputeDriver.reconcileHarnessTrust` pins the provider's
+workspace generation and CA. The Gateway checks the generation on the
+[Box relay](../../deploy/examples/strands-box/ingress/README.md) upgrade before sending native requests.
 
 After Harness readiness, preparation replaces stopped or unready Gateways. Activation waits for workspace node enrollment; dedicated Codex retains `agent-<agent digest>-workspace`.
 `KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds callbacks; `AGENT_WITH_NODE_ENTRYPOINT` prepares capability storage and TLS for OpenClaw-authorized [native hooks](../reference/gateway-routing.md#native-node-endpoint).

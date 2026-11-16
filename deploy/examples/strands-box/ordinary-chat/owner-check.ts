@@ -9,7 +9,7 @@ import {
   type BigIntStats,
 } from "node:fs";
 import { request } from "node:https";
-const ownerDirectory = "openclaw-box-owner";
+const ownerDirectory = "openclaw-external-workspace-owner";
 const readOnly = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 
 function unchanged(original: BigIntStats, current: BigIntStats): boolean {
@@ -162,8 +162,8 @@ async function check(files: { binding: Buffer; ca: Buffer; assertCurrent: () => 
         .digest("base64");
       if (
         res.statusCode === 101 &&
-        headers["x-openclaw-box-owner"]?.length === 1 &&
-        headers["x-openclaw-box-owner"][0] === generation &&
+        headers["x-openclaw-external-workspace-generation"]?.length === 1 &&
+        headers["x-openclaw-external-workspace-generation"][0] === generation &&
         headers["sec-websocket-accept"]?.length === 1 &&
         headers["sec-websocket-accept"][0] === accept
       )

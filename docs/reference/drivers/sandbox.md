@@ -97,20 +97,16 @@ directory from `harnessHome`. The Sandbox creates that owner-only directory
 outside the Harness workspace and file-transfer roots. Compute validates the path
 and owns the relay URL and authentication.
 
-Compute calls `harnessStatus(context)` with the Agent transport token. The
-Driver returns `serving` only after an authenticated handshake. It returns
-`starting` while startup is pending, or `failed` with evidence of a startup
-failure. Compute validates that evidence before it fails the revision. If the
-provider does not answer, Compute reports a transient dependency failure.
+Compute calls `harnessStatus(context)` with the transport token. After an
+authenticated handshake, the Driver returns `serving`, `starting`, or `failed`.
+Compute validates startup failure evidence. No answer produces a transient
+dependency failure.
 
-For Codex, when the Driver supplies a provider endpoint and `harnessStatus`,
-Compute checks status while the workspace node is pending and waits for
-`serving` before it activates the revision.
-For a dedicated OpenClaw worker, Compute checks status only before its node
-enrolls. After enrollment, `withdrawHarnessExposure(context)` removes the
-temporary status endpoint. The method resolves only after a read under the
-controller's identity confirms removal. A missing response does not confirm removal.
-Compute can also call this method for a serving or permanently failed revision.
+Compute waits for a Codex provider Harness to serve before activation, including
+while its workspace node is pending. For dedicated OpenClaw, Compute checks
+status before the node enrolls, then calls `withdrawHarnessExposure(context)`.
+The Driver must verify removal under the controller's identity before returning.
+Compute can also withdraw exposure from a serving or permanently failed revision.
 
 The endpoint can select `codexPermissionProfile: ":danger-full-access"` when the
 provider supplies the sandbox boundary. Kubernetes Compute projects the selection

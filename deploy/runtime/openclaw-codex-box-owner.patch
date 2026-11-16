@@ -165,7 +165,7 @@ index 0000000..8d5c0f3
 +
 +const generationSha256 = "a".repeat(64);
 +const authToken = "fixture-native-transport-capability";
-+const header = "X-OpenClaw-Box-Owner";
++const header = "X-OpenClaw-External-Workspace-Generation";
 +const owner = { workspaceRoot };
 +
 +it("does not inherit an earlier external policy on an implicit or global-danger turn", () => {
@@ -234,7 +234,7 @@ index 0000000..8d5c0f3
 +});
 +
 +it("uses only the closed provider mount for the exact Compute route and capability", async () => {
-+  const root = await mkdtemp(join(tmpdir(), "openclaw-box-owner-"));
++  const root = await mkdtemp(join(tmpdir(), "openclaw-external-workspace-owner-"));
 +  const parent = join(root, "etc");
 +  const directory = join(parent, "owner");
 +  const bindingPath = join(directory, "binding.json");
@@ -312,7 +312,7 @@ index 0000000..8d5c0f3
 +});
 +
 +it("delivers native frames only on the CA-pinned original generation, including after withdrawal", async () => {
-+  const directory = await mkdtemp(join(tmpdir(), "openclaw-box-owner-tls-"));
++  const directory = await mkdtemp(join(tmpdir(), "openclaw-external-workspace-owner-tls-"));
 +  const certPath = join(directory, "cert.pem");
 +  const keyPath = join(directory, "key.pem");
 +  const [cert, key] = await (async () => {
@@ -484,7 +484,7 @@ index 0000000..732a641
 +import { posix } from "node:path";
 +import { isDeepStrictEqual, TextDecoder } from "node:util";
 +
-+const OWNER_HEADER = "x-openclaw-box-owner";
++const OWNER_HEADER = "x-openclaw-external-workspace-generation";
 +const SHA256 = /^[a-f0-9]{64}$/;
 +const DIRECTORY_FLAGS =
 +  constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
@@ -492,7 +492,7 @@ index 0000000..732a641
 +  constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 +const BINDING_PATH = {
 +  root: "/",
-+  ancestry: ["etc", "openclaw-box-owner"],
++  ancestry: ["etc", "openclaw-external-workspace-owner"],
 +  uid: 0,
 +};
 +const isAbsent = (error: unknown) =>

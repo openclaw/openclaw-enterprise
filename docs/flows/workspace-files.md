@@ -92,28 +92,25 @@ checked on each update.
 
 ### 2. Deployment initializes storage before execution
 
-`apps/controller/src/worker.ts` reads private setup state into
-`ComputeRevisionContext`. A Driver without `supportsWorkspaceSetup` returns
-`WORKSPACE_SETUP_UNSUPPORTED`. The worker serializes Agent startup and passes `workspaceSetup` to Compute.
+`apps/controller/src/worker.ts` serializes startup and passes private
+`workspaceSetup` in `ComputeRevisionContext`. A Driver without
+`supportsWorkspaceSetup` returns `WORKSPACE_SETUP_UNSUPPORTED`.
 
 Bundled Drivers use
 `apps/controller/src/drivers/compute/workspace-setup-runtime.ts:WORKSPACE_SETUP_RUNTIME`.
-Kubernetes delivers an Agent-owned Secret to the workspace owner's init container
-(Gateway when embedded, Harness when dedicated); Docker uses a setup container
-and durable volumes; SSH uses the protected Agent directory. Provider-owned
-Harnesses require the Sandbox's `validateWorkspaceSetup(harness, configuration)`:
-Compute delegates validation of the relocated workspace, or returns `409` before
-staging inputs. Preparation repeats this check.
+Kubernetes projects an Agent-owned Secret to the workspace owner's initializer.
+Docker uses a setup container and durable volumes. SSH uses the protected Agent
+directory. Compute delegates provider workspace validation to
+`validateWorkspaceSetup(harness, configuration)`, returns `409` on refusal
+before staging, and repeats validation during preparation.
 
-The [ordinary Box example](../../deploy/examples/strands-box/ordinary-chat/installed.md)
-binds the native Harness and a separate file-only node to one workspace claim.
-The provider retains that node's identity outside the Box workload. Compute
-waits for the Gateway to observe enrollment before activating the revision.
+In the [ordinary Box example](../../deploy/examples/strands-box/ordinary-chat/installed.md),
+a file-only node shares the Harness workspace claim. Compute waits for enrollment.
 
-OpenShell separately prepares native OpenClaw's private writable PVC subpaths,
-preserving retained entries. Ownership/mode checks, UID-fenced deletion and writer
-termination precede Sandbox creation. This permission setup carries no documents;
-see [OpenShell preparation](openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox).
+OpenShell prepares private writable PVC subpaths and preserves retained entries.
+Ownership and mode checks, UID-fenced deletion, and writer termination precede
+[Sandbox creation](openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox).
+This step carries no documents.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:harnessRequirementsFromDeployment`
 hands Sandbox the [setup identity and exact Secret reference](../reference/drivers/sandbox.md#provisioning-inputs).
@@ -134,10 +131,9 @@ atomically replace only absent, stock, or already-submitted content. The runner
 reruns setup for `BOOTSTRAP.md`, verifies results, and atomically writes
 `.oce-workspace-setup.json`.
 
-Matching markers skip replay; incomplete writes revalidate. After recorded
-completion, missing/mismatched markers block startup, preserving edits.
-Kubernetes initializer logs can include allowlisted codes such as `EROFS`.
-Temporary-directory cleanup preserves an earlier setup error.
+A matching marker skips replay. Incomplete writes revalidate. After completion,
+a missing or mismatched marker blocks startup. Kubernetes can log `EROFS` and
+other allowlisted codes. Cleanup preserves the first setup error.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:safeRuntimeFailureObservation`
 reports exit 2 as `WORKSPACE_SETUP_REFUSED`; other failures retry

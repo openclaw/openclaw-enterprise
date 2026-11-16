@@ -68,7 +68,7 @@ outside its admitted policy. A receipt hash identifies that execution. The
 operator and supervisor own this check.
 
 Run the Gateway as a nonroot user. Mount a root-owned mode-0555 directory
-read-only at `/etc/openclaw-box-owner` in the Gateway. Its ancestors must be
+read-only at `/etc/openclaw-external-workspace-owner` in the Gateway. Its ancestors must be
 root-owned and neither group- nor world-writable. Use root-owned mode-0444
 regular files with one link each and no symlinks. Its `ca.pem` contains the
 ingress CA. Its compact JSON `binding.json` contains only the canonical
