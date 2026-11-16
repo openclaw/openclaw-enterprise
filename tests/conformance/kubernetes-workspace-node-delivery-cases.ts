@@ -398,7 +398,10 @@ export async function checkUpgradeRemovesSetupCode(createFixture: DedicatedDeplo
   const nodeName = secret.metadata.name;
   const encode = (value: string) => Buffer.from(value, "utf8").toString("base64");
   save({
-    ...secret,
+    apiVersion: secret.apiVersion,
+    kind: secret.kind,
+    type: secret.type,
+    metadata: secret.metadata,
     data: {
       deviceId: encode("node-1"),
       setupCode: encode("env-era-code"),
