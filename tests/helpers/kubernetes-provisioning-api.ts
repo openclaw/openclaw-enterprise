@@ -156,22 +156,29 @@ function runtimeDrivers(
 }
 
 export function createProvisioningContext(test: TestContext) {
-  const resources = new AsyncDisposableStack();
   const services = new AsyncDisposableStack();
-  test.after(() => {
-    // Stop the worker and API while their Kubernetes access is still available.
-    // A failed service close must still release the Namespace, RBAC and kubeconfig.
-    resources.use(services);
-    return resources.disposeAsync();
+  const releases: (() => void | Promise<unknown>)[] = [() => services.disposeAsync()];
+  test.after(async () => {
+    // Keep Kubernetes access until the worker and API close. A timeout can finish
+    // another acquisition during teardown, so visit new registrations in order.
+    const errors: unknown[] = [];
+    for (const release of releases) {
+      try {
+        await release();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "Kubernetes provisioning fixture cleanup failed");
+    }
   });
   return {
     mock: test.mock,
     signal: test.signal,
     services,
     after(release: () => void | Promise<unknown>) {
-      resources.defer(async () => {
-        await release();
-      });
+      releases.push(release);
     },
   };
 }
