@@ -2352,7 +2352,9 @@ test(
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         // 0078 replaces the custody guard in place; abort its CREATE FUNCTION statement.
+        // 0079 grants access after creating the ceiling table; abort that final GRANT.
         const rollbackTag = [
+          [78, "GRANT"],
           [77, "CREATE FUNCTION"],
           [76, "CREATE INDEX"],
           [75, "CREATE TRIGGER"],

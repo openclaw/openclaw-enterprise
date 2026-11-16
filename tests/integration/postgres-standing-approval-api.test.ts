@@ -193,6 +193,8 @@ test(
         controller.registerDriver(d);
         controller.selectDriver(d.capability, d.id);
       }
+      // Direct fixture composition must initialize persisted limits before admitting deployment.
+      await controller.initializeSandboxNetworkPolicyCeiling();
       app = createFastifyApp({
         controller,
         iamDriver: iam,
