@@ -37,7 +37,7 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
     const key = await f.api("POST", "/api/auth/service-keys", {
       namespaceId: agent.namespaceId,
       servicePrincipalId: principal.id,
-      name: `http-${randomUUID()}`,
+      name: `http-${randomUUID().slice(0, 8)}`,
     });
     registerQaSecret(key.key);
     return key;
