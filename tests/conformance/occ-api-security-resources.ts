@@ -10,7 +10,6 @@ import {
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { tenantANamespaceId, tenantRequest as request } from "../helpers/tenant-reader-app.ts";
-import { ROUTE_NOT_FOUND, ROUTE_TRAILING_SLASH } from "../helpers/refusal-text.mjs";
 import {
   bootstrap,
   createAgent,
@@ -289,8 +288,8 @@ export function registerExactResourceCases() {
     // A path no route has gets route text, not "resource not found", and the same answer for a
     // readable and an unknown Agent (finding D764).
     for (const [suffix, message] of [
-      ["/", ROUTE_TRAILING_SLASH],
-      ["/no-such-route", ROUTE_NOT_FOUND],
+      ["/", "No API route has this path: remove the trailing slash."],
+      ["/no-such-route", "No API route has this path. Check it against the API reference."],
     ] as const) {
       const answers: Array<readonly [number, ReturnType<typeof responseError>]> = [];
       for (const id of [agentA.id, unknownAgentId]) {

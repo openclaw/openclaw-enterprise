@@ -5,15 +5,13 @@ import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { registerRepositoryCredentialsDeploymentAdmissionCases } from "./repository-credentials-deployment-admission-cases.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { harnessEgressEnrollment } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
-import {
-  CodexPluginDriver,
-  OCCPluginDriver,
-} from "../../apps/controller/src/drivers/plugin/index.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
@@ -49,15 +47,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 import {
-  BROKER_PROXY_DISABLED,
-  BROKER_PROXY_DOMAIN_DECISION,
-  BROKER_PROXY_DOMAINS,
-  BROKER_PROXY_EMPTY_HOST,
-  BROKER_PROXY_LOCAL_BINDING,
-  BROKER_PROXY_MODE,
   callerDenied,
-  CODEX_NEEDS_DEDICATED,
-  COMPUTE_REPOSITORY_UNSUPPORTED,
   COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
   CREDENTIAL_PROXY_GIT_ALONE,
   CREDENTIAL_PROXY_INSTALLATION_ACCESS,
@@ -66,9 +56,6 @@ import {
   PROXY_REGISTRATION_UNAVAILABLE,
   REPOSITORY_ACCESS_OR_BINDINGS,
   REPOSITORY_SELECTION_NOT_APPROVED,
-  REPOSITORY_SETTINGS_MISSING,
-  runtimeIdUnsupported,
-  SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import { protectedSourceInputs } from "../helpers/protected-source-refusals.ts";
@@ -76,6 +63,12 @@ import { protectedSourceInputs } from "../helpers/protected-source-refusals.ts";
 const driverId = "repository-credentials";
 const backendId = "repository-provider";
 const selection = [{ repositoryRef: "project", profile: "git-write" }];
+
+/**
+ * @typedef {ReturnType<typeof createFastifyApp>} AdmissionApp
+ * @typedef {(method: string, path: string, payload?: unknown) =>
+ *   Promise<{status: number, [field: string]: unknown}>} AdmissionRequest
+ */
 
 const sandboxRegistration = (driverId) => ({
   capability: "sandbox",
@@ -201,6 +194,11 @@ function sshCompute() {
   });
 }
 
+/**
+ * @param {string} namespaceId
+ * @param {readonly string[]} extraRepositories
+ * @returns {import("../../apps/controller/src/drivers/repo/github/access/registry.ts").GitHubRepositoryRegistry}
+ */
 function registryFor(namespaceId, extraRepositories = [], installationAccess = false) {
   return {
     ...(installationAccess && {
@@ -250,6 +248,7 @@ function repositoryDriver(registry, Driver = GitHubRepositoryPolicy) {
   );
 }
 
+/** @param {import("node:test").TestContext} t */
 async function fixture(
   t,
   {
@@ -300,6 +299,10 @@ async function fixture(
       ]
     : [];
 
+  /**
+   * @param {import("../../apps/controller/src/drivers/repo/github/access/registry.ts").GitHubRepositoryRegistry} [registry]
+   * @param {typeof GitHubRepositoryPolicy} [Driver]
+   */
   async function compose(registry, Driver) {
     const controller = new OpenClawController(installation, {
       state,
@@ -331,6 +334,7 @@ async function fixture(
       },
     });
     t.after(() => app.close());
+    /** @type {AdmissionRequest} */
     const request = await createAuthenticatedControllerRequest(app, auth);
     return { controller, request, app };
   }
@@ -352,6 +356,7 @@ async function fixture(
   const composed = repositories ? await compose(registry) : initial;
   const collection = `/namespaces/${namespace.id}/agents`;
 
+  /** @param {Partial<import("../../packages/contracts/src/index.ts").CreateAgentBody>} fields */
   async function createAgent(fields = {}) {
     const response = await composed.request("POST", collection, {
       name: `Repository Agent ${randomUUID()}`,
@@ -362,6 +367,7 @@ async function fixture(
     return response.data;
   }
 
+  /** @param {Pick<import("../../packages/contracts/src/index.ts").AgentWire, "id" | "harnessAuth">} agent */
   async function prepareDeployment(agent) {
     // Readiness is a prerequisite here; no Kubernetes/SSH provisioning is claimed.
     await state.transact((unit) =>
@@ -400,6 +406,7 @@ async function fixture(
   }
 
   // A signed-in person with no grant at all, for answers that must not depend on existence.
+  /** @param {AdmissionApp} app @returns {Promise<AdmissionRequest>} */
   async function requestWithoutGrants(app) {
     const credentials = {
       email: `outsider-${randomUUID()}@example.com`,
@@ -416,6 +423,7 @@ async function fixture(
     actorId: auth.seed.principal.id,
     requestWithoutGrants,
     iamState,
+    /** @param {number} count */
     failIAMAfterReads(count) {
       remainingIAMReads = count;
     },
@@ -1068,297 +1076,10 @@ test("Agent repository access preserves request order when the Driver returns bi
   ]);
 });
 
-test("Deploy freezes public repository selection without exposing provider grants", async (t) => {
-  const f = await fixture(t);
-  const agent = await f.createAgent({ repositoryBindings: [{ repositoryRef: "project" }] });
-  await f.prepareDeployment(agent);
-  const path = `${f.collection}/${agent.id}`;
-  const deployed = await f.request("POST", `${path}/deploy`);
-  assert.equal(deployed.status, 202, JSON.stringify(deployed));
-  const snapshot = deployed.data.repositoryCredentials;
-  assert.deepEqual(Object.keys(snapshot).sort(), ["bindings", "deadlineWallMs", "driver"]);
-  assert.deepEqual(snapshot.bindings, selection);
-  assert.equal(snapshot.driver.id, driverId);
-  assert.equal(typeof snapshot.driver.implementation, "string");
-  assert.equal(snapshot.deadlineWallMs, Date.parse(deployed.data.createdAt) + 600_000);
-  const internal = await f.state.read((view) =>
-    view.revisions.findRevision(f.namespace.id, agent.id, deployed.data.id),
-  );
-  assert.equal(internal.repositoryCredentials.bindings[0].backendId, backendId);
-  assert.equal(internal.repositoryCredentials.bindings[0].grant.repositoryId, "789");
-
-  const cleared = await f.request("PATCH", path, {
-    configurationId: f.configuration.id,
-    repositoryBindings: [],
-  });
-  assert.equal(cleared.status, 200);
-  const historical = await f.request("GET", `${path}/revisions/${deployed.data.id}`);
-  assert.deepEqual(historical.data.repositoryCredentials, snapshot);
-  // The list names the revision without its saved settings; the snapshot stays on the GET.
-  const [listed] = (await f.request("GET", `${path}/revisions`)).data;
-  assert.equal(listed.id, deployed.data.id);
-  assert.equal(Object.hasOwn(listed, "repositoryCredentials"), false);
-  const independent = await f.request("POST", `${path}/deploy`);
-  assert.equal(independent.status, 202, JSON.stringify(independent));
-  assert.equal(Object.hasOwn(independent.data, "repositoryCredentials"), false);
-});
-
-test("Deploy rechecks repository policy after a draft was accepted", async (t) => {
-  const f = await fixture(t);
-  const agent = await f.createAgent({ repositoryBindings: selection });
-  await f.prepareDeployment(agent);
-  // Recomposition replaces operator policy; an accepted draft is not a permanent grant.
-  const replacement = structuredClone(f.registry);
-  replacement.repositories[0].namespaces[0].profiles = ["git-read"];
-  const reconfigured = await f.compose(replacement);
-  const path = `${f.collection}/${agent.id}`;
-  // The request sends no selections: the saved ones are refused as saved state, a 409, both by
-  // deploy and by the standing approval review that reads them (finding 2536).
-  for (const [method, suffix] of [
-    ["POST", "/deploy"],
-    ["GET", "/repository-approval-scopes"],
-  ]) {
-    const refused = await reconfigured.request(method, `${path}${suffix}`);
-    assert.equal(refused.status, 409, `${suffix}: ${JSON.stringify(refused)}`);
-    assert.equal(refused.error.code, "RESOURCE_CONFLICT", suffix);
-    assert.equal(refused.error.message, SAVED_REPOSITORY_SELECTION_NOT_APPROVED, suffix);
-  }
-  assert.deepEqual((await reconfigured.request("GET", `${path}/revisions`)).data, []);
-  const unchanged = (await reconfigured.request("GET", path)).data;
-  assert.deepEqual(unchanged.repositoryBindings, selection);
-  assert.equal(unchanged.desiredRuntimeState, "stopped");
-});
-
-test("Repository refusals wait for the Agent grant: a missing and an unreadable Agent answer alike", async (t) => {
-  // Finding 2536 names repository refusals at save and deploy. They run only after the caller's
-  // grant on the Agent, so a caller without it learns nothing from them: the same request gets
-  // the same answer for an Agent that exists and one that does not, each request's ID hidden.
-  const f = await fixture(t);
-  const agent = await f.createAgent({ repositoryBindings: selection });
-  await f.prepareDeployment(agent);
-  const narrowed = structuredClone(f.registry);
-  narrowed.repositories[0].namespaces[0].profiles = ["git-read"];
-  const reconfigured = await f.compose(narrowed);
-  const outsider = await f.requestWithoutGrants(reconfigured.app);
-  const missing = `agt_${randomUUID()}`;
-  const refusedSave = {
-    configurationId: f.configuration.id,
-    repositoryBindings: [{ repositoryRef: "missing" }],
-  };
-  for (const [method, suffix, body, status, message] of [
-    ["PATCH", "", refusedSave, 400, REPOSITORY_SELECTION_NOT_APPROVED],
-    ["POST", "/deploy", undefined, 409, SAVED_REPOSITORY_SELECTION_NOT_APPROVED],
-  ]) {
-    // The same request from the administrator meets the named refusal.
-    const named = await reconfigured.request(method, `${f.collection}/${agent.id}${suffix}`, body);
-    assert.equal(named.status, status, JSON.stringify(named));
-    assert.equal(named.error.message, message);
-    await assertSameAnswer(
-      (id) => outsider(method, `${f.collection}/${id}${suffix}`, body),
-      [agent.id, missing],
-      { label: `${method} ${suffix}` },
-    );
-  }
-  // Agent create names the refusal only after the Namespace grant: an outsider gets the same
-  // answer for this Namespace and for one that does not exist.
-  const refusedCreate = { name: "Refused Agent", ...refusedSave };
-  const named = await reconfigured.request("POST", f.collection, refusedCreate);
-  assert.equal(named.status, 400, JSON.stringify(named));
-  assert.equal(named.error.message, REPOSITORY_SELECTION_NOT_APPROVED);
-  await assertSameAnswer(
-    (id) => outsider("POST", `/namespaces/${id}/agents`, refusedCreate),
-    [f.namespace.id, `ns_${randomUUID()}`],
-    { label: "POST agents" },
-  );
-});
-
-test("Unsupported Compute refuses repository deployment while ordinary deployment remains optional", async (t) => {
-  const f = await fixture(t, { compute: sshCompute() });
-  const options = await f.request("GET", `${f.collection}/repository-options`);
-  assert.equal(options.status, 503, JSON.stringify(options));
-  assert.equal(options.error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
-  const agent = await f.createAgent({
-    repositoryBindings: selection,
-    harnessAuth: { method: "runtime" },
-    gatewayManagedMode: false,
-  });
-  await f.prepareDeployment(agent);
-  const path = `${f.collection}/${agent.id}`;
-  // A permanent Installation property, not an outage to retry (finding 2536).
-  const denied = await f.request("POST", `${path}/deploy`);
-  assert.equal(denied.status, 409, JSON.stringify(denied));
-  assert.equal(denied.error.code, "RESOURCE_CONFLICT");
-  assert.equal(denied.error.message, COMPUTE_REPOSITORY_UNSUPPORTED);
-  assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
-  const cleared = await f.request("PATCH", path, {
-    configurationId: f.configuration.id,
-    repositoryBindings: [],
-  });
-  assert.equal(cleared.status, 200);
-  const ordinary = await f.request("POST", `${path}/deploy`);
-  assert.equal(ordinary.status, 202, JSON.stringify(ordinary));
-  assert.equal(Object.hasOwn(ordinary.data, "repositoryCredentials"), false);
-});
-
-test("Repository admission retains unknown Harness and execution-mode rejection", async (t) => {
-  for (const { harness, executionMode, status, code, message, atSave, storedPastSave } of [
-    // An unsupported runtime identity is Configuration content, not a missing resource.
-    // Configuration save refuses it (finding 3020), so only a row an older release stored
-    // reaches deployment.
-    {
-      harness: "unknown",
-      executionMode: "embedded",
-      status: 400,
-      code: "INVALID_REQUEST",
-      message: runtimeIdUnsupported('agents.defaults.models["openai/gpt-5.1"]'),
-      storedPastSave: true,
-    },
-    // Kubernetes cannot deliver repository credentials to dedicated OpenClaw, so Agent save
-    // refuses this Harness/mode pair before deployment admission.
-    {
-      harness: "openclaw",
-      executionMode: "dedicated",
-      status: 409,
-      code: "RESOURCE_CONFLICT",
-      message: COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
-      atSave: true,
-    },
-    // A Harness/mode mismatch names the execution mode the Configuration needs, at Agent save
-    // as at deployment.
-    {
-      harness: "codex",
-      executionMode: "embedded",
-      status: 400,
-      code: "INVALID_REQUEST",
-      message: CODEX_NEEDS_DEDICATED,
-      atSave: true,
-    },
-  ]) {
-    await t.test(`${harness}/${executionMode}`, async (t) => {
-      const configurationDriver = createTestConfigurationDriver();
-      const f = await fixture(t, {
-        harness: storedPastSave ? "openclaw" : harness,
-        configurationDriver,
-      });
-      if (atSave) {
-        const refused = await f.request("POST", f.collection, {
-          name: `Repository Agent ${randomUUID()}`,
-          configurationId: f.configuration.id,
-          executionMode,
-          repositoryBindings: selection,
-        });
-        assert.equal(refused.status, status, JSON.stringify(refused));
-        assert.equal(refused.error.code, code);
-        assert.equal(refused.error.message, message);
-        assert.deepEqual((await f.request("GET", f.collection)).data, []);
-        return;
-      }
-      const agent = await f.createAgent({ executionMode, repositoryBindings: selection });
-      await f.prepareDeployment(agent);
-      if (storedPastSave) {
-        // Written past OCC, as an older release's Configuration save stored it.
-        const values = createHarnessConfiguration(harness, "gpt-5.1");
-        delete values.gateway.auth;
-        await configurationDriver.update({
-          ...configurationDriver.stored({ namespaceId: f.namespace.id, id: f.configuration.id }),
-          values,
-        });
-      }
-      const path = `${f.collection}/${agent.id}`;
-      const denied = await f.request("POST", `${path}/deploy`);
-      assert.equal(denied.status, status, JSON.stringify(denied));
-      assert.equal(denied.error.code, code);
-      assert.equal(denied.error.message, message);
-      assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
-    });
-  }
-  const f = await fixture(t);
-  const invalidMode = await f.request("POST", f.collection, {
-    name: "Unknown mode",
-    configurationId: f.configuration.id,
-    repositoryBindings: selection,
-    executionMode: "unknown",
-  });
-  assert.equal(invalidMode.status, 400, JSON.stringify(invalidMode));
-  assert.equal(invalidMode.error.code, "INVALID_REQUEST");
-  assert.deepEqual((await f.request("GET", f.collection)).data, []);
-});
-
-test("Dedicated repository admission still rejects a selected Sandbox Driver", async (t) => {
-  const f = await fixture(t, { harness: "codex" });
-  const agent = await f.createAgent({ executionMode: "dedicated", repositoryBindings: selection });
-  await f.prepareDeployment(agent);
-  // Selecting Sandbox changes the admitted topology; no Sandbox runtime is invoked.
-  const sandbox = {
-    id: "repository-admission-sandbox",
-    capability: "sandbox",
-    implementation: "test-sandbox",
-    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
-    facets: ["networking", "filesystem", "process"],
-    async cleanup() {},
-  };
-  f.controller.registerDriver(sandbox);
-  f.controller.selectDriver("sandbox", sandbox.id);
-  const path = `${f.collection}/${agent.id}`;
-  const denied = await f.request("POST", `${path}/deploy`);
-  assert.equal(denied.status, 409, JSON.stringify(denied));
-  assert.equal(denied.error.code, "RESOURCE_CONFLICT");
-  assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
-});
-
-test("Kubernetes admission supports dedicated Codex repositories for every profile", async (t) => {
-  for (const profile of ["git-read", "git-write", "git-full"]) {
-    await t.test(profile, async (t) => {
-      const f = await fixture(t, { harness: "codex" });
-      const bindings = [{ repositoryRef: "project", profile }];
-      const agent = await f.createAgent({
-        executionMode: "dedicated",
-        repositoryBindings: bindings,
-      });
-      assert.deepEqual(agent.repositoryBindings, bindings);
-      await f.prepareDeployment(agent);
-      const path = `${f.collection}/${agent.id}`;
-      const deployed = await f.request("POST", `${path}/deploy`);
-      assert.equal(deployed.status, 202, JSON.stringify(deployed));
-      assert.deepEqual(deployed.data.harness, {
-        id: "codex",
-        version: "1.0.0",
-        mode: "dedicated",
-        overrides: {},
-        configuration: {
-          modelProvider: {
-            protocol: "openai-responses",
-            baseUrl: "https://api.openai.com/v1",
-            supportsStandaloneWebSearch: false,
-          },
-        },
-      });
-      assert.deepEqual(deployed.data.repositoryCredentials.bindings, bindings);
-      const historical = await f.request("GET", `${path}/revisions/${deployed.data.id}`);
-      assert.deepEqual(historical.data.repositoryCredentials, deployed.data.repositoryCredentials);
-    });
-  }
-});
-
-// Kubernetes Compute sends a Codex Harness's repository traffic through its Codex network proxy
-// and refused a proxy setting that blocks the broker only in preparation, after a dedicated
-// deployment had stopped the running revision (finding 2350). Configuration save does not know
-// which Agents use the Configuration, so Agent save, provisioning and deployment refuse it, with
-// the text preparation uses. A deny of the broker host itself stays with preparation, the only
-// step that knows the host (tests/conformance/repository-runtime-material.test.ts).
-const brokerProxyRefusals = [
-  ["disabled", { enabled: false }, BROKER_PROXY_DISABLED],
-  ["unknown mode", { enabled: true, mode: "offline" }, BROKER_PROXY_MODE],
-  ["local binding", { enabled: true, allowLocalBinding: "yes" }, BROKER_PROXY_LOCAL_BINDING],
-  ["domains list", { enabled: true, domains: ["github.com"] }, BROKER_PROXY_DOMAINS],
-  [
-    "domain decision",
-    { enabled: true, domains: { "github.com": "block" } },
-    BROKER_PROXY_DOMAIN_DECISION,
-  ],
-  ["empty host", { enabled: true, domains: { " ": "allow" } }, BROKER_PROXY_EMPTY_HOST],
-];
-
+/**
+ * @param {string} harness
+ * @param {import("../../packages/contracts/src/index.ts").OpenClawConfigurationValue} networkProxy
+ */
 function codexProxyValues(harness, networkProxy) {
   const values = createHarnessConfiguration(harness, "gpt-5.1");
   delete values.gateway.auth;
@@ -1370,245 +1091,14 @@ function codexProxyValues(harness, networkProxy) {
   return values;
 }
 
-function assertBrokerProxyRefused(response, message, label) {
-  assert.equal(response.status, 400, `${label}: ${JSON.stringify(response)}`);
-  assert.equal(response.error.code, "INVALID_REQUEST", label);
-  assert.equal(response.error.message, message, label);
-}
-
-test("Agent save and deployment refuse a Codex network proxy that blocks the repository broker", async (t) => {
-  const f = await fixture(t, { harness: "codex" });
-  const configurationPath = `/namespaces/${f.namespace.id}/configurations/${f.configuration.id}`;
-  // A limited proxy with its own allowlist lets Compute add the broker host: it deploys.
-  const allowing = await f.request("PATCH", configurationPath, {
-    values: codexProxyValues("codex", {
-      enabled: true,
-      mode: "limited",
-      domains: { "github.com": "allow" },
-    }),
-  });
-  assert.equal(allowing.status, 200, JSON.stringify(allowing));
-  const agent = await f.createAgent({ executionMode: "dedicated", repositoryBindings: selection });
-  await f.prepareDeployment(agent);
-  const path = `${f.collection}/${agent.id}`;
-  const running = await f.request("POST", `${path}/deploy`);
-  assert.equal(running.status, 202, JSON.stringify(running));
-
-  for (const [label, networkProxy, message] of brokerProxyRefusals) {
-    // An edit of the Configuration the running Agent uses is accepted.
-    const edited = await f.request("PATCH", configurationPath, {
-      values: codexProxyValues("codex", networkProxy),
-    });
-    assert.equal(edited.status, 200, `${label}: ${JSON.stringify(edited)}`);
-    assertBrokerProxyRefused(
-      await f.request("POST", f.collection, {
-        name: `Repository Agent ${randomUUID()}`,
-        configurationId: f.configuration.id,
-        executionMode: "dedicated",
-        repositoryBindings: selection,
-      }),
-      message,
-      `${label} create`,
-    );
-    assertBrokerProxyRefused(
-      await f.request("PATCH", path, {
-        configurationId: f.configuration.id,
-        repositoryBindings: selection,
-      }),
-      message,
-      `${label} update`,
-    );
-    assertBrokerProxyRefused(await f.request("POST", `${path}/deploy`), message, `${label} deploy`);
-    // Deployment admitted no revision, so the worker has nothing to stop the running one for:
-    // it stays the Agent's only revision, and the Agent stays running.
-    const revisions = (await f.request("GET", `${path}/revisions`)).data;
-    assert.deepEqual(
-      revisions.map(({ id }) => id),
-      [running.data.id],
-      label,
-    );
-    assert.equal((await f.request("GET", path)).data.desiredRuntimeState, "running", label);
-  }
-
-  // Without repository bindings the proxy carries no broker traffic, and the same setting saves
-  // and deploys: the refusal's other remedy works.
-  const cleared = await f.request("PATCH", path, {
-    configurationId: f.configuration.id,
-    repositoryBindings: [],
-  });
-  assert.equal(cleared.status, 200, JSON.stringify(cleared));
-  const unbound = await f.request("POST", `${path}/deploy`);
-  assert.equal(unbound.status, 202, JSON.stringify(unbound));
-});
-
-test("Embedded OpenClaw skips the Codex broker proxy and refuses Codex plugin selections", async (t) => {
-  const f = await fixture(t);
-  const configuration = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
-    kind: "agent",
-    values: codexProxyValues("openclaw", { enabled: false }),
-  });
-  assert.equal(configuration.status, 201, JSON.stringify(configuration));
-  const create = (plugins) =>
-    f.request("POST", f.collection, {
-      name: `Repository Agent ${randomUUID()}`,
-      configurationId: configuration.data.id,
-      repositoryBindings: selection,
-      ...(plugins === undefined ? {} : { plugins }),
-    });
-  // Without plugins no Plugin Driver runs Codex in the Gateway, so nothing reads the proxy.
-  const plain = await create();
-  assert.equal(plain.status, 201, JSON.stringify(plain));
-  // Enabling the Codex catalog does not install a Codex bridge on an OpenClaw Harness.
-  const driver = new CodexPluginDriver();
-  f.controller.registerDriver(driver);
-  f.controller.selectDriver("plugin", driver.id);
-  const refused = await create({ "codex-plugin:linear@openai-curated-remote": { enabled: true } });
-  assert.equal(refused.status, 400, JSON.stringify(refused));
-  assert.match(refused.error.message, /Plugin Driver.*openclaw Harness/i);
-});
-
-test("Provisioning refuses a Codex network proxy that blocks the repository broker before queueing", async (t) => {
-  const configurationDriver = createTestConfigurationDriver();
-  // Refusing the request creates no Configuration; only the worker would.
-  configurationDriver.createExact = async () => assert.fail("The request created Configuration");
-  configurationDriver.inspectExact = async () => assert.fail("The request inspected Configuration");
-  const f = await fixture(t, { harness: "codex", configurationDriver });
-  await f.state.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
-  );
-  const secret = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
-    name: "Provisioning model",
-    value: "synthetic-model-key",
-  });
-  assert.equal(secret.status, 201, JSON.stringify(secret));
-  for (const [label, networkProxy, message] of brokerProxyRefusals) {
-    assertBrokerProxyRefused(
-      await f.request("POST", `${f.collection}/provision`, {
-        requestId: `req_${randomUUID()}`,
-        name: `Provisioned ${label}`,
-        executionMode: "dedicated",
-        configuration: { kind: "agent", values: codexProxyValues("codex", networkProxy) },
-        harnessAuth: { method: "api_key", source: secret.data.ref },
-        repositoryBindings: selection,
-      }),
-      message,
-      `${label} provision`,
-    );
-  }
-  assert.deepEqual((await f.request("GET", f.collection)).data, []);
-});
-
-test("Repository capability remains optional when no repository Backend or Driver is configured", async (t) => {
-  const f = await fixture(t, { compute: sshCompute(), repositories: false });
-  const agent = await f.createAgent({
-    harnessAuth: { method: "runtime" },
-    gatewayManagedMode: false,
-  });
-  await f.prepareDeployment(agent);
-  const deployed = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
-  assert.equal(deployed.status, 202, JSON.stringify(deployed));
-  assert.equal(Object.hasOwn(deployed.data, "repositoryCredentials"), false);
-  // Finding 2362: binding a repository with no repository Driver configured is a permanent
-  // Installation state, not an outage, so create and update name the setting instead of a 503.
-  for (const [method, path, body] of [
-    [
-      "PATCH",
-      `${f.collection}/${agent.id}`,
-      { configurationId: f.configuration.id, repositoryBindings: selection },
-    ],
-    [
-      "POST",
-      f.collection,
-      {
-        name: `Repository Agent ${randomUUID()}`,
-        configurationId: f.configuration.id,
-        repositoryBindings: selection,
-      },
-    ],
-  ]) {
-    const missingDriver = await f.request(method, path, body);
-    assert.equal(missingDriver.status, 409, `${method}: ${JSON.stringify(missingDriver)}`);
-    assert.equal(missingDriver.error.code, "RESOURCE_CONFLICT", method);
-    // Names the missing settings and who adds them (finding D763).
-    assert.equal(missingDriver.error.message, REPOSITORY_SETTINGS_MISSING);
-  }
-  assert.equal((await f.request("GET", f.collection)).data.length, 1, "no Agent was created");
-  const unchanged = await f.request("GET", `${f.collection}/${agent.id}`);
-  assert.equal(Object.hasOwn(unchanged.data, "repositoryBindings"), false);
-  // Without a repository Driver, discovery answers no options before the Compute check.
-  const options = await f.request("GET", `${f.collection}/repository-options`);
-  assert.equal(options.status, 200, JSON.stringify(options));
-  assert.deepEqual(options.data, []);
-  assert.equal(options.meta.notConfigured, true);
-  // A binding stored before the Installation dropped its repository settings has no approval
-  // scope to review: nothing can approve it, so the review lists none instead of the refusal.
-  await f.state.transact((unit) =>
-    unit.agents.updateConfiguration(
-      f.namespace.id,
-      agent.id,
-      f.configuration.id,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      selection,
-    ),
-  );
-  const scopes = await f.request("GET", `${f.collection}/${agent.id}/repository-approval-scopes`);
-  assert.equal(scopes.status, 200, JSON.stringify(scopes));
-  assert.deepEqual(scopes.data, []);
-  // Such a binding can still be dropped: an empty selection needs no repository Driver, so the
-  // console's Repositories tab offers Save for it (finding 2398).
-  const dropped = await f.request("PATCH", `${f.collection}/${agent.id}`, {
-    configurationId: f.configuration.id,
-    repositoryAccess: { defaultProfile: "git-full", repositories: [] },
-  });
-  assert.equal(dropped.status, 200, JSON.stringify(dropped));
-  const cleared = await f.request("GET", `${f.collection}/${agent.id}`);
-  assert.deepEqual(cleared.data.repositoryBindings ?? [], []);
-});
-
-test("Provisioning rejects a forbidden repository profile before queueing or creating resources", async (t) => {
-  const configurationDriver = createTestConfigurationDriver();
-  // These effect methods must remain unused when admission rejects the repository selection.
-  configurationDriver.createExact = async () =>
-    assert.fail("Rejected admission created Configuration");
-  configurationDriver.inspectExact = async () =>
-    assert.fail("Rejected admission inspected Configuration");
-  const f = await fixture(t, {
-    harness: "codex",
-    configurationDriver,
-    compute: kubernetesCompute(),
-  });
-  await f.state.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
-  );
-  const secret = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
-    name: "Provisioning model",
-    value: "synthetic-model-key",
-  });
-  assert.equal(secret.status, 201);
-  const body = {
-    requestId: `req_${randomUUID()}`,
-    name: "Rejected provisioning",
-    executionMode: "dedicated",
-    configuration: { kind: "agent", values: f.configuration.values },
-    harnessAuth: { method: "api_key", source: secret.data.ref },
-    repositoryBindings: [{ repositoryRef: "foreign-project", profile: "git-write" }],
-  };
-  const response = await f.request("POST", `${f.collection}/provision`, body);
-  assert.equal(response.status, 400, JSON.stringify(response));
-  assert.equal(response.error.code, "INVALID_REQUEST");
-  assert.equal(response.error.message, REPOSITORY_SELECTION_NOT_APPROVED);
-  assert.deepEqual((await f.request("GET", f.collection)).data, []);
-  // The refusal follows the Namespace's provisioning grants (finding 2536).
-  const outsider = await f.requestWithoutGrants(f.app);
-  const outsiderBody = { ...body, requestId: `req_${randomUUID()}` };
-  await assertSameAnswer(
-    (id) => outsider("POST", `/namespaces/${id}/agents/provision`, outsiderBody),
-    [f.namespace.id, `ns_${randomUUID()}`],
-    { label: "POST agents/provision" },
-  );
+registerRepositoryCredentialsDeploymentAdmissionCases({
+  fixture,
+  kubernetesCompute,
+  sshCompute,
+  codexProxyValues,
+  selection,
+  driverId,
+  backendId,
 });
 
 // Finding 1145: the provisioning request answers the 409 Agent create gives for repository

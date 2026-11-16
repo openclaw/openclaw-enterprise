@@ -24,7 +24,8 @@ import {
   type SendAttempt,
   type StoredSendReceipt,
 } from "../../packages/occ/src/egress-send-receipts.ts";
-import { staticEgressFixture, syntheticDispatchFixture } from "../helpers/static-egress.mjs";
+import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 import { waitUntil, within } from "../helpers/wait-for.mjs";
 
 const admitMetadata = async ({

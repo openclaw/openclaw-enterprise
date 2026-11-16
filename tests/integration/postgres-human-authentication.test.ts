@@ -15,7 +15,7 @@ import {
   type PostgresPool,
   type PreparedPasswordAccount,
 } from "../../packages/occ/src/index.ts";
-import { administrativeActor } from "../helpers/administrative-actor.mjs";
+import { administrativeActor } from "../helpers/administrative-actor.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";

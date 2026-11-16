@@ -34,6 +34,7 @@ import {
   retryKubectlWrite,
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { refusingPort } from "../helpers/available-port.ts";
 import { listen } from "../helpers/listen.ts";
 import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
@@ -2424,6 +2425,112 @@ test("the inline probe's refused connection passes a deny check", async (t) => {
   );
   assert.deepEqual(denial, { denied: true, code: "ECONNREFUSED" });
 });
+
+test(
+  "the installed two-cluster preflight rejects unsafe inputs without exposing private values",
+  { timeout: 20_000 },
+  async (t): Promise<void> => {
+    const directory = await temporaryDirectory(t, "occ-two-cluster-inputs-");
+    const configurationFile = join(directory, "configuration.json");
+    const serviceKeyFile = join(directory, "missing-service-key.json");
+    const installedTest = fileURLToPath(
+      new URL("../integration/kubernetes-two-cluster-real.test.mjs", import.meta.url),
+    );
+    const env = {
+      HOME: directory,
+      PATH: directory,
+      OCC_TEST_TWO_CLUSTER_CONFIG: configurationFile,
+    };
+    const username = "private-user-marker";
+    const password = "private-password-marker";
+    const requestValue = "private-request-marker";
+    const invalidUrl = "The two-cluster fixture requires a valid apiUrl.";
+    const privateUrl =
+      "The two-cluster fixture apiUrl cannot contain credentials, a query or a fragment.";
+
+    // The absent key file and isolated child keep any unexpected fall-through
+    // from reaching an installed cluster. A valid selection reaches the
+    // mode-specific credential check before the file can be opened.
+    for (const [name, configuration, message] of [
+      [
+        "URL credentials",
+        { apiUrl: syntheticCredentialUrl({ username, password, host: "127.0.0.1" }) },
+        privateUrl,
+      ],
+      [
+        "malformed URL with credentials",
+        {
+          apiUrl: syntheticCredentialUrl({
+            username,
+            password,
+            host: "localhost",
+            port: "invalid-port",
+          }),
+        },
+        invalidUrl,
+      ],
+      [
+        "malformed JSON",
+        `{"apiUrl": "${requestValue}`,
+        "The two-cluster fixture must be a JSON object.",
+      ],
+      ["non-string URL", { apiUrl: [requestValue] }, invalidUrl],
+      ["URL query", { apiUrl: `https://[::1]/?token=${requestValue}` }, privateUrl],
+      ["URL fragment", { apiUrl: `http://localhost/#${requestValue}` }, privateUrl],
+      ["empty URL query", { apiUrl: "https://127.0.0.1/?" }, privateUrl],
+      ["empty URL fragment", { apiUrl: "https://127.0.0.1/#" }, privateUrl],
+      [
+        "nonloopback URL",
+        { apiUrl: "https://192.0.2.1" },
+        "The two-cluster fixture apiUrl must use HTTP or HTTPS on loopback.",
+      ],
+      [
+        "unsupported URL scheme",
+        { apiUrl: "ftp://localhost" },
+        "The two-cluster fixture apiUrl must use HTTP or HTTPS on loopback.",
+      ],
+      [
+        "unsupported auth method",
+        { apiUrl: "http://127.0.0.1", harnessAuthMethod: requestValue },
+        "Unsupported harnessAuthMethod.",
+      ],
+      [
+        "missing default API key",
+        { apiUrl: "http://localhost" },
+        "The selected real-runtime case requires OPENAI_API_KEY.",
+      ],
+      [
+        "missing PAT",
+        { apiUrl: "https://[::1]", harnessAuthMethod: "codex_pat" },
+        "The selected real-runtime case requires CODEX_ACCESS_TOKEN.",
+      ],
+    ] as const) {
+      const input =
+        typeof configuration === "string"
+          ? configuration
+          : JSON.stringify({ serviceKeyFile, ...configuration });
+      await writeFile(configurationFile, input, { mode: 0o600 });
+      await assert.rejects(
+        execute(process.execPath, ["--test", installedTest], {
+          env,
+          encoding: "utf8",
+          signal: t.signal,
+          timeout: 5_000,
+        }),
+        (error: unknown): boolean => {
+          expectExecFailure(error);
+          assert.equal(error.code, 1, name);
+          const diagnostic = error.stdout + error.stderr;
+          for (const [index, marker] of [username, password, requestValue].entries()) {
+            assert.equal(diagnostic.includes(marker), false, `${name} leaked marker ${index + 1}`);
+          }
+          assert.ok(diagnostic.includes(message), name);
+          return true;
+        },
+      );
+    }
+  },
+);
 
 test("an inline deny check fails unless the probe reports a denial", async (t) => {
   const source = await readFile(probeScript, "utf8");

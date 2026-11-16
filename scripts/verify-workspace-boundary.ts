@@ -17,7 +17,21 @@ const activeSourceRoots = [
   "tests/docs",
 ];
 
-async function sourceFiles(directory) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
+async function readJsonObject(path: string): Promise<Record<string, unknown>> {
+  const value: unknown = JSON.parse(await readFile(join(repositoryRoot, path), "utf8"));
+  assert.ok(isRecord(value), `${path} must contain a JSON object.`);
+  return value;
+}
+
+async function sourceFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = await Promise.all(
     entries.map(async (entry) => {
@@ -66,9 +80,7 @@ for (const name of activeApplications) {
     new RegExp(`(?:^|\\s)apps/${name}(?:\\s|$)`, "m"),
     `The active ${name} application must be explicitly selected.`,
   );
-  const applicationManifest = JSON.parse(
-    await readFile(join(repositoryRoot, "apps", name, "package.json"), "utf8"),
-  );
+  const applicationManifest = await readJsonObject(`apps/${name}/package.json`);
   assert.equal(
     applicationManifest.name,
     `@openclaw-enterprise/${name}`,
@@ -76,20 +88,38 @@ for (const name of activeApplications) {
   );
 }
 
-const manifest = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8"));
-assert.doesNotMatch(
-  JSON.stringify(manifest.scripts ?? {}),
-  /(?:^|[\s./])legacy\//,
-  "Root workspace scripts must never execute archived implementation code.",
-);
+const manifest = await readJsonObject("package.json");
+const scripts = manifest.scripts ?? {};
+assert.ok(isRecord(scripts), "Root workspace scripts must be a JSON object.");
+for (const [name, command] of Object.entries(scripts)) {
+  assert.ok(typeof command === "string", `Root workspace script ${name} must be a string.`);
+  assert.doesNotMatch(
+    command,
+    /(?:^|[\s./])legacy\//,
+    "Root workspace scripts must never execute archived implementation code.",
+  );
+}
 
-const tsconfig = JSON.parse(await readFile(join(repositoryRoot, "tsconfig.json"), "utf8"));
+const tsconfig = await readJsonObject("tsconfig.json");
 assert.ok(
-  tsconfig.exclude?.some((path) => path === "legacy" || path.startsWith("legacy/")),
+  isArray(tsconfig.exclude) &&
+    tsconfig.exclude.some(
+      (path) => typeof path === "string" && (path === "legacy" || path.startsWith("legacy/")),
+    ),
   "The TypeScript solution must explicitly exclude legacy/.",
 );
 
-const references = new Set((tsconfig.references ?? []).map(({ path }) => path));
+const projectReferences = tsconfig.references ?? [];
+assert.ok(isArray(projectReferences), "TypeScript project references must be a JSON array.");
+const references = new Set(
+  projectReferences.map((reference) => {
+    assert.ok(
+      isRecord(reference) && typeof reference.path === "string",
+      "Each TypeScript project reference must provide a path.",
+    );
+    return reference.path;
+  }),
+);
 for (const name of activePackages) {
   assert.ok(references.has(`./packages/${name}`), `Missing ${name} TypeScript project reference.`);
 }
@@ -119,6 +149,7 @@ for (const source of sources) {
   for (const [, specifier] of content.matchAll(
     /\b(?:import|export)\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']/g,
   )) {
+    assert.ok(specifier);
     const resolved = specifier.startsWith(".")
       ? relative(repositoryRoot, join(dirname(source), specifier))
       : specifier;

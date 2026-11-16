@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
-import { sentIdHidden } from "./refusal-text.mjs";
 
 type RefusalAnswer = Pick<ReturnType<typeof requestFailure>, "status" | "code" | "message">;
 
@@ -73,8 +72,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hideSentId(value: unknown, id: string): unknown {
   if (typeof value === "string") {
-    const hidden: unknown = sentIdHidden(value, id);
-    return hidden;
+    return value.replaceAll(id, "<id>");
   }
   const items: readonly unknown[] | undefined = Array.isArray(value) ? value : undefined;
   if (items !== undefined) {
