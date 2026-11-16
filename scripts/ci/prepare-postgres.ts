@@ -126,10 +126,10 @@ function findReadyDatabase(
   for (const entry of state.resources) {
     const resource = asRecord(entry);
     if (
-      resource?.kind === "postgres-database" &&
-      resource[field] === value &&
-      resource.owner === state.prefix &&
-      resource.status === "ready" &&
+      entry.kind === "postgres-database" &&
+      entry.owner === state.prefix &&
+      entry.status === "ready" &&
+      resource?.[field] === value &&
       resource.composeProject === server.name &&
       resource.port === server.port
     ) {
