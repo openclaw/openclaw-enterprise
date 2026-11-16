@@ -47,12 +47,19 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
   issuedKeys.push(key.id);
   const service = { "x-api-key": key.key };
   const path = `/agents/${agent.id}/chat`;
+  const evidence = {
+    httpRequests: 0,
+    completedJsonResponses: 0,
+    completedSseResponses: 0,
+    verifiedToolActions: 0,
+  };
   const send = async (
     headers: Record<string, string>,
     body: Record<string, unknown>,
     url = path,
     during?: () => Promise<void>,
   ) => {
+    evidence.httpRequests += 1;
     const response = await new Promise<import("node:http").IncomingMessage>((resolve, reject) => {
       const request = httpRequest(
         f.apiUrl + url,
@@ -116,6 +123,7 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
     const json = JSON.parse(result.text);
     assert.equal(json.object, "chat.completion");
     assert.equal(json.data, undefined, "OCC must not wrap the native response");
+    evidence.completedJsonResponses += 1;
     return String(json.choices[0].message.content);
   };
   try {
@@ -170,6 +178,7 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
         marker,
         "the selected Harness must execute the HTTP turn's tool action",
       );
+      evidence.verifiedToolActions += 1;
       const streamed = await send(
         headers,
         message(
@@ -202,6 +211,7 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
         /40|forty/i,
         "the streamed model answer must reach the requested final number",
       );
+      evidence.completedSseResponses += 1;
     }
     const label = `conversation-${randomUUID()}`;
     const memory = `remember-${randomUUID()}`;
@@ -395,6 +405,13 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
     await f.api("POST", `${base}/agents/${agent.id}/stop`);
     assert.equal((await send(rotated, message("Do not execute this request."))).status, 503);
   } finally {
+    await f.record(`http-chat-${agent.id}-outcomes`, {
+      ...evidence,
+      preset: agent.preset,
+      verificationMode: process.env.OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE || "workspace-write",
+      // These count HTTP completions, not internal provider calls or automatic retries.
+      providerCallCount: "unobserved",
+    });
     for (const id of issuedKeys) {
       await f.api("DELETE", `/api/auth/service-keys/${id}`);
     }
