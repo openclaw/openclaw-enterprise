@@ -15,12 +15,15 @@ import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/san
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   assertNativeWorkNotFailed,
-  assertNativeWorkerProofInController,
   failNativeProvisioningDeadline,
-  nativeFirstAgentProofTimeout,
   nativeProvisioningPath,
   runtimeLogSources,
+  waitForNativeProvisioning,
   waitForNativeRedeploy,
+} from "../helpers/local-first-agent-native-diagnostics.ts";
+import {
+  assertNativeWorkerProofInController,
+  nativeFirstAgentProofTimeout,
 } from "../helpers/local-first-agent-native.mjs";
 import { localOpenShellGatewayOptions } from "../helpers/local-openshell-gateway.mjs";
 import {
@@ -515,7 +518,11 @@ test("native terminal failures report only fixed failure codes", async (t) => {
     const calls = [];
     const request = async (method, path, body, signal) => {
       calls.push({ method, path, body, signal });
-      return responses[calls.length - 1];
+      const response = responses[calls.length - 1];
+      if (response instanceof Error) {
+        throw response;
+      }
+      return response;
     };
     let message;
     const signal = AbortSignal.timeout(30_000);
@@ -802,6 +809,40 @@ test("native terminal failures report only fixed failure codes", async (t) => {
     assert.equal(observed.provisioning.phase, "configuration");
     const unbound = { ...handoff, revisionId: "private-sentinel" };
     assert.equal((await observe(unbound, unbound, [], [])).deployment, "unavailable");
+
+    // A failed optional read preserves the original assertion and redacts the read error.
+    const failedRead = await observe(
+      handoff,
+      handoff,
+      [deployment, new Error("private-sentinel")],
+      [deploymentPath, logPath],
+    );
+    assert.equal(failedRead.category, "RUNTIME_AUTHENTICATION_FAILED");
+    assert.equal(failedRead.modelProbe, "unavailable");
+
+    // A read that settles during cancellation cannot supply evidence for the held failure.
+    const controller = new AbortController();
+    const cancelledReads = [];
+    await assert.rejects(
+      assertNativeWorkNotFailed(handoff, expectation, {
+        namespaceId,
+        provisioningPath,
+        provisioned: handoff,
+        signal: controller.signal,
+        request: async (_method, path) => {
+          cancelledReads.push(path);
+          controller.abort(new Error("private-sentinel"));
+          return deployment;
+        },
+      }),
+      (error) => {
+        const held = reportedFailure(error.message);
+        assert.equal(held.category, "RUNTIME_AUTHENTICATION_FAILED");
+        assert.equal(held.deployment, "unavailable");
+        return true;
+      },
+    );
+    assert.deepEqual(cancelledReads, [deploymentPath]);
   });
 
   await t.test("pass work that has not failed", async () => {
@@ -814,7 +855,7 @@ test("native terminal failures report only fixed failure codes", async (t) => {
     });
   });
 
-  await t.test("name a failed redeploy's code and model check without peer text", async () => {
+  await t.test("name a failed redeploy's code and model check without peer text", async (t) => {
     const replacementId = `rev_${randomUUID()}`;
     const agentPath = `/namespaces/${namespaceId}/agents/${agentId}`;
     const replacementPath = `${agentPath}/deployments/${replacementId}`;
@@ -933,14 +974,16 @@ test("native terminal failures report only fixed failure codes", async (t) => {
 
     // A redeploy returns once it succeeded and is active, without diagnostic reads.
     const ready = { ...failed, status: "succeeded", error: null };
+    const currentAgent = { id: agentId, namespaceId, activeRevisionId: revisionId };
+    const replacementAgent = { ...currentAgent, activeRevisionId: replacementId };
     const calls = [];
     const responses = [
       { ...ready, status: "running" },
-      { activeRevisionId: revisionId },
+      currentAgent,
       ready,
-      { activeRevisionId: revisionId },
+      currentAgent,
       ready,
-      { activeRevisionId: replacementId },
+      replacementAgent,
     ];
     const active = await waitForNativeRedeploy({
       request: async (method, path) => {
@@ -953,7 +996,7 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       signal: AbortSignal.timeout(30_000),
       pollMs: 1,
     });
-    assert.deepEqual(active, { deployment: ready, agent: { activeRevisionId: replacementId } });
+    assert.deepEqual(active, { deployment: ready, agent: replacementAgent });
     assert.deepEqual(calls, [
       replacementPath,
       agentPath,
@@ -962,6 +1005,42 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       replacementPath,
       agentPath,
     ]);
+
+    for (const other of [{ id: otherBinding.agentId }, { namespaceId: otherBinding.namespaceId }]) {
+      await assert.rejects(
+        waitForNativeRedeploy({
+          request: async (_method, path) =>
+            path === replacementPath ? ready : { ...replacementAgent, ...other },
+          namespaceId,
+          agentId,
+          revisionId: replacementId,
+          signal: AbortSignal.timeout(30_000),
+        }),
+        /mismatched Agent binding/,
+      );
+    }
+
+    // An Agent read that begins in time but settles after the deadline cannot prove readiness.
+    t.mock.timers.enable({ apis: ["Date"] });
+    const lateCalls = [];
+    const late = await waitForNativeRedeploy({
+      request: async (method, path) => {
+        lateCalls.push(path);
+        if (path === agentPath) {
+          t.mock.timers.tick(51);
+          return replacementAgent;
+        }
+        return ready;
+      },
+      namespaceId,
+      agentId,
+      revisionId: replacementId,
+      signal: AbortSignal.timeout(30_000),
+      timeoutMs: 50,
+      pollMs: 1,
+    });
+    assert.deepEqual(lateCalls, [replacementPath, agentPath]);
+    assert.deepEqual(late, { deployment: undefined, agent: undefined });
   });
 });
 
@@ -1083,6 +1162,7 @@ test("the missed native handoff deadline reports only Pod readiness and fixed ru
       [readyPods[0], { ...agent, role: "private-sentinel" }],
       [{ ...gateway, phase: "private-sentinel" }, agent],
       [readyPods[0], { ...agent, ready: false }],
+      [readyPods[0], { ...agent, ready: { value: "private-sentinel" } }],
       [readyPods[0], readyPods[0], agent],
       [...readyPods, agent],
     ]) {
@@ -1133,6 +1213,57 @@ test("the missed native handoff deadline reports only Pod readiness and fixed ru
     [deploymentPath, provisioningPath],
   );
   assert.equal(observation.provisioningAfterDeployment.status, "succeeded");
+  // A late response for another revision of the same work cannot explain this deadline.
+  const stale = await observe(
+    [
+      { ...deployment, status: "succeeded" },
+      { ...late, revisionId: `rev_${randomUUID()}` },
+    ],
+    [deploymentPath, provisioningPath],
+  );
+  assert.equal(stale.provisioningAfterDeployment, "unavailable");
+
+  const agentPath = `/namespaces/${namespaceId}/agents/${agentId}`;
+  const activeAgent = { namespaceId, id: agentId, activeRevisionId: revisionId };
+  const ready = { ...deployment, status: "succeeded" };
+  const calls = [];
+  const poll = (work, readAgent) =>
+    waitForNativeProvisioning({
+      namespaceId,
+      provisioningPath,
+      signal: AbortSignal.timeout(30_000),
+      request: async (_method, path) => {
+        calls.push(path);
+        if (path === provisioningPath) {
+          return work;
+        }
+        if (path === deploymentPath) {
+          return ready;
+        }
+        if (path === agentPath) {
+          return readAgent();
+        }
+        throw new Error("Unexpected First Agent request");
+      },
+    });
+  assert.deepEqual(await poll(late, () => activeAgent), { revisionId, nativeAgent: activeAgent });
+  assert.deepEqual(calls.splice(0), [provisioningPath, deploymentPath, agentPath]);
+  // A completed work item cannot select an arbitrary controller route.
+  await assert.rejects(
+    poll({ ...late, agentId: "../private-sentinel" }, () => activeAgent),
+    /invalid revision binding/,
+  );
+  assert.deepEqual(calls.splice(0), [provisioningPath]);
+  // A late Agent response triggers diagnostic readback, even when all three records agree.
+  t.mock.timers.enable({ apis: ["Date"] });
+  await assert.rejects(
+    poll(late, () => {
+      t.mock.timers.tick(8 * 60_000);
+      return activeAgent;
+    }),
+    /did not become ready before the deadline/,
+  );
+  assert.deepEqual(calls, [provisioningPath, deploymentPath, agentPath, deploymentPath]);
 });
 
 test(
@@ -1297,7 +1428,7 @@ test(
       // grant, transport and revision; the Agent receives no Secret grant.
       const kube = { stateDirectory, cluster: recorded.cluster, env };
       const nativeRequestedAt = Date.now();
-      const { provisioned, nativeAgent } = await measureFirstAgentStage(
+      const { revisionId: initialRevisionId, nativeAgent } = await measureFirstAgentStage(
         nativeContext,
         "native-deploy",
         async () => {
@@ -1316,67 +1447,13 @@ test(
             initialWorkspaceFiles: { ...WORKSPACE_DEFAULTS },
             workspaceDefaultsId: WORKSPACE_DEFAULTS_ID,
           });
-          const deadline = Date.now() + 8 * 60_000;
-          const provisioningPath = nativeProvisioningPath(
-            nativeNamespace.id,
-            submitted.provisioning,
-          );
-          let provisioned;
-          let deployment;
-          let nativeAgent;
-          while (Date.now() < deadline) {
-            nativeContext.signal.throwIfAborted();
-            provisioned = await request("GET", provisioningPath);
-            const failureDiagnostics = {
-              request,
-              namespaceId: nativeNamespace.id,
-              provisioningPath,
-              provisioned,
-              signal: nativeContext.signal,
-              readProbePod: (revision, signal) => readNativeProbePod(kube, revision, signal),
-            };
-            await assertNativeWorkNotFailed(
-              provisioned,
-              "Guided native provisioning must succeed",
-              failureDiagnostics,
-            );
-            if (provisioned.status === "succeeded") {
-              assert.ok(provisioned.agentId && provisioned.revisionId);
-              const nativePath = `${base}/agents/${provisioned.agentId}`;
-              deployment = await request(
-                "GET",
-                `${nativePath}/deployments/${provisioned.revisionId}`,
-              );
-              await assertNativeWorkNotFailed(
-                deployment,
-                "The admitted native revision must become ready",
-                failureDiagnostics,
-              );
-              nativeAgent = await request("GET", nativePath);
-              if (
-                deployment.status === "succeeded" &&
-                nativeAgent.activeRevisionId === provisioned.revisionId
-              ) {
-                break;
-              }
-            }
-            await new Promise((resolve) =>
-              setTimeout(resolve, Math.min(2_000, Math.max(1, deadline - Date.now()))),
-            );
-          }
-          if (Date.now() >= deadline && provisioned?.status !== "succeeded") {
-            await failNativeProvisioningDeadline({
-              request,
-              provisioningPath,
-              provisioned,
-              namespaceId: nativeNamespace.id,
-              signal: nativeContext.signal,
-            });
-          }
-          assert.equal(provisioned?.status, "succeeded");
-          assert.equal(deployment?.status, "succeeded");
-          assert.equal(nativeAgent?.activeRevisionId, provisioned.revisionId);
-          return { provisioned, nativeAgent };
+          return waitForNativeProvisioning({
+            request,
+            namespaceId: nativeNamespace.id,
+            provisioningPath: nativeProvisioningPath(nativeNamespace.id, submitted.provisioning),
+            signal: nativeContext.signal,
+            readProbePod: (revision, signal) => readNativeProbePod(kube, revision, signal),
+          });
         },
       );
       assert.equal(nativeAgent.executionMode, "dedicated");
@@ -1386,7 +1463,7 @@ test(
       });
       assert.deepEqual(nativeAgent.credentialSources, [{ sourceId: nativeSource.id }]);
       const nativePath = `${base}/agents/${nativeAgent.id}`;
-      const revision = await request("GET", `${nativePath}/revisions/${provisioned.revisionId}`);
+      const revision = await request("GET", `${nativePath}/revisions/${initialRevisionId}`);
       assert.equal(revision.harness.id, "openclaw");
       assert.equal(revision.harness.mode, "dedicated");
       const access = await request("GET", `${base}/iam/access-bindings`);
@@ -1512,7 +1589,7 @@ test(
         };
       };
       const initialProvider = await readProviderRevision(
-        provisioned.revisionId,
+        initialRevisionId,
         "native-initial",
         nativeRequestedAt,
       );
@@ -1584,7 +1661,7 @@ test(
       const initialSetup = await readSetup();
       assert.ok(initialSetup.uid && initialSetup.setupId);
       assert.equal(initialSetup.deviceId, initialProvider.expectedNodeId);
-      assert.equal(initialSetup.enrolledRevisionId, provisioned.revisionId);
+      assert.equal(initialSetup.enrolledRevisionId, initialRevisionId);
       assert.ok(Number.isSafeInteger(initialSetup.expiresAtMs) && initialSetup.expiresAtMs > 0);
       const completion = await readCompletion(initialProvider, initialSetup.setupId);
       assert.equal(completion.completion?.deviceId, initialProvider.expectedNodeId);
@@ -1618,7 +1695,7 @@ test(
         "native-redeploy",
         async () => {
           const replacement = await request("POST", `${nativePath}/deploy`);
-          assert.notEqual(replacement.id, provisioned.revisionId);
+          assert.notEqual(replacement.id, initialRevisionId);
           assert.equal(replacement.harness.id, "openclaw");
           assert.equal(replacement.harness.mode, "dedicated");
           const { deployment: replacementDeployment, agent: replacementAgent } =
