@@ -31,7 +31,7 @@ import {
   sshGatewayPasswordRefusal,
   unreadableSecretRefProblem as formatSecretRefProblem,
 } from "../helpers/refusal-text.mjs";
-import { INVALID_ALLOW_USERS_SAMPLE } from "../helpers/trusted-proxy-shapes.mjs";
+import { INVALID_ALLOW_USERS_SAMPLE } from "../helpers/trusted-proxy-shapes.ts";
 import {
   bindHarnessKey,
   bootstrapInstallation,

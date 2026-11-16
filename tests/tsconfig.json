@@ -115,6 +115,7 @@
     "integration/configuration-startup-validation-cases.ts",
     "integration/configuration-startup-credential-proxy-cases.ts",
     "integration/configuration-http-lifecycle-cases.ts",
+    "integration/configuration-gateway-trusted-proxy-cases.ts",
     "integration/configuration-size-admission-cases.ts",
     "integration/configuration-channel-credential-cases.ts",
     "integration/qa-agent-lifecycle-diagnostics-cases.ts",

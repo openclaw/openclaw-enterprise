@@ -1,9 +1,12 @@
+import type { OpenClawConfigurationValue } from "../../packages/contracts/src/index.ts";
+
 // Gateway trusted-proxy settings the Gateway refuses at startup, so Kubernetes Compute refuses them
 // at preparation, deploy admission and Configuration save (findings 3006, 3032). The driver
 // conformance test sends every shape; the HTTP tests send the `*_SAMPLE` shapes through the real
 // API. The expected texts are KUBERNETES_ALLOW_USERS_REFUSAL and
 // KUBERNETES_DEVICE_AUTO_APPROVE_REFUSAL in refusal-text.mjs.
 
+// The refused values are raw JSON settings, including scalars and mixed array elements.
 // allowUsers values the API tests send: the machine identity left out, a case-duplicate e-mail
 // identity (the Gateway resolves "@" grants case-insensitively), and an empty list, which admits
 // every proxy user upstream. The first one also names a human, so a response that echoed the
@@ -12,11 +15,11 @@ export const INVALID_ALLOW_USERS_SAMPLE = [
   ["oidc:member-01"],
   ["occ-workspace-files", "member@example.com", "Member@Example.com"],
   [],
-];
+] as const satisfies readonly OpenClawConfigurationValue[];
 
 // Every refused allowlist: the sample plus duplicates, case variants that spoof the machine
 // identity, identities a proxy header cannot carry exactly, and object property names.
-export const INVALID_ALLOW_USERS = [
+export const INVALID_ALLOW_USERS: readonly OpenClawConfigurationValue[] = [
   ...INVALID_ALLOW_USERS_SAMPLE,
   ["occ-workspace-files", " "],
   null,
@@ -33,7 +36,7 @@ export const INVALID_ALLOW_USERS = [
 ];
 
 // deviceAutoApprove values the API tests send: scopes as text, a text enabled, and an unknown key.
-export const INVALID_DEVICE_AUTO_APPROVE_SAMPLE = [
+export const INVALID_DEVICE_AUTO_APPROVE_SAMPLE: readonly OpenClawConfigurationValue[] = [
   { enabled: true, scopes: "operator.read" },
   { enabled: "true" },
   { enabled: true, approvers: ["oidc:member-01"] },
@@ -41,7 +44,7 @@ export const INVALID_DEVICE_AUTO_APPROVE_SAMPLE = [
 
 // Every refused device auto-approval: the sample plus values that are not an object, an admin scope
 // as text (a text value would skip the human admin-scope check), and blank or non-text scopes.
-export const INVALID_DEVICE_AUTO_APPROVE = [
+export const INVALID_DEVICE_AUTO_APPROVE: readonly OpenClawConfigurationValue[] = [
   ...INVALID_DEVICE_AUTO_APPROVE_SAMPLE,
   "operator.admin",
   null,
@@ -54,9 +57,7 @@ export const INVALID_DEVICE_AUTO_APPROVE = [
 
 // Device auto-approvals the Gateway accepts: each optional field alone, an empty scope list, and
 // both fields with a non-admin scope.
-export const ACCEPTED_DEVICE_AUTO_APPROVE = [
-  {},
-  { enabled: false },
-  { scopes: [] },
-  { enabled: true, scopes: ["operator.read"] },
-];
+export const ACCEPTED_DEVICE_AUTO_APPROVE: readonly {
+  readonly enabled?: boolean;
+  readonly scopes?: readonly string[];
+}[] = [{}, { enabled: false }, { scopes: [] }, { enabled: true, scopes: ["operator.read"] }];
