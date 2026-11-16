@@ -87,6 +87,7 @@
     "tests/integration/qa-fixture-inputs.test.mjs",
     "tests/integration/compose-network.test.ts",
     "tests/integration/qa-repository-installation.test.ts",
+    "tests/integration/qa-failure-diagnostics.test.ts",
     "tests/integration/repository-runtime-materialization.test.ts",
     "tests/conformance/repository-credentials-contracts.test.ts",
     "tests/integration/plugin-driver-startup.test.ts",
@@ -208,6 +209,9 @@
     },
     {
       "path": "tests/integration/qa-repository-installation.test.ts"
+    },
+    {
+      "path": "tests/integration/qa-failure-diagnostics.test.ts"
     },
     {
       "path": "tests/integration/github-app-observer.test.ts"
