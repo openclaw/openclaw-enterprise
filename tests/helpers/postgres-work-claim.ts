@@ -3,9 +3,9 @@ import { PostgresWorkQueue, type ClaimedWork } from "../../packages/occ/src/inde
 
 type WorkScope = { workId: string } | { namespaceId: string };
 
-// Guard competing rows visible to the locking statement. Rows inserted after its
-// snapshot can still be claimed. Use another connection for the real queue claim
-// because PostgreSQL does not skip a transaction's own locks.
+// Lock competing rows available at the guard's statement snapshot. The later claim
+// can select newly inserted rows or rows skipped here that have since unlocked.
+// Claim on another connection because PostgreSQL does not skip its own locks.
 export async function claimIsolatedWork(
   pool: Pool,
   scope: WorkScope,
