@@ -2553,10 +2553,10 @@ test(
     assert.equal(services[0].spec.type, "ClusterIP");
     assert.ok(!objects.some(({ metadata }) => metadata.name.includes("repository-credentials")));
     for (const deployment of objects.filter(({ kind }) => kind === "Deployment")) {
-      assert.equal(deployment.spec.template.spec.containers.length, 1);
-      assert.ok(
-        !deployment.spec.template.spec.volumes.some(({ name }) => name.startsWith("repository-")),
-      );
+      const { containers, volumes } = deployment.spec.template.spec;
+      assert.equal(containers.length, 1);
+      assert.ok(!volumes.some(({ name }) => name.startsWith("repository-")));
+      assert.ok(!containers[0].env.some(({ name }) => name === "OCC_GATEWAY_API_KEY_PATH"));
     }
     const tenantWorker = findResource(objects, "ClusterRole", "oce-openclaw-tenant-worker");
     assert.deepEqual(
@@ -2586,11 +2586,6 @@ test(
         ),
       ),
     );
-    for (const deployment of objects.filter(({ kind }) => kind === "Deployment")) {
-      for (const container of deployment.spec.template.spec.containers) {
-        assert.ok(!container.env.some(({ name }) => name === "OCC_GATEWAY_API_KEY_PATH"));
-      }
-    }
 
     // Initialization, API, and worker use distinct identities; database credentials remain isolated.
     for (const component of ["initialization", "api", "worker"]) {
@@ -2603,55 +2598,46 @@ test(
     assert.deepEqual(pod.nodeSelector, { "oce-role": "control" });
     assert.equal(pod.securityContext.fsGroupChangePolicy, "OnRootMismatch");
     const [check, migration] = pod.initContainers;
+    const [bootstrap] = pod.containers;
     assert.equal(check.name, "installation-check");
     assert.equal(migration.name, "migration");
     assert.deepEqual(migration.args, ["scripts/migrate-production.mjs", "--expect-empty"]);
-    assert.equal(pod.containers[0].name, "bootstrap");
-    assert.deepEqual(pod.containers[0].args, ["scripts/bootstrap-installation.mjs"]);
+    assert.equal(bootstrap.name, "bootstrap");
+    assert.deepEqual(bootstrap.args, ["scripts/bootstrap-installation.mjs"]);
     assert.ok(migration.env.some(({ name }) => name === "OCC_MIGRATION_DATABASE_URL"));
     assert.ok(!migration.env.some(({ name }) => name === "OCC_DATABASE_URL"));
-    assert.ok(pod.containers[0].env.some(({ name }) => name === "OCC_DATABASE_URL"));
-    assert.ok(!pod.containers[0].env.some(({ name }) => name === "OCC_MIGRATION_DATABASE_URL"));
-    assert.ok(
-      pod.containers[0].env.some(
-        ({ name, valueFrom }) =>
-          name === "OCC_AUTH_SECRET" &&
-          valueFrom?.secretKeyRef?.name === "occ-auth" &&
-          valueFrom.secretKeyRef.key === "secret",
-      ),
-    );
-    assert.ok(
-      pod.containers[0].env.some(
-        ({ name, value }) =>
-          name === "OCC_AUTH_BASE_URL" && value === "https://occ.example.invalid",
-      ),
-    );
-    assert.ok(
-      pod.containers[0].env.some(
-        ({ name, value }) =>
-          name === "OCC_BOOTSTRAP_ADMIN_EMAIL" && value === "admin@example.invalid",
-      ),
-    );
-    assert.ok(
-      pod.containers[0].env.some(
-        ({ name, value }) =>
-          name === "OCC_BOOTSTRAP_INSTALLATION_NAME" && value === "openclaw-enterprise",
-      ),
-    );
-    assert.ok(
-      pod.containers[0].env.some(
-        ({ name, value }) =>
-          name === "OCC_BOOTSTRAP_PASSWORD_FILE" &&
-          value === "/var/lib/openclaw/bootstrap/initial-admin-password",
-      ),
-    );
-    assert.ok(
-      pod.containers[0].env.some(
-        ({ name, value }) =>
-          name === "OCC_BOOTSTRAP_SERVICE_KEY_FILE" &&
-          value === "/var/lib/openclaw/bootstrap/initial-admin-service-key.json",
-      ),
-    );
+    assert.ok(bootstrap.env.some(({ name }) => name === "OCC_DATABASE_URL"));
+    assert.ok(!bootstrap.env.some(({ name }) => name === "OCC_MIGRATION_DATABASE_URL"));
+
+    function assertEnvValue(container, name, value) {
+      assert.ok(
+        container.env.some((entry) => entry.name === name && entry.value === value),
+        `${container.name} must set ${name} to ${value}`,
+      );
+    }
+
+    function assertAuthEnvironment(container) {
+      assert.ok(
+        container.env.some(
+          ({ name, valueFrom }) =>
+            name === "OCC_AUTH_SECRET" &&
+            valueFrom?.secretKeyRef?.name === "occ-auth" &&
+            valueFrom.secretKeyRef.key === "secret",
+        ),
+        `${container.name} must read OCC_AUTH_SECRET from occ-auth/secret`,
+      );
+      assertEnvValue(container, "OCC_AUTH_BASE_URL", "https://occ.example.invalid");
+    }
+
+    assertAuthEnvironment(bootstrap);
+    for (const [name, value] of Object.entries({
+      OCC_BOOTSTRAP_ADMIN_EMAIL: "admin@example.invalid",
+      OCC_BOOTSTRAP_INSTALLATION_NAME: "openclaw-enterprise",
+      OCC_BOOTSTRAP_PASSWORD_FILE: "/var/lib/openclaw/bootstrap/initial-admin-password",
+      OCC_BOOTSTRAP_SERVICE_KEY_FILE: "/var/lib/openclaw/bootstrap/initial-admin-service-key.json",
+    })) {
+      assertEnvValue(bootstrap, name, value);
+    }
     assert.ok(
       pod.volumes.some(
         ({ name, persistentVolumeClaim }) =>
@@ -2660,7 +2646,7 @@ test(
       ),
     );
     assert.ok(
-      pod.containers[0].volumeMounts.some(
+      bootstrap.volumeMounts.some(
         ({ name, mountPath, readOnly }) =>
           name === "bootstrap-password-output" &&
           mountPath === "/var/lib/openclaw/bootstrap" &&
@@ -2760,20 +2746,7 @@ test(
         ),
       );
       if (component === "api") {
-        assert.ok(
-          container.env.some(
-            ({ name, valueFrom }) =>
-              name === "OCC_AUTH_SECRET" &&
-              valueFrom?.secretKeyRef?.name === "occ-auth" &&
-              valueFrom.secretKeyRef.key === "secret",
-          ),
-        );
-        assert.ok(
-          container.env.some(
-            ({ name, value }) =>
-              name === "OCC_AUTH_BASE_URL" && value === "https://occ.example.invalid",
-          ),
-        );
+        assertAuthEnvironment(container);
         assert.ok(!pod.volumes.some(({ name }) => name === "internal-admission"));
         assert.ok(!container.volumeMounts.some(({ name }) => name === "internal-admission"));
         assert.deepEqual(container.livenessProbe.httpGet, { path: "/healthz", port: "http" });
