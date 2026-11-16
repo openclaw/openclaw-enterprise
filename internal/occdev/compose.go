@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -15,6 +16,42 @@ const (
 	developmentGatewayAPIKeyMount = "/run/openclaw-development/gateway-api-key"
 	developmentGatewayCAMount     = "/run/openclaw-development/gateway-ca.crt"
 )
+
+// PostgreSQL reads this public script as a different UID. Snapshot only the
+// default read-only bind; custom sources and writable mounts remain unchanged.
+func prepareComposeBootstrapSQL(rendered any, state *developmentState) error {
+	config, _ := rendered.(map[string]any)
+	services, _ := config["services"].(map[string]any)
+	postgres, _ := services["postgres"].(map[string]any)
+	volumes, _ := postgres["volumes"].([]any)
+	defaultSource := filepath.Join(state.Repository, "migrations", "init-local.sql")
+	for _, raw := range volumes {
+		volume, _ := raw.(map[string]any)
+		if volume["type"] != "bind" || volume["target"] != "/docker-entrypoint-initdb.d/00-occ-roles.sql" || volume["read_only"] != true {
+			continue
+		}
+		source, _ := volume["source"].(string)
+		if source != defaultSource {
+			// Compose may render a symlinked checkout's physical working directory.
+			// Resolve only the repository, never an arbitrary custom bind source.
+			repository, err := filepath.EvalSymlinks(state.Repository)
+			if err != nil || source != filepath.Join(repository, "migrations", "init-local.sql") {
+				continue
+			}
+		}
+		data, err := os.ReadFile(source)
+		if err != nil {
+			return fmt.Errorf("read Compose bootstrap SQL: %w", err)
+		}
+		copy := filepath.Join(state.directory, "init-local.sql")
+		if err := exclusiveWrite(copy, data, 0644); err != nil {
+			return fmt.Errorf("prepare Compose bootstrap SQL: %w", err)
+		}
+		volume["source"] = copy
+		return nil
+	}
+	return nil
+}
 
 // k3d needs an explicit gateway when joining a Compose-owned Docker network.
 // Resolve it from the rendered subnet so Compose overrides keep their meaning.

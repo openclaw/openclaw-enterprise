@@ -275,6 +275,8 @@ Open the console, choose a running Agent with a selected version, and verify **O
 
 Full runtime proof still requires a real browser test that loads native assets through OCC, reconnects native WebSocket traffic, verifies the OCE session cookie never reaches the native gateway, and completes an authorized action against a disposable Agent. A native configuration edit requires [Gateway managed mode](../../reference/agents/gateway-managed-mode.md) to be off.
 
+For retained overlong domains, follow [domain recovery](native-admin-domain-recovery.md).
+
 ## Troubleshooting
 
 Match the refused request’s ID to `http.completed`. HTTP admission refusals carry `nativeAdmissionReason`; early guards and post-admission failures may omit it.

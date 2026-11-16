@@ -216,18 +216,17 @@ Deployment. Use the same procedure, with these changes:
 
 ## A save or deployment lost its response
 
-The operation may have succeeded. Before retrying:
+In the original Namespace, check before retrying.
 
-- For model and channel credentials, reload the Agent's Credentials tab and check
-  its saved bindings. An operator can inspect generated transport storage through
-  the exact Agent runtime-credentials API.
-- For deployment, inspect the Agent's **Viewing version** picker and the status for the
-  saved version; a second deployment creates another version.
-- For a workspace file, reload that file and compare its content with your
-  intended edit before saving again.
+- **Draft edit.** Compare the edited fields in `occ agent get AGENT_ID --output json`.
+  For concurrent edits, check the [audit evidence](audit-log.md#investigate-an-uncertain-agent-edit).
+- **Credentials.** Reload **Credentials** and check the saved bindings. Operators
+  can inspect generated transport storage through the Agent's runtime-credentials API.
+- **Deployment.** Check **Viewing version** and its status. Deploying again creates
+  another version. For `deploy-first`, use the printed [read-only recovery command](agent-revisions.md#guarded-first-deployment-and-receipt-recovery).
+- **[Workspace file](workspace-files.md).** Reload and compare its contents with your edit.
 
-See [console recovery](../../reference/console/create-and-deploy.md) for partial
-Agent creation and [workspace files](workspace-files.md) for editing limits.
+For partial Agent creation, see [Console recovery](../../reference/console/create-and-deploy.md).
 
 ## A plugin does not work after deployment
 

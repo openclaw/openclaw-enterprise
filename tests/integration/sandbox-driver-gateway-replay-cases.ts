@@ -69,7 +69,6 @@ export async function prepareGatewayReplayFixture({
   prepareProvision,
   harnessService,
   storedSandbox,
-  replayState,
 }: {
   openShellDriver: (gatewayClient: ReplayGateway) => OpenShellSandboxDriver;
   prepareProvision: (driver: OpenShellSandboxDriver) => Provision;
@@ -82,8 +81,14 @@ export async function prepareGatewayReplayFixture({
     request: OpenShellSandboxCreateRequest,
     fields: Pick<OpenShellSandboxResponse, "id">,
   ) => OpenShellSandboxResponse;
-  replayState: ReplayState;
 }) {
+  const replayState: ReplayState = {
+    handlerError: undefined,
+    refuseEverything: undefined,
+    onRefusal: undefined,
+    holdHandler: undefined,
+    reachedHold: undefined,
+  };
   const gatewayClient: ReplayGateway = workspaceGatewayClient();
   const sandboxes = new Map<string, OpenShellSandboxResponse>();
   const admissions = new Map<string, { payload: string; sandboxId?: string }>();
@@ -154,7 +159,47 @@ export async function prepareGatewayReplayFixture({
     return seen;
   };
   const id0 = "00000000-0000-4000-8000-000000000004";
-  return { gatewayClient, sandboxes, provision, trace, id0 };
+  return { gatewayClient, sandboxes, provision, trace, id0, replayState };
+}
+
+export async function verifyFreshRequestAfterRefusal({
+  sandboxes,
+  provision,
+  trace,
+  id0,
+  replayState,
+}: Awaited<ReturnType<typeof prepareGatewayReplayFixture>>) {
+  // A create that errors server-side leaves its request_id unresolved.
+  replayState.handlerError = new Error("provider 'model' not found");
+  await assert.rejects(provision(), /provider 'model' not found/);
+  assert.deepEqual(trace(), ["getSandbox", `createSandbox:${id0}`]);
+
+  // The next pass sees the refusal and no Sandbox, then creates with the next request_id.
+  const first = await provision();
+  const [, refusedCreate, , freshCreate] = trace();
+  assert.equal(refusedCreate, `createSandbox:${id0}`);
+  assert.ok(freshCreate);
+  const id1 = freshCreate.slice("createSandbox:".length);
+  assert.match(id1, /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.notEqual(id1, id0);
+  assert.equal(sandboxes.size, 1);
+
+  // Each failing pass spends at most one new request_id.
+  sandboxes.clear();
+  replayState.handlerError = new Error("compute driver unavailable");
+  await assert.rejects(provision(), /compute driver unavailable/);
+  const failed = trace();
+  assert.deepEqual(failed.slice(0, 4), [
+    "getSandbox",
+    `createSandbox:${id0}`,
+    "getSandbox",
+    `createSandbox:${id1}`,
+  ]);
+  assert.equal(failed.length, 6);
+  const failedCreate = failed[5];
+  assert.ok(failedCreate);
+  const id2 = failedCreate.slice("createSandbox:".length);
+  return { first, id1, id2 };
 }
 
 export async function verifyConcurrentReplayAndExhaustion({

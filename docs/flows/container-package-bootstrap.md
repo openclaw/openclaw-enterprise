@@ -62,7 +62,7 @@ hosted bootstrap or subsequent release has succeeded.
 ### 1. Validate the approved source and destinations
 
 `scripts/ci/container-bootstrap.ts:main` reuses
-`scripts/ci/container-release.mjs:verifyMainSource`, `verifyCi`, and
+`scripts/ci/container-release/admission.ts:verifyMainSource`, `verifyCi`, and
 `verifyEnvironment`. Source equals the trusted main workflow source commit and
 checkout. The repository is public, exact-source main-push CI succeeds, and the
 environment disables admin bypass and permits only branch `main`. Invalid context fails before a registry write.
@@ -83,7 +83,7 @@ scratch Dockerfile and fixed text marker. Repository source and source commit la
 link the image to Enterprise. Docker exports `linux/amd64` OCI bytes without
 copying the checkout, fetching a base image, or receiving registry credentials.
 Skopeo authenticates using the workflow token over stdin and a temporary auth file.
-For the chart marker, `scripts/ci/chart-package.mjs:pushChart` checks Helm's exit
+For the chart marker, `scripts/ci/chart-package.ts:pushChart` checks Helm's exit
 status and reads the pushed digest from stderr before bootstrap checks the remote
 manifest digest. A missing digest or failed push stops the run.
 
@@ -104,7 +104,7 @@ lock, which does not constrain external package administrators. Partial success
 is possible. The operator follows the existing publication procedure to build,
 smoke and publish actual Enterprise images.
 
-`scripts/ci/container-release.mjs:verifyGhcr` is shared by publication and promotion.
+`scripts/ci/container-release/admission.ts:verifyGhcr` is shared by publication and promotion.
 It checks public package identity and rejects conflicting repository metadata.
 When GitHub omits repository metadata, it accepts the omission without querying
 approval history. Package linkage is configured during
@@ -125,7 +125,7 @@ and source; the workflow downloads their validated IDs with digest checks.
 
 `scripts/ci/container-resume.ts:resume` preserves the producer identity in each
 seal and rechecks original source CI. It calls
-`scripts/ci/container-release.mjs:publishPrepared`, which verifies both archive
+`scripts/ci/container-release/publication.ts:publishPrepared`, which verifies both archive
 hashes and OCI digests before registry writes. Before each image, source, CI,
 producer, environment, and public-package metadata are rechecked. A
 matching existing source tag is inspected remotely and left untouched, even if
@@ -148,7 +148,7 @@ without deleting the original archives or rerunning their producer.
 - `node --test tests/integration/container-resume.test.ts` exercises the recovery
   CLI with HTTP/transport fixtures; a hosted run must prove actual GHCR transfer.
 
-- `node --test tests/integration/container-release.test.mjs` checks shared gate
+- `node --test tests/integration/container-release.test.ts` checks shared gate
   behavior, bootstrap 404 handling, and stderr-only Helm push output. The
   subprocess-stream case does not publish to GHCR.
 - Inspect the hosted job summary and authenticated package metadata for both

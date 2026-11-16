@@ -216,22 +216,22 @@ After OCC accepts a newer version that requires earlier workloads to stop, the
 worker stops their reconciliation and maintenance;
 see the [Compute replacement contract](../compute.md#production-revision-stages).
 
-RWX Harness or Gateway claims are rejected during reconciliation and final
-Agent deletion.
-
-As with the Gateway claim, RWO does not fence writers on a partitioned node. Pod
-termination and the storage provider's safe detach/attach behavior remain
-required; the Driver never force detaches a disk. A local-path PV keeps its node
-affinity and cannot move its data to another node. Cross-node rescheduling needs
-an appropriate portable StorageClass, not RWX.
+Reconciliation and final Agent deletion refuse RWX workspace or Gateway claims.
+RWO cannot fence writers on a partitioned node. Terminate the Pod and allow safe
+provider detach/attach. The Driver never force-detaches disks. Local-path PVs retain
+node affinity; moving data across nodes requires a portable StorageClass.
 
 Both claims retain Namespace and Agent ownership across replacements.
-Reconciliation rejects foreign, terminating or incompatible claims without
-mutation. Claims precede Pods; waiting for `Bound` first would deadlock
-`WaitForFirstConsumer`. Workload readiness gates activation. Stop and retirement
-retain both claims. Agent deletion retires all revisions, then deletes owned
-claims by UID. Failed cleanup keeps deletion pending and preserves the Agent's
-database identity for retry.
+Reconciliation leaves foreign, terminating or incompatible claims untouched and refuses reuse.
+Create claims before Pods. Waiting for binding would deadlock `WaitForFirstConsumer`.
+Workload readiness gates activation. Stop and retirement retain both claims.
+Agent deletion retires all revisions, then deletes owned claims by UID.
+On cleanup failure, deletion stays pending and the Agent keeps its database identity for retry.
+
+## Optional scratch storage
+
+For `/sandbox/scratch` storage, see [configuration](configuration.md#scratch-volumes)
+and [setup](../../../guides/topics/remote-harness.md#add-operator-owned-scratch-storage).
 
 ## Managed native configuration
 

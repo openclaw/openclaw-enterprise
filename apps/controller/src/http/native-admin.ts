@@ -787,7 +787,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     let timeout: NodeJS.Timeout | undefined;
     try {
       await Promise.race([
-        Promise.allSettled([...nativeAdminPendingWork]),
+        (async () => {
+          // A connect audit can settle after socket closure and start its close audit.
+          // Drain that follow-on work under the same shutdown deadline.
+          while (nativeAdminPendingWork.size > 0) {
+            await Promise.allSettled([...nativeAdminPendingWork]);
+          }
+        })(),
         new Promise<void>((resolve) => {
           const timer = setTimeout(resolve, NATIVE_ADMIN_WORK_DRAIN_MS);
           timeout = timer;
@@ -901,6 +907,9 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       }
       throw error;
     }
+    if (nativeAdminDomain.length > 214) {
+      return { status: "unavailable" };
+    }
     const { agent, revision, successor, mode } = selection;
     const target = nativeAdminTarget({
       publicOrigin,
@@ -912,7 +921,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     if (agent.desiredRuntimeState !== "running") {
       return { status: "stopped", agent, revision, target, mode };
     }
-    if (successor !== undefined && replacesActiveWorkload(successor)) {
+    if (
+      selection.predecessorPhase === "stopping" ||
+      (selection.predecessorPhase === undefined &&
+        successor !== undefined &&
+        replacesActiveWorkload(successor))
+    ) {
       return { status: "unavailable" };
     }
     if (!nativeAdminConfigurationSupported(revision, target.origin)) {
@@ -951,7 +965,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   ): Promise<Pick<Agent, "id" | "namespaceId"> | undefined> {
     const controller = getController();
     const domain = nativeAdminDomain;
-    if (!controller || domain === undefined) {
+    const agentKey = /^agent-([0-9a-f]{32})\./.exec(hostname)?.[1];
+    if (
+      !controller ||
+      domain === undefined ||
+      agentKey === undefined ||
+      hostname !== `agent-${agentKey}.${domain}`
+    ) {
       return undefined;
     }
     return controller.resolveAgentReference(
@@ -1831,7 +1851,13 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         return undefined;
       },
       onConnect: async () => {
-        await appendNativeAdminSocketAudit("connect", admission, { connectionId });
+        const connectAudit = appendNativeAdminSocketAudit("connect", admission, { connectionId });
+        nativeAdminPendingWork.add(connectAudit);
+        try {
+          await connectAudit;
+        } finally {
+          nativeAdminPendingWork.delete(connectAudit);
+        }
       },
       onClose: (cause: NativeAdminWebSocketCloseCause) => {
         const closeReason = nativeAdminShuttingDown ? "shutdown" : cause.reason;

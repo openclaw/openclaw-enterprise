@@ -7,8 +7,8 @@ import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
-import { commandPath as executablePath } from "../helpers/compose.mjs";
+import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.ts";
+import { commandPath as executablePath } from "../helpers/compose.ts";
 import { commandCalls, commandPath } from "../helpers/fake-commands.ts";
 import { commandShim, startCommandServer } from "../helpers/fixture-command-server.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";

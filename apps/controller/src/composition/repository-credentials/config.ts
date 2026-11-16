@@ -8,12 +8,19 @@ import {
   GITHUB_REPOSITORY_REGISTRY_MAX_BYTES,
   validateGitHubRepositoryRegistry,
 } from "../../drivers/repo/github/access/registry.ts";
-import type {
-  GitHubStaticTokenOwner,
-  GitHubDriverFactory,
+import {
+  isGitHubProfile,
+  type GitHubStaticTokenOwner,
+  type GitHubDriverFactory,
 } from "../../drivers/repo/github/access/types.ts";
 import { loadPublicCa } from "./public-ca.ts";
 import { readProtectedFile } from "./protected-file.ts";
+
+export const inputLimits = Object.freeze({
+  "config.json": 262144,
+  "tls.crt": 131072,
+  "tls.key": 65536,
+});
 
 export class RetiredGitHubAuthorityError extends Error {
   constructor() {
@@ -49,7 +56,7 @@ export async function loadConfiguration(
   let owner: GitHubStaticTokenOwner | undefined;
   let upstreamCa: Buffer | undefined;
   try {
-    raw = await readProtected(path, 262144);
+    raw = await readProtected(path, inputLimits["config.json"]);
     const input: unknown = JSON.parse(raw.toString("utf8"));
     const root = record(input);
     const backendInput = record(root.backend);
@@ -60,7 +67,7 @@ export async function loadConfiguration(
     function validateGateway() {
       const gateway = record(root.gateway);
       for (const profile of config.sessionPolicy.allowedProfiles) {
-        if (profile !== "git-read" && profile !== "git-write" && profile !== "git-full") {
+        if (!isGitHubProfile(profile)) {
           throw new Error("invalid-configuration");
         }
       }
@@ -68,8 +75,8 @@ export async function loadConfiguration(
     }
     type TlsPair = Readonly<{ cert: Buffer; key: Buffer }>;
     const loadTlsAndFactoryOptions = async (gateway: Record<string, unknown>) => {
-      cert = await readProtected(string(gateway.tlsCertFile), 131072, false);
-      tlsKey = await readProtected(string(gateway.tlsKeyFile), 65536);
+      cert = await readProtected(string(gateway.tlsCertFile), inputLimits["tls.crt"], false);
+      tlsKey = await readProtected(string(gateway.tlsKeyFile), inputLimits["tls.key"]);
       const tls: TlsPair = { cert, key: tlsKey };
       createSecureContext({ ...tls, minVersion: "TLSv1.2" });
       return {

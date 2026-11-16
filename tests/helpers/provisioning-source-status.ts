@@ -1,24 +1,23 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 
-import type { CredentialGatewayDriver } from "../../packages/contracts/src/index.ts";
+import {
+  AgentProvisioningStatusResponse,
+  type CredentialGatewayDriver,
+} from "../../packages/contracts/src/index.ts";
 import type { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 
-type Fixture = {
+import type { createProvisioningFixture } from "../integration/postgres-agent-provisioning-fixture.ts";
+
+type Fixture = Pick<
+  Awaited<ReturnType<typeof createProvisioningFixture>>,
+  "request" | "requestChecked"
+> & {
   state: PostgresPlatformState;
   startWorker: () => Promise<void>;
   stopWorker: () => Promise<void>;
-  request: (
-    method: string,
-    path: string,
-    options?: { body: unknown },
-  ) => Promise<{
-    status: number;
-    body: unknown;
-    data: unknown;
-  }>;
   secretDriver: { calls: unknown[] };
   computeDriver: { calls: unknown[] };
 };
@@ -31,7 +30,7 @@ export async function assertProvisioningSourceStatus(
   gateway: CredentialGatewayDriver,
   target: { workId: string; url: string; admissionPath: string; body: unknown },
 ) {
-  const saved = await fixture.request("GET", target.url);
+  const saved = await fixture.requestChecked(AgentProvisioningStatusResponse, "GET", target.url);
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const snapshot = () =>
     fixture.state.read((state) => state.provisioning.findWithWork(target.workId));
@@ -61,7 +60,11 @@ export async function assertProvisioningSourceStatus(
         return [];
       };
       calls = 0;
-      const status = await fixture.request("GET", target.url);
+      const status = await fixture.requestChecked(
+        AgentProvisioningStatusResponse,
+        "GET",
+        target.url,
+      );
       assert.equal(status.status, 200, JSON.stringify(status.body));
       assert.deepEqual(status.data, saved.data);
       assert.equal(calls, 0, "status must not consult the admission catalog");
@@ -113,7 +116,11 @@ export async function assertProvisioningSourceWithdrawal(
       state.provisioning.findWithWork(target.workId),
     );
     assert.equal(stored?.record.agentId, undefined);
-    const observed = await fixture.request("GET", target.url);
+    const observed = await fixture.requestChecked(
+      AgentProvisioningStatusResponse,
+      "GET",
+      target.url,
+    );
     assert.equal(observed.status, 200, JSON.stringify(observed.body));
   } finally {
     gateway.listSourceTypes = catalog;

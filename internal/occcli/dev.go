@@ -17,6 +17,18 @@ import (
 
 func developmentCommand() *cobra.Command {
 	command := commandGroup("dev", "Start or stop a local development stack from a source checkout")
+	command.AddCommand(&cobra.Command{
+		Use:   "check",
+		Short: "Check recorded Local Setup provisioning dependencies",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			repository, err := developmentRepository()
+			if err != nil {
+				return err
+			}
+			return occdev.Check(cmd.Context(), occdev.Options{Repository: repository, Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr()})
+		},
+	})
 	// Development commands do not use the remote resource client's flags, but
 	// an explicit empty --key-output must not fall back to the dev-owned path.
 	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error { return refuseEmptyFlags(cmd) }
