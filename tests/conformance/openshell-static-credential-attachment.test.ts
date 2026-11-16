@@ -17,7 +17,6 @@ import {
 } from "../helpers/kubernetes-workspace-setup.ts";
 import { installationControllerOptions } from "../../apps/controller/src/composition/installation-config.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
-import { asRecord } from "../../packages/utils/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -46,10 +45,7 @@ test("startup composes both OpenShell members from one Backend for static source
   const [openShell] = base.backend;
   const { credential_proxy: _proxyLink, ...backendDrivers } = openShell.drivers;
   const { credential_proxy: _proxySelection, ...drivers } = base.drivers;
-  const computeOptions: unknown = fixture.driver.options;
-  const compute = asRecord(computeOptions);
-  const network = asRecord(compute?.network);
-  assert.ok(compute && network);
+  const compute = fixture.driver.options;
   const configuration = {
     ...base,
     backend: [
@@ -70,13 +66,13 @@ test("startup composes both OpenShell members from one Backend for static source
         configuration: {
           ...compute,
           images: drivers.compute.configuration.images,
-          network: Object.assign(network, {
+          network: Object.assign(compute.network, {
             providerHarness: {
               namespace: "openshell",
               podLabels: { app: "openshell-gateway" },
               address: "10.43.0.50",
               port: 8080,
-            },
+            } satisfies NonNullable<typeof compute.network.providerHarness>,
           }),
         },
       },
