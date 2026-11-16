@@ -97,7 +97,10 @@ occ agent deploy "$AGENT_ID" --retain-harness-overrides REVISION_ID
 ```
 
 The flags are mutually exclusive. With neither flag, deployment uses current
-Installation defaults. The CLI sends one deployment request; inspect the
+Installation defaults. If OCC cannot read the revision's saved settings, the CLI
+retains the overrides that the revision list records for it. A revision saved
+before OCC recorded overrides has none, so the CLI prints a notice and uses
+current Installation defaults. The CLI sends one deployment request; inspect the
 returned revision's settings for the resolved destination. Explicit provider overrides require an authorized
 API-key Credential Source. The [provider reference](../../reference/drivers/kubernetes-compute/model-provider.md)
 defines replacement semantics and authentication and network limits.

@@ -139,7 +139,8 @@ does not run this qualification. Preserve exact build, image selection, installe
 configuration and independent network-enforcement evidence with the result.
 
 Use the [version 2 connected inputs](./static-egress.md#select-the-prepared-connected-lane), with `authorityProfile` set to
-`fresh-whole-execution` and no `credentialConnector`. In gateway discovery, the supplier must list
+`fresh-whole-execution` and no `credentialConnector`. Omit `controllerUpgrade`: this
+lane qualifies one deployed release. In gateway discovery, the supplier must list
 each of these capabilities exactly once in both its required and supported lists, in any order:
 credential access, installation exchange, response custody, execution authority and protected
 no-material support. Installed enforcement evidence must report them in the order shown.
@@ -198,7 +199,7 @@ then select the actual lane. The state and results paths must belong to this att
 ```sh
 export OCC_TEST_EGRESS_DISPATCH_OBSERVER_SOCKET="$new_observer_dir/control.sock"
 CI_RUNNER_DEADLINE_MS=$(node -p 'Date.now() + 95 * 60000') \
-CI_RUNNER_TEST_TIMEOUT_MS=5100000 node scripts/ci/run-tests.mjs run egress-custody-installed \
+CI_RUNNER_TEST_TIMEOUT_MS=5100000 node scripts/ci/run-tests.ts run egress-custody-installed \
   --state "$attempt/state.json" --results "$attempt/results.json"
 ```
 

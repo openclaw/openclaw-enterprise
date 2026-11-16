@@ -20,7 +20,7 @@ process startup procedures.
 ## Requirements
 
 - Node.js 24 or newer and the repository's existing workspace dependencies.
-- For default Compose development, Docker Engine and `docker compose`. To deploy
+- For the Docker Compute development preview, Docker Engine and `docker compose`. To deploy
   Agents locally, follow [Local Setup](../guides/quickstart.md).
 - A migrated local PostgreSQL database and an API using the same application
   connection; the full Compose stack starts both. See the

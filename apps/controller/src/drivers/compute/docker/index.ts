@@ -40,7 +40,11 @@ import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
 import { failureAfterCleanup } from "../cleanup-failure.ts";
-import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-context.ts";
+import {
+  currentComputeAbortSignal,
+  currentComputeOperationLifetime,
+  withComputeAbortSignal,
+} from "../operation-context.ts";
 import {
   AGENT_READINESS_ENTRYPOINT,
   COMPUTE_AGENT_RUNTIME_ENTRYPOINT as AGENT_RUNTIME_ENTRYPOINT,
@@ -179,6 +183,30 @@ const MODEL_API_KEY = "OPENAI_API_KEY";
 const CONFIGURATION_DOCUMENT = "/home/node/.openclaw/openclaw.json";
 const GATEWAY_PASSWORD_ENV = "OPENCLAW_GATEWAY_PASSWORD";
 const GATEWAY_PASSWORD_REFERENCE = `\${${GATEWAY_PASSWORD_ENV}}`;
+
+// Only fixed route names enter diagnostics; resource IDs and query values do not.
+const requestOperations = [
+  ["ping", /^\/_ping$/],
+  ["version", /^\/version$/],
+  ["container-list", /^\/containers\/json(?:\?|$)/],
+  ["container-create", /^\/containers\/create(?:\?|$)/],
+  ["container-inspect", /^\/containers\/[^/?]+\/json$/],
+  ["container-start", /^\/containers\/[^/?]+\/start$/],
+  ["container-stop", /^\/containers\/[^/?]+\/stop(?:\?|$)/],
+  ["container-kill", /^\/containers\/[^/?]+\/kill(?:\?|$)/],
+  ["container-wait", /^\/containers\/[^/?]+\/wait(?:\?|$)/],
+  ["container-archive", /^\/containers\/[^/?]+\/archive(?:\?|$)/],
+  ["container-exec", /^\/containers\/[^/?]+\/exec$/],
+  ["container-remove", /^\/containers\/[^/?]+(?:\?|$)/],
+  ["network-create", /^\/networks\/create$/],
+  ["network", /^\/networks\/[^/?]+$/],
+  ["volume-create", /^\/volumes\/create$/],
+  ["volume-list", /^\/volumes(?:\?|$)/],
+  ["volume", /^\/volumes\/[^/?]+$/],
+  ["image-inspect", /^\/images\/[^/?]+\/json$/],
+  ["exec-start", /^\/exec\/[^/?]+\/start$/],
+  ["exec-inspect", /^\/exec\/[^/?]+\/json$/],
+] as const;
 
 // Deployment admission (validateGatewaySettings) and preparation apply the same rules, so a
 // deploy that preparation would refuse never stops the running revision first (finding 2352).
@@ -1693,6 +1721,11 @@ ${WORKSPACE_SETUP_RUNTIME}`,
     expected: readonly number[],
     timeoutMs = REQUEST_TIMEOUT_MS,
   ): Promise<unknown> {
+    const started = performance.now();
+    const deadline = Math.min(
+      Date.now() + timeoutMs,
+      currentComputeOperationLifetime()?.deadline ?? Infinity,
+    );
     const ownerSignal = currentComputeAbortSignal();
     const timeout = AbortSignal.timeout(timeoutMs);
     const signal = ownerSignal === undefined ? timeout : AbortSignal.any([ownerSignal, timeout]);
@@ -1700,6 +1733,23 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       signal,
       () =>
         new Promise<unknown>((resolve, reject) => {
+          const rejectRequest = (error: Error) => {
+            if (signal.aborted && Object.is(error.cause, signal.reason)) {
+              const operation =
+                requestOperations.find(
+                  ([name, route]) =>
+                    route.test(path) && (name !== "volume-create" || method === "POST"),
+                )?.[0] ?? "other";
+              const verb = ["GET", "POST", "PUT", "DELETE"].includes(method) ? method : "OTHER";
+              const reason =
+                ownerSignal?.aborted && Object.is(signal.reason, ownerSignal.reason)
+                  ? "caller cancellation"
+                  : "request timeout";
+              // Only native HTTP errors are annotated; a pre-aborted caller keeps its own reason.
+              error.message = `Docker ${verb} ${operation}: ${reason} after ${Math.round(performance.now() - started)} ms (request timeout ${timeoutMs} ms; deadline ${new Date(deadline).toISOString()}).`;
+            }
+            reject(error);
+          };
           const payload =
             body === undefined ? undefined : Buffer.isBuffer(body) ? body : JSON.stringify(body);
           const request = httpRequest(
@@ -1721,7 +1771,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
             (response) => {
               const chunks: Buffer[] = [];
               let responseBytes = 0;
-              response.once("error", reject);
+              response.once("error", rejectRequest);
               const contentLength = response.headers["content-length"];
               if (
                 typeof contentLength === "string" &&
@@ -1763,7 +1813,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
               });
             },
           );
-          request.once("error", reject);
+          request.once("error", rejectRequest);
           if (payload !== undefined) {
             request.write(payload);
           }

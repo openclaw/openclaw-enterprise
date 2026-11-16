@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: 2026-11-05
-last_updated_session: authoring-run/7e95100b-4e77-456d-85a2-e31dc72ccf5e
+updated: 2026-11-15
+last_updated_session: authoring-run/b6f44520-bd43-4be4-abf7-ea80e0dd95af
 ---
 
 # Repository credential service flow
@@ -120,12 +120,14 @@ disposal; clock rollback cannot restore use. If a disposal acknowledgement is lo
 status, close and shutdown resend the same status; the journal records it once and
 refuses a different one.
 
-The receipt and operator control clients reject private-socket replies over
-16,384 bytes and destroy the response without waiting for its end.
-[`RepositoryReceiptClient.call`](../../apps/controller/src/drivers/repo/access/receipt-client.ts)
-reports `RECEIPT_UNAVAILABLE`;
+[Control](../../apps/controller/src/backends/repository-credentials/control-client.ts)
+and [receipt](../../apps/controller/src/drivers/repo/access/receipt-client.ts) use
+[`readPrivateJsonResponse`](../../apps/controller/src/drivers/repo/access/private-json-response.ts):
+complete `application/json`, 16,384-byte cap, buffer wiping.
+Synchronous overflow refusal precedes teardown: receipt reports `RECEIPT_UNAVAILABLE`;
+backend control reports retryable `RepositoryCredentialControlError`.
 [`callControl`](../../apps/controller/src/drivers/repo/github/access/client/operator.ts)
-retains the admission ID in `control-request-failed` and also closes the request.
+retains `control-request-failed`, the admission ID, and request teardown.
 
 Development factory failure or an invalid binding closes construction admission before
 `apps/controller/src/drivers/repo/access/custody.ts:disposeAllRenewal`.
@@ -251,97 +253,93 @@ pack buffering.
 ### 5. Deliver an outcome and release ownership
 
 `apps/controller/src/drivers/repo/access/transport/response-headers.ts:responseHeaders`
-checks upstream header bounds and framing. The GitHub route plan carries the
-policy from `apps/controller/src/drivers/repo/github/access/response.ts:createResponsePolicy`
-for response headers, pagination and followed resource fields, composing
+checks upstream header bounds and framing. GitHub uses `apps/controller/src/drivers/repo/github/access/response.ts:createResponsePolicy`
+for headers, pagination and followed resource fields, composing
 `apps/controller/src/drivers/repo/github/access/response-urls.ts:createUrlRewriter`
 and `rewritePaginationLinks` with
 `apps/controller/src/drivers/repo/github/access/response-resources.ts:createResourceRewriter`.
-Before releasing JSON within the configured response-size limit, it removes `temp_clone_token` from repository
-objects, their `parent`/`source` relationships and PR `head.repo`/`base.repo`
-objects. GraphQL cannot select the equivalent `tempCloneToken` (see above).
+Before releasing size-limited JSON, it removes `temp_clone_token` from repository
+objects, their `parent`/`source` relationships and PR `head.repo`/`base.repo`.
+GraphQL cannot select `tempCloneToken`.
 This is not a generic credential-string scanner.
 The URL owner maps the configured repository ID to admitted
-`/repos/owner/repository` before checking route and resource purpose; other IDs
-are refused. Issue pagination accepts `after`/`before` cursors with 1–1,024 allowed
+`/repos/owner/repository` before checking route and resource purpose; it refuses other IDs. Issue pagination accepts `after`/`before` cursors with 1–1,024 allowed
 characters and up to two trailing `=` characters. Rewritten
 gateway links require subsequent session/profile checks.
-Informational nested labels, milestones, repository metadata and human content
+Nested labels, milestones, repository metadata and human content
 remain unchanged. Transport applies
 `apps/controller/src/drivers/repo/access/transport/response-headers.ts:safeResponseHeaders`
-before writing response headers to the client.
+before writing client headers.
 
-After successful input, upstream failure before response headers stops upstream
-I/O, then sends fixed `502 exchange-uncertain` after settlement. Cancellation,
+After successful input, failure before upstream headers stops upstream I/O,
+then sends fixed `502 exchange-uncertain` after settlement. Cancellation,
 deadlines, input failure and post-header failure destroy the incoming connection,
-including later cancellation while error delivery remains owned.
+including cancellation during error delivery.
 
 `apps/controller/src/drivers/repo/access/lifecycle/exchange.ts:executeExchange`
 closes a rejecting authenticator's gate, drains its admitted sender, then classifies
-the result: completed, not-dispatched or possibly-dispatched. Committed writes stay
-possibly dispatched and are never replayed. The exchange joins tracked I/O before releasing credential use and capacity. The handler
+the result: completed, not-dispatched or possibly-dispatched. Committed writes remain
+possibly dispatched, never replayed. It joins tracked I/O before releasing credential use and capacity. The handler
 ignores response `close` after `writableFinished`; premature close cancels the
 exchange. Original provider settlement and cleanup outlive requests.
 
 ### 6. Close locally and finish cleanup
 
-`apps/controller/src/drivers/repo/access/service.ts:createCredentialService` closes the
-session before cancelling its exchanges and advancing lifecycle cleanup. A
-session becomes disposed only after exchanges, original actions, captures,
-renewal state and auxiliary finalization are resolved. If the provider queue is
-full before cleanup dispatch, `apps/controller/src/drivers/repo/access/lifecycle.ts`
-keeps retirement/finalization unattempted and registers one capacity waiter per
-session through `apps/controller/src/drivers/repo/access/provider-queue.ts`. Available
-capacity wakes cleanup; queue rejection alone does not mark an action uncertain.
+`apps/controller/src/drivers/repo/access/service.ts:createCredentialService` closes
+sessions before exchange cancellation and cleanup. Disposal awaits exchanges, original
+actions, captures, renewal state and auxiliary finalization. Before dispatch, a full provider queue makes `apps/controller/src/drivers/repo/access/lifecycle.ts` defer retirement
+and finalization, registering one waiter per session via
+`apps/controller/src/drivers/repo/access/provider-queue.ts`. Available capacity wakes
+cleanup. Queue rejection alone never marks an action uncertain.
 
-`apps/controller/src/composition/repository-credentials/service.ts:runService`
-stops admission, closes sessions and bounds cleanup with an independent timer.
-Grace expiry reports unresolved obligations without proving disposal. The original
-broker writes `DISPOSED` to the worker's receipt journal before reporting it,
-and gives pending terminal writes a separate ten-second window before graceful exit. The Helm worker is a
-restartable init container so its receipt listener outlives broker shutdown.
-Only a committed observation survives restart. Uncommitted or uncertain
-provider inventory remains unknown. The original issuer retains token cleanup;
-the sender closes its TLS and session material after shutdown disposition.
+`apps/controller/src/composition/repository-credentials/service.ts:runService` stops
+admission, closes sessions and independently bounds cleanup. Grace expiry reports
+unresolved obligations. The original broker journals `DISPOSED` in the worker before reporting it. Graceful exit allows ten extra seconds for terminal writes. The Helm worker’s restartable init container preserves receipts through
+broker shutdown. Both private listeners (receipt and prepared Git) disconnect
+clients and join admitted handlers before Worker pool teardown.
 
-Failed construction custody joins shutdown drainage: its pending obligation
-counts in `pendingAuxiliary` without a published or disposed session; disposal
-wakes shutdown waiters.
+For claimed closing protocol 1/3 cleanup,
+`apps/controller/src/worker/repository-credentials.ts:consumeDisposedReceipt`
+reads the original broker's receipt. A `DISPOSED` hint starts a transaction:
+check the claim, lock and match the attempt, validate that receipt,
+recheck the claim, record disposal. Committed receipts supply missing
+session IDs. If locked reads cannot confirm it, cleanup stays pending
+without sender calls. Failed initial lookups or those without terminal receipts
+use the attempt's original sender.
+
+Only committed observations survive restart. Uncertain provider inventory stays unknown.
+The original issuer retains token cleanup. The sender closes TLS and session material
+after shutdown disposition. Failed construction remains unpublished, undisposed and counted in `pendingAuxiliary`. Disposal wakes shutdown waiters.
 
 ## Emitted packaging
 
-`scripts/build-repository-credentials.mjs` follows the credential entrypoints in
-the controller's emitted tree into separate service/client artifacts.
+`scripts/build-repository-credentials.ts` packages the controller's emitted credential
+entrypoints into separate service/client artifacts.
 
 | Artifact context                        | Runtime entrypoints beneath `dist/`                                                   |
 | --------------------------------------- | ------------------------------------------------------------------------------------- |
 | `.build/repository-credentials/service` | `repository-credentials.js`, `composition/repository-credentials/check-config.js`     |
 | `.build/repository-credentials/client`  | `drivers/repo/github/access/client/{launch,operator,git-helper,native-git,router}.js` |
 
-The Dockerfiles under `deploy/runtime/repository-credentials/` consume these
-contexts. `deploy/examples/repository-credentials/compose.yaml` separates service
-inputs/control from client session/workspace mounts. The
-[operator guide](../guides/repository-credentials/standalone-service.md#container-images) covers image
-builds and entrypoints. The
+`deploy/runtime/repository-credentials/` Dockerfiles consume these contexts. `deploy/examples/repository-credentials/compose.yaml` separates service
+inputs/control from client session/workspace mounts. See
+[image builds and entrypoints](../guides/repository-credentials/standalone-service.md#container-images). The
 [test guide](../testing/repository-credentials.md#record-each-evidence-boundary)
 distinguishes packaging, container, live-provider and platform proof.
 
 ## Debugging and Verification
 
-Run `pnpm credentials:build` and `pnpm credentials:check-config CONFIG_FILE` for
-the separate emitted startup path. Run the client configuration and package
-integration tests for private files, actual Git helper behavior and detached
-runtime loading. Inspect session status after close: a closed session can still
-have pending or uncertain cleanup.
+Check emitted startup with `pnpm credentials:build` and
+`pnpm credentials:check-config CONFIG_FILE`. Client configuration and package
+integration tests cover private files, Git helper behavior and detached loading.
+After close, inspect session status for pending or uncertain cleanup.
 
-A helper failure reports a fixed category without credentials. Diagnose the
-configured HTTPS host/path and private file ownership first. API failures also
-require checking that the session uses `git-full`, then the pinned CLI, canonical
-host, gateway DNS/SAN and port 443.
-For a local gh launch refusal, inspect the selected private session files and
-their ownership without exposing credential contents.
+Helper failures report fixed categories, never credentials. Check HTTPS host/path
+and private file ownership. For API failures, check
+`git-full`, the pinned CLI, canonical host, gateway DNS/SAN and port 443.
+Inspect gh session files and ownership without exposing credentials.
 The [test guide](../testing/repository-credentials.md) covers controlled upstream,
-client and alternate-adapter checks; live-provider behavior requires separate qualification.
+client and alternate-adapter checks; qualify live providers separately.
 
 ## Related docs
 
@@ -355,6 +353,14 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-15 00:24: Document claimed cleanup from committed native disposal receipts. (authoring-run/b6f44520-bd43-4be4-abf7-ea80e0dd95af - 5d61a52ed35e25b857884f684b5c5892bad5da2e)
+
+- 2026-11-12 15:23: Share bounded response reading. (authoring-run/559c3e53-17e7-4d44-ab91-0be2a2695608 - c67db827363d8457e10e28a77992e804663c47fe)
+
+- 2026-11-12 09:21: Condense shutdown ownership. (authoring-run/e06f9930-fe36-477f-baea-a6dccbf81438 - 2f241650ec0e6bd0eb0a5b2b3be98fd84a9fee87)
+
+- 2026-11-12 09:05: Describe how Worker shutdown drains private repository handlers. (authoring-run/1dda383f-486f-4161-bcd4-fdb427a1adb7 - 8d3352ca6e3be12cbc6729aa95ccd44f02137b94)
 
 - 2026-11-05 13:04: Refresh session construction while preserving current admission and shutdown behavior. (authoring-run/7e95100b-4e77-456d-85a2-e31dc72ccf5e - ec30be0251ac912467c78856edb3a9c989c1ec00)
 

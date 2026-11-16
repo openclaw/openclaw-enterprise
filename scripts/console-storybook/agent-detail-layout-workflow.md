@@ -104,6 +104,10 @@ Use **Deployment needs Secret operate** to check access that stays denied.
    selected version's interface directly in a new tab. Review the target and
    Gateway managed-mode warning. Check stopped, unsupported, denied, and failed
    status stories: no enabled launch link appears without available access.
+   In **Browser chat off**, the panel says browser chat is off and offers
+   **Open draft** and **Browser chat settings**. In **Browser chat off,
+   read-only caller**, it asks you to ask someone who can edit the
+   Configuration and offers no settings link.
 5. Open **Components / Workspace / Keep unsaved files**. Choose Instructions and
    User context. Each keeps its edits and Unsaved indicator. Read every file's
    role description. Save one file, then Reload another; each action affects
@@ -144,8 +148,11 @@ Use **Deployment needs Secret operate** to check access that stays denied.
    button stays enabled. Press Enter during the next six seconds. The button
    becomes busy immediately and keeps focus as the panel switches to v8.
    When the simulated record read fails, v8 shows a retry notice and the
-   button is enabled and still focused. Reset the story to replay. The real
-   Controller regression for this replacement is in
+   button is enabled and still focused. Reset and repeat the refresh. While
+   it is pending, press Shift+Tab to move focus to **Deployment details**.
+   When v8 shows the retry notice, focus stays on the summary. Press Enter to
+   fold the details and Space to reopen them. The real Controller regression
+   for this replacement is in
    `tests/browser/console-agent-detail-2.test.ts`.
    These stories simulate responses. The real Controller browser regression in
    `tests/browser/console-deployment-activity.test.ts` additionally checks queued →

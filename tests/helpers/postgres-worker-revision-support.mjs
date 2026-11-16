@@ -2,224 +2,68 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/access/client/config.ts";
 import { RepositoryReceiptStore } from "../../apps/controller/src/backends/repository-credentials/receipt-store.ts";
-import { waitFor } from "./wait-for.mjs";
+import {
+  advanceCleanupRetries,
+  advanceRevisionQueue,
+  completedPasses,
+  completion,
+  deferWork,
+  expireStoppedClaims,
+  expireWorkLease,
+  makeQueuedWorkDue,
+  makeWorkDue,
+  nextMaintenancePass,
+  settleRevisionMaintenance,
+  waitForRevisionPass,
+  waitForWorkPass,
+  waitForWorkStateDue,
+} from "./postgres-worker-revision-queue.ts";
+
+/**
+ * @import { Pool } from "pg"
+ * @import { AgentRevision, NativeRepositorySender, OpenRepositorySessionInput, RepositoryCredentialSessionStatus, RepositoryPolicyDriver, RepositoryRevisionState } from "../../packages/contracts/src/index.ts"
+ * @import { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts"
+ * @import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts"
+ * @typedef {Omit<RepositoryPolicyDriver & NativeRepositorySender, "implementation" | "maintenanceIntervalMs" | "resolve" | "status"> & {
+ *   implementation: string,
+ *   maintenanceIntervalMs: number,
+ *   status(sessionId: string, signal?: AbortSignal): ReturnType<NativeRepositorySender["status"]>,
+ *   resolve(input?: Parameters<RepositoryPolicyDriver["resolve"]>[0]): ReturnType<RepositoryPolicyDriver["resolve"]>,
+ *   bindReceiptState(state: PostgresPlatformState): void,
+ *   checkAdmissionReady(signal: AbortSignal): Promise<void>
+ * }} RepositoryWorkerDriver
+ * @typedef {{ operation: "open", input: OpenRepositorySessionInput, signal: AbortSignal }
+ *   | { operation: "recover", input: OpenRepositorySessionInput, signal: AbortSignal }
+ *   | { operation: "status", sessionId: string }
+ *   | { operation: "close", sessionId: string }} RepositoryCall
+ * @typedef {{ -readonly [Key in keyof RepositoryRevisionState]: RepositoryRevisionState[Key] }} FixtureRepositoryRevision
+ */
 
 // Helpers shared by the PostgreSQL worker integration tests.
 
-// The worker emits worker.completed after its queue transaction commits, so another
-// connection can see the committed Work state first. Wait for the event instead of
-// reading the event list once.
-export function completion(events, description, predicate) {
-  return waitFor(description, async () => events.find(predicate));
-}
-
-// The database can say a work item ended before its worker.completed event arrives (finding
-// 1607). Wait for the work's first pass with `outcome`, check it is the last pass observed, and
-// return every pass of the work. A revision pass whose pointer commit lost a race logs the
-// retry it committed (`ACTIVE_REVISION_CHANGED`, finding 1611), so its later pass is the end.
-export async function completedPasses(events, work, outcome = "success") {
-  const ended = await completion(
-    events,
-    `work ${work.idempotencyKey} to end with outcome ${outcome}`,
-    (event) =>
-      event.event === "worker.completed" &&
-      event.workId === work.idempotencyKey &&
-      event.outcome === outcome,
-  );
-  const passes = events.filter(
-    ({ event, workId }) => event === "worker.completed" && workId === work.idempotencyKey,
-  );
-  assert.equal(passes.at(-1), ended);
-  return passes;
-}
-
-// Work due-time and lease helpers. Tests move a Work item's due time or lease end instead of
-// waiting out a cadence, backoff or lease; the worker still claims and runs each pass. `match`
-// names the rows exactly as the caller would in SQL, and every filter must hold:
-//   "key"             idempotency_key = key
-//   ["key", ...]      idempotency_key = ANY(keys)
-//   { key, keys, keyLike, namespaceId, revisionId, agentTarget, state, claimToken }
-// An empty filter object, an unknown filter or an undefined value is refused, so a helper never
-// updates more rows than its caller names.
-const workColumns = {
-  key: (n) => `idempotency_key = $${n}`,
-  keys: (n) => `idempotency_key = ANY($${n}::text[])`,
-  keyLike: (n) => `idempotency_key LIKE $${n}`,
-  namespaceId: (n) => `namespace_id = $${n}`,
-  revisionId: (n) => `revision_id = $${n}`,
-  agentTarget: (n) => `agent_target = $${n}`,
-  state: (n) => `state = $${n}`,
-  claimToken: (n) => `claim_token = $${n}::uuid`,
+export {
+  advanceCleanupRetries,
+  advanceRevisionQueue,
+  completedPasses,
+  completion,
+  deferWork,
+  expireStoppedClaims,
+  expireWorkLease,
+  makeQueuedWorkDue,
+  makeWorkDue,
+  nextMaintenancePass,
+  settleRevisionMaintenance,
+  waitForRevisionPass,
+  waitForWorkPass,
+  waitForWorkStateDue,
 };
-
-function updateWork(pool, set, match, setParams = []) {
-  const filters =
-    typeof match === "string" ? { key: match } : Array.isArray(match) ? { keys: match } : match;
-  if (filters === null || typeof filters !== "object") {
-    throw new Error(`Unsupported Work match ${match}`);
-  }
-  const params = [...setParams];
-  const where = Object.entries(filters).map(([name, value]) => {
-    const column = workColumns[name];
-    if (column === undefined || value === undefined) {
-      throw new Error(`Unsupported Work match ${name}=${value}`);
-    }
-    params.push(value);
-    return column(params.length);
-  });
-  if (where.length === 0) {
-    throw new Error("A Work match needs at least one filter");
-  }
-  return pool.query(`UPDATE occ.controller_work SET ${set} WHERE ${where.join(" AND ")}`, params);
-}
-
-// Make the matched Work due now.
-export function makeWorkDue(pool, match) {
-  return updateWork(pool, "available_at = clock_timestamp()", match);
-}
-
-// Make the matched Work due `delay` (an interval such as "1 hour") from now.
-export function deferWork(pool, match, delay = "1 hour") {
-  return updateWork(pool, "available_at = clock_timestamp() + $1::interval", match, [delay]);
-}
-
-// End the matched Work's lease a second ago, as if its worker had died, so another worker can
-// reclaim it without waiting out the lease.
-export function expireWorkLease(pool, match) {
-  return updateWork(pool, "lease_expires_at = clock_timestamp() - interval '1 second'", match);
-}
-
-// Make the queued Work whose idempotency key matches `keys` (a LIKE pattern) due now, for
-// tests that wait on a pass but not on its cadence or backoff. Only due times change: claims
-// stay real, and the worker still claims and runs each pass.
-export async function makeQueuedWorkDue(fixture, keys) {
-  await makeWorkDue(fixture.observerPool, { state: "queued", keyLike: keys });
-}
-
-// Model the next cleanup interval without waiting an hour for the boundary
-// Driver. Change only this revision's queued due times; claims remain real.
-export async function advanceCleanupRetries(fixture, revision) {
-  await makeQueuedWorkDue(fixture, `agent_revision:${revision.id}:repository_cleanup:%`);
-}
-
-// Make this revision's queued maintenance and cleanup passes due now, for tests that wait on
-// a pass but not on its cadence. The worker still claims and runs each pass. A pass that runs
-// early schedules the next one a full interval later, so later waits on these cadences must
-// advance them too.
-export async function advanceRevisionQueue(fixture, revision) {
-  await fixture.advanceMaintenance(revision);
-  await advanceCleanupRetries(fixture, revision);
-}
-
-// Polls like waitFor, making this revision's queued passes due after each miss.
-export function waitForRevisionPass(description, fixture, revision, read, options) {
-  return waitAdvancing(description, read, () => advanceRevisionQueue(fixture, revision), options);
-}
-
-// Polls like waitFor, making `work`'s own queued retry due after each miss, for waits on its
-// retries (a refused candidate's stop, a dependency outage) but not on their backoff.
-export function waitForWorkPass(description, fixture, work, read, options) {
-  return waitAdvancing(
-    description,
-    read,
-    () => makeQueuedWorkDue(fixture, work.idempotencyKey),
-    options,
-  );
-}
-
-// Waits like the fixture's work() for `work` to reach `state`, making its queued retries due.
-export function waitForWorkStateDue(fixture, work, state, timeoutMs = 30_000) {
-  return waitForWorkPass(
-    `work ${work.idempotencyKey} to become ${state}`,
-    fixture,
-    work,
-    async () => {
-      const { rows } = await fixture.observerPool.query(
-        "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
-        [work.idempotencyKey],
-      );
-      return rows[0]?.state === state ? rows[0] : undefined;
-    },
-    timeoutMs,
-  );
-}
-
-function waitAdvancing(description, read, advance, options) {
-  return waitFor(
-    description,
-    async () => {
-      const value = await read();
-      if (value === undefined) {
-        await advance();
-      }
-      return value;
-    },
-    options,
-  );
-}
-
-// For a test that changes authority between worker passes rather than during one. A pass
-// checks authority before it prepares, so a pass already running when the change commits may
-// still prepare after it. That is safe: later Git use is authorized per request, and claims are
-// serial per Agent, so the cleanup that reduces access runs after that pass. Stopping the worker
-// also drains passes; this keeps it running. Defer this revision's queued maintenance and wait
-// until no pass of its Agent is claimed and neither of its preparing passes (reconcile,
-// maintenance) is due. waitForRevisionPass or advanceRevisionQueue makes the deferred pass due.
-export async function settleRevisionMaintenance(fixture, revision, options = 25_000) {
-  const maintenance = `agent_revision:${revision.id}:maintenance:%`;
-  await waitFor(
-    "no worker pass in flight for the Agent and its maintenance deferred",
-    async () => {
-      await deferWork(fixture.observerPool, {
-        revisionId: revision.id,
-        state: "queued",
-        keyLike: maintenance,
-      });
-      // One snapshot: a pass that ended before it left only deferred maintenance behind.
-      const {
-        rows: [{ busy }],
-      } = await fixture.observerPool.query(
-        `SELECT EXISTS (
-           SELECT 1 FROM occ.controller_work
-           WHERE (state = 'claimed' AND agent_id = $4)
-              OR (revision_id = $1 AND state = 'queued'
-                  AND (idempotency_key LIKE $2 OR idempotency_key = $3)
-                  AND available_at < clock_timestamp() + interval '30 minutes')
-         ) AS busy`,
-        [revision.id, maintenance, `agent_revision:${revision.id}:reconcile`, revision.agentId],
-      );
-      return busy ? undefined : true;
-    },
-    options,
-  );
-}
-
-// After settleRevisionMaintenance and then the authority change, make this revision's deferred
-// maintenance due and wait until one of its passes ends. Given that order, the pass started
-// after the change, so a test can then check it did not prepare. `events` collects the worker's
-// emitted events.
-export function nextMaintenancePass(fixture, revision, events, options = 25_000) {
-  const maintenance = `agent_revision:${revision.id}:maintenance:`;
-  const seen = events.length;
-  return waitForRevisionPass(
-    "a maintenance pass that started after the change to end",
-    fixture,
-    revision,
-    async () =>
-      events
-        .slice(seen)
-        .find(
-          ({ event, workId }) =>
-            event === "worker.completed" &&
-            typeof workId === "string" &&
-            workId.startsWith(maintenance),
-        ),
-    options,
-  );
-}
 
 // A `transformDrivers` for fixture.start whose IAM Driver throws a plain Error while
 // `unavailable()` is true, as an IAM outage does. The worker retries that pass.
+/**
+ * @param {() => boolean} unavailable
+ * @returns {(drivers: InstallationRuntimeDrivers) => InstallationRuntimeDrivers}
+ */
 export function withUnavailableIAM(unavailable) {
   return (drivers) => {
     const createIAMDriver = drivers.createIAMDriver;
@@ -244,12 +88,6 @@ export function withUnavailableIAM(unavailable) {
   };
 }
 
-// Only after every fixture worker has stopped: a pass that stop interrupted keeps its claim
-// until the lease ends. Expire this revision's claims instead of waiting out the lease.
-export async function expireStoppedClaims(fixture, revision) {
-  await expireWorkLease(fixture.observerPool, { state: "claimed", revisionId: revision.id });
-}
-
 // This boundary Driver supplies synthetic sessions backed by the actual receipt
 // owner. The real worker, IAM, State, and PostgreSQL queue own the lifecycle
 // decisions; these cases do not qualify the concrete credential service or Compute.
@@ -268,12 +106,18 @@ export function repositoryBoundary({
       grantId: `grant-${index}`,
     },
   }));
+  /** @type {Map<string, RepositoryCredentialSessionStatus>} */
   const admissions = new Map();
+  /** @type {Map<string, RepositoryCredentialSessionStatus>} */
   const sessions = new Map();
+  /** @type {Map<string, { admissionId: string, input: Parameters<RepositoryReceiptStore["bind"]>[1] }>} */
   const ownership = new Map();
+  /** @type {RepositoryCall[]} */
   const calls = [];
   const generation = randomUUID();
+  /** @type {RepositoryReceiptStore} */
   let receipts;
+  /** @param {string} sessionId */
   const dispose = async (sessionId) => {
     const session = sessions.get(sessionId);
     const owned = ownership.get(sessionId);
@@ -283,6 +127,7 @@ export function repositoryBoundary({
     if (session.state === "DISPOSED") {
       return session;
     }
+    /** @type {RepositoryCredentialSessionStatus} */
     const disposed = { ...session, state: "DISPOSED" };
     await receipts.dispose(owned.admissionId, owned.input, generation, {
       ...disposed,
@@ -300,6 +145,7 @@ export function repositoryBoundary({
     admissions.set(owned.admissionId, disposed);
     return disposed;
   };
+  /** @type {RepositoryWorkerDriver} */
   const driver = {
     id: "repository-worker-boundary",
     implementation: "repository-worker-boundary",
@@ -347,6 +193,7 @@ export function repositoryBoundary({
         return { kind: "missing" };
       }
       assert.equal(admission.kind, "reserved");
+      /** @type {RepositoryCredentialSessionStatus} */
       const session = {
         sessionId: `session_${randomUUID()}`,
         state: "OPEN",
@@ -383,18 +230,19 @@ export function repositoryBoundary({
       return dispose(sessionId);
     },
   };
-  return {
-    driver,
-    dispose,
-    calls,
-    snapshot: {
-      driver: { id: driver.id, implementation: driver.implementation },
-      deadlineWallMs,
-      bindings,
-    },
+  /** @type {FixtureRepositoryRevision} */
+  const snapshot = {
+    driver: { id: driver.id, implementation: driver.implementation },
+    deadlineWallMs,
+    bindings,
   };
+  return { driver, dispose, calls, snapshot };
 }
 
+/**
+ * @param {{ state: PostgresPlatformState }} fixture
+ * @param {Pick<AgentRevision, "namespaceId" | "agentId" | "id">} revision
+ */
 export function repositoryAttempts(fixture, revision) {
   return fixture.state.read((view) =>
     view.repositorySessions.listRevisionAttempts({
@@ -406,6 +254,10 @@ export function repositoryAttempts(fixture, revision) {
 }
 
 // Offboards an operator: it keeps its identity but loses every access binding.
+/**
+ * @param {{ observerPool: Pick<Pool, "query"> }} fixture
+ * @param {string} subjectId
+ */
 export function removeAccessBindings(fixture, subjectId) {
   return fixture.observerPool.query(
     `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1`,

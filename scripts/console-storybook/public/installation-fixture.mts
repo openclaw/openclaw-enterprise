@@ -18,7 +18,6 @@ type InstallationScenario = {
   nativeWorkerSupport?: false | NonNullable<InstallationCapabilities["nativeWorkers"]>["support"];
   openclawExecutionModes?: NonNullable<InstallationCapabilities["openclaw"]>["executionModes"];
   openclawSettingRefusal?: string;
-  repositoryAccessRequired?: true;
   sandboxDriverUnavailable?: boolean;
   credentialSourceTypes?: NonNullable<InstallationCapabilities["credentialSources"]>["types"];
   pluginCatalogs?: InstallationCapabilities["pluginCatalogs"];
@@ -212,7 +211,6 @@ export function installationFixture(
     createdAt,
     capabilities: {
       ...(scenario.nativeAdminSetup ? { nativeAdmin: true } : {}),
-      ...(scenario.repositoryAccessRequired ? { repositoryAccessRequired: true } : {}),
       ...(scenario.unsupportedProvisioning === true
         ? {}
         : { agentProvisioning: { executionModes: ["dedicated"] } }),

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-05
-last_updated_session: authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc
+updated: 2026-11-12
+last_updated_session: authoring-run/b8442d2f-2982-4cf1-8421-13f99290aa97
 ---
 
 # Agent Plugin Deployment Flow
@@ -69,31 +69,32 @@ graph TD
 
 ### Credential-scoped discovery
 
-[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) needs a
+[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires a
 Harness, Agent `create`, and caller `operate` on stored sources. Wrong Namespace:
 `400`; missing Secret: `404`; unavailable explicit CredentialSource: `409`.
 
-Saved discovery needs a dedicated Agent and caller `read`/`update`. Bound sources
+Saved discovery requires a dedicated Agent and caller `read`/`update`. Bound sources
 require caller and Agent `operate`; explicit sources require caller `operate`.
-Missing or unready bound sources return `404`. Hosted catalogs use credentials;
+Missing or unready bound sources return `404`. Hosted catalogs require credentials;
 curated catalogs do not.
 
-The bundled OpenShell Backend reader looks up metadata and exports through
-operator mTLS. External Gateways retain optional `withSourceToken`. OCC checks
-the source and its Gateway owner, then rechecks authority, attachment and catalog
-before dispatch. Cancellation discards late credentials. Refresh stays with its owner.
+The OpenShell Backend reads metadata and exports through operator mTLS. External
+Gateways retain optional `withSourceToken`. OCC checks source/Gateway ownership,
+then rechecks authority, attachment and catalog before dispatch. Cancellation
+discards late credentials; refresh stays with its owner.
 
 `packages/occ/src/index.ts:OpenClawController.discoverManagedMcpTools`
 
-Managed MCP reads through Secret Driver and rechecks before `tools/list`.
+Managed MCP uses Secret Driver, rechecking before `tools/list`.
 `driverPolicy.toolNames` pins upstream names across runtimes.
 
-Closing cancels; account changes clear results; Harness changes clear selections
-and approvers. Hosted reads bound size/time, reject redirects and credential echoes,
-and return safe metadata with `Cache-Control: no-store`.
-See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs).
-The optional `NativeCodexPluginCatalogReader` uses stdio `plugin/list`, rejects
-invalid results and stops the child on teardown. HTTP uses the hosted reader.
+Closing cancels; account changes clear results; Harness changes clear selections/approvers. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
+bound size/time, reject redirects and credential echoes, and return safe metadata
+with `Cache-Control: no-store`.
+`apps/controller/src/drivers/plugin/hosted-catalog.ts:catalogEntry` accepts omitted
+`requires_local_executor`; explicit `true` without skills remains unavailable.
+Details reject unmatched MCP/scheduled tasks. Optional stdio
+`NativeCodexPluginCatalogReader` rejects invalid `plugin/list` results and stops its child.
 
 ### 1. Validate desired state under exact-Agent authority
 
@@ -332,25 +333,24 @@ shutdown, or permanent failure latch exists. Warnings describe deployment comple
 ## Debugging and Verification
 
 The OpenClaw model probe's CPU-based deadline cannot exceed 600 seconds. CPU wait is the larger PSI or throttled
-delta; throttled time is capped by throttled periods. Missing, nonfinite or reset samples give no delta and cannot
-establish starvation.
+delta, capped by throttled periods; missing, nonfinite or reset samples cannot establish starvation. An OpenClaw
+timeout is starved only if over a quarter of its last 15 s is CPU wait and no 5 s stretch is idle
+(`timeoutWindowMs`, `timeoutWindowCpuWaitMs`, `timeoutWindowIdleMs`).
 
-- Compare `Agent.plugins` with the selected version snapshot and deployment status.
-  A successful Agent write alone is not runtime installation evidence.
-- Invalid or unsupported policy leaves Agent desired state unchanged. Catalog
-  membership, authenticated metadata, ownership, and effective native configuration
-  are checked during startup; failure keeps the candidate unready.
-- Check missing native packages, release drift, connector authentication, and
-  effective policy when readiness fails; preserve credential values in protected
-  runtime state rather than copying them into logs.
-- Before host effects, SSH Compute rejects nonempty requested Agent plugin maps or
-  default plugin approver policies. Clear both or use compatible Kubernetes.
+- Compare `Agent.plugins` with the version snapshot and deployment status.
+  An Agent write alone does not prove runtime installation.
+- Invalid or unsupported policy leaves Agent desired state unchanged. Startup checks
+  catalog membership, authenticated metadata, ownership and effective native
+  configuration; failure keeps the candidate unready.
+- When readiness fails, check native packages, release drift, connector
+  authentication and effective policy; keep credentials out of logs.
+- On an SSH Compute refusal (section 3), clear plugin maps and default approver
+  policies, or use compatible Kubernetes.
 - For plugin warnings, check deployment status for `PLUGIN_INSTALL_FAILED` or
-  `PLUGIN_AUTH_REQUIRED` and the admitted `pluginId`. Confirm the corresponding
-  runtime and gateway entries are disabled. Do not infer plugin attribution
-  from arbitrary native logs.
+  `PLUGIN_AUTH_REQUIRED` and the admitted `pluginId`. Confirm its runtime and
+  gateway entries are disabled. Never infer plugin attribution from native logs.
 - Prove behavior with a model-chosen plugin call in a normal Agent turn, then
-  disable or remove the plugin and verify another Agent is unchanged. Source or
+  disable or remove it and verify another Agent is unchanged. Source or
   fixture tests are not native runtime proof.
 
 ## Related docs
@@ -368,6 +368,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-12 11:28: Accept omitted hosted executor metadata. (authoring-run/b8442d2f-2982-4cf1-8421-13f99290aa97 - b80d084ba843cb8e9ff99e9550bb35dcf6b820f6)
 
 - 2026-11-05 21:02: Trace plugin JSON refusal. (authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc - 3768cfd0d640f450f485cb334b6753ac1e5ea1c3)
 

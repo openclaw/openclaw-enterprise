@@ -291,9 +291,10 @@ func TestDevUpProtectedProfileEntrypoints(t *testing.T) {
 	for _, entrypoint := range []string{"cli", "script"} {
 		for _, compute := range []string{"default", "docker", "kubernetes"} {
 			for _, scenario := range cases {
-				// Database and ordinary-launch controls below exercise Docker;
-				// Kubernetes additionally covers the formerly supported profile.
-				if compute == "kubernetes" && (scenario.want == "" || strings.Contains(scenario.name, "database")) {
+				// Database and ordinary-launch controls below exercise Docker.
+				// The default (Kubernetes-only) and Kubernetes profiles cover only
+				// the refusals: both accept a database name and need k3d to start.
+				if compute != "docker" && (scenario.want == "" || strings.Contains(scenario.name, "database")) {
 					continue
 				}
 				t.Run(entrypoint+"/"+compute+"/"+scenario.name, func(t *testing.T) {

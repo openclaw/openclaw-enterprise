@@ -14,7 +14,7 @@ metadata:
 spec:
   {{- if eq $component "api" }}
   replicas: 1
-  # One serving controller: sign-in limits and session admission are process-local.
+  # Each API process has its own sign-in attempt and concurrency limits.
   strategy:
     type: Recreate
   {{- else }}
@@ -361,6 +361,8 @@ spec:
               value: {{ include "openclaw.installationSecretNamespace" $ | quote }}
             - name: NODE_ENV
               value: production
+            - name: OCC_CONTROL_PLANE_AUDIT_ENABLED
+              value: {{ ternary "true" "false" $.Values.controlPlaneAudit.enabled | quote }}
             {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
             - name: OCC_CONSOLE_THEME_DIR
               value: /etc/openclaw/console-theme
@@ -646,17 +648,17 @@ spec:
           # Liveness detects a stuck run loop from the marker age, not from probe latency.
           readinessProbe:
             exec:
-              command: [node, scripts/production-healthcheck.mjs, worker, ready]
+              command: [node, scripts/production-healthcheck.ts, worker, ready]
             timeoutSeconds: 5
           livenessProbe:
             exec:
-              command: [node, scripts/production-healthcheck.mjs, worker]
+              command: [node, scripts/production-healthcheck.ts, worker]
             timeoutSeconds: 5
           # Like the API, a slow boot gets 2 min before liveness starts. A 5 s period keeps
           # the Node probe from taking CPU from the booting worker.
           startupProbe:
             exec:
-              command: [node, scripts/production-healthcheck.mjs, worker]
+              command: [node, scripts/production-healthcheck.ts, worker]
             timeoutSeconds: 5
             periodSeconds: 5
             failureThreshold: 24

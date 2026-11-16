@@ -14,14 +14,16 @@ export interface ProviderResponse {
   readonly body: Buffer;
 }
 export interface ProviderTransport {
+  /** Borrow the body synchronously; complete only after successful request close. */
   issue(
     authorization: string,
     attempt: ProviderAttempt,
     assertMaterialCurrent: () => void,
-    observeResponse: (response: ProviderResponse) => void,
+    consumeResponse: (response: ProviderResponse) => undefined,
     observe?: (observation: ProviderObservation) => void,
-  ): Promise<ProviderResponse>;
-  revoke(authorization: string, attempt: ProviderAttempt): Promise<ProviderResponse>;
+  ): Promise<void>;
+  /** Only a complete 204 response confirms retirement. Transport failures remain uncertain. */
+  revoke(authorization: string, attempt: ProviderAttempt): Promise<boolean>;
 }
 
 /** This capability can only mint its original scope or revoke the presented token. */
@@ -32,7 +34,7 @@ export function createProviderTransport(
 ): ProviderTransport {
   const trustedCa = ca === undefined ? undefined : Buffer.from(ca);
   return Object.freeze<ProviderTransport>({
-    issue(authorization, attempt, assertMaterialCurrent, observeResponse, observe) {
+    issue(authorization, attempt, assertMaterialCurrent, consumeResponse, observe) {
       return sendProviderRequest({
         endpoint: prepared,
         ca: trustedCa,
@@ -41,12 +43,13 @@ export function createProviderTransport(
         authorization,
         attempt,
         assertMaterialCurrent,
-        observeResponse,
+        consumeResponse,
         ...(observe ? { observe } : {}),
       });
     },
-    revoke(authorization, attempt) {
-      return sendProviderRequest({
+    async revoke(authorization, attempt) {
+      let revoked = false;
+      await sendProviderRequest({
         endpoint: prepared,
         ca: trustedCa,
         clock,
@@ -54,8 +57,11 @@ export function createProviderTransport(
         authorization,
         attempt,
         assertMaterialCurrent: () => {},
-        observeResponse: () => {},
+        consumeResponse: (response) => {
+          revoked = response.status === 204;
+        },
       });
+      return revoked;
     },
   });
 }

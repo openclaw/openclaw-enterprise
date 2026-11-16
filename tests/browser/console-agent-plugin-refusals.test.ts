@@ -19,7 +19,7 @@ import {
   writeRequests,
 } from "./console-agents-browser-helpers.ts";
 import { CODEX_PLACEMENT_REFUSAL } from "../helpers/refusal-text.mjs";
-import { liftRestriction } from "../helpers/iam-grants.mjs";
+import { liftRestriction } from "../helpers/iam-grants.ts";
 
 type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 

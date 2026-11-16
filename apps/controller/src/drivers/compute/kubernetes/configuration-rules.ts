@@ -23,6 +23,7 @@ import {
   unreadablePluginSecretInput,
   waitsOnVariable,
   wholeEnvironmentReferenceName,
+  workspaceNodeGatewayPasswordProblem,
 } from "@openclaw-enterprise/occ";
 import { asRecord, splitModelRef } from "@openclaw-enterprise/utils";
 import type { HarnessAuthMethodRule } from "../harness-auth-method.ts";
@@ -114,20 +115,10 @@ export function requireWorkspaceNodeGatewayPassword(
   configuration: Readonly<OpenClawConfigurationDocument>,
   createError: SettingError,
 ): void {
-  const gateway = configuration.gateway;
-  const auth = asRecord(gateway)?.auth;
-  if (
-    (gateway !== undefined && asRecord(gateway) === undefined) ||
-    (auth !== undefined && asRecord(auth) === undefined) ||
-    asRecord(auth)?.password !== undefined
-  ) {
-    return;
+  const problem = workspaceNodeGatewayPasswordProblem(configuration);
+  if (problem !== undefined) {
+    throw createError(problem.setting, problem.requirement);
   }
-  const generated = generatedGatewayPasswordReference(configuration.secrets);
-  throw createError(
-    "gateway.auth.password",
-    `must be the environment reference {source: "env", provider: "${generated.provider}", id: "${OPENCLAW_GATEWAY_PASSWORD}"} on a Dedicated Codex Agent: its Gateway uses it to apply the workspace node`,
-  );
 }
 
 const FILE_TRANSFER_PLUGIN = "file-transfer";

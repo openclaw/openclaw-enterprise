@@ -1,31 +1,26 @@
+import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
-import type { AuditEventFactory } from "@openclaw-enterprise/audit";
-import type {
-  AuditEvent,
-  ComputeDriver,
-  ConfigurationDriver,
-} from "@openclaw-enterprise/contracts";
 import {
-  NativeIAMDriver,
-  validateAuthAccountPrincipalSeed,
-  validatePersistedNativeIAMState,
-  type AuthPrincipalSeed,
-} from "@openclaw-enterprise/iam";
+  CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
+  controlPlaneAuditDatabaseOptions,
+  postgresAgentAuditState,
+} from "./control-plane-audit.ts";
+import type { AuditEventFactory } from "@openclaw-enterprise/audit";
+import type { ComputeDriver, ConfigurationDriver } from "@openclaw-enterprise/contracts";
+import { NativeIAMDriver, validatePersistedNativeIAMState } from "@openclaw-enterprise/iam";
 import {
   createPostgresPool,
   OpenClawController,
-  PostgresHumanAuthentication,
   PostgresPlatformState,
 } from "@openclaw-enterprise/occ";
 import {
-  betterAuthIssuer,
+  createPostgresAuthAccountProvisioner,
   createPostgresControllerAuth,
   type GoogleSignInConfiguration,
   type OidcSignInConfiguration,
-  type PreparedAuthAccount,
 } from "../auth/index.ts";
 import { createDockerDevelopmentComputeDriverFromEnv } from "../drivers/compute/docker/index.ts";
 import { createFilesystemDevelopmentConfigurationDriverFromEnv } from "../drivers/configuration/filesystem/index.ts";
@@ -79,6 +74,7 @@ export interface PostgresDevelopmentConfig {
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
   readonly agentRuntimeLogsEnabled?: boolean;
+  readonly controlPlaneAuditEnabled?: boolean;
 }
 
 export type PostgresDevelopmentRuntimeOptions =
@@ -115,8 +111,10 @@ export async function composePostgresDevelopment(
     throw new Error("Google sign-in does not support native administration.");
   }
 
+  const auditEnabled = config.controlPlaneAuditEnabled !== false;
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
+    ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
   });
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
@@ -125,6 +123,7 @@ export async function composePostgresDevelopment(
   try {
     const state = new PostgresPlatformState(pool, {
       preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
+      ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
     });
     const persistedInstallation = await state.loadInstallation();
     if (persistedInstallation === undefined) {
@@ -174,22 +173,10 @@ export async function composePostgresDevelopment(
     if (!principal || principal.kind !== "principal" || principal.id !== bootstrapPrincipal.id) {
       throw new Error("The configured development Principal is absent from persisted IAM policy.");
     }
-    const humanAuthentication = new PostgresHumanAuthentication(
+    const provisionAuthAccount = createPostgresAuthAccountProvisioner({
       state,
-      installationId,
-      betterAuthIssuer(installationId),
-    );
-    const provisionAuthAccount = async (
-      seed: AuthPrincipalSeed,
-      auditEvent: AuditEvent,
-      prepared: PreparedAuthAccount,
-      external?: { readonly providerId: string; readonly subject: string },
-    ) => {
-      const current = await state.loadNativeIAMState(installationId);
-      validateAuthAccountPrincipalSeed(seed, current, installationId);
-      // The account, its Principal and bindings, and its enrolment commit together.
-      await humanAuthentication.provisionPasswordAccount(prepared, seed, auditEvent, external);
-    };
+      installationId: installationId,
+    });
 
     const loggingLevel = config.logging?.level ?? drivers?.installation.logging.level;
     const channelDriver = new SlackChannelDriver();
@@ -199,6 +186,7 @@ export async function composePostgresDevelopment(
         ...installationControllerOptions(drivers?.installation),
         namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,
+        ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
         ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
         ...(drivers?.pluginSourceReader === undefined
           ? {}
@@ -349,6 +337,9 @@ export async function composePostgresDevelopment(
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       resolveHarness: resolveApprovedHarness,
       auditSink: state.auditSink,
+      ...(auditEnabled
+        ? { durableRequestAuditSink: state.auditSink, agentAuditCursorSecret: config.authSecret }
+        : {}),
       ...(drivers === undefined
         ? {}
         : { backendSummaries: backendSummariesFromDefinitions(drivers.installation.backend) }),
@@ -378,8 +369,9 @@ export async function composePostgresDevelopment(
     await drivers?.preparedGitHub?.connect(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
+    const checkDatabaseReadiness = createPostgresReadinessCheck(pool);
     app.get("/readyz", async () => {
-      await pool.query("SELECT 1");
+      await checkDatabaseReadiness();
       return { status: "ready" };
     });
     app.addHook("onClose", () => close(state));

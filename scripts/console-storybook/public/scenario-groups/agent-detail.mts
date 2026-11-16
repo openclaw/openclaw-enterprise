@@ -410,7 +410,7 @@ export function createAgentDetailScenarios({
         description:
           "The Agent header keeps its identity and actions visible while access is rechecked. The delay and Agent data are simulated.",
         steps: [
-          "Choose Copy Agent ID. If clipboard access is available, Copied appears briefly; otherwise, the ID is selected for manual copying.",
+          "Choose Copy Agent ID. When the copy succeeds, “Copied” appears for two seconds. Otherwise, the entire ID is selected and “Copy selection” appears.",
           "Focus Open draft, switch to another window, then return. During the 1.5-second access check, the action stays visible but cannot be used; focus returns to it after the check.",
           "Repeat the window switch and focus Namespaces while the check is pending. Focus stays in the sidebar when the check finishes.",
           "Choose Open draft to open the draft Configuration without deploying. In the next story, try the Agents back link and Namespace selector while a save is in progress.",
@@ -971,6 +971,29 @@ export function createAgentDetailScenarios({
           "Deploy new version is disabled with the allowUsers refusal deploy gives.",
         ],
         gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes Compute rules.",
+      },
+      codexGatewayPasswordMissingRefused: {
+        group: "Pages/Agent detail",
+        name: "Dedicated Codex without the gateway password",
+        path: draft,
+        deployed: true,
+        rules: [
+          {
+            suffix: "/agents/validate",
+            method: "POST",
+            status: 400,
+            code: "INVALID_REQUEST",
+            message:
+              'Configuration setting gateway.auth.password must be the environment reference {source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD"} on a Dedicated Codex Agent: its Gateway uses it to apply the workspace node.',
+          },
+        ],
+        description:
+          "An older release saved a Dedicated Codex Configuration without gateway.auth.password. Kubernetes Compute refuses it where it applies the workspace node at runtime, so the page asks Create Agent's preflight, which runs the Installation's Compute rules. Here it refuses, so the page shows that refusal and holds Deploy.",
+        steps: [
+          "In Prepare this version, the first step reads Fix the gateway password.",
+          "Deploy new version is disabled with the gateway.auth.password refusal deploy gives.",
+        ],
+        gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail-deployment.ts covers the page with the real Kubernetes Compute rules.",
       },
       kubernetesEntryKeyVariantChecking: {
         group: "Pages/Agent detail",
@@ -1735,6 +1758,7 @@ export function createAgentDetailScenarios({
           "Fold Deployment details and Tab to Refresh deployment. About five seconds after v7 appears, the quiet poll starts. The button stays enabled and focused.",
           "Press Enter while that poll is pending. The button becomes busy and keeps focus. When the refresh discovers v8 and replaces the panel, its Refresh deployment button keeps focus in the same position.",
           "Wait for the v8 retry notice. Refresh deployment is enabled again and remains focused. Reset the story to repeat.",
+          "Reset and repeat the refresh. While it is pending, press Shift+Tab to focus Deployment details. When the v8 retry notice appears, Enter folds the focused disclosure and Space reopens it.",
         ],
         gap: "Storybook simulates the version list and the failed deployment read. The Controller browser regression covers the real version discovery and read failure.",
       },
@@ -1946,9 +1970,8 @@ export function createAgentDetailScenarios({
         deployed: true,
         clipboard: "unavailable",
         actions: [{ selector: ".page-meta-copy", click: true }],
-        description:
-          "Where the browser offers no clipboard (an http origin, say), Copy Agent ID selects the ID instead, so it can be copied by hand.",
-        steps: ["Check that the Agent ID is selected and no Copied status appears."],
+        description: "When the browser has no clipboard access, you can copy the Agent ID by hand.",
+        steps: ["Check that the entire Agent ID is selected and “Copy selection” appears."],
       },
       draftCredentialRejected: {
         group: "Pages/Agent detail",
@@ -3075,11 +3098,19 @@ export function createAgentDetailScenarios({
             skip: 1,
             once: true,
           },
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+            skip: 1,
+            once: true,
+            delayMs: 2500,
+          },
         ],
         description: "The Console retries one temporary Configuration read failure on tab return.",
         steps: [
-          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved edit.",
-          "Switch to another browser tab and return. The draft and focus return without selecting Retry.",
+          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved JSON edit and scroll until the page header is out of view.",
+          "Switch to another browser tab and return. After one second, Still checking… appears at the bottom of the viewport while the draft is hidden. The delayed retry restores the draft, selection, focus, and scroll without selecting Retry, and the status disappears.",
+          "Repeat at 390 px wide. The status fits the viewport and does not block navigation. Reset the story to repeat the delayed retry.",
         ],
       },
       configurationReadUnavailableOnRefocus: {

@@ -7,7 +7,7 @@ import {
   readRuntimeStatusFromHandler,
   readStatusFromHandler,
 } from "../fixtures/codex-native-startup.mjs";
-import { listen as listenServer } from "./listen.mjs";
+import { listen as listenServer } from "./listen.ts";
 
 type PeerFailure = { pluginId: string; code: string };
 type PeerStatus = {
@@ -50,7 +50,7 @@ type SupervisorState = {
   serving: boolean;
   readinessProbes: { child: number; status: number }[];
   validation: { status: number | null; stdout: string; error?: Error };
-  validations: number;
+  validationCalls: { command: string; args: readonly string[]; readOnly: string | undefined }[];
   children: Child[];
   exits: number[];
   intervals: { callback: () => unknown; delay: number }[];
@@ -130,7 +130,7 @@ export async function startCodexGatewaySupervisor(
     readinessProbes: [],
     // What OpenClaw's config validator reports, and how often the wrapper ran it.
     validation: { status: 0, stdout: JSON.stringify({ valid: true }) },
-    validations: 0,
+    validationCalls: [],
     children: [],
     exits: [],
     intervals: [],
@@ -155,6 +155,9 @@ export async function startCodexGatewaySupervisor(
   if (savedFiles !== undefined) {
     fixture.files = new Map(savedFiles);
   }
+  // The kubelet creates an empty termination log for each container instance; /tmp, an
+  // emptyDir, keeps what an earlier instance of the Pod saved there.
+  fixture.files.set("/dev/termination-log", "");
   if (initialPeerStatus !== undefined) {
     fixture.peerStatus = initialPeerStatus;
   }
@@ -332,11 +335,11 @@ export async function startCodexGatewaySupervisor(
             return child;
           },
           spawnSync(command: string, args: readonly string[], options: SpawnOptions) {
-            // Native image tests separately exercise the real config validator.
-            assert.equal(command, "node");
-            assert.deepEqual(plain(args), ["/app/openclaw.mjs", "config", "validate", "--json"]);
-            assert.equal(options.env.OPENCLAW_CONFIG_READONLY, "1");
-            fixture.validations++;
+            fixture.validationCalls.push({
+              command,
+              args: structuredClone(args),
+              readOnly: options?.env?.OPENCLAW_CONFIG_READONLY,
+            });
             return fixture.validation;
           },
         };

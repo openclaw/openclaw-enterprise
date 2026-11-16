@@ -1,22 +1,15 @@
 import { validateHeaderName, validateHeaderValue } from "node:http";
 import type { HeaderFields, RequestHead } from "../backend-contracts.ts";
+import { TRANSPORT_HEADER_NAMES } from "./transport-header-names.ts";
 
 const RESERVED = new Set([
+  ...TRANSPORT_HEADER_NAMES,
   "host",
-  "connection",
-  "keep-alive",
-  "proxy-connection",
   "proxy-authenticate",
-  "proxy-authorization",
   "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
   // Node can send this field before the dispatch gate opens.
   "expect",
   "cookie",
-  "content-length",
-  "content-encoding",
   "accept-encoding",
 ]);
 

@@ -45,16 +45,16 @@ observed at the provider, and response bytes **at each recipient**. Record denia
 observation is unknown, not zero. In the replacement cases, A and B are successive supervisor
 installations. Current state may invalidate A's exchange but can never relabel it as B's.
 
-| Exercise | Required observation |
-| --- | --- |
-| Parent and sibling each make the admitted read | For **each** exchange: one access permit, one material read, one send permit, one matching provider request. Only its bound recipient gets the expected response. No executable allowlist or client hook is needed. |
-| Cross two live executions or splice another stream onto an authenticated connection | Reject the mismatched origin, stream or recipient before material access. Zero allowed permits, reads, provider requests or provider bytes at either execution. |
-| Replace A before the first check | Try A's queued request, its still-open channel and B presenting A's proof first. The same zero counts apply. A fresh admitted exchange from B succeeds. |
-| Replace A after its material read, or lose its response destination after dispatch | In the first case, count A's access permit and read, then zero send permits and provider requests. In the second, count the provider request, zero response bytes at B, actual or unknown delivery at A, and no retry. |
-| Allow a protected read needing no credential, then withdraw the last route | Both permits, **zero** material reads, one provider request and the expected response only at its recipient. After withdrawal, deny even this read. Losing the entire policy plan or rolling back to an incompatible reader must never release an execution into direct networking. |
-| Lose the dispatch-record acknowledgment *before permit release* | Zero send permits released, zero provider requests. Reconcile the exact committed attempt without releasing a replacement permit. |
-| Lose the provider reply *after a write* | Record the send permit and write; the provider effect remains uncertain. One permit does not prove exactly-once delivery. Never replay to resolve the uncertainty. |
-| Lose the credential-rejection acknowledgment, then restart and redeliver | Before acknowledgment, durably deduplicate the authenticated receipt, fence its exact store and version, and commit any coalesced recovery obligation. Observe one obligation for rejected N, none for N+1, no second recovery and no business retry. |
+| Exercise                                                                            | Required observation                                                                                                                                                                                                                                                                |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Parent and sibling each make the admitted read                                      | For **each** exchange: one access permit, one material read, one send permit, one matching provider request. Only its bound recipient gets the expected response. No executable allowlist or client hook is needed.                                                                 |
+| Cross two live executions or splice another stream onto an authenticated connection | Reject the mismatched origin, stream or recipient before material access. Zero allowed permits, reads, provider requests or provider bytes at either execution.                                                                                                                     |
+| Replace A before the first check                                                    | Try A's queued request, its still-open channel and B presenting A's proof first. The same zero counts apply. A fresh admitted exchange from B succeeds.                                                                                                                             |
+| Replace A after its material read, or lose its response destination after dispatch  | In the first case, count A's access permit and read, then zero send permits and provider requests. In the second, count the provider request, zero response bytes at B, actual or unknown delivery at A, and no retry.                                                              |
+| Allow a protected read needing no credential, then withdraw the last route          | Both permits, **zero** material reads, one provider request and the expected response only at its recipient. After withdrawal, deny even this read. Losing the entire policy plan or rolling back to an incompatible reader must never release an execution into direct networking. |
+| Lose the dispatch-record acknowledgment _before permit release_                     | Zero send permits released, zero provider requests. Reconcile the exact committed attempt without releasing a replacement permit.                                                                                                                                                   |
+| Lose the provider reply _after a write_                                             | Record the send permit and write; the provider effect remains uncertain. One permit does not prove exactly-once delivery. Never replay to resolve the uncertainty.                                                                                                                  |
+| Lose the credential-rejection acknowledgment, then restart and redeliver            | Before acknowledgment, durably deduplicate the authenticated receipt, fence its exact store and version, and commit any coalesced recovery obligation. Observe one obligation for rejected N, none for N+1, no second recovery and no business retry.                               |
 
 ### Destination, response and Git controls
 
@@ -88,7 +88,7 @@ original owner, attempt and outstanding effects; a timeout or earlier observatio
 does not settle them. The [protocol](protocol.md#withdraw-and-recover) defines the tombstone,
 deadline and cleanup obligations.
 
-Confirmed loss of the *last* authorized owner installs a hold and fences new admissions. Report
+Confirmed loss of the _last_ authorized owner installs a hold and fences new admissions. Report
 `parking` until stop and data preservation justify `parked`. A team Agent with another authorized owner
 continues; an unavailable directory is not confirmed owner loss. Restart, repair, deletion and
 garbage collection must respect the hold. Release requires current authority and fresh admission.
@@ -100,6 +100,8 @@ and a fresh, stopped runtime home. Inherit no credentials, grants, approvals or 
 schedules, hooks and pending work inert. Preserve authorized read-only access to the original.
 
 ## Retire the legacy path without widening existing grants
+
+Credential Proxy replaces the deprecated Gateway and Refresh capabilities. Existing sources and refreshes retain their recorded owners until supported drain. Only the validated bundled Git-only installation retains fresh static Gateway model enrollment (catalog-declared Harness authentication without refresh, device authorization or ChatGPT OAuth token login); execution-authority configurations, unknown profiles and remote failures cannot select this exception.
 
 ### Execution authority
 
@@ -125,17 +127,17 @@ defines snapshot ownership and zero-retention reads.
 
 ### Interface and consumer migration
 
-| Credential Gateway method | Responsibility that must survive retirement |
-| --- | --- |
-| `listSourceTypes` | `CredentialSourceControl.describeTypes`, including provider schema and Harness compatibility |
-| `registerSource` | `applySource`, then separately `configureRefresh` for dynamic inputs |
-| `updateSource` | `applySource` with admitted configuration and static adoption or approved replacement |
-| `sourceStatus` | Configuration status, distinct from per-grant `refreshStatus` |
-| `removeSource` | `removeSource`, `removeRefresh` and owned provider/profile cleanup |
-| `attachForRevision` | `configureRevision`, then Sandbox `applyCredentialProxy` |
-| `attachmentStatus` | Join Credential Proxy `wiringStatus` to Sandbox `credentialProxyStatus` for the exact installation |
-| `withdraw` | Durable withdrawal, `withdrawBinding` and late-installation rechecks |
-| Additional `validateSourceConfig` | OCC schema validation and provider `normalizeInput`, without I/O and before Secret access |
+| Credential Gateway method         | Responsibility that must survive retirement                                                        |
+| --------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `listSourceTypes`                 | `CredentialSourceControl.describeTypes`, including provider schema and Harness compatibility       |
+| `registerSource`                  | `applySource`, then separately `configureRefresh` for dynamic inputs                               |
+| `updateSource`                    | `applySource` with admitted configuration and static adoption or approved replacement              |
+| `sourceStatus`                    | Configuration status, distinct from per-grant `refreshStatus`                                      |
+| `removeSource`                    | `removeSource`, `removeRefresh` and owned provider/profile cleanup                                 |
+| `attachForRevision`               | `configureRevision`, then Sandbox `applyCredentialProxy`                                           |
+| `attachmentStatus`                | Join Credential Proxy `wiringStatus` to Sandbox `credentialProxyStatus` for the exact installation |
+| `withdraw`                        | Durable withdrawal, `withdrawBinding` and late-installation rechecks                               |
+| Additional `validateSourceConfig` | OCC schema validation and provider `normalizeInput`, without I/O and before Secret access          |
 
 Move persisted driver IDs, revision and Harness snapshots, Agent bindings and authentication
 selection to exact source, binding, route and execution admissions. Replace resolved-string inputs and

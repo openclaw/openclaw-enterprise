@@ -9,12 +9,18 @@ import (
 
 var developmentDatabaseName = regexp.MustCompile(`^openclaw_k8s_[a-z0-9_]+$`)
 
-// CheckDevelopmentProfile validates protected egress and its related selectors
-// before Compute dispatch, including callers that otherwise bypass Up.
+// CheckDevelopmentProfile validates protected egress, sign-in and their
+// related selectors before Compute dispatch, including callers that otherwise
+// bypass Up: scripts/dev-up runs it through occ dev check-profile.
 func CheckDevelopmentProfile() error {
 	r := newRunner(Options{})
 	profile := resolveProfile(r.env)
 	if err := r.protectedEgressSelection(); err != nil {
+		return err
+	}
+	// The Docker startup script does not read OCC_DEVELOPMENT_SIGN_IN, so the
+	// same refusal as Up must happen here.
+	if _, err := developmentSignIn(r.env); err != nil {
 		return err
 	}
 	if _, err := r.selectedDevelopmentDatabase(profile.ControlPlane); err != nil {

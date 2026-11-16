@@ -5,8 +5,12 @@ export interface OidcEnrollmentPolicy {
   readonly admission: { readonly groupsClaim: string; readonly anyOf: readonly string[] };
   readonly additionalScopes: readonly string[];
   readonly createAccount:
-    | { readonly enabled: false; readonly role: null }
-    | { readonly enabled: true; readonly role: AccountEnrollmentRole | null };
+    | { readonly enabled: false; readonly role: null; readonly requireVerifiedEmail: boolean }
+    | {
+        readonly enabled: true;
+        readonly role: AccountEnrollmentRole | null;
+        readonly requireVerifiedEmail: boolean;
+      };
   readonly groupIds?: readonly string[];
 }
 
@@ -64,10 +68,16 @@ export function oidcEnrollmentPolicy(value: unknown): OidcEnrollmentPolicy {
   const create = object(policy.createAccount === undefined ? {} : policy.createAccount, [
     "enabled",
     "role",
+    "requireVerifiedEmail",
   ]);
   const enabled = create.enabled === undefined ? false : create.enabled;
   if (typeof enabled !== "boolean" || (!enabled && create.role !== undefined)) {
     throw new Error("OIDC enrollment has an invalid account creation policy.");
+  }
+  const requireVerifiedEmail =
+    create.requireVerifiedEmail === undefined ? true : create.requireVerifiedEmail;
+  if (typeof requireVerifiedEmail !== "boolean") {
+    throw new Error("OIDC enrollment requireVerifiedEmail must be a boolean.");
   }
   let role: AccountEnrollmentRole | null = null;
   if (enabled) {
@@ -94,7 +104,11 @@ export function oidcEnrollmentPolicy(value: unknown): OidcEnrollmentPolicy {
   return Object.freeze({
     admission: Object.freeze({ groupsClaim: text(admission.groupsClaim), anyOf }),
     additionalScopes,
-    createAccount: Object.freeze(enabled ? { enabled, role } : { enabled, role: null }),
+    createAccount: Object.freeze(
+      enabled
+        ? { enabled, role, requireVerifiedEmail }
+        : { enabled, role: null, requireVerifiedEmail },
+    ),
     ...(policy.groupIds === undefined ? {} : { groupIds: strings(policy.groupIds) }),
   });
 }

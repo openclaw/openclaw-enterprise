@@ -349,6 +349,30 @@ export function nativeAdminValues(marker: string, origin: string) {
   return withNativeAdminGateway(nativeValues(marker), origin);
 }
 
+// Serve the real native admin status, read as the fixture's administrator, with `fields`
+// removed from its data, as an older API that predates them answers. Returns the URL to
+// pass to page.unroute.
+export async function omitNativeAdminStatusFields(
+  page: Page,
+  fixture: Pick<Fixture, "origin" | "request">,
+  namespaceId: string,
+  agentId: string,
+  fields: readonly string[],
+) {
+  const path = `/namespaces/${namespaceId}/agents/${agentId}/native-admin`;
+  const url = `${fixture.origin}${path}`;
+  await page.route(url, async (route) => {
+    const response = await fixture.request("GET", path);
+    const body: unknown = response.body;
+    assert.ok(isRecord(body) && isRecord(body.data), "native admin status must carry data");
+    for (const field of fields) {
+      delete body.data[field];
+    }
+    await route.fulfill({ status: response.status, json: body });
+  });
+  return url;
+}
+
 // Without a caller-permission summary the console keeps controls enabled, so the API's own
 // denial is what the reader sees.
 export async function withholdPermissionSummary(

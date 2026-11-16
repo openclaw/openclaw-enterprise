@@ -100,15 +100,15 @@ export function createSkipperPreparedComputeEvents(commandPath) {
         const completed =
           parsed.every(Boolean) &&
           current?.exitCode !== undefined &&
-          current.sessionId === undefined;
+          current.sessionId === undefined &&
+          (results.length === 1 || sameSession);
         const ok =
           !active.invalid &&
           active.results.has(id) &&
           remaining > 0 &&
           completed &&
           current.exitCode === 0 &&
-          markerSeen &&
-          (results.length === 1 || sameSession);
+          markerSeen;
         const sha = output.match(/(?:^|\n)([0-9a-f]{40})(?:\n|$)/)?.[1];
         let status = "unrecognized";
         if (remaining <= 0 || (current?.sessionId !== undefined && !pollFits)) {
@@ -120,6 +120,7 @@ export function createSkipperPreparedComputeEvents(commandPath) {
           event: "skipper-native-result",
           id,
           markerSeen,
+          ...(ok ? { modelFixtureSelectedTerminalSuccess: true } : {}),
           sha,
           status,
           exitCode: current?.exitCode ?? null,

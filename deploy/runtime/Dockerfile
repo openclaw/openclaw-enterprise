@@ -18,7 +18,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
     sh /node-repair/fetch.sh
 
 FROM node-source AS node-compiled
-ARG NODE_BUILD_JOBS=4
+ARG NODE_BUILD_JOBS=auto
 RUN --network=none sh /node-repair/build.sh
 
 FROM node-build-base AS node-repaired-build-base
@@ -31,6 +31,23 @@ RUN --mount=type=secret,id=build-ca,required=false \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     sh /tmp/curl/build.sh
 RUN --network=none sh /tmp/curl/verify.sh
+
+FROM node-build-base AS native-tool-archives
+WORKDIR /build
+COPY scripts/ci/download-pinned.sh scripts/ci/download-pinned.sh
+COPY scripts/lib/runtime-download-clients.ts scripts/lib/runtime-download-clients.ts
+COPY deploy/runtime/additional-download-clients.json deploy/runtime/additional-download-clients.json
+COPY deploy/runtime/native-tools/fetch.ts deploy/runtime/native-tools/fetch.ts
+RUN --mount=type=secret,id=build-ca,required=false \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
+    node deploy/runtime/native-tools/fetch.ts
+
+FROM node-build-base AS native-tools
+RUN --network=none \
+    --mount=type=bind,from=native-tool-archives,source=/archives,target=/archives \
+    --mount=type=bind,source=deploy/runtime/native-tools/install.sh,target=/tmp/install-native-tools.sh \
+    sh /tmp/install-native-tools.sh
 
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS node-runtime-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
@@ -63,7 +80,7 @@ RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
 
 # The runtime's credential client compiles from its own sources only: the
 # client directory and client-contracts.ts, the only modules the client
-# closure in scripts/build-repository-credentials.mjs accepts. Other controller
+# closure in scripts/build-repository-credentials.ts accepts. Other controller
 # and package changes then keep this stage cached. tsconfig.client.json keeps
 # the controller's compiler options and turns off only project build outputs
 # (declarations, build info) and the type check; Static Checks and the service
@@ -75,12 +92,11 @@ COPY apps/controller/tsconfig.json apps/controller/tsconfig.json
 COPY deploy/runtime/repository-credentials/tsconfig.client.json deploy/runtime/repository-credentials/tsconfig.client.json
 COPY apps/controller/src/drivers/repo/access/client-contracts.ts apps/controller/src/drivers/repo/access/client-contracts.ts
 COPY apps/controller/src/drivers/repo/github/access/client apps/controller/src/drivers/repo/github/access/client
-COPY scripts/build-repository-credentials.mjs scripts/build-repository-credentials.mjs
 COPY scripts/build-repository-credentials.ts scripts/build-repository-credentials.ts
 COPY deploy/runtime/repository-credentials/.dockerignore deploy/runtime/repository-credentials/.dockerignore
 COPY deploy/runtime/repository-credentials/hooks.json deploy/runtime/repository-credentials/hooks.json
 RUN node_modules/.bin/tsc -p deploy/runtime/repository-credentials/tsconfig.client.json --pretty false \
-    && node scripts/build-repository-credentials.mjs --client-only
+    && node scripts/build-repository-credentials.ts --client-only
 # Assemble the runtime's credential client as one tree with fixed modes and
 # timestamps. The runtime copies it onto / as its last layer, so a client change
 # rebuilds only that layer and every builder writes the same bytes. With a fixed
@@ -105,7 +121,6 @@ FROM repository-credentials-deps AS repository-credentials-build
 COPY tsconfig.base.json tsconfig.json ./
 COPY packages packages
 COPY apps/controller apps/controller
-COPY scripts/build-repository-credentials.mjs scripts/build-repository-credentials.mjs
 COPY scripts/build-repository-credentials.ts scripts/build-repository-credentials.ts
 COPY deploy/runtime/repository-credentials/.dockerignore deploy/runtime/repository-credentials/.dockerignore
 COPY deploy/runtime/repository-credentials/hooks.json deploy/runtime/repository-credentials/hooks.json
@@ -130,19 +145,18 @@ ENV OPENCLAW_BUILD_TIMESTAMP=${OPENCLAW_BUILD_TIMESTAMP}
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 COPY deploy/runtime/openclaw-source.json /tmp/openclaw-source.json
-COPY scripts/lib/openclaw-source.mjs /tmp/lib/openclaw-source.mjs
 COPY scripts/lib/openclaw-source.ts /tmp/lib/openclaw-source.ts
 RUN --mount=type=secret,id=build-ca,required=false \
     set -eu; \
-    node /tmp/lib/openclaw-source.mjs verify /tmp/openclaw-source.json; \
+    node /tmp/lib/openclaw-source.ts verify /tmp/openclaw-source.json; \
     if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
     curl --fail --location --silent --show-error \
       "https://codeload.github.com/openclaw/openclaw/tar.gz/${GIT_COMMIT}" -o /tmp/openclaw-source.tar.gz; \
     printf '%s  /tmp/openclaw-source.tar.gz\n' "$OPENCLAW_SOURCE_SHA256" | sha256sum --check --strict; \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
-# Record every patch applied here in appliedPatches in scripts/build-runtime-assets.mjs,
-# which writes provenance; runtime-assets.test.mjs compares the two.
+# Record every patch applied here in appliedPatches in scripts/build-runtime-assets.ts,
+# which writes provenance; runtime-assets.test.ts compares the two.
 # TODO: Remove this bridge patch when OpenClaw supports networkProxy.readOnlyPaths.
 COPY deploy/runtime/openclaw-codex-read-only-paths.patch /tmp/openclaw-codex-read-only-paths.patch
 RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp/openclaw-codex-read-only-paths.patch' | sha256sum --check --strict \
@@ -155,8 +169,9 @@ RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp
 COPY deploy/runtime/openclaw-codex-box-owner.patch /tmp/openclaw-codex-box-owner.patch
 RUN echo 'fab67fe3aa048d3dd152e4e39c00c986888a6d1e64e39358dd36e1f575b36d88  /tmp/openclaw-codex-box-owner.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-box-owner.patch
-COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
-RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
+COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
+RUN node /tmp/build-runtime-assets.ts inputs /source /inputs \
+    && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts
 
 # @matrix-org/matrix-sdk-crypto-nodejs downloads its native library from GitHub during
 # install, with no retry or checksum. Fetch the pinned library with the retrying,
@@ -199,11 +214,11 @@ FROM openclaw-dependency-inputs AS openclaw-patched-source
 RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     --mount=type=bind,from=matrix-sdk-crypto,source=/out,target=/tmp/matrix-sdk-crypto \
-    --mount=type=bind,source=deploy/runtime/with-pinned-matrix-sdk-crypto.mjs,target=/tmp/with-pinned-matrix-sdk-crypto.mjs \
+    --mount=type=bind,source=deploy/runtime/with-pinned-matrix-sdk-crypto.mts,target=/tmp/with-pinned-matrix-sdk-crypto.mts \
     --mount=type=bind,source=deploy/runtime/install-attempts.sh,target=/tmp/install-attempts.sh \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
-    COREPACK_ENABLE_NETWORK=0 sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
+    COREPACK_ENABLE_NETWORK=0 sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mts /tmp/matrix-sdk-crypto \
     pnpm install --frozen-lockfile --store-dir=/tmp/pnpm-store \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
@@ -240,6 +255,11 @@ COPY deploy/runtime/openclaw-node-only-setup.patch /tmp/openclaw-node-only-setup
 RUN echo '279b270ad09f2ef7d5ea24e3de733b1856b7bc9150eb5e8854e2b0523aac42f2  /tmp/openclaw-node-only-setup.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-only-setup.patch
 
+# Remove this backport when the pinned core includes upstream openclaw/openclaw#185180.
+COPY deploy/runtime/openclaw-native-turn-settlement.patch /tmp/openclaw-native-turn-settlement.patch
+RUN echo '5f2127b46a4a92d24469e43d67301ee0b99d99eb2582c4e690b81b12fd8b7da6  /tmp/openclaw-native-turn-settlement.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-native-turn-settlement.patch
+
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
@@ -252,6 +272,7 @@ FROM openclaw-patched-source AS openclaw-bridge-tests
 RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
+    src/sessions/session-controller.watchdog.test.ts src/agents/embedded-agent-runner/runs.liveness.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     src/infra/private-store-file.test.ts \
     src/node-host/runner.test.ts \
@@ -340,7 +361,7 @@ FROM openclaw-dependency-inputs AS openclaw-production-deps
 RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     --mount=type=bind,from=matrix-sdk-crypto,source=/out,target=/tmp/matrix-sdk-crypto \
-    --mount=type=bind,source=deploy/runtime/with-pinned-matrix-sdk-crypto.mjs,target=/tmp/with-pinned-matrix-sdk-crypto.mjs \
+    --mount=type=bind,source=deploy/runtime/with-pinned-matrix-sdk-crypto.mts,target=/tmp/with-pinned-matrix-sdk-crypto.mts \
     --mount=type=bind,source=deploy/runtime/install-attempts.sh,target=/tmp/install-attempts.sh \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
@@ -348,7 +369,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
     while IFS= read -r plugin; do \
       set -- "$@" --filter "./extensions/$plugin"; \
     done < openclaw-workspace-plugin-dirs; \
-    COREPACK_ENABLE_NETWORK=0 sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
+    COREPACK_ENABLE_NETWORK=0 sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mts /tmp/matrix-sdk-crypto \
     pnpm install --frozen-lockfile --prod "$@" --store-dir=/tmp/pnpm-store \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
@@ -412,8 +433,7 @@ for (const plugin of ["codex", "slack"]) {
   }
 }
 NODE
-COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
-COPY scripts/lib/openclaw-source.mjs /tmp/lib/openclaw-source.mjs
+COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 COPY scripts/lib/openclaw-source.ts /tmp/lib/openclaw-source.ts
 COPY --from=openclaw-source /tmp/openclaw-source.json /tmp/openclaw-source.json
 RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verification/scripts \
@@ -421,8 +441,9 @@ RUN --mount=type=bind,from=openclaw-source,source=/source/scripts,target=/verifi
     node scripts/docker/copy-bootstrap-scripts.mjs /tmp/openclaw-runtime-bootstrap \
     && rm -rf scripts \
     && mv /tmp/openclaw-runtime-bootstrap/scripts scripts \
-    && node /tmp/build-runtime-assets.mjs package /source /out /tmp/openclaw-source.json \
-    && node /verification/scripts/check-package-dist-imports.mjs /source
+    && node /tmp/build-runtime-assets.ts package /source /out /tmp/openclaw-source.json \
+    && node /verification/scripts/check-package-dist-imports.mjs /source \
+    && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts /tmp/openclaw-source.json
 
 FROM node-runtime-base AS runtime
 
@@ -444,12 +465,14 @@ WORKDIR /app
 
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 
+COPY --from=native-tools /out/ /
 RUN --mount=type=bind,from=curl-packages,source=/out,target=/tmp/curl-packages \
-    apt-get update --error-on=any \
+    if [ -x /opt/devtools/bin/cargo ]; then set -- gcc libc6-dev; else set --; fi \
+    && apt-get update --error-on=any \
     && candidate="$(apt-cache policy curl | sed -n 's/^  Candidate: //p')" \
     && expected="$(cat /tmp/curl-packages/debian-version)" \
     && { [ "$candidate" = "$expected" ] || { echo "Refresh the curl backport: Debian candidate is $candidate, source is $expected" >&2; exit 1; }; } \
-    && apt-get install -y --no-install-recommends tini git ca-certificates openssh-client libstdc++6 libgomp1 python3 procps /tmp/curl-packages/*.deb \
+    && apt-get install -y --no-install-recommends tini git ca-certificates openssh-client libstdc++6 libgomp1 python3 procps "$@" /tmp/curl-packages/*.deb \
     && mkdir -p /usr/share/doc/curl/oce \
     && cp /tmp/curl-packages/*.sha256 /usr/share/doc/curl/oce/ \
     && rm -rf /var/lib/apt/lists/*
@@ -459,7 +482,7 @@ RUN --network=none \
     ldd /usr/local/bin/node > /tmp/node-linkage \
     && ! grep 'not found' /tmp/node-linkage \
     && rm /tmp/node-linkage \
-    && node /verification/repair/verify.mjs \
+    && node /verification/repair/verify.mts \
     && sh /verification/repair/test.sh /usr/local/bin/node /verification/node
 # Version checks use throwaway state directories: gh writes a random device ID
 # and Codex a randomly named arg0 directory, which would otherwise ship.
@@ -504,11 +527,12 @@ RUN mkdir -p node_modules/.bin \
     && ln -s ../openclaw/openclaw.mjs node_modules/.bin/openclaw \
     && ln -s ../openclaw/node_modules/@openai/codex/bin/codex.js node_modules/.bin/codex
 
-COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
-COPY scripts/lib/openclaw-source.mjs /tmp/lib/openclaw-source.mjs
+COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 COPY scripts/lib/openclaw-source.ts /tmp/lib/openclaw-source.ts
 
-RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw /home/node/.codex/generated_images \
+RUN --mount=type=bind,source=scripts/lib/runtime-download-clients.ts,target=/tmp/lib/runtime-download-clients.ts \
+    --mount=type=bind,source=deploy/runtime/additional-download-clients.json,target=/tmp/additional-download-clients.json \
+    mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw /home/node/.codex/generated_images \
   && chown node:node /home/node/.codex /home/node/.codex/generated_images \
   && chmod 700 /home/node/.codex /home/node/.codex/generated_images \
   && cp -R node_modules/openclaw/dist/extensions/slack/skills/. ./plugin-skills/ \
@@ -534,8 +558,8 @@ RUN mkdir -p node_modules/openclaw/dist/extensions ./plugin-skills /etc/openclaw
   && rm -rf "$codex_home" \
   && test -f /app/dist/extensions/codex/openclaw.plugin.json \
   && test -f /app/dist/extensions/slack/openclaw.plugin.json \
-  && node /tmp/build-runtime-assets.mjs inventory /app/node_modules/openclaw /opt/oce/runtime /usr/local/share/oce-node/provenance.json \
-  && rm /tmp/build-runtime-assets.mjs /tmp/lib/openclaw-source.mjs /tmp/lib/openclaw-source.ts
+  && node /tmp/build-runtime-assets.ts inventory /app/node_modules/openclaw /opt/oce/runtime /usr/local/share/oce-node/provenance.json /tmp/additional-download-clients.json \
+  && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts
 
 RUN /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig
 

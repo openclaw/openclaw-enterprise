@@ -236,11 +236,11 @@ fresh disposable local Kubernetes and separately authorized EKS/general Kubernet
 | Operations         | Worker/Agent restart, storage retention, image upgrade/rollback boundaries, metrics scrape and collector delivery if enabled                                             |
 
 Relevant existing suites were inspected, not executed:
-[driver startup](../../../tests/integration/plugin-driver-startup.test.mjs),
-[discovery API](../../../tests/integration/plugin-discovery-api.test.mjs),
+[driver startup](../../../tests/integration/plugin-driver-startup.test.ts),
+[discovery API](../../../tests/integration/plugin-discovery-api.test.ts),
 [real status transport](../../../tests/integration/kubernetes-plugin-status-real.test.mjs),
 [native plugins](../../../tests/integration/plugin-driver-real.test.mjs),
-[PostgreSQL presets](../../../tests/integration/postgres-presets.test.mjs).
+[PostgreSQL presets](../../../tests/integration/postgres-presets.test.ts).
 Controlled upstreams prove API/IAM behavior; controlled status producers prove
 transport; native scenarios prove selected runtime behavior. None alone proves
 the proposed profiles are Helm-installed and operational on EKS.
