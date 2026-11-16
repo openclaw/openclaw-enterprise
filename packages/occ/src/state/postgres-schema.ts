@@ -1297,7 +1297,10 @@ export const controllerWork = occSchema.table(
     })
       .onUpdate("restrict")
       .onDelete("no action"),
-    check("controller_work_kind_valid", sql`${table.workKind} IN ('lifecycle', 'provisioning')`),
+    check(
+      "controller_work_kind_valid",
+      sql`${table.workKind} IN ('lifecycle', 'provisioning', 'observer')`,
+    ),
     check(
       "controller_work_idempotency_key_length",
       sql`char_length(${table.idempotencyKey}) BETWEEN 1 AND 512`,
@@ -1332,6 +1335,9 @@ export const controllerWork = occSchema.table(
           AND ${table.revisionId} IS NULL AND ${table.namespaceTarget} IS NULL
           AND ${table.agentTarget} IS NULL
           AND ${table.idempotencyKey} ~ '^agent_revision:rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:repository_cleanup:(retire:)?[0-9a-f]{64}$')
+        OR (${table.workKind} = 'observer' AND ${table.agentId} IS NOT NULL
+          AND ${table.revisionId} IS NOT NULL AND ${table.namespaceTarget} IS NULL
+          AND ${table.agentTarget} IS NULL)
       )`,
     ),
     check(
@@ -1545,6 +1551,119 @@ export const agentProvisioningWork = occSchema.table(
     check(
       "agent_provisioning_admitted_revision_status_valid",
       sql`${table.revisionId} IS NULL OR ${table.status} IN ('running', 'succeeded', 'failed')`,
+    ),
+  ],
+);
+
+export const observerInvocations = occSchema.table(
+  "observer_invocations",
+  {
+    workId: text("work_id").primaryKey(),
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    actorId: text("actor_id").notNull(),
+    requestId: text("request_id").notNull(),
+    requestFingerprint: text("request_fingerprint").notNull(),
+    targetRole: text("target_role").notNull(),
+    status: text("status").notNull(),
+    completedPhase: text("completed_phase").notNull(),
+    qualification: jsonb("qualification").$type<Record<string, unknown>>().notNull(),
+    plan: jsonb("plan").$type<Record<string, unknown>>().notNull(),
+    progress: jsonb("progress").$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "observer_invocations_work_owner",
+      columns: [table.workId],
+      foreignColumns: [controllerWork.idempotencyKey],
+    })
+      .onUpdate("restrict")
+      .onDelete("cascade"),
+    foreignKey({
+      name: "observer_invocations_revision_owner",
+      columns: [table.namespaceId, table.agentId, table.revisionId],
+      foreignColumns: [agentRevisions.namespaceId, agentRevisions.agentId, agentRevisions.id],
+    })
+      .onUpdate("restrict")
+      .onDelete("restrict"),
+    unique("observer_invocation_request_unique").on(
+      table.namespaceId,
+      table.actorId,
+      table.requestId,
+    ),
+    check(
+      "observer_invocation_status_valid",
+      sql`${table.status} IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')`,
+    ),
+    check(
+      "observer_invocation_phase_valid",
+      sql`${table.completedPhase} IN ('admitted', 'target_resolved', 'observer_created', 'ready', 'terminal', 'cleanup')`,
+    ),
+    check(
+      "observer_invocation_target_role_valid",
+      sql`${table.targetRole} IN ('agent', 'gateway')`,
+    ),
+    check(
+      "observer_invocation_identifiers_valid",
+      sql`${table.workId} ~ '^[A-Za-z0-9._~:@/-]{1,200}$'
+        AND ${table.namespaceId} ~ '^[A-Za-z0-9._~:@/-]{1,200}$'
+        AND ${table.agentId} ~ '^[A-Za-z0-9._~:@/-]{1,200}$'
+        AND ${table.revisionId} ~ '^[A-Za-z0-9._~:@/-]{1,200}$'
+        AND ${table.actorId} ~ '^[A-Za-z0-9._~:@/-]{1,200}$'
+        AND ${table.requestId} ~ '^[A-Za-z0-9._~:@/-]{1,200}$'`,
+    ),
+    check(
+      "observer_invocation_fingerprint_valid",
+      sql`${table.requestFingerprint} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "observer_invocation_documents_valid",
+      sql`occ.observer_invocation_qualification_is_valid(${table.qualification})
+        AND occ.observer_invocation_plan_is_valid(${table.plan}, ${table.qualification})
+        AND occ.observer_invocation_progress_is_valid(${table.progress}, ${table.plan})`,
+    ),
+    check(
+      "observer_invocation_phase_progress_valid",
+      sql`CASE ${table.completedPhase}
+        WHEN 'admitted' THEN ${table.progress} = '{}'::jsonb
+        WHEN 'target_resolved' THEN ${table.progress} ? 'targetResolution'
+          AND NOT ${table.progress} ?| ARRAY['observer', 'readiness', 'terminal', 'cleanup']
+        WHEN 'observer_created' THEN ${table.progress} ?& ARRAY['targetResolution', 'observer']
+          AND NOT ${table.progress} ?| ARRAY['readiness', 'terminal', 'cleanup']
+        WHEN 'ready' THEN ${table.progress} ?& ARRAY['targetResolution', 'observer', 'readiness']
+          AND NOT ${table.progress} ?| ARRAY['terminal', 'cleanup']
+        WHEN 'terminal' THEN ${table.progress} ? 'terminal' AND NOT ${table.progress} ? 'cleanup'
+        WHEN 'cleanup' THEN ${table.progress} ?& ARRAY['terminal', 'cleanup']
+        ELSE false
+      END`,
+    ),
+    check(
+      "observer_invocation_status_phase_valid",
+      sql`(${table.completedPhase} = 'admitted' AND ${table.status} = 'queued')
+        OR (${table.completedPhase} IN ('target_resolved', 'observer_created', 'ready', 'terminal')
+          AND ${table.status} IN ('queued', 'running'))
+        OR (${table.completedPhase} = 'cleanup'
+          AND ${table.status} IN ('succeeded', 'failed', 'cancelled'))`,
+    ),
+    check(
+      "observer_invocation_terminal_outcome_valid",
+      sql`${table.completedPhase} <> 'cleanup'
+        OR (${table.status} = 'succeeded'
+          AND ${table.progress} #>> '{terminal,stopOutcome}' = 'succeeded')
+        OR (${table.status} = 'cancelled'
+          AND ${table.progress} #>> '{terminal,stopOutcome}' = 'cancelled')
+        OR (${table.status} = 'failed'
+          AND ${table.progress} #>> '{terminal,stopOutcome}' IN ('failed', 'timed_out'))`,
+    ),
+    index("observer_invocations_revision_history").on(
+      table.namespaceId,
+      table.agentId,
+      table.revisionId,
+      table.createdAt,
+      table.workId,
     ),
   ],
 );

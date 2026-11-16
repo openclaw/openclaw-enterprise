@@ -229,6 +229,16 @@ export function bindPlatformUnitOfWork(
       "retryByWorkId",
       "releaseConfiguration",
     ]),
+    observer: bindRepository(repositories.observer, lifetime, [
+      "findByWorkId",
+      "findWithWork",
+      "findByRequest",
+      "listRevisionInvocations",
+      "create",
+      "checkpoint",
+      "recordFailure",
+      "cancel",
+    ]),
     audit: bindRepository(repositories.audit, lifetime, ["append", "list"]),
     operations: bindRepository(repositories.operations, lifetime, [
       "append",

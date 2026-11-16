@@ -625,6 +625,14 @@
       "tag": "0078_preserve_pending_sandbox_policy_application",
       "breakpoints": true,
       "sha256": "ecea7db627931734acba60f4a8d7fa23dd6c6209f07ed1901507ffe47347a789"
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1787000000079,
+      "tag": "0079_observer_invocation_work",
+      "breakpoints": true,
+      "sha256": "f2c6f5b8d68b74a7ab562fbdaa72f234ea5ac1c247cf353c58ffa4c8162c8f02"
     }
   ],
   "initialSchemaStates": {
@@ -647,6 +655,22 @@
     }
   },
   "logicalRestoreCatalogs": {
+    "f7605fa76d15d7b2a2cb99ec3848c376ccb39742505fce7de7c2774d60b9808b": [
+      "48d09b2d4f5dd980839db2819d35bc470619ab492a34a62a898bb110fdbc4403",
+      "70784732be51185a691a486975a10ddfe5046cc0a78c02d755e4276637ddcc50",
+      "419e7c10f64fc2e72b44045cf80e3ddd3fe774f33b89bf12295b5310d5a9c553",
+      "d39c540db9f347f104db3250c668f1eac131409a71ac8aaf93e6a975ed2f09b0"
+    ],
+    "53bf886aed3097aac072ea37992c6fe2f8397acdd0ee29bf8cb4599547d2e85c": [
+      "aa1c2ef6ac155ac55c5e3ecea6e14c69489d545893dcb05453df17ed9cb49d1a",
+      "35e58241d2983bd4fc147d33258696016190972b54fd75d58e2821f031facd06",
+      "e49f7d68ea7114a24cc7250d84eb8d98ec8253fcf486635c479888a109ea6733",
+      "6956ee10610cf9510a9e5c8f1322d3c6dcf73489118e2b3ca72c9549855538b5",
+      "ae256281857664dc3720698175a17632afd6d0340b995d94ea8e8684ab7a4653",
+      "db0e48ebdabc0c6cdbebb35dd91412b8b14de63d3afb431dbdfcea9477ee7e47",
+      "01c87b2c0cca1b8fa73d1e91875f5787dee9e774a0df5204ddf28c8d43b24e36",
+      "0408d89fffc06a9e9c79d72a47bb6312366d3fc1e461f63f0c10eaa0e994e0b2"
+    ],
     "eb024f6c9697e8796d9633de0400495f41a2ad2378a2d8d6512feb7b99db9e73": [
       "890302ea4befd5ca8a1aa9d49e1c2b5ae124379cacb4fa74a377e6da210d2428"
     ],
@@ -722,7 +746,7 @@
     ]
   },
   "catalogs": {
-    "completed": "4368f8db721cd6b233dc2c65895de016de99af92f87919db5ba17153c8aba229",
+    "completed": "f7605fa76d15d7b2a2cb99ec3848c376ccb39742505fce7de7c2774d60b9808b",
     "empty": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "prePresetsMain": "7fe2e7ccc13ce974d03137b5117752ff03e7c001d2916d50c300ddbdf826207a",
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
@@ -771,6 +795,7 @@
     "preDefaultUsers": "b3d9b0b499a4ea4a0cab68cd2836ab6ceba96be82c3f2bb6faac5e7fcb2a06c4",
     "preNativeBrowserAccess": "d2bd6eeba2ea3063bd043a75e52699dbd79dd35187fa3ff1f2f111dfa71946f5",
     "preControlPlaneAudit": "3c4fbf128dd283e684211b88abf6c5dbd102463e7eec1dfcf5e7172180c611ed",
+    "preObserverInvocationWork": "4368f8db721cd6b233dc2c65895de016de99af92f87919db5ba17153c8aba229",
     "preHarnessOverrides": "451fc5103dcacb194c7decfd419da6444995d78ddbd4f44ee4f69217b4cb6c5b",
     "preAccountAdministrationPolicy": "c1e2e44e89e14f9408c939d4e2caf72d49dabc200df617f52b11a7050c36828c",
     "preFiniteRepositorySessionWithdrawal": "c806edfa92f7889a92783f40ea6d0dbed281250ebdc632a363d724f12a2d1d33",

@@ -90,7 +90,7 @@ export interface PostgresWorkQueueOptions {
 }
 
 interface WorkRow {
-  readonly work_kind: ControllerWorkKind | null;
+  readonly work_kind: unknown;
   readonly idempotency_key: string;
   readonly namespace_id: string;
   readonly agent_id: string | null;
@@ -577,10 +577,20 @@ function asRow(value: unknown): WorkRow {
   return value as WorkRow;
 }
 
+function controllerWorkKind(value: unknown): ControllerWorkKind {
+  if (value === null) {
+    return "lifecycle";
+  }
+  if (value === "lifecycle" || value === "provisioning" || value === "observer") {
+    return value;
+  }
+  throw new ScopeViolationError("PostgreSQL returned an unsupported controller work kind.");
+}
+
 export function asWork(value: unknown): ControllerWork {
   const row = asRow(value);
   return Object.freeze({
-    kind: row.work_kind ?? "lifecycle",
+    kind: controllerWorkKind(row.work_kind),
     idempotencyKey: row.idempotency_key,
     namespaceId: row.namespace_id,
     ...(row.agent_id === null ? {} : { agentId: row.agent_id }),
@@ -831,7 +841,7 @@ export class PostgresWorkQueue {
   async enqueue(input: EnqueueWork, requestId?: string): Promise<ControllerWork> {
     const idempotencyKey = nonempty(input.idempotencyKey, "Controller work idempotency key");
     const kind = input.kind ?? "lifecycle";
-    if (kind !== "lifecycle" && kind !== "provisioning") {
+    if (kind !== "lifecycle" && kind !== "provisioning" && kind !== "observer") {
       throw new ScopeViolationError("Controller work requires a supported kind.");
     }
     if (idempotencyKey.length > 512) {
@@ -882,6 +892,14 @@ export class PostgresWorkQueue {
       (agentId !== null || revisionId !== null || namespaceTarget !== null || agentTarget !== null)
     ) {
       throw new ScopeViolationError("Provisioning work requires one exact Namespace target.");
+    }
+    if (
+      kind === "observer" &&
+      (agentId === null || revisionId === null || namespaceTarget !== null || agentTarget !== null)
+    ) {
+      throw new ScopeViolationError(
+        "Observer work requires one exact Agent revision with no lifecycle target.",
+      );
     }
     const availableAt = input.availableAt === undefined ? null : asDate(input.availableAt);
 
@@ -1446,9 +1464,14 @@ export class PostgresWorkQueue {
     }
   }
 
-  async retry(claim: WorkClaim, failure: RetryableFailure): Promise<void> {
+  async retry(
+    claim: WorkClaim,
+    failure: RetryableFailure,
+    options: { readonly observerSettlement?: true } = {},
+  ): Promise<ControllerWork> {
     validateClaim(claim);
     const failureCode = safeFailureCode(failure.code);
+    const observerSettlement = options.observerSettlement === true;
     const jitter = this.nextRandom();
     const exhausted = `(attempt_count >= $5::integer AND NOT ${repositoryCleanupSql("work")})`;
     const retried = await this.client.query(
@@ -1479,8 +1502,9 @@ export class PostgresWorkQueue {
            AND state = 'claimed'
            AND claim_token = $2::uuid
            AND lease_expires_at > clock_timestamp()
+           AND (NOT $9::boolean OR work_kind = 'observer')
          RETURNING *
-       ), ${transferRepositoryCleanupSql()} ${SETTLE_PROVISIONING_FAILURE_SQL}
+       ), ${transferRepositoryCleanupSql("$9::boolean")} ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${INSERT_EVIDENCE_SQL}`,
       [
         claim.idempotencyKey,
@@ -1491,22 +1515,34 @@ export class PostgresWorkQueue {
         MAX_BACKOFF_MS,
         INITIAL_BACKOFF_MS,
         jitter,
+        observerSettlement,
       ],
     );
-    if (retried.rows.length === 0) {
+    const work = retried.rows[0];
+    if (work === undefined) {
       throw new WorkClaimLostError();
     }
+    return asWork(work);
   }
 
   async fail(
     claim: WorkClaim,
     failure: PermanentFailure,
-    options: { readonly continuingRevision?: true } = {},
+    options: {
+      readonly continuingRevision?: true;
+      readonly observerSettlement?: true;
+    } = {},
   ): Promise<void> {
     validateClaim(claim);
     const failureCode = safeFailureCode(failure.code);
     const data = validateFailureData(failureCode, failure.data);
     const continuingRevision = options.continuingRevision === true;
+    const observerSettlement = options.observerSettlement === true;
+    if (continuingRevision && observerSettlement) {
+      throw new ScopeViolationError(
+        "Observer settlement cannot continue an active revision after failure.",
+      );
+    }
     const maintenanceKey = MAINTENANCE_KEY.exec(claim.idempotencyKey);
     if (
       continuingRevision &&
@@ -1535,6 +1571,7 @@ export class PostgresWorkQueue {
        ), eligible AS (
          SELECT source.* FROM source
          WHERE NOT ${repositoryCleanupSql("source")}
+           AND (NOT $8::boolean OR source.work_kind = 'observer')
            AND (NOT $7::boolean OR EXISTS (
              SELECT 1 FROM continuing_agent AS agent
              JOIN occ.agent_revisions AS revision
@@ -1566,7 +1603,7 @@ export class PostgresWorkQueue {
          WHERE work.idempotency_key = eligible.idempotency_key
            AND work.lease_expires_at > clock_timestamp()
          RETURNING work.*
-       ), ${transferRepositoryCleanupSql("$7::boolean", "source.reason_code = 'REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED'")} ${SETTLE_PROVISIONING_FAILURE_SQL}
+       ), ${transferRepositoryCleanupSql("($7::boolean OR $8::boolean)", "source.reason_code = 'REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED'")} ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${INSERT_EVIDENCE_CTE_SQL}
        SELECT EXISTS (SELECT 1 FROM source) AS claim_current,
          EXISTS (SELECT 1 FROM transitioned) AS failed`,
@@ -1578,6 +1615,7 @@ export class PostgresWorkQueue {
         failureCode,
         data === undefined ? null : JSON.stringify(data),
         continuingRevision,
+        observerSettlement,
       ],
     );
     const result = failed.rows[0] as { claim_current: boolean; failed: boolean } | undefined;
