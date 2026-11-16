@@ -12,7 +12,7 @@ import test from "node:test";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { createNativeAdminAccess } from "../../apps/controller/src/http/native-admin.ts";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.mjs";
 import { waitUntil } from "../helpers/wait-for.ts";
 import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";

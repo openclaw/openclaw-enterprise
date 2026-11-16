@@ -13,7 +13,7 @@ import { loadConsoleTheme } from "../../apps/controller/src/composition/console-
 import { readConsoleAsset } from "../../apps/controller/src/console-assets.ts";
 import { renderConsoleThemeShell } from "../../apps/controller/src/console-theme.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { caAndLeaf } from "../helpers/certificates.mjs";
+import { caAndLeaf } from "../helpers/certificates.ts";
 import { captureChild } from "../helpers/child-processes.mjs";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";

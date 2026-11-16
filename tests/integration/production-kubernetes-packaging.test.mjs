@@ -46,7 +46,7 @@ import {
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 import { createEnvoyWorkspaceGatewayPlan } from "../helpers/envoy-workspace-gateway.mjs";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { RecordingContext } from "../conformance/kubernetes-teardown-cases.ts";
 import { withBoundedTeardown } from "../helpers/bounded-teardown.ts";
 import { withEnvironment } from "../helpers/environment.ts";

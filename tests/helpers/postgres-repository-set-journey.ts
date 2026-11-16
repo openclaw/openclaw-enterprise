@@ -62,7 +62,7 @@ const repositorySetPermissions = {
   issues: "write",
 } as const;
 import { gitExpiryGateway } from "./openshell-online-git-journey.mjs";
-import { harnessTlsFixture } from "./harness-tls.mjs";
+import { harnessTlsFixture } from "./harness-tls.ts";
 import { bindReservedPortInProcess, reservePort } from "./available-port.ts";
 import { invoke, token, openShellMiddlewareClient } from "./openshell-online-wire.mjs";
 import { exerciseNativeRepositorySet } from "./native-repository-set.ts";

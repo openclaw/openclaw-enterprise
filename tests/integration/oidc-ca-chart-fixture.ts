@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
-import { caAndLeaf } from "../helpers/certificates.mjs";
+import { caAndLeaf } from "../helpers/certificates.ts";
 import {
   chartTooling,
   parseProductionChart,

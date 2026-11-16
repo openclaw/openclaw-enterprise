@@ -49,7 +49,7 @@ import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/comp
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
 
 // Every field the OpenShell Git runtime emits reaches the worker log (finding 2244).

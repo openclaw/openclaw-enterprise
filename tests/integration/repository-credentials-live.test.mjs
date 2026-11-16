@@ -11,7 +11,7 @@ import {
   closeAndDispose,
   registerResourceCleanup,
 } from "../fixtures/repository-credentials/cleanup.ts";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import {
   cleanEnvironment,
   listen,

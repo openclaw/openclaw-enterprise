@@ -8,7 +8,7 @@ import {
   setGlobalDispatcher,
 } from "../../apps/controller/node_modules/undici/index.js";
 import { boundedTeardown } from "../helpers/bounded-teardown.ts";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { listen } from "../helpers/listen.ts";
 import { allMessages, assertSlackChannelDestination } from "../helpers/slack-delivery.ts";
 import { slackApi } from "../helpers/slack-web-api.ts";

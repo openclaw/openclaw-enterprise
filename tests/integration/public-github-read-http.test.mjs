@@ -5,7 +5,7 @@ import https from "node:https";
 import { connect as connectTcp, createServer as createTcpServer, Socket } from "node:net";
 import test from "node:test";
 import { createPublicGithubReadServer } from "../../apps/controller/src/drivers/repo/github/public-read/server.ts";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { runPublicGithubReadSocketCapacityCases } from "./public-github-read-socket-capacity-cases.ts";

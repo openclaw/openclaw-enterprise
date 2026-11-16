@@ -50,7 +50,7 @@ import { jsonRequestInit } from "../helpers/inject-json.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver, registerAndSelectDrivers } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
