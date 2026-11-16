@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.mjs";
+import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.ts";
 import {
   extractImageFile,
   removeImageFileContainer,

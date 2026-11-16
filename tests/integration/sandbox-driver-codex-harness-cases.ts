@@ -24,7 +24,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { SandboxRevisionUnsupportedError } from "../../packages/occ/src/index.ts";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { openShellWorkspaceHarnessConfiguration } from "./sandbox-driver-installation-fixture.ts";
 import { backendFor, openShellDriver } from "./sandbox-driver-openshell-fixture.ts";
 import {

@@ -10,13 +10,13 @@ import { NativeIAMDriver, createAuthPrincipalSeed } from "../../packages/iam/src
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createDevelopmentComputeDriver } from "./development.mjs";
-import { createDevelopmentIAMState } from "./development-iam-state.mjs";
-import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
+import { authorizedPrincipal, createDevelopmentIAMState } from "./development-iam-state.ts";
+import { createInstallationDriverConfiguration } from "./installation-driver-configuration.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { stopProcess } from "./stop-process.mjs";
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { reservedPortArgs } from "./available-port.ts";
 import { databaseUrl, requiresPostgres } from "./postgres-database.mjs";
@@ -47,33 +47,6 @@ export function backendDefinition(options = {}) {
     },
     drivers: { service_account: options.serviceAccountDriverId ?? serviceAccountDriverId },
   };
-}
-
-export function authorizedPrincipal(iam, required = [["deploy", "agent"]]) {
-  const roles = new Set(
-    iam.roles
-      .filter(({ permissions }) =>
-        required.every(([action, resourceKind]) =>
-          permissions.some(
-            (permission) =>
-              permission.action === action && permission.resourceKind === resourceKind,
-          ),
-        ),
-      )
-      .map(({ id }) => id),
-  );
-  return iam.identities.find(
-    ({ id, kind }) =>
-      kind === "principal" &&
-      iam.bindings.some(
-        (binding) =>
-          binding.subjectKind === "identity" &&
-          binding.subjectId === id &&
-          binding.namespaceId === undefined &&
-          binding.resourceKind === undefined &&
-          roles.has(binding.roleId),
-      ),
-  );
 }
 
 export async function ensureInstallation(state, label) {

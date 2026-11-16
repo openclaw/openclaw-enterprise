@@ -31,7 +31,7 @@ import {
   oldRuntime,
   runtime,
 } from "../helpers/production-upgrade-recovery-tools.ts";
-import { dumpYaml, loadYaml } from "../helpers/qa-utils.mjs";
+import { dumpYaml, loadYaml } from "../helpers/kubernetes-yaml.ts";
 
 type PluginRegistration = {
   id: string;

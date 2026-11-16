@@ -12,7 +12,7 @@ import {
   bodyShapes as helperBodyShapes,
   providerErrorCodes as helperErrorCodes,
   providerErrorTypes as helperErrorTypes,
-} from "../helpers/local-first-agent-native.mjs";
+} from "../helpers/local-first-agent-native-diagnostics.ts";
 
 const execute = promisify(execFile);
 

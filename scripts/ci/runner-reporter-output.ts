@@ -29,7 +29,12 @@ type TestCase = {
   durationMs: unknown;
 };
 
-type SuiteSource = { file: string; line?: number; column?: number; nesting?: number };
+type SuiteSource = {
+  file: string;
+  line?: number;
+  column?: number;
+  nesting?: number;
+};
 type Issue = ReturnType<typeof issue>;
 type OpenShellReplacement = {
   checkpoint: (typeof openShellReplacementCheckpoints)[number];
@@ -403,14 +408,19 @@ export function readFileEvidence(
       events.some((event) => reporterField(event, "type") === "test:upstream-outage-attribution") &&
       testCase.data.file === join(root, upstreamOutageCase.declaration) &&
       testCase.data.name === upstreamOutageCase.name &&
-      testCase.data.nesting === 0
+      testCase.data.nesting === 0 &&
+      testCase.data.testType === "test"
     ) {
-      evidence.openShellReplacement = upstreamReplacement(
-        events,
-        evidence.measurements,
-        testCase,
-        "failed",
-      );
+      const caseTimedOut =
+        optionalReporterField(testCase.data.error, "failureType") === "testTimeoutFailure";
+      if (!caseTimedOut || (output.status === 1 && evidence.unfinishedStage === "replacement")) {
+        evidence.openShellReplacement = upstreamReplacement(
+          events,
+          evidence.measurements,
+          testCase,
+          caseTimedOut ? "unfinished" : "failed",
+        );
+      }
     }
   }
   let coverageAssertions: ReturnType<typeof assertionFailures>;

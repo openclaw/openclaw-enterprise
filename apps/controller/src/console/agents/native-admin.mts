@@ -283,10 +283,12 @@ export function renderNativeAdminAccess(
     }
     scope.hidden = launch.hidden;
     const chat = current?.status === "available" && current.mode === "chat";
+    const launchLabel = chat ? "Open chat" : "Open Agent UI";
     launch.replaceChildren(
-      document.createTextNode(chat ? "Open chat" : "Open Agent UI"),
+      document.createTextNode(launchLabel),
       element("span", { "aria-hidden": "true" }, "↗"),
     );
+    setText(unavailable, launchLabel);
     setText(
       scope,
       chat

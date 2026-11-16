@@ -11,7 +11,7 @@ import {
 } from "../../scripts/lib/auth-maintain-arguments.ts";
 import { outputSink } from "../helpers/bootstrap-installation.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 

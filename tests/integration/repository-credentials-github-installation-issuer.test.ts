@@ -9,9 +9,9 @@ import type {
 import { createGitHubPreparationOwner } from "../../apps/controller/src/drivers/repo/github/access/prepared-owner.ts";
 import type { GitHubPreparationDiagnostic } from "../../apps/controller/src/drivers/repo/github/access/provider-diagnostics.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.mjs";
-import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
+import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.ts";
 
 function assertCredentialMatches(actual: Uint8Array | undefined, expected: string | undefined) {
   assert.equal(

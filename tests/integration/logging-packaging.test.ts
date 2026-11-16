@@ -1,145 +1,116 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import Type, { type Static } from "typebox";
+import { Check } from "typebox/value";
 
-import { composeConfiguration } from "../helpers/compose.mjs";
+import { asRecord } from "../../packages/utils/src/index.ts";
+import { composeConfiguration } from "../helpers/compose.ts";
+import { namedChartResource } from "../helpers/production-chart-resource.ts";
 import {
   chartTooling,
   parseProductionChart,
   productionCollectorValues as loggingValues,
-  renderProductionChart,
-} from "../helpers/production-chart.mjs";
+  renderProductionChart as render,
+  type ChartValues,
+} from "../helpers/production-chart.ts";
 
-type ComposePort =
-  | string
-  | {
-      mode?: string;
-      protocol?: string;
-      target: number;
-      published: string | number;
-      host_ip?: string;
-    };
+const chartResource = Type.Intersect([
+  namedChartResource,
+  Type.Object({
+    metadata: Type.Object({ labels: Type.Optional(Type.Record(Type.String(), Type.String())) }),
+  }),
+]);
 
-interface ComposeLogging {
-  driver: string;
-  options: Record<string, string>;
-}
-
-interface ComposeLoggingConfiguration {
-  services: {
-    bootstrap: { logging: ComposeLogging };
-    controller: { logging: ComposeLogging; environment: NodeJS.ProcessEnv };
-    migrate: { logging: ComposeLogging };
-    worker: { logging: ComposeLogging; environment: NodeJS.ProcessEnv };
-    postgres: { logging?: ComposeLogging };
-    collector: {
-      ports: ComposePort[];
-      image: string;
-      logging: { driver: string };
-      mem_limit: string | number;
-      user: string;
-      read_only: boolean;
-      cap_drop: string[];
-      security_opt: string[];
-    };
-  };
-  volumes: Record<string, unknown>;
-}
-
-interface ChartResource {
-  kind: string;
-  metadata: { name: string; labels?: Record<string, string> };
-}
-
-interface ServiceAccount extends ChartResource {
-  kind: "ServiceAccount";
-  automountServiceAccountToken?: boolean;
-}
-
-interface CollectorDaemonSet extends ChartResource {
-  kind: "DaemonSet";
-  spec: {
-    template: {
-      spec: {
-        containers: Array<{
-          image: string;
-          envFrom?: unknown[];
-          env?: unknown[];
-          ports?: unknown[];
-          securityContext: {
-            allowPrivilegeEscalation?: boolean;
-            readOnlyRootFilesystem?: boolean;
-            capabilities: { drop?: string[] };
-          };
-          resources?: unknown;
-          volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }>;
-        }>;
-        securityContext: { runAsNonRoot?: boolean; supplementalGroups?: number[] };
-        volumes: Array<{
-          name: string;
-          hostPath?: { path: string; type?: string };
-          emptyDir?: { sizeLimit?: string };
-          secret?: { secretName: string };
-        }>;
-      };
-    };
-  };
-}
-
-interface InitializationJob extends ChartResource {
-  kind: "Job";
-  spec: {
-    template: {
-      spec: { initContainers: Array<{ name: string }>; containers: Array<{ name: string }> };
-    };
-  };
-}
-
-interface ClusterRole extends ChartResource {
-  kind: "ClusterRole";
-  rules: Array<{ apiGroups?: string[]; resources?: string[]; verbs: string[] }>;
-}
-
-interface NetworkPolicy extends ChartResource {
-  kind: "NetworkPolicy";
-  spec: {
-    egress?: Array<{ to?: Array<{ ipBlock?: { cidr: string } }>; ports?: unknown[] }>;
-    ingress?: unknown[];
-  };
-}
-
-type ChartResources = {
-  ServiceAccount: ServiceAccount;
-  DaemonSet: CollectorDaemonSet;
-  Job: InitializationJob;
-  ClusterRole: ClusterRole;
-  NetworkPolicy: NetworkPolicy;
+const collectorPod = Type.Object({
+  containers: Type.Array(
+    Type.Object({
+      image: Type.String(),
+      envFrom: Type.Optional(Type.Unknown()),
+      env: Type.Optional(Type.Unknown()),
+      ports: Type.Optional(Type.Unknown()),
+      securityContext: Type.Object({
+        allowPrivilegeEscalation: Type.Optional(Type.Boolean()),
+        readOnlyRootFilesystem: Type.Optional(Type.Boolean()),
+        capabilities: Type.Object({ drop: Type.Optional(Type.Array(Type.String())) }),
+      }),
+      resources: Type.Optional(Type.Unknown()),
+      volumeMounts: Type.Array(Type.Object({ name: Type.String(), mountPath: Type.String() })),
+    }),
+  ),
+  securityContext: Type.Object({
+    runAsNonRoot: Type.Optional(Type.Boolean()),
+    supplementalGroups: Type.Optional(Type.Array(Type.Number())),
+  }),
+  volumes: Type.Array(
+    Type.Object({
+      name: Type.String(),
+      hostPath: Type.Optional(Type.Unknown()),
+      emptyDir: Type.Optional(Type.Unknown()),
+      secret: Type.Optional(Type.Object({ secretName: Type.String() })),
+    }),
+  ),
+});
+const namedContainers = Type.Array(Type.Object({ name: Type.String() }));
+const resourceShapes = {
+  ServiceAccount: Type.Object({ automountServiceAccountToken: Type.Optional(Type.Boolean()) }),
+  DaemonSet: Type.Object({ spec: Type.Object({ template: Type.Object({ spec: collectorPod }) }) }),
+  Job: Type.Object({
+    spec: Type.Object({
+      template: Type.Object({
+        spec: Type.Object({ initContainers: namedContainers, containers: namedContainers }),
+      }),
+    }),
+  }),
+  ClusterRole: Type.Object({
+    rules: Type.Array(Type.Object({ resources: Type.Optional(Type.Array(Type.String())) })),
+  }),
+  NetworkPolicy: Type.Object({
+    spec: Type.Object({
+      egress: Type.Optional(
+        Type.Array(
+          Type.Object({
+            to: Type.Optional(
+              Type.Array(
+                Type.Object({ ipBlock: Type.Optional(Type.Object({ cidr: Type.String() })) }),
+              ),
+            ),
+          }),
+        ),
+      ),
+      ingress: Type.Optional(Type.Unknown()),
+    }),
+  }),
 };
-
-interface CollectorConfig {
-  receivers: { filelog: { include: string[]; exclude: string[] } };
-}
-
-type HelmOverrides = Record<string, string | null>;
-const render: (
-  overrides?: HelmOverrides,
-  options?: { release?: string; isUpgrade?: boolean },
-) => Promise<{ stdout: string }> = renderProductionChart;
+const collectorConfig = Type.Object({
+  receivers: Type.Object({
+    filelog: Type.Object({
+      include: Type.Array(Type.String()),
+      exclude: Type.Array(Type.String()),
+    }),
+  }),
+});
+type ChartResource = Static<typeof chartResource>;
 
 async function chartResources(manifests: string): Promise<ChartResource[]> {
-  return parseProductionChart(manifests);
+  const documents = await parseProductionChart(manifests);
+  assert.ok(Check(Type.Array(chartResource), documents), "Expected named Helm resources");
+  return documents;
 }
 
-function findResource<Kind extends keyof ChartResources>(
+function findResource<Kind extends keyof typeof resourceShapes>(
   resources: readonly ChartResource[],
   kind: Kind,
   matches: (object: ChartResource) => boolean,
-): ChartResources[Kind] {
-  const resource = resources.find(
-    (object): object is ChartResources[Kind] => object.kind === kind && matches(object),
-  );
-  assert.ok(resource, `Expected chart to render a ${kind}`);
+): ChartResource & Static<(typeof resourceShapes)[Kind]> {
+  const resource = resources.find((object) => object.kind === kind && matches(object));
+  assert.ok(Check(resourceShapes[kind], resource), `Expected chart to render a ${kind}`);
   return resource;
+}
+
+function hasComponent(component: string) {
+  return ({ metadata }: ChartResource) =>
+    metadata.labels?.["app.kubernetes.io/component"] === component;
 }
 
 function helmRefusal(error: unknown): error is Error & { code: unknown; stderr: string } {
@@ -152,30 +123,43 @@ function helmRefusal(error: unknown): error is Error & { code: unknown; stderr: 
   );
 }
 
-function composeLoggingConfiguration(
-  environment: NodeJS.ProcessEnv = {},
-): ComposeLoggingConfiguration {
-  return composeConfiguration(["compose.yaml", "compose.logging.yaml"], {
+function composeRecord(value: unknown, field: string): Record<string, unknown> {
+  const record = asRecord(value);
+  assert.ok(record, `Expected Compose to render ${field}`);
+  return record;
+}
+
+function composeLoggingConfiguration(environment: NodeJS.ProcessEnv = {}) {
+  const { services, volumes } = composeConfiguration(["compose.yaml", "compose.logging.yaml"], {
     OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "http://127.0.0.1:4318/v1/logs",
     ...environment,
   });
+  assert.ok(services, "Expected Compose to render services");
+  assert.ok(volumes, "Expected Compose to render volumes");
+  return {
+    service: (name: string) => composeRecord(services[name], `service ${name}`),
+    volumes,
+  };
 }
 
-function hasLoopbackPort(service: { ports: ComposePort[] }, target: number, published: number) {
+function hasLoopbackPort(ports: unknown, target: number, published: number) {
+  assert.ok(Array.isArray(ports), "Expected Compose to render Collector ports");
+  const bindings: readonly unknown[] = ports;
   // Compare the same TCP binding in either provider's resolved representation.
-  return service.ports.some((port) => {
+  return bindings.some((port) => {
     if (typeof port === "string") {
       return (
         port === `127.0.0.1:${published}:${target}` ||
         port === `127.0.0.1:${published}:${target}/tcp`
       );
     }
+    const binding = composeRecord(port, "Collector port binding");
     return (
-      (port.mode ?? "ingress") === "ingress" &&
-      (port.protocol ?? "tcp") === "tcp" &&
-      port.target === target &&
-      String(port.published) === String(published) &&
-      port.host_ip === "127.0.0.1"
+      (binding.mode ?? "ingress") === "ingress" &&
+      (binding.protocol ?? "tcp") === "tcp" &&
+      binding.target === target &&
+      (binding.published === published || binding.published === String(published)) &&
+      binding.host_ip === "127.0.0.1"
     );
   });
 }
@@ -200,52 +184,59 @@ test("development logging override routes only OCC-owned services through the pr
     "logging:\n  level: info\n",
   );
 
-  const configuration = composeLoggingConfiguration();
-  const { bootstrap, collector, controller, migrate, postgres, worker } = configuration.services;
+  const { service, volumes } = composeLoggingConfiguration();
+  const collector = service("collector");
 
   assert.equal(
     collector.image,
     "docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc",
   );
-  assert.ok(hasLoopbackPort(collector, 24224, 24224));
-  assert.ok(hasLoopbackPort(collector, 8888, 8888));
-  assert.equal(collector.logging.driver, "local");
+  assert.ok(hasLoopbackPort(collector.ports, 24224, 24224));
+  assert.ok(hasLoopbackPort(collector.ports, 8888, 8888));
+  assert.equal(composeRecord(collector.logging, "collector.logging").driver, "local");
   assert.ok(["402653184", "384m"].includes(String(collector.mem_limit)));
   assert.equal(collector.user, "0:0");
   assert.equal(collector.read_only, true);
   assert.deepEqual(collector.cap_drop, ["ALL"]);
   assert.deepEqual(collector.security_opt, ["no-new-privileges:true"]);
-  assert.ok(Object.hasOwn(configuration.volumes, "occ_otelcol_data"));
+  assert.ok(Object.hasOwn(volumes, "occ_otelcol_data"));
 
-  for (const service of [bootstrap, controller, migrate, worker]) {
-    assert.equal(service.logging.driver, "fluentd");
-    assert.equal(service.logging.options["fluentd-address"], "127.0.0.1:24224");
-    assert.equal(service.logging.options["fluentd-async"], "true");
-    assert.equal(service.logging.options["fluentd-buffer-limit"], "1024");
-    assert.equal(service.logging.options.mode, "non-blocking");
-    assert.equal(service.logging.options["max-buffer-size"], "1m");
-    assert.equal(service.logging.options["cache-disabled"], "false");
-    assert.equal(service.logging.options["cache-max-size"], "10m");
-    assert.equal(service.logging.options["cache-max-file"], "2");
-    assert.equal(service.logging.options["cache-compress"], "true");
-    const { labels } = service.logging.options;
-    assert.ok(labels);
+  for (const name of ["bootstrap", "controller", "migrate", "worker"]) {
+    const logging = composeRecord(service(name).logging, `${name}.logging`);
+    assert.equal(logging.driver, "fluentd");
+    const options = composeRecord(logging.options, `${name}.logging.options`);
+    assert.equal(options["fluentd-address"], "127.0.0.1:24224");
+    assert.equal(options["fluentd-async"], "true");
+    assert.equal(options["fluentd-buffer-limit"], "1024");
+    assert.equal(options.mode, "non-blocking");
+    assert.equal(options["max-buffer-size"], "1m");
+    assert.equal(options["cache-disabled"], "false");
+    assert.equal(options["cache-max-size"], "10m");
+    assert.equal(options["cache-max-file"], "2");
+    assert.equal(options["cache-compress"], "true");
+    assert.ok(typeof options.labels === "string");
+    const { labels } = options;
     assert.match(labels, /org\.openclaw\.enterprise\.managed/);
     assert.match(labels, /org\.openclaw\.enterprise\.version/);
     assert.match(labels, /com\.docker\.compose\.service/);
   }
-  assert.equal(controller.environment.OCC_DOCKER_LOGGING_ADDRESS, "127.0.0.1:24224");
-  assert.equal(worker.environment.OCC_DOCKER_LOGGING_ADDRESS, "127.0.0.1:24224");
-  assert.equal(postgres.logging, undefined);
+  for (const name of ["controller", "worker"]) {
+    const environment = composeRecord(service(name).environment, `${name}.environment`);
+    assert.equal(environment.OCC_DOCKER_LOGGING_ADDRESS, "127.0.0.1:24224");
+  }
+  assert.equal(service("postgres").logging, undefined);
 
   const overridden = composeLoggingConfiguration({
     OCC_DOCKER_LOGGING_ADDRESS: "127.0.0.1:25224",
     OTEL_COLLECTOR_PORT: "25224",
     OTEL_COLLECTOR_METRICS_PORT: "18888",
   });
-  assert.ok(hasLoopbackPort(overridden.services.collector, 24224, 25224));
-  assert.ok(hasLoopbackPort(overridden.services.collector, 8888, 18888));
-  assert.equal(overridden.services.worker.logging.options["fluentd-address"], "127.0.0.1:25224");
+  const overriddenPorts = overridden.service("collector").ports;
+  assert.ok(hasLoopbackPort(overriddenPorts, 24224, 25224));
+  assert.ok(hasLoopbackPort(overriddenPorts, 8888, 18888));
+  const workerLogging = composeRecord(overridden.service("worker").logging, "worker.logging");
+  const workerOptions = composeRecord(workerLogging.options, "worker.logging.options");
+  assert.equal(workerOptions["fluentd-address"], "127.0.0.1:25224");
 });
 
 test(
@@ -257,15 +248,9 @@ test(
 
     const { stdout } = await render(loggingValues);
     const rendered = await chartResources(stdout);
-    const byKindAndComponent = <Kind extends keyof ChartResources>(kind: Kind, component: string) =>
-      findResource(
-        rendered,
-        kind,
-        ({ metadata }) => metadata.labels?.["app.kubernetes.io/component"] === component,
-      );
-    const serviceAccount = byKindAndComponent("ServiceAccount", "collector");
-    const daemonSet = byKindAndComponent("DaemonSet", "collector");
-    const initialization = byKindAndComponent("Job", "initialization");
+    const serviceAccount = findResource(rendered, "ServiceAccount", hasComponent("collector"));
+    const daemonSet = findResource(rendered, "DaemonSet", hasComponent("collector"));
+    const initialization = findResource(rendered, "Job", hasComponent("initialization"));
     const pod = daemonSet.spec.template.spec;
     const container = pod.containers[0];
     assert.ok(container);
@@ -277,8 +262,8 @@ test(
       { name: "K8S_NODE_NAME", valueFrom: { fieldRef: { fieldPath: "spec.nodeName" } } },
     ]);
     assert.deepEqual(container.ports, [{ name: "metrics", containerPort: 8888 }]);
-    assert.equal(daemonSet.spec.template.spec.securityContext.runAsNonRoot, true);
-    assert.deepEqual(daemonSet.spec.template.spec.securityContext.supplementalGroups, [0]);
+    assert.equal(pod.securityContext.runAsNonRoot, true);
+    assert.deepEqual(pod.securityContext.supplementalGroups, [0]);
     assert.equal(container.securityContext.allowPrivilegeEscalation, false);
     assert.equal(container.securityContext.readOnlyRootFilesystem, true);
     assert.deepEqual(container.securityContext.capabilities.drop, ["ALL"]);
@@ -322,8 +307,11 @@ test(
       "utf8",
     );
     assert.match(kubernetesCollectorConfig, /occ\.component.+initialization/);
-    const [config]: CollectorConfig[] = await parseProductionChart(kubernetesCollectorConfig);
-    assert.ok(config);
+    const [config] = await parseProductionChart(kubernetesCollectorConfig);
+    assert.ok(
+      Check(collectorConfig, config),
+      "Expected Collector filelog include and exclude globs",
+    );
     const { receivers } = config;
     const includes = receivers.filelog.include.map(globExpression);
     const excludes = receivers.filelog.exclude.map(globExpression);
@@ -334,7 +322,7 @@ test(
     const upgradeJob = findResource(
       await chartResources(upgrade.stdout),
       "Job",
-      ({ metadata }) => metadata.labels?.["app.kubernetes.io/component"] === "initialization",
+      hasComponent("initialization"),
     );
     // The initialization-specific CRI globs collect structured migration and bootstrap events.
     // The startup check writes a plain-text result for the operator.
@@ -371,7 +359,7 @@ test(
     const longInitialization = findResource(
       await chartResources(longRelease.stdout),
       "Job",
-      ({ metadata }) => metadata.labels?.["app.kubernetes.io/component"] === "initialization",
+      hasComponent("initialization"),
     );
     checkInitializationLogs(longInitialization.metadata.name.slice(0, 63));
     // Other workloads' containers stay out, and the Collector never reads itself.
@@ -424,7 +412,7 @@ test(
   "production Helm logging rejects mutable images, broad egress, and shared application Secrets",
   helmTooling,
   async () => {
-    const refusals: Array<[string, HelmOverrides]> = [
+    const refusals: Array<[string, ChartValues]> = [
       [
         "mutable Collector image",
         {
@@ -528,7 +516,7 @@ test(
       "executionCluster.workerKubeconfigSecretName": "execution-worker",
       "executionCluster.apiCidrs[0]": "10.44.0.2/32",
     };
-    const enabledFeatures: Array<[HelmOverrides, string[]]> = [
+    const enabledFeatures: Array<[ChartValues, string[]]> = [
       [oidc, ["occ-oidc-login"]],
       [gatewayRouting, ["occ-gateway-api-key"]],
       [
@@ -609,13 +597,13 @@ test(
     assert.ok(
       !disabled.some((object) => object.metadata.name === "openclaw-enterprise-collector-metrics"),
     );
-    const overrides: HelmOverrides[] = [
+    const overrides: ChartValues[] = [
       { "logging.collector.exporter.namespaceLabels": null },
       { "logging.collector.exporter.podLabels": null },
       { "logging.collector.exporter.cidr": "203.0.113.10/32" },
       { "logging.collector.metrics.scraperNamespaceLabels": null },
       { "logging.collector.metrics.scraperPodLabels": null },
-      ...["0", "65536", "9.5"].map((port): HelmOverrides => ({
+      ...["0", "65536", "9.5"].map((port): ChartValues => ({
         "logging.collector.exporter.port": port,
       })),
     ];

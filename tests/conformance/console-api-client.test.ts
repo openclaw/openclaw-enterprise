@@ -8,11 +8,10 @@ import {
   type RequestOptions,
 } from "../../apps/controller/src/console/api-client.mts";
 import { createViewLifetime } from "../../apps/controller/src/console/view-lifetime.mts";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 
 async function namespaceUrl(t: TestContext, server: Server) {
-  const port: unknown = await listen(t, server);
-  assert.ok(typeof port === "number");
+  const port = await listen(t, server);
   return `http://127.0.0.1:${port}/namespaces`;
 }
 

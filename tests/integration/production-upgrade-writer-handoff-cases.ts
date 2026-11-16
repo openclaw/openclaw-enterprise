@@ -37,7 +37,7 @@ import {
   requireRecoveryPreflight,
   type RecoveryState,
 } from "../helpers/production-upgrade-recovery-state.ts";
-import { runtime } from "../helpers/production-upgrade-recovery-tools.ts";
+import { runtime, skipWithoutHelm } from "../helpers/production-upgrade-recovery-tools.ts";
 import {
   createDoctorPodFixture,
   embeddedDoctorNamespace,
@@ -180,8 +180,7 @@ export function registerWriterHandoffCases({
   });
 
   test("a named worker patch denial keeps the incumbent API serving", async (t) => {
-    if (!realHelm) {
-      t.skip("helm is unavailable to render the real chart");
+    if (skipWithoutHelm(t, realHelm)) {
       return;
     }
     const f = await fixture(t, {

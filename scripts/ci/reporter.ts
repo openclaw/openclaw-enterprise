@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { TestEvent } from "node:test/reporters";
 import { projectFailureDiagnostic, isRecord } from "./reporter-diagnostics.ts";
 import {
@@ -83,7 +83,10 @@ export function nativeFirstAgentProofDiagnostic(failureStage: unknown, worker: u
   if (typeof failureStage !== "string" || !stages.includes(failureStage)) {
     return undefined;
   }
-  const diagnostic = { kind: "native-first-agent-proof" as const, failureStage };
+  const diagnostic = {
+    kind: "native-first-agent-proof" as const,
+    failureStage,
+  };
   if (!isRecord(worker)) {
     return diagnostic;
   }
@@ -519,7 +522,14 @@ function* interruptedOutput({ lines, omitted }: OutputTail) {
   }
 }
 
-function location(data: ReporterEventData = {}, recordCoverage = false) {
+const nativeChildTestFile = resolve("tests/integration/harness-topology-k3d-real.test.mjs");
+
+function location(
+  data: ReporterEventData = {},
+  recordCoverage = false,
+  failed = false,
+  upstreamCaseTimedOut = false,
+) {
   const rawError = data.details?.error;
   const error = failureFields(rawError);
   const cause = error?.cause ?? rawError;
@@ -535,7 +545,11 @@ function location(data: ReporterEventData = {}, recordCoverage = false) {
     const frame = fields.stack.split("\n").find((line) => line.includes(marker));
     const coordinates = frame?.slice(frame.indexOf(marker) + marker.length).match(/^(\d+):(\d+)/);
     if (coordinates) {
-      failureLocation = { file, line: Number(coordinates[1]), column: Number(coordinates[2]) };
+      failureLocation = {
+        file,
+        line: Number(coordinates[1]),
+        column: Number(coordinates[2]),
+      };
     }
   }
   return {
@@ -570,8 +584,9 @@ function location(data: ReporterEventData = {}, recordCoverage = false) {
         ? {
             code: error.code === "ERR_TEST_FAILURE" ? "ERR_TEST_FAILURE" : undefined,
             name: "Error",
-            failureType:
-              fileFailure && error.failureType === "testCodeFailure"
+            failureType: upstreamCaseTimedOut
+              ? "testTimeoutFailure"
+              : fileFailure && error.failureType === "testCodeFailure"
                 ? "testCodeFailure"
                 : undefined,
             exitCode:
@@ -590,7 +605,16 @@ function location(data: ReporterEventData = {}, recordCoverage = false) {
                 ? { code: "ERR_ASSERTION", name: "AssertionError" }
                 : undefined,
             location: failureLocation,
-            diagnostic: projectFailureDiagnostic(cause, nativeFirstAgentProofDiagnostic),
+            diagnostic: projectFailureDiagnostic(
+              cause,
+              nativeFirstAgentProofDiagnostic,
+              failed &&
+                file === nativeChildTestFile &&
+                data.name === "native child returns its own exact answer" &&
+                data.nesting === 1 &&
+                data.details?.type === "test" &&
+                error.failureType === "testCodeFailure",
+            ),
             ...failureText(cause, fields),
           }
         : undefined,
@@ -622,14 +646,14 @@ export default async function* jsonLinesReporter(
     try {
       const raw: unknown = JSON.parse(line.slice(openShellProgressPrefix.length));
       const value: unknown = openShellProgress(raw);
+      if (
+        isRecord(raw) &&
+        (raw.kind === "openshell-stage" || raw.kind === "openshell-replacement-checkpoint") &&
+        (!isRecord(value) || (upstreamPhase !== "envelope" && upstreamPhase !== "active"))
+      ) {
+        upstreamPhase = "ineligible";
+      }
       if (isRecord(value)) {
-        if (
-          (value.kind === "openshell-stage" || value.kind === "openshell-replacement-checkpoint") &&
-          upstreamPhase !== "envelope" &&
-          upstreamPhase !== "active"
-        ) {
-          upstreamPhase = "ineligible";
-        }
         progress.push(value);
       }
     } catch {
@@ -644,6 +668,7 @@ export default async function* jsonLinesReporter(
   const runningKey = (data: ReporterEventData) =>
     `${data.nesting}:${data.line}:${data.column}:${data.name}`;
   for await (const event of source) {
+    let upstreamCaseTimedOut = false;
     if (
       upstreamPhase !== "ineligible" &&
       (event.type === "test:dequeue" ||
@@ -692,6 +717,9 @@ export default async function* jsonLinesReporter(
         data.details?.type === "test"
       ) {
         upstreamPhase = "failed";
+        const error = failureFields(data.details.error);
+        upstreamCaseTimedOut =
+          error?.code === "ERR_TEST_FAILURE" && error.failureType === "testTimeoutFailure";
       } else if (event.type === "test:complete" && upstreamPhase === "failed" && envelope) {
         upstreamPhase = "closed";
       } else {
@@ -700,7 +728,10 @@ export default async function* jsonLinesReporter(
     }
     if (event.type === "test:dequeue" && typeof event.data?.name === "string") {
       const key = runningKey(event.data);
-      running.set(key, { data: event.data, count: (running.get(key)?.count ?? 0) + 1 });
+      running.set(key, {
+        data: event.data,
+        count: (running.get(key)?.count ?? 0) + 1,
+      });
       continue;
     }
     if (event.type === "test:complete" && typeof event.data?.name === "string") {
@@ -789,7 +820,7 @@ export default async function* jsonLinesReporter(
 
     yield `${JSON.stringify({
       type: event.type,
-      data: location(event.data, recordCoverage),
+      data: location(event.data, recordCoverage, event.type === "test:fail", upstreamCaseTimedOut),
     })}\n`;
   }
   if (upstreamPhase === "closed") {

@@ -11,7 +11,8 @@ import {
   redactFailureDetail,
   redactLogLine,
 } from "../../scripts/ci/failure-redaction.ts";
-import { selectComposeSubnet } from "./compose-network.mjs";
+import { configurePodmanComposeProvider } from "../../scripts/lib/podman-compose-provider.ts";
+import { selectComposeSubnet } from "./compose-network.ts";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const cli = join(root, "bin", "occ");
@@ -497,9 +498,7 @@ async function existingOrigin(directory, state, environment) {
     COMPOSE_DISABLE_ENV_FILE: "1",
     DOCKER_HOST: state.dockerHost,
   });
-  if (state.containerEngine === "podman") {
-    subprocessEnvironment.PODMAN_COMPOSE_PROVIDER ||= "podman-compose";
-  }
+  configurePodmanComposeProvider(state.containerEngine, subprocessEnvironment);
   const result = await run(
     state.containerEngine,
     [

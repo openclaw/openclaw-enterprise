@@ -11,40 +11,9 @@ type UserMessageMetadata = {
   idempotencyKey?: string | number;
 };
 type TranscriptRow = string | { role: string; content: string | readonly object[] };
-type EvidenceOptions = { sessionKey: string; turnMarker: string; toolName: string };
-type AgentSelection = {
-  id?: string | undefined;
-  namespaceId?: string | undefined;
-  revision?: { id?: string | undefined } | undefined;
-};
-type TranscriptAssertion<Result> = (
-  agent: AgentSelection,
-  options: EvidenceOptions,
-) => Promise<Result>;
-type TranscriptAssertions = {
-  assertSessionToolCallEvidence: TranscriptAssertion<{ codexMirrorTurnVerified?: boolean }>;
-  assertNoSessionToolCallEvidence: TranscriptAssertion<void>;
-  assertSessionToolDeniedEvidence: TranscriptAssertion<void>;
-};
-type TranscriptAssertionOptions = {
-  proofMode: "codex";
-  gatewayUrl: undefined;
-  execCodex: undefined;
-  waitFor: undefined;
-  readRuntimeLogs: undefined;
-  recordRuntimeLogs: undefined;
-  execGateway: (
-    agent: AgentSelection,
-    argv: [node: "node", evalFlag: "-e", script: string, ...args: string[]],
-  ) => Promise<{ label: string; stdout: string }>;
-};
 
 async function transcriptWriter(t: TestContext, prefix: string) {
-  const {
-    createNativePluginAssertions,
-  }: {
-    createNativePluginAssertions: (options: TranscriptAssertionOptions) => TranscriptAssertions;
-  } = await import("../helpers/plugin-driver-real.mjs");
+  const { createNativePluginAssertions } = await import("../helpers/native-plugin-assertions.ts");
   const directory = await temporaryDirectory(t, prefix);
 
   return (name: string, rows: readonly TranscriptRow[]) => {
@@ -72,11 +41,6 @@ async function transcriptWriter(t: TestContext, prefix: string) {
 
     const assertions = createNativePluginAssertions({
       proofMode: "codex",
-      gatewayUrl: undefined,
-      execCodex: undefined,
-      waitFor: undefined,
-      readRuntimeLogs: undefined,
-      recordRuntimeLogs: undefined,
       async execGateway(_agent, [, , script, ...args]) {
         const run = spawnSync(
           process.execPath,

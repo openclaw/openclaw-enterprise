@@ -12,9 +12,9 @@ import {
   HARNESS_EGRESS_ENROLLMENT_PATH,
 } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { signedLeaf } from "../helpers/certificates.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
+import { signedLeaf } from "../helpers/certificates.ts";
+import { listen } from "../helpers/listen.ts";
 
 type ProbeScenario = {
   name: string;
