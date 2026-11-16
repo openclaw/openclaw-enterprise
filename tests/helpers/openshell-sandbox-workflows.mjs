@@ -1,6 +1,6 @@
 import { createReplacementNodeObservation } from "./openshell-workspace-node-observation.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
-import { runOpenShellStage } from "./openshell-stage.mjs";
+import { runOpenShellStage } from "./openshell-stage.ts";
 import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagnostic.ts";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.ts";
 import {
