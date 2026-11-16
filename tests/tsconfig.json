@@ -109,6 +109,7 @@
     "integration/postgres-worker-revision-readiness-shutdown-cases.ts",
     "integration/json-body-depth-http-cases.ts",
     "integration/occ-api-injected-fixture.ts",
+    "integration/occ-api-backend-cases.ts",
     "integration/occ-api-resource-route-cases.ts",
     "integration/occ-api-compute-admission-cases.ts",
     "integration/occ-api-plugin-policy-cases.ts",

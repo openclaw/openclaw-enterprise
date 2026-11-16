@@ -1,3 +1,4 @@
+import { runBackendAssociations, runBackendIdCharacterRule } from "./occ-api-backend-cases.ts";
 import {
   registerAuthorizationDecisionCases,
   registerBootstrapAuthorizationEvidenceCase,
@@ -12,9 +13,13 @@ import {
   registerOpenClawPluginPolicyCases,
 } from "./occ-api-plugin-policy-cases.ts";
 import {
+  checkMalformedResourcePaths,
+  checkPayloadLimitAndAllowedMethods,
+  checkResourceCreationSchemas,
   runBodylessRoutes,
   runNamespaceIsolation,
   runResourceRoutes,
+  withValidationBeforeIam,
 } from "./occ-api-resource-route-cases.ts";
 import {
   bindHarnessKey,
@@ -74,7 +79,6 @@ import {
   DEDICATED_STORAGE_ROUTING_REQUIRED,
   DEPLOYMENT_FAILED,
   MODEL_CREDENTIAL_REJECTED_RECORDED,
-  NAMESPACE_NAME_CONFLICT,
   referenceFormRefusal,
   SECRET_NAME_CONFLICT,
   SERVICE_ACCOUNT_CROSS_NAMESPACE,
@@ -2859,230 +2863,12 @@ test("Agent deletion closes every synchronous mutation boundary before teardown"
   assert.equal(revisions.data.length, 1, "no mutation may admit work after deletion starts");
 });
 
-async function bootstrapChatGptBackend(backendId) {
-  const controller = await configuredController({
-    backends: [
-      {
-        id: backendId,
-        type: "chatgpt",
-        configuration: {
-          workspaceId: "11111111-1111-4111-8111-111111111111",
-          apiKeyPath: "/unused-in-api-contract-test",
-        },
-        drivers: { service_account: "chatgpt-service-accounts" },
-      },
-    ],
-    backendSummaries: [{ id: backendId, type: "chatgpt" }],
-  });
-  await bootstrap(controller);
-  return controller;
-}
-
 test("Agent Backend API preserves nullable drafts and immutable revision associations", async () => {
-  const controller = await bootstrapChatGptBackend("openai");
-  const { fixture } = controller;
-  const backends = await controller.request("GET", "/backends");
-  assert.equal(backends.status, 200);
-  assert.deepEqual(backends.data, [{ id: "openai", type: "chatgpt" }]);
-  assert.doesNotMatch(JSON.stringify(backends.body), /apiKey|workspaceId|credential|drivers|path/i);
-  const namespace = await createNamespace(controller, "provider-api");
-  const configuration = await createConfiguration(controller, namespace.id);
-  const collection = `/namespaces/${namespace.id}/agents`;
-
-  const { principal: member } = await fixture.createAuthPrincipal("backend-selector");
-  fixture.state.identities.push(member);
-  const memberApp = fixture.createApp(member);
-  assertApiError(await injectedRequest(memberApp, "GET", "/backends"), 403, "FORBIDDEN");
-  const beforeDeniedCreates = await controller.request("GET", collection);
-  assert.equal(beforeDeniedCreates.status, 200);
-  const readCreateState = () =>
-    fixture.platformState.read(async (unit) => ({
-      agents: await unit.agents.listAgents(namespace.id),
-      configuration: await unit.configurations.findConfiguration(namespace.id, configuration.id),
-      roles: await unit.iamPolicy.listRoles(namespace.id),
-      accessBindings: await unit.iamPolicy.listAccessBindings(namespace.id),
-      servicePrincipals: await unit.iamPolicy.listServicePrincipals(namespace.id),
-      operations: await unit.operations.list(),
-    }));
-  const beforeDeniedState = await readCreateState();
-  assert.equal(beforeDeniedState.configuration?.id, configuration.id);
-  assert.equal(beforeDeniedState.configuration.namespaceId, namespace.id);
-
-  // Backend existence must not be observable before the caller's exact Agent-create check.
-  let firstDenial;
-  const denialRequestIds = new Set();
-  for (const backendId of ["openai", "unknown"]) {
-    const denied = await injectedRequest(memberApp, "POST", collection, {
-      body: { name: "denied-backend", configurationId: configuration.id, backendId },
-    });
-    assertApiError(denied, 403, "FORBIDDEN", backendId);
-    assert.deepEqual(Object.keys(denied.body).sort(), ["error", "meta"]);
-    assert.equal(denied.data, undefined);
-    if (firstDenial === undefined) {
-      firstDenial = denied.body.error;
-    } else {
-      assert.deepEqual(denied.body.error, firstDenial);
-    }
-    const requestId = denied.body.meta.requestId;
-    assert.equal(denialRequestIds.has(requestId), false);
-    denialRequestIds.add(requestId);
-    const events = fixture.auditSink.events.filter((event) => event.requestId === requestId);
-    assert.equal(events.length, 1, "the denied request emits no success mutation");
-    const denial = events[0];
-    const target = { kind: "agent", id: namespace.id, namespaceId: namespace.id };
-    assert.equal(denial.kind, "authorization_denial");
-    assert.equal(denial.action, "openclaw.agents.create");
-    assert.equal(denial.actorId, member.id);
-    assert.equal(denial.actor.principalId, member.id);
-    assert.equal(denial.outcome, "denied");
-    assert.equal(denial.reasonCode, "AUTHORIZATION_DENIED");
-    assert.equal(denial.iamDriverId, "iam-integration");
-    assert.deepEqual(denial.resource, target);
-    assert.deepEqual(denial.authorization, {
-      principalId: member.id,
-      action: "create",
-      resource: target,
-    });
-    assert.equal(denial.details.iamEvidence.identityId, member.id);
-    // A refusal may append its audit event, but cannot change application or IAM State.
-    assert.deepEqual(await readCreateState(), beforeDeniedState, backendId);
-  }
-  const afterDeniedCreates = await controller.request("GET", collection);
-  assert.equal(afterDeniedCreates.status, 200);
-  assert.deepEqual(afterDeniedCreates.data, beforeDeniedCreates.data);
-
-  // Agent creation can select a Backend without permission to list the Installation catalog.
-  fixture.state.roles.push({
-    id: "role-backend-agent-creator",
-    namespaceId: namespace.id,
-    permissions: [
-      { action: "create", resourceKind: "agent" },
-      { action: "read", resourceKind: "configuration" },
-    ],
-  });
-  fixture.state.bindings.push({
-    id: "binding-backend-agent-creator",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: member.id,
-    roleId: "role-backend-agent-creator",
-  });
-  assertApiError(await injectedRequest(memberApp, "GET", "/backends"), 403, "FORBIDDEN");
-  const memberCreated = await injectedRequest(memberApp, "POST", collection, {
-    body: {
-      name: "member-selected",
-      configurationId: configuration.id,
-      backendId: "openai",
-    },
-  });
-  assert.equal(memberCreated.status, 201, JSON.stringify(memberCreated.body));
-  assert.equal(memberCreated.data.backendId, "openai");
-  const memberRead = await controller.request("GET", `${collection}/${memberCreated.data.id}`);
-  assert.equal(memberRead.status, 200);
-  assert.equal(memberRead.data.backendId, "openai");
-  const beforeUnknownCreate = await controller.request("GET", collection);
-  assert.equal(beforeUnknownCreate.status, 200);
-  const memberUnknown = await injectedRequest(memberApp, "POST", collection, {
-    body: {
-      name: "member-unknown",
-      configurationId: configuration.id,
-      backendId: "unknown",
-    },
-  });
-  assertApiError(memberUnknown, 404, "NOT_FOUND");
-  const afterUnknownCreate = await controller.request("GET", collection);
-  assert.equal(afterUnknownCreate.status, 200);
-  assert.deepEqual(afterUnknownCreate.data, beforeUnknownCreate.data);
-
-  // Exercise wire defaults and persistence through the real authenticated Fastify routes.
-  for (const [name, association] of [
-    ["omitted", {}],
-    ["null", { backendId: null }],
-    ["selected", { backendId: "openai" }],
-  ]) {
-    const result = await controller.request("POST", collection, {
-      body: { name, configurationId: configuration.id, ...association },
-    });
-    assert.equal(result.status, 201, JSON.stringify(result.body));
-    assert.equal(result.data.backendId, association.backendId ?? null);
-    const read = await controller.request("GET", `${collection}/${result.data.id}`);
-    assert.equal(read.data.backendId, association.backendId ?? null);
-  }
-
-  const agents = await controller.request("GET", collection);
-  const selected = agents.data.find((agent) => agent.name === "selected");
-  const target = `${collection}/${selected.id}`;
-  const preserved = await controller.request("PATCH", target, {
-    body: { configurationId: configuration.id },
-  });
-  assert.equal(preserved.status, 200);
-  assert.equal(preserved.data.backendId, "openai");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  await bindHarnessKey(fixture, namespace.id, selected);
-  const revision = await controller.request("POST", `${target}/deploy`);
-  assert.equal(revision.status, 202, JSON.stringify(revision.body));
-  assert.equal(revision.data.backendId, "openai");
-
-  const cleared = await controller.request("PATCH", target, {
-    body: { configurationId: configuration.id, backendId: null },
-  });
-  assert.equal(cleared.status, 200);
-  assert.equal(cleared.data.backendId, null);
-  const prior = await controller.request("GET", `${target}/revisions/${revision.data.id}`);
-  assert.equal(prior.data.backendId, "openai", "draft changes cannot rewrite admitted revisions");
-  const independent = await controller.request("POST", `${target}/deploy`);
-  assert.equal(independent.status, 202);
-  assert.equal(independent.data.backendId, null);
-
-  for (const backendId of ["", " ", "unknown", 42, [], {}]) {
-    const expectedStatus = backendId === "unknown" ? 404 : 400;
-    const invalid = await controller.request("POST", collection, {
-      body: { name: "invalid-provider", configurationId: configuration.id, backendId },
-    });
-    assert.equal(invalid.status, expectedStatus, JSON.stringify(invalid.body));
-    const invalidPatch = await controller.request("PATCH", target, {
-      body: { configurationId: configuration.id, backendId },
-    });
-    assert.equal(invalidPatch.status, expectedStatus, JSON.stringify(invalidPatch.body));
-  }
-  const unchanged = await controller.request("GET", target);
-  assert.equal(unchanged.data.backendId, null);
-  const replaced = await controller.request("PATCH", target, {
-    body: { configurationId: configuration.id, backendId: "openai" },
-  });
-  assert.equal(replaced.status, 200);
-  assert.equal(replaced.data.backendId, "openai");
+  await runBackendAssociations(configuredController);
 });
 
 test("Installation Backend IDs and Agent backendId share the API schema's character rule", async () => {
-  // 200 code points (395 UTF-16 units) with interior whitespace: the API schema accepts it,
-  // so OCC must accept it as configuration and the state store must save it.
-  const id = `open\u00a0${"😀".repeat(195)}`;
-  const controller = await bootstrapChatGptBackend(id);
-  const namespace = await createNamespace(controller, "backend-id-rule");
-  const configuration = await createConfiguration(controller, namespace.id);
-  const collection = `/namespaces/${namespace.id}/agents`;
-
-  const created = await controller.request("POST", collection, {
-    body: { name: "long-backend-id", configurationId: configuration.id, backendId: id },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  assert.equal(created.data.backendId, id);
-
-  // 201 code points; DEL and C1 controls (PostgreSQL's [[:cntrl:]] refuses both); line and
-  // paragraph separators.
-  for (const backendId of [
-    "😀".repeat(201),
-    "open\u007fai",
-    "open\u0085ai",
-    "open\u2028ai",
-    "open\u2029ai",
-  ]) {
-    const invalid = await controller.request("POST", collection, {
-      body: { name: "invalid-backend-id", configurationId: configuration.id, backendId },
-    });
-    assertApiError(invalid, 400, "INVALID_REQUEST");
-  }
+  await runBackendIdCharacterRule(configuredController);
 });
 
 test("Names follow the Backend ID text rule, so C1 controls are refused", async () => {
@@ -4965,51 +4751,7 @@ test("administrator-created auth accounts sign in and receive only provisioned I
 test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB limit", async () => {
   const controller = await configuredController();
 
-  const malformedJson = await controller.request("POST", "/installation/bootstrap", {
-    rawBody: "{not-json",
-    headers: { "content-type": "application/json" },
-  });
-  assertApiError(malformedJson, 400, "INVALID_REQUEST");
-
-  const unsupportedType = await controller.request("POST", "/installation/bootstrap", {
-    rawBody: "name=enterprise",
-    headers: { "content-type": "text/plain" },
-  });
-  assertApiError(unsupportedType, 415, "UNSUPPORTED_MEDIA_TYPE");
-
-  for (const invalid of [null, [], {}, { name: "" }, { name: "   " }]) {
-    const result = await controller.request("POST", "/installation/bootstrap", { body: invalid });
-    assert.equal(result.status, 400);
-  }
-
-  await bootstrap(controller);
-
-  for (const invalid of [null, [], {}, { name: "" }, { name: 4 }]) {
-    const result = await controller.request("POST", "/namespaces", {
-      body: invalid,
-    });
-    assert.equal(result.status, 400);
-  }
-
-  const namespace = await createNamespace(controller, "validated");
-  const duplicateNamespace = await controller.request("POST", "/namespaces", {
-    body: { name: "validated" },
-  });
-  assertApiError(duplicateNamespace, 409, "RESOURCE_CONFLICT");
-  assert.equal(duplicateNamespace.body.error.message, NAMESPACE_NAME_CONFLICT);
-
-  const invalidAgent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "" },
-  });
-  assert.equal(invalidAgent.status, 400);
-
-  const agent = await createAgent(controller, namespace.id, "valid-agent");
-  const duplicateAgent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "valid-agent", configurationId: agent.configurationId },
-  });
-  assertApiError(duplicateAgent, 409, "RESOURCE_CONFLICT");
-  // The caller chose only the name, so the conflict says the name is taken here.
-  assert.equal(duplicateAgent.body.error.message, AGENT_NAME_CONFLICT);
+  const { namespace, agent } = await checkResourceCreationSchemas(controller);
 
   for (const configurationId of [null, [], "invalid"]) {
     const invalidCreation = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
@@ -5082,55 +4824,8 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
   const unexpectedQuery = await controller.request("GET", "/namespaces?owner=foreign");
   assertApiError(unexpectedQuery, 400, "INVALID_REQUEST");
 
-  const malformedIdentifier = await controller.request("GET", "/namespaces/ns_not-a-uuid");
-  assert.equal(malformedIdentifier.status, 400);
-  // Path-parameter failures name the parameter and its syntax, like body failures name fields.
-  assert.deepEqual(malformedIdentifier.body.error.details, [
-    { path: "/namespaceId", code: "INVALID_FORMAT" },
-  ]);
-  assert.match(malformedIdentifier.body.error.message, /params \/namespaceId .* expected ns_ /);
-
-  const wrongResourceKind = await controller.request("GET", `/namespaces/${agent.id}`);
-  assert.equal(wrongResourceKind.status, 400);
-
-  const nonV4Agent = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/agt_00000000-0000-0000-0000-000000000000`,
-  );
-  assert.equal(nonV4Agent.status, 400);
-  assert.deepEqual(nonV4Agent.body.error.details, [{ path: "/agentId", code: "INVALID_FORMAT" }]);
-
-  // A deployment is addressed by its revision ID, so the message names the rev_ prefix.
-  const malformedDeployment = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deployments/rev_bogus/runtime/logs?source=gateway`,
-  );
-  assert.equal(malformedDeployment.status, 400);
-  assert.deepEqual(malformedDeployment.body.error.details, [
-    { path: "/deploymentId", code: "INVALID_FORMAT" },
-  ]);
-  assert.match(malformedDeployment.body.error.message, /params \/deploymentId .* expected rev_ /);
-
-  const oversized = await controller.request("POST", "/namespaces", {
-    body: { name: "x".repeat(64 * 1024) },
-  });
-  assertApiError(oversized, 413, "PAYLOAD_TOO_LARGE");
-
-  // Keep method order and overlapping literal/parameter paths in the public Allow header.
-  for (const [method, path, allowed] of [
-    ["DELETE", "/namespaces", "POST, GET"],
-    [
-      "OPTIONS",
-      `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-      "GET, PATCH, DELETE",
-    ],
-    ["OPTIONS", `/namespaces/${namespace.id}/agents/${agent.id}/deploy?ignored=true`, "POST"],
-    ["OPTIONS", `/namespaces/${namespace.id}/agents/provision`, "POST, PATCH, GET, DELETE"],
-  ]) {
-    const unsupportedMethod = await controller.request(method, path);
-    assertApiError(unsupportedMethod, 405, "METHOD_NOT_ALLOWED");
-    assert.equal(unsupportedMethod.headers.get("allow"), allowed);
-  }
+  await checkMalformedResourcePaths(controller, namespace, agent);
+  await checkPayloadLimitAndAllowedMethods(controller, namespace, agent);
 
   const fixture = await createInjectedFixture();
   const bootstrapped = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
@@ -5138,35 +4833,16 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
   });
   assert.equal(bootstrapped.status, 201);
 
-  const originalLookup = fixture.iamDriver.lookupIdentity;
-  const originalAuthorize = fixture.iamDriver.authorize;
-  let identityLookups = 0;
-  let authorizationChecks = 0;
-  fixture.iamDriver.lookupIdentity = async (...args) => {
-    identityLookups += 1;
-    return originalLookup.apply(fixture.iamDriver, args);
-  };
-  fixture.iamDriver.authorize = async (...args) => {
-    authorizationChecks += 1;
-    return originalAuthorize.apply(fixture.iamDriver, args);
-  };
-  const auditCount = fixture.auditSink.events.length;
-
-  try {
+  await withValidationBeforeIam(fixture, async (assertUnchanged) => {
     for (const options of [
       { rawBody: '{"name":' },
       { body: { name: "invalid-scope", installationId: fixture.installationId } },
     ]) {
       const invalid = await injectedRequest(fixture.app, "POST", "/namespaces", options);
       assertApiError(invalid, 400, "INVALID_REQUEST");
-      assert.equal(identityLookups, 0);
-      assert.equal(authorizationChecks, 0);
-      assert.equal(fixture.auditSink.events.length, auditCount);
+      assertUnchanged();
     }
-  } finally {
-    fixture.iamDriver.lookupIdentity = originalLookup;
-    fixture.iamDriver.authorize = originalAuthorize;
-  }
+  });
 
   const untouched = await injectedRequest(fixture.app, "GET", "/namespaces");
   assertOnlyDefaultNamespace(untouched);
