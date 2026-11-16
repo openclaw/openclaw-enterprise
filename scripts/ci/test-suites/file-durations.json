@@ -246,7 +246,7 @@
     "tests/integration/native-admin-access.test.mjs": 10200,
     "tests/integration/occ-api-namespace-iam-policy.test.ts": 11900,
     "tests/integration/occ-api.test.mjs": 128500,
-    "tests/integration/occ-metrics.test.mjs": 3800,
+    "tests/integration/occ-metrics.test.ts": 3800,
     "tests/integration/occ-service-account-lifecycle.test.ts": 3900,
     "tests/integration/oidc-ca-trust.test.ts": 7800,
     "tests/integration/oidc-id-token.test.ts": 400,

@@ -21,11 +21,11 @@
     "tests/integration/postgres-worker-agent-revision-teardown.test.ts",
     "tests/integration/postgres-worker-harness-exposure.test.ts",
     "tests/integration/auth-maintain.test.ts",
-    "tests/integration/occ-metrics.test.mjs"
+    "tests/integration/occ-metrics.test.ts"
   ],
   "files": [
     {
-      "path": "tests/integration/occ-metrics.test.mjs",
+      "path": "tests/integration/occ-metrics.test.ts",
       "expectedTests": [
         "API metrics follow real authenticated routes and keep replica registries isolated",
         "metrics settings reject exposed development binds and disabled stray settings",
