@@ -1,6 +1,8 @@
 # Agent native admin UI
 
-Native browser access is disabled by default. It exposes an Agent Gateway’s chat or administration surface according to the caller’s Agent permission, subject to [Gateway managed mode](#gateway-managed-mode). OCC resolves the Agent host and proxies native HTTP and WebSocket traffic using the human’s OCE session.
+Native browser access is disabled by default. OCC uses the caller's OCE session
+and Agent permissions to proxy Gateway chat or administration over HTTP and
+WebSocket. [Gateway managed mode](#gateway-managed-mode) limits administration.
 
 ## Host-only session exchange
 
@@ -83,33 +85,37 @@ this boundary before returning any feature status, including `disabled`.
 Successful access selects `mode: "chat"` or `mode: "admin"`; unsupported narrow
 runtime authority fails closed instead of granting administration.
 
-The response reports:
+| Status        | Meaning                                                                                 |
+| ------------- | --------------------------------------------------------------------------------------- |
+| `disabled`    | The Installation has not enabled native admin UI access.                                |
+| `stopped`     | The Agent is not in desired running state.                                              |
+| `unsupported` | See [unsupported reasons](#unsupported-reasons).                                        |
+| `unavailable` | The running Agent has no selected version, or an exclusive replacement prevents access. |
+| `available`   | The caller may open the returned `url` for the selected version.                        |
 
-| Status        | Meaning                                                                                                                                                                                                                                                             |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `disabled`    | The Installation has not enabled native admin UI access.                                                                                                                                                                                                            |
-| `stopped`     | The Agent is not in desired running state.                                                                                                                                                                                                                          |
-| `unsupported` | Native admin UI access is unsupported. `reason`: `not-enabled` (no browser chat opt-in: `controlUi` is off, or has neither the Agent origin nor trusted-proxy auth), `configuration` (another native setting refuses it) or `compute` (no usable gateway endpoint). |
-| `unavailable` | No version is serving yet: the Agent has no selected version, or a newer version is replacing it.                                                                                                                                                                   |
-| `available`   | The caller may open the returned `url` for the selected version.                                                                                                                                                                                                    |
+During a newer exclusive replacement, OCC rechecks access to the selected
+predecessor. Its saved [replacement record](agents/planned-replacement.md) must
+name that predecessor and have phase `pre-stop`. OCC returns `unavailable` after
+the worker records `stopping` or if no record matches the selected predecessor.
 
-A stopped Agent without a selected version returns only `status: "stopped"`, including before first deployment and after completed stop reconciliation. Otherwise, stopped results include target fields. A desired-running Agent without a selected version returns `unavailable` in the success envelope. Dependency outages, including IAM, return `503 DEPENDENCY_UNAVAILABLE`. Malformed requests, IAM denials and missing sessions use the protected-route error envelope.
+A stopped Agent without a selected version returns only `status: "stopped"`,
+including before first deployment and after stop reconciliation. While the Agent is stopping,
+a chat operator also receives only the status. An administrator with a
+selected stopped version receives target fields. Dependency outages, including
+IAM, return `503 DEPENDENCY_UNAVAILABLE`. Malformed requests, IAM denials and
+missing sessions use the protected-route error envelope.
 
-Changing the selected Compute Driver does not migrate existing versions. After
-lifecycle and native-configuration checks, OCC compares the selected Driver's ID
-and implementation with the selected version's recorded owner. A mismatch returns
-`503 DEPENDENCY_UNAVAILABLE` from the availability API before endpoint resolution,
-private gateway-key lookup or transport. Agent-host HTTP retains its existing
-`403` refusal. WebSocket admission destroys the client socket without an HTTP
-response, before gateway-key lookup or connection; a mismatch during a WebSocket
-lease closes the connection through the existing failed-lease path.
-Earlier stopped, replacing and unsupported-configuration outcomes
-keep their precedence.
+After lifecycle and native configuration checks, OCC compares the selected
+Compute Driver's ID and implementation with the version's recorded owner.
+A mismatch returns `503 DEPENDENCY_UNAVAILABLE` from the status API and `403`
+from Agent-host HTTP. WebSocket admission closes the socket without an HTTP
+response. These refusals precede endpoint lookup, gateway-key lookup and
+connection. A mismatch during lease renewal closes the connection.
 
-The mismatch is not transient, so refreshing does not clear it. Each API process
-logs one `native_admin.compute_owner_mismatch` warning per version and selected
-Driver, naming both Driver IDs and implementations. To restore access, select the
-version's Compute Driver again, with the same ID and implementation.
+Changing the selected Compute Driver leaves existing versions in place.
+Each API process logs one `native_admin.compute_owner_mismatch` per version
+and selected Driver, naming both IDs and implementations. Select the version's
+Compute Driver again to restore access.
 
 Without a valid session, `/` or `/chat/main[/<session>]` navigations can return to the Console. Session segments accept letters, digits, hyphens and underscores; trailing slashes are allowed. Only the opaque host key survives; paths and queries are dropped. Responses use `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, without checking Agent existence.
 
@@ -124,6 +130,13 @@ The Console’s authenticated `GET /native-admin/return/<key>` operation checks 
 A signed-in person who has neither chat nor administration access to the Agent is never redirected. Their top-level HTML navigation stays HTTP 403 on a page that does not name the Agent; its only link, **Go to your Agents**, points at `/console/agents`. JSON requests still receive the JSON `403`; WebSocket upgrades still close.
 
 After a failed reconnect and same-origin health response of `401` or `403`, the Control UI offers **Reconnect in browser**. The link opens `/` on the current Agent host, without automatic navigation or carrying the chat path or query. This prompts an access check, not proof of expiry; OCC decides whether to offer sign-in or refuse.
+
+### Unsupported reasons
+
+- `not-enabled` means the Configuration did not opt this Agent into browser chat.
+  Control UI is off, or it is on with neither the Agent origin nor trusted-proxy auth.
+- `configuration` means another native setting prevents access.
+- `compute` means the selected Compute Driver supplied no valid private `wss:` endpoint.
 
 ## Agent host identity
 
@@ -179,13 +192,10 @@ Chat access does not grant native configuration writes, device or pairing
 administration, approval management, or elevated gateway commands. A runtime
 that cannot enforce the selected narrow scopes is unsupported for chat mode.
 
-When Gateway managed mode is off, native admin changes affect gateway-local state
-outside OCE Configurations and Agent revisions. To keep a setting across Pod
-recreation or redeployment, save it in the OCE Configuration. In the Kubernetes pilot, native configuration edits
-affect a Pod-local copy that resets from the managed snapshot when the Pod is
-recreated or the Agent is redeployed.
-See [Kubernetes managed native configuration](drivers/kubernetes-compute/storage-and-credentials.md#managed-native-configuration)
-for mount selection and the copy lifecycle.
+With Gateway managed mode off, native changes stay in gateway-local state.
+Kubernetes reloads the managed snapshot on Pod recreation or redeployment. Save
+lasting settings in the OCE Configuration. See [Kubernetes managed native configuration](drivers/kubernetes-compute/storage-and-credentials.md#managed-native-configuration)
+for mounts and copy behavior.
 
 Do not change `gateway.bind`, `gateway.customBindHost`, or
 `gateway.tailscale.mode` in that copy. OCE checks these listener settings in the
@@ -206,7 +216,7 @@ device state, plugins, or other persistent gateway data.
 - Auth setup rejects missing or incompatible Console and Agent DNS hosts, public-suffix cookie scope, and short auth secrets. The removed `sharedCookieDomain` and `OCC_AUTH_COOKIE_DOMAIN` inputs are rejected, including empty values.
 - Native access setup rejects invalid enablement, origins, or transport prerequisites. A missing `OCC_GATEWAY_API_KEY_PATH` reports `GATEWAY_API_KEY_UNAVAILABLE`.
 - Host-only exchange requires guarded OIDC sign-in, same-site HTTPS Console and Agent origins, and disabled sandbox preview.
-- See [availability statuses](#authorization-and-availability): unsupported native configuration, gateway routing or an unclean Compute endpoint returns `unsupported`.
+- See [unsupported reasons](#unsupported-reasons) for native configuration and private gateway endpoint refusals.
 - The console hides native access for disabled and denied states and explains stopped, unsupported, or unavailable states. When available, **Open chat** or **Open Agent UI** opens a new tab directly in shared-cookie mode or completes the host-only exchange.
 - Attributable IAM denials remain audit events for status checks, native-host proxy admission, and recurring WebSocket lease renewal. Those denial paths preserve the human IAM principal and exact Agent target.
 - Proxied HTTP and WebSocket requests strip browser credentials, service keys, forwarded headers, native identity/scope headers, and native `Set-Cookie` before responding through OCC. WebSocket upgrades require a non-null exact Agent `Origin`; accepted `101` connections audit `websocket.connect` with `connectionId` and `websocket.close` with the same `connectionId` plus `closeReason`, refresh authorization every 25 seconds, close when a lease check fails or takes more than 5 seconds, set `closeReason` to distinguish lifecycle, revocation, dependency, client, upstream, and shutdown paths, and are destroyed during API `preClose`.
