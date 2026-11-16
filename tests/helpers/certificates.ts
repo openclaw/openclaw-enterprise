@@ -3,12 +3,78 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
+export type OpenSslRunner = (command: string, args: string[]) => Promise<unknown>;
+
+export interface CertificateAuthorityPaths {
+  caPath: string;
+  caKeyPath: string;
+}
+
+interface CertificatePaths {
+  keyPath: string;
+  certPath: string;
+}
+
+interface CertificateMaterial extends CertificatePaths {
+  key: string;
+  cert: string;
+}
+
+interface SelfSignedOptions {
+  name?: string;
+  commonName?: string;
+  subjectAltName?: string;
+  keyPem?: string | undefined;
+  days?: number;
+}
+
+interface CertificateAuthorityOptions {
+  caName: string;
+  caKeyPem?: string | undefined;
+  days?: number;
+  run?: OpenSslRunner | undefined;
+}
+
+type LeafUsage = "serverAuth" | "clientAuth";
+
+interface SignedLeafOptions {
+  name: string;
+  commonName?: string | undefined;
+  subject?: string | undefined;
+  subjectAltName?: string | undefined;
+  usage?: LeafUsage;
+  keyPem?: string | undefined;
+  days?: number;
+  run?: OpenSslRunner | undefined;
+}
+
+interface LeafPaths extends CertificatePaths {
+  csr: string;
+  ext: string;
+}
+
+interface IssueLeafOptions {
+  subject: string;
+  subjectAltName: string | undefined;
+  usage: LeafUsage;
+  keyPem: string | undefined;
+  days: number;
+  run: OpenSslRunner;
+}
+
+interface CaAndLeafOptions extends CertificateAuthorityOptions {
+  commonName?: string | undefined;
+  subject?: string | undefined;
+  subjectAltName?: string | undefined;
+  leafKeyPem?: string | undefined;
+}
+
 const execute = promisify(execFile);
 
 // Returns the openssl key arguments: `-key keyPath` after writing `keyPem` there, or
 // arguments that generate a fresh P-256 key at `keyPath` (much faster than RSA). Shared
 // fixture keys (shared-keys.mjs) save the generation entirely where a test needs RSA.
-async function keyArguments(keyPath, keyPem) {
+async function keyArguments(keyPath: string, keyPem: string | undefined): Promise<string[]> {
   if (keyPem === undefined) {
     return [
       "-newkey",
@@ -26,20 +92,16 @@ async function keyArguments(keyPath, keyPem) {
 
 // A self-signed server (or client) certificate in `directory`, as `<name>.key` and
 // `<name>.crt`. Returns the PEM texts and their paths.
-/**
- * @param {string} directory
- * @param {{name?: string, commonName?: string, subjectAltName?: string, keyPem?: string, days?: number}} [options]
- */
 export async function selfSigned(
-  directory,
+  directory: string,
   {
     name = "tls",
     commonName = "localhost",
     subjectAltName = "DNS:localhost,IP:127.0.0.1",
     keyPem,
     days = 1,
-  } = {},
-) {
+  }: SelfSignedOptions = {},
+): Promise<CertificateMaterial> {
   const keyPath = join(directory, `${name}.key`);
   const certPath = join(directory, `${name}.crt`);
   await execute("openssl", [
@@ -55,21 +117,16 @@ export async function selfSigned(
     "-addext",
     `subjectAltName=${subjectAltName}`,
   ]);
-  return {
-    key: await readFile(keyPath, "utf8"),
-    cert: await readFile(certPath, "utf8"),
-    keyPath,
-    certPath,
-  };
+  return readCertificate({ keyPath, certPath });
 }
 
 // A CA in `directory` as ca-key.pem and ca.pem. `run(command, args)` runs openssl; pass
 // one to apply the caller's subprocess policy (timeouts, logging). Callers own the files,
 // including removing the CA key.
 export async function certificateAuthority(
-  directory,
-  { caName, caKeyPem, days = 2, run = execute },
-) {
+  directory: string,
+  { caName, caKeyPem, days = 2, run = execute }: CertificateAuthorityOptions,
+): Promise<CertificateAuthorityPaths> {
   const caPath = join(directory, "ca.pem");
   const caKeyPath = join(directory, "ca-key.pem");
   await run("openssl", [
@@ -93,14 +150,14 @@ export async function certificateAuthority(
 // Writes the leaf key, CSR, extensions and certificate at `paths` and signs it with `ca`.
 // `subjectAltName` is left out when unset; `usage` is the extended key usage.
 async function issueLeaf(
-  paths,
-  { caPath, caKeyPath },
-  { subject, subjectAltName, usage, keyPem, days, run },
-) {
+  paths: LeafPaths,
+  { caPath, caKeyPath }: CertificateAuthorityPaths,
+  { subject, subjectAltName, usage, keyPem, days, run }: IssueLeafOptions,
+): Promise<void> {
   await run("openssl", [
     "req",
     "-new",
-    ...(await keyArguments(paths.key, keyPem)),
+    ...(await keyArguments(paths.keyPath, keyPem)),
     "-subj",
     subject,
     "-out",
@@ -131,7 +188,7 @@ async function issueLeaf(
     "-extfile",
     paths.ext,
     "-out",
-    paths.cert,
+    paths.certPath,
   ]);
 }
 
@@ -139,8 +196,8 @@ async function issueLeaf(
 // <name>.crt. `subject` defaults to `/CN=<commonName>`; `usage` is serverAuth or
 // clientAuth. Returns the PEM texts and their paths.
 export async function signedLeaf(
-  directory,
-  ca,
+  directory: string,
+  ca: CertificateAuthorityPaths,
   {
     name,
     commonName,
@@ -150,45 +207,48 @@ export async function signedLeaf(
     keyPem,
     days = 2,
     run = execute,
-  },
-) {
-  const file = (suffix) => join(directory, `${name}.${suffix}`);
-  const paths = { key: file("key"), csr: file("csr"), ext: file("ext"), cert: file("crt") };
+  }: SignedLeafOptions,
+): Promise<CertificateMaterial> {
+  const file = (suffix: string) => join(directory, `${name}.${suffix}`);
+  const paths = { keyPath: file("key"), csr: file("csr"), ext: file("ext"), certPath: file("crt") };
   await issueLeaf(paths, ca, { subject, subjectAltName, usage, keyPem, days, run });
+  return readCertificate(paths);
+}
+
+async function readCertificate({
+  keyPath,
+  certPath,
+}: CertificatePaths): Promise<CertificateMaterial> {
   return {
-    key: await readFile(paths.key, "utf8"),
-    cert: await readFile(paths.cert, "utf8"),
-    keyPath: paths.key,
-    certPath: paths.cert,
+    key: await readFile(keyPath, "utf8"),
+    cert: await readFile(certPath, "utf8"),
+    keyPath,
+    certPath,
   };
 }
 
 // A CA and a server leaf it signed, in `directory` as ca-key.pem, ca.pem, key.pem and
 // cert.pem. `run` and file ownership as for certificateAuthority.
-/**
- * @param {string} directory
- * @param {{
- *   caName: string,
- *   commonName?: string | undefined,
- *   subject?: string | undefined,
- *   subjectAltName?: string | undefined,
- *   caKeyPem?: string | undefined,
- *   leafKeyPem?: string | undefined,
- *   days?: number,
- *   run?: (command: string, args: string[]) => Promise<unknown>,
- * }} options
- */
 export async function caAndLeaf(
-  directory,
-  { caName, commonName, subject, subjectAltName, caKeyPem, leafKeyPem, days = 2, run = execute },
-) {
-  const file = (name) => join(directory, name);
+  directory: string,
+  {
+    caName,
+    commonName,
+    subject,
+    subjectAltName,
+    caKeyPem,
+    leafKeyPem,
+    days = 2,
+    run = execute,
+  }: CaAndLeafOptions,
+): Promise<CertificateAuthorityPaths & CertificatePaths> {
+  const file = (name: string) => join(directory, name);
   const ca = await certificateAuthority(directory, { caName, caKeyPem, days, run });
   const paths = {
-    key: file("key.pem"),
+    keyPath: file("key.pem"),
     csr: file("leaf.csr"),
     ext: file("leaf.ext"),
-    cert: file("cert.pem"),
+    certPath: file("cert.pem"),
   };
   await issueLeaf(paths, ca, {
     subject: subject ?? `/CN=${commonName}`,
@@ -198,5 +258,5 @@ export async function caAndLeaf(
     days,
     run,
   });
-  return { ...ca, keyPath: paths.key, certPath: paths.cert };
+  return { ...ca, keyPath: paths.keyPath, certPath: paths.certPath };
 }

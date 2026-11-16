@@ -9,8 +9,8 @@ import type { JsonObject } from "../../apps/controller/src/drivers/repo/access/j
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
 import { run } from "../fixtures/repository-credentials/process.mjs";
 import { refusingPort } from "../helpers/available-port.ts";
-import { signedLeaf } from "../helpers/certificates.mjs";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { signedLeaf } from "../helpers/certificates.ts";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
 
 const helper = fileURLToPath(

@@ -39,7 +39,7 @@ import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/man
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { conformanceKubeconfig } from "../helpers/kubernetes-compute.mjs";
 import {
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,

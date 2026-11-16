@@ -1,13 +1,15 @@
 import { readFile } from "node:fs/promises";
-import { certificateAuthority, signedLeaf } from "./certificates.mjs";
-import { temporaryDirectory } from "./temporary-directory.mjs";
+
+import { certificateAuthority, signedLeaf } from "./certificates.ts";
+import type { CleanupRegistrar } from "./console-file-app.ts";
+import { temporaryDirectory } from "./temporary-directory.ts";
 
 /**
  * Local test-owned CA and a localhost leaf; no host trust or credentials are read.
- * Callers pass the result straight to TLS servers as options, so no field may use a
- * TLS option name: the CA is `authority`, not `ca`.
+ * The result also serves as TLS server options. The `authority` field keeps the
+ * fixture CA separate from the server's `ca` option.
  */
-export async function harnessTlsFixture(t) {
+export async function harnessTlsFixture(t: CleanupRegistrar) {
   const directory = await temporaryDirectory(t, "oce-harness-tls-");
   const ca = await certificateAuthority(directory, { caName: "Harness fixture CA", days: 1 });
   const leaf = await signedLeaf(directory, ca, {

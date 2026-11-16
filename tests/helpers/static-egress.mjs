@@ -31,7 +31,7 @@ import {
   createOpenShellEgressAuthority,
   bindOpenShellEgressAuthority,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-authority.ts";
-import { selfSigned } from "./certificates.mjs";
+import { selfSigned } from "./certificates.ts";
 import { listen } from "./listen.ts";
 import {
   createExchangeClients,

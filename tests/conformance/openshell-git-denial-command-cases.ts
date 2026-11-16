@@ -10,7 +10,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import {
   gitRemovalDenialCategory,
   gitRemovalDenialCommand,

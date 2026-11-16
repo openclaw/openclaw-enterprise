@@ -17,8 +17,8 @@ import {
 } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
 import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import { OpenShellPreparedGitProvider } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { signedLeaf } from "../helpers/certificates.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
+import { signedLeaf } from "../helpers/certificates.ts";
 import { listen } from "../helpers/listen.ts";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { waitFor } from "../helpers/qa-utils.mjs";
