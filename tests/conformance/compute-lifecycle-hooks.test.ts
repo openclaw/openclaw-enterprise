@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type {
+  AgentRevision,
+  Driver,
+  Namespace,
+  WorkloadLaunchContext,
+} from "@openclaw-enterprise/contracts";
 import { ComputeLifecycleDispatcher } from "../../apps/controller/src/drivers/compute/lifecycle-hooks.ts";
 import {
   currentComputeAbortSignal,
@@ -13,13 +19,14 @@ const namespace = Object.freeze({
   name: "Support",
   status: "ready",
   createdAt: "2026-08-20T00:00:00.000Z",
-});
+} satisfies Namespace);
 
 const revision = Object.freeze({
   id: "revision-support-1",
   namespaceId: namespace.id,
   agentId: "agent-support",
   revision: 1,
+  backendId: null,
   configurationId: "configuration-support",
   configurationKind: "agent",
   configurationGeneration: 3,
@@ -28,13 +35,26 @@ const revision = Object.freeze({
     logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },
     diagnostics: { otel: { logs: false } },
   }),
-  harness: Object.freeze({ id: "openclaw", version: "1.0.0" }),
+  gatewayManagedMode: false,
+  harness: Object.freeze({
+    id: "openclaw",
+    version: "1.0.0",
+    mode: "embedded",
+    overrides: {},
+    configuration: {},
+  }),
+  harnessAuth: { method: "runtime" },
+  executionAdmission: { version: 2, mode: "unprotected" },
   compute: Object.freeze({ id: "compute-docker-development", implementation: "docker-local" }),
   servicePrincipalId: "service-principal-support",
   createdAt: namespace.createdAt,
-});
+} satisfies AgentRevision);
 
-function selectedDriver(capability, id, computeLifecycleHooks) {
+function selectedDriver(
+  capability: Driver["capability"],
+  id: string,
+  computeLifecycleHooks?: Driver["computeLifecycleHooks"],
+): Driver {
   return {
     capability,
     id,
@@ -44,8 +64,8 @@ function selectedDriver(capability, id, computeLifecycleHooks) {
 }
 
 test("selected hooks preserve controller order and revoke in reverse order", async () => {
-  const calls = [];
-  const owner = (capability, id) =>
+  const calls: string[] = [];
+  const owner = (capability: Driver["capability"], id: string) =>
     selectedDriver(capability, id, {
       async beforeWorkloadStart(actualRevision, launch) {
         assert.deepEqual(actualRevision, revision);
@@ -81,7 +101,7 @@ test("selected hooks preserve controller order and revoke in reverse order", asy
 
 test("workload hooks receive immutable Agent Configuration provenance and native settings", async () => {
   const mutableRevision = structuredClone(revision);
-  let observedRevision;
+  let observedRevision: Readonly<AgentRevision> | undefined;
   const dispatcher = new ComputeLifecycleDispatcher([
     selectedDriver("configuration", "settings", {
       async beforeWorkloadStart(actualRevision, launch) {
@@ -92,9 +112,10 @@ test("workload hooks receive immutable Agent Configuration provenance and native
         assert.deepEqual(actualRevision.configuration, revision.configuration);
         assert.equal(Object.isFrozen(actualRevision), true);
         assert.equal(Object.isFrozen(actualRevision.configuration), true);
-        assert.throws(() => {
-          actualRevision.configurationGeneration = 4;
-        }, TypeError);
+        assert.throws(
+          () => Object.assign(actualRevision, { configurationGeneration: 4 }),
+          TypeError,
+        );
         launch.environment.MODEL_TOKEN = "opaque-provider-reference";
       },
     }),
@@ -103,12 +124,13 @@ test("workload hooks receive immutable Agent Configuration provenance and native
   assert.deepEqual(await dispatcher.beforeWorkloadStart(mutableRevision), {
     environment: { MODEL_TOKEN: "opaque-provider-reference" },
   });
+  assert.ok(observedRevision);
   assert.notEqual(observedRevision, mutableRevision);
   assert.deepEqual(mutableRevision, revision);
 });
 
 test("failed workload preparation compensates completed bindings before returning", async () => {
-  const calls = [];
+  const calls: string[] = [];
   const dispatcher = new ComputeLifecycleDispatcher([
     selectedDriver("configuration", "first", {
       async beforeWorkloadStart(_revision, launch) {
@@ -137,7 +159,7 @@ test("failed workload preparation compensates completed bindings before returnin
 test("failed workload preparation preserves its exact tenant identity during revocation", async () => {
   const mutableRevision = structuredClone(revision);
   const original = structuredClone(mutableRevision);
-  let revokedRevision;
+  let revokedRevision: Readonly<AgentRevision> | undefined;
   const dispatcher = new ComputeLifecycleDispatcher([
     selectedDriver("configuration", "first", {
       async beforeWorkloadStart() {},
@@ -147,7 +169,7 @@ test("failed workload preparation preserves its exact tenant identity during rev
     }),
     selectedDriver("iam", "malicious", {
       async beforeWorkloadStart(actualRevision) {
-        actualRevision.namespaceId = "foreign-tenant";
+        Object.assign(actualRevision, { namespaceId: "foreign-tenant" });
       },
     }),
   ]);
@@ -156,6 +178,7 @@ test("failed workload preparation preserves its exact tenant identity during rev
     dispatcher.beforeWorkloadStart(mutableRevision),
     /beforeWorkloadStart failed for iam:malicious/,
   );
+  assert.ok(revokedRevision);
   assert.deepEqual(revokedRevision, original);
   assert.equal(revokedRevision.namespaceId, namespace.id);
   assert.equal(revokedRevision.servicePrincipalId, revision.servicePrincipalId);
@@ -169,7 +192,7 @@ test("workload launches reject reserved variables, unsafe names, and plaintext c
     ["OPENCLAW_CONFIG_PATH", "opaque-reference"],
     ["unsafe-name", "opaque-reference"],
     ["MODEL_TOKEN", "actual-provider-credential"],
-  ]) {
+  ] as const) {
     const dispatcher = new ComputeLifecycleDispatcher([
       selectedDriver("configuration", "settings", {
         async beforeWorkloadStart(_revision, launch) {
@@ -205,7 +228,7 @@ test("only the completed workload environment is validated before launch", async
 });
 
 test("invalid completed launch values revoke prepared owners in reverse order", async () => {
-  const revoked = [];
+  const revoked: string[] = [];
   const dispatcher = new ComputeLifecycleDispatcher([
     selectedDriver("configuration", "first", {
       async beforeWorkloadStart(_revision, launch) {
@@ -230,7 +253,7 @@ test("invalid completed launch values revoke prepared owners in reverse order", 
 });
 
 test("later callback mutations cannot change accepted workload launch values", async () => {
-  let hookLaunch;
+  let hookLaunch: WorkloadLaunchContext | undefined;
   const dispatcher = new ComputeLifecycleDispatcher([
     selectedDriver("configuration", "settings", {
       async beforeWorkloadStart(_revision, launch) {
@@ -241,13 +264,14 @@ test("later callback mutations cannot change accepted workload launch values", a
   ]);
 
   const launch = await dispatcher.beforeWorkloadStart(revision);
+  assert.ok(hookLaunch);
   hookLaunch.environment.MODEL_TOKEN = "actual-provider-password";
 
   assert.equal(launch.environment.MODEL_TOKEN, "opaque-original");
 });
 
 test("revocation failure blocks remaining teardown and never exposes the original error", async () => {
-  const calls = [];
+  const calls: string[] = [];
   const dispatcher = new ComputeLifecycleDispatcher([
     selectedDriver("configuration", "settings", {
       async beforeWorkloadStop() {
@@ -262,9 +286,11 @@ test("revocation failure blocks remaining teardown and never exposes the origina
     }),
   ]);
 
-  await assert.rejects(dispatcher.beforeWorkloadStop(revision), (error) => {
+  await assert.rejects(dispatcher.beforeWorkloadStop(revision), (error: unknown) => {
+    assert.ok(error instanceof Error);
     assert.match(error.message, /beforeWorkloadStop failed for iam:identity/);
     assert.doesNotMatch(error.message, /plaintext-credential/);
+    assert.ok("phase" in error);
     assert.equal(error.phase, "beforeWorkloadStop");
     return true;
   });
@@ -273,7 +299,7 @@ test("revocation failure blocks remaining teardown and never exposes the origina
 
 test("launch-failure cleanup revokes after its original workload claim is cancelled", async () => {
   const cancellation = new AbortController();
-  const calls = [];
+  const calls: string[] = [];
   const dispatcher = new ComputeLifecycleDispatcher([
     selectedDriver("configuration", "settings", {
       async beforeWorkloadStart(actualRevision, _launch, signal) {
@@ -321,8 +347,8 @@ test("ordinary workload retirement still respects operation cancellation", async
 
 test("cancellation after workload preparation revokes every completed owner in reverse", async () => {
   const cancellation = new AbortController();
-  const calls = [];
-  const owner = (id) =>
+  const calls: string[] = [];
+  const owner = (id: string) =>
     selectedDriver("configuration", id, {
       async beforeWorkloadStart(_revision, launch, signal) {
         assert.equal(signal, cancellation.signal);
@@ -362,9 +388,11 @@ test("nested compute signals retain parent cancellation without a deadline", asy
   await withComputeAbortSignal(parent.signal, () =>
     withComputeAbortSignal(new AbortController().signal, async () => {
       const signal = currentComputeAbortSignal();
+      assert.ok(signal);
       parent.abort(reason);
       assert.equal(signal.aborted, true);
-      assert.equal(signal.reason, reason);
+      const abortReason: unknown = signal.reason;
+      assert.equal(abortReason, reason);
     }),
   );
 });
@@ -378,7 +406,7 @@ test("nested compute signals reject an already aborted parent", async () => {
       withComputeAbortSignal(new AbortController().signal, async () =>
         assert.fail("operation ran"),
       ),
-      (error) => error === reason,
+      (error: unknown) => error === reason,
     );
   });
 });
@@ -389,7 +417,9 @@ test("nested compute signals preserve the parent deadline", async () => {
     { signal: new AbortController().signal, deadlineAt: new Date(deadline).toISOString() },
     () =>
       withComputeAbortSignal(new AbortController().signal, async () => {
-        assert.equal(currentComputeOperationLifetime().deadline, deadline);
+        const lifetime = currentComputeOperationLifetime();
+        assert.ok(lifetime);
+        assert.equal(lifetime.deadline, deadline);
       }),
   );
 });
