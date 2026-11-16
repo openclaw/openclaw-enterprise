@@ -222,6 +222,7 @@
     "helpers/runtime-image-startup.ts",
     "helpers/runtime-image-gateway-restart.ts",
     "helpers/runtime-model-probe-observation.ts",
+    "conformance/codex-failure-output-classifier-cases.ts",
     "helpers/production-tui-otel.ts",
     "helpers/credential-source-owner-upgrade.ts",
     "helpers/populated-upgrade-return.ts",
