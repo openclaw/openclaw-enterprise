@@ -56,8 +56,8 @@ With enrollment configured, OCE requests `openid email profile` and any explicit
 The Role must be Installation-scoped. Define such Roles in the
 [Installation `iam` configuration](../authorization/default-users.md#installation-iam-configuration);
 its configured `role_config_` Roles are supported, as is the bootstrap
-administrator Role. The accounts API and `POST /namespaces/{namespaceId}/iam/roles`
-create only Namespace-scoped Roles, which enrollment rejects. A policy that
+administrator Role. `POST /namespaces/{namespaceId}/iam/roles`
+creates only Namespace-scoped Roles, which enrollment rejects. A policy that
 names one fails API startup when the policy is applied.
 
 An exact Installation binding does not grant Agent or Namespace access. Initial
