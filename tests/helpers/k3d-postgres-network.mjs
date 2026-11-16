@@ -224,6 +224,7 @@ export async function attachPostgresToK3d(registerCleanup) {
     cluster,
     container: postgresContainer,
     attachmentName: "postgres",
+    preservePublishedPort: true,
   });
 }
 
@@ -466,9 +467,36 @@ function corroboratedEndpointId(network, containerId, endpoint) {
   return endpointId || undefined;
 }
 
+async function supportsGatewayPriority(containerBin) {
+  try {
+    const { stdout: help } = await executeFile(containerBin, ["network", "connect", "--help"]);
+    if (!/^\s*--gw-priority(?:\s|[=,]|$)/m.test(help)) {
+      return false;
+    }
+    const { stdout } = await executeFile(containerBin, ["version", "--format", "{{json .}}"]);
+    const version = JSON.parse(stdout);
+    return [version?.Client?.ApiVersion, version?.Server?.ApiVersion].every((api) => {
+      const parts = typeof api === "string" && /^(\d+)\.(\d+)$/.exec(api);
+      if (!parts) {
+        return false;
+      }
+      const major = Number(parts[1]);
+      const minor = Number(parts[2]);
+      return (
+        Number.isSafeInteger(major) &&
+        Number.isSafeInteger(minor) &&
+        (major > 1 || (major === 1 && minor >= 48))
+      );
+    });
+  } catch {
+    // A failed read-only probe leaves the engine's existing connect command available.
+    return false;
+  }
+}
+
 async function attachContainerToK3d(
   registerCleanup,
-  { statePath, containerBin, cluster, container, attachmentName },
+  { statePath, containerBin, cluster, container, attachmentName, preservePublishedPort = false },
 ) {
   const base = join(dirname(statePath), `${attachmentName}-k3d-${cluster.name}`);
   const lockPath = `${base}.lock`;
@@ -754,12 +782,17 @@ async function attachContainerToK3d(
 
     let pending;
     if (!attached) {
+      const args = ["network", "connect"];
+      // Keep PostgreSQL's original network as its default gateway so the host port stays bound.
+      if (preservePublishedPort && (await supportsGatewayPriority(containerBin))) {
+        args.push("--gw-priority=-1");
+      }
       pending = { attachment, connectedByHarness: true, holders: {}, pendingConnect: true };
       // Persist intent first. A failed engine call or holder write must leave
       // the same pair fenced for reconciliation.
       await writeHolders(registryPath, pending);
       try {
-        await executeFile(containerBin, ["network", "connect", network.id, containerId]);
+        await executeFile(containerBin, [...args, network.id, containerId]);
       } catch (error) {
         throw pendingError(pending, `Connect reported ${error.code ?? error.name}`, error);
       }

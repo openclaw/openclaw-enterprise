@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { once } from "node:events";
 import { constants } from "node:fs";
 import fs, { lstat, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { stripTypeScriptTypes, syncBuiltinESMExports } from "node:module";
+import { createConnection, createServer, isIP, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
-import { setEnvironment } from "../helpers/environment.ts";
+import { testOwner, testOwnerLabel, withTestOwnerLabel } from "../helpers/docker-test-owner.mjs";
+import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
 import { attachKeycloakToK3d, attachPostgresToK3d } from "../helpers/k3d-postgres-network.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -74,7 +77,14 @@ test(
       );
     }
     const started: typeof states = [];
-    const projects: string[] = [];
+    const projects: Array<{ name: string; port: number }> = [];
+    const releases: Array<() => Promise<void>> = [];
+    const cluster = `postgres-port-${randomUUID()}`;
+    const network = `k3d-${cluster}`;
+    const peer = `k3d-${cluster}-server-0`;
+    const ownerFilter = `label=${testOwnerLabel}=${testOwner}`;
+    const attachmentOwnership = join(root, "attachment-owned.json");
+    let attachmentCreationAttempted = false;
     const env = { ...process.env, GITHUB_ENV: "", GITHUB_OUTPUT: "" };
     const node = (args: string[]) =>
       execFileSync(process.execPath, args, {
@@ -84,9 +94,19 @@ test(
         timeout: 90_000,
       });
     const docker = (args: string[]) =>
-      execFileSync("docker", args, { encoding: "utf8", timeout: 30_000 }).trim();
+      execFileSync("docker", withTestOwnerLabel("docker", args), {
+        encoding: "utf8",
+        timeout: 30_000,
+      }).trim();
     t.after(async () => {
       const errors: unknown[] = [];
+      for (const release of releases.splice(0).reverse()) {
+        try {
+          await release();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
       for (const state of started) {
         try {
           node([
@@ -102,19 +122,55 @@ test(
           errors.push(error);
         }
       }
+      if (attachmentCreationAttempted) {
+        for (const { list, remove, name } of [
+          { list: ["ps", "-aq"], remove: ["rm", "-f", "-v"], name: `^/${peer}$` },
+          { list: ["network", "ls", "-q"], remove: ["network", "rm"], name: `^${network}$` },
+        ]) {
+          const query = [
+            ...list,
+            "--no-trunc",
+            "--filter",
+            `name=${name}`,
+            "--filter",
+            ownerFilter,
+          ];
+          try {
+            const resourceId = docker(query);
+            if (resourceId) {
+              assert.match(resourceId, /^[a-f0-9]{64}$/);
+              docker([...remove, resourceId]);
+            }
+            assert.equal(docker(query), "");
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+      }
       if (errors.length) {
         throw new AggregateError(
           errors,
-          `PostgreSQL cleanup failed; retained ${parentPath ?? root}`,
+          `PostgreSQL cleanup failed; retained ${parentPath ?? root}; attachment journal ${attachmentOwnership}`,
         );
       }
-      for (const project of projects) {
-        const filter = ["--filter", `label=com.docker.compose.project=${project}`];
+      for (const { name, port } of projects) {
+        const filter = ["--filter", `label=com.docker.compose.project=${name}`];
         assert.equal(docker(["ps", "-aq", ...filter]), "");
         assert.equal(docker(["volume", "ls", "-q", ...filter]), "");
         assert.equal(docker(["network", "ls", "-q", ...filter]), "");
+        const socket = createConnection({ host: "127.0.0.1", port });
+        try {
+          await assert.rejects(once(socket, "connect"), { code: "ECONNREFUSED" });
+        } finally {
+          socket.destroy();
+        }
       }
       await rm(root, { recursive: true });
+      if (projects.length === states.length) {
+        t.diagnostic(
+          "Owned PostgreSQL projects and peer removed and both original TCP ports refused",
+        );
+      }
     });
     const ports = new Set<number>();
     // Keep both real servers alive: Docker, rather than a released caller-side
@@ -139,7 +195,7 @@ test(
       const server = state.resources.find(
         (resource: { kind: string }) => resource.kind === "compose-postgres",
       );
-      projects.push(server.name);
+      projects.push({ name: server.name, port: server.port });
       assert.equal(server.status, "ready");
       assert.ok(server.port > 0 && server.port <= 65535 && server.port !== 55432);
       ports.add(server.port);
@@ -183,20 +239,180 @@ test(
       ?.slice("OCC_TEST_DATABASE_URL=".length);
     assert.ok(connectionString);
     const { default: pg } = await import("pg");
-    const client = new pg.Client({ connectionString, connectionTimeoutMillis: 5_000 });
-    try {
-      await client.connect();
-      // The migrator created this table; bootstrap alone creates only schemas.
-      assert.deepEqual(
-        (
-          await client.query(
-            "select current_user as role, to_regclass('occ.installation') is not null as migrated",
-          )
-        ).rows,
-        [{ role: "occ_app", migrated: true }],
+    const readDatabase = async (url = connectionString) => {
+      // Use a new connection to the original DSN in every phase: a pooled socket
+      // can remain usable even after Docker moves the published listener.
+      const client = new pg.Client({ connectionString: url, connectionTimeoutMillis: 5_000 });
+      try {
+        await client.connect();
+        // The migrator created this table; bootstrap alone creates only schemas.
+        assert.deepEqual(
+          (
+            await client.query(
+              "select 1 as probe, current_user as role, to_regclass('occ.installation') is not null as migrated",
+            )
+          ).rows,
+          [{ probe: 1, role: "occ_app", migrated: true }],
+        );
+      } finally {
+        await client.end();
+      }
+    };
+    const state = JSON.parse(await readFile(states[0]!.path, "utf8"));
+    const server = state.resources.find(
+      (resource: { kind: string }) => resource.kind === "compose-postgres",
+    );
+    const container = docker([
+      "compose",
+      "-f",
+      server.composeFile,
+      "-p",
+      server.name,
+      "ps",
+      "-q",
+      "postgres",
+    ]);
+    const memberships = () =>
+      JSON.parse(docker(["inspect", "--format", "{{json .NetworkSettings.Networks}}", container]));
+    const originalNetworks = Object.keys(memberships()).sort();
+    const listenerFailures: unknown[] = [];
+    const checkListener = async (phase: string) => {
+      assert.equal(
+        docker(["inspect", "--format", "{{.State.Health.Status}}", container]),
+        "healthy",
       );
+      docker(["exec", container, "pg_isready", "-h", "127.0.0.1", "-U", "postgres"]);
+      assert.equal(
+        docker(["exec", container, "psql", "-U", "postgres", "-d", "postgres", "-Atc", "SELECT 1"]),
+        "1",
+      );
+      const published = JSON.parse(
+        docker(["inspect", "--format", "{{json .NetworkSettings.Ports}}", container]),
+      );
+      // Collect loopback failures so all four phases and the refusal control run on both helpers.
+      try {
+        await readDatabase();
+        t.diagnostic(`Original loopback SQL ${phase}: SELECT 1 passed`);
+      } catch (error) {
+        listenerFailures.push(error);
+        const refused = error instanceof Error && "code" in error && error.code === "ECONNREFUSED";
+        t.diagnostic(`Original loopback SQL ${phase}: ${refused ? "ECONNREFUSED" : "failed"}`);
+      }
+      try {
+        assert.deepEqual(published["5432/tcp"], [
+          { HostIp: "127.0.0.1", HostPort: String(server.port) },
+        ]);
+      } catch (error) {
+        listenerFailures.push(error);
+      }
+    };
+    await checkListener("before attachment");
+
+    // Start an inert peer with a real network endpoint, without starting Kubernetes or PostgreSQL.
+    await writeFile(
+      attachmentOwnership,
+      JSON.stringify({ network, peer, ownerLabel: testOwnerLabel, owner: testOwner }),
+      { flag: "wx", mode: 0o600 },
+    );
+    // A create can reach Docker even if its result never reaches this test.
+    attachmentCreationAttempted = true;
+    const networkId = docker(["network", "create", network]);
+    assert.match(networkId, /^[a-f0-9]{64}$/);
+    const image = docker(["inspect", "--format", "{{.Image}}", container]);
+    const peerId = docker([
+      "run",
+      "-d",
+      "--pull=never",
+      "--name",
+      peer,
+      "--network",
+      networkId,
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      "--read-only",
+      "--mount",
+      "type=tmpfs,target=/var/lib/postgresql,tmpfs-size=1048576,tmpfs-mode=0700",
+      "--entrypoint",
+      "/bin/sleep",
+      image,
+      "180",
+    ]);
+    assert.match(peerId, /^[a-f0-9]{64}$/);
+    assert.equal(docker(["inspect", "--format", "{{.State.Status}}", peerId]), "running");
+    const mounts = JSON.parse(docker(["inspect", "--format", "{{json .Mounts}}", peerId]));
+    assert.deepEqual(
+      mounts.map(({ Type, Destination }: { Type: string; Destination: string }) => ({
+        Type,
+        Destination,
+      })),
+      [{ Type: "tmpfs", Destination: "/var/lib/postgresql" }],
+    );
+    const peerNetworks = JSON.parse(
+      docker(["inspect", "--format", "{{json .NetworkSettings.Networks}}", peerId]),
+    );
+    assert.equal(peerNetworks[network].NetworkID, networkId);
+    const attachmentState = join(root, "attachment.json");
+    await writeFile(
+      attachmentState,
+      JSON.stringify({
+        resources: [server, { kind: "k3d-cluster", status: "ready", name: cluster }],
+      }),
+    );
+    await withEnvironment(
+      { OPENCLAW_ENTERPRISE_CI_STATE: attachmentState, OCC_DOCKER_BIN: "docker" },
+      async () => {
+        const registerRelease = (release: () => Promise<void>) => {
+          releases.push(release);
+        };
+        const address = await attachPostgresToK3d(registerRelease);
+        assert.equal(isIP(address), 4);
+        assert.equal(address, memberships()[network].IPAddress);
+        assert.deepEqual(Object.keys(memberships()).sort(), [...originalNetworks, network].sort());
+        await checkListener("after attachment");
+        t.diagnostic(`Docker attached gateway priority: ${memberships()[network].GwPriority ?? 0}`);
+        assert.equal(await attachPostgresToK3d(registerRelease), address);
+        // One file ending must not remove a sibling file's database connection.
+        await releases.shift()!();
+        assert.equal(memberships()[network].IPAddress, address);
+        await checkListener("after first release");
+        await releases.shift()!();
+        assert.deepEqual(Object.keys(memberships()).sort(), originalNetworks);
+        await checkListener("after final release");
+        for (const suffix of ["json", "lock"]) {
+          await assert.rejects(lstat(join(root, `postgres-k3d-${cluster}.${suffix}`)), {
+            code: "ENOENT",
+          });
+        }
+      },
+    );
+
+    // Keep the outbound socket bound so no other test can claim the non-listening port.
+    const sockets = new Set<Socket>();
+    const listener = createServer((socket) => sockets.add(socket));
+    try {
+      const listening = once(listener, "listening");
+      listener.listen(0, "127.0.0.1");
+      await listening;
+      const endpoint = listener.address();
+      assert.ok(endpoint && typeof endpoint === "object");
+      const held = createConnection({ host: "127.0.0.1", port: endpoint.port });
+      sockets.add(held);
+      await once(held, "connect");
+      assert.ok(held.localPort);
+      const closedUrl = new URL(connectionString);
+      closedUrl.port = String(held.localPort);
+      await assert.rejects(readDatabase(closedUrl.toString()), { code: "ECONNREFUSED" });
+      t.diagnostic("Held non-listening loopback port refused the fresh PostgreSQL connection");
     } finally {
-      await client.end();
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+      listener.close();
+    }
+    if (listenerFailures.length) {
+      throw new AggregateError(listenerFailures, "Original PostgreSQL loopback listener failed");
     }
   },
 );
@@ -218,6 +434,7 @@ async function recordingAttachment(t: TestContext, fixture: "postgres" | "keyclo
   const nextObservation = join(root, "next-membership.json");
   const mutationsPath = join(root, "mutations.jsonl");
   const connectIntent = join(root, "connect-intent.json");
+  const probesPath = join(root, "probes.jsonl");
   const engine = join(root, "engine.mjs");
   const registry = join(root, `${fixture}-k3d-fixture.json`);
   const lock = registry.replace(/\.json$/, ".lock");
@@ -247,6 +464,8 @@ async function recordingAttachment(t: TestContext, fixture: "postgres" | "keyclo
     fullIdLookup?: "wrong-name" | "wrong-id" | "unavailable";
     ambiguousHexName?: boolean;
     connectExit?: "before" | "after" | undefined;
+    gatewayHelp?: "present" | "unavailable" | undefined;
+    gatewayVersion?: string | undefined;
     keepOnDisconnect?: boolean;
     disconnectExit?: boolean;
   }) => writeFile(engineState, JSON.stringify(input));
@@ -273,6 +492,7 @@ async function recordingAttachment(t: TestContext, fixture: "postgres" | "keyclo
   }
   await updateEngine({});
   await writeFile(mutationsPath, "");
+  await writeFile(probesPath, "");
   await writeFile(
     engine,
     stripTypeScriptTypes(`#!${process.execPath}
@@ -302,7 +522,15 @@ const original = ${JSON.stringify(networkId)};
 const composeName = state.legacy === "hex-unrelated" ? "f".repeat(64) : "fixture_default";
 const composeId = state.ambiguousHexName ? composeName : ${JSON.stringify(composeNetworkId)};
 const current = state.replacement ? ${JSON.stringify(replacementId)} : original;
-if (command === "ps" && args.includes("--no-trunc") && args.includes("{{.ID}}")) {
+if (command === "network" && subcommand === "connect" && field === "--help") {
+  appendFileSync(${JSON.stringify(probesPath)}, JSON.stringify(args) + "\\n");
+  if (state.gatewayHelp === "unavailable") process.exit(7);
+  if (state.gatewayHelp === "present") console.log("    --gw-priority int   Highest priority is the default gateway");
+} else if (command === "version" && subcommand === "--format" && field === "{{json .}}") {
+  appendFileSync(${JSON.stringify(probesPath)}, JSON.stringify(args) + "\\n");
+  if (state.gatewayVersion === undefined) process.exit(7);
+  console.log(state.gatewayVersion);
+} else if (command === "ps" && args.includes("--no-trunc") && args.includes("{{.ID}}")) {
   if (field === "network=" + current || field === "network=" + composeId) {
     const requested = args[4]?.slice(3);
     if (args[3] !== "--filter" || args[4] !== "id=" + requested || ![serverId, container, selected].includes(requested)) {
@@ -434,12 +662,13 @@ if (command === "ps" && args.includes("--no-trunc") && args.includes("{{.ID}}"))
       ? attachKeycloakToK3d(register, { container: "keycloak", statePath: providerState })
       : attachPostgresToK3d(register);
   const readRegistry = async () => JSON.parse(await readFile(registry, "utf8"));
-  const mutations = async (): Promise<string[][]> =>
-    (await readFile(mutationsPath, "utf8"))
+  const recordedArgs = async (path: string): Promise<string[][]> =>
+    (await readFile(path, "utf8"))
       .trim()
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line));
+  const mutations = () => recordedArgs(mutationsPath);
   const gone = () => assert.rejects(readFile(registry, "utf8"), { code: "ENOENT" });
   const expectNoAdmission = async () => {
     await gone();
@@ -548,6 +777,7 @@ if (command === "ps" && args.includes("--no-trunc") && args.includes("{{.ID}}"))
       writeFile(nextObservation, JSON.stringify(inventories)),
     readRegistry,
     mutations,
+    probes: () => recordedArgs(probesPath),
     pending,
     refused,
     recovery,
@@ -556,6 +786,76 @@ if (command === "ps" && args.includes("--no-trunc") && args.includes("{{.ID}}"))
     consoleError,
   };
 }
+
+test("gateway priority applies only to fresh PostgreSQL attachments on capable engines", async (t) => {
+  const help = ["network", "connect", "--help"];
+  const version = ["version", "--format", "{{json .}}"];
+  const api = (client: unknown, server: unknown) =>
+    JSON.stringify({ Client: { ApiVersion: client }, Server: { ApiVersion: server } });
+  const supported = api("1.48", "1.52");
+
+  for (const [label, gatewayHelp, gatewayVersion, probes] of [
+    ["missing option", undefined, supported, [help]],
+    ["help unavailable", "unavailable", supported, [help]],
+    ["version unavailable", "present", undefined, [help, version]],
+    ["malformed version", "present", "{", [help, version]],
+    ["non-string API", "present", api("1.48", 1.48), [help, version]],
+    ["old client API", "present", api("1.47", "1.52"), [help, version]],
+    ["old server API", "present", api("1.52", "1.47"), [help, version]],
+  ] as const) {
+    await t.test(label, async (t) => {
+      const f = await recordingAttachment(t);
+      await f.updateEngine({ gatewayHelp, gatewayVersion });
+      await f.acquire();
+      await f.releases[0]!();
+      await f.gone();
+      assert.deepEqual(await f.probes(), probes);
+      assert.deepEqual(await f.mutations(), [f.connect, f.disconnect]);
+    });
+  }
+
+  for (const fixture of ["postgres", "keycloak"] as const) {
+    await t.test(fixture, async (t) => {
+      const f = await recordingAttachment(t, fixture);
+      await f.updateEngine({ gatewayHelp: "present", gatewayVersion: supported });
+      await f.acquire();
+      await f.acquire();
+      await f.releases[1]!();
+      const connect =
+        fixture === "postgres"
+          ? [
+              "network",
+              "connect",
+              "--gw-priority=-1",
+              f.attachment.networkId,
+              f.attachment.containerId,
+            ]
+          : f.connect;
+      assert.deepEqual(await f.mutations(), [connect]);
+      await f.releases[0]!();
+      await f.gone();
+      assert.deepEqual(await f.mutations(), [connect, f.disconnect]);
+      assert.deepEqual(await f.probes(), fixture === "postgres" ? [help, version] : []);
+    });
+  }
+
+  await t.test("a flagged connect failure fences membership without retrying", async (t) => {
+    const f = await recordingAttachment(t);
+    await f.updateEngine({
+      gatewayHelp: "present",
+      gatewayVersion: supported,
+      connectExit: "after",
+    });
+    await assert.rejects(f.acquire, { code: 7 });
+    await f.pending("pendingConnect");
+    assert.deepEqual(JSON.parse((await f.readConnectIntent()).toString()), await f.readRegistry());
+    await f.refused(/Pending k3d connect.*still attached/);
+    assert.deepEqual(await f.probes(), [help, version]);
+    assert.deepEqual(await f.mutations(), [
+      ["network", "connect", "--gw-priority=-1", f.attachment.networkId, f.attachment.containerId],
+    ]);
+  });
+});
 
 test("k3d fixture attachments preserve exact engine ownership", async (t) => {
   for (const reversed of [false, true]) {

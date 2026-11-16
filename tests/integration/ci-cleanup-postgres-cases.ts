@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { cleanupState } from "../../scripts/ci/cleanup.ts";
 import { postgresSuperuserPassword, runPostgresAdmin } from "../../scripts/ci/postgres-admin.ts";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
-import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
+import { commandCalls, commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { startFakePostgres, type FakePostgresQuery } from "../helpers/fake-postgres-server.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
@@ -546,10 +546,12 @@ export function registerChildJournalCases(): void {
       resources: children,
     });
     const log = join(root, "docker.log");
-    const docker = await writeCommand(root, "docker", "exit 97", { log });
+    const docker = await writeCommand(root, "docker", "exit 0", { log });
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       OCC_DOCKER_BIN: docker,
+      // The real fixture also invokes Docker directly through PATH.
+      PATH: commandPath(root),
       TMPDIR: root,
       OCC_TEST_CI_POSTGRES_REAL: "1",
       OPENCLAW_ENTERPRISE_CI_STATE: parentPath,
@@ -566,10 +568,16 @@ export function registerChildJournalCases(): void {
     // and rejects foreign/duplicate environment paths before attempting preparation.
     const [firstState] = states;
     assert.ok(firstState);
-    for (const selected of [
-      states,
-      [firstState, firstState],
-      [...states, { path: join(root, "extra.json"), owner: "other" }],
+    for (const { selected, diagnostic } of [
+      { selected: states, diagnostic: /CI state already exists/ },
+      {
+        selected: [firstState, firstState],
+        diagnostic: /Managed PostgreSQL states must match/,
+      },
+      {
+        selected: [...states, { path: join(root, "extra.json"), owner: "other" }],
+        diagnostic: /Managed PostgreSQL states must match/,
+      },
     ]) {
       const result = spawnSync(process.execPath, args, {
         cwd: repositoryRoot,
@@ -578,10 +586,7 @@ export function registerChildJournalCases(): void {
         timeout: 30_000,
       });
       assert.equal(result.status, 1, result.stdout + result.stderr);
-      assert.match(
-        result.stdout + result.stderr,
-        /CI state already exists|Managed PostgreSQL states must match/,
-      );
+      assert.match(result.stdout + result.stderr, diagnostic);
       for (const state of states) {
         assert.equal(await readFile(state.path, "utf8"), foreign);
       }
