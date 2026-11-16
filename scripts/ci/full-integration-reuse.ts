@@ -295,7 +295,7 @@ export async function validateResults({
       const validation = spawnSync(
         process.execPath,
         [
-          "scripts/ci/run-tests.mjs",
+          "scripts/ci/run-tests.ts",
           "aggregate",
           lane,
           "--results-dir",

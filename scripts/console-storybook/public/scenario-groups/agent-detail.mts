@@ -410,7 +410,7 @@ export function createAgentDetailScenarios({
         description:
           "The Agent header keeps its identity and actions visible while access is rechecked. The delay and Agent data are simulated.",
         steps: [
-          "Choose Copy Agent ID. If clipboard access is available, Copied appears briefly; otherwise, the ID is selected for manual copying.",
+          "Choose Copy Agent ID. When the copy succeeds, “Copied” appears for two seconds. Otherwise, the entire ID is selected and “Copy selection” appears.",
           "Focus Open draft, switch to another window, then return. During the 1.5-second access check, the action stays visible but cannot be used; focus returns to it after the check.",
           "Repeat the window switch and focus Namespaces while the check is pending. Focus stays in the sidebar when the check finishes.",
           "Choose Open draft to open the draft Configuration without deploying. In the next story, try the Agents back link and Namespace selector while a save is in progress.",
@@ -1969,9 +1969,8 @@ export function createAgentDetailScenarios({
         deployed: true,
         clipboard: "unavailable",
         actions: [{ selector: ".page-meta-copy", click: true }],
-        description:
-          "Where the browser offers no clipboard (an http origin, say), Copy Agent ID selects the ID instead, so it can be copied by hand.",
-        steps: ["Check that the Agent ID is selected and no Copied status appears."],
+        description: "When the browser has no clipboard access, you can copy the Agent ID by hand.",
+        steps: ["Check that the entire Agent ID is selected and “Copy selection” appears."],
       },
       draftCredentialRejected: {
         group: "Pages/Agent detail",

@@ -7,7 +7,7 @@ import {
 import type { RepositoryStandingApproval } from "../../packages/occ/src/ports/repository-sessions.ts";
 import { repositoryApprovalFingerprint } from "../../packages/occ/src/repository-approval.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
-import { repositoryBinding } from "../fixtures/repository-credentials/session-state.mjs";
+import { repositoryBinding } from "../fixtures/repository-credentials/session-state.ts";
 
 test("in-memory standing approvals retain scoped history across revocation and re-grant", async () => {
   const state = new InMemoryPlatformState();

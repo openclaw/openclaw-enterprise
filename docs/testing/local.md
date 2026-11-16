@@ -44,7 +44,7 @@ current source before running that file by itself:
 
 ```sh
 pnpm cli:build
-node --test tests/integration/first-agent-startup.test.mjs
+node --test tests/integration/first-agent-startup.test.ts
 ```
 
 ## Check packaged OpenShell Workspace resources
@@ -75,8 +75,9 @@ finding that replaces an old one.
 
 ## Authentication and authorization coverage
 
-`tests/conformance/iam.test.mjs` and `tests/integration/occ-api.test.mjs` cover
-identity, authorization, isolation, and audit behavior. The service API key
+`tests/conformance/iam.test.ts`, `tests/integration/occ-api.test.mjs`, and
+`tests/integration/occ-api-namespace-iam-policy.test.ts` cover identity,
+authorization, isolation, and audit behavior. The service API key
 suite uses memory storage. Run the [PostgreSQL tests](postgresql.md) for
 persistence and external sign-in; memory-backed success does not prove them.
 
@@ -308,7 +309,7 @@ With an exclusively used disposable database from [PostgreSQL setup](postgresql.
 ```sh
 OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_test_local \
 OCC_METRICS_TEST_MIGRATION_DATABASE_URL=postgresql://occ_migrator:occ-migrator-local@127.0.0.1:55432/openclaw_test_local \
-  node --test tests/integration/occ-metrics.test.mjs
+  node --test tests/integration/occ-metrics.test.ts
 ```
 
 The migration URL must target the same database; without it the lock case skips.
@@ -319,7 +320,7 @@ On Linux with Podman, run the real monitoring containers:
 
 ```sh
 OCC_TEST_METRICS_MONITORING=1 OCC_METRICS_TEST_ENGINE=podman \
-  node --test tests/integration/occ-metrics-monitoring.test.mjs
+  node --test tests/integration/occ-metrics-monitoring.test.ts
 ```
 
 Use `docker` for Docker Engine. The test removes its randomly named containers.
@@ -338,7 +339,7 @@ NetworkPolicy. Use a fresh private state directory for each run:
 OBS_LANE=k3d-observability
 OBS_RUN_DIR=$(mktemp -d)
 env -u OPENAI_API_KEY node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
-  env -u OPENAI_API_KEY node scripts/ci/run-tests.mjs run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
+  env -u OPENAI_API_KEY node scripts/ci/run-tests.ts run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
 ```
 
 Inspect the exit status and result counts, including skips. After preparation
@@ -367,7 +368,7 @@ Run from the checkout root with a fresh state directory.
 OBS_LANE=k3d-otel
 OBS_RUN_DIR=$(mktemp -d)
 corepack pnpm exec node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
-  corepack pnpm exec node scripts/ci/run-tests.mjs run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
+  corepack pnpm exec node scripts/ci/run-tests.ts run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
 ```
 
 Inspect results and clean up as above. The model lane checks embedded and

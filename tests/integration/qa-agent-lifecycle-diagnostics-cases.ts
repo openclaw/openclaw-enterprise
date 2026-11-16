@@ -31,7 +31,7 @@ export function registerQaAgentLifecycleDiagnosticsCases(): void {
   test("a QA Agent deployment timeout names its last status, attempt and Pods", async (t) => {
     const { deployQaAgentAndWait } = await import("../helpers/qa-installation.mjs");
     const { createQaReport } = await import("../helpers/qa-report.mjs");
-    const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+    const { registerQaSecret } = await import("../helpers/qa-secrets.ts");
     // An invented 48-character registered value. Runtime text that OCC shortened could keep
     // part of it, which whole-value redaction cannot match.
     const privateValue = "qa-deploy-fixture-private-0123456789abcdefghijkl";
@@ -266,7 +266,7 @@ export function registerQaAgentLifecycleDiagnosticsCases(): void {
   });
 
   test("a QA Agent stop timeout names the remaining Pods and keeps redacted platform logs", async () => {
-    const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+    const { registerQaSecret } = await import("../helpers/qa-secrets.ts");
     const { stopQaAgent, describeStopObservation } = await import("../helpers/qa-repository.mjs");
     registerQaSecret("stop-fixture-service-key");
     const agent: AgentFixture = { id: "agent-1", namespaceId: "namespace-1" };

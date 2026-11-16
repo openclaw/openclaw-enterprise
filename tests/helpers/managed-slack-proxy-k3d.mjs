@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { parseProductionChart, renderProductionChart } from "./production-chart.mjs";
+import { parseProductionChart, renderProductionChart } from "./production-chart.ts";
 
 // Install the supported chart resources in the topology's disposable namespace.
 // The release must match the API labels and the existing Gateway namespace grant.

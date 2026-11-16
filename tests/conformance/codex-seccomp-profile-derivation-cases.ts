@@ -14,7 +14,7 @@ import {
   writeJson,
 } from "./codex-seccomp-preparation-fixture.ts";
 
-const generatorPath = join(repositoryRoot, "scripts/generate-codex-seccomp.mjs");
+const generatorPath = join(repositoryRoot, "scripts/generate-codex-seccomp.ts");
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);

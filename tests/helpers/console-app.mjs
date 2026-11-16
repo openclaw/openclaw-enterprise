@@ -1,4 +1,4 @@
-import { openShellNamespaceObjects } from "./openshell-workspace-protocol.mjs";
+import { openShellNamespaceObjects } from "./openshell-workspace-protocol.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import assert from "node:assert/strict";
@@ -36,7 +36,7 @@ import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { reservePort } from "./available-port.ts";
-import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
+import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.ts";
 import { createConsoleFixtureTransport } from "./console-fixture-transport.ts";
 import { createFixtureResponse } from "./console-fixture-response.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
@@ -665,7 +665,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     return fixtureResponse(result, 201, InstallationResponse, "bootstrap Installation").data;
   }
 
-  /** @param {string} name */
+  /** @param {string} name @param {{ready?: boolean}} [options] */
   async function createNamespace(name, { ready = false } = {}) {
     const result = await request("POST", "/namespaces", { body: { name } });
     const namespace = fixtureResponse(result, 201, NamespaceResponse, "create Namespace").data;

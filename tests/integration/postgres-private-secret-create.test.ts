@@ -14,7 +14,7 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 const origin = "https://console.oce.localhost";
 const authSecret = "private-test-auth-" + randomUUID();

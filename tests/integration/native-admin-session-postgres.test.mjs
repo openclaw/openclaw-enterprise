@@ -3,10 +3,8 @@ import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
 
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { injectJson as inject } from "../helpers/inject-json.mjs";
-import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
+import { waitFor, waitUntil } from "../helpers/wait-for.ts";
 import {
   publicOrigin,
   nativeGatewayApiKey,
@@ -26,64 +24,10 @@ import {
   assertSocketClosesAfterMutation,
 } from "../helpers/native-admin-postgres.ts";
 import {
-  assertNativeBrowserLaunchAuthorityLockOrder,
-  assertNativeBrowserLaunchRechecksParentExpiry,
-  assertNativeBrowserShutdownDrainsLaunch,
-} from "./native-browser-launch-postgres-cases.ts";
-
-// Drive the real bridge protocol without claiming browser cookie or popup behavior.
-// The browser integration separately exercises those mechanics with trusted HTTPS.
-async function launchNativeBrowserSession(api, session, target, previousCookie) {
-  const path = `/namespaces/${target.namespace.id}/agents/${target.agent.id}/native-admin`;
-  const headers = {
-    origin: api.origin,
-    cookie: session.cookie,
-    "x-occ-session-key": session.sessionKey,
-  };
-  const launch = await api.app.inject({
-    method: "POST",
-    url: `${path}/launch`,
-    headers,
-    payload: {},
-  });
-  assert.equal(launch.statusCode, 200, launch.body);
-  const { intentId, landingUrl } = launch.json().data;
-  const landing = new URL(landingUrl);
-  const bound = await api.app.inject({
-    method: "GET",
-    url: landing.pathname + landing.search,
-    headers: { host: landing.host, ...(previousCookie ? { cookie: previousCookie } : {}) },
-  });
-  assert.equal(bound.statusCode, 200, bound.body);
-  const challengeCookie = cookieHeaderFromSetCookie(bound.headers["set-cookie"]);
-  const challenge = challengeCookie.split("=")[1];
-  const confirm = await api.app.inject({
-    method: "POST",
-    url: `${path}/confirm`,
-    headers,
-    payload: { intentId, challenge },
-  });
-  assert.equal(confirm.statusCode, 200, confirm.body);
-  const { exchange, redeemUrl } = confirm.json().data;
-  const redeem = new URL(redeemUrl);
-  const issued = await api.app.inject({
-    method: "POST",
-    url: redeem.pathname,
-    headers: {
-      host: redeem.host,
-      origin: api.origin,
-      cookie: [challengeCookie, previousCookie].filter(Boolean).join("; "),
-      "content-type": "application/x-www-form-urlencoded",
-    },
-    payload: new URLSearchParams({ intentId, exchange }).toString(),
-  });
-  assert.equal(issued.statusCode, 200, issued.body);
-  const cookie = cookieHeaderFromSetCookie(issued.headers["set-cookie"])
-    .split("; ")
-    .find((value) => value.startsWith("__Host-occ_agent_access="));
-  assert.ok(cookie, "successful redemption must return a host-only Agent handle");
-  return cookie;
-}
+  registerLeaseDependencyCases,
+  registerLeaseIndependentCookieCase,
+  registerLeaseReplacementAndRevocationCases,
+} from "./native-admin-session-lease-cases.ts";
 
 async function waitForAuditActions(pool, namespaceId, agentId, actions) {
   let remaining = actions;
@@ -569,39 +513,16 @@ test(
   },
 );
 
-for (const { dependency, owner, method } of [
-  { dependency: "an IAM", owner: "iamDriver", method: "authorize" },
-  { dependency: "an identity lookup", owner: "iamDriver", method: "lookupIdentity" },
-  { dependency: "a State", owner: "state", method: "read" },
-]) {
-  test(
-    `PostgreSQL native admin WebSocket lease closes as a dependency failure during ${dependency} outage`,
-    { ...requiresPostgres, timeout: 30_000 },
-    async (t) => {
-      const scenario = await openNativeAdminSocketScenario(t, "iam-outage");
-      // The replica holding the socket loses a dependency at the next lease renewal. An outage
-      // is not a revocation: the close names a dependency failure and writes no denial audit.
-      const target = scenario.apiB[owner];
-      const original = target[method];
-      t.after(() => {
-        target[method] = original;
-      });
-      const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
-        target[method] = async () => {
-          throw new Error(`${dependency} outage`);
-        };
-      });
-      t.diagnostic(`${dependency} outage closed native admin WebSocket in ${closedAfterMs}ms`);
-      await assertSocketAuditCloseReason(scenario, "dependency_failure");
-      const denials = await scenario.apiA.pool.query(
-        `SELECT count(*)::int AS count FROM occ.audit_events
-        WHERE namespace_id = $1 AND resource_id = $2 AND kind = 'authorization_denial'`,
-        [scenario.namespace.id, scenario.agent.id],
-      );
-      assert.equal(denials.rows[0].count, 0);
-    },
-  );
-}
+/** @satisfies {import("./native-admin-session-lease-cases.ts").LeaseDependencies} */
+const leaseDependencies = {
+  openNativeAdminSocketScenario,
+  assertSocketAuditCloseReason,
+  async assertRevokedHttp(scenario) {
+    await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
+  },
+};
+
+registerLeaseDependencyCases(leaseDependencies);
 
 test(
   "PostgreSQL native admin WebSocket lease closes at the next renewal after Agent stop",
@@ -623,122 +544,7 @@ test(
   },
 );
 
-test(
-  "PostgreSQL native admin WebSocket lease closes at the next renewal after active revision replacement",
-  { ...requiresPostgres, timeout: 30_000 },
-  async (t) => {
-    const scenario = await openNativeAdminSocketScenario(t, "revision");
-    let nextRevision;
-    const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
-      nextRevision = await scenario.apiA.controller.deployAgent(
-        scenario.principal.id,
-        { namespaceId: scenario.namespace.id, agentId: scenario.agent.id },
-        resolveApprovedHarness,
-      );
-      assert.notEqual(nextRevision.id, scenario.revision.id);
-      await scenario.apiA.state.transact((unit) =>
-        unit.agents.compareAndSetActiveRevision(
-          scenario.namespace.id,
-          scenario.agent.id,
-          scenario.revision.id,
-          nextRevision.id,
-        ),
-      );
-    });
-    t.diagnostic(`active revision replacement closed native admin WebSocket in ${closedAfterMs}ms`);
-    await assertSocketAuditCloseReason(scenario, "revision_changed");
-    assert.ok(nextRevision, "revision replacement must create a successor revision");
-
-    const reconnectedHttp = await nativeGet(
-      scenario.apiB,
-      scenario.native,
-      scenario.nativeCookie,
-      "/after-revision",
-    );
-    assert.equal(reconnectedHttp.statusCode, 200, reconnectedHttp.body);
-    const reopened = await openNativeWebSocket(
-      scenario.port,
-      scenario.native,
-      scenario.nativeCookie,
-      "/session/reconnected",
-    );
-    t.after(() => reopened.destroy());
-    const latestConnect = await waitFor(
-      "reconnected WebSocket audit on replacement revision",
-      async () => {
-        const result = await scenario.apiA.pool.query(
-          `SELECT details
-           FROM occ.audit_events
-          WHERE namespace_id = $1
-            AND resource_kind = 'agent'
-            AND resource_id = $2
-            AND action = 'openclaw.agents.native_admin.websocket.connect'
-            AND details->'nativeAdmin'->>'revisionId' = $3
-          ORDER BY occurred_at DESC, id DESC
-          LIMIT 1`,
-          [scenario.namespace.id, scenario.agent.id, nextRevision.id],
-        );
-        return result.rows[0];
-      },
-      5_000,
-    );
-    assert.equal(
-      latestConnect.details.nativeAdmin.revisionId,
-      nextRevision.id,
-      "shared session reconnect must bind the current active revision",
-    );
-  },
-);
-
-test(
-  "PostgreSQL native admin WebSocket closes on API shutdown and disabled redeploy denies reuse",
-  { ...requiresPostgres, timeout: 30_000 },
-  async (t) => {
-    const scenario = await openNativeAdminSocketScenario(t, "shutdown-disabled");
-    const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
-      await scenario.apiB.app.close();
-    });
-    t.diagnostic(`API shutdown closed native admin WebSocket in ${closedAfterMs}ms`);
-    await assertSocketAuditCloseReason(scenario, "shutdown");
-
-    const disabledApi = await createApi(t, "shutdown-disabled-off", scenario.upstream.port, {
-      nativeAdminEnabled: false,
-    });
-    t.after(() => disabledApi.app.close());
-    const denied = await nativeGet(disabledApi, scenario.native, scenario.nativeCookie);
-    assert.equal(denied.statusCode, 403, denied.body);
-  },
-);
-
-// These cases exercise real PostgreSQL sessions, IAM and OCC relay admission. The HTTPS
-// peer is a transport fixture; native method/scope enforcement has separate runtime proof.
-for (const change of ["operate-revoked", "account-disabled"]) {
-  test(
-    `PostgreSQL chat socket closes when ${change}`,
-    { ...requiresPostgres, timeout: 30_000 },
-    async (t) => {
-      const scenario = await openNativeAdminSocketScenario(t, change, { mode: "chat" });
-      await assertSocketClosesAfterMutation(scenario.socket, async () => {
-        if (change === "operate-revoked") {
-          await scenario.apiA.pool.query(`DELETE FROM occ.iam_access_bindings WHERE role_id = $1`, [
-            scenario.operator.roleId,
-          ]);
-        } else {
-          const changed = await scenario.apiA.pool.query(
-            `UPDATE occ.human_authentication_accounts SET disabled = true, version = version + 1 WHERE user_id = $1`,
-            [scenario.operator.account.id],
-          );
-          assert.equal(changed.rowCount, 1, "the guarded account must exist before disabling it");
-        }
-      });
-      await assertSocketAuditCloseReason(
-        scenario,
-        change === "operate-revoked" ? "authorization_denied" : "session_invalid",
-      );
-      await assertRevokedHttp(scenario.apiB, scenario.native, scenario.nativeCookie);
-    },
-  );
-}
+registerLeaseReplacementAndRevocationCases(leaseDependencies);
 
 test(
   "PostgreSQL admin downgrade closes the old socket and reconnects only through chat",
@@ -762,164 +568,4 @@ test(
   },
 );
 
-test(
-  "PostgreSQL reconnect uses the new cookie while the original chat socket keeps its session",
-  { ...requiresPostgres, timeout: 30_000 },
-  async (t) => {
-    const scenario = await openNativeAdminSocketScenario(t, "cookie-change", { mode: "chat" });
-    const next = await createAgentPermissionSession(
-      scenario.apiA,
-      scenario.namespace.id,
-      scenario.agent.id,
-      "new-browser-account",
-      ["operate"],
-    );
-    const socket = await openNativeWebSocket(scenario.port, scenario.native, next.session.cookie);
-    t.after(() => socket.destroy());
-    // Deleting the original session closes only its socket, even after another account connects.
-    await assertSocketClosesAfterMutation(scenario.socket, () =>
-      scenario.apiA.pool.query(`DELETE FROM occ.session WHERE id = $1`, [
-        scenario.parentSession.id,
-      ]),
-    );
-    await assertSocketAuditCloseReason(scenario, "session_invalid");
-    assert.equal(socket.destroyed, false);
-  },
-);
-
-test(
-  "PostgreSQL native browser launch and Agent creation share a consistent authority lock order",
-  { ...requiresPostgres, timeout: 30_000 },
-  (t) => assertNativeBrowserLaunchAuthorityLockOrder(t, parentSessionRow),
-);
-
-test(
-  "PostgreSQL native browser launch rechecks parent expiry after waiting for the Namespace",
-  { ...requiresPostgres, timeout: 30_000 },
-  (t) => assertNativeBrowserLaunchRechecksParentExpiry(t, parentSessionRow),
-);
-
-test(
-  "PostgreSQL native browser shutdown drains an in-flight launch without returning access",
-  { ...requiresPostgres, timeout: 30_000 },
-  assertNativeBrowserShutdownDrainsLaunch,
-);
-
-test(
-  "PostgreSQL host-only relaunch preserves an existing socket only for the same parent and revision",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (t) => {
-    await ensureBootstrap(t);
-    const upstream = await startNativeHttpsUpstream(t);
-    trustLocalUpstreamCertificate(t, upstream.cert);
-    const api = await createApi(t, "relaunch", upstream.port, { exchange: true });
-    t.after(() => api.app.close());
-    const parent = await signIn(api.app);
-    const target = await createNativeAgent(api, parent, upstream);
-    const other = await createNativeAgent(api, parent, upstream);
-    const port = await listen(api.app);
-    const cookie = await launchNativeBrowserSession(api, parent, target);
-    const socket = await openNativeWebSocket(port, target.native, cookie);
-    t.after(() => socket.destroy());
-
-    // Reopening the same Agent must leave a previously admitted tab connected.
-    // Carry the actual cookie returned by the first exchange through redemption.
-    const reopened = await launchNativeBrowserSession(api, parent, target, cookie);
-
-    let received = "";
-    socket.on("data", (chunk) => {
-      received += chunk.toString();
-    });
-    await assertSocketClosesAfterMutation(socket, async () => {
-      // The helper first waits through multiple real lease renewals. Prove bytes
-      // still cross the old relay, then replace the revision through its owner.
-      assert.equal(
-        reopened,
-        cookie,
-        "same-parent, same-revision relaunch must reuse the live handle",
-      );
-      const otherCookie = await launchNativeBrowserSession(api, parent, other, cookie);
-      assert.notEqual(otherCookie, cookie, "a different Agent must receive its own handle");
-      assert.equal((await nativeGet(api, target.native, otherCookie)).statusCode, 403);
-      assert.equal((await nativeGet(api, target.native, cookie)).statusCode, 200);
-
-      upstream.peers[0].write("still-connected-after-relaunch");
-      await waitFor(
-        "the original relay after relaunch",
-        () => received.includes("still-connected-after-relaunch"),
-        2_000,
-      );
-      const revision = await api.controller.deployAgent(
-        target.principal.id,
-        { namespaceId: target.namespace.id, agentId: target.agent.id },
-        resolveApprovedHarness,
-      );
-      await api.state.transact((unit) =>
-        unit.agents.compareAndSetActiveRevision(
-          target.namespace.id,
-          target.agent.id,
-          target.revision.id,
-          revision.id,
-        ),
-      );
-    });
-    assert.equal((await nativeGet(api, target.native, cookie)).statusCode, 403);
-    // A deployment invalidates this handle without logging the person out. Refreshing
-    // a named chat page must explain how to reopen, never silently adopt the new version.
-    const host = new URL(target.native.origin).host;
-    const key = new URL(target.native.origin).hostname.match(/^agent-([a-f0-9]{32})\./)[1];
-    const requestsBeforeRefresh = upstream.requests.length;
-    for (const activation of [{}, { "sec-fetch-user": "?1" }]) {
-      const stalePage = await api.app.inject({
-        method: "GET",
-        url: `/chat/main/simple-test-session-${"a".repeat(32)}`,
-        headers: {
-          host,
-          cookie,
-          accept: "text/html",
-          "sec-fetch-mode": "navigate",
-          "sec-fetch-dest": "document",
-          ...activation,
-        },
-      });
-      assert.equal(stalePage.statusCode, 403);
-      assert.match(stalePage.headers["content-type"], /^text\/html/);
-      assert.match(stalePage.body, /Agent version changed/);
-      assert.ok(
-        stalePage.body.includes(
-          `<a href="${api.origin}/console/#native-agent=${key}">Return to console</a>`,
-        ),
-        "the recovery destination must be a clickable link",
-      );
-      assert.equal(stalePage.headers.location, undefined);
-      assert.equal(stalePage.headers["set-cookie"], undefined);
-      assert.equal(stalePage.headers["cache-control"], "no-store");
-      assert.ok(stalePage.headers["x-request-id"]);
-      assert.equal(upstream.requests.length, requestsBeforeRefresh);
-    }
-    const staleApi = await nativeGet(api, target.native, cookie, "/api/status");
-    assert.equal(staleApi.statusCode, 403);
-    assert.match(staleApi.headers["content-type"], /^application\/json/);
-    const revisedCookie = await launchNativeBrowserSession(api, parent, target, cookie);
-    assert.notEqual(revisedCookie, cookie, "a new revision cannot reuse the previous handle");
-    const revisedSocket = await openNativeWebSocket(port, target.native, revisedCookie);
-    t.after(() => revisedSocket.destroy());
-
-    // A new parent session for the same account must not inherit the old handle.
-    const newParent = await signIn(api.app);
-    assert.notEqual(newParent.sessionKey, parent.sessionKey);
-    let newCookie;
-    await assertSocketClosesAfterMutation(revisedSocket, async () => {
-      newCookie = await launchNativeBrowserSession(api, newParent, target, revisedCookie);
-      assert.notEqual(newCookie, revisedCookie);
-    });
-    const newSocket = await openNativeWebSocket(port, target.native, newCookie);
-    t.after(() => newSocket.destroy());
-    await assertSocketClosesAfterMutation(newSocket, async () => {
-      const signedOut = await inject(api.app, "POST", "/api/auth/sign-out", { session: newParent });
-      assert.equal(signedOut.statusCode, 200, signedOut.body);
-    });
-    assert.equal((await nativeGet(api, target.native, newCookie)).statusCode, 403);
-    assert.ok(upstream.upgrades.every((upgrade) => upgrade.headers.cookie === undefined));
-  },
-);
+registerLeaseIndependentCookieCase(leaseDependencies);

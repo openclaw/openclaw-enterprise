@@ -8,7 +8,7 @@
   "parallelFiles": [
     "tests/integration/postgres-password-sign-in-limit.test.ts",
     "tests/integration/postgres-bootstrap-failures.test.ts",
-    "tests/integration/postgres-agent-provisioning.test.mjs",
+    "tests/integration/postgres-agent-provisioning.test.ts",
     "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.ts",
     "tests/integration/postgres-oidc-recovery-replacement.test.ts",
@@ -22,7 +22,7 @@
     "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
     "tests/integration/postgres-default-users.test.ts",
     "tests/integration/postgres-agent-runtime-logs.test.ts",
-    "tests/integration/postgres-repository-broker-receipts.test.mjs",
+    "tests/integration/postgres-repository-broker-receipts.test.ts",
     "tests/integration/postgres-worker-stale-claim.test.ts",
     "tests/integration/postgres-worker-audit.test.ts",
     "tests/integration/postgres-namespace-iam-policy.test.ts",
@@ -30,7 +30,7 @@
     "tests/integration/postgres-connection-templates.test.ts",
     "tests/integration/workspace-setup-worker.test.ts",
     "tests/integration/postgres-repository-sessions.test.ts",
-    "tests/integration/postgres-secret-state.test.mjs",
+    "tests/integration/postgres-secret-state.test.ts",
     "tests/integration/postgres-service-account-deletion.test.ts",
     "tests/integration/postgres-service-account-issuance-recovery.test.ts",
     "tests/integration/postgres-service-account-compensation.test.ts",
@@ -39,14 +39,14 @@
     "tests/integration/postgres-connection-auth.test.ts",
     "tests/integration/postgres-pool-options.test.ts",
     "tests/integration/postgres-repository-transactions.test.ts",
-    "tests/integration/postgres-controller-work-targets.test.mjs",
+    "tests/integration/postgres-controller-work-targets.test.ts",
     "tests/integration/postgres-transaction-commit.test.mjs",
     "tests/integration/postgres-agent-sandbox-policy.test.mjs",
-    "tests/integration/postgres-static-egress.test.mjs",
+    "tests/integration/postgres-static-egress.test.ts",
     "tests/integration/postgres-static-retired-admission.test.ts",
     "tests/integration/postgres-prepared-token-service.test.ts",
-    "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
-    "tests/integration/postgres-prepared-repository-git-broker.test.mjs",
+    "tests/integration/postgres-prepared-github-lifecycle.test.ts",
+    "tests/integration/postgres-prepared-repository-git-broker.test.ts",
     "tests/integration/postgres-prepared-receipt-restart.test.ts",
     "tests/integration/postgres-prepared-standing-expiry.test.ts",
     "tests/integration/postgres-protected-git-recipient-custody.test.ts",
@@ -61,8 +61,8 @@
     "tests/integration/postgres-openshell-standing-repository-set.test.ts",
     "tests/integration/postgres-openshell-standing-selected-repository.test.ts",
     "tests/integration/postgres-openshell-standing-cold-worker.test.ts",
-    "tests/integration/postgres-egress-send-receipts.test.mjs",
-    "tests/integration/postgres-protected-credential-free.test.mjs",
+    "tests/integration/postgres-egress-send-receipts.test.ts",
+    "tests/integration/postgres-protected-credential-free.test.ts",
     "tests/integration/postgres-standing-approval-api.test.ts",
     "tests/integration/postgres-standing-repository-boundary.test.ts",
     "tests/integration/postgres-standing-execution.test.ts",
@@ -171,7 +171,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-controller-work-targets.test.mjs",
+      "path": "tests/integration/postgres-controller-work-targets.test.ts",
       "expectedTests": ["PostgreSQL controller work requires exactly one complete target shape"]
     },
     {
@@ -222,9 +222,10 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-secret-state.test.mjs",
+      "path": "tests/integration/postgres-secret-state.test.ts",
       "expectedTests": [
         "in-memory state persists Secret metadata and binding references without values",
+        "PostgreSQL PAT Secret bindings enforce exact ownership and reject retired auth methods",
         "PostgreSQL state persists Secret metadata and enforces binding dependencies"
       ]
     },
@@ -266,7 +267,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-agent-provisioning.test.mjs",
+      "path": "tests/integration/postgres-agent-provisioning.test.ts",
       "expectedTests": [
         "provisioning API queues one job with existing Secret references and replays only the exact same request",
         "provisioning status judges claim liveness by the database clock, not the controller clock",
@@ -388,7 +389,7 @@
       "path": "tests/integration/postgres-repository-sessions.test.ts"
     },
     {
-      "path": "tests/integration/postgres-repository-broker-receipts.test.mjs",
+      "path": "tests/integration/postgres-repository-broker-receipts.test.ts",
       "expectedTests": [
         "only the reserving broker generation fences its own reservation",
         "memory",
@@ -420,7 +421,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
+      "path": "tests/integration/postgres-prepared-github-lifecycle.test.ts",
       "expectedTests": [
         "authorized GitHub proxy requests mint the registered grant and share one replacement",
         "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",
@@ -435,7 +436,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-prepared-repository-git-broker.test.mjs"
+      "path": "tests/integration/postgres-prepared-repository-git-broker.test.ts"
     },
     {
       "path": "tests/integration/postgres-prepared-receipt-restart.test.ts",
@@ -566,7 +567,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-static-egress.test.mjs"
+      "path": "tests/integration/postgres-static-egress.test.ts"
     },
     {
       "path": "tests/integration/postgres-static-retired-admission.test.ts",
@@ -580,7 +581,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-egress-send-receipts.test.mjs",
+      "path": "tests/integration/postgres-egress-send-receipts.test.ts",
       "expectedTests": [
         "PostgreSQL send receipts survive owner loss and fence exact static versions",
         "after COMMIT and loss of the acknowledgment and caller process, recover the exact outcome and feedback",
@@ -589,7 +590,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-protected-credential-free.test.mjs",
+      "path": "tests/integration/postgres-protected-credential-free.test.ts",
       "expectedTests": [
         "explicit protected credential-free metadata: both gates, false selections, lost COMMIT and last withdrawal"
       ]

@@ -12,7 +12,7 @@ The root [pnpm workspace](../pnpm-workspace.yaml) explicitly selects
 `contracts`, `occ`, `iam`, and `audit`. [TypeScript project references](../tsconfig.json) select the same
 projects. Adding a directory does not enroll it in the workspace: intentional
 workspace changes must also update these declarations and the
-[workspace boundary check](../scripts/verify-workspace-boundary.mjs).
+[workspace boundary check](../scripts/verify-workspace-boundary.ts).
 The configuration excludes `legacy/`; do not import archived implementations.
 
 The Go CLI uses the root [Go module](../go.mod). The documentation renderer in
@@ -149,8 +149,17 @@ checksum, and fixed build timestamp used by that runtime recipe and its callers.
 `deploy/runtime/node/` owns the runtime's pinned Node source, termination patch,
 native build and verification. Its patch inventory is separate from OpenClaw's.
 
-Chart-owned startup scripts live under `deploy/helm/openclaw-enterprise/files/`
-and are embedded in rendered container commands; they ship with the chart.
+Helm embeds the startup programs from `deploy/helm/openclaw-enterprise/files/`
+in rendered container commands. Edit their TypeScript sources in
+`deploy/helm/src/`. Install the workspace dependencies and run the matching
+command from the repository root with the pinned Node version.
+
+- API CA programs: `node deploy/helm/src/generate-api-ca.ts`
+- Installation check: `node deploy/helm/src/generate-installation-check.ts`
+
+Commit any generated chart updates with their sources. The OIDC CA integration
+suite checks the packaged CA programs. The Installation preflight suite checks
+that Helm renders the Installation check from its generated chart file.
 
 Select checks using the [testing guide](testing/README.md). Follow AGENTS.md's
 integration requirements for runtime changes. For documentation-only changes,

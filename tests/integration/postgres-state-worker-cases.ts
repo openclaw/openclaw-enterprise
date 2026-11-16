@@ -17,7 +17,7 @@ import {
   request,
   startController,
 } from "../helpers/postgres-platform-state.ts";
-import { waitUntil, within } from "../helpers/wait-for.mjs";
+import { waitUntil, within } from "../helpers/wait-for.ts";
 
 export async function recheckNamespaceRestriction(context: TestContext) {
   const [{ Pool }, { createControllerWorker }, { createDevelopmentComputeDriver }] =
@@ -195,6 +195,9 @@ export async function drainApiOnSigterm(context: TestContext) {
         probe.once("error", (error: NodeJS.ErrnoException) => {
           if (error.code === "ECONNREFUSED") {
             resolve(true);
+          } else if (error.code === "ECONNRESET" && error.syscall === "connect") {
+            // Closing a listener can reset a queued connection. Wait for a fresh refusal.
+            resolve(false);
           } else {
             reject(error);
           }

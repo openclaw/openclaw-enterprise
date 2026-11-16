@@ -597,7 +597,7 @@ function location(data: ReporterEventData = {}, recordCoverage = false) {
   };
 }
 
-// Only for scripts/ci/run-tests.mjs: failure text here is unredacted, so never
+// Only for scripts/ci/run-tests.ts: failure text here is unredacted, so never
 // point a step whose stdout reaches a log or artifact at this reporter directly.
 export default async function* jsonLinesReporter(
   source: AsyncIterable<ReporterEvent> | Iterable<ReporterEvent>,

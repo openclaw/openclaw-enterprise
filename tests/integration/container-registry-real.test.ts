@@ -8,7 +8,7 @@ import test, { type TestContext } from "node:test";
 import { setTimeout } from "node:timers/promises";
 import Type from "typebox";
 import { Check } from "typebox/value";
-import { registryImage } from "../../scripts/ci/fixture-support-images.mjs";
+import { registryImage } from "../../scripts/ci/fixture-support-images.ts";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 
 const indexMediaType = "application/vnd.oci.image.index.v1+json";

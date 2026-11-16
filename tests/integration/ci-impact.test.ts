@@ -37,7 +37,7 @@ const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const selector = join(repositoryRoot, "scripts/ci/impact.ts");
 const pnpmImpact = join(repositoryRoot, "scripts/ci/pnpm-impact.ts");
 const gate = join(repositoryRoot, "scripts/ci/impact-gate.ts");
-const runner = join(repositoryRoot, "scripts/ci/run-tests.mjs");
+const runner = join(repositoryRoot, "scripts/ci/run-tests.ts");
 const read = (path: string) => readFileSync(join(repositoryRoot, path), "utf8");
 const policy = readFileSync(selector, "utf8");
 const ciWorkflow = read(".github/workflows/ci.yml");
@@ -840,6 +840,14 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
     consumerBlobs ===
     "ad55f3c6ecfb551d76984ffd901abe3dfeb9c170\n47cc6129264ecdfb5271be15c51441e48e990323";
   const mode = knownConsumer ? "candidate" : "broad";
+  const expectedLanes = [
+    "checks-baseline-1",
+    "checks-baseline-2",
+    "checks-browser",
+    "checks-browser-2",
+    "images-packaging",
+  ];
+  const expectedCompanionJobs = knownConsumer ? ["console-storybook.yml/build"] : [];
   const artifact = join(f.dir, "receipt.json");
   assert.match(
     await pnpmImpactOutput(f, {}, ["--summary", artifact]),
@@ -852,26 +860,39 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
     identity: { base: f.base, tested: f.tested, head: f.head },
     mode,
     reason: knownConsumer ? "console_asset_reader" : "unverified_storybook",
-    lanes: [
-      "checks-baseline-1",
-      "checks-baseline-2",
-      "checks-browser",
-      "checks-browser-2",
-      "images-packaging",
-    ],
-    companionJobs: knownConsumer ? ["console-storybook.yml/build"] : [],
+    lanes: expectedLanes,
+    companionJobs: expectedCompanionJobs,
   });
   const jobs = laneTable().filter((row) => receipt.lanes.includes(row.lane));
   assert.equal(jobs.length, receipt.lanes.length);
   assert.match(await f.select(), /^mode=full$/m);
 
-  const unbound = shadowData(await pnpmImpactOutput(f, { GITHUB_RUN_ATTEMPT: "" }, ["--shadow"]));
+  const readShadow = async (input: Fixture, env: NodeJS.ProcessEnv = {}) =>
+    shadowData(await pnpmImpactOutput(input, env, ["--shadow"]));
+  const alongsideAsset = (path: string, content: string) =>
+    fixture(
+      t,
+      (ctx) => {
+        change(ctx);
+        ctx.put(path, content);
+      },
+      initial,
+    );
+  const expectUnverified = async (input: Fixture) => {
+    const shadow = await readShadow(input);
+    assert.equal(shadow.mode, "broad");
+    assert.equal(shadow.reason, "unverified_storybook");
+    assert.deepEqual(shadow.lanes, expectedLanes);
+    assert.deepEqual(shadow.companionJobs, []);
+  };
+
+  const unbound = await readShadow(f, { GITHUB_RUN_ATTEMPT: "" });
   assert.equal(unbound.mode, "broad");
   assert.equal(unbound.reason, "missing_run_identity");
 
   const manifestPath = "scripts/ci/test-suites/images-packaging.json";
   const missing = await fixture(t, change, { ...initial, [manifestPath]: '{"files":[]}' });
-  const incomplete = shadowData(await pnpmImpactOutput(missing, {}, ["--shadow"]));
+  const incomplete = await readShadow(missing);
   assert.equal(incomplete.mode, "broad");
   assert.equal(incomplete.reason, "incomplete_manifest");
   assert.deepEqual(incomplete.lanes, []);
@@ -884,86 +905,50 @@ test("asset reader shadow uses the CI manifest and includes the standalone Story
     },
     initial,
   );
-  const mixed = shadowData(await pnpmImpactOutput(other, {}, ["--shadow"]));
+  const mixed = await readShadow(other);
   assert.equal(mixed.mode, "broad");
   assert.equal(mixed.reason, knownConsumer ? "mixed_scope" : "unverified_storybook");
-  assert.deepEqual(mixed.lanes, receipt.lanes);
-  assert.deepEqual(mixed.companionJobs, receipt.companionJobs);
+  assert.deepEqual(mixed.lanes, expectedLanes);
+  assert.deepEqual(mixed.companionJobs, expectedCompanionJobs);
+
+  const workflow = present(initial[storybookWorkflow]);
   for (const [path, content] of [
-    [
-      storybookWorkflow,
-      present(initial[storybookWorkflow]).replace(/^ {2}build:$/m, "  docs-preview:"),
-    ],
+    [storybookWorkflow, workflow.replace(/^ {2}build:$/m, "  docs-preview:")],
     [preparer, "export {};\n"],
-  ]) {
-    const changedConsumer = await fixture(
-      t,
-      (ctx) => {
-        change(ctx);
-        ctx.put(present(path), content);
-      },
-      initial,
-    );
-    const shadow = shadowData(await pnpmImpactOutput(changedConsumer, {}, ["--shadow"]));
-    assert.equal(shadow.reason, "unverified_storybook");
-    assert.equal(shadow.mode, "broad");
-    assert.deepEqual(shadow.lanes, receipt.lanes);
-    assert.deepEqual(shadow.companionJobs, []);
+  ] satisfies [string, string][]) {
+    const changedConsumer = await alongsideAsset(path, content);
+    await expectUnverified(changedConsumer);
   }
   const stale = await fixture(t, change, {
     ...initial,
-    [storybookWorkflow]: present(initial[storybookWorkflow]).replace(
-      '      - "apps/controller/src/console-assets.ts"\n',
-      "",
-    ),
+    [storybookWorkflow]: workflow.replace('      - "apps/controller/src/console-assets.ts"\n', ""),
   });
-  const priorChange = shadowData(await pnpmImpactOutput(stale, {}, ["--shadow"]));
-  assert.equal(priorChange.reason, "unverified_storybook");
-  assert.equal(priorChange.mode, "broad");
-  assert.deepEqual(priorChange.lanes, receipt.lanes);
-  assert.deepEqual(priorChange.companionJobs, []);
+  await expectUnverified(stale);
 
   for (const [path, scripts] of [
     ["package.json", {}],
     [standalone, { build: "tsc --pretty false" }],
   ] satisfies [string, Record<string, string>][]) {
     const redirected = withScripts(present(initial[path]), scripts);
-    const alongside = await fixture(
-      t,
-      (ctx) => {
-        change(ctx);
-        ctx.put(path, redirected);
-      },
-      initial,
-    );
-    const alreadyChanged = await fixture(t, change, { ...initial, [path]: redirected });
-    for (const input of [alongside, alreadyChanged]) {
-      const shadow = shadowData(await pnpmImpactOutput(input, {}, ["--shadow"]));
-      assert.equal(shadow.mode, "broad");
-      assert.deepEqual(shadow.companionJobs, []);
-      assert.equal(shadow.reason, "unverified_storybook");
-      assert.deepEqual(shadow.lanes, receipt.lanes);
-    }
+    const changedAtHead = await alongsideAsset(path, redirected);
+    const changedInBase = await fixture(t, change, { ...initial, [path]: redirected });
+    await expectUnverified(changedAtHead);
+    await expectUnverified(changedInBase);
   }
-  const metadata = await fixture(
-    t,
-    (ctx) => {
-      change(ctx);
-      ctx.put(
-        standalone,
-        JSON.stringify({
-          ...jsonRecord(present(initial[standalone])),
-          description: "Updated description",
-        }),
-      );
-    },
-    initial,
+
+  const metadata = await alongsideAsset(
+    standalone,
+    JSON.stringify({
+      ...jsonRecord(present(initial[standalone])),
+      description: "Updated description",
+    }),
   );
-  const unrelated = shadowData(await pnpmImpactOutput(metadata, {}, ["--shadow"]));
+  const unrelated = await readShadow(metadata);
   assert.equal(unrelated.mode, "broad");
-  assert.deepEqual(unrelated.companionJobs, receipt.companionJobs);
+  assert.deepEqual(unrelated.companionJobs, expectedCompanionJobs);
+
   const shared = await fixture(t, sharedChange, initial);
-  const unmapped = shadowData(await pnpmImpactOutput(shared, {}, ["--shadow"]));
+  const unmapped = await readShadow(shared);
   assert.equal(unmapped.mode, "broad");
   assert.equal(unmapped.reason, "unmapped_scope");
   assert.deepEqual(unmapped.lanes, []);
@@ -1948,7 +1933,7 @@ test("documentation workflow selects documentation checks and omits product test
   // Keep the documentation route free of product-test and lane invocations.
   assert.doesNotMatch(
     docs,
-    /run-ci-lane|run-tests\.mjs\s+(?:run|aggregate)|\b(?:pnpm|npm)\s+(?:run\s+)?test(?::|\b)|\bnode\s+--test\b|\bgo\s+test\b/,
+    /run-ci-lane|run-tests\.ts\s+(?:run|aggregate)|\b(?:pnpm|npm)\s+(?:run\s+)?test(?::|\b)|\bnode\s+--test\b|\bgo\s+test\b/,
   );
   for (const name of ["pr-safe", "runtime-image-fixture"]) {
     assert.match(job(name), /needs\.impact\.outputs\.mode == 'full'/, name);
@@ -2092,7 +2077,7 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
   const commands = [
     "bash scripts/ci/setup-tools.sh workflows",
     "actionlint .github/workflows/*.yml",
-    "node scripts/ci/run-tests.mjs audit",
+    "node scripts/ci/run-tests.ts audit",
     ...skipped.flatMap(({ run }) =>
       run === "pnpm lint" ? ["pnpm lint --concurrency 2"] : present(run).split(" && "),
     ),
@@ -3325,7 +3310,7 @@ test("mixed test and code, tooling, workflow or package changes select full", as
     [
       "src/app.ts",
       "scripts/ci/prepare.mjs",
-      "scripts/ci/run-tests.mjs",
+      "scripts/ci/run-tests.ts",
       "scripts/ci/impact-gate.ts",
       ".github/workflows/ci.yml",
       "package.json",
@@ -3656,7 +3641,7 @@ test("workflow runs selected lanes in tests mode and gates them by the verified 
   const required = job("ci-required");
   assert.match(required, /EXPECTED_LANES: \$\{\{ needs\.impact\.outputs\.lanes \}\}/);
   assert.match(required, /impact-gate\.ts [^\n]*--mode tests [^\n]*--lanes "\$EXPECTED_LANES"/);
-  assert.match(required, /run-tests\.mjs aggregate ci [^\n]*--lanes "\$EXPECTED_LANES"/);
+  assert.match(required, /run-tests\.ts aggregate ci [^\n]*--lanes "\$EXPECTED_LANES"/);
   const impact = job("impact");
   for (const [output, step] of [
     ["mode", "select"],

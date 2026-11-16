@@ -26,6 +26,7 @@ interface NativeWireCapture {
 export interface NativeAdminStream {
   closed: boolean;
   finished: boolean;
+  watchdogExpired: boolean;
   writes: number;
   close: Promise<{ finished: boolean; writes: number }>;
   reset(): void;
@@ -491,6 +492,7 @@ export function registerNativeAdminHttpIntegrityCases(
       downstream: streamResult(avatar),
       producerClosedAfterFinal404: closedAfter404,
       producerFinished: producer.finished,
+      producerWatchdogExpired: producer.watchdogExpired,
       writesAtFinal404,
       writesAfterObservation: producer.writes,
     };
@@ -506,5 +508,15 @@ export function registerNativeAdminHttpIntegrityCases(
     };
     nativeIntegrityDiagnostic(t, "NATIVE-TRANSPORT-04", observed, positiveControls);
     assert.equal(closedAfter404, true, "HTTP_INTEGRITY_04_DISCARDED_STREAM_CANCELLATION");
+    assert.equal(
+      observed.producerFinished,
+      false,
+      "the discarded producer must not finish normally",
+    );
+    assert.equal(
+      observed.producerWatchdogExpired,
+      false,
+      "the watchdog must not close the discarded producer",
+    );
   });
 }

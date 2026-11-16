@@ -4,7 +4,7 @@ import { join, relative } from "node:path";
 import { describe, it as test } from "node:test";
 import { readRuntimeRepositoryManifest } from "../../apps/controller/src/drivers/repo/github/access/client/manifest.ts";
 import { selectGitPushDestination } from "../../apps/controller/src/drivers/repo/github/access/client/targets.ts";
-import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
+import { temporaryDirectory } from "../fixtures/repository-credentials/process.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   clean,
