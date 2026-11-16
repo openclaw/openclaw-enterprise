@@ -16,7 +16,7 @@ import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after } from "node:test";
 
-import { commandPath, composeConfigurationProvider } from "./compose.mjs";
+import { commandPath, composeConfigurationProvider } from "./compose.ts";
 import { bashString, commandShim, startCommandServer } from "./fixture-command-server.ts";
 import { readJsonLines as readJsonLinesFile } from "./json-lines.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";

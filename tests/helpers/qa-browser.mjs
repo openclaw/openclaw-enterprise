@@ -9,7 +9,7 @@ import { createServer } from "node:tls";
 import { chromium } from "playwright";
 import { prepareQaConsoleTheme } from "./qa-installation.mjs";
 import { waitFor } from "./qa-utils.mjs";
-import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.mjs";
+import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.ts";
 
 export async function createQaBrowser(f, { themed }) {
   if (themed) {

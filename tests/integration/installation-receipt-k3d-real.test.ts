@@ -10,9 +10,10 @@ import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   createKubernetesClient,
   createKubernetesInstallationConfiguration,
+  explicitK3dSelection,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.ts";
-import { prepareProductionHelmControlPlane } from "../helpers/production-helm-real.mjs";
+import { prepareProductionHelmControlPlane } from "../helpers/production-helm-real.ts";
 import type { FixtureRun } from "../helpers/production-rehearsal-custody.ts";
 import { runFixtureCommand } from "../helpers/production-rehearsal-custody.ts";
 import { parseProductionChart, renderProductionChart } from "../helpers/production-chart.mjs";
@@ -26,11 +27,6 @@ function heldResponse() {
 }
 
 const selected = process.env.OCC_TEST_PRODUCTION_OBSERVABILITY === "1";
-const selection = {
-  kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
-  kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
-};
-
 test(
   "production installation receipts survive interruption before and after Job capture",
   {
@@ -40,15 +36,22 @@ test(
     timeout: 900_000,
   },
   async (t) => {
-    await validateExplicitK3dLoopbackContext(selection);
-    const images = {
-      controller: process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
-      postgres: process.env.OCC_TEST_PRODUCTION_POSTGRES_IMAGE,
-      runtime: process.env.OCC_TEST_KUBERNETES_IMAGE,
-    };
-    for (const [name, image] of Object.entries(images)) {
+    const selectionInput = explicitK3dSelection();
+    await validateExplicitK3dLoopbackContext(selectionInput);
+    const { kubeconfigPath, kubernetesContext } = selectionInput;
+    assert.ok(kubeconfigPath && kubernetesContext);
+    const selection = { kubeconfigPath, kubernetesContext };
+    function importedImage(name: string) {
+      const image = process.env[name];
       assert.match(image ?? "", /^\S+@sha256:[a-f0-9]{64}$/, `${name} requires an immutable image`);
+      assert.ok(image);
+      return image;
     }
+    const images = {
+      controller: importedImage("OCC_TEST_PRODUCTION_CONTROLLER_IMAGE"),
+      postgres: importedImage("OCC_TEST_PRODUCTION_POSTGRES_IMAGE"),
+      runtime: importedImage("OCC_TEST_KUBERNETES_IMAGE"),
+    };
     const kubernetes = createKubernetesClient({ selection });
     const { kubectl, resource, waitFor } = kubernetes;
     const directory = await mkdtemp(join(tmpdir(), "occ-receipt-production-"));

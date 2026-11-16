@@ -29,7 +29,7 @@ import {
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
 import { bindRole } from "../helpers/iam-grants.mjs";
-import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
   catalogRowNoModel,

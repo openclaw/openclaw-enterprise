@@ -24,7 +24,7 @@ import {
   WITHDRAWAL_SOURCE_NOT_USED,
   protectedSourceTypeRefused,
 } from "../helpers/refusal-text.mjs";
-import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.mjs";
+import { assertSameAnswer, refusedAnswer } from "../helpers/refusal-answers.ts";
 
 // Finding 2536: these refusals answered a generic 404 (or a 500), though each comes after the
 // caller's grants and is about the request or an Installation property. Each now names its

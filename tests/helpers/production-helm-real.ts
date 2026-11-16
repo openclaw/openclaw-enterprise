@@ -1,13 +1,146 @@
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { failureSecrets } from "../../scripts/ci/failure-redaction.ts";
+import type {
+  V1NetworkPolicyPeer,
+  V1PersistentVolumeClaim,
+  V1Pod,
+  V1Secret,
+  V1Service,
+} from "../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js";
+import { asRecord } from "../../packages/utils/src/index.ts";
+import { failureSecrets, type RedactionSecrets } from "../../scripts/ci/failure-redaction.ts";
 import { podFailureDiagnostic } from "./k3d-failure-diagnostics.ts";
 import {
   createKubernetesClient,
+  type createKubernetesInstallationConfiguration,
   diagnosticDeadlineMs,
   withinDiagnosticDeadline,
 } from "./kubernetes-real.ts";
+import type { FixtureRun } from "./production-rehearsal-custody.ts";
+
+type Labels = Readonly<Record<string, string>>;
+type PodPeer = { namespace: string; podLabels: Labels };
+
+type RepositoryCredentialsValues = {
+  enabled?: boolean;
+  authority?: "prepared-git";
+  delivery?: "" | "credential-proxy";
+  image?: string;
+  serviceName?: string;
+  clusterDomain?: string;
+  hostname?: string;
+  backendId?: string;
+  registryConfigMapName?: string;
+  registryKey?: string;
+  serviceConfigSecretName?: string;
+  serviceConfigKey?: string;
+  appKeySecretName?: string;
+  appKeyKey?: string;
+  preparedCustodySecretName?: string;
+  preparedProviderCaConfigMapName?: string;
+  tlsSecretName?: string;
+  publicCaSecretName?: string;
+  publicCaKey?: string;
+  upstreamCidrs?: readonly string[];
+  upstreamPort?: number;
+};
+
+type GatewayRoutingValues = {
+  enabled?: boolean;
+  hostname?: string;
+  gatewayClassName?: string;
+  gatewayName?: string;
+  envoyNamespace?: string;
+  apiKeySecretName?: string;
+  caSecretName?: string;
+  caSecretKey?: string;
+  tlsSecretName?: string;
+  serviceType?: "ClusterIP" | "LoadBalancer" | "NodePort";
+  remoteNodeCidrs?: readonly string[];
+  tenantGatewayPort?: number;
+  envoyHttpsTargetPort?: number;
+  sandbox?: {
+    enabled?: boolean;
+    domain?: string;
+    tlsSecretName?: string;
+    listenerPort?: number;
+    ingressPeers?: readonly V1NetworkPolicyPeer[];
+  };
+  issuerRef?: { name?: string; kind?: string; group?: string };
+  envoyGatewayPodLabels?: Labels;
+};
+
+type HelmOverrides = {
+  repositoryCredentials?: RepositoryCredentialsValues | undefined;
+  gatewayRouting?: GatewayRoutingValues | undefined;
+  controlPlane?: { nodeSelector?: Labels; installationChecksum?: string } | undefined;
+  executionCluster?:
+    | {
+        enabled?: boolean;
+        apiKubeconfigSecretName?: string;
+        workerKubeconfigSecretName?: string;
+        kubeconfigKey?: string;
+        apiCidrs?: readonly string[];
+        apiPort?: number;
+      }
+    | undefined;
+  metrics?:
+    | {
+        enabled?: boolean;
+        port?: number;
+        scraperNamespaceLabels?: Labels;
+        scraperPodLabels?: Labels;
+      }
+    | undefined;
+};
+
+type HelmTarget = {
+  selection: { kubeconfigPath: string; kubernetesContext: string };
+  namespace: string;
+  release: string;
+};
+
+type PrepareOptions = HelmTarget &
+  HelmOverrides & {
+    images: { controller: string; postgres: string };
+    directory: string;
+    suffix: string;
+    configuration: ReturnType<typeof createKubernetesInstallationConfiguration>;
+    authBaseURL: string;
+    agentNativeAdminDomain: string;
+    installationName: string;
+    apiClients: readonly PodPeer[];
+    channelDirectoryProxyUrl?: string | undefined;
+    databaseName?: string | undefined;
+    databaseTLS?:
+      | {
+          caSecretName: string;
+          serverSecretName: string;
+          imagePullPolicy?: "Never" | "IfNotPresent" | undefined;
+        }
+      | undefined;
+    run: FixtureRun;
+    kubernetes: Pick<
+      ReturnType<typeof createKubernetesClient>,
+      "kubectl" | "kubectlArguments" | "resource" | "waitFor"
+    >;
+    createSecretValue: () => string;
+    record: (
+      message: string,
+      details: { claimName: string } | { namespace: string },
+    ) => void | Promise<void>;
+  };
+
+type FixtureResource = V1Secret | V1PersistentVolumeClaim | V1Pod | V1Service;
+
+function firstRecord(value: unknown) {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const items: unknown[] = value;
+  return asRecord(items[0]);
+}
 
 // The caller owns the disposable namespace and registers its cleanup before installation.
 export async function prepareProductionHelmControlPlane({
@@ -22,23 +155,21 @@ export async function prepareProductionHelmControlPlane({
   agentNativeAdminDomain,
   installationName,
   apiClients,
-  channelDirectoryProxyUrl = undefined,
+  channelDirectoryProxyUrl,
   repositoryCredentials,
   gatewayRouting,
   controlPlane,
   executionCluster,
   metrics,
   databaseName = "openclaw_enterprise",
-  databaseTLS = /** @type {{caSecretName: string, serverSecretName: string, imagePullPolicy?: "Never" | "IfNotPresent"} | undefined} */ (
-    undefined
-  ),
+  databaseTLS,
   run,
   kubernetes,
   createSecretValue,
   record,
-}) {
+}: PrepareOptions) {
   // The values this installation creates, so a failure diagnostic can redact them.
-  const secretValues = [];
+  const secretValues: string[] = [];
   const secret = () => {
     const value = createSecretValue();
     secretValues.push(value);
@@ -51,19 +182,20 @@ export async function prepareProductionHelmControlPlane({
     assert.notEqual(databaseTLS.caSecretName, databaseTLS.serverSecretName);
   }
   const { kubectl, waitFor } = kubernetes;
-  const apply = (object) =>
+  const apply = (object: FixtureResource) =>
     run("kubectl", kubernetes.kubectlArguments(["apply", "-f", "-"]), {
       input: JSON.stringify(object),
     });
-  const get = (kind, name, namespace = system) => kubernetes.resource(kind, name, namespace);
-  const metadata = (name, namespace = system, labels = {}) => ({
+  const get = (kind: string, name: string, namespace = system) =>
+    kubernetes.resource(kind, name, namespace);
+  const metadata = (name: string, namespace = system, labels: Labels = {}) => ({
     name,
     namespace,
     labels: { "oce-test": suffix, ...labels },
   });
-  const createSecret = (name, stringData) =>
+  const createSecret = (name: string, stringData: Record<string, string>) =>
     apply({ apiVersion: "v1", kind: "Secret", metadata: metadata(name), stringData });
-  const createClaim = (name) =>
+  const createClaim = (name: string) =>
     apply({
       apiVersion: "v1",
       kind: "PersistentVolumeClaim",
@@ -74,6 +206,8 @@ export async function prepareProductionHelmControlPlane({
         resources: { requests: { storage: "1Gi" } },
       },
     });
+  const nodePlacement =
+    controlPlane?.nodeSelector === undefined ? {} : { nodeSelector: controlPlane.nodeSelector };
   const podSecurity = {
     runAsNonRoot: true,
     runAsUser: 1000,
@@ -86,7 +220,7 @@ export async function prepareProductionHelmControlPlane({
     requests: { cpu: "100m", memory: "128Mi" },
     limits: { cpu: "1", memory: "1Gi" },
   };
-  const waitPod = (name) =>
+  const waitPod = (name: string) =>
     kubectl("-n", system, "wait", "--for=condition=Ready", `pod/${name}`, "--timeout=180s");
 
   const postgresPassword = secret();
@@ -104,9 +238,7 @@ export async function prepareProductionHelmControlPlane({
     metadata: metadata("bootstrap-password-prepare"),
     spec: {
       restartPolicy: "Never",
-      ...(controlPlane?.nodeSelector === undefined
-        ? {}
-        : { nodeSelector: controlPlane.nodeSelector }),
+      ...nodePlacement,
       automountServiceAccountToken: false,
       securityContext: {
         runAsUser: 0,
@@ -135,14 +267,16 @@ export async function prepareProductionHelmControlPlane({
     },
   });
   await waitFor("fresh bootstrap PVC preparation", async () => {
-    const pod = await get("pod", "bootstrap-password-prepare");
-    assert.notEqual(pod.status.phase, "Failed", "bootstrap PVC preparation Pod failed");
-    return pod.status.phase === "Succeeded";
+    const pod = asRecord(await get("pod", "bootstrap-password-prepare"));
+    const status = asRecord(pod?.status);
+    assert.ok(status, "Expected bootstrap PVC preparation Pod status");
+    assert.notEqual(status.phase, "Failed", "bootstrap PVC preparation Pod failed");
+    return status.phase === "Succeeded";
   });
-  assert.deepEqual(
-    JSON.parse((await kubectl("-n", system, "logs", "bootstrap-password-prepare")).trim()),
-    { uid: 1000, gid: 1000, mode: 0o700 },
+  const permissionEvidence: unknown = JSON.parse(
+    (await kubectl("-n", system, "logs", "bootstrap-password-prepare")).trim(),
   );
+  assert.deepEqual(permissionEvidence, { uid: 1000, gid: 1000, mode: 0o700 });
   await record("Fresh bootstrap PVC root prepared for UID 1000 output", {
     claimName: "bootstrap-password",
   });
@@ -151,9 +285,7 @@ export async function prepareProductionHelmControlPlane({
     kind: "Pod",
     metadata: metadata("postgres", system, { app: "postgres" }),
     spec: {
-      ...(controlPlane?.nodeSelector === undefined
-        ? {}
-        : { nodeSelector: controlPlane.nodeSelector }),
+      ...nodePlacement,
       securityContext: {
         ...podSecurity,
         runAsUser: 999,
@@ -262,7 +394,9 @@ export async function prepareProductionHelmControlPlane({
     spec: { selector: { app: "postgres" }, ports: [{ port: 5432 }] },
   });
   await waitPod("postgres");
-  const postgresIP = (await get("pod", "postgres")).status.podIP;
+  const postgres = asRecord(await get("pod", "postgres"));
+  const postgresIP = asRecord(postgres?.status)?.podIP;
+  assert.ok(typeof postgresIP === "string" && postgresIP, "Expected the ready PostgreSQL Pod IP");
   await createSecret("occ-installation-startup", {
     "installation.yaml": JSON.stringify(configuration),
   });
@@ -278,7 +412,12 @@ export async function prepareProductionHelmControlPlane({
     "migration-url": `postgresql://occ_migrator:${migrationPassword}@postgres.${system}.svc.cluster.local:5432/${databaseName}${databaseQuery}`,
   });
   await createSecret("occ-auth", { secret: secret() });
-  const endpoint = (await get("endpoints", "kubernetes", "default")).subsets[0];
+  const endpoints = asRecord(await get("endpoints", "kubernetes", "default"));
+  const endpoint = firstRecord(endpoints?.subsets);
+  const endpointIP = firstRecord(endpoint?.addresses)?.ip;
+  const endpointPort = firstRecord(endpoint?.ports)?.port;
+  assert.ok(typeof endpointIP === "string" && endpointIP, "Expected the Kubernetes endpoint IP");
+  assert.ok(typeof endpointPort === "number", "Expected the Kubernetes endpoint port");
   const adminEmail = `admin-${suffix}@example.invalid`;
   const values = {
     images: { controller: images.controller },
@@ -295,8 +434,8 @@ export async function prepareProductionHelmControlPlane({
       }),
     },
     cluster: {
-      cidrs: [`${endpoint.addresses[0].ip}/32`],
-      port: endpoint.ports[0].port,
+      cidrs: [`${endpointIP}/32`],
+      port: endpointPort,
     },
     api: {
       clients: apiClients,
@@ -304,28 +443,18 @@ export async function prepareProductionHelmControlPlane({
     },
     resources,
     // Callers without prepared routing exercise the supported direct-access installation.
-    gatewayRouting: { enabled: false },
+    gatewayRouting: gatewayRouting === undefined ? { enabled: false } : gatewayRouting,
+    repositoryCredentials,
+    controlPlane,
+    executionCluster,
+    metrics,
   };
-  if (repositoryCredentials !== undefined) {
-    values.repositoryCredentials = repositoryCredentials;
-  }
-  if (gatewayRouting !== undefined) {
-    values.gatewayRouting = gatewayRouting;
-  }
-  if (controlPlane !== undefined) {
-    values.controlPlane = controlPlane;
-  }
-  if (executionCluster !== undefined) {
-    values.executionCluster = executionCluster;
-  }
-  if (metrics !== undefined) {
-    values.metrics = metrics;
-  }
-  await writeFile(join(directory, "values.json"), JSON.stringify(values), { mode: 0o600 });
+  const valuesPath = join(directory, "values.json");
+  await writeFile(valuesPath, JSON.stringify(values), { mode: 0o600 });
   return {
     adminEmail,
-    valuesPath: join(directory, "values.json"),
-    diagnose: (error) =>
+    valuesPath,
+    diagnose: (error: unknown) =>
       withHelmInstallDiagnostic(error, {
         selection,
         namespace: system,
@@ -340,7 +469,9 @@ export async function prepareProductionHelmControlPlane({
   };
 }
 
-export async function installProductionHelmControlPlane(options) {
+export async function installProductionHelmControlPlane(
+  options: PrepareOptions & { chartDirectory?: string | undefined },
+) {
   const {
     selection,
     namespace: system,
@@ -370,7 +501,7 @@ export async function installProductionHelmControlPlane(options) {
       "300s",
     ],
     { timeout: 330_000 },
-  ).catch(async (error) => {
+  ).catch(async (error: unknown) => {
     throw await prepared.diagnose(error);
   });
   await record("Helm initialization, API and worker ready", { namespace: system });
@@ -381,7 +512,10 @@ export async function installProductionHelmControlPlane(options) {
 // hook Job's BackoffLimitExceeded). Before the caller's cleanup removes the namespace, the error
 // gains each Pod's state, the namespace's events and the hook Job Pod's logs from every
 // container, init containers included. The hook keeps its failed Job until the next install.
-export async function withHelmInstallDiagnostic(error, { selection, namespace, release, secrets }) {
+export async function withHelmInstallDiagnostic(
+  error: unknown,
+  { selection, namespace, release, secrets }: HelmTarget & { secrets: RedactionSecrets },
+) {
   const job = `${release}-initialization`.slice(0, 63).replace(/-$/u, "");
   // Its kubectl stops at the diagnostic's deadline (finding 1557).
   const { kubectl } = createKubernetesClient({ selection });
@@ -392,10 +526,15 @@ export async function withHelmInstallDiagnostic(error, { selection, namespace, r
         namespace,
         logLabels: { "job-name": job },
         secrets,
-      }).catch(
-        (diagnosticError) =>
-          `\nHelm install diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`,
-      ),
+      }).catch((diagnosticError: unknown) => {
+        const name =
+          ((typeof diagnosticError === "object" && diagnosticError !== null) ||
+            typeof diagnosticError === "function") &&
+          "name" in diagnosticError
+            ? diagnosticError.name
+            : undefined;
+        return `\nHelm install diagnostic unavailable: ${name ?? "Error"}`;
+      }),
     { timedOut: `\nHelm install diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
   );
   if (error instanceof Error) {
