@@ -1,6 +1,6 @@
 // The startup model probe scenario shared by runtime-image-startup-probe.test.mjs,
-// runtime-image-startup-termination.test.mjs and the Gateway restart cases
-// (runtime-image-gateway-restart.mjs), which CI runs side by side in Image Runtime
+// runtime-image-startup-termination.test.ts and the Gateway restart cases
+// (runtime-image-gateway-restart.ts), which CI runs side by side in Image Runtime
 // Startup 2 and 1: one runtime wrapper started with the container command the
 // Compute driver renders, beside a stand-in model provider sidecar.
 import assert from "node:assert/strict";
@@ -20,21 +20,23 @@ import {
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
-import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
+import { createModelProbeCertificates } from "./runtime-model-probe-certificates.ts";
 import { modelProbeDiagnostic } from "./runtime-model-probe-observation.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import {
   execute,
-  image,
-  runtimeImageModel,
   docker,
   runDocker,
   waitForDockerLog,
-  createAdmittedRuntimeImageConfiguration,
-  jsonLogEntries,
   failureTail,
-  gatewayMemoryArguments,
-} from "./runtime-image-startup.mjs";
+} from "./runtime-image-docker.ts";
+import { jsonLogEntries } from "./runtime-image-gateway-observations.ts";
+import { gatewayMemoryArguments } from "./runtime-image-memory.ts";
+import {
+  image,
+  runtimeImageModel,
+  createAdmittedRuntimeImageConfiguration,
+} from "./runtime-image-startup.ts";
 
 // Startup model probes on Kubernetes. These tests run the real Codex Harness
 // and embedded Gateway wrappers, the image's own Codex and OpenClaw probes and

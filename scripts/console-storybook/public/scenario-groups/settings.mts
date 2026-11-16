@@ -37,6 +37,7 @@ export const settingsScenarios = {
     steps: [
       "Check that the page has no Namespace selector and that the account card shows initials, name and email.",
       "Turn Debug mode on and off. The sidebar diagnostics follow the switch without adding a URL parameter.",
+      "Before expanding any Installation Driver, check that each collapsed summary shows the Driver ID, contribution key and a separate Implementation label. Switch from Fields to JSON and back and confirm the same labels remain visible while the groups stay collapsed.",
       "Expand each Installation Driver below the cards. Read the human labels and raw keys; Credential Gateway shows binary paths, Sandbox shows nested fields and hidden resources, and IAM has no visible fields. Switch Fields / JSON and confirm the expanded groups stay open.",
       "Choose Sign out in the Session card: “Signing out…” appears, then the sign-in page.",
       "Scroll the long page from top to bottom. The account control must stay at the viewport bottom; open it and select Settings without scrolling back. Repeat with Debug mode enabled. At phone width, values fit and the navigation drawer still opens.",
@@ -80,6 +81,7 @@ export const settingsScenarios = {
     description:
       "A simulated package Driver has nested records, arrays, empty values and a writeOnly field. The API fixture returns its redaction marker, and the production renderer handles the safe JSON without a bundled schema-specific form. The expanded page exercises the shared sidebar beyond one viewport.",
     steps: [
+      "Check that the collapsed Configuration summary shows the Driver ID, contribution key and a separate Implementation label. Switch from Fields to JSON and back before expanding it; the labels stay visible and the group stays collapsed.",
       "Expand Configuration. Inspect groups, nested records, false, zero, null, empty arrays and objects, literal markup text, and the hidden value.",
       "Switch to JSON and back to Fields. The values and expanded state remain unchanged.",
       "Scroll to the bottom: the navigation background and profile reach the page bottom. At phone width, open and close the navigation drawer and check that fields fit the viewport.",

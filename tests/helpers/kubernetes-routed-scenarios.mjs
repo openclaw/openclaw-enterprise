@@ -46,6 +46,12 @@ export function preparedAuth(driver, namespace, embedded = false, harnessAuth = 
     harnessAuth,
     configuration: { agents: { defaults: { model: embedded ? "openai/gpt-5" : "codex/gpt-5" } } },
   };
+  revision.harness.overrides = {};
+  revision.harness.configuration = driver.resolveHarnessConfiguration(
+    revision.harness,
+    revision.harnessAuth,
+    revision.configuration,
+  );
   return driver.harnessAuthForRevision(revision, authContext(revision, namespace), {
     name: namespace,
     plane: "execution",
@@ -88,9 +94,24 @@ export function routedOptions(overrides = {}) {
   });
 }
 
+/** Construct the immutable settings that production admission resolves before execution. */
+export function admitRevisionHarness(driver, revision) {
+  revision.harness = { ...revision.harness, overrides: revision.harness.overrides ?? {} };
+  revision.harness.configuration = driver.resolveHarnessConfiguration(
+    revision.harness,
+    revision.harnessAuth,
+    revision.configuration,
+  );
+  revision.compute.admission = driver.admitRevision(revision);
+  revision.compute.runtimeInputs = driver.snapshotRuntimeInputs?.(revision);
+  return revision;
+}
+
+/** @returns {import("../../packages/contracts/src/index.ts").AgentRevision} */
 export function routedRevision(driver, overrides = {}) {
   const revision = {
     id: "revision-routed-1",
+    backendId: null,
     executionAdmission: { version: 2, mode: "unprotected" },
     namespaceId: tenant.id,
     agentId: "agent-routed",
@@ -127,9 +148,25 @@ export function routedRevision(driver, overrides = {}) {
     createdAt: tenant.createdAt,
     ...overrides,
   };
-  // Mirror OCC admission for fixtures using the shared provider before deployment.
-  if (driver.options?.runtime?.modelProvider !== undefined) {
-    revision.compute.admission = driver.admitRevision(revision);
+  // Use the real Compute admission contract; execution never fills missing revision settings.
+  revision.harness = {
+    ...revision.harness,
+    overrides: revision.harness.overrides ?? {},
+    configuration:
+      revision.harness.configuration ??
+      driver.resolveHarnessConfiguration?.(
+        revision.harness,
+        revision.harnessAuth,
+        revision.configuration,
+      ) ??
+      {},
+  };
+  if (
+    !Object.hasOwn(revision.compute, "admission") &&
+    !Object.hasOwn(revision.compute, "runtimeInputs")
+  ) {
+    revision.compute.admission = driver.admitRevision?.(revision);
+    revision.compute.runtimeInputs = driver.snapshotRuntimeInputs?.(revision);
   }
   return revision;
 }

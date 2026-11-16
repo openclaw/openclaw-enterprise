@@ -1,13 +1,29 @@
 {
   "prepare": {
     "postgres": true,
-    "requiresPreparedStateForFile": true
+    "requiresPreparedStateForFile": true,
+    "selfProvisionedFiles": ["tests/integration/ci-prepare-postgres-real.test.ts"]
   },
   "files": [
     {
-      "path": "tests/integration/postgres-migration-compatibility.test.mjs",
+      "path": "tests/integration/ci-prepare-postgres-real.test.ts",
+      "env": { "OCC_TEST_CI_POSTGRES_REAL": "1" },
       "expectedTests": [
+        "PostgreSQL preparation uses distinct Docker-assigned loopback ports and cleans its projects"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-migration-compatibility.test.mjs",
+      "optionalEnv": [
+        "OCC_TEST_RELEASED_CONTROLLER_IMAGE",
+        "OCC_TEST_RELEASED_CONTROLLER_REVISION",
+        "OCC_TEST_CANDIDATE_CONTROLLER_IMAGE",
+        "OCC_TEST_CANDIDATE_CONTROLLER_REVISION"
+      ],
+      "expectedTests": [
+        "Separate database deployment verifies the exact candidate history without applying pending SQL",
         "Logical restore preserves reviewed canonical and Provider migration histories",
+        "An authenticated user can browse revisions retained across the Harness settings migration",
         "First installation requires empty migration history under the migration lock",
         "Canonical migration commands preserve main data and serialize fresh/repeat runners",
         "Canonical migration refuses unexplained histories before mutation",

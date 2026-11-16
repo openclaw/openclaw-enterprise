@@ -196,15 +196,29 @@ export function renderConnectionTemplates(
       clients = available.data;
       savedTemplates = templates.filter((item) => availableInNamespace(item, currentNamespace));
       redirectUri = available.meta?.redirectUri;
+      let clientNames: Map<string, string> | undefined;
       showRows(
         savedTemplates.map((template) => {
           const scope = availabilityLabel(template, namespaces);
-          const client = clients.find((item) => item.id === template.current.oauthClientId);
+          const registrationId = template.current.oauthClientId;
+          let clientName: string | undefined;
+          if (registrationId !== undefined) {
+            if (clientNames === undefined) {
+              clientNames = new Map();
+              for (const { id, displayName } of clients) {
+                // Keep the first label if the catalog contains a duplicate registration ID.
+                if (!clientNames.has(id)) {
+                  clientNames.set(id, displayName);
+                }
+              }
+            }
+            clientName = clientNames.get(registrationId);
+          }
           return {
             name: template.displayName,
             details: [
               scope,
-              client?.displayName ?? "No OAuth client assigned",
+              clientName ?? "No OAuth client assigned",
               String(template.current.version),
             ],
             actions: [

@@ -103,15 +103,14 @@ selection, flags, output formats, retries and exit codes.
 Installation administrators hold Agent `administer`, which also reaches Gateway
 log text in the [native admin UI](../../reference/agent-native-admin.md). To
 delegate log reading, bind a Namespace Role with Agent `read_logs` and `read` to
-the exact Agent; it covers every version. Opening the Agent in the console also
-needs Namespace `read` (otherwise it shows "Namespace unavailable"). Runtime
+the exact Agent (every version). Opening the Agent in the console needs Namespace `read` (otherwise it shows "Namespace unavailable"). Runtime
 status needs `read` bound to each Agent revision by ID; without it, the console
-does not read status. A `read_logs` Restriction blocks log text even for
+does not read status. A `read_logs` Restriction blocks log text, even for
 administrators. Without `operate`, the Logs tab has no runtime strip or Pod
 picker; it reads each source's current Pod and says when one is missing. A status
 refusal names only the grant the console knows is missing. Service principals use
 the same grants. Every request and poll is authorized again, so revoking a grant
-stops the next poll.
+takes effect on the next poll.
 See [authorization](../../reference/authorization.md).
 
 ## What the output contains
@@ -123,7 +122,7 @@ returning it:
   plus the fixed plain line `Harness model authentication probe failed.` as an
   `error`. A line's `code` field shows on the collapsed row.
 - **openclaw**: Gateway JSON console records (level, subsystem, message and a
-  short list of operational fields such as `status`, `method` and `durationMs`).
+  short list of operational fields such as `status`, `method`, `durationMs`).
   Payload keys such as `prompt`, `content`, `messages`, `args` and `headers` are
   dropped. `info` and `debug` records without a subsystem carry reply text (for
   example from the OpenAI-compatible chat endpoint) and are withheld; errors
@@ -137,18 +136,20 @@ returning it:
   `logging.level: debug` the Harness drops them, readiness-probe
   connections and repeated remote-control retries (one per 10 minutes is kept).
 - **text**: plain lines up to 4 KiB, including those starting with a bracketed
-  component tag such as `[node-host] advertised commands: ...`.
+  component tag such as `[node-host] advertised commands: ...`. Their level is
+  `unknown`, except known node host lines: connect failures and closes are `warn`;
+  paused reconnects, endpoint persistence failures and rejections are `error`;
+  connected and advertised-commands lines are `info`.
 
 Other structured output, including Codex JSON-RPC protocol traffic, oversized
 lines and malformed lines that start like a JSON object or array, is
-**withheld**: the page shows a count, never content. A pretty-printed
-(multi-line) JSON value becomes one withheld row. Each row names its reason
-code: `unrecognised_structured` (structured output
+**withheld**: the page shows a count, never content. A multi-line JSON value
+becomes one withheld row. Each row names its reason code: `unrecognised_structured` (structured output
 OCC does not keep), `malformed` (JSON split across lines, as Codex prints
 it, JSON that does not parse, or JSON nested too deeply) or `oversized`.
 The console and `occ agent logs` show an invisible or direction-changing
-character in retained text, such as a bidirectional override, as an escape like
-`\u202e`, so a line cannot reorder or hide what you read.
+character in retained text (such as a bidirectional override) as an escape like
+`\u202e`.
 
 Every retained string is redacted. OCC replaces PEM blocks, `Authorization`
 and cookie header values, `Bearer` tokens, `Basic` user:password values, JWTs,
@@ -161,25 +162,22 @@ the value after a command-line credential flag such as `curl -u user:password`
 with `[redacted:<pattern>]`. A PEM block printed over several lines is masked
 from an observed BEGIN through END, across follow polls in the same container
 view. Only ordered lines newer than the prior cursor position can close it (at
-END or the first line that is not base64, a PEM header or blank). PEM-shaped
+END or the first line that is not base64, a PEM header or blank), so PEM-shaped
 lines may stay masked for the rest of that view.
-A restart, Pod change, expired cursor or new view starts without that context
-and cannot mask a block that began before it.
+A restart, Pod change, expired cursor or new view loses that context and cannot
+mask a block that began before it.
 Redaction is best-effort: an opaque token under 40 characters with no known
 prefix and no key name or `Bearer` next to it stays visible. Do not rely on
 redaction to make a runtime that prints secrets safe.
 Tabs, line breaks and cursor-forward escapes become spaces; other controls are
-removed. In plain text, written `\n`, `\t` and `%3D` also separate words for
-redaction. Messages are capped at 8 KiB.
+removed. In plain text, written `\n`, `\t` and `%3D` also separate words. Messages are capped at 8 KiB.
 
-Runtime status Event messages are redacted the same way; node names, image
-references and Secret and ConfigMap names are masked in the standard scheduler
-and kubelet messages. Other Event text can still name cluster
-objects.
+Status Event messages are redacted the same way; the standard scheduler
+and kubelet messages also mask node names, image references and Secret and
+ConfigMap names. Other Event text can still name cluster objects.
 
 Container lines carry `contentClass: "operational"` and sandbox lines
-`"activity"`; the reserved `content` class (message text, prompts, tool output)
-is never returned.
+`"activity"`; the reserved `content` class (prompts, tool output) is never returned.
 
 ## Gaps, limits and retention
 
@@ -196,12 +194,12 @@ A page never silently skips output; it labels each gap:
 Limits per request: 1000 lines, 1 MiB read from the cluster, 32 KiB per input
 line, 512 KiB per response (including JSON escaping, cursor and metadata),
 the newest 100 Events per Pod, 10 seconds overall. A cut response keeps its
-progress; continue with the returned cursor for lines beyond a page limit. Output
+progress; continue from the returned cursor. Output
 replaced by identical text cannot be detected. Each API
 replica allows each principal 2 requests per second per Agent with a burst of
 10 (`429` with `Retry-After`) and 16 concurrent reads (`503`). Both limits apply
 after [authorization](../../reference/security.md#console-and-api-runtime-log-reads),
-so a caller without the grants always gets `403`.
+so callers without the grants always get `403`.
 
 Kubernetes keeps only each container's current and previous instance, nothing
 from deleted Pods; for

@@ -40,7 +40,20 @@ const runtime = await loadInstallationConfiguration({
 assert.ok(runtime);
 try {
   assert.deepEqual(resolvedNativeModules, mode === "native" ? nativeModules : new Set());
-  assert.equal(runtime.repositoryPolicy !== undefined, mode !== "none");
+  assert.equal(Object.hasOwn(runtime, "repositoryPolicy"), false);
+  assert.equal(Object.hasOwn(runtime.installation.drivers, "repo"), false);
+  const admission = runtime.repositoryAdmission;
+  if (mode === "none") {
+    assert.equal(admission, undefined);
+  } else {
+    assert.ok(admission);
+    assert.equal(admission.policyMode, "built-in");
+    const binding = admission.policy.resolveBindings({
+      namespaceId: "namespace-a",
+      bindings: [{ repositoryRef: "application", profile: "git-write" }],
+    });
+    assert.equal(binding.sessionDurationSeconds, 600);
+  }
   assert.equal(runtime.nativeRepositorySender !== undefined, mode === "native");
   assert.equal(runtime.protectedDriver !== undefined, mode === "protected");
 } finally {

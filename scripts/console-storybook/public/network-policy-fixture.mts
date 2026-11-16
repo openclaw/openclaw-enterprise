@@ -469,8 +469,23 @@ export function createNetworkPolicyFixture(
           "The preview requires a string policy application revision ID.",
         );
       }
+      if (
+        !("expectedVersion" in body) ||
+        body.expectedVersion !== sandboxPolicy.version ||
+        body.revisionId !== candidateRevisionId ||
+        sandboxPolicy.application?.state === "pending"
+      ) {
+        return error(409, "RESOURCE_STATE_CONFLICT");
+      }
+      if ("additions" in body) {
+        if (!hasNetworkAdditions(body)) {
+          return error(400, "INVALID_REQUEST", "The reviewed network additions are invalid.");
+        }
+        sandboxPolicy.version += 1;
+        sandboxPolicy.additions = body.additions;
+      }
       sandboxPolicy.application = {
-        id: "00000000-0000-4000-8000-000000000009",
+        id: crypto.randomUUID(),
         revisionId: body.revisionId,
         policyVersion: sandboxPolicy.version,
         state: "pending",
@@ -478,7 +493,12 @@ export function createNetworkPolicyFixture(
         requestedAt: createdAt,
       };
       policyPolls = 0;
-      return response(sandboxPolicy, 202);
+      return response(
+        scenario.policyState === "unconfirmedSave"
+          ? { ...sandboxPolicy, additions: [] }
+          : sandboxPolicy,
+        202,
+      );
     }
     if (scenario.policyState && suffix.endsWith("/sandbox-policy/networking/recommendations")) {
       if (scenario.policyState === "ownerDenied") {

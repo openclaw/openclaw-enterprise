@@ -160,7 +160,13 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   readonly requestDiagnostic?: {
     readonly method: string;
     readonly grpcStatus: number;
-    readonly validationCategory: "POLICY_SAFETY" | "POLICY_MIDDLEWARE_VALIDATION" | "UNKNOWN";
+    readonly validationCategory:
+      | "POLICY_SAFETY"
+      | "POLICY_MIDDLEWARE_VALIDATION"
+      | "PVC_ADMISSION_LABELS"
+      | "CLASS_ADMISSION_LABELS"
+      | "RESOURCE_METADATA_FORBIDDEN"
+      | "UNKNOWN";
   };
 
   constructor(
@@ -172,6 +178,25 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
     if (requestDiagnostic !== undefined) {
       this.requestDiagnostic = Object.freeze({ ...requestDiagnostic });
     }
+  }
+}
+
+/** The database did not accept required audit evidence in the current transaction. */
+export class AuditAppendUnavailableError extends DependencyUnavailableError {
+  readonly reasonCode: "AUDIT_CAPACITY_EXCEEDED" | undefined;
+
+  constructor(reasonCode?: "AUDIT_CAPACITY_EXCEEDED") {
+    super("The platform audit write failed.");
+    this.name = "AuditAppendUnavailableError";
+    this.reasonCode = reasonCode;
+  }
+}
+
+/** A failed private runtime diagnostics transport read, without supplier details. */
+export class RuntimeDiagnosticsTransportError extends DependencyUnavailableError {
+  constructor() {
+    super("The private Gateway diagnostics transport is unavailable.");
+    this.name = "RuntimeDiagnosticsTransportError";
   }
 }
 
@@ -357,10 +382,33 @@ export class ChannelDirectoryError extends Error {
   }
 }
 
+export class WorkClaimLostError extends Error {
+  constructor() {
+    super("The controller work claim is missing, expired, or owned by another worker.");
+    this.name = "WorkClaimLostError";
+  }
+}
+
 export class ScopeViolationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ScopeViolationError";
+  }
+}
+
+/** A device login's private binding does not match the admitted request scope. */
+export class DeviceAuthorizationScopeMismatchError extends ScopeViolationError {
+  constructor() {
+    super("The login belongs to another actor or Agent scope.");
+    this.name = "DeviceAuthorizationScopeMismatchError";
+  }
+}
+
+/** A committed revision withdrawal permanently closes its repository session admission. */
+export class RepositorySessionWithdrawnError extends ScopeViolationError {
+  constructor() {
+    super("Repository session admission was withdrawn for this revision.");
+    this.name = "RepositorySessionWithdrawnError";
   }
 }
 
@@ -664,17 +712,10 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
   }
 }
 
-/**
- * Finding 2360: with repository.openShell, the bundled OpenShell Credential Proxy's only
- * registration is the request-phase Git service, which never advertises the execution profile.
- * It delivers repository Git, so a Proxy-owned credential source (static, prepared or
- * credential-free metadata) or an Agent without a repository binding can never be admitted.
- * Source creation answered a generic 503 for this permanent configuration and such a deploy a
- * 503 or a bare 404; both now name the Installation settings.
- */
+/** The configured Git transport does not support protected credential-source admission. */
 export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
   static readonly description =
-    "With repository.openShell the Credential Proxy serves only repository Git, not Proxy-owned credential sources or Agents without repository access. Installation administrators can drop repository.openShell and drivers.credential_proxy, losing protected Git.";
+    "With repository.openShell the Credential Proxy serves only repository Git. Protected credential sources require a qualified execution profile. Ordinary model sources can use Credential Gateway without live adoption.";
 
   constructor() {
     super(CredentialProxyRepositoryOnlyError.description);
@@ -1032,6 +1073,13 @@ export class TransientDependencyError extends Error {
  * operator fixes that identity or grant, so Compute fails the Namespace step at once.
  * The message names only the provider's refusal code, never provider text.
  */
+export class SandboxNamespacePendingError extends Error {
+  constructor(message = "Sandbox Namespace resources have not converged.") {
+    super(message);
+    this.name = "SandboxNamespacePendingError";
+  }
+}
+
 export class SandboxNamespaceRefusedError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -1082,7 +1130,29 @@ export class ActivationPendingError extends Error {
 }
 
 /** An activation step that cannot complete for this revision. */
-export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
+export type ActivationFailedCode =
+  | "AGENT_GATEWAY_UNAUTHORIZED"
+  | "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE"
+  | "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE";
+
+const CODEX_PERMISSION_DENIALS = [
+  "sandbox-mode-denied",
+  "named-profile-denied",
+  "reviewer-denied",
+] as const;
+
+export type CodexPermissionDenial = (typeof CODEX_PERMISSION_DENIALS)[number];
+
+/** The selected Driver proved that this execution's repository access cannot be resumed.
+ * Missing evidence or a failed dependency read must not produce this terminal result. */
+export class RepositoryExecutionRequiresRedeployError extends Error {
+  readonly code = "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED";
+
+  constructor() {
+    super("Repository access cannot resume on this execution. Deploy a new revision.");
+    this.name = "RepositoryExecutionRequiresRedeployError";
+  }
+}
 
 /**
  * Compute preparation cannot complete for this revision. The worker records a
@@ -1107,20 +1177,35 @@ export class ComputePreparationFailedError extends Error {
 }
 
 /**
- * Activation found its workloads running but one of them can never complete
- * activation for this revision: the dedicated Gateway refuses its own in-Pod CLI
- * as unauthorized, so it cannot confirm its workspace node. The cause is fixed
- * by the admitted Configuration, so the worker fails the deployment with `code`
- * instead of waiting for the convergence deadline. The message stays in the
- * controller; status shows a fixed text.
+ * A workload cannot activate under its current configuration or managed policy.
+ * Preparation and activation can both discover the refusal. The worker fails
+ * deployment with `code` instead of waiting for the convergence deadline.
+ * Status uses fixed text; the error message stays in the controller. Operational
+ * diagnostics may retain the fixed Codex permission denial categories.
  */
 export class ActivationFailedError extends Error {
   readonly code: ActivationFailedCode;
+  readonly permissionDenials?: readonly CodexPermissionDenial[];
 
-  constructor(code: ActivationFailedCode, message: string) {
+  constructor(
+    code: ActivationFailedCode,
+    message: string,
+    permissionDenials?: readonly CodexPermissionDenial[],
+  ) {
     super(message);
     this.name = "ActivationFailedError";
     this.code = code;
+    if (
+      code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE" &&
+      permissionDenials !== undefined
+    ) {
+      const recognized = CODEX_PERMISSION_DENIALS.filter((denial) =>
+        permissionDenials.includes(denial),
+      );
+      if (recognized.length > 0) {
+        this.permissionDenials = Object.freeze(recognized);
+      }
+    }
   }
 }
 
@@ -1401,7 +1486,7 @@ export class CredentialSourceRegistrationConfigError extends ScopeViolationError
 export class StoredCredentialSourceConfigError extends ResourceStateConflictError {
   static message(field: string): string {
     if (field === "base_url") {
-      return "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must match the Installation's runtime.modelProvider.baseUrl. Rebind and redeploy Agents, then delete the old source once unused.";
+      return "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must permit the destination selected by the Agent revision. Rebind and redeploy Agents, then delete the old source once unused.";
     }
     return `This credential source's saved ${field} no longer meets the OpenShell Credential Gateway's rules, so it cannot be used. Create a new source with a valid ${field}, bind it in place of this one, then delete this one.`;
   }
@@ -1532,6 +1617,7 @@ const RETRY_LATER_MESSAGES = Object.freeze({
  * operator can fix (`proxyRegistration`) from its availability check.
  */
 export class RetryLaterError extends DependencyUnavailableError {
+  readonly retryAfterSeconds?: number;
   constructor(reason: "deviceLoginFailed", cause: unknown);
   constructor(reason: "registrationFence", seconds: number);
   constructor(reason: "proxyRegistration");
@@ -1542,6 +1628,9 @@ export class RetryLaterError extends DependencyUnavailableError {
       ),
     );
     this.name = "RetryLaterError";
+    if (reason === "registrationFence") {
+      this.retryAfterSeconds = Math.max(1, Math.ceil(Number(detail)));
+    }
     if (reason === "deviceLoginFailed") {
       this.cause = detail;
     }

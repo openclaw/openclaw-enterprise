@@ -31,11 +31,6 @@ run_root=${XDG_STATE_HOME:-$HOME/.local/state}/oce
 install -d -m 700 "$run_root"
 RUN_DIR=$(mktemp -d "$run_root/openshell.XXXXXXXX")
 printf 'Private session directory: %s\n' "$RUN_DIR"
-
-# Stage the network policy for cluster startup and the configuration script for the Helm reload.
-install -m 600 docs/snippets/openshell-quickstart/plugin-network-policy.yaml "${RUN_DIR:?}/artifacts.yaml"
-install -m 600 docs/snippets/openshell-quickstart/configure-installation.mjs "$RUN_DIR/configure-installation.mjs"
-source docs/snippets/openshell-quickstart/stage-session.sh
 ```
 
 Choose one image path before starting the cluster.
@@ -51,6 +46,17 @@ unset OCC_DEVELOPMENT_CONTROLLER_IMAGE OCC_KUBERNETES_RUNTIME_IMAGE
 ```bash
 export OCC_DEVELOPMENT_CONTROLLER_IMAGE="${CONTROLLER_IMAGE:?Select the published controller}"
 export OCC_KUBERNETES_RUNTIME_IMAGE="${RUNTIME_IMAGE:?Select the published runtime}"
+```
+
+After selecting the images and matching checkout, stay in the same Bash shell
+and stage the quickstart files from that checkout. `RUN_DIR` still names the
+private directory created above, even after changing checkouts.
+
+```bash
+# Stage the network policy for cluster startup and the configuration script for the Helm reload.
+install -m 600 docs/snippets/openshell-quickstart/plugin-network-policy.yaml "${RUN_DIR:?}/artifacts.yaml"
+install -m 600 docs/snippets/openshell-quickstart/configure-installation.mts "$RUN_DIR/configure-installation.mts"
+source docs/snippets/openshell-quickstart/stage-session.sh
 ```
 
 ## 2. Start a new k3d installation
@@ -83,11 +89,11 @@ The launcher enables Gateway TLS, mTLS and authentication before startup. Wait f
 
 Run this from the matching release checkout. The configuration script removes the generated `source-control` rule that gives Git uninspected access to `github.com:443`. It keeps the other rules and selects the curated Codex plugin catalog. Git access requires an explicit repository binding and its authorized installation profile.
 
-The [configuration script](../../snippets/openshell-quickstart/configure-installation.mjs) checks that the generated rule matches the expected settings before changing it.
+The [configuration script](../../snippets/openshell-quickstart/configure-installation.mts) checks that the generated rule matches the expected settings before changing it.
 
 ```bash
 # Edit the fresh installation.yaml once, before provisioning Agents.
-node "$RUN_DIR/configure-installation.mjs"
+node "$RUN_DIR/configure-installation.mts"
 ```
 
 Step 4 reloads this edit through the authenticated operator session, preserving the
@@ -123,7 +129,7 @@ CONSOLE_ORIGIN=$(jq -er .browserOrigin "$state/state.json")
 NATIVE_ADMIN_DOMAIN=$(jq -er .nativeAdminDomain "$state/state.json")
 # The local launcher supplies the cluster policies. No extra CNI service rules are needed.
 cat > "$RUN_DIR/platform.sh" <<'SH'
-deployment_preflight() { :; }
+deployment_preflight() { ./bin/occ dev check; }
 deployment_network() { :; }
 repository_network() { :; }
 SH

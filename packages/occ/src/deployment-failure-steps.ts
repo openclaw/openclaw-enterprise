@@ -6,8 +6,7 @@
 //
 // - "deploy-again": deploying the Agent again can clear the failure, so a client may offer it.
 // - "logs": the version's runtime ran, and its logs can show the cause.
-// - "change": a setting, grant or record must change first, and no runtime started, so its logs
-//   cannot help.
+// - "change": a setting, grant or record must change first; the status message names it.
 export type DeploymentFailureStep = "deploy-again" | "logs" | "change";
 
 export const DEPLOYMENT_FAILURE_STEPS: Readonly<Record<string, DeploymentFailureStep>> =
@@ -29,6 +28,7 @@ export const DEPLOYMENT_FAILURE_STEPS: Readonly<Record<string, DeploymentFailure
     REPOSITORY_DRIVER_MISMATCH: "deploy-again",
     REPOSITORY_EXECUTION_CHANGED: "deploy-again",
     REPOSITORY_EXECUTION_CLOSED: "deploy-again",
+    REPOSITORY_EXECUTION_REDEPLOY_REQUIRED: "deploy-again",
     REPOSITORY_EXECUTION_REPLACED: "deploy-again",
     REPOSITORY_EXECUTION_UNVERIFIED: "deploy-again",
     REPOSITORY_GIT_ROUTE_BLOCKED: "deploy-again",
@@ -79,6 +79,8 @@ export const DEPLOYMENT_FAILURE_STEPS: Readonly<Record<string, DeploymentFailure
     REPOSITORY_RUNTIME_UNSUPPORTED: "change",
     REPOSITORY_STANDING_APPROVAL_REMOVED: "change",
     REPOSITORY_STANDING_POLICY_CHANGED: "change",
+    RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE: "change",
+    RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE: "change",
     SANDBOX_GATEWAY_UNAUTHORIZED: "change",
     SANDBOX_HARNESS_UNSUPPORTED: "change",
     SANDBOX_POD_LABELS_NOT_PERMITTED: "change",

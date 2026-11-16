@@ -9,7 +9,8 @@ Replace `github-login` with the original RFC PR author's GitHub login (without `
 The author is required and is treated as the RFC owner. The index uses this
 frontmatter value; do not repeat it in the body or add a separate owner field.
 Describe team responsibilities in the proposal where relevant.
-Adapt the headings to the change and remove sections that do not apply. See the
+Keep Acceptance Criteria; adapt the other headings to the change and remove
+sections that do not apply. See the
 [RFC process](rfcs.md) for review, length, and diagram guidance.
 
 Adapted from the [OpenClaw RFC template](https://github.com/openclaw/rfcs/blob/main/rfcs/0000-template.md).
@@ -129,6 +130,28 @@ sequenceDiagram
   end
 ```
 
+## Acceptance Criteria
+
+[Define how the implementation will be verified end to end. Give each criterion
+a stable ID and connect it to a goal above. For each criterion, specify:
+
+- The caller, starting state, permissions, required environment, and real
+  dependencies.
+- The actions through the supported user or operator workflow, from entry point
+  to final result.
+- The observable pass condition and the evidence that will establish it, such as
+  an integration test or a reproducible manual check.
+
+Cover success and consequential denial, failure, or recovery. Exercise the real
+implementation and dependencies for the behavior being proved; mocks and source
+inspection alone do not establish end-to-end success. Name missing prerequisites
+and the criteria they leave unverified. Keep detailed commands and results in
+the implementation plan when one exists, linked by criterion ID.]
+
+- **AC-1 — [Goal]:** Given [caller, starting state, and prerequisites], when
+  [supported workflow], then [observable result]. Verify with [test or manual
+  procedure and required evidence].
+
 ## Delivery and verification
 
 [For a bigger feature, link its implementation plan and keep only delivery
@@ -140,8 +163,8 @@ status. Planning or implementing the RFC does not change its decision status.]
 2. [Connect the capability to its supported caller.]
 3. [Name any remaining selected work and qualification.]
 
-[Pair each required outcome with evidence for success and consequential denial,
-failure, or recovery. State what has run and what remains unverified.]
+[Map verification results to the Acceptance Criteria by ID. State what has run
+and what remains unverified; link the implementation plan's results when present.]
 
 <a id="alternatives-and-open-decisions"></a>
 

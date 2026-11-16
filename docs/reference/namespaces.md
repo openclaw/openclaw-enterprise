@@ -28,7 +28,9 @@ with a server-assigned ID. It uses the ordinary Namespace creation path,
 authorizes `create` for the bootstrap Principal through the selected IAM
 Driver, and queues reconciliation in the same transaction as Installation
 state and bootstrap audit. The worker provisions it through the selected
-Compute Driver and transitions it from `provisioning` to `ready`. Bootstrap
+Compute Driver, then runs selected registration setup through the
+[Namespace lifecycle](drivers/namespace-lifecycle.md). It transitions
+from `provisioning` to `ready` only after every participant completes. Bootstrap
 success does not imply infrastructure readiness.
 
 Use `GET /namespaces` to discover the ID. The name does not select Kubernetes'
@@ -53,6 +55,12 @@ Creation requires Namespace `create` in the Installation. Reads and deletion
 require the corresponding permission on the exact Namespace. Namespace lists
 authorize each result separately; permission to access one Namespace does not
 reveal another. [Authorization](authorization.md) defines scope and grants.
+When the Installation configuration sets an `ownerRole`, OCC binds the creator
+of a Namespace to that
+[Owner Role](authorization/default-users.md#creators-own-what-they-create)
+across it. Creating a Namespace also writes the
+[configured Group bindings](authorization/default-users.md#how-occ-applies-the-configuration)
+that name it, such as Agent creation in `default`.
 
 `POST /namespaces` accepts a name and returns `201` with a Namespace in
 `provisioning` status. `GET /namespaces` lists authorized Namespaces;
@@ -101,7 +109,7 @@ in the Console reads its current status.
 | Status         | Meaning                                                                     |
 | -------------- | --------------------------------------------------------------------------- |
 | `provisioning` | The Namespace exists, but its required runtime infrastructure is not ready. |
-| `ready`        | Its backing Namespace infrastructure has reported ready.                    |
+| `ready`        | Compute and all selected Namespace setup hooks have completed.              |
 | `failed`       | Provisioning encountered a permanent failure.                               |
 | `deleting`     | Authorized deletion has started; new Agents and deployments are rejected.   |
 
@@ -235,6 +243,7 @@ workload is ready.
 
 ## Changelog
 
+- 2026-11-04 12:00: With a configured `ownerRole`, the creator of a Namespace owns it; creating a Namespace writes the configured Group bindings that name it. (claude/session_01HzmRt1DGB79VEnEWHt7PRy)
 - 2026-10-18 21:10: The console names a Namespace's status where Agent creation starts and disables creation only where the API refuses new Agents. (ux-a5)
 - 2026-10-06 18:55: The worker log names why a Namespace failed; the API still does not. (fix-d521)
 - 2026-10-06 18:40: Note that a reused existing namespace fails until its old tenant markers are cleared, that `failed` carries no reason, and that `401` covers service API keys. (dogfood-r38)

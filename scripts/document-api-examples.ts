@@ -11,9 +11,11 @@ const methods = new Set(["get", "post", "put", "patch", "delete", "head", "optio
 const example = (value: unknown, summary: string) => ({ example: { summary, value } });
 const cursorExamples: Record<string, string | undefined> = {
   listAgentRevisions: "v1.1",
+  listAgentAuditEvents: "YXVkaXQtbmV4dC1wYWdl",
   getAgentDeploymentRuntimeLogs: "v1.ZXhhbXBsZQ." + "x".repeat(43),
 };
 const rateLimitCodes: Record<string, string | undefined> = {
+  createAuthAccount: "RATE_LIMITED",
   signInEmail: "RATE_LIMITED",
   completeNamespaceConnection: "RATE_LIMITED",
   getAgentSandboxRecommendations: "RUNTIME_LOGS_RATE_LIMITED",
@@ -65,6 +67,10 @@ export function documentApiExamples<T>(document: T): T {
         throw new Error(`Missing or duplicate operationId: ${method} ${path}`);
       }
       used.add(name);
+      // The deployment handler supplies an empty object before validation when the body is omitted.
+      if (name === "deployAgent") {
+        record(operation.requestBody, "deployAgent request body").required = false;
+      }
       operation.description ??= operation.summary;
       const parameters = operation.parameters ?? [];
       if (!Array.isArray(parameters)) {
