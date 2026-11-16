@@ -57,6 +57,9 @@ interface SlackResults {
 }
 
 type SlackMethod = keyof SlackRequests;
+type SlackCall = {
+  [Method in SlackMethod]: [method: Method, token: string, ...body: SlackRequests[Method]];
+}[SlackMethod];
 type SlackResult<Method extends SlackMethod> = { readonly ok: true } & SlackResults[Method];
 type ObjectValue = Record<string, unknown>;
 
@@ -118,11 +121,11 @@ function isTransient(error: unknown): boolean {
   );
 }
 
-export async function slackApi<Method extends SlackMethod>(
-  method: Method,
-  token: string,
-  ...[body = {}]: SlackRequests[NoInfer<Method>]
-): Promise<SlackResult<Method>> {
+export async function slackApi<Call extends SlackCall>(
+  ...call: Call
+): Promise<SlackResult<Call[0]>> {
+  const method: Call[0] = call[0];
+  const [, token, body = {}] = call;
   assert.ok(Object.hasOwn(validate, method), "unsupported Slack proof operation");
   const writesMessage = method === "chat.postMessage";
   const url = new URL(`https://slack.com/api/${method}`);

@@ -103,7 +103,7 @@ test("bundled Slack presets supply threaded replies", async () => {
 
 test("the Slack editor steers named accounts away from the default account's token names", () => {
   const support = slack.support({ channels: { slack: { accounts: { work: {} } } } });
-  assert.ok(!support.supported);
+  assert.ok(support.supported === false);
   // OpenClaw starts an implicit default account from SLACK_APP_TOKEN/SLACK_BOT_TOKEN.
   assert.match(
     support.reason,
@@ -136,7 +136,7 @@ test("the Slack editor names a bot token it cannot edit the way Configuration sa
     const support = slack.support({
       channels: { slack: { appToken: "${SLACK_APP_TOKEN}", botToken } },
     });
-    assert.ok(!support.supported, JSON.stringify(botToken));
+    assert.ok(support.supported === false, JSON.stringify(botToken));
     assert.equal(
       support.reason,
       `Slack bot token ${form}. To edit Slack here, set botToken to \${SLACK_BOT_TOKEN} in the Configuration JSON.`,

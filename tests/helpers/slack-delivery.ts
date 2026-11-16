@@ -40,17 +40,13 @@ type MessageQuery = {
   [Method in MessageMethod]: [method: Method, token: string, params: SlackRequests[Method][0]];
 }[MessageMethod];
 
-export async function allMessages(
-  ...[method, token, params]: MessageQuery
-): Promise<SlackMessage[]> {
+export async function allMessages(...request: MessageQuery): Promise<SlackMessage[]> {
+  const params = request[2];
   const messages: SlackMessage[] = [];
   let cursor: string | undefined;
   do {
-    const page = await slackApi(method, token, {
-      ...params,
-      limit: 100,
-      ...(cursor ? { cursor } : {}),
-    });
+    request[2] = { ...params, limit: 100, ...(cursor ? { cursor } : {}) };
+    const page = await slackApi(...request);
     messages.push(...(page.messages ?? []));
     cursor = page.response_metadata?.next_cursor;
     assert.ok(!page.has_more || cursor, "Slack must provide a cursor for complete observation");
