@@ -4,18 +4,19 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import test from "node:test";
-import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.ts";
+
+import { renderMatrixMarkdown, type DriverMatrix } from "../../scripts/generate-compute-matrix.ts";
 import {
   buildDocs,
   createDocsFixture,
   repositoryRoot as root,
   writeComputeMatrixReadme,
   writeDocsConfig,
-} from "../helpers/docs-site.mjs";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+} from "../helpers/docs-site.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
-async function markdownFiles(directory) {
-  const result = [];
+async function markdownFiles(directory: string): Promise<string[]> {
+  const result: string[] = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) {
@@ -25,6 +26,28 @@ async function markdownFiles(directory) {
     }
   }
   return result;
+}
+
+function navigationEntries(value: unknown, key: string): unknown[] {
+  assert.ok(
+    value !== null && typeof value === "object" && key in value,
+    `Missing ${key} in docs navigation`,
+  );
+  const entries: unknown = Reflect.get(value, key);
+  assert.ok(Array.isArray(entries), `Expected an array for ${key} in docs navigation`);
+  return entries;
+}
+
+function entrySlugs(entry: unknown): string[] {
+  if (typeof entry === "string") {
+    return [entry];
+  }
+  assert.ok(entry !== null && typeof entry === "object", "Invalid docs navigation entry");
+  if ("group" in entry) {
+    return navigationEntries(entry, "pages").flatMap(entrySlugs);
+  }
+  assert.ok("page" in entry && typeof entry.page === "string", "Missing docs navigation slug");
+  return [entry.page];
 }
 
 // Exercise the shipped CLI against the authored corpus and generated API.
@@ -41,16 +64,18 @@ test("docs build renders every authored page and preserves repository ownership"
     timeout: 120_000,
   });
   const pages = await markdownFiles(join(root, "docs"));
-  const config = JSON.parse(await readFile(join(root, "docs/docs.json"), "utf8"));
+  const config: unknown = JSON.parse(await readFile(join(root, "docs/docs.json"), "utf8"));
+  assert.ok(config !== null && typeof config === "object" && "navigation" in config);
   // Entries are slugs or { page, label }; groups nest, and a tab's hidden pages build too.
-  const entrySlugs = (entry) =>
-    typeof entry === "string"
-      ? [entry]
-      : "group" in entry
-        ? entry.pages.flatMap(entrySlugs)
-        : [entry.page];
-  const navigation = config.navigation.languages.flatMap(({ tabs }) =>
-    tabs.flatMap(({ groups, hidden = [] }) => [...groups, ...hidden].flatMap(entrySlugs)),
+  const navigation = navigationEntries(config.navigation, "languages").flatMap((language) =>
+    navigationEntries(language, "tabs").flatMap((tab) => {
+      const groups = navigationEntries(tab, "groups");
+      const hidden =
+        tab !== null && typeof tab === "object" && "hidden" in tab
+          ? navigationEntries(tab, "hidden")
+          : [];
+      return [...groups, ...hidden].flatMap(entrySlugs);
+    }),
   );
   assert.equal(new Set(navigation).size, navigation.length, "Navigation duplicates a page");
   for (const page of pages) {
@@ -175,14 +200,15 @@ test("docs validation rejects broken links, anchors and navigation through the C
       'Before <!-- <a id="inline-comment-example"></a> --> after',
     ].join("\n\n"),
   );
-  for (const fragment of ["real-id", "real-name", "real-div-id", "real-upper-name"]) {
-    await writeFile(
-      join(fixture, "docs/README.md"),
-      `# Home\n\n[Valid](../CONTRIBUTING.md#${fragment})\n`,
-    );
-    result = validate();
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-  }
+  await writeFile(
+    join(fixture, "docs/README.md"),
+    "# Home\n\n" +
+      ["real-id", "real-name", "real-div-id", "real-upper-name"]
+        .map((fragment) => `[Valid](../CONTRIBUTING.md#${fragment})\n`)
+        .join(""),
+  );
+  result = validate();
+  assert.equal(result.status, 0, result.stderr || result.stdout);
   for (const fragment of [
     "div-name",
     "span-name",
@@ -202,7 +228,11 @@ test("docs validation rejects broken links, anchors and navigation through the C
     assert.match(result.stderr + result.stdout, /missing heading/);
   }
   await writeFile(join(fixture, "docs/README.md"), "# Home\n");
-  const pages = config.navigation.languages[0].tabs[0].groups[0].pages;
+  const [language] = config.navigation.languages;
+  const [tab] = language?.tabs ?? [];
+  const [group] = tab?.groups ?? [];
+  assert.ok(group);
+  const { pages } = group;
   pages.push("absent");
   await writeDocsConfig(fixture, config);
   result = validate();
@@ -260,7 +290,7 @@ test("spec validation rejects links to missing headings", async (t) => {
   await mkdir(join(fixture, "specs/rfcs"), { recursive: true });
   await mkdir(join(fixture, "docs"), { recursive: true });
   await writeFile(join(fixture, "docs/guide.md"), "# Guide\n\n## Setup\n\n## Setup\n");
-  const validate = async (target) => {
+  const validate = async (target: string) => {
     await writeFile(join(fixture, "specs/plan.md"), `# Plan\n\n## Scope\n\n[Link](${target})\n`);
     return spawnSync(process.execPath, [join(root, "scripts/check-specs.mjs")], {
       cwd: fixture,
@@ -279,7 +309,10 @@ test("spec validation rejects links to missing headings", async (t) => {
   }
 });
 
-function matrixFixtureData() {
+// `scope` is authored matrix metadata carried in the fixture alongside renderer fields.
+function matrixFixtureData(): DriverMatrix & {
+  drivers: (DriverMatrix["drivers"][number] & { scope: "development" | "production" })[];
+} {
   return {
     baseline: "23d490b93d59dc810f28430f31576209200ba9ba",
     reviewedAt: "2026-09-16",
@@ -385,7 +418,7 @@ for (const [kind, label] of [
     const page = join(fixture, target);
     const before = `# Manual introduction\n\n<!-- ${kind}-matrix:start -->\nStale table\n<!-- ${kind}-matrix:end -->\n\nManual notes\n`;
     await writeFile(page, before);
-    const run = (...args) =>
+    const run = (...args: string[]) =>
       spawnSync(process.execPath, [join(root, `scripts/generate-${kind}-matrix.ts`), ...args], {
         cwd: fixture,
         encoding: "utf8",
