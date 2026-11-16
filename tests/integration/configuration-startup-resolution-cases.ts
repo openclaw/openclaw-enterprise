@@ -44,7 +44,7 @@ type InstallationFactory = () => MutableComputeInstallation;
 type RepositoryInstallation = Readonly<Record<string, unknown>> & {
   drivers: {
     compute: {
-      configuration: { network: { repositoryCredentials?: { port: number } } };
+      configuration: { network: Record<string, unknown> };
     };
   };
   repository?: unknown;
@@ -623,8 +623,8 @@ export async function checkNativeRepositoryStartup(
   // Ports on both sides of 8443; neither appears inside "8443", so the echo check means something.
   const misplaced = (port: number) => {
     const value = structuredClone(configuration);
-    const peer = value.drivers.compute.configuration.network.repositoryCredentials;
-    assert.ok(peer);
+    const peer = asRecord(value.drivers.compute.configuration.network.repositoryCredentials);
+    assert.ok(peer && typeof peer.port === "number");
     peer.port = port;
     return value;
   };
