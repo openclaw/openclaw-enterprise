@@ -289,6 +289,7 @@
     "../scripts/observe-worker-terminations.ts",
     "helpers/native-admin-postgres.ts",
     "integration/native-admin-http-integrity-cases.ts",
+    "integration/native-admin-shared-session-cases.ts",
     "helpers/postgres-worker-revision-queue.ts",
     "conformance/topology-launch-cases.ts",
     "integration/configuration-credential-save-cases.ts"
