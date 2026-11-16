@@ -337,6 +337,10 @@ replacement even while the terminating Pod still appears in the Kubernetes API.
 
 Completion requires the expected Helm revision and OCC access; runtime upgrades
 also require deployment, readiness and Doctor success.
+For a long native Codex turn, check the terminal event for the original run.
+The bundled [watchdog correction](../../deploy/runtime/openclaw-native-turn-settlement.patch)
+counts native-owned wait time separately from finalization. An explicit Stop,
+a revoked owner, or a stalled finalization can still end the run.
 For selected-Agent checks, `verify_agent_continuity` precedes terminal controller/Helm checks.
 Each role needs one Running, Ready Pod; replacement UIDs/completed init containers are valid. Eight results hit the endpoint cap and cannot prove uniqueness.
 Previously observed provider Harness status must remain running. Failure retains

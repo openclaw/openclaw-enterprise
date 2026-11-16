@@ -54,6 +54,10 @@ const appliedPatches = [
     file: "openclaw-planned-completion.patch",
     sha256: "e6dd8a4c0c85c77390bb4aa68e62416d7a4fe950f5d622c79809e73c79e6f1cb",
   },
+  {
+    file: "openclaw-native-turn-settlement.patch",
+    sha256: "5f2127b46a4a92d24469e43d67301ee0b99d99eb2582c4e690b81b12fd8b7da6",
+  },
 ];
 const [command, sourceRoot, output, manifestPath] = process.argv.slice(2);
 const root = await realpath(sourceRoot);
