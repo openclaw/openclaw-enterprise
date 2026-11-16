@@ -153,7 +153,7 @@ automatically. [Local checkout tests](../../docs/testing/openshell.md) use their
 
 Local assembly omits broad suites. Run [source verification](../../docs/flows/container-publication.md#runtime-source-verification) for runtime changes.
 
-For ARM64 Harnesses that forbid JIT, see the [Code Mode runtime](code-mode/README.md).
+See the [JIT-free ARM64 Harness](code-mode/README.md).
 
 ## Build a local runtime image
 

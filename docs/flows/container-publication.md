@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-16
-last_updated_session: authoring-run/d9e4e664-8a87-4717-b535-02a8c786019e
+updated: 2026-11-14
+last_updated_session: authoring-run/a59f5478-cdb3-4f32-8e10-534fb4fba07e
 ---
 
 # Container publication flow
@@ -84,10 +84,6 @@ docker build -f deploy/runtime/Dockerfile \
 Coverage includes native turn settlement, approval discovery after reconnect,
 HTTP rejection and native handoff during late writes. Failure blocks smoke and
 upload. Local builds can run independently.
-
-The optional [ARM64 interpreter image](../../deploy/runtime/code-mode/README.md)
-derives from a built runtime image. It refreshes the runtime inventory and
-qualifies its Code Mode host against the stock host before it can be selected.
 
 The `resources` step checks architecture, CPU, memory and ancestor cgroup-v2 limits.
 Both stages use its Node compiler budget. ARM uses up to eight jobs, or four for
@@ -319,11 +315,7 @@ owns package-write access and coordination.
 
 ## Changelog
 
-- 2026-11-16 23:30: Refresh the interpreter image inventory and qualify its host against the stock JIT host. (authoring-run/d9e4e664-8a87-4717-b535-02a8c786019e - 92dfb194a9)
-
 - 2026-11-14 22:54: Document native ZIP selection. (authoring-run/a59f5478-cdb3-4f32-8e10-534fb4fba07e - e2ca224aa9657568ded513872d2fe6315d8d5301)
-
-- 2026-11-14 11:49: Document verification of the optional ARM64 interpreter image. (authoring-run/73fd9679-c55a-46ed-b8fe-840fce2b54b1 - c8c38b5d4317cdd9558b2d8a4fb4271615fa7cd6)
 
 - 2026-11-14 15:07: Document optional native tool selection, image verification, and published client identities. (authoring-run/b93b80a6-de4f-4ade-b2de-0a80efedde44 - 1c56c61909b9f480845f4579e2add893207fa759)
 
