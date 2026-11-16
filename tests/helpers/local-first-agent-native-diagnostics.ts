@@ -169,7 +169,10 @@ function absentOr<T>(value: unknown, observe: (present: unknown) => T): T | "non
 
 // For fields where "none" is a real value: absent prints "absent", off-set "other".
 function markerOrAbsent<T extends string>(value: unknown, known: ReadonlySet<T>) {
-  return value == null ? "absent" : isKnown(known, value) ? value : "other";
+  if (value == null) {
+    return "absent";
+  }
+  return isKnown(known, value) ? value : "other";
 }
 
 const failureCategory = (code: unknown): FailureCode =>
@@ -266,7 +269,9 @@ async function observeModelProbe(
   ) {
     return;
   }
+  signal.throwIfAborted();
   const output: unknown = await readProbePod(revision, signal);
+  signal.throwIfAborted();
   if (typeof output !== "string") {
     return;
   }
@@ -303,10 +308,9 @@ async function observeNativeFailure(diagnostics: ProvisioningDiagnostics | undef
   if (revision) {
     try {
       const diagnosticSignal = diagnosticBudget(diagnostics.signal);
-      const deployment = await diagnostics.request(
-        "GET",
+      const deployment = await readEvidence(
+        diagnostics.request,
         revision.deploymentPath,
-        undefined,
         diagnosticSignal,
       );
       await observeDeployment(
@@ -328,12 +332,29 @@ function diagnosticBudget(signal: AbortSignal) {
   return AbortSignal.any([signal, AbortSignal.timeout(5_000)]);
 }
 
+async function readEvidence(request: ReadDiagnostic, path: string, signal: AbortSignal) {
+  signal.throwIfAborted();
+  const value = await request("GET", path, undefined, signal);
+  signal.throwIfAborted();
+  return value;
+}
+
 function hasWorkStatus(value: Record<string, unknown>): value is WorkStatusRecord {
   return isKnown(workStatuses, value.status);
 }
 
 function hasAgentRevision(value: Record<string, unknown>): value is AgentRevisionRecord {
   return value.activeRevisionId === undefined || typeof value.activeRevisionId === "string";
+}
+
+function readBoundAgent(value: unknown, revision: RevisionIds): AgentRevisionRecord {
+  const agent = asRecord(value);
+  assert.ok(
+    agent && agent.id === revision.agentId && agent.namespaceId === revision.namespaceId,
+    "The native deployment returned a mismatched Agent binding",
+  );
+  assert.ok(hasAgentRevision(agent), "The native deployment returned an invalid active revision");
+  return agent;
 }
 
 function boundDeployment(value: unknown, revision: RevisionIds) {
@@ -345,7 +366,7 @@ function boundDeployment(value: unknown, revision: RevisionIds) {
     : undefined;
 }
 
-export function nativeDeploymentForRevision(
+function nativeDeploymentForRevision(
   value: unknown,
   revision: RevisionIds,
   operation: "deploy" | "redeploy",
@@ -380,10 +401,9 @@ async function observeDeployment(
     : undefined;
   if (deployment.status === "failed" && expectedProbeCode) {
     observation.modelProbe = "unavailable";
-    const logs = await request(
-      "GET",
+    const logs = await readEvidence(
+      request,
       `${revision.deploymentPath}/runtime/logs?source=agent&tailLines=1000`,
-      undefined,
       signal,
     );
     await observeModelProbe(observation, logs, revision, expectedProbeCode, readProbePod, signal);
@@ -425,16 +445,15 @@ export async function assertNativeWorkNotFailed(
 // A failed redeploy reports evidence for the replacement revision within one diagnostic budget.
 async function failNativeRedeploy(
   deployment: Record<string, unknown>,
-  { request, signal, ...ids }: Pick<RedeployContext, "request" | "signal"> & RevisionIds,
+  revision: RevisionBinding,
+  request: ReadDiagnostic,
+  signal: AbortSignal,
 ): Promise<never> {
   const observation: FailureObservation = { deployment: "unavailable" };
-  const revision = readRevisionBinding(ids.namespaceId, ids.agentId, ids.revisionId);
-  if (revision) {
-    try {
-      await observeDeployment(observation, deployment, revision, request, diagnosticBudget(signal));
-    } catch {
-      // Diagnostic failures cannot replace the terminal failure or reveal peer errors.
-    }
+  try {
+    await observeDeployment(observation, deployment, revision, request, diagnosticBudget(signal));
+  } catch {
+    // Diagnostic failures cannot replace the terminal failure or reveal peer errors.
   }
   return failNativeWork(
     "Redeployment with the retained native workspace must succeed",
@@ -453,7 +472,8 @@ export async function waitForNativeRedeploy({
   timeoutMs = 8 * 60_000,
   pollMs = 2_000,
 }: RedeployContext) {
-  const ids = { namespaceId, agentId, revisionId };
+  const ids = readRevisionBinding(namespaceId, agentId, revisionId);
+  assert.ok(ids, "The native redeploy returned an invalid binding");
   const agentPath = `/namespaces/${namespaceId}/agents/${agentId}`;
   const deadline = Date.now() + timeoutMs;
   let deployment: WorkStatusRecord | undefined;
@@ -461,28 +481,24 @@ export async function waitForNativeRedeploy({
   while (Date.now() < deadline) {
     signal.throwIfAborted();
     const currentDeployment = nativeDeploymentForRevision(
-      await request("GET", `${agentPath}/deployments/${revisionId}`),
+      await request("GET", ids.deploymentPath),
       ids,
       "redeploy",
     );
     if (currentDeployment.status === "failed") {
-      await failNativeRedeploy(currentDeployment, { request, ...ids, signal });
+      await failNativeRedeploy(currentDeployment, ids, request, signal);
     }
     signal.throwIfAborted();
     if (Date.now() >= deadline) {
       break;
     }
-    const currentAgent = asRecord(await request("GET", agentPath));
+    const currentAgent = await request("GET", agentPath);
     signal.throwIfAborted();
     if (Date.now() >= deadline) {
       break;
     }
-    assert.ok(
-      currentAgent && hasAgentRevision(currentAgent),
-      "The native redeploy returned an invalid Agent",
-    );
     deployment = currentDeployment;
-    agent = currentAgent;
+    agent = readBoundAgent(currentAgent, ids);
     if (deployment.status === "succeeded" && agent.activeRevisionId === revisionId) {
       break;
     }
@@ -565,6 +581,69 @@ function readProvisionedRevision(
     return undefined;
   }
   return readRevisionBinding(namespaceId, provisioned.agentId, provisioned.revisionId);
+}
+
+// The installer can proceed only after these three reads agree before the deadline.
+export async function waitForNativeProvisioning(
+  context: Omit<ProvisioningDiagnostics, "provisioned">,
+) {
+  const { namespaceId, provisioningPath, request, signal } = context;
+  const deadline = Date.now() + 8 * 60_000;
+  let provisioned: Record<string, unknown> | undefined;
+  while (Date.now() < deadline) {
+    signal.throwIfAborted();
+    provisioned = asRecord(await request("GET", provisioningPath));
+    assert.ok(
+      provisioned && readProvisioningPath(namespaceId, provisioned) === provisioningPath,
+      "Guided native provisioning returned an invalid binding",
+    );
+    const diagnostics = { ...context, provisioned };
+    await assertNativeWorkNotFailed(
+      provisioned,
+      "Guided native provisioning must succeed",
+      diagnostics,
+    );
+    if (provisioned.status === "succeeded") {
+      const revision = readRevisionBinding(
+        namespaceId,
+        provisioned.agentId,
+        provisioned.revisionId,
+      );
+      assert.ok(revision, "Guided native provisioning returned an invalid revision binding");
+      if (Date.now() >= deadline) {
+        break;
+      }
+      const deployment = nativeDeploymentForRevision(
+        await request("GET", revision.deploymentPath),
+        revision,
+        "deploy",
+      );
+      await assertNativeWorkNotFailed(
+        deployment,
+        "The admitted native revision must become ready",
+        diagnostics,
+      );
+      if (Date.now() >= deadline) {
+        break;
+      }
+      const value = await request("GET", `/namespaces/${namespaceId}/agents/${revision.agentId}`);
+      signal.throwIfAborted();
+      if (Date.now() >= deadline) {
+        break;
+      }
+      const nativeAgent = readBoundAgent(value, revision);
+      if (
+        deployment.status === "succeeded" &&
+        nativeAgent.activeRevisionId === revision.revisionId
+      ) {
+        return { nativeAgent, revisionId: revision.revisionId };
+      }
+    }
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, Math.min(2_000, Math.max(1, deadline - Date.now()))),
+    );
+  }
+  return failNativeProvisioningDeadline({ ...context, provisioned });
 }
 
 function observedProvisioning(provisioning: Record<string, unknown> | undefined) {
@@ -667,7 +746,7 @@ async function observeRuntimeAfterDeadline(
   signal: AbortSignal,
 ) {
   observation.runtimeAfterDeadline = "unavailable";
-  const runtime = await request("GET", `${revision.deploymentPath}/runtime`, undefined, signal);
+  const runtime = await readEvidence(request, `${revision.deploymentPath}/runtime`, signal);
   const pods = observedPodReadiness(runtime, revision.revisionId);
   observation.runtimeAfterDeadline = pods;
   // One ready Pod per role makes these log pages useful within the original budget.
@@ -688,10 +767,9 @@ async function observeRuntimeAfterDeadline(
     }
     output[source] = "unavailable";
     try {
-      const logs = await request(
-        "GET",
+      const logs = await readEvidence(
+        request,
         `${revision.deploymentPath}/runtime/logs?source=${source}&tailLines=1000`,
-        undefined,
         signal,
       );
       output[source] = observedRuntimeOutput(logs, revision.revisionId, source);
@@ -708,7 +786,7 @@ async function observeDeadline(
 ) {
   const diagnosticSignal = diagnosticBudget(signal);
   const deployment = boundDeployment(
-    await request("GET", revision.deploymentPath, undefined, diagnosticSignal),
+    await readEvidence(request, revision.deploymentPath, diagnosticSignal),
     revision,
   );
   if (!deployment) {
@@ -724,7 +802,7 @@ async function observeDeadline(
   }
   if (isTerminal(deployment.status)) {
     observation.provisioningAfterDeployment = "unavailable";
-    const after = asRecord(await request("GET", provisioningPath, undefined, diagnosticSignal));
+    const after = asRecord(await readEvidence(request, provisioningPath, diagnosticSignal));
     if (
       after?.agentId === revision.agentId &&
       after.revisionId === revision.revisionId &&
