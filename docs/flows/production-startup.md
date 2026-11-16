@@ -154,8 +154,8 @@ On install and upgrade, Helm runs the generated
 `CHART_LISTENER_MISMATCH` when `OCC_EGRESS_AUTHORITY_PORT` or
 `OCC_OPENSHELL_GIT_PORT` is set.
 
-`openclaw.listenerEnv` passes `OCC_CHART_GATEWAY_ROUTING` to the hook, API and
-worker. `requireChartGatewayRouting` checks the Gateway name, Gateway and Envoy
+With chart-managed routing, `openclaw.listenerEnv` passes `OCC_CHART_GATEWAY_ROUTING`
+to the hook, API and worker. `requireChartGatewayRouting` checks the Gateway name, Gateway and Envoy
 namespaces, and hostname. It reports a mismatched field without its value.
 
 The hook keeps the release name and bounds its suffix to 63 characters. Both
