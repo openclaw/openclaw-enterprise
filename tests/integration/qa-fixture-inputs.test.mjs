@@ -22,7 +22,7 @@ import {
   protectedModelApiKey,
   registerQaSecret,
   redactQaError,
-} from "../helpers/qa-secrets.mjs";
+} from "../helpers/qa-secrets.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { registerQaCodexPolicyThreadCase } from "./qa-codex-policy-thread-case.ts";
 import { registerQaNativeToolEvidenceCase } from "./qa-native-tool-evidence-case.ts";
@@ -141,9 +141,21 @@ test(
   { timeout: 30_000 },
   async (t) => {
     const directory = await temporaryDirectory(t, "qa-report-");
-    const output = join(directory, "matrix.json");
+    const evidenceDirectory = join(directory, "qa-matrix-evidence");
+    await mkdir(evidenceDirectory);
+    const output = join(evidenceDirectory, "matrix.json");
+    const summary = join(directory, "summary.md");
+    const script = fileURLToPath(new URL("../../scripts/ci/qa-matrix-summary.ts", import.meta.url));
+    const secret = "synthetic-stage-secret-value";
+    const selection = [
+      {
+        cell: "compose/Codex",
+        scenarios: Array.from({ length: 20 }, (_, i) => `scenario-${i}`),
+        unselected: [],
+      },
+    ];
     const reportModule = new URL("../helpers/qa-report.mjs", import.meta.url).href;
-    const secretsModule = new URL("../helpers/qa-secrets.mjs", import.meta.url).href;
+    const secretsModule = new URL("../helpers/qa-secrets.ts", import.meta.url).href;
     // Exercise the real reporter under node:test, including failed subtests.
     // A shared writeFile without a serialized snapshot can lose concurrent rows
     // or leave a trailing fragment of the previous JSON document.
@@ -151,14 +163,16 @@ test(
     import test from 'node:test';
     import { createQaReport } from ${JSON.stringify(reportModule)};
     import { registerQaSecret } from ${JSON.stringify(secretsModule)};
-    // Real runs register fixture secrets, so redaction always has work to do.
-    registerQaSecret('synthetic-stage-secret-value');
-    const report = createQaReport(${JSON.stringify(output)}, { scope: 'full', concurrency: 4 });
+    const secret = ${JSON.stringify(secret)};
+    registerQaSecret(secret);
+    const report = createQaReport(${JSON.stringify(output)}, {
+      scope: 'full', concurrency: 4, selection: ${JSON.stringify(selection)},
+    });
     test('parallel report', { concurrency: 4 }, async (t) => {
       await Promise.all(Array.from({length: 20}, (_, i) =>
         report.stage(t, 'compose/Codex', 'stage-' + i, async () => {
           if (i === 2) throw new Error('blocked by unavailable test prerequisite');
-          if (i === 7) throw new Error('expected assertion failure');
+          if (i === 7) throw new Error('expected assertion failure for ' + secret);
           // A DOMException's message is getter-only; redaction must keep it.
           if (i === 11) throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
           if (i === 13) throw undefined;
@@ -167,7 +181,10 @@ test(
       await report.save();
     });
   `;
+    // Capture the child's own node:test output instead of forwarding its events.
+    const { NODE_TEST_CONTEXT: _context, ...env } = process.env;
     const child = spawn(process.execPath, ["--input-type=module", "-e", source], {
+      env,
       stdio: ["ignore", "pipe", "pipe"],
     });
     t.after(() => {
@@ -181,14 +198,16 @@ test(
         diagnostic += chunk;
       });
     }
-    const code = await new Promise((resolve, reject) => {
-      child.once("error", reject);
-      child.once("exit", resolve);
-    });
-    assert.equal(code, 1, diagnostic);
-    const report = JSON.parse(await readFile(output, "utf8"));
+    const [exitCode] = await once(child, "close");
+    assert.equal(exitCode, 1, diagnostic);
+    assert.match(diagnostic, /expected assertion failure for \[REDACTED\]/);
+    assert.ok(!diagnostic.includes(secret));
+    const snapshot = await readFile(output, "utf8");
+    assert.ok(!snapshot.includes(secret));
+    const report = JSON.parse(snapshot);
     assert.equal(report.scope, "full");
     assert.equal(report.concurrency, 4);
+    assert.deepEqual(report.selection, selection);
     assert.equal(report.outcomes.length, 20);
     assert.equal(new Set(report.outcomes.map((row) => row.scenario)).size, 20);
     for (let i = 0; i < 20; i += 1) {
@@ -206,9 +225,9 @@ test(
       assert.ok(Number.isInteger(row.durationMs) && row.durationMs >= 0);
     }
     assert.match(report.outcomes.find((row) => row.stage === "stage-2").reason, /blocked by/);
-    assert.match(
+    assert.equal(
       report.outcomes.find((row) => row.stage === "stage-7").reason,
-      /expected assertion/,
+      "expected assertion failure for [REDACTED]",
     );
     assert.equal(
       report.outcomes.find((row) => row.stage === "stage-11").reason,
@@ -216,7 +235,26 @@ test(
     );
     assert.equal(report.outcomes.find((row) => row.stage === "stage-13").reason, "undefined");
     assert.equal((await stat(output)).mode & 0o777, 0o600);
-    assert.deepEqual(await readdir(directory), ["matrix.json"]);
+    assert.deepEqual(await readdir(evidenceDirectory), ["matrix.json"]);
+
+    const result = spawnSync(process.execPath, [script], {
+      encoding: "utf8",
+      env: { RUNNER_TEMP: directory, GITHUB_STEP_SUMMARY: summary },
+      timeout: 5_000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    const markdown = await readFile(summary, "utf8");
+    assert.match(markdown, /Scope: full/);
+    const expectedRows = report.outcomes.map(
+      ({ cell, scenario, stage, outcome }) => `| ${cell} | ${scenario} | ${stage} | ${outcome} |`,
+    );
+    assert.deepEqual(
+      markdown
+        .split("\n")
+        .filter((line) => /^\| compose\/Codex \| scenario-\d+ \| stage-\d+ \|/u.test(line)),
+      expectedRows,
+    );
   },
 );
 
@@ -566,7 +604,7 @@ test("hosted QA materializes only selected credentials and rejects missing selec
 });
 
 test("QA command diagnostics retain the error while hiding generated and environment secrets", async (t) => {
-  const { qaCommandFailureDetail, registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  const { qaCommandFailureDetail, registerQaSecret } = await import("../helpers/qa-secrets.ts");
   registerQaSecret("generated-private-value");
   const output = qaCommandFailureDetail(
     "earlier detail\n".repeat(12) +
@@ -663,7 +701,7 @@ test("QA command diagnostics retain the error while hiding generated and environ
 test("a failed image build keeps its failed step's output as redacted QA evidence", async () => {
   const { imageBuildFailureOutput, recordImageBuildFailure } =
     await import("../helpers/qa-installation.mjs");
-  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.ts");
   registerQaSecret("build-private-value");
   // BuildKit's plain progress (finding 2020's shape): steps interleave, each line prefixed by
   // its step; the failed step's output is gone from the final summary's last lines.
@@ -748,7 +786,7 @@ test("a failed image build keeps its failed step's output as redacted QA evidenc
 // masked; a protected command records nothing.
 test("the QA command runner records a failed image build step as redacted evidence", async (t) => {
   const { runQaCommand } = await import("../helpers/qa-installation.mjs");
-  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.ts");
   const directory = await temporaryDirectory(t, "qa-run-evidence-");
   const artifacts = await mkdtemp(join(directory, "artifacts-"));
   registerQaSecret("registered-private-2025");
@@ -1075,7 +1113,7 @@ test("QA waits report the last observation when they time out", async () => {
 registerQaAgentLifecycleDiagnosticsCases();
 
 test("QA log redaction hides each line of a registered multi-line secret", async () => {
-  const { redactedQaTail, registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  const { redactedQaTail, registerQaSecret } = await import("../helpers/qa-secrets.ts");
   const body = ["MIIEfixtureLineOneAAAAAAAA", "fixtureLineTwoBBBBBBBBBBBB"];
   registerQaSecret(
     ["-----BEGIN PRIVATE KEY-----", ...body, "-----END PRIVATE KEY-----"].join("\n"),
@@ -1095,7 +1133,7 @@ test("QA log redaction hides each line of a registered multi-line secret", async
 
 test("QA log redaction hides JSON-escaped, base64 and percent-encoded copies of a registered secret", async () => {
   const { redactQaError, redactedQaTail, registerQaSecret } =
-    await import("../helpers/qa-secrets.mjs");
+    await import("../helpers/qa-secrets.ts");
   // Synthetic, with every character an encoding changes.
   const value = 'synthetic"qa\\value/<&>+= 2026';
   registerQaSecret(value);
@@ -1132,7 +1170,7 @@ test("QA log redaction hides JSON-escaped, base64 and percent-encoded copies of 
 
 test("QA error redaction keeps errors whose message cannot be written", async () => {
   const { inspect } = await import("node:util");
-  const { redactQaError, registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  const { redactQaError, registerQaSecret } = await import("../helpers/qa-secrets.ts");
   const value = "synthetic-qa-error-secret-2026";
   registerQaSecret(value);
 
@@ -1180,15 +1218,14 @@ test("QA error redaction keeps errors whose message cannot be written", async ()
 test("QA error redaction covers causes, AggregateError errors and command output", async () => {
   const { execFile } = await import("node:child_process");
   const { inspect, promisify } = await import("node:util");
-  const { qaSecretVariants, redactQaError, registerQaSecret } =
-    await import("../helpers/qa-secrets.mjs");
+  const { redactQaError, registerQaSecret } = await import("../helpers/qa-secrets.ts");
   const value = "synthetic-qa-nested-secret-2026";
   registerQaSecret(value);
   // Everything node:test prints, getters included, at any depth.
   const printed = (error) => inspect(error, { depth: Infinity, getters: true });
   const assertClean = (error) => {
     const text = printed(error);
-    for (const variant of [...qaSecretVariants(value), inspectedBytes(value)]) {
+    for (const variant of printedSecretForms(value)) {
       assert.ok(!text.includes(variant), `variant survived: ${text}`);
     }
   };
@@ -1433,10 +1470,9 @@ test(
   "node:test failure output carries no QA secret from nested error fields",
   { timeout: 60_000 },
   async (t) => {
-    const { qaSecretVariants } = await import("../helpers/qa-secrets.mjs");
     const value = "synthetic-qa-reporter-secret-2026";
     const directory = await temporaryDirectory(t, "qa-reporter-");
-    const secretsModule = new URL("../helpers/qa-secrets.mjs", import.meta.url).href;
+    const secretsModule = new URL("../helpers/qa-secrets.ts", import.meta.url).href;
     const file = join(directory, "redacted.test.mjs");
     await writeFile(
       file,
@@ -1484,21 +1520,22 @@ test(
     assert.match(output, /cmd: '.* \[REDACTED\]'/, output);
     assert.match(output, /detail: 'getter \[REDACTED\]'/, output);
     assert.match(output, /stdout: <Buffer 5b 52 45 44 41 43 54 45 44 5d>/, output);
-    for (const variant of [...qaSecretVariants(value), inspectedBytes(value)]) {
+    for (const variant of printedSecretForms(value)) {
       assert.ok(!output.includes(variant), `variant survived: ${output}`);
     }
   },
 );
 
-// How util.inspect prints the start of a Buffer holding `value`: hex bytes.
-function inspectedBytes(value) {
-  return [...Buffer.from(value).subarray(0, 12)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join(" ");
+// These reporter fixtures contain only URL-safe text. Check the raw text,
+// both base64 forms and the opening hex bytes printed by util.inspect.
+function printedSecretForms(value) {
+  const bytes = Buffer.from(value);
+  const inspectedBytes = bytes.subarray(0, 12).toString("hex").match(/../gu).join(" ");
+  return [value, bytes.toString("base64"), bytes.toString("base64url"), inspectedBytes];
 }
 
 test("QA log tails drop the body of an unregistered key that starts above the tail", async () => {
-  const { redactedQaTail } = await import("../helpers/qa-secrets.mjs");
+  const { redactedQaTail } = await import("../helpers/qa-secrets.ts");
   const lines = redactedQaTail(
     [
       "-----BEGIN OPENSSH PRIVATE KEY-----",

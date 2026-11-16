@@ -19,7 +19,7 @@ import {
   grantQaSecret,
   qaCommandFailureDetail,
   redactedQaTail,
-} from "./qa-secrets.mjs";
+} from "./qa-secrets.ts";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { maskPrivateKeyLines } from "../../scripts/ci/failure-redaction.ts";
 
