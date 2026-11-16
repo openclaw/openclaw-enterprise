@@ -11,7 +11,7 @@ import { OpenClawController, PostgresPlatformState } from "../../packages/occ/sr
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createDevelopmentComputeDriver } from "./development.mjs";
 import { authorizedPrincipal, createDevelopmentIAMState } from "./development-iam-state.ts";
-import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "./installation-driver-configuration.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";

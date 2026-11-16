@@ -1,5 +1,5 @@
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
-import { createCredentialProxyInstallationConfiguration } from "./installation-driver-configuration.mjs";
+import { createCredentialProxyInstallationConfiguration } from "./installation-driver-configuration.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
