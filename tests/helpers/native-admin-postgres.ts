@@ -5,11 +5,13 @@ import { createConnection, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import type { IncomingHttpHeaders } from "node:http";
 import type { TestContext } from "node:test";
-import type {
-  ComputeDriver,
-  PermissionAction,
-  ConfigurationDriver,
-  SecretDriver,
+import {
+  AgentResponse,
+  SecretResponse,
+  type ComputeDriver,
+  type PermissionAction,
+  type ConfigurationDriver,
+  type SecretDriver,
 } from "../../packages/contracts/src/index.ts";
 import { once } from "node:events";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
@@ -27,6 +29,7 @@ import {
   PostgresPlatformState,
   PostgresHumanAuthentication,
 } from "../../packages/occ/src/index.ts";
+import { createFixtureResponse } from "./console-fixture-response.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
@@ -37,11 +40,11 @@ import {
 } from "./bootstrap-installation.mjs";
 import { createHarnessConfiguration, withNativeAdminGateway } from "./harness-configuration.mjs";
 import { createReadyComputeDriver } from "./development.mjs";
-import { selfSigned } from "./certificates.mjs";
-import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
+import { selfSigned } from "./certificates.ts";
+import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
 import { fixtureOidcIssuer } from "./production-sign-in.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
-import { waitUntil } from "./wait-for.mjs";
+import { waitUntil } from "./wait-for.ts";
 
 type NativeApp = ReturnType<typeof createFastifyApp>;
 
@@ -279,6 +282,8 @@ export async function createApi(
     controller.registerDriver(driver);
     controller.selectDriver(driver.capability, driver.id);
   }
+  // This direct fixture performs trusted API initialization before admitting an Agent.
+  await controller.initializeSandboxNetworkPolicyCeiling();
   const app = createFastifyApp({
     controller,
     iamDriver,
@@ -393,8 +398,13 @@ export async function createNativeAgent(
       value: `test-key-${randomUUID()}`,
     },
   });
-  assert.equal(secretResponse.statusCode, 201, secretResponse.body);
-  const secret = secretResponse.json().data;
+  const fixtureResponse = createFixtureResponse(api.app.getSchemas());
+  const { data: secret } = fixtureResponse(
+    { status: secretResponse.statusCode, body: secretResponse.json<unknown>() },
+    201,
+    SecretResponse,
+    "create native admin harness Secret",
+  );
 
   const agentResponse = await inject(api.app, "POST", `/namespaces/${namespace.id}/agents`, {
     session,
@@ -405,8 +415,12 @@ export async function createNativeAgent(
       gatewayManagedMode: false,
     },
   });
-  assert.equal(agentResponse.statusCode, 201, agentResponse.body);
-  const agent = agentResponse.json().data;
+  const { data: agent } = fixtureResponse(
+    { status: agentResponse.statusCode, body: agentResponse.json<unknown>() },
+    201,
+    AgentResponse,
+    "create native admin Agent",
+  );
   const nativeOrigin = nativeOriginForAgent(
     api.controller.installation.id,
     namespace.id,

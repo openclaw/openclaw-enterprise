@@ -43,7 +43,7 @@ import {
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { registerAndSelectDrivers } from "../helpers/development.mjs";
-import { bindRole, permissionsFor } from "../helpers/iam-grants.mjs";
+import { bindRole, permissionsFor } from "../helpers/iam-grants.ts";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { agentPrincipalDenied } from "../helpers/refusal-text.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";

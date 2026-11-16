@@ -90,7 +90,6 @@ const scenarios = [
   // Asset preparation imports the shared schema through the controller's workspace
   // dependency graph, so its sources and dependency inputs affect both event types.
   ...[
-    "packages/contracts/src/workspace-defaults.mjs",
     "packages/contracts/src/workspace-defaults.ts",
     "packages/contracts/src/sandbox-policy.ts",
     "packages/contracts/src/configuration-definition.ts",

@@ -427,7 +427,7 @@ func TestK3dRegistryAttachmentOrdering(t *testing.T) {
 		"kubectl": `"--kubeconfig "*" --context k3d-` + cluster + ` get --raw=/version") ;;
 "create -f "*) while :; do :; done ;;`,
 		"helm": `"show chart "*) exit 45 ;;`,
-		"node": `"scripts/prepare-development-codex-seccomp.mjs "*) echo 'sandbox fixture refused' >&2; exit 42 ;;`,
+		"node": `"scripts/prepare-development-codex-seccomp.ts "*) echo 'sandbox fixture refused' >&2; exit 42 ;;`,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -464,7 +464,7 @@ func TestK3dRegistryAttachmentOrdering(t *testing.T) {
 		previous = i
 	}
 	// The probe and controller import overlap; a probe failure can cancel that pull.
-	if probe := index("node scripts/prepare-development-codex-seccomp.mjs "); probe < 0 || probe >= index("k3d cluster delete "+cluster) {
+	if probe := index("node scripts/prepare-development-codex-seccomp.ts "); probe < 0 || probe >= index("k3d cluster delete "+cluster) {
 		t.Fatal("the Codex sandbox probe was not attempted before rollback")
 	}
 	disconnect := index("docker network disconnect k3d-" + cluster + " " + registryTestContainer)

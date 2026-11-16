@@ -15,7 +15,7 @@ import {
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { bootstrapInstallation } from "../../scripts/bootstrap-installation.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const origin = "https://console.oce.localhost";
@@ -62,6 +62,7 @@ test(
   { ...requiresPostgres, timeout: 120_000 },
   async (context) => {
     assert.ok(databaseUrl);
+    const selectedDatabaseUrl = databaseUrl;
     const secret = randomBytes(32).toString("hex");
     const statePath = process.env.OPENCLAW_ENTERPRISE_CI_STATE;
     const directory = await mkdtemp(
@@ -128,16 +129,18 @@ test(
     let heldClient: pg.PoolClient | undefined;
     const requests: Promise<unknown>[] = [];
     try {
-      app = await composeProduction({
-        mode: "production",
-        host: "127.0.0.1",
-        databaseUrl,
-        authSecret: secret,
-        authBaseURL: origin,
-        nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
-        poolMax: 2,
-        drivers: await productionDrivers(),
-      });
+      const compose = async (): Promise<Awaited<ReturnType<typeof composeProduction>>> =>
+        composeProduction({
+          mode: "production",
+          host: "127.0.0.1",
+          databaseUrl: selectedDatabaseUrl,
+          authSecret: secret,
+          authBaseURL: origin,
+          nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
+          poolMax: 2,
+          drivers: await productionDrivers(),
+        });
+      app = await compose();
       assert.ok(applicationPool, "observe the genuine composition-owned pool");
       const pool = applicationPool;
       const server = app;
@@ -314,6 +317,31 @@ test(
       assert.equal((await send("GET")).statusCode, 200);
       assert.equal(readinessQueries, afterDisconnect + 1);
       assert.equal(pool.waitingCount, 0);
+
+      // The dedicated session is also a serving prerequisite. Real backend loss must
+      // fail both Kubernetes probes, and replacement composition must reacquire first.
+      const observer = new pg.Pool({ connectionString: databaseUrl, max: 1 });
+      try {
+        const owner = await observer.query(
+          "SELECT DISTINCT pid FROM pg_locks WHERE locktype='advisory' AND granted AND database=(SELECT oid FROM pg_database WHERE datname=current_database())",
+        );
+        assert.equal(owner.rowCount, 1, "only the startup session retains an advisory lock");
+        await observer.query("SELECT pg_terminate_backend($1)", [owner.rows[0].pid]);
+        for (const url of ["/readyz", "/healthz"]) {
+          const unavailable = await server.inject({ method: "GET", url });
+          assert.equal(unavailable.statusCode, 503, unavailable.body);
+          assert.equal(unavailable.json().error.code, "DEPENDENCY_UNAVAILABLE");
+        }
+        await app.close();
+        const replacement = await compose();
+        app = replacement;
+        for (const url of ["/readyz", "/healthz"]) {
+          const recovered = await replacement.inject({ method: "GET", url });
+          assert.equal(recovered.statusCode, 200, recovered.body);
+        }
+      } finally {
+        await observer.end();
+      }
     } finally {
       if (heldClient !== undefined) {
         await heldClient.query("ROLLBACK").catch(() => undefined);

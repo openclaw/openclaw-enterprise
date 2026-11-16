@@ -4,6 +4,11 @@ import { acquireInstallationCeilingStartup } from "./installation-ceiling-startu
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
+import {
+  CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
+  controlPlaneAuditDatabaseOptions,
+  postgresAgentAuditState,
+} from "./control-plane-audit.ts";
 import type { AuditEventFactory } from "@openclaw-enterprise/audit";
 import type { ComputeDriver, ConfigurationDriver } from "@openclaw-enterprise/contracts";
 import { NativeIAMDriver, validatePersistedNativeIAMState } from "@openclaw-enterprise/iam";
@@ -70,6 +75,7 @@ export interface PostgresDevelopmentConfig {
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
   readonly agentRuntimeLogsEnabled?: boolean;
+  readonly controlPlaneAuditEnabled?: boolean;
 }
 
 export type PostgresDevelopmentRuntimeOptions =
@@ -112,8 +118,10 @@ export async function composePostgresDevelopment(
     );
   }
 
+  const auditEnabled = config.controlPlaneAuditEnabled !== false;
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
+    ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
   });
 
   let ceilingStartup: Awaited<ReturnType<typeof acquireInstallationCeilingStartup>> | undefined;
@@ -128,6 +136,7 @@ export async function composePostgresDevelopment(
   try {
     const state = new PostgresPlatformState(pool, {
       preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
+      ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
     });
     const persistedInstallation = await state.loadInstallation();
     if (persistedInstallation === undefined) {
@@ -192,6 +201,7 @@ export async function composePostgresDevelopment(
           ceilingStartup?.assertCurrent(),
         namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,
+        ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
         ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
         ...(drivers?.pluginSourceReader === undefined
           ? {}
@@ -208,6 +218,7 @@ export async function composePostgresDevelopment(
     ceilingStartup = await acquireInstallationCeilingStartup(
       pool,
       controller,
+      state,
       drivers?.installation,
     );
     controller.registerDriver(iamDriver);
@@ -347,6 +358,9 @@ export async function composePostgresDevelopment(
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       resolveHarness: resolveApprovedHarness,
       auditSink: state.auditSink,
+      ...(auditEnabled
+        ? { durableRequestAuditSink: state.auditSink, agentAuditCursorSecret: config.authSecret }
+        : {}),
       ...(drivers === undefined
         ? {}
         : { backendSummaries: backendSummariesFromDefinitions(drivers.installation.backend) }),
@@ -375,9 +389,18 @@ export async function composePostgresDevelopment(
     drivers?.repositoryTransport?.connectRestartObservation?.(pool);
     await drivers?.preparedGitHub?.connect(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
-    app.get("/healthz", async () => ({ status: "ok" }));
+    if (ceilingStartup.seedIgnored) {
+      app.log.warn(
+        "The startup network policy ceiling is seed-only. Use Installation Settings to change the saved ceiling.",
+      );
+    }
+    app.get("/healthz", async () => {
+      await ceilingStartup!.assertCurrent();
+      return { status: "ok" };
+    });
     const checkDatabaseReadiness = createPostgresReadinessCheck(pool);
     app.get("/readyz", async () => {
+      await ceilingStartup!.assertCurrent();
       await checkDatabaseReadiness();
       return { status: "ready" };
     });

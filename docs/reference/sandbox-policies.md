@@ -97,6 +97,10 @@ Each PostgreSQL API instance reserves one pool connection for startup ownership;
 startup settings; conflicting live settings are refused. Stop existing API
 replicas before changing the management mode or startup-managed rules. See the [operator workflow](../guides/topics/agent-sandbox-policy.md#manage-installation-network-limits).
 
+Losing the startup session makes the instance unready and unhealthy. Kubernetes
+restarts it through its liveness probe; the restarted API reacquires ownership
+before becoming ready. Other deployments must restart the affected process.
+
 Each rule has `id`, an exact absolute `binary` path, a DNS `host`, and `ports`
 containing inclusive `{from,to}` ranges. For example, this startup seed permits
 future requests for one service:
@@ -146,6 +150,9 @@ application with its requester, operation ID, snapshot, and expected provider
 resource version. The worker rechecks authority, ownership, lifecycle, and the
 current ceiling before effects. It preserves defaults from the admitted revision.
 A concurrent provider update causes a conflict instead of an overwrite.
+OCC rejects a save that removes a pending application. After the worker records
+`applied` or `failed`, a save that advances the policy to its next version can
+clear the application record.
 
 `pending` means enforcement is unconfirmed. `applied` requires the provider's
 complete desired policy to match the admitted candidate and its active, loaded

@@ -11,7 +11,7 @@ import {
   newPage,
 } from "./console-agents-browser-helpers.ts";
 import { responseTo } from "./console-action-helpers.ts";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
 
 const path = "/installation/sandbox-network-policy-ceiling";
 const rule = {

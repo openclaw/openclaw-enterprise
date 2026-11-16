@@ -61,8 +61,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 2
           persist-credentials: false
-      - name: Set up scheduled admission runtime
-        if: github.event_name == 'schedule'
+      - name: Set up preflight runtime
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -72,7 +71,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           INPUT_LANE: ${{ inputs.lane }}
         run: |
-          node scripts/ci/full-integration-preflight.mjs
+          node scripts/ci/full-integration-preflight.ts
 
   execute:
     name: Execute

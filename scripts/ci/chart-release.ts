@@ -21,7 +21,7 @@ import {
   verifyCi,
   verifyEnvironment,
   verifyMainSource,
-} from "./container-release.mjs";
+} from "./container-release.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const digestPattern = /^sha256:[a-f0-9]{64}$/;

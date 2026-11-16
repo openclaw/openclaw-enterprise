@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { assertGatewayLogEntry } from "../helpers/runtime-image-startup.mjs";
+import { assertGatewayLogEntry } from "../helpers/runtime-image-startup.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;

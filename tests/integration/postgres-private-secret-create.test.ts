@@ -14,7 +14,7 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 const origin = "https://console.oce.localhost";
 const authSecret = "private-test-auth-" + randomUUID();
@@ -451,11 +451,12 @@ test(
   "OAuth registration and cleanup retain custody across unknown PostgreSQL commits",
   requiresPostgres,
   async (t) => {
-    assert.ok(databaseUrl);
+    const testDatabaseUrl = databaseUrl;
+    assert.ok(testDatabaseUrl);
     for (const phase of ["publication", "cleanup"] as const) {
       for (const mode of ["acknowledgement-lost", "not-forwarded"] as const) {
         await t.test(phase + "-" + mode, async (s) => {
-          const proxy = await commitAckProxy(databaseUrl);
+          const proxy = await commitAckProxy(testDatabaseUrl);
           let closed = false;
           const close = async () => {
             if (!closed) {

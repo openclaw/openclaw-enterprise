@@ -1,6 +1,6 @@
 ---
 created: 2026-10-15
-updated: "2026-11-13"
+updated: "2026-11-16"
 last_updated_session: "01a1cb1a-b03e-7380-9b34-1a7470a05f64"
 ---
 
@@ -50,40 +50,37 @@ Arrows trace source paths; provider verification has separate limits.
 ### 0. Initialize and manage the Installation ceiling
 
 `apps/controller/src/composition/installation-ceiling-startup.ts:acquireInstallationCeilingStartup`
-holds an API session lease. Matching startup settings allow replicas; conflicts
-refuse startup. Stop replicas before changing mode or startup-managed rules.
-Console seeds have no runtime authority. Operations check the lease; shutdown
-releases it. Restart after lease loss.
+commits rules, audit and startup fingerprint on the lease-owning PostgreSQL
+connection. Matching settings allow replicas; conflicts refuse startup.
+Readiness and liveness reject permanent lease loss, allowing Kubernetes to restart
+the replica. Stop replicas before changing startup-managed rules or mode.
 
 `packages/occ/src/index.ts:initializeSandboxNetworkPolicyCeiling` takes the
-exclusive ceiling lock, seeds version 1 once, or applies startup replacement.
-Initialization commits bootstrap attribution with the record; workers never seed state.
+exclusive lock and attributes initialization to the bootstrap identity.
+Composed controllers permit one attempt with the lease transaction.
+Memory callers initialize explicitly; workers never seed state.
 
 `apps/controller/src/console/network-policy-ceiling.mts:renderNetworkPolicyCeiling`
 retains drafts and requires server preview before an explicit save.
 
 `apps/controller/src/http/sandbox-policy.ts:sandboxPolicyHandlers` dispatches the
-Installation read, preview and save endpoints. Each requires exact-Installation `administer`.
-`updateInstallationSandboxNetworkPolicyCeiling` fences caller authority, authorizes
-and validates grants, locks the ceiling exclusively, rechecks authorization, mode
-and version, and commits rules with audit. Preview shares the guard and validator
-without writes.
-It invokes no Sandbox Driver or Agent reconciliation.
+Installation endpoints under exact-Installation `administer`.
+`updateInstallationSandboxNetworkPolicyCeiling` fences authority, validates grants,
+locks exclusively, rechecks mode and version, and commits rules with audit.
+Preview uses the same checks without writes or reconciliation.
 
-`packages/occ/src/state/postgres-state.ts` persists the record; memory mirrors it.
-Admission and worker application take a shared ceiling lock before Namespace and
-Agent locks, so admission after a committed update reads the new rules. Missing
-or invalid state fails explicitly. See the
+Admission and worker application explicitly use Read Committed, taking the shared
+ceiling lock before Namespace and Agent locks. They read committed updates;
+unrelated Stop and credential operations avoid this lock. Missing or invalid
+state fails explicitly. See the
 [ceiling contract](../reference/sandbox-policies.md#installation-ceiling).
 
 ### 1. Admit and persist desired additions
 
-`internal/occcli/agent_policy.go:agentPolicyCommand` declares JSON and YAML
-output for each policy subcommand. `internal/occcli/cli.go:validateOptions` selects JSON only when `--output` is
-omitted and refuses unsupported explicit formats before any request. It then
-prints the acknowledged result through
-`internal/occcli/output.go:printStructured`. A successful mutation therefore
-returns its result without a later table-format error.
+`internal/occcli/agent_policy.go:agentPolicyCommand` declares JSON and YAML outputs.
+`internal/occcli/cli.go:validateOptions` defaults omitted `--output` to JSON and
+rejects unsupported formats before requests. `internal/occcli/output.go:printStructured`
+prints the acknowledged result.
 
 `OpenClawController.discoverConfigurations` filters registry contributions by the
 server-selected Driver, scope, and resource-owner read authority. Installation
@@ -92,15 +89,14 @@ Agent discovery and policy GET
 use the same descriptor with owner-generated facet action URLs and current
 availability. The registry never selects a Driver from submitted additions.
 
-`validateAgentSandboxPolicy` authorizes the exact Agent and policy, checks the
-current editing flag, expected version, and pending application, then runs shared
-schema/semantic validation, the Driver contribution (which can only narrow it), and
-current ceiling/provider admission. An empty or reversed port range is never inside
-the ceiling. It returns a configuration result from the shared-lock transaction without
-writing policy or work. Schema and semantic refusals carry safe `error.details`; stale or
-unauthorized requests retain their resource errors. Every later mutation repeats
-these checks. Ceiling refusal keeps its Installation-delegation cause; unsupported
-wildcard/range refusal names the Driver capability limit. Both retain field details.
+`validateAgentSandboxPolicy` authorizes the exact Agent and policy, checks editing,
+version and pending work, then validates schema, semantics, narrowing Driver
+contributions and ceiling/provider admission. Empty or reversed port ranges fail.
+Preview returns a configuration result without writes; later mutations repeat
+these checks. Schema/semantic refusals carry safe `error.details`; stale or
+unauthorized requests retain resource errors. Ceiling refusal names Installation
+delegation; unsupported wildcard/range refusal names the Driver limit. Both retain
+field details.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 public detail
 records as escaped JSON and omits records with Unicode control characters, so
 CLI callers retain the same field and cause without terminal controls.
@@ -150,7 +146,11 @@ authorized editing operation changes this flag.
 `packages/occ/src/state/postgres-state.ts` performs versioned updates. Agent
 creation creates its one policy through a database trigger. Constraints enforce
 ownership, document shape, immutable application identity, version transitions,
-and application revision ownership. Agent deletion cascades policy removal and
+and application revision ownership. The in-memory adapter and the PostgreSQL
+update trigger reject saves that remove a pending application, including saves
+that keep the current policy version. The worker can record the expected provider
+resource version and set the same application to `applied` or `failed`.
+Agent deletion cascades policy removal and
 cleans its exact IAM access.
 
 ### 2. Freeze deployment or enqueue live application
@@ -271,7 +271,8 @@ the policy read, only the network policy card states it; the suggestions card is
 - Compare the application revision with the active Agent revision and inspect
   attributable audit evidence before retrying a stale or unconfirmed request.
 - [PostgreSQL admission integration](../../tests/integration/postgres-agent-sandbox-policy.test.mjs)
-  exercises HTTP/IAM/storage; the [OpenShell runtime lane](../../tests/helpers/openshell-sandbox-workflows.mjs)
+  exercises HTTP/IAM/storage, application-role refusal of pending application
+  removal, and worker settlement; the [OpenShell runtime lane](../../tests/helpers/openshell-sandbox-workflows.mjs)
   owns real enforcement proof. Storybook proves simulated presentation only.
 - [Console batch browser tests](../../tests/browser/console-policy-denials.test.ts)
   cover selection across pages, stable Follow, deduplication, preservation of saved
@@ -290,6 +291,10 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-16 11:31: Trace atomic startup ownership, lease-loss probes and scoped Read Committed admission. (01a1cb1a-b03e-7380-9b34-1a7470a05f64 - 4e08594acaf0bf68f53b1e6c6c88be94a4014589)
+
+- 2026-11-13 22:21: Reject policy saves that remove a pending application. (authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c - cf0370780b4e885e35ee463033b6926e5d3109ef)
 
 - 2026-11-13: Trace the Console’s single save-and-apply request and its atomic admission for a running Agent.
 

@@ -42,7 +42,14 @@ function closer(pool) {
   };
 }
 
-// Runs `work(pool)` on a short-lived pool, then closes it (see `closer`).
+/**
+ * Runs work on a short-lived pool, then closes it (see closer).
+ * @template T
+ * @param {string | undefined} url
+ * @param {(pool: import("pg").Pool) => Promise<T>} work
+ * @param {{max?: number}} [options]
+ * @returns {Promise<T>}
+ */
 export async function withPool(url, work, { max = 4 } = {}) {
   const pool = new pg.Pool({ connectionString: url, max });
   const close = closer(pool);

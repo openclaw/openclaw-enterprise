@@ -29,7 +29,7 @@ import {
   taggedView,
   viewTag,
 } from "./console-refocus-helpers.ts";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
 
 type Agent = Pick<AgentWire, "id" | "name" | "configurationId">;
 type Namespace = Pick<NamespaceWire, "id">;

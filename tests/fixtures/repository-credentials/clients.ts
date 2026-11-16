@@ -5,51 +5,16 @@ import { access, cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { TestContext } from "node:test";
 import type { JsonValue } from "../../../apps/controller/src/drivers/repo/access/json-value.ts";
-import type { CredentialServiceOwner } from "../../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
-import type {
-  RepositoryCredentialSessionResult,
-  ServiceConfig,
-} from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
+import type { RepositoryCredentialSessionResult } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import type { RuntimeRepositoryBinding } from "../../../apps/controller/src/drivers/repo/github/access/client/manifest.ts";
-import { appRoot, appExtension, appModule, credentialClientPath } from "./runtime.mjs";
-import { cleanEnvironment, run as runProcess, temporaryDirectory } from "./process.mjs";
+import { appRoot, appExtension, appModule, credentialClientPath } from "./runtime.ts";
+import { cleanEnvironment, run, temporaryDirectory } from "./process.ts";
 
 type NativeMaterialEntry = { repositoryRef: string; publicCa?: Uint8Array } & (
   | { opened: RepositoryCredentialSessionResult; clientDirectory?: never }
   | { opened?: never; clientDirectory: string }
 );
-export type CredentialClientFixture = {
-  clientDirectory: string;
-  opened: RepositoryCredentialSessionResult;
-  config: ServiceConfig;
-  tls: { ca: Buffer };
-  clock: { deadlines(): number[]; advance(milliseconds: number): Promise<void> };
-  service: Pick<CredentialServiceOwner, "close">;
-  git: {
-    bare: string;
-    trace: { method?: string; path: string; gitProtocol?: string | string[] }[];
-    ref(name: string): Promise<string>;
-    disconnectAfterNextAcceptedPush(): void;
-    holdNextFetch(options?: { beforeHeaders?: boolean }): {
-      observed: Promise<void>;
-      release(): void;
-    };
-  };
-  github: {
-    trace: { method?: string; target: string; tokenIndex?: number; userAgent?: string }[];
-    issuesOfTokens: { length: number };
-    authenticationAttempts: { length: number };
-    pulls: Map<
-      number,
-      { number: number; body: string; draft?: boolean; state: string; title: string }
-    >;
-    disconnectAfterMutation(method: string, target: string): void;
-  };
-};
-export type StartCredentialClientFixture = (
-  t: TestContext,
-  options?: Parameters<typeof import("./service.mjs").startCredentialServiceFixture>[1],
-) => Promise<CredentialClientFixture | undefined>;
+export type CredentialClientFixture = import("./service-fixture.ts").DefaultServiceFixture;
 type ClientCommandOptions = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -58,13 +23,6 @@ type ClientCommandOptions = {
   allowFailure?: boolean;
   signal?: AbortSignal;
 };
-export type ClientCommand = (
-  command: string,
-  args: string[],
-  options?: ClientCommandOptions,
-) => Promise<{ code: number | null; stdout: string; stderr: string }>;
-
-const run = runProcess as ClientCommand;
 
 // Source and delivered builds resolve the same module exports through different file paths.
 export async function loadRepositoryClientModule<Module extends object>(

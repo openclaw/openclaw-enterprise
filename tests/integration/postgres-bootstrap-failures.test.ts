@@ -26,7 +26,7 @@ import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import type { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { injectJson } from "../helpers/inject-json.mjs";
@@ -135,7 +135,7 @@ function isConfigurationDocument(value: unknown): value is OpenClawConfiguration
 
 const failureDatabaseUrl = process.env.OCC_BOOTSTRAP_FAILURE_DATABASE_URL;
 const commitAcknowledgementFaultFixture = fileURLToPath(
-  new URL("../fixtures/postgres-commit-ack-fault.mjs", import.meta.url),
+  new URL("../fixtures/postgres-commit-ack-fault.ts", import.meta.url),
 );
 const requiresFailurePostgres = {
   skip: failureDatabaseUrl

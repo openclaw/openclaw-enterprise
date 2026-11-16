@@ -15,9 +15,9 @@ import {
 import {
   seedSessionRevision,
   sessionAttempt,
-} from "../conformance/repository-sessions.contract.mjs";
+} from "../conformance/repository-sessions.contract.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 
 // The persisted OpenShell Git route (migration 0062) as the application role
 // writes it: identity and custody facts only, one holder named by a fence, a pending write
@@ -297,7 +297,7 @@ function retainedGitWithdrawal(removal: boolean) {
     const pool = testPool(t, { connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);
     const { repositoryCredentials } =
-      await import("../fixtures/repository-credentials/session-state.mjs");
+      await import("../fixtures/repository-credentials/session-state.ts");
     // The worker tests cross the real deadline. This store proof starts after expiry or
     // removes an admitted finite binding while its deadline is still in the future.
     const { revision } = await seedSessionRevision(
@@ -915,7 +915,7 @@ test(
     });
     const state = new PostgresPlatformState(pool);
     const { repositoryCredentials } =
-      await import("../fixtures/repository-credentials/session-state.mjs");
+      await import("../fixtures/repository-credentials/session-state.ts");
     const { revision } = await seedSessionRevision(
       state,
       repositoryCredentials({ deadlineWallMs: Date.now() - 1 }),

@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { protectedText, redactedQaTail } from "./qa-secrets.mjs";
+import { protectedText, redactedQaTail } from "./qa-secrets.ts";
 
 /** Run the real OpenShell workflow against explicitly prepared, disposable infrastructure. */
 export async function verifyQaSandboxPolicy(artifacts, scenario = "network-policy") {

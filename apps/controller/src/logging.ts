@@ -161,7 +161,7 @@ export function createOccLogger(options: OccLoggerOptions): OccLogger {
 }
 
 function safeString(value: string): string | undefined {
-  if (!SAFE_STRING.test(value) || resemblesToken(value)) {
+  if (!SAFE_STRING.test(value) || resemblesCredential(value)) {
     return undefined;
   }
   return value;

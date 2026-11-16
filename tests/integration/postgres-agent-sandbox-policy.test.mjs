@@ -1,10 +1,10 @@
-import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.mjs";
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
+import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-protocol.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
   InstalledDriver,
@@ -13,20 +13,20 @@ import {
   ResourceStateConflictError,
 } from "../../packages/occ/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
-import {
-  databaseUrl,
-  localMigratorDatabaseUrl,
-  requiresPostgres,
-} from "../helpers/postgres-database.mjs";
-import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
+import { localMigratorDatabaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { callerDenied, GRANT_EXCEEDS_CEILING } from "../helpers/refusal-text.mjs";
+import { registerSandboxPolicyWorkerRecovery } from "./postgres-agent-sandbox-policy-worker-recovery-cases.ts";
 
-async function createPolicyApp(t, recordOperations = false, { laxDriver = false } = {}) {
+async function createPolicyApp(
+  t,
+  recordOperations = false,
+  { laxDriver = false, poolOptions = {} } = {},
+) {
   const grant = {
     id: "python-demo",
     binary: "/usr/bin/python3.11",
@@ -71,7 +71,7 @@ async function createPolicyApp(t, recordOperations = false, { laxDriver = false 
       drivers: { sandbox: "policy-openshell", credential_gateway: "policy-credentials" },
       client: new OpenShellGateway(
         { serviceName: "openshell-gateway" },
-        { gatewayClient: openShellWorkspaceProtocol() },
+        { gatewayClient: completeOpenShellGatewayClient(openShellWorkspaceProtocol()) },
       ),
     },
   });
@@ -100,6 +100,7 @@ async function createPolicyApp(t, recordOperations = false, { laxDriver = false 
     };
   }
   const fixture = await createPostgresAgentApp(t, {
+    poolOptions,
     label: "sandbox-policy",
     authSecret: "sandbox-policy-postgres-session-secret-32-characters",
     sandboxDriver,
@@ -967,120 +968,7 @@ test(
   },
 );
 
-test(
-  "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it",
-  requiresPostgres,
-  async (t) => {
-    const { pool, state, inject, deployAgent, grant } = await createPolicyApp(t, true);
-    const { namespace, agent, revision } = await deployAgent("Interrupted policy recovery");
-    await state.transact(async (unit) => {
-      await unit.namespaces.lockNamespace(namespace.id);
-      await unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revision.id);
-    });
-    const queue = new PostgresWorkQueue(pool, { maxAttempts: 1, leaseDurationMs: 50 });
-    // Prior lifecycle work has completed; the active revision is the exact application target.
-    for (let claim = await queue.claim(); claim !== undefined; claim = await queue.claim()) {
-      await queue.complete(claim);
-    }
-    const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
-    assert.equal((await inject("PATCH", `${path}/editing`, { enabled: true })).statusCode, 200);
-    assert.equal(
-      (await inject("PUT", path, { expectedVersion: 1, additions: [grant] })).statusCode,
-      200,
-    );
-    const admitted = await inject("POST", `${path}/apply`, {
-      expectedVersion: 2,
-      revisionId: revision.id,
-    });
-    assert.equal(admitted.statusCode, 202, admitted.body);
-    // The pending application applies its snapshot of version 2: neither a save nor a second
-    // application may replace that policy until it finishes.
-    for (const [method, url, body, message] of [
-      [
-        "PUT",
-        path,
-        { expectedVersion: 2, additions: [] },
-        "The policy changed or an application is still pending. Reload before editing.",
-      ],
-      [
-        "POST",
-        `${path}/apply`,
-        { expectedVersion: 2, revisionId: revision.id },
-        "A policy application is already pending.",
-      ],
-    ]) {
-      const refused = await inject(method, url, body);
-      assert.equal(refused.statusCode, 409, refused.body);
-      assert.equal(refused.json().error.message, message);
-    }
-    const claim = await queue.claim();
-    assert.equal(claim.agentTarget, "sandbox_policy");
-    await expireWorkLease(pool, claim.idempotencyKey);
-
-    const blocker = await pool.connect();
-    await blocker.query("BEGIN");
-    await blocker.query("SELECT id FROM occ.sandbox_policies WHERE agent_id=$1 FOR UPDATE", [
-      agent.id,
-    ]);
-    const workers = [];
-    const start = async () => {
-      const name = `policy-recovery-${randomUUID()}`;
-      const worker = createControllerWorker({
-        pool: new pg.Pool({ connectionString: databaseUrl, application_name: name }),
-        computeDriver: createDevelopmentComputeDriver(),
-        maxAttempts: 1,
-        pollIntervalMs: 30_000,
-        emit() {},
-      });
-      workers.push(worker);
-      await worker.start();
-      return { worker, name };
-    };
-    try {
-      const interrupted = await start();
-      // Hold finalization after the terminal queue UPDATE. Terminating that real PostgreSQL
-      // session simulates losing the worker between writes, without replacing queue behavior.
-      const pid = await waitFor("policy finalization blocked after queue recovery", async () => {
-        const result = await pool.query(
-          "SELECT pid FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock' AND query LIKE '%sandbox_policies%'",
-          [interrupted.name],
-        );
-        return result.rows[0]?.pid;
-      });
-      await pool.query("SELECT pg_terminate_backend($1)", [pid]);
-      await interrupted.worker.stop();
-      assert.equal(
-        (await queue.findWork(claim.idempotencyKey)).state,
-        "claimed",
-        "the interrupted transaction must preserve recoverable work",
-      );
-      assert.equal((await inject("GET", path)).json().data.policy.application.state, "pending");
-      await blocker.query("ROLLBACK");
-
-      const recovered = await start();
-      await waitFor("restarted worker finalizes abandoned application", async () => {
-        const policy = (await inject("GET", path)).json().data.policy;
-        return policy.application.state === "failed" ? policy : undefined;
-      });
-      await recovered.worker.stop();
-      assert.equal((await queue.findWork(claim.idempotencyKey)).state, "failed_permanent");
-      const audit = await pool.query(
-        "SELECT actor_id FROM occ.audit_events WHERE action='openclaw.agents.sandbox_policy.application' AND resource_id=$1",
-        [admitted.json().data.id],
-      );
-      assert.equal(audit.rowCount, 1, "terminal recovery emits one attributable policy failure");
-      assert.equal(audit.rows[0].actor_id, claim.actorId);
-      const next = await inject("PUT", path, { expectedVersion: 2, additions: [] });
-      assert.equal(next.statusCode, 200, next.body);
-    } finally {
-      await blocker.query("ROLLBACK");
-      blocker.release();
-      for (const worker of workers) {
-        await worker.stop();
-      }
-    }
-  },
-);
+registerSandboxPolicyWorkerRecovery(createPolicyApp);
 
 test(
   "a looser Driver contribution cannot widen the shared grant rules or the ceiling",
@@ -1304,8 +1192,15 @@ test(
   "worker rechecks saved ceiling after admission and fails closed on lost state",
   requiresPostgres,
   async (t) => {
-    const fixture = await createPolicyApp(t, true);
+    const fixture = await createPolicyApp(t, true, {
+      poolOptions: { options: "-c default_transaction_isolation=repeatable\\ read" },
+    });
     const { pool, state, inject, deployAgent, grant, sandboxDriver } = fixture;
+    assert.equal(
+      (await pool.query("SHOW default_transaction_isolation")).rows[0]
+        .default_transaction_isolation,
+      "repeatable read",
+    );
     const migrator = new pg.Pool({
       connectionString: localMigratorDatabaseUrl(fixture.databaseUrl),
       max: 1,
@@ -1329,6 +1224,7 @@ test(
         ).json().data.success,
         true,
       );
+      const independent = await deployAgent("Stop independent of policy admission");
       const locked = Promise.withResolvers();
       const replace = Promise.withResolvers();
       const update = fixture.controller.transact(async (unit) => {
@@ -1344,18 +1240,48 @@ test(
       });
       await locked.promise;
       let admission;
+      let stop;
+      let stopped;
       try {
         admission = inject("PUT", path, { expectedVersion: 1, additions: [grant] });
         // Observe PostgreSQL waiting on the shared admission lock, before any Namespace/Agent lock.
         await waitFor("Agent admission waits for the ceiling owner transaction", async () => {
           const waiting = await pool.query(
-            "SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%pg_advisory_xact_lock_shared%' LIMIT 1",
+            "SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%pg_advisory_xact_lock_shared%' LIMIT 1",
           );
           return waiting.rowCount === 1 ? true : undefined;
         });
+        // Stopping a different Namespace does not admit policy. It must complete while
+        // the Installation write and policy-dependent save are still waiting.
+        stop = inject(
+          "POST",
+          `/namespaces/${independent.namespace.id}/agents/${independent.agent.id}/stop`,
+        ).then((response) => {
+          stopped = response;
+          return response;
+        });
+        const independentResult = await waitFor(
+          "stop completes without the ceiling queue",
+          async () => {
+            if (stopped !== undefined) {
+              return stopped;
+            }
+            const waiting = await pool.query(
+              "SELECT count(*)::integer AS count FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%pg_advisory_xact_lock_shared%'",
+            );
+            return waiting.rows[0].count >= 2 ? "blocked" : undefined;
+          },
+        );
+        assert.notEqual(
+          independentResult,
+          "blocked",
+          "unrelated stop must not acquire the ceiling lock",
+        );
+        assert.equal(independentResult.statusCode, 202, independentResult.body);
       } finally {
         replace.resolve();
         await update;
+        await stop;
       }
       const response = await admission;
       assert.equal(response.statusCode, 409, response.body);
@@ -1402,13 +1328,27 @@ test(
             ? "SANDBOX_POLICY_CEILING_CHANGED"
             : "SANDBOX_POLICY_CEILING_UNAVAILABLE";
         let blocker;
+        let ownerUpdate;
+        const replace = Promise.withResolvers();
         let removed;
         let worker;
         try {
           if (scenario === "tightened") {
-            await saveCeiling([]);
+            const locked = Promise.withResolvers();
+            ownerUpdate = fixture.controller.transact(async (unit) => {
+              await unit.installations.holdSandboxNetworkPolicyCeiling("exclusive");
+              locked.resolve();
+              await replace.promise;
+              const previous = await unit.installations.getSandboxNetworkPolicyCeiling();
+              await fixture.controller.updateInstallationSandboxNetworkPolicyCeiling(
+                fixture.principal.id,
+                previous.version,
+                [],
+              );
+            });
+            await locked.promise;
           } else {
-            // Keep the worker alive but hold the admission lock until persisted state is removed.
+            // Keep the worker alive but hold admission until persisted state is removed.
             blocker = await pool.connect();
             await blocker.query("BEGIN");
             await blocker.query(
@@ -1417,7 +1357,10 @@ test(
           }
           const computeDriver = fixture.computeDriver;
           worker = createControllerWorker({
-            pool: new pg.Pool({ connectionString: fixture.databaseUrl }),
+            pool: new pg.Pool({
+              connectionString: fixture.databaseUrl,
+              options: "-c default_transaction_isolation=repeatable\\ read",
+            }),
             drivers: {
               installation: {
                 drivers: {
@@ -1442,6 +1385,17 @@ test(
             emit() {},
           });
           await worker.start();
+          await waitFor("worker heartbeat precedes its blocked ceiling recheck", async () => {
+            const waiting = await pool.query(
+              "SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%pg_advisory_xact_lock_shared%' LIMIT 1",
+            );
+            return waiting.rowCount === 1 ? true : undefined;
+          });
+          if (ownerUpdate !== undefined) {
+            replace.resolve();
+            await ownerUpdate;
+          }
+
           if (blocker !== undefined) {
             removed = (
               await migrator.query(
@@ -1461,6 +1415,14 @@ test(
             const application = result.rows[0]?.document.application;
             return application?.state === "failed" ? application : undefined;
           }).then((application) => assert.equal(application.reason, expected));
+          // A committed tightening or missing owner state is a permanent first-pass
+          // refusal. A stale snapshot must not contact the provider and retry first.
+          const refusedWork = await pool.query(
+            "SELECT attempt_count, reason_code FROM occ.controller_work WHERE namespace_id=$1 AND agent_target='sandbox_policy'",
+            [namespace.id],
+          );
+          assert.deepEqual(refusedWork.rows, [{ attempt_count: 1, reason_code: expected }]);
+
           const current = await state.read((view) => view.agents.findAgent(namespace.id, agent.id));
           assert.equal(
             current.activeRevisionId,
@@ -1476,6 +1438,8 @@ test(
             revision.sandboxPolicy,
           );
         } finally {
+          replace.resolve();
+          await ownerUpdate;
           if (blocker !== undefined) {
             await blocker.query("ROLLBACK");
             blocker.release();

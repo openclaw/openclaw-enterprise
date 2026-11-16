@@ -1148,7 +1148,7 @@ export interface PlatformOperationReadRepository {
 }
 
 export interface PlatformOperationRepository extends PlatformOperationReadRepository {
-  append(operation: PlatformOperation): Promise<void>;
+  append(operation: PlatformOperation, requestId?: string): Promise<void>;
   /**
    * Requeue the exact deleting Agent's terminal teardown initiated by
    * `initiatingActorId`, assigning it to `actorId` (the same actor for a plain
@@ -1226,7 +1226,10 @@ export interface PlatformUnitOfWork extends PlatformReadView {
 
 export interface PlatformStateStore {
   read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T>;
-  transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T>;
+  transact<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+    options?: { readonly isolationLevel: "read committed" },
+  ): Promise<T>;
 }
 
 export interface TransactionalAuditWriter {
@@ -3295,7 +3298,8 @@ function repositories(
         (policy.version === existing.version &&
           !isDeepStrictEqual(policy.additions, existing.additions)) ||
         (policy.version !== existing.version &&
-          (previousApplication?.state === "pending" || application !== undefined))
+          (previousApplication?.state === "pending" || application !== undefined)) ||
+        (previousApplication?.state === "pending" && application === undefined)
       ) {
         throw new ScopeViolationError("Invalid SandboxPolicy version transition.");
       }

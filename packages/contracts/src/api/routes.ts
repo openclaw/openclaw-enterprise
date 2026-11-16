@@ -17,6 +17,7 @@ import {
   SandboxPolicyRecommendationsResponse,
 } from "./sandbox-policy.ts";
 import { Type } from "typebox";
+import { AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
 import {
   ConnectionStartResponse,
   SavedConnectionListResponse,
@@ -1961,6 +1962,22 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       response: { 200: AgentReadResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "listAgentAuditEvents",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/audit-events",
+    action: "openclaw.audit.agent.read",
+    iamAction: "read_audit",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "List audit metadata for one Agent",
+    tags: ["Agents"],
+    schema: {
+      params: AgentParams,
+      querystring: AgentAuditQuery,
+      response: { 200: AgentAuditResponse, ...readErrors, 501: ErrorResponseRef },
     },
   },
   {

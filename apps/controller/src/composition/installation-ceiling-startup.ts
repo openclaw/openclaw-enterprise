@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import type { OpenClawController, PostgresPool } from "@openclaw-enterprise/occ";
+import {
+  DependencyUnavailableError,
+  type OpenClawController,
+  type PostgresPool,
+  type PostgresPlatformState,
+} from "@openclaw-enterprise/occ";
 import type { InstallationStartupConfiguration } from "./installation-config.ts";
 
 const gate = "occ.installation.ceiling-startup-ownership";
@@ -9,6 +14,7 @@ const live = "occ.installation.ceiling-startup-live";
 export async function acquireInstallationCeilingStartup(
   pool: PostgresPool,
   controller: OpenClawController,
+  state: PostgresPlatformState,
   configuration:
     | Pick<
         InstallationStartupConfiguration,
@@ -19,6 +25,7 @@ export async function acquireInstallationCeilingStartup(
   const client = await pool.connect();
   let lost = false;
   let released = false;
+  let checking: Promise<void> | undefined;
   const onError = () => {
     lost = true;
   };
@@ -49,6 +56,7 @@ export async function acquireInstallationCeilingStartup(
       return;
     }
     released = true;
+    await checking?.catch(() => undefined);
     try {
       // A lost backend has already released its session locks. Querying it during close
       // would mask an earlier failure; discard it instead. A loss during unlock is the
@@ -70,49 +78,74 @@ export async function acquireInstallationCeilingStartup(
     }
   };
   try {
-    await client.query("BEGIN");
-    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [gate]);
-    const result = await client.query(
-      "SELECT startup_configuration FROM occ.installation_network_policy_ceiling WHERE installation_id = $1",
-      [controller.installation.id],
-    );
-    const same =
-      (result.rows[0] as { startup_configuration?: string } | undefined)?.startup_configuration ===
-      fingerprint;
-    const locked = await client.query(
-      same
-        ? "SELECT pg_try_advisory_lock_shared(hashtextextended($1, 0)) AS locked"
-        : "SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked",
-      [live],
-    );
-    if ((locked.rows[0] as { locked?: boolean } | undefined)?.locked !== true) {
-      throw new Error(
-        "Conflicting Installation ceiling startup configuration. Stop existing API replicas before changing the startup management mode or rules.",
+    const initialized = await state.transactOnConnection(client, async (unit) => {
+      await state.queryInTransaction(
+        unit,
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [gate],
       );
-    }
-    await controller.initializeSandboxNetworkPolicyCeiling();
-    await client.query(
-      "UPDATE occ.installation_network_policy_ceiling SET startup_configuration = $2 WHERE installation_id = $1",
-      [controller.installation.id, fingerprint],
-    );
-    if (!same) {
-      // The startup gate prevents another API from entering between exclusive and shared holds.
-      await client.query("SELECT pg_advisory_lock_shared(hashtextextended($1, 0))", [live]);
-      await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [live]);
-    }
-    await client.query("COMMIT");
+      const result = await state.queryInTransaction(
+        unit,
+        "SELECT startup_configuration FROM occ.installation_network_policy_ceiling WHERE installation_id = $1",
+        [controller.installation.id],
+      );
+      const same =
+        (result.rows[0] as { startup_configuration?: string } | undefined)
+          ?.startup_configuration === fingerprint;
+      const locked = await state.queryInTransaction(
+        unit,
+        same
+          ? "SELECT pg_try_advisory_lock_shared(hashtextextended($1, 0)) AS locked"
+          : "SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked",
+        [live],
+      );
+      if ((locked.rows[0] as { locked?: boolean } | undefined)?.locked !== true) {
+        throw new Error(
+          "Conflicting Installation ceiling startup configuration. Stop existing API replicas before changing the startup management mode or rules.",
+        );
+      }
+      const initialized = await controller.initializeSandboxNetworkPolicyCeiling(undefined, unit);
+      await state.queryInTransaction(
+        unit,
+        "UPDATE occ.installation_network_policy_ceiling SET startup_configuration = $2 WHERE installation_id = $1",
+        [controller.installation.id, fingerprint],
+      );
+      if (!same) {
+        // The startup gate prevents another API from entering between exclusive and shared holds.
+        await state.queryInTransaction(
+          unit,
+          "SELECT pg_advisory_lock_shared(hashtextextended($1, 0))",
+          [live],
+        );
+        await state.queryInTransaction(unit, "SELECT pg_advisory_unlock(hashtextextended($1, 0))", [
+          live,
+        ]);
+      }
+      return initialized;
+    });
     return {
+      seedIgnored: initialized.seedIgnored,
       async assertCurrent() {
         if (lost || released) {
-          throw new Error(
+          throw new DependencyUnavailableError(
             "Installation ceiling startup ownership was lost. Restart this API instance.",
           );
         }
-        try {
-          await client.query("SELECT 1");
-        } catch {
-          lost = true;
-          throw new Error(
+        checking ??= client
+          .query("SELECT 1")
+          .then(() => undefined)
+          .catch(() => {
+            lost = true;
+            throw new DependencyUnavailableError(
+              "Installation ceiling startup ownership was lost. Restart this API instance.",
+            );
+          })
+          .finally(() => {
+            checking = undefined;
+          });
+        await checking;
+        if (lost || released) {
+          throw new DependencyUnavailableError(
             "Installation ceiling startup ownership was lost. Restart this API instance.",
           );
         }
@@ -120,9 +153,9 @@ export async function acquireInstallationCeilingStartup(
       close: unlock,
     };
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => {
-      lost = true;
-    });
+    // Failed or uncertain startup never returns this dedicated session to the pool.
+    // Destroying it also releases any session locks acquired before the failure.
+    lost = true;
     await unlock().catch(() => undefined);
     throw error;
   }

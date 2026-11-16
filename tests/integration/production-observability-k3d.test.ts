@@ -1,35 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  decodeOtlpLogs,
-  type ReadObservabilityLogs,
-} from "../helpers/production-observability-collector.ts";
+import { decodeOtlpLogs } from "../helpers/production-observability-collector.ts";
 import {
   installObservabilityControlPlane,
   observabilitySelection,
-} from "../helpers/production-observability-k3d.mjs";
-import {
-  verifyInstalledWorkerRestarts,
-  type InstalledWorkerFixture,
-} from "../helpers/worker-termination-installed.ts";
-
-type Fixture = InstalledWorkerFixture & {
-  foreign: string;
-  selectors: Record<string, unknown>;
-  kubernetes: { resources: (kind: string, namespace: string) => Promise<unknown> };
-  scrape: (pod: string, namespace: string, url: string) => Promise<unknown>;
-  request: (
-    method: string,
-    path: string,
-    body?: undefined,
-    authenticated?: boolean,
-  ) => Promise<unknown>;
-  api: (method: string, path: string) => Promise<unknown>;
-  node: (pod: string, namespace: string, script: string) => Promise<string>;
-  upgrade: (patch: Record<string, unknown>) => Promise<void>;
-  installLogReceiver: () => Promise<ReadObservabilityLogs>;
-  pods: (component: string) => Promise<unknown>;
-};
+} from "../helpers/production-observability-k3d.ts";
+import { verifyInstalledWorkerRestarts } from "../helpers/worker-termination-installed.ts";
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -50,39 +26,6 @@ function string(value: unknown): string {
   return value;
 }
 
-function fixture(value: unknown): asserts value is Fixture {
-  const f = object(value);
-  for (const key of ["system", "monitoring", "foreign", "directory", "release"]) {
-    string(f[key]);
-  }
-  for (const secret of array(f.secrets)) {
-    string(secret);
-  }
-  object(f.selectors);
-  const selection = object(f.selection);
-  string(selection.kubeconfigPath);
-  string(selection.kubernetesContext);
-  assert.equal(typeof object(f.kubernetes).resources, "function");
-  for (const key of [
-    "metadata",
-    "apply",
-    "get",
-    "scrape",
-    "request",
-    "api",
-    "currentPod",
-    "node",
-    "kubectl",
-    "upgrade",
-    "installLogReceiver",
-    "waitFor",
-    "pods",
-    "record",
-  ]) {
-    assert.equal(typeof f[key], "function");
-  }
-}
-
 type LogAttributes = ReturnType<typeof decodeOtlpLogs>[number]["attributes"];
 
 const attributes = (entries: LogAttributes) =>
@@ -92,12 +35,11 @@ test(
   "Helm defaults expose private OCC metrics and operational logs through real collection",
   observabilitySelection,
   async (t) => {
-    const f: unknown = await installObservabilityControlPlane(t);
-    fixture(f);
+    const f = await installObservabilityControlPlane(t);
     const assertScrapes = async (checks: [string, string, string, number][]) => {
       const results = await Promise.allSettled(
         checks.map(async ([pod, namespace, url, status]) => {
-          assert.equal(object(await f.scrape(pod, namespace, url)).status, status);
+          assert.equal((await f.scrape(pod, namespace, url)).status, status);
         }),
       );
       // Finish every bounded probe before a failure triggers namespace cleanup.
@@ -108,7 +50,7 @@ test(
         }
       }
     };
-    const unauthenticated = object(await f.request("GET", "/installation", undefined, false));
+    const unauthenticated = await f.request("GET", "/installation", undefined, false);
     try {
       assert.equal(unauthenticated.status, 401);
     } catch (error) {
@@ -146,10 +88,10 @@ test(
     }
     await assertScrapes(listeners.map((url) => ["scraper", f.monitoring, url, 0]));
     await f.upgrade({ metrics: { ...f.selectors } });
-    const request = object(await f.request("GET", "/installation"));
+    const request = await f.request("GET", "/installation");
     assert.ok(request.requestId);
     for (const url of listeners) {
-      const metrics = object(await f.scrape("scraper", f.monitoring, url));
+      const metrics = await f.scrape("scraper", f.monitoring, url);
       assert.equal(metrics.status, 200);
       assert.match(string(metrics.text), /occ_process_start_time_seconds\{[^\n]+\} [0-9.]+/);
       if (url === listeners[0]) {
@@ -169,7 +111,7 @@ test(
     f.record("Default metrics listeners and paired scraper NetworkPolicies verified with raw HTTP");
 
     const readLogs = await f.installLogReceiver();
-    const fresh = object(await f.request("GET", "/installation"));
+    const fresh = await f.request("GET", "/installation");
     assert.ok(fresh.requestId);
     // Inspect actual OTLP exports from the shipped chart Collector. Neither a
     // query backend nor a synthetic log emission stands in for OCC here.
@@ -213,13 +155,11 @@ test(
         "OTLP export contains a credential",
       );
     }
-    for (const pod of array(await f.pods("collector"))) {
-      const metrics = object(
-        await f.scrape(
-          "scraper",
-          f.monitoring,
-          `http://${string(object(object(pod).status).podIP)}:8888/metrics`,
-        ),
+    for (const pod of await f.pods("collector")) {
+      const metrics = await f.scrape(
+        "scraper",
+        f.monitoring,
+        `http://${string(object(object(pod).status).podIP)}:8888/metrics`,
       );
       assert.equal(metrics.status, 200);
       assert.match(string(metrics.text), /otelcol_exporter_sent_log_records/);
@@ -233,8 +173,7 @@ test(
   "worker observer retains two real restartable-init worker exits",
   observabilitySelection,
   async (t) => {
-    const f: unknown = await installObservabilityControlPlane(t, { nativeRepository: true });
-    fixture(f);
+    const f = await installObservabilityControlPlane(t, { nativeRepository: true });
     const readLogs = await f.installLogReceiver();
     await verifyInstalledWorkerRestarts(f, readLogs, "restartable-init");
     assert.ok(object(await f.api("GET", "/installation")).id);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
-import { waitFor } from "./wait-for.mjs";
+import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
+import { waitFor } from "./wait-for.ts";
 
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const requiresPostgres = {
@@ -19,7 +19,7 @@ async function setup(context) {
     { createTestConfigurationDriver },
     { createInstallationDriverConfiguration },
     { createTestSecretDriver },
-    { createDevelopmentIAMState },
+    { authorizedPrincipal, createDevelopmentIAMState },
   ] = await Promise.all([
     import("pg"),
     import("../../apps/controller/src/worker.ts"),
@@ -28,9 +28,9 @@ async function setup(context) {
     import("../../apps/controller/src/composition/production-harness.ts"),
     import("../../packages/occ/src/index.ts"),
     import("../helpers/configuration-driver.ts"),
-    import("../helpers/installation-driver-configuration.mjs"),
+    import("../helpers/installation-driver-configuration.ts"),
     import("../helpers/secret-driver.mjs"),
-    import("../helpers/development-iam-state.mjs"),
+    import("../helpers/development-iam-state.ts"),
   ]);
 
   const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
@@ -68,35 +68,11 @@ async function setup(context) {
     await state.transact((unit) => unit.installations.createInstallation(installation));
   }
 
-  const iam = await state.loadNativeIAMState();
-  const deployRoles = new Set(
-    iam.roles
-      .filter(({ permissions }) =>
-        [
-          ["deploy", "agent"],
-          ["read", "configuration"],
-          ["operate", "secret"],
-        ].every(([action, resourceKind]) =>
-          permissions.some(
-            (permission) =>
-              permission.action === action && permission.resourceKind === resourceKind,
-          ),
-        ),
-      )
-      .map(({ id }) => id),
-  );
-  const actor = iam.identities.find(
-    ({ id, kind }) =>
-      kind === "principal" &&
-      iam.bindings.some(
-        (binding) =>
-          binding.subjectKind === "identity" &&
-          binding.subjectId === id &&
-          binding.namespaceId === undefined &&
-          binding.resourceKind === undefined &&
-          deployRoles.has(binding.roleId),
-      ),
-  );
+  const actor = authorizedPrincipal(await state.loadNativeIAMState(), [
+    ["deploy", "agent"],
+    ["read", "configuration"],
+    ["operate", "secret"],
+  ]);
   assert.ok(actor, "persisted IAM must contain an unrestricted Agent-deploy Principal");
   // This fixture performs trusted initialization before a worker, which never seeds itself.
   if (

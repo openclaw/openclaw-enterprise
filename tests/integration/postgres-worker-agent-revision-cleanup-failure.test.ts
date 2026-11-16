@@ -11,8 +11,8 @@ import {
   SandboxRevisionUnsupportedError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
-import { withFailedCleanup } from "../helpers/compute-cleanup-failure.mjs";
-import { jsonLineDestination } from "../helpers/json-lines.mjs";
+import { withFailedCleanup } from "../helpers/compute-cleanup-failure.ts";
+import { jsonLineDestination, requireLogRecord } from "../helpers/json-lines.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { completedPasses, completion } from "../helpers/postgres-worker-revision-support.mjs";
 
@@ -46,7 +46,7 @@ interface WorkerEvent {
 /** The worker's raw events, and the log lines its sanitizing emitter writes for them. */
 function capturedLogs() {
   const events: WorkerEvent[] = [];
-  const lines: WorkerEvent[] = [];
+  const lines: unknown[] = [];
   const logged = createWorkerLogEmitter(
     createOccLogger({
       component: "occ-worker",
@@ -162,9 +162,12 @@ revisionTest(
         scenario.label,
       );
       // The operator's log keeps the failed cleanup too.
-      const line = logs.lines.find(
-        (entry) => entry.event === "worker.completed" && entry.revisionId === scenario.candidate.id,
-      );
+      const line = logs.lines
+        .map(requireLogRecord)
+        .find(
+          (entry) =>
+            entry.event === "worker.completed" && entry.revisionId === scenario.candidate.id,
+        );
       assert.equal(line?.cleanupCause, "Error", scenario.label);
     }
   },

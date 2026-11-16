@@ -179,6 +179,38 @@ These checks do not close the runtime, media or independent-review gaps above.
 No Driver contract or default runtime image changed. Real runtime qualification,
 reviewable native media attachments and final CI remain delivery requirements.
 
+## Review follow-up, 2026-11-16
+
+Main at `591cb4463` owns migrations 0077 and 0078. The ceiling migration and
+snapshot now use 0079; its SQL bytes are unchanged. Main's migration receipts,
+catalogs and restore aliases remain intact. The full logical-restore scenario
+passes on PostgreSQL 18.6, including canonical and Provider archives, upgrades
+from prefixes 51 and 74–78, and refusal of altered history or grants.
+
+Review requires one startup attempt, with rules, audit and fingerprint committed
+on the lease-owning connection; readiness and liveness must reject lost ownership. Admission and
+queued application must explicitly use Read Committed, and unrelated lifecycle
+operations must avoid the ceiling lock. The owning regressions and current
+[flow](../../docs/flows/agent-sandbox-policy.md) track these repairs.
+
+The owner and Agent PostgreSQL suites pass 58/58 without skips. The production
+bootstrap/readiness case passes separately on a fresh migrated database,
+including lease termination and recovery through recomposition. The affected
+API/lifecycle suite passes 271/271 and the ceiling browser suite passes 5/5.
+Both provisioning handoff/Stop orderings pass. The native-admin PostgreSQL
+deployment/proxy case also passes after explicit fixture initialization; its
+pre-fix run failed because the persisted ceiling was missing.
+Bounded comparisons against the earlier behavior reproduce stale HTTP admission,
+an extra worker attempt under Repeatable Read, a blocked unrelated Stop, startup
+writes surviving lease loss, and healthy probes after that loss.
+
+The exploratory merged-source conformance run passed 3,667 of 3,674 tests.
+Four credential-fixture cases could not find OpenSSL on their restricted executable
+path; three found an older GitHub CLI than their required version. These local
+prerequisite failures do not establish a passing suite. Hosted verification,
+external review disclosure approval, live runtime qualification and native media
+attachments remain required.
+
 ## Manual Notes
 
 ## Changelog

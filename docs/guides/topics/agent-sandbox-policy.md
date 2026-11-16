@@ -113,6 +113,10 @@ Restarting with only a different seed does not replace them. See the
 [ceiling reference](../../reference/sandbox-policies.md#installation-ceiling)
 for the configuration contract.
 
+If an API instance loses its startup database session, its health and readiness
+checks fail. Wait for the Kubernetes liveness restart, or restart that process
+when using another supervisor. Confirm readiness before retrying the request.
+
 ## CLI
 
 Use the same Namespace and authenticated OCC context as other Agent commands:
