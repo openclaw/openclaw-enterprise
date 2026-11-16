@@ -81,6 +81,14 @@ export function containerEnv(container: Record<string, unknown>) {
   return renderedRecords(container.env, "container environment entry");
 }
 
+function workspaceSetupSecret(objects: DeployTransport["objects"]) {
+  const secret = [...objects.values()].find(
+    (object) => object.kind === "Secret" && typeof asRecord(object.data)?.setupCode === "string",
+  );
+  assert.ok(secret, "expected the workspace node setup Secret");
+  return secret;
+}
+
 function patchAnnotations(body: unknown) {
   return renderedRecord(
     renderedRecord(renderedRecord(body, "Pod patch").metadata, "Pod patch metadata").annotations,
@@ -118,7 +126,6 @@ export async function checkStartupPluginInitialization(
 ) {
   const {
     state,
-    driver,
     revision,
     namespace,
     gatewayName,
@@ -132,38 +139,8 @@ export async function checkStartupPluginInitialization(
     markReady,
   } = createFixture();
   assert.equal((await prepare()).ready, false);
-  // The first Harness template already carries the node wiring. The setup code
-  // is not in its environment: one optional Secret item is mounted read-only,
-  // so the Harness starts before the Secret exists.
-  assert.deepEqual(
-    harnessNodeSetup(
-      renderedRecord(read("Deployment", agentName).spec, "Harness Deployment spec").template,
-    ),
-    {
-      environment: [
-        {
-          name: "OPENCLAW_NODE_SETUP_PATH",
-          value: "/run/openclaw-node-setup/setup-code",
-          valueFrom: undefined,
-        },
-      ],
-      volume: {
-        name: "openclaw-node-setup",
-        secret: {
-          secretName: driver["workspaceNodeName"](revision),
-          optional: true,
-          // Kubelet grants fsGroup read on Secret files, so 0400 would act as 0440.
-          defaultMode: 0o440,
-          items: [{ key: "setupCode", path: "setup-code" }],
-        },
-      },
-      mount: {
-        name: "openclaw-node-setup",
-        mountPath: "/run/openclaw-node-setup",
-        readOnly: true,
-      },
-      command: [...RUNTIME_WRAPPER_COMMAND],
-    },
+  const initialNodeSetup = harnessNodeSetup(
+    renderedRecord(read("Deployment", agentName).spec, "Harness Deployment spec").template,
   );
   // The node is named after the Agent, not after the revision's Pod (D85).
   assert.equal(
@@ -266,7 +243,35 @@ export async function checkStartupPluginInitialization(
     })),
     [{ name: "agent-pod", target: namespace, annotations: ["openclaw.dev/workspace-node-setup"] }],
   );
-  const nodeSecretName = driver["workspaceNodeName"](revision);
+  const nodeSecretName = workspaceSetupSecret(objects).metadata.name;
+  // The first Harness template already carries the node wiring. The setup code
+  // is not in its environment: one optional Secret item is mounted read-only,
+  // so the Harness starts before the Secret exists.
+  assert.deepEqual(initialNodeSetup, {
+    environment: [
+      {
+        name: "OPENCLAW_NODE_SETUP_PATH",
+        value: "/run/openclaw-node-setup/setup-code",
+        valueFrom: undefined,
+      },
+    ],
+    volume: {
+      name: "openclaw-node-setup",
+      secret: {
+        secretName: nodeSecretName,
+        optional: true,
+        // Kubelet grants fsGroup read on Secret files, so 0400 would act as 0440.
+        defaultMode: 0o440,
+        items: [{ key: "setupCode", path: "setup-code" }],
+      },
+    },
+    mount: {
+      name: "openclaw-node-setup",
+      mountPath: "/run/openclaw-node-setup",
+      readOnly: true,
+    },
+    command: [...RUNTIME_WRAPPER_COMMAND],
+  });
   assert.deepEqual(
     Object.keys(
       renderedRecord(read("Secret", nodeSecretName).data, "workspace node Secret data"),
@@ -383,35 +388,17 @@ export async function checkStartupPluginInitialization(
 // env-era setupCode in its Secret. The upgrade removes the leftover code without
 // a new setup, and a Harness Pod that is gone (404) does not fail the pass.
 export async function checkUpgradeRemovesSetupCode(createFixture: DedicatedDeployFixtureFactory) {
-  const {
-    state,
-    driver,
-    revision,
-    namespace,
-    clients,
-    read,
-    save,
-    prepare,
-    markReady,
-    agentName,
-    gatewayName,
-  } = createFixture();
-  const nodeName = driver["workspaceNodeName"](revision);
+  const { state, clients, read, save, prepare, markReady, agentName, gatewayName } =
+    createFixture();
+  // Start the upgrade with an existing Agent-owned Secret carrying the old setup code.
+  const previous = createFixture({ clock: { now: 0 } });
+  await prepareAndMarkWorkloadsReady(previous);
+  assert.equal((await previous.prepare()).ready, false);
+  const secret = workspaceSetupSecret(previous.objects);
+  const nodeName = secret.metadata.name;
   const encode = (value: string) => Buffer.from(value, "utf8").toString("base64");
-  const manifest = driver["manifest"](
-    "v1",
-    "Secret",
-    nodeName,
-    driver["workspaceNodeOwnership"](revision),
-    {
-      name: namespace,
-      plane: "execution",
-    },
-  );
   save({
-    ...manifest,
-    type: "Opaque",
-    metadata: { ...manifest.metadata, uid: "node-uid", resourceVersion: "1" },
+    ...secret,
     data: {
       deviceId: encode("node-1"),
       setupCode: encode("env-era-code"),
@@ -473,7 +460,7 @@ export async function checkUpgradeRemovesSetupCode(createFixture: DedicatedDeplo
 // A node that has not paired within the pass's wait leaves the pass pending; the
 // wait starts only once the setup exists and the Gateway is ready.
 export async function checkInitialPairingWait(createFixture: DedicatedDeployFixtureFactory) {
-  const { state, driver, gatewayName, agentName, objects, prepare, markReady } = createFixture();
+  const { state, gatewayName, agentName, objects, prepare, markReady } = createFixture();
   assert.equal((await prepare()).ready, false);
   markReady(agentName);
   assert.equal((await prepare()).ready, false);
@@ -481,8 +468,8 @@ export async function checkInitialPairingWait(createFixture: DedicatedDeployFixt
   markReady(gatewayName);
   const started = Date.now();
   assert.equal((await prepare()).ready, false);
-  assert.ok(Date.now() - started >= driver["workspaceNodePairingWaitMs"]);
-  assert.deepEqual(state.observeWaits, [driver["workspaceNodePairingWaitMs"]]);
+  assert.deepEqual(state.observeWaits, [60]);
+  assert.ok(Date.now() - started >= 60);
   assert.equal(
     [...objects.values()].some(
       (object) => object.kind === "ConfigMap" && object.metadata.name.endsWith("-workspace-node"),
@@ -502,8 +489,7 @@ export async function checkBoundedPairingAcrossPasses(
 ) {
   const clock: { now: number } = { now: 0 };
   const fixture = createFixture({ clock });
-  const { state, driver, prepare } = fixture;
-  assert.equal(driver["workspaceNodePairingWaitMs"], 8_000);
+  const { state, prepare } = fixture;
   await prepareAndMarkWorkloadsReady(fixture);
   const passTimes: number[] = [];
   for (let pass = 0; pass < 6; pass++) {
