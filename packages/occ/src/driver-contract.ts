@@ -148,6 +148,8 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
           "isRouteBlockedError",
         ].every((name) => typeof asRecord(candidate.repositoryAccess)?.[name] === "function")) &&
       (candidate.harnessHome === undefined || absolutePosixPath(candidate.harnessHome)) &&
+      (candidate.harnessTransportCredential === undefined ||
+        candidate.harnessTransportCredential === "verifier") &&
       (candidate.validateWorkspaceSetup === undefined ||
         typeof candidate.validateWorkspaceSetup === "function") &&
       (candidate.configureAgent === undefined || typeof candidate.configureAgent === "function") &&

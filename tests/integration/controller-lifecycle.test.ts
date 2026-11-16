@@ -447,6 +447,24 @@ test("the controller selects explicitly registered Sandbox Drivers with closed f
       DriverSelectionError,
     );
   }
+  // A provider-owned Harness may request verifier-only transport delivery and nothing else.
+  controller.registerDriver(
+    Object.assign(createSandboxDriver({ id: "verifier-transport" }), {
+      harnessTransportCredential: "verifier",
+    }),
+  );
+  for (const harnessTransportCredential of ["secret", "", 1]) {
+    assert.throws(
+      () =>
+        controller.registerDriver(
+          Object.assign(
+            createSandboxDriver({ id: `invalid-transport-${String(harnessTransportCredential)}` }),
+            { harnessTransportCredential },
+          ),
+        ),
+      DriverSelectionError,
+    );
+  }
   for (const hook of ["validateWorkspaceSetup", "ensureNamespace", "provisionHarness", "cleanup"]) {
     assert.throws(
       () =>
