@@ -35,8 +35,10 @@ node scripts/strands-fast.ts --repeat 5 --serial
 
 The summary reports each sample, median and nearest-rank p90, plus total time
 including executable fingerprinting and setup. Repetitions stop on the first
-failed sample. Interrupting stops additional work and lets current tests finish
-their owned cleanup; it does not immediately kill the native process's owner.
+failed sample. An interrupt sent only to the fast runner stops additional work
+and lets current tests finish. A terminal interrupt can also reach the child CI
+runners and stop tests before cleanup finishes. Inspect the original process
+and result files before retrying an interrupted run.
 
 For only the native rehearsal:
 
@@ -58,7 +60,9 @@ inputs and runtime failures fail the case. No PostgreSQL or Kubernetes setup
 is required.
 
 Require one passing case for the native lane, or six for the fast harness, zero
-skips, successful cleanup, and all four rehearsal check records:
+skips, and successful cleanup. The rehearsal asserts four observations. The CI
+runner does not retain those individual diagnostics on a passing run; use the
+direct native rehearsal command above to see them:
 
 1. `model-before`: the native process finishes a model turn and persists the reply.
 2. `git-fetched`: a fresh commit arrives through the real sender and matches the
