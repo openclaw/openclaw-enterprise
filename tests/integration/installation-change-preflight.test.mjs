@@ -12,7 +12,7 @@ import {
   chartTooling,
   parseProductionChart,
   renderProductionChart,
-} from "../helpers/production-chart.mjs";
+} from "../helpers/production-chart.ts";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import {
   chartListeners,

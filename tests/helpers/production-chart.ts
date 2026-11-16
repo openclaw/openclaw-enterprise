@@ -4,6 +4,20 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+export type ChartValues = Readonly<Record<string, string | number | boolean | null>>;
+
+export type ChartRenderOptions = {
+  release?: string;
+  chartDirectory?: string;
+  namespace?: string;
+  isUpgrade?: boolean;
+  valuesFiles?: readonly string[];
+  omit?: readonly string[];
+  strings?: ChartValues;
+};
+
+type ChartRenderResult = Readonly<{ stdout: string; stderr: string }>;
+
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const helm = process.env.OCC_HELM_BIN ?? "helm";
@@ -55,9 +69,12 @@ export const productionCollectorValues = {
 // `helm template` without a cluster is deterministic (the chart uses no random or time
 // functions, and `lookup` finds nothing), so equal arguments and values-file contents give
 // the same result. Many cases render the same values more than once; they share one render.
-const renders = new Map();
+const renders = new Map<string, Promise<ChartRenderResult>>();
 
-export async function renderProductionChart(overrides = {}, options = {}) {
+export async function renderProductionChart(
+  overrides: ChartValues = {},
+  options: ChartRenderOptions = {},
+): Promise<ChartRenderResult> {
   const args = [
     "template",
     options.release ?? "oce",
@@ -82,7 +99,7 @@ export async function renderProductionChart(overrides = {}, options = {}) {
   for (const [key, value] of Object.entries(options.strings ?? {})) {
     args.push("--set-string", `${key}=${value}`);
   }
-  let key;
+  let key: string | undefined;
   try {
     key = JSON.stringify([
       args,
@@ -110,7 +127,12 @@ export async function renderProductionChart(overrides = {}, options = {}) {
  * `values.yaml` (`output.directory`), then `extraValueFiles`, then `extraArgs`. Returns the
  * manifests; a refused render throws execFileSync's error, with Helm's stderr.
  */
-export function helmTemplate(output, extraValueFiles = [], releaseName = "oce", extraArgs = []) {
+export function helmTemplate(
+  output: { directory: string },
+  extraValueFiles: readonly string[] = [],
+  releaseName = "oce",
+  extraArgs: readonly string[] = [],
+): string {
   return execFileSync(
     helm,
     [
@@ -134,24 +156,30 @@ export function helmTemplate(output, extraValueFiles = [], releaseName = "oce", 
   );
 }
 
-export async function parseProductionChart(manifests) {
-  const parsed = await new Promise((resolve, reject) => {
+export async function parseProductionChart(manifests: string): Promise<unknown[]> {
+  const parsed = await new Promise<string>((resolve, reject: (error: unknown) => void) => {
     const child = execFile(
       "yq",
       ["eval-all", "-o=json", "-I=0", ".", "-"],
-      { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
+      { cwd: repository, env: goToolEnvironment(), encoding: "utf8", maxBuffer: 2_000_000 },
       (error, stdout) => (error ? reject(error) : resolve(stdout)),
     );
-    child.stdin.end(manifests);
+    child.stdin?.end(manifests);
   });
-  return parsed.trim().split("\n").map(JSON.parse);
+  return parsed
+    .trim()
+    .split("\n")
+    .map((line) => {
+      const document: unknown = JSON.parse(line);
+      return document;
+    });
 }
 
 /**
  * `helm template` of the openclaw-execution chart with the routing values it requires, then
  * `extraArgs` (such as "--set", "dns.namespace=true"). A refused render rejects with Helm's stderr.
  */
-export function renderExecutionChart(...extraArgs) {
+export function renderExecutionChart(...extraArgs: string[]): Promise<ChartRenderResult> {
   return execute(
     helm,
     [

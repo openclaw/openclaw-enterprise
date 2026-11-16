@@ -17,7 +17,7 @@ import {
   parseProductionChart,
   productionCollectorValues,
   renderProductionChart,
-} from "./production-chart.mjs";
+} from "./production-chart.ts";
 import { createDriver, fixtureComputeConfiguration } from "./kubernetes-compute-real.mjs";
 import { createProductionNetworkProbe } from "./production-network-probe.ts";
 
