@@ -20,7 +20,7 @@ import {
   qaCommandFailureDetail,
   redactedQaTail,
 } from "./qa-secrets.ts";
-import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import { maskPrivateKeyLines } from "../../scripts/ci/failure-redaction.ts";
 
 function execute(command, args, options) {

@@ -5,7 +5,7 @@ import { parseUnambiguousJson } from "../../apps/controller/src/drivers/json-mem
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.ts";
-import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
+import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
 import { requestHead } from "../fixtures/repository-credentials/request-head.ts";
 
 import type { RequestHead } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";

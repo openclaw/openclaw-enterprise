@@ -303,9 +303,7 @@ test(
     const prior = f.revision as AgentRevision;
     const { namespaceId, agentId } = prior;
     const providerWrites = () =>
-      f.gh.trace
-        .filter((r: { method: string }) => r.method === "POST" || r.method === "DELETE")
-        .map((r: { method: string }) => r.method);
+      f.gh.trace.filter((r) => r.method === "POST" || r.method === "DELETE").map((r) => r.method);
     await f.owner.maintain();
     assert.deepEqual(providerWrites(), ["POST"]);
     const repositoryRef = "team-install";
@@ -435,7 +433,7 @@ test(
       "only then may the narrow issuer mint again",
     );
     assert.deepEqual(
-      f.gh.issuesOfTokens.map((i: { repositoryIds: number[] | "installation" }) => i.repositoryIds),
+      f.gh.issuesOfTokens.map((i) => i.repositoryIds),
       [
         [Number(f.binding.grant.repositoryId)],
         "installation",

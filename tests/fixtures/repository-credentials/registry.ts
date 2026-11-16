@@ -1,18 +1,19 @@
 import { join } from "node:path";
 import { createControlledClock } from "./clock.mjs";
-import { serviceConfigurationData } from "./builders.mjs";
+import type { Clock } from "../../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import type {
+  ServiceConfig,
+  ServiceLimits,
+} from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
+import { appFunction } from "./app-functions.ts";
+import { validateFixtureServiceConfiguration } from "./service-fixture.ts";
 import { createTlsMaterial } from "./process.mjs";
-import { createResourceScope } from "./resources.mjs";
+import { createResourceScope, type FixtureOwner } from "./resources.ts";
 import { socketDirectory } from "../../helpers/socket-directory.mjs";
-import {
-  credentialDriverModule,
-  githubProviderModule,
-  credentialCompositionModule,
-} from "./runtime.mjs";
-import { writeSessionClientConfiguration } from "./service-resources.mjs";
-import { createRegistryMaterial } from "./registry/material.ts";
+import { writeSessionClientConfiguration } from "./service-resources.ts";
+import { createRegistryMaterial, type RegistryFixtureDefinition } from "./registry/material.ts";
 import { startRegistryProviderFixtures } from "./registry/provider.ts";
-import { createRegistryServiceOwner } from "./registry/service.mjs";
+import { createRegistryServiceOwner } from "./registry/service.ts";
 
 export const defaultRegistryRepositories = Object.freeze([
   Object.freeze({
@@ -27,7 +28,45 @@ export const defaultRegistryRepositories = Object.freeze([
   }),
 ]);
 
-export async function startRegistryCredentialServiceFixture(t, options = {}) {
+type ControlledClock = ReturnType<typeof createControlledClock>;
+type RegistryOptions<C extends Clock> = {
+  clock?: C | undefined;
+  tls?: Awaited<ReturnType<typeof createTlsMaterial>>;
+  namespaceId?: string;
+  backendId?: string;
+  durationSeconds?: number;
+  maximumDurationSeconds?: number;
+  profile?: string;
+  repositories?: readonly RegistryFixtureDefinition[];
+  limits?: Partial<ServiceLimits>;
+  gateway?: Partial<ServiceConfig["gateway"]>;
+  socketPath?: string;
+  autoOpen?: boolean;
+};
+type OpenOptions = { profile?: string; durationSeconds?: number; deadlineWallMs?: number };
+
+type RegistryFixture<C extends Clock> = Awaited<ReturnType<typeof startRegistry<C>>> & { clock: C };
+
+export function startRegistryCredentialServiceFixture(
+  t: FixtureOwner,
+  options?: RegistryOptions<Clock> & { clock?: undefined },
+): Promise<RegistryFixture<ControlledClock>>;
+export function startRegistryCredentialServiceFixture<C extends Clock>(
+  t: FixtureOwner,
+  options: RegistryOptions<C> & { clock: C },
+): Promise<RegistryFixture<C>>;
+export function startRegistryCredentialServiceFixture(
+  t: FixtureOwner,
+  options: RegistryOptions<Clock>,
+): Promise<RegistryFixture<Clock>>;
+export function startRegistryCredentialServiceFixture(
+  t: FixtureOwner,
+  options: RegistryOptions<Clock> = {},
+) {
+  return startRegistry(t, options);
+}
+
+async function startRegistry<C extends Clock>(t: FixtureOwner, options: RegistryOptions<C>) {
   const resources = createResourceScope();
   try {
     const clock = options.clock ?? createControlledClock();
@@ -45,40 +84,32 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
       maximumDurationSeconds,
     });
     const [
-      { validateServiceConfig },
-      { loadGitHubRepositoryRegistry },
-      { resolveGitHubRepositoryBinding },
-      { createPreparedGitHubRegistryFactory },
+      validateServiceConfig,
+      loadGitHubRepositoryRegistry,
+      resolveGitHubRepositoryBinding,
+      createPreparedGitHubRegistryFactory,
     ] = await Promise.all([
-      credentialDriverModule("configuration"),
-      credentialCompositionModule("registry"),
-      githubProviderModule("registry"),
-      githubProviderModule("warm-registry-factory"),
+      appFunction("drivers/repo/access/configuration", "validateServiceConfig"),
+      appFunction("composition/repository-credentials/registry", "loadGitHubRepositoryRegistry"),
+      appFunction("drivers/repo/github/access/registry", "resolveGitHubRepositoryBinding"),
+      appFunction(
+        "drivers/repo/github/access/warm-registry-factory",
+        "createPreparedGitHubRegistryFactory",
+      ),
     ]);
     const controlDirectory = await socketDirectory(resources, "rcs-control-");
-    const configured = validateServiceConfig(
-      serviceConfigurationData({
-        gateway: {
-          publicOrigin: "https://credentials.example.test",
-          listen: "0.0.0.0:443",
-          controlSocket: join(controlDirectory, "control.sock"),
-        },
-        sessionPolicy: { maximumDurationSeconds },
-        limits: options.limits,
-      }),
+    const config = validateFixtureServiceConfiguration(
+      validateServiceConfig,
+      controlDirectory,
+      { sessionPolicy: { maximumDurationSeconds }, limits: options.limits },
+      options.gateway,
     );
-    // Test listeners can ask the kernel for a port without relaxing production
-    // configuration validation, as in the standalone service fixture.
-    const config =
-      options.gateway === undefined
-        ? configured
-        : { ...configured, gateway: { ...configured.gateway, ...options.gateway } };
     const { repositories, apiOrigin, gitOrigin } = await startRegistryProviderFixtures(resources, {
       definitions,
       clock,
       tls,
     });
-    const owner = createRegistryServiceOwner(resources, {
+    const owner = await createRegistryServiceOwner(resources, {
       loadGitHubRepositoryRegistry,
       createPreparedGitHubRegistryFactory,
       registryFile,
@@ -90,7 +121,6 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
       apiOrigin,
       gitOrigin,
     });
-    await owner.start();
     const byRef = new Map(repositories.map((entry) => [entry.repositoryRef, entry]));
     const fixture = {
       clock,
@@ -113,7 +143,7 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
       get listeners() {
         return owner.listeners;
       },
-      async open(repositoryRef, overrides = {}) {
+      async open(repositoryRef: string, overrides: OpenOptions = {}) {
         const entry = byRef.get(repositoryRef);
         if (!entry) {
           throw new Error("unknown fixture repository");
@@ -162,5 +192,6 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
     return fixture;
   } catch (error) {
     await resources.close(error);
+    throw error;
   }
 }

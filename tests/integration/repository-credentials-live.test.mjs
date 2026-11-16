@@ -5,7 +5,7 @@ import { readFile, chmod, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { credentialDriverModule } from "../fixtures/repository-credentials/runtime.mjs";
-import { runPinnedClients } from "../fixtures/repository-credentials/clients.mjs";
+import { runPinnedClients } from "../fixtures/repository-credentials/clients.ts";
 import { removeRemoteBranches } from "../fixtures/repository-credentials/workflows.ts";
 import {
   closeAndDispose,

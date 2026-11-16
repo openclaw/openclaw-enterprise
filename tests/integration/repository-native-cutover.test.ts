@@ -37,7 +37,7 @@ import {
 import {
   serviceConfigurationData,
   githubTokenConfigurationData,
-} from "../fixtures/repository-credentials/builders.mjs";
+} from "../fixtures/repository-credentials/builders.ts";
 
 async function fixture(t: TestContext) {
   const directory = await socketDirectory(t, "native-cutover-");

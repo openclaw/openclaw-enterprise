@@ -11,6 +11,32 @@ export {
   humanText,
 } from "./metadata.mjs";
 
+/**
+ * @typedef {import("./repository-resources.mjs").RepositoryOptions} RepositoryOptions
+ * @typedef {{token: string, expires_at: string, permissions: Record<string, string>,
+ *   repository_selection: string, repositories: ReturnType<typeof createRepositoryResources>["repo"][]}} TokenPacket
+ * @typedef {{status: number, body: unknown}} IssueResponse
+ * @typedef {() => void | Promise<void>} Gate
+ * @typedef {RepositoryOptions & {
+ *   clock: {wallNow(): number},
+ *   expectedRepositoryIds?: readonly (number | string)[],
+ *   additionalRepositories?: readonly RepositoryOptions[],
+ *   keyPair?: ReturnType<typeof sharedRsaKeyPair>,
+ *   tokenLifetimeMs?: number | ((index: number) => number),
+ *   tokenResponse?: (packet: TokenPacket) => unknown,
+ *   additionalPermissions?: readonly Readonly<Record<string, string>>[],
+ *   installationAccess?: boolean, encodeIssueResponse?: (body: unknown) => string | Buffer,
+ *   beforeIssue?: Gate | undefined, beforeIssueResponse?: Gate, issueResponseGate?: Gate, revokeResponseGate?: Gate,
+ *   beforeMetadataResponse?: ((exchange: {request: import("node:http").IncomingMessage,
+ *     response: import("node:http").ServerResponse}) => void | Promise<void>) | undefined,
+ *   issueResponse?: (reply: IssueResponse) => IssueResponse,
+ *   draftResponse?: (body: Record<string, unknown>) => unknown,
+ *   metadataResponse?: (body: ReturnType<typeof createRepositoryResources>["repo"]) => unknown,
+ *   revokeStatus?: number, issueStatus?: number
+ * }} GitHubProtocolOptions
+ */
+
+/** @param {GitHubProtocolOptions} options */
 export function createGitHubProtocol({
   clock,
   repository = fixtureRepository,
@@ -54,7 +80,15 @@ export function createGitHubProtocol({
     resources,
     ...additionalRepositories.map((entry) => createRepositoryResources(entry)),
   ];
+  /** @type {{
+   * method: string | undefined, target: string | undefined, userAgent: string | undefined,
+   * apiVersion: string | string[] | undefined, graphQLFeatures: string | string[] | undefined,
+   * accept: string | undefined, tokenIndex: number | undefined,
+   * query?: unknown, variables?: unknown,
+   * operation?: "createPullRequest" | "query", forwardedOperationId?: boolean, usedBearer?: boolean
+   * }[]} */
   const trace = [];
+  /** @type {string[]} */
   const errors = [];
   let disconnectMutation;
   function disconnect(request, response, url) {
@@ -223,7 +257,13 @@ export function createGitHubProtocol({
       }
     } catch (error) {
       // Keep failure evidence safe: assertion values may include signing input.
-      errors.push(error.name);
+      try {
+        const name = error instanceof Error ? error.name : undefined;
+        errors.push(typeof name === "string" ? name : "Error");
+      } catch {
+        // A callback can throw an Error whose name accessor also throws.
+        errors.push("Error");
+      }
       response.destroy();
     }
   };
@@ -243,17 +283,21 @@ export function createGitHubProtocol({
     authorizeRepository: authority.authorizeRepository,
     acceptStatic: authority.acceptStatic,
     tokenState: authority.tokenState,
+    /** @param {number} status */
     setRevokeStatus(status) {
       revokeStatus = status;
     },
     /**
      * Answer issue requests with this status and no token (201 issues again), or with this
      * raw body in place of minting.
+     * @param {number} status
+     * @param {string} [body]
      */
     setIssueStatus(status, body = undefined) {
       issueStatus = status;
       issueBody = body;
     },
+    /** @param {string} method @param {string} target */
     disconnectAfterMutation(method, target) {
       disconnectMutation = `${method} ${target}`;
     },

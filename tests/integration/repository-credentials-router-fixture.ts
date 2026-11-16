@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import type { RepositoryCredentialClientConfiguration } from "../../apps/controller/src/drivers/repo/access/client-contracts.ts";
 import type { RepositoryCredentialSessionResult } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
-import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
+import { repositoryClientData } from "../fixtures/repository-credentials/builders.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
 import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.mjs";
 import { settled } from "../helpers/child-processes.mjs";

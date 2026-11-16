@@ -31,7 +31,7 @@ import {
   githubTokenConfigurationData,
   serviceConfigurationData,
   custodyLimits,
-} from "../fixtures/repository-credentials/builders.mjs";
+} from "../fixtures/repository-credentials/builders.ts";
 import { requestHead } from "../fixtures/repository-credentials/request-head.ts";
 
 // Synthetic values: the prefix selects a class; nothing here is a real credential.

@@ -5,7 +5,7 @@ import type { Socket } from "node:net";
 import { join } from "node:path";
 import { admissionIdTimestamp } from "../../../apps/controller/src/drivers/repo/access/admission-id.ts";
 import { matchesRepositorySessionId } from "../../../apps/controller/src/drivers/repo/access/client-contracts.ts";
-import type { FixtureOwner } from "./registry/material.ts";
+import type { FixtureOwner } from "./resources.ts";
 
 export interface DroppedAdmission {
   readonly admissionId: string;

@@ -5,7 +5,7 @@ import type { GitHubRepositoryRegistration } from "../../../../apps/controller/s
 import { fixtureAppId, fixtureInstallationId } from "../github.mjs";
 import { temporaryDirectory } from "../process.mjs";
 
-export type FixtureOwner = { after(cleanup: () => void | Promise<void>): void };
+import type { FixtureOwner } from "../resources.ts";
 
 type NamespaceRegistration = GitHubRepositoryRegistration["namespaces"][number];
 export type RegistryFixtureDefinition = Pick<

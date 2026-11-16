@@ -5,36 +5,18 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
 import type { ControlErrorCode } from "../../../apps/controller/src/drivers/repo/access/control-contracts.ts";
-import type { RunningListeners } from "../../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
 import type { JsonValue } from "../../../apps/controller/src/drivers/repo/access/json-value.ts";
 import type { SessionStatus } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { socketDirectory } from "../../helpers/socket-directory.mjs";
 import { registerResourceCleanup, closeAndDispose, type ResourceCleanup } from "./cleanup.ts";
-import {
-  loadRepositoryClientModule,
-  type ClientCommand,
-  type CredentialClientFixture,
-} from "./clients.ts";
+import { loadRepositoryClientModule, type ClientCommand } from "./clients.ts";
 import { runInFixtureContainer } from "./container.ts";
 import { run as runCommand, temporaryDirectory } from "./process.mjs";
-import { startCredentialServiceFixture, gatewayRequest as requestGateway } from "./service.mjs";
+import { startCredentialServiceFixture, gatewayRequest } from "./service-fixture.ts";
 
-type RegressionFixture = Pick<CredentialClientFixture, "config" | "opened" | "tls"> & {
-  listeners: RunningListeners;
-  github: CredentialClientFixture["github"] & {
-    issues: Map<number, { body: string; state: string }>;
-    comments: Map<number, { body: string }>;
-  };
-};
 type GatewayRequestOptions = { method: string; path: string; body?: JsonValue | undefined };
 
 const run = runCommand as ClientCommand;
-const gatewayRequest = requestGateway as (
-  fixture: RegressionFixture,
-  target: string,
-  options: Omit<GatewayRequestOptions, "path">,
-) => Promise<{ status: number; body: string }>;
-
 type DisposalObservation = Pick<SessionStatus, "sessionId" | "state" | "activeUses"> & {
   cleanup: Pick<SessionStatus["cleanup"], "active" | "pending" | "uncertain" | "auxiliaryPending">;
 };
@@ -211,14 +193,13 @@ export function registerCredentialFixtureRegressions() {
     }
     // Reconciliation uses the same admitted session and production sender as the
     // original write, including when the provider accepted it but lost its reply.
-    const serviceFixture: RegressionFixture | undefined = await startCredentialServiceFixture(t, {
+    const serviceFixture = await startCredentialServiceFixture(t, {
       gateway: { listen: "127.0.0.1:0" },
     });
-    assert.ok(serviceFixture);
     const fixture = serviceFixture.github;
     const send = async ({ method, path, body }: GatewayRequestOptions): Promise<unknown> => {
       const response = await gatewayRequest(serviceFixture, `/${path}`, { method, body });
-      assert.ok(response.status < 400);
+      assert.ok(response.status !== undefined && response.status < 400);
       return response.body ? JSON.parse(response.body) : undefined;
     };
     const repository = "fixture/repository";

@@ -3,14 +3,23 @@ import { fixtureRepository, fixtureRepositoryId } from "./metadata.mjs";
 
 const json = (status, body, headers = {}) => ({ status, body, headers });
 
+/** @typedef {{repository?: string, repositoryId?: string, description?: string | null | undefined}} RepositoryOptions */
+
+/** @param {RepositoryOptions} [options] */
 export function createRepositoryResources({
   repository = fixtureRepository,
   repositoryId = fixtureRepositoryId,
   description = null,
 } = {}) {
   const [owner, name] = repository.split("/");
+  // PATCH merges the request JSON into the stored issue or pull. Only the map key stays fixed.
+  /** @typedef {import("../../../../apps/controller/src/drivers/repo/access/json-value.ts").JsonValue} JsonValue */
+  /** @typedef {{number: JsonValue, state: JsonValue, title?: JsonValue | undefined, body?: JsonValue}} IssueObservation */
+  /** @type {Map<number, IssueObservation>} */
   const issues = new Map();
+  /** @type {Map<number, IssueObservation & {base: JsonValue, head: JsonValue, draft?: JsonValue}>} */
   const pulls = new Map();
+  /** @type {Map<number, {id: number, body: unknown, issue: JsonValue, url: string, html_url: string}>} */
   const comments = new Map();
   let nextNumber = 1;
   let nextComment = 101;
