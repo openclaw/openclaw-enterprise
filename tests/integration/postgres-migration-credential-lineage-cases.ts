@@ -13,6 +13,8 @@ import type {
 type HistoryFixture = {
   admin: Pool;
   adminUrl: string;
+  container: string;
+  port: number;
   migrationUrl: string;
   databasePrefix: string;
 };
@@ -359,7 +361,7 @@ export function registerPostgresMigrationCredentialLineageCases({
       assert.deepEqual((await historyReceipts(db.migrator)).slice(0, receipts.length), receipts);
       assert.deepEqual(
         (
-          await db.app.query<{ backendId: string; harnessAuth: unknown }, [string, string]>(
+          await db.app.query<{ backendId: string | null; harnessAuth: unknown }, [string, string]>(
             `SELECT backend_id AS "backendId", harness_auth AS "harnessAuth"
              FROM occ.agents WHERE namespace_id=$1 AND id=$2`,
             [seeded.namespace, seeded.agent],
@@ -378,7 +380,7 @@ export function registerPostgresMigrationCredentialLineageCases({
       const revision = (
         await db.app.query<
           {
-            backendId: string;
+            backendId: string | null;
             backendBinding: unknown;
             providerBinding: unknown;
             repositoryBackendId: unknown;
@@ -486,12 +488,8 @@ export function registerPostgresMigrationCredentialLineageCases({
       const beforeRefusal = await historySnapshot(db);
       assert.deepEqual(
         await runHistoryMigration(db, "production", undefined, undefined, (error) => {
-          const databaseError =
-            error instanceof pg.DatabaseError
-              ? error
-              : error instanceof Error
-                ? error.cause
-                : undefined;
+          assert.ok(error instanceof Error);
+          const databaseError = error instanceof pg.DatabaseError ? error : error.cause;
           assert.ok(databaseError instanceof pg.DatabaseError);
           assert.equal(databaseError.code, "23514");
           assert.match(databaseError.message, /^Unsupported legacy managed PAT authentication:/);
