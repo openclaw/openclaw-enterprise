@@ -132,6 +132,7 @@ revisionTest(
       },
       async stopRevision(revision) {
         const active = await fixture.currentAgent(owner);
+        assert.ok(active);
         if (active.activeRevisionId === revision.id) {
           const replacement = await fixture.state.read((view) =>
             view.agents.findPredecessorReplacement(revision.namespaceId, revision.agentId),
@@ -217,7 +218,7 @@ revisionTest(
       "UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour' WHERE idempotency_key = $1",
       [candidate.idempotencyKey],
     );
-    const record = (phase) =>
+    const record = (phase: "pre-stop" | "stopping") =>
       fixture.state.transact(async (unit) => {
         await unit.namespaces.lockNamespace(fixture.namespace.id);
         await unit.agents.lockAgent(fixture.namespace.id, owner.id);
@@ -241,6 +242,8 @@ revisionTest(
 
     await fixture.stop();
     const stopping = await record("stopping");
+    assert.ok(pending);
+    assert.ok(stopping);
     assert.equal(stopping.startedAt, pending.startedAt);
     assert.ok(stopping.stoppingAt);
     assert.deepEqual(await record("pre-stop"), stopping, "a retry must not reopen committed stop");
@@ -268,7 +271,7 @@ revisionTest(
     const second = await fixture.revision(owner, 2, { compute: admittedCompute });
     await fixture.work(second, "failed_permanent");
     await fixture.stop();
-    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, first.id);
+    assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, first.id);
     assert.deepEqual([...driver.running], [second.id]);
     // Migration adds NULL to the legacy state: R1 remains selected, but R2
     // already stopped it and retained its own runtime for diagnosis.
