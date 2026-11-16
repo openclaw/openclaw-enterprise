@@ -88,12 +88,9 @@ Dedicated Gateways enforce tool policy, including [MCP routing](agent-plugins.md
 
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.prepareRevision`
 
-Docker starts embedded gateways or dedicated Codex containers but rejects
-harness-auth bindings before deployment; no Agent path is deployable.
-`dockerGatewayConfigurationDocument` admits supported authentication fields/modes;
-`reconcileGateway` generates `OPENCLAW_GATEWAY_PASSWORD` only for new containers.
-The [Docker gateway authentication reference](../reference/drivers/docker-compute.md#gateway-authentication)
-owns mode and password rules.
+Docker rejects Harness authentication bindings before Agent deployment.
+`reconcileGateway` generates `OPENCLAW_GATEWAY_PASSWORD` for new containers.
+See [Docker Gateway authentication](../reference/drivers/docker-compute.md#gateway-authentication).
 
 Kubernetes supports managed bindings.
 SSH supports `{ "method": "runtime" }` only for unmanaged embedded OpenClaw: operator
@@ -115,15 +112,10 @@ native dedicated transport tokens depend on runtime configuration. The
 [harness authentication flow](native-service-account-credential-delivery.md) covers
 admission, immutable source snapshots and worker reauthorization.
 
-API composition, including development, and worker startup call
-`KubernetesComputeDriver.preflight` before reconciliation. `KubernetesComputeDriver.validateConfiguration`
-first rejects native Gateway or derived sandbox listener ports overlapping private
-runtime status TCP/18791. Single-cluster
-preflight checks every storage-namespace page and refuses split targets without
-the tenant label. Resolution accepts an adopted `oce-gateways-<hash>` tenant
-only beside its storage label.
-The [upgrade requirements](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
-own the operator boundary.
+API and Worker startup call `KubernetesComputeDriver.preflight` before reconciliation.
+Configuration rejects listener ports that overlap TCP/18791. Single-cluster
+preflight checks every storage-namespace page and requires the tenant label for
+adopted split targets. See [upgrade requirements](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
 
 `ensureNamespace` prepares a single-cluster tenant namespace. Its storage-role
 label identifies adopted targets. Split-cluster Gateways keep their control-cluster
@@ -134,11 +126,8 @@ older Pods and copies their passwords before switching templates. Concurrent
 creation requires an exact ownership and password match.
 
 The [networking reference](../reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation)
-owns qualified DNS and exact selectors. Harness selectors include revision
-and network profile. Stable Gateway selectors omit the revision.
-`deploy/helm/openclaw-execution/templates/routing.yaml` refuses DNS and Envoy
-peer-map values other than strings or null. `runtime.gatewayNodeSelector` places
-Gateways and private-state initializers. Compute-owned launches require
+defines DNS and selectors. `runtime.gatewayNodeSelector` places Gateways and
+private-state initializers. Compute-owned launches require
 [Codex initialization](../reference/drivers/kubernetes-compute.md#troubleshooting).
 An opted-in ordinary provider receives the verifier and the Gateway keeps the
 bearer. `KubernetesComputeDriver.reconcileHarnessTrust` pins the provider's
@@ -146,11 +135,9 @@ workspace generation, CA, and leaf digest from the trusted provider admission.
 The Gateway and Worker verify the CA, hostname, and leaf digest before sending
 the bearer through the [Box relay](../../deploy/examples/strands-box/ingress/README.md).
 They check the generation on the upgrade before sending native requests.
-For the installed Box example, the chart's Worker policy permits TCP 8443 to
-the relay Service's exact Namespace and Pod selector. The Driver's per-revision
-relay policy admits the selected Worker and Gateway. The relay forwards
-to the Box host. The host's file-only node connects to the Gateway through Envoy. The
-operator admits its observed source address with `gatewayRouting.remoteNodeCidrs`.
+The chart admits Worker egress to the relay Service selector on TCP 8443.
+The per-revision relay admits the Worker and Gateway and forwards to the Box host.
+The file-only node reaches Envoy through the configured `gatewayRouting.remoteNodeCidrs` host address.
 
 After Harness readiness, preparation replaces stopped or unready Gateways. Activation waits for workspace node enrollment; dedicated Codex retains `agent-<agent digest>-workspace`.
 `KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds callbacks; `AGENT_WITH_NODE_ENTRYPOINT` prepares capability storage and TLS for OpenClaw-authorized [native hooks](../reference/gateway-routing.md#native-node-endpoint).
@@ -196,13 +183,11 @@ sends a masked normal-close frame without a Harness request. Cleanup is bounded.
 
 `apps/controller/src/worker.ts:ControllerWorker`
 
-`requiresStoppedPredecessors` stops all predecessors, including Gateways, and
-waits for Pod termination. Redeployment interrupts service but preserves both PVCs;
-retry or a new version recovers failures. Recorded stops prevent repeats; a returning
-predecessor makes its successor unready. Stops retry after one, two, four, then more
-claim leases. Failed preparation or preparing or activating the predecessor clears
-its record. New exclusive versions supersede old reconciliation and maintenance
-without rollback; see [production version stages](../reference/drivers/compute.md#production-revision-stages).
+`requiresStoppedPredecessors` stops all predecessors and waits for Pod termination.
+Redeployment interrupts service and keeps both PVCs. Recorded stops prevent repeats.
+A returning predecessor makes its successor unready. Stops retry after one, two,
+four, then more claim leases. Predecessor preparation, activation, or failed
+preparation clears the record. See [production version stages](../reference/drivers/compute.md#production-revision-stages).
 For API-key inference, `modelProviderConfiguration` in
 `apps/controller/src/drivers/compute/model-provider.ts` translates the provider
 saved in the revision for OpenClaw. `pluginRuntimeSnapshot` in
