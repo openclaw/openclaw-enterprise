@@ -21,6 +21,7 @@ const imageProbe = `
   console.log(JSON.stringify({
     bootstrap: existsSync(${JSON.stringify(bootstrapProgram)}),
     migration: JSON.parse(readFileSync("/app/package.json", "utf8")).scripts?.["db:migrate:production"],
+    precreatedCredentials: existsSync("/app/scripts/lib/bootstrap-credentials.ts"),
     sharedCookies: existsSync(configuration) &&
       typeof (await import(configuration)).deriveSharedCookieDomain === "function",
   }));
@@ -75,22 +76,23 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
       "--eval",
       imageProbe,
     ]);
-    const { bootstrap, sharedCookies, migration } = JSON.parse(probe.stdout);
+    const { bootstrap, precreatedCredentials, sharedCookies, migration } = JSON.parse(probe.stdout);
     const entry = /^(?:NODE_ENV=production )?node (scripts\/migrate-production\.(?:mjs|ts))$/.exec(
       migration ?? "",
     )?.[1];
     assert.ok(entry, "The image must declare a supported production migration command.");
     assert.equal(typeof sharedCookies, "boolean");
+    assert.equal(typeof precreatedCredentials, "boolean");
     inputsByImage.set(image, {
       bootstrap,
       migration: entry,
+      precreatedCredentials,
       OCC_AUTH_BASE_URL: sharedCookies ? sharedCookieOrigin : legacyOrigin,
       OCC_AGENT_NATIVE_ADMIN_DOMAIN: agentDomain,
     });
   }
-  const { bootstrap, OCC_AUTH_BASE_URL, OCC_AGENT_NATIVE_ADMIN_DOMAIN } = inputsByImage.get(
-    images.released.reference,
-  );
+  const { bootstrap, precreatedCredentials, OCC_AUTH_BASE_URL, OCC_AGENT_NATIVE_ADMIN_DOMAIN } =
+    inputsByImage.get(images.released.reference);
   assert.equal(bootstrap, true, "The released image must ship the Installation bootstrap command.");
   const db = await createDatabase();
   const migrationUrl = new URL(db.migrationUrl);
@@ -294,19 +296,25 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
     await migrate(images.released);
     const before = await history();
     assert.ok(before.length > 0);
-    await command([
-      ...args(images.released, "--input-type=module", {
-        NODE_ENV: "development",
-        OCC_DATABASE_URL: applicationUrl.toString(),
-        OCC_AUTH_SECRET: authSecret,
-        OCC_AUTH_BASE_URL,
-        OCC_AGENT_NATIVE_ADMIN_DOMAIN,
-        OPENCLAW_DEV_EMAIL: "postgres-admin@openclaw.local",
-        OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: "/bootstrap/admin-password",
-        OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: "/bootstrap/admin-service-key",
-      }),
-      "--eval",
-      `
+    const bootstrapEnvironment = {
+      NODE_ENV: "development",
+      OCC_DATABASE_URL: applicationUrl.toString(),
+      OCC_AUTH_SECRET: authSecret,
+      OCC_AUTH_BASE_URL,
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN,
+      OPENCLAW_DEV_EMAIL: "postgres-admin@openclaw.local",
+    };
+    // Select the historical image's contract before its single bootstrap attempt;
+    // the candidate's new input settings cannot initialize an older released image.
+    if (precreatedCredentials) {
+      await command([
+        ...args(images.released, "--input-type=module", {
+          ...bootstrapEnvironment,
+          OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE: "/bootstrap/admin-password",
+          OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE: "/bootstrap/admin-service-key",
+        }),
+        "--eval",
+        `
           import { writeFile } from "node:fs/promises";
           import { randomBytes } from "node:crypto";
           await writeFile(process.env.OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE,
@@ -316,7 +324,16 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
           const { bootstrapInstallation } = await import(${JSON.stringify(bootstrapProgram)});
           process.exitCode = await bootstrapInstallation({ args: [] });
         `,
-    ]);
+      ]);
+    } else {
+      await command(
+        args(images.released, bootstrapProgram, {
+          ...bootstrapEnvironment,
+          OPENCLAW_DEV_PASSWORD: "postgres-development-password",
+          OCC_BOOTSTRAP_SERVICE_KEY_FILE: "/bootstrap/service-key.json",
+        }),
+      );
+    }
     await scenario({
       start,
       migrate,
