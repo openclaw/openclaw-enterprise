@@ -94,12 +94,11 @@ import {
 } from "../helpers/envoy-workspace-gateway.mjs";
 import { startWorkspaceGatewayHostRelay } from "./workspace-gateway-host-relay.ts";
 import {
-  defaultKeycloakImage,
   issueServingCertificate,
   keycloakServiceClient,
   keycloakUserClient,
-  startKeycloak,
-} from "../helpers/keycloak-real.mjs";
+} from "./keycloak-issuer-material.ts";
+import { defaultKeycloakImage, startKeycloak } from "./keycloak-real.mjs";
 import { pollReplacementActivation } from "./openshell-replacement-activation.ts";
 
 /** @param {unknown} turn */
