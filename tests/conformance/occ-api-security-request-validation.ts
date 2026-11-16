@@ -5,7 +5,7 @@ import {
   NamespaceSchema,
   NamespaceListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import { BODY_NOT_JSON, RESOURCE_NOT_FOUND } from "../helpers/refusal-text.mjs";
+import { RESOURCE_NOT_FOUND } from "../helpers/refusal-text.mjs";
 import {
   tenantANamespaceId,
   tenantRequest as request,
@@ -54,7 +54,7 @@ export function registerBodyValidationCases() {
     assert.equal(notJson.response.status, 400);
     assert.deepEqual(responseError(notJson.payload), {
       code: "INVALID_REQUEST",
-      message: BODY_NOT_JSON,
+      message: "The request body is not valid JSON.",
     });
     const poisoned = await request(fixture.app, "/namespaces", {
       body: '{"__proto__":{"x":1},"name":"p"}',
