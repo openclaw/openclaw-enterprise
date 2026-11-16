@@ -12,7 +12,7 @@ The root [pnpm workspace](../pnpm-workspace.yaml) explicitly selects
 `contracts`, `occ`, `iam`, and `audit`. [TypeScript project references](../tsconfig.json) select the same
 projects. Adding a directory does not enroll it in the workspace: intentional
 workspace changes must also update these declarations and the
-[workspace boundary check](../scripts/verify-workspace-boundary.mjs).
+[workspace boundary check](../scripts/verify-workspace-boundary.ts).
 The configuration excludes `legacy/`; do not import archived implementations.
 
 The Go CLI uses the root [Go module](../go.mod). The documentation renderer in
