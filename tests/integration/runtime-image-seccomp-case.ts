@@ -4,7 +4,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
-import { reviewedCodexSeccompSecurityOptions } from "../helpers/runtime-image-startup.mjs";
+import { reviewedCodexSeccompSecurityOptions } from "../helpers/runtime-image-startup.ts";
 
 export async function verifyRuntimeSeccompRecord(
   t: TestContext,

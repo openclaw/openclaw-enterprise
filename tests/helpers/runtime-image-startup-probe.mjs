@@ -25,16 +25,18 @@ import { modelProbeDiagnostic } from "./runtime-model-probe-observation.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import {
   execute,
-  image,
-  runtimeImageModel,
   docker,
   runDocker,
   waitForDockerLog,
-  createAdmittedRuntimeImageConfiguration,
-  jsonLogEntries,
   failureTail,
-  gatewayMemoryArguments,
-} from "./runtime-image-startup.mjs";
+} from "./runtime-image-docker.ts";
+import { jsonLogEntries } from "./runtime-image-gateway-observations.ts";
+import { gatewayMemoryArguments } from "./runtime-image-memory.ts";
+import {
+  image,
+  runtimeImageModel,
+  createAdmittedRuntimeImageConfiguration,
+} from "./runtime-image-startup.ts";
 
 // Startup model probes on Kubernetes. These tests run the real Codex Harness
 // and embedded Gateway wrappers, the image's own Codex and OpenClaw probes and

@@ -29,6 +29,52 @@ export const imageTestOptions =
 
 type CleanupScope = { after(cleanup: () => unknown): void };
 
+// A new volume owned by the Gateway user, for mounting at `mountPath` (the
+// Gateway home or its ~/.openclaw) as its PersistentVolume is. `seed`, a shell
+// command run first as root with `seedVolumes` also mounted, can fill it.
+type GatewayStateVolumeOptions = { seed?: string; seedVolumes?: readonly string[] };
+
+export async function gatewayStateVolume(
+  t: CleanupScope,
+  mountPath: string,
+  { seed, seedVolumes = [] }: GatewayStateVolumeOptions = {},
+): Promise<string> {
+  const volume = `oce-runtime-image-state-${randomBytes(6).toString("hex")}`;
+  await runDocker(["volume", "create", volume]);
+  // node:test runs `after` hooks in registration order, so this one runs before
+  // the hooks that remove the containers started on the volume later, and Docker
+  // refuses to remove a volume in use. Remove those containers first.
+  t.after(async () => {
+    const users = await runDocker(["ps", "-aq", "--filter", `volume=${volume}`]).catch(
+      () => undefined,
+    );
+    const ids = users?.stdout.split(/\s+/).filter(Boolean) ?? [];
+    if (ids.length > 0) {
+      await runDocker(["rm", "-f", ...ids]).catch(() => {});
+    }
+    await runDocker(["volume", "rm", "-f", volume]).catch(() => {});
+  });
+  // As root, like the Docker Driver's workspace setup: a new volume mounted
+  // below the image's home can be root-owned.
+  await runDocker([
+    "run",
+    "--rm",
+    "--user",
+    "0:0",
+    "--network",
+    "none",
+    "--volume",
+    `${volume}:${mountPath}`,
+    ...seedVolumes.flatMap((value) => ["--volume", value]),
+    "--entrypoint",
+    "sh",
+    image,
+    "-c",
+    `${seed === undefined ? "" : `${seed} && `}chown -R 1000:1000 ${mountPath}`,
+  ]);
+  return volume;
+}
+
 export async function temporaryGatewayConfiguration(
   t: CleanupScope,
   harnessId: string,
