@@ -322,7 +322,7 @@ async function withReleasedControllerFixture(t, images, createDatabase, scenario
           await writeFile(process.env.OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE,
             "occ_" + randomBytes(32).toString("base64url"), { mode: 0o600, flag: "wx" });
           const { bootstrapInstallation } = await import(${JSON.stringify(bootstrapProgram)});
-          process.exitCode = await bootstrapInstallation({ args: [] });
+          process.exitCode = await bootstrapInstallation({ environment: process.env, args: [] });
         `,
       ]);
     } else {
