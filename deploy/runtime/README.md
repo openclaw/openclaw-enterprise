@@ -156,6 +156,8 @@ automatically. [Local checkout tests](../../docs/testing/openshell.md) use their
 
 Local assembly omits broad suites. Run [source verification](../../docs/flows/container-publication.md#runtime-source-verification) for runtime changes.
 
+See the [JIT-free ARM64 Harness](code-mode/README.md).
+
 ## Build a local runtime image
 
 For paired builds, see [QA prebuilds and caching](../../docs/testing/ci/qa-advisory.md#prebuild-local-qa-images).
