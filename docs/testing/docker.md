@@ -91,7 +91,7 @@ With a running Docker engine and an existing immutable Node 24+ Linux image:
 
 ```sh
 OCC_TEST_CODEX_PROBE_IMAGE=sha256:<local-image-id> \
-  node --test tests/integration/codex-model-probe.test.mjs
+  node --test tests/integration/codex-model-probe.test.ts
 ```
 
 The image may be a repository digest; the test does not pull it. It uses a

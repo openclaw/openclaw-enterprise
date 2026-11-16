@@ -4,12 +4,41 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import type {
+  ExternalChatgptAuth,
+  RUNTIME_DIAGNOSTIC_CODES,
+  RuntimeFailureCause,
+} from "@openclaw-enterprise/contracts";
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { readJsonLines } from "../helpers/json-lines.mjs";
+import { asRecord } from "../../packages/utils/src/index.ts";
+import { requireLogRecord } from "../helpers/json-lines.ts";
+import { readJsonLines } from "../helpers/json-lines-file.ts";
 import { waitUntil } from "../helpers/wait-for.mjs";
+
+type RecoveryInput =
+  "recover" | "timeout" | "rejected" | "killed-once" | "killed" | "malformed" | "tool";
+type LauncherInput = RecoveryInput | "pat" | "external";
+type AccountMetadata = Omit<ExternalChatgptAuth, "accessTokenPlaceholder">;
+type LauncherAuth =
+  | { CODEX_LOGIN_MODE: "api_key"; OPENAI_API_KEY: string }
+  | { CODEX_LOGIN_MODE: "codex_pat"; CODEX_ACCESS_TOKEN: string }
+  | {
+      CODEX_LOGIN_MODE: "chatgptAuthTokens";
+      OCE_CODEX_CHATGPT_ACCOUNT: string;
+      CODEX_ACCESS_TOKEN?: string;
+    };
+type RecoveryScenario = {
+  name: string;
+  input: RecoveryInput;
+  attempts: 1 | 2;
+  npmLauncher?: true;
+  cause?: RuntimeFailureCause;
+} & (
+  { ready: true; code?: never } | { ready?: never; code: (typeof RUNTIME_DIAGNOSTIC_CODES)[number] }
+);
 
 const execute = promisify(execFile);
 const image = process.env.OCC_TEST_CODEX_PROBE_IMAGE;
@@ -107,7 +136,7 @@ child.on("exit", (code, signal) => (signal ? process.kill(process.pid, signal) :
 `;
 
 // Lay out the npm packages the image installs and put the launcher on PATH, as the image does.
-async function writeNpmLauncher(directory) {
+async function writeNpmLauncher(directory: string) {
   const modules = join(directory, "node_modules", "@openai");
   const native = join(modules, `codex-linux-${process.arch}`);
   await mkdir(join(modules, "codex", "bin"), { recursive: true });
@@ -121,18 +150,92 @@ async function writeNpmLauncher(directory) {
   ]);
 }
 
+function readStrings(value: unknown, description: string): string[] {
+  assert.ok(Array.isArray(value), description);
+  const items: unknown[] = value;
+  assert.ok(
+    items.every((item) => typeof item === "string"),
+    description,
+  );
+  return items;
+}
+
+function readCalls(value: unknown): string[][] {
+  assert.ok(Array.isArray(value), "Expected recorded Codex argv lists.");
+  const calls: unknown[] = value;
+  return calls.map((args) => readStrings(args, "Expected a Codex argv list of strings."));
+}
+
+function readRuntimeFailure(value: unknown) {
+  if (value === undefined) {
+    return undefined;
+  }
+  const failure = asRecord(value);
+  assert.ok(failure, "Expected a runtime failure object.");
+  const { code, check, cause } = failure;
+  assert.ok(
+    typeof code === "string" && typeof check === "string",
+    "Expected a runtime failure with a code and check.",
+  );
+  // Compare the complete cause in the retry assertion, including any unexpected fields.
+  return { code, check, cause };
+}
+
+function readSnapshot(stdout: string) {
+  const value: unknown = JSON.parse(stdout);
+  const snapshot = asRecord(value);
+  const status = asRecord(snapshot?.status);
+  assert.ok(snapshot && status, "Expected a Docker snapshot with a runtime status object.");
+  const ready = snapshot.ready;
+  assert.ok(typeof ready === "boolean", "Expected the readiness marker state.");
+
+  return {
+    ready,
+    status,
+    runtimeFailure: readRuntimeFailure(status.runtimeFailure),
+    calls: readCalls(snapshot.calls),
+    probeDirectories: readStrings(snapshot.probeDirectories, "Expected probe directory names."),
+    codexProcesses: readStrings(snapshot.codexProcesses, "Expected Codex process commands."),
+  };
+}
+
+function readProbeDiagnostics(stderr: string) {
+  return stderr
+    .split("\n")
+    .filter((line) => line.startsWith("{"))
+    .map((line) => {
+      const record: unknown = JSON.parse(line);
+      return requireLogRecord(record);
+    })
+    .filter(({ event }) => event === "codex.model_probe")
+    .map(({ attempt, code, elapsedMs }) => {
+      assert.ok(
+        typeof attempt === "number" && typeof code === "string" && typeof elapsedMs === "number",
+        "Expected a model probe diagnostic with an attempt, code and elapsed time.",
+      );
+      return { attempt, code, elapsedMs };
+    });
+}
+
 async function startLauncher(
-  t,
-  scenario,
+  t: TestContext,
+  scenario: LauncherInput,
   stopAfterTimeout = false,
-  auth = { CODEX_LOGIN_MODE: "api_key", OPENAI_API_KEY: "credential-canary" },
+  auth: LauncherAuth = { CODEX_LOGIN_MODE: "api_key", OPENAI_API_KEY: "credential-canary" },
   npmLauncher = false,
 ) {
+  assert.ok(image);
+  assert.ok(
+    process.getuid && process.getgid,
+    "The Docker fixture requires Unix user and group IDs.",
+  );
+  const uid = process.getuid();
+  const gid = process.getgid();
   const directory = await mkdtemp(join(tmpdir(), "oce-codex-probe-"));
   const name = `oce-codex-probe-${randomUUID()}`;
   let output = "";
   let errors = "";
-  let stop;
+  let stop: ReturnType<typeof execute> | undefined;
   t.after(async () => {
     await execute("docker", ["rm", "--force", name], { timeout: 10000 });
     await rm(directory, { recursive: true, force: true });
@@ -159,11 +262,11 @@ async function startLauncher(
       "--security-opt=no-new-privileges",
       // Match the private bind mount owner on Linux without DAC override.
       "--user",
-      `${process.getuid()}:${process.getgid()}`,
+      `${uid}:${gid}`,
       "--tmpfs",
       "/tmp",
       "--tmpfs",
-      `/home/node:uid=${process.getuid()},gid=${process.getgid()},mode=0700`,
+      `/home/node:uid=${uid},gid=${gid},mode=0700`,
       "--mount",
       `type=bind,src=${directory},dst=/fixture,readonly`,
       "--mount",
@@ -198,15 +301,17 @@ async function startLauncher(
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
-  const exited = new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) => resolve({ code, signal }));
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    (resolve, reject: (error: unknown) => void) => {
+      child.once("error", reject);
+      child.once("exit", (code, signal) => resolve({ code, signal }));
+    },
+  );
+  child.stdout.on("data", (chunk: Buffer) => {
+    output += chunk.toString();
   });
-  child.stdout.on("data", (chunk) => {
-    output += chunk;
-  });
-  child.stderr.on("data", (chunk) => {
-    errors += chunk;
+  child.stderr.on("data", (chunk: Buffer) => {
+    errors += chunk.toString();
     if (stopAfterTimeout && stop === undefined && errors.includes('"code":"MODEL_PROBE_TIMEOUT"')) {
       stop = execute("docker", ["kill", "--signal=TERM", name], { timeout: 5000 });
     }
@@ -214,7 +319,7 @@ async function startLauncher(
   return {
     name,
     exited,
-    calls: () => readJsonLines(join(directory, "calls")),
+    calls: async () => readCalls(await readJsonLines(join(directory, "calls"))),
     output: () => output,
     errors: () => errors,
     stop: () => stop,
@@ -242,12 +347,12 @@ async function startLauncher(
         ],
         { timeout: 5000 },
       );
-      return JSON.parse(stdout);
+      return readSnapshot(stdout);
     },
   };
 }
 
-function waitFor(check, diagnostics) {
+function waitFor(check: () => boolean, diagnostics: () => string): Promise<void> {
   return waitUntil(() => `the launcher to settle: ${diagnostics()}`, check, {
     timeoutMs: 70_000,
     intervalMs: 50,
@@ -261,6 +366,7 @@ test(
     timeout: 90000,
   },
   async (t) => {
+    assert.ok(image);
     assert.match(image, /^(?:sha256:[a-f0-9]{64}|.+@sha256:[a-f0-9]{64})$/);
     // Both imported and managed PATs reach this receiver; Compute tests verify
     // their distinct source ownership before selecting the same native login.
@@ -273,10 +379,10 @@ test(
       const snapshot = await launcher.snapshot();
       assert.equal(snapshot.ready, true);
       assert.equal(snapshot.calls.length, 3);
-      assert.ok(snapshot.calls[0].includes("login"));
-      assert.ok(snapshot.calls[1].includes("exec"));
-      assert.ok(snapshot.calls[2].includes("app-server"));
-      assert.equal(snapshot.status.runtimeFailure, undefined);
+      assert.ok(snapshot.calls[0]?.includes("login"));
+      assert.ok(snapshot.calls[1]?.includes("exec"));
+      assert.ok(snapshot.calls[2]?.includes("app-server"));
+      assert.equal(snapshot.runtimeFailure, undefined);
       assert.deepEqual(snapshot.probeDirectories, []);
       assert.doesNotMatch(
         launcher.output() + launcher.errors(),
@@ -292,15 +398,15 @@ test(
         planType: "business",
         userId: "fixture-user",
         email: "fixture@example.invalid",
-      }),
-    };
+      } satisfies AccountMetadata),
+    } satisfies LauncherAuth;
     const launcher = await startLauncher(t, "external", false, auth);
     await waitFor(() => launcher.output().includes("APP_SERVER_STARTED"), launcher.errors);
     const snapshot = await launcher.snapshot();
     assert.equal(snapshot.ready, true);
     assert.equal(snapshot.calls.length, 2);
-    assert.ok(snapshot.calls[0].includes("exec"));
-    assert.ok(snapshot.calls[1].includes("app-server"));
+    assert.ok(snapshot.calls[0]?.includes("exec"));
+    assert.ok(snapshot.calls[1]?.includes("app-server"));
     assert.doesNotMatch(launcher.output() + launcher.errors(), /opaque-gateway-placeholder/);
 
     // Incomplete metadata must stop before any native process or readiness.
@@ -314,7 +420,7 @@ test(
     );
     const failed = await invalid.snapshot();
     assert.equal(failed.ready, false);
-    assert.equal(failed.status.runtimeFailure.code, "LOGIN_FAILED");
+    assert.equal(failed.runtimeFailure?.code, "LOGIN_FAILED");
     assert.deepEqual(failed.calls, []);
 
     // A restart after withdrawal has account metadata but no provider material.
@@ -327,8 +433,8 @@ test(
     );
     const unavailable = await withdrawn.snapshot();
     assert.equal(unavailable.ready, false);
-    assert.equal(unavailable.status.runtimeFailure.check, "login");
-    assert.equal(unavailable.status.runtimeFailure.code, "AUTHENTICATION_FAILED");
+    assert.equal(unavailable.runtimeFailure?.check, "login");
+    assert.equal(unavailable.runtimeFailure?.code, "AUTHENTICATION_FAILED");
     assert.deepEqual(unavailable.calls, []);
     const { stdout } = await execute("docker", [
       "exec",
@@ -351,10 +457,11 @@ test(
     concurrency: true,
   },
   async (t) => {
+    assert.ok(image);
     assert.match(image, /^(?:sha256:[a-f0-9]{64}|.+@sha256:[a-f0-9]{64})$/);
     // A missing local image is setup failure, not a model-probe timeout.
     await execute("docker", ["image", "inspect", image], { timeout: 10000 });
-    const scenarios = [
+    const scenarios: RecoveryScenario[] = [
       { name: "timeout then success", input: "recover", attempts: 2, ready: true },
       { name: "two timeouts", input: "timeout", attempts: 2, code: "MODEL_PROBE_TIMEOUT" },
       // Finding 2274: behind the image's npm launcher, the timeout must still end the native
@@ -409,9 +516,9 @@ test(
             snapshot.calls.filter((args) => args.includes("app-server")).length,
             scenario.ready ? 1 : 0,
           );
-          assert.equal(snapshot.status.runtimeFailure?.code, scenario.code);
+          assert.equal(snapshot.runtimeFailure?.code, scenario.code);
           if (scenario.cause !== undefined) {
-            assert.deepEqual(snapshot.status.runtimeFailure.cause, scenario.cause);
+            assert.deepEqual(snapshot.runtimeFailure?.cause, scenario.cause);
           }
           assert.deepEqual(snapshot.probeDirectories, []);
           // A timed-out or failed check leaves no Codex process behind: only a ready launcher
@@ -425,14 +532,9 @@ test(
             launcher.output() + launcher.errors() + JSON.stringify(snapshot.status),
             new RegExp(`${canary}|credential-canary|transport-canary`),
           );
-          const diagnostics = launcher
-            .errors()
-            .split("\n")
-            .filter((line) => line.startsWith("{"))
-            .map(JSON.parse)
-            .filter(({ event }) => event === "codex.model_probe");
+          const diagnostics = readProbeDiagnostics(launcher.errors());
           assert.equal(diagnostics.length, scenario.attempts);
-          assert.equal(diagnostics.at(-1).code, scenario.code ?? "READY");
+          assert.equal(diagnostics.at(-1)?.code, scenario.code ?? "READY");
           assert.deepEqual(
             diagnostics.map((entry) => entry.attempt),
             scenario.attempts === 2 ? [1, 2] : [1],
@@ -460,15 +562,7 @@ test(
         const calls = await launcher.calls();
         assert.equal(calls.filter((args) => args.includes("exec")).length, 1);
         assert.equal(calls.filter((args) => args.includes("app-server")).length, 0);
-        assert.equal(
-          launcher
-            .errors()
-            .split("\n")
-            .filter((line) => line.startsWith("{"))
-            .map(JSON.parse)
-            .filter(({ event }) => event === "codex.model_probe").length,
-          1,
-        );
+        assert.equal(readProbeDiagnostics(launcher.errors()).length, 1);
         assert.doesNotMatch(launcher.errors(), /Harness model authentication probe failed/);
       }),
     ]);
