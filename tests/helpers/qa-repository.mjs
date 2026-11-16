@@ -5,16 +5,12 @@ import { captureChild } from "./child-processes.mjs";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { BlockList, isIP } from "node:net";
+import { isIP } from "node:net";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { allowsPushRef } from "../../apps/controller/src/drivers/repo/access/client-contracts.ts";
 import {
   PREPARED_REPOSITORY_DIRECTORY,
   REPOSITORY_CONTROL_SOCKET,
-  REPOSITORY_REGISTRY_PATH,
-  preparedRepositoryBackend,
-  preparedRepositoryInstallation,
 } from "../../scripts/lib/prepared-repository-installation.ts";
 import { verifyNativeRepositoryJourney } from "./repository-native-journey.mjs";
 import { createGitHubAppRepositoryObserver } from "./github-app-observer.ts";
@@ -22,114 +18,16 @@ import {
   createRepositoryObserver,
   readInstalledCredentialSession,
 } from "./repository-credentials-installed.mjs";
+import {
+  applyQaRepositoryInstallation,
+  qaRepositoryBranch,
+  qaRepositoryServiceConfig,
+  readQaRepositoryRegistry,
+  readQaRepositoryUpstreamPolicy,
+  selectPreparedQaRepository,
+} from "./qa-repository-preparation.ts";
 import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
 import { protectedText, redactedQaTail, registerQaSecret } from "./qa-secrets.ts";
-
-/** The one run-owned branch that every repository scenario of a QA run may push. */
-export function qaRepositoryBranch(suffix) {
-  return `oce-qa-${suffix}`;
-}
-
-/**
- * Narrow the selected registry to what prepared native Git can serve. The worker
- * refuses any policy but git-write on exactly one branch with explicit Git
- * transport (PREPARED_REPOSITORY_REQUIRES_ONE_EXPLICIT_REVIEW_REF), and `occ dev up`
- * refuses it before touching the cluster. git-only grants no PR route, so the QA
- * journey pushes and stops there. Only narrowing is allowed: each policy must
- * already grant a write profile, and one that lists push refs must authorize the
- * run-owned branch.
- */
-export function grantQaRepositoryBranch(registry, suffix) {
-  assert.equal(registry.repositories.length, 1, "select exactly one authorized repository");
-  const ref = `refs/heads/${qaRepositoryBranch(suffix)}`;
-  for (const policy of registry.repositories[0].namespaces) {
-    // Narrow a write grant; never turn a read-only policy into one.
-    assert.ok(
-      policy.profiles?.some((profile) => profile === "git-write" || profile === "git-full"),
-      "selected registry must already grant git-write or git-full",
-    );
-    if (policy.pushRefAllowlist) {
-      assert.ok(
-        allowsPushRef(policy.pushRefAllowlist, ref),
-        "selected registry must authorize the run-owned branch name",
-      );
-    }
-    policy.profiles = ["git-write"];
-    policy.transport = "git-only";
-    policy.pushRefAllowlist = [ref];
-    delete policy.pullRequestBase;
-    delete policy.draftPullLimit;
-  }
-  return registry;
-}
-
-/** The repository service's own configuration: it sends native Git and holds no App key. */
-export function qaRepositoryServiceConfig(registry, host) {
-  return {
-    gateway: {
-      listen: "0.0.0.0:8443",
-      publicOrigin: `https://${host}`,
-      controlSocket: REPOSITORY_CONTROL_SOCKET,
-      tlsCertFile: "/etc/openclaw/repository-ca/ca.crt",
-      tlsKeyFile: "/etc/openclaw/repository-inputs/tls.key",
-    },
-    sessionPolicy: {
-      maximumDurationSeconds: registry.maximumDurationSeconds,
-      defaultProfile: "git-write",
-      allowedProfiles: ["git-write"],
-    },
-    backend: {
-      kind: "github-prepared-git-registry",
-      backendId: registry.backendId,
-      registryFile: REPOSITORY_REGISTRY_PATH,
-    },
-  };
-}
-
-/** Point the Installation at the Compose repository service through the relay. */
-export function applyQaRepositoryInstallation(configuration, registry, podLabels) {
-  configuration.backend = [preparedRepositoryBackend({ backendId: registry.backendId })];
-  delete configuration.drivers.repo;
-  configuration.repository = preparedRepositoryInstallation({
-    sessionDurationSeconds: registry.maximumDurationSeconds,
-  });
-  configuration.drivers.compute.configuration.network.repositoryCredentials = {
-    namespace: "oce-system",
-    podLabels,
-    port: 8443,
-  };
-  return configuration;
-}
-
-// The hosted selector and launcher validate the public GitHub source. Validate
-// this local input's shape before DNS/exec, and reuse one containment policy for
-// runner evidence and the worker's actual connection (not string equality /32).
-async function readQaRepositoryUpstreamPolicy(input) {
-  let value;
-  try {
-    value = JSON.parse(await readFile(join(input, "upstream-cidrs.json"), "utf8"));
-  } catch {
-    throw new Error("repository egress input must contain valid JSON");
-  }
-  const explicit = Array.isArray(value);
-  const cidrs = explicit ? value : value?.githubApiAndGit;
-  assert.ok(Array.isArray(cidrs) && cidrs.length > 0, "repository egress requires IPv4 CIDRs");
-  const approved = new BlockList();
-  for (const cidr of cidrs) {
-    assert.equal(typeof cidr, "string", "repository egress requires canonical IPv4 CIDRs");
-    const [address, prefix, extra] = cidr.split("/");
-    assert.ok(
-      isIP(address) === 4 && /^(?:[1-9]|[12][0-9]|3[0-2])$/.test(prefix) && extra === undefined,
-      "repository egress requires canonical IPv4 CIDRs",
-    );
-    const bits = Number(prefix);
-    const numeric = address.split(".").reduce((value, octet) => value * 256 + Number(octet), 0);
-    assert.equal(numeric % 2 ** (32 - bits), 0, "repository egress CIDR must be a network address");
-    assert.ok(!explicit || bits === 32, "explicit repository endpoints require IPv4 /32 addresses");
-    approved.addSubnet(address, bits, "ipv4");
-  }
-  return { cidrs, approved };
-}
 
 // Run where prepared GitHub issuance runs, before any QA Agent binds this repository.
 // Node HTTPS keeps production's DNS selection, agent:false and verified TLS. This
@@ -264,20 +162,8 @@ async function probeQaRepositoryWorker(f, { cidrs, approved }) {
 export async function prepareQaRepository(f) {
   const input = f.repositoryInput;
   assert.ok(input, "OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY is required");
-  const registry = JSON.parse(
-    await protectedText(join(input, "registry.json"), "repository registry"),
-  );
-  assert.equal(
-    registry.repositories.length,
-    1,
-    "select exactly one authorized disposable repository",
-  );
-  const entry = registry.repositories[0];
-  // createQaInstallation wrote the registry through grantQaRepositoryBranch.
-  assert.deepEqual(entry.namespaces[0].profiles, ["git-write"]);
-  assert.deepEqual(entry.namespaces[0].pushRefAllowlist, [
-    `refs/heads/${qaRepositoryBranch(f.suffix)}`,
-  ]);
+  const registry = await readQaRepositoryRegistry(input);
+  const entry = selectPreparedQaRepository(registry, f.suffix);
   f.repositoryEntry = entry;
   const upstreamPolicy = await readQaRepositoryUpstreamPolicy(input);
   // Record the runner's DNS view, not cluster reachability. Only these two fixed

@@ -11,7 +11,7 @@ import { selectComposeSubnet } from "./compose-network.ts";
 import { createNativePluginAssertions } from "./native-plugin-assertions.ts";
 import { runQaCommand } from "./qa-command.ts";
 import { prepareHybridInstallation } from "./qa-hybrid.mjs";
-import { grantQaRepositoryBranch } from "./qa-repository.mjs";
+import { grantQaRepositoryBranch, readQaRepositoryRegistry } from "./qa-repository-preparation.ts";
 import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
 import {
   protectedText,
@@ -328,9 +328,7 @@ export async function createQaInstallation(
   if (sourceInput) {
     repositoryInput = join(directory, "repository-input");
     await mkdir(repositoryInput, { mode: 0o700 });
-    const registry = JSON.parse(
-      await protectedText(join(sourceInput, "registry.json"), "repository registry"),
-    );
+    const registry = await readQaRepositoryRegistry(sourceInput);
     grantQaRepositoryBranch(registry, suffix);
     await writeFile(join(repositoryInput, "registry.json"), JSON.stringify(registry), {
       mode: 0o600,
