@@ -9,7 +9,7 @@ import { json } from "node:stream/consumers";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
-  createExternalProtectedDriver,
+  createExternalSandboxRegistration,
   loadDriverPackage,
 } from "../../apps/controller/src/composition/driver-packages.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
@@ -886,8 +886,8 @@ test(
     );
     assert.ok(!x.kube.reads.includes("Secret/node-setup"));
     assert.deepEqual(x.kube.actions, []);
-    assert.throws(
-      () => createExternalProtectedDriver(x.loaded.module, x.selection),
+    await assert.rejects(
+      createExternalSandboxRegistration(x.loaded.module, x.selection, ["credential_proxy"]),
       /one Driver registration/,
     );
   },

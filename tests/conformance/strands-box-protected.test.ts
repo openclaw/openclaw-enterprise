@@ -3,7 +3,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   createExternalDriver,
-  createExternalProtectedDriver,
+  createExternalSandboxRegistration,
   loadDriverPackage,
 } from "../../apps/controller/src/composition/driver-packages.ts";
 import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
@@ -60,14 +60,16 @@ test(
       () => createExternalDriver(loaded.module, selection(paired), "sandbox"),
       /unselected Driver identity/,
     );
-    assert.throws(
-      () => createExternalProtectedDriver(loaded.module, selection(ordinary)),
+    await assert.rejects(
+      createExternalSandboxRegistration(loaded.module, selection(ordinary), ["credential_proxy"]),
       /one Driver registration/,
     );
     const plain = createExternalDriver(loaded.module, selection(ordinary), "sandbox");
     assert.equal("repositoryAccess" in plain, false);
     assert.equal("enrollHarness" in plain, false);
-    const owner = createExternalProtectedDriver(loaded.module, selection(paired));
+    const owner = await createExternalSandboxRegistration(loaded.module, selection(paired), [
+      "credential_proxy",
+    ]);
     t.after(() => owner.close());
     assert.equal(typeof owner.requireRepositoryGitTransport(), "function");
     const sandbox = owner.require("sandbox");

@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { isDeepStrictEqual } from "node:util";
 import { type TestContext } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createExternalProtectedDriver } from "../../apps/controller/src/composition/driver-packages.ts";
+import { createExternalSandboxRegistration } from "../../apps/controller/src/composition/driver-packages.ts";
 import {
   computeReleasePublicKey,
   signComputeExecutionRelease,
@@ -174,12 +174,11 @@ export async function pairedFixture(t: TestContext, options: { originPort?: numb
     relay,
     protectedRepository: { provider: "github" },
   };
-  const owner = createExternalProtectedDriver(module as never, {
-    id,
-    implementation,
-    configuration,
-    definition: module as never,
-  });
+  const owner = await createExternalSandboxRegistration(
+    module as never,
+    { id, implementation, configuration, definition: module as never },
+    ["credential_proxy"],
+  );
   t.after(() => owner.close());
   const grant = { providerInstanceId: "provider", repositoryId: "one-selection", grantId: "grant" };
   const plan: ProxyPlan = {
