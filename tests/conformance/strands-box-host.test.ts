@@ -87,6 +87,7 @@ import {
   assertPinnedResolution,
   assertUpstreamCaScope,
   BOX_UPSTREAM_CA_KEY,
+  CONTROLLED_INFERENCE_MARKER,
   loadUpstreamCa,
   nativeHookRoute,
   parseRoute,
@@ -2331,48 +2332,85 @@ test(
       url: "https://10.0.0.9:8444/v1",
       address: "10.0.0.9",
     };
-    const model = { socket: join(runtimeDir, "source", "model.sock"), path: "/v1/responses" };
-    const credentialSource = { socket: join(runtimeDir, "source", "oce.sock"), bearer, model };
+    // Both sources' sockets inside a run's own runtime directory, as the host requires.
+    const sources = (run: string) => {
+      const model = { socket: join(run, "source", "model.sock"), path: "/v1/responses" };
+      return {
+        model,
+        credentialSource: { socket: join(run, "source", "oce.sock"), bearer, model },
+      };
+    };
+    const { model, credentialSource } = sources(runtimeDir);
     const releaseGate = true as const;
     const input = gated(smokeInput(config).input);
     const held = { ...input, egress: [route], releaseGate, reservationGeneration };
     try {
-      for (const refused of [
-        { ...held, credentialSource, environment: { ...input.environment, OPENAI_API_KEY: "x" } },
-        { ...held, credentialSource, egress: [] },
-        { ...held, credentialSource, egress: [route, route] },
-        {
-          ...held,
-          credentialSource: { ...credentialSource, model: { ...model, path: "/v1/chat" } },
-        },
-        {
-          ...held,
-          credentialSource: {
-            ...credentialSource,
-            model: { ...model, socket: credentialSource.socket },
-          },
-        },
-        {
-          ...held,
-          credentialSource: {
-            ...credentialSource,
-            model: { ...model, socket: join(runtimeDir, "other", "model.sock") },
-          },
-        },
-        {
-          ...held,
-          credentialSource: {
-            ...credentialSource,
-            model: { ...model, socket: join(directory, "model.sock") },
-          },
-        },
-      ]) {
+      // Each case runs in a scratch runtime directory with its sockets inside it and differs from
+      // the admitted start only by its own defect; the control start in the same shape is
+      // admitted and reaches the release gate, so a refusal can come only from that defect.
+      for (const [inScratch, expected] of [
+        [(run: string) => ({ ...held, ...sources(run) }), "startup_refused:wait-release"],
+        ...(
+          [
+            (run: string) => ({
+              ...held,
+              ...sources(run),
+              // With a model source Box sets this placeholder itself; the environment may not.
+              environment: { ...input.environment, OPENAI_API_KEY: CONTROLLED_INFERENCE_MARKER },
+            }),
+            (run: string) => ({ ...held, ...sources(run), egress: [] }),
+            (run: string) => ({ ...held, ...sources(run), egress: [route, route] }),
+            (run: string) => {
+              const own = sources(run);
+              return {
+                ...held,
+                credentialSource: {
+                  ...own.credentialSource,
+                  model: { ...own.model, path: "/v1/chat" },
+                },
+              };
+            },
+            (run: string) => {
+              const own = sources(run);
+              return {
+                ...held,
+                credentialSource: {
+                  ...own.credentialSource,
+                  model: { ...own.model, socket: own.credentialSource.socket },
+                },
+              };
+            },
+            (run: string) => {
+              const own = sources(run);
+              return {
+                ...held,
+                credentialSource: {
+                  ...own.credentialSource,
+                  model: { ...own.model, socket: join(run, "other", "model.sock") },
+                },
+              };
+            },
+            (run: string) => {
+              const own = sources(run);
+              return {
+                ...held,
+                credentialSource: {
+                  ...own.credentialSource,
+                  model: { ...own.model, socket: join(directory, "model.sock") },
+                },
+              };
+            },
+          ] as const
+        ).map((refused) => [refused, "startup_refused:stage-inputs"] as const),
+      ] as const) {
         const scratch = join(directory, `refused-${randomBytes(4).toString("hex")}`);
         mkdirSync(scratch, { mode: 0o700 });
-        const refusedExecution = start({ ...config, runtimeDir: scratch }, refused);
-        await assert.rejects(refusedExecution.ready, { message: "startup_refused:stage-inputs" });
-        await refusedExecution.done.catch(() => undefined);
-        assert.equal(refusedExecution.boxProcess(), undefined);
+        const execution = start({ ...config, runtimeDir: scratch }, inScratch(scratch));
+        await assert.rejects(execution.ready, { message: expected });
+        await execution.done.catch(() => undefined);
+        if (expected === "startup_refused:stage-inputs") {
+          assert.equal(execution.boxProcess(), undefined);
+        }
       }
       const execution = start(config, { ...held, credentialSource });
       await execution.spawned;
