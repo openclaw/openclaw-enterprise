@@ -257,3 +257,87 @@ test("with key digests the dry-run model accepts only those bearers and records 
   const recorded = JSON.stringify(requests);
   assert.ok(!recorded.includes(key) && !recorded.includes(rotated), "only digests are recorded");
 });
+
+test("the model-sibling step posts only to the planned URLs, with the placeholder by reference", () => {
+  assert.match(gitCommand(plan, nonce, "model-sibling"), /^echo model-sibling-unplanned-/);
+  const siblings = [
+    "https://model.example.test:8444/v1/responses",
+    "https://model.example.test:8444/route/v1/responses/x",
+  ];
+  const command = gitCommand(gitPlan({ ...plan, modelSiblings: siblings }), nonce, "model-sibling");
+  for (const url of siblings) assert.equal(command.split(` ${url}`).length, 3, "printed and posted once");
+  assert.deepEqual(
+    [...new Set(command.match(/https:\/\/[^\s"]+/g))].sort(),
+    [...siblings].sort(),
+  );
+  assert.match(command, /-H "Authorization: Bearer \$k"/);
+  assert.match(command, /-o \/dev\/null/);
+  assert.doesNotMatch(command, /echo[^;]*\$k\b|printf[^;]*\$k\b/, "the placeholder is never printed");
+  for (const bad of [
+    ["http://model.example.test:8444/v1/responses"],
+    ["https://model.example.test/v1/responses"],
+    ["https://model.example.test:8444/v1/responses?x=1"],
+    ["https://model.example.test:8444/v1/$(id)"],
+    ["https://model.example.test:8444/a/../v1"],
+    [],
+    Array(9).fill(siblings[0]),
+  ]) {
+    assert.throws(() => gitPlan({ ...plan, modelSiblings: bad }), /modelSiblings/);
+  }
+});
+
+test("with a path prefix the dry-run model also serves the Responses path below it, and nothing next to it", async () => {
+  const { createHash } = await import("node:crypto");
+  const { controlledGitModelRequests } = await import(
+    "../../deploy/examples/strands-box/git/controlled-git-model.ts"
+  );
+  const key = `sk-test-${"p".repeat(40)}`;
+  const sha = createHash("sha256").update(key).digest("hex");
+  const rows: Record<string, unknown>[] = [];
+  const peer = { address: "10.0.0.9", bearerSha256: [sha], requests: (row: Record<string, unknown>) => rows.push(row) };
+  for (const bad of ["route", "/route/", "/a//b", "/../v1", "/%2e", "/a/b/c/d/e"]) {
+    assert.throws(() => controlledGitModelRequests(nonce, plan, () => {}, { ...peer, pathPrefix: bad }), /pathPrefix/);
+  }
+  const handler = controlledGitModelRequests(nonce, plan, () => {}, { ...peer, pathPrefix: "/route" });
+  const call = async (url: string) => {
+    const body = Buffer.from(JSON.stringify({ model: "gpt-5", input: [{ role: "user", content: "hello" }] }));
+    const req = Object.assign(
+      (async function* () {
+        yield body;
+      })(),
+      { socket: { remoteAddress: "10.0.0.9" }, method: "POST", url, headers: { authorization: `Bearer ${key}` } },
+    );
+    let status = 200;
+    const res = {
+      headersSent: false,
+      writeHead(code: number) {
+        status = code;
+        return { end() {} };
+      },
+      setHeader() {},
+      write: () => true,
+      end() {},
+      destroy() {},
+    };
+    await handler(req as never, res as never);
+    return status;
+  };
+  assert.equal(await call("/route/v1/responses"), 200);
+  assert.equal(await call("/v1/responses"), 200);
+  for (const sibling of ["/route/v1/responses/x", "/routex/v1/responses", "/route/v2/responses", "/other/v1/responses", "/route/v1/responses?x=1"]) {
+    assert.equal(await call(sibling), 404, sibling);
+  }
+  assert.deepEqual(
+    rows.map((row) => [row.path, row.bearerSha256 === sha]),
+    [
+      ["/route/v1/responses", true],
+      ["/v1/responses", true],
+      ["/route/v1/responses/x", true],
+      ["/routex/v1/responses", true],
+      ["/route/v2/responses", true],
+      ["/other/v1/responses", true],
+      ["/route/v1/responses?x=1", true],
+    ],
+  );
+  assert.ok(!JSON.stringify(rows).includes(key));
+});

@@ -5,8 +5,12 @@
 // through it: the placeholder step prints only digests and lengths of the workload's variables.
 //
 //   node controlled-git-model.ts <config.json>
-//   config: { address, port, boxAddress, certificate, key, runDirectory, nonce, plan, bearerSha256? }
-//   plan:   { repository, otherRepository, branch, otherRef, base }
+//   config: { address, port, boxAddress, certificate, key, runDirectory, nonce, plan, bearerSha256?, pathPrefix? }
+//   plan:   { repository, otherRepository, branch, otherRef, base, modelSiblings? }
+//   pathPrefix: also serve the Responses path below this prefix (`<prefix>/v1/responses`), for a model
+//   route whose base URL has a path prefix. `/v1/responses` stays served.
+//   modelSiblings: URLs next to the model route that the model-sibling step posts to from the
+//   workload with Box's placeholder; each one must be refused before it reaches a provider.
 //   bearerSha256: the SHA-256 (hex) of each model key the fixture accepts (a protected Agent's key, which
 //   Box injects). Without it the fixture accepts only the controlled route's public marker. Every
 //   request's bearer digest (never the bearer) goes to `model-requests.jsonl` in the run directory.
@@ -46,6 +50,9 @@ export const GIT_STEPS = [
   // Codex's own patch tool (not the shell): add one new harmless file under the Harness home,
   // outside the workspace. Records whether Codex or Box refuses the write.
   "outside-write",
+  // Requests from the workload's shell to paths next to the model route (plan.modelSiblings),
+  // with Box's placeholder as the bearer: HTTP status codes only.
+  "model-sibling",
 ] as const;
 /** Steps whose tool output the receipt keeps (bounded): none of them prints a credential. */
 const RECORDED_OUTPUT: ReadonlySet<GitStep> = new Set<GitStep>([
@@ -57,6 +64,7 @@ const RECORDED_OUTPUT: ReadonlySet<GitStep> = new Set<GitStep>([
   "tamper-interpreter",
   "tamper-forge",
   "outside-write",
+  "model-sibling",
 ]);
 /** Bound on repeated calls for the gateway-loop step (the stock critical threshold is 20). */
 export const LOOP_CALLS = 30;
@@ -67,6 +75,7 @@ export interface GitPlan {
   readonly branch: string;
   readonly otherRef: string;
   readonly base: string;
+  readonly modelSiblings?: readonly string[];
 }
 const model = "gpt-5";
 const WORKSPACE = "/home/node/workspace";
@@ -79,16 +88,30 @@ export function outsideWritePatch(nonce: string): string {
 }
 const REPOSITORY = /^[A-Za-z0-9_.-]{1,39}\/[A-Za-z0-9_.-]{1,100}$/;
 const BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,100}$/;
+/** A model-sibling URL: https, an explicit port and plain path segments; nothing a shell expands. */
+const SIBLING = /^https:\/\/[a-z0-9.-]{1,100}:[0-9]{2,5}(?:\/[A-Za-z0-9._-]{1,40}){1,8}$/;
+/** A model route's path prefix: one to four plain segments. */
+const PATH_PREFIX = /^(?:\/[A-Za-z0-9_-]{1,40}){1,4}$/;
 
 export function gitPlan(value: unknown): GitPlan {
   const data = object(value);
-  fields(data, ["repository", "otherRepository", "branch", "otherRef", "base"]);
+  fields(data, ["repository", "otherRepository", "branch", "otherRef", "base", "modelSiblings"]);
+  const siblings = data.modelSiblings;
+  if (
+    siblings !== undefined &&
+    (!Array.isArray(siblings) ||
+      siblings.length === 0 ||
+      siblings.length > 8 ||
+      !siblings.every((url) => typeof url === "string" && SIBLING.test(url) && !url.includes("..")))
+  )
+    throw new Error("modelSiblings must list one to eight plain https URLs.");
   const plan = {
     repository: string(data.repository),
     otherRepository: string(data.otherRepository),
     branch: string(data.branch),
     otherRef: string(data.otherRef),
     base: string(data.base),
+    ...(siblings === undefined ? {} : { modelSiblings: siblings as string[] }),
   };
   if (
     !REPOSITORY.test(plan.repository) ||
@@ -176,6 +199,20 @@ export function gitCommand(plan: GitPlan, nonce: string, step: GitStep): string 
       // Fallback when the request offers no apply_patch tool: Codex intercepts a shell
       // `apply_patch` invocation and applies the patch itself.
       return `apply_patch <<'EOF'\n${outsideWritePatch(nonce)}EOF`;
+    case "model-sibling":
+      // Box's placeholder (from the environment, or Codex's auth.json when the tool shell drops
+      // *KEY* variables) travels only through a variable; the reply body is discarded.
+      return plan.modelSiblings === undefined
+        ? `echo model-sibling-unplanned-${tag}`
+        : [
+            `k=\${OPENAI_API_KEY:-$(jq -r '.OPENAI_API_KEY // empty' /home/node/.codex/auth.json 2>/dev/null)}`,
+            `case "$k" in strands_box_*) echo placeholder=1 len=\${#k};; *) echo placeholder=0 len=\${#k};; esac`,
+            ...plan.modelSiblings.map(
+              (url) =>
+                `printf '%s %s\\n' ${url} "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -X POST -H "Authorization: Bearer $k" -H 'Content-Type: application/json' --data '{}' ${url} 2>&1 | tr -d '\\n' | cut -c1-160)"`,
+            ),
+            `echo model-sibling-${tag}`,
+          ].join("; ");
     case "tamper-forge":
       // The readable relay credential, then a forged permission request through the hook route:
       // with the Shell's own client, and with the permitted relay command itself.
@@ -254,6 +291,8 @@ export interface GitModelPeer {
   readonly bearerSha256?: readonly string[];
   /** One row per request that reached the fixture: its bearer's digest and whether it was accepted. */
   readonly requests?: (row: Obj) => void;
+  /** Also serve `<pathPrefix>/v1/responses` (a model route below a path prefix). */
+  readonly pathPrefix?: string;
 }
 
 /** One request handler for the whole run; each step's tool call is answered once. */
@@ -265,6 +304,9 @@ export function controlledGitModelRequests(
 ) {
   const calls = new Map<string, GitStep>();
   const answered = new Set<string>();
+  if (peer.pathPrefix !== undefined && !PATH_PREFIX.test(peer.pathPrefix))
+    throw new Error("pathPrefix must be plain path segments.");
+  const served = new Set(["/v1/responses", ...(peer.pathPrefix === undefined ? [] : [`${peer.pathPrefix}/v1/responses`])]);
   return async (req: IncomingMessage, res: ServerResponse) => {
     try {
       const presented = bearerDigest(req.headers.authorization);
@@ -283,7 +325,7 @@ export function controlledGitModelRequests(
       if (
         req.socket.remoteAddress !== peer.address ||
         req.method !== "POST" ||
-        req.url !== "/v1/responses" ||
+        !served.has(String(req.url)) ||
         !authorized
       ) {
         res.writeHead(404).end();
@@ -411,7 +453,18 @@ export function controlledGitModelRequests(
 
 function start(path: string) {
   const data = object(readConfig(path));
-  fields(data, ["address", "port", "boxAddress", "certificate", "key", "runDirectory", "nonce", "plan", "bearerSha256"]);
+  fields(data, [
+    "address",
+    "port",
+    "boxAddress",
+    "certificate",
+    "key",
+    "runDirectory",
+    "nonce",
+    "plan",
+    "bearerSha256",
+    "pathPrefix",
+  ]);
   const nonce = data.nonce;
   const port = data.port;
   if (!isNonce(nonce) || typeof port !== "number" || !Number.isInteger(port) || port < 1024)
@@ -449,6 +502,7 @@ function start(path: string) {
         ...(keys === undefined
           ? { authorization: `Bearer ${CONTROLLED_INFERENCE_MARKER}` }
           : { bearerSha256: keys as string[] }),
+        ...(data.pathPrefix === undefined ? {} : { pathPrefix: string(data.pathPrefix) }),
         requests: log,
       },
     ),
