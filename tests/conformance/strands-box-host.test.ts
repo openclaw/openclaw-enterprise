@@ -322,7 +322,14 @@ test(
       const first = await revoke({ owner, sourceId: "cs_model" });
       assert.equal(first.status, 200);
       const receipt = first.body as Record<string, unknown>;
-      assert.deepEqual(Object.keys(receipt).sort(), ["owner", "receiptId", "revokedAt", "sourceId"]);
+      const receiptOf = (reply: { body: unknown }) =>
+        (reply.body as Record<string, unknown> | undefined)?.receiptId;
+      assert.deepEqual(Object.keys(receipt).sort(), [
+        "owner",
+        "receiptId",
+        "revokedAt",
+        "sourceId",
+      ]);
       assert.deepEqual(receipt.owner, owner);
       assert.equal(receipt.sourceId, "cs_model");
       const files = readdirSync(revocationDir);
@@ -333,27 +340,32 @@ test(
       assert.equal(stored?.receiptId, receipt.receiptId);
       assert.equal(stored?.executionId, undefined);
       // Idempotent: the same receipt again. Another source of the revision gets its own.
-      assert.equal((await revoke({ owner, sourceId: "cs_model" })).body?.receiptId, receipt.receiptId);
+      assert.equal(receiptOf(await revoke({ owner, sourceId: "cs_model" })), receipt.receiptId);
       const second = await revoke({ owner, sourceId: "cs_other" });
-      assert.notEqual(second.body?.receiptId, receipt.receiptId);
+      assert.notEqual(receiptOf(second), receipt.receiptId);
       assert.equal(readdirSync(revocationDir).length, 2);
       // What the next start (PUT) of this revision loads into its view: refused from the start.
       assert.deepEqual(harnessModelView(config as never, owner, "cs_model").revoked, {
         receiptId: receipt.receiptId,
         revokedAt: receipt.revokedAt,
       });
-      assert.deepEqual(harnessModelView(config as never, { ...owner, revisionId: "rev_next" }, "cs_model"), {
-        sourceId: "cs_model",
-      });
+      assert.deepEqual(
+        harnessModelView(config as never, { ...owner, revisionId: "rev_next" }, "cs_model"),
+        {
+          sourceId: "cs_model",
+        },
+      );
       // The log names the receipt ID only.
       const deadline = Date.now() + 2_000;
-      while (!stdout.includes(String(second.body?.receiptId)) && Date.now() < deadline) {
+      while (!stdout.includes(String(receiptOf(second))) && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       assert.ok(stdout.includes(`model attachment revoked ${String(receipt.receiptId)}`));
       assert.ok(!stdout.includes("cs_model") && !stdout.includes(owner.agentId));
     } finally {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGTERM");
+      }
       await exited;
       rmSync(root, { recursive: true, force: true });
     }
@@ -375,7 +387,9 @@ test(
         { status: 409, body: { error: "model_not_configured" } },
       );
     } finally {
-      if (plainChild.exitCode === null && plainChild.signalCode === null) plainChild.kill("SIGTERM");
+      if (plainChild.exitCode === null && plainChild.signalCode === null) {
+        plainChild.kill("SIGTERM");
+      }
       await plainExited;
       rmSync(plain, { recursive: true, force: true });
     }

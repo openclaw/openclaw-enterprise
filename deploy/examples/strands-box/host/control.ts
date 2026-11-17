@@ -1391,6 +1391,7 @@ function reply(
     | RecordView
     | { error: string }
     | { asks: readonly (SourceAsk | ModelAsk)[] }
+    | Pick<ModelRevocation, "owner" | "sourceId" | "receiptId" | "revokedAt">
     | {
         state: "held" | "approved";
         owner: Owner;

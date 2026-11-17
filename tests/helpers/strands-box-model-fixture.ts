@@ -164,7 +164,9 @@ export async function fakeKubernetesSecrets(t: TestContext) {
     /** Bump a Secret's resourceVersion, as any write would. */
     touch(name: string) {
       const stored = secrets.get(name);
-      if (stored !== undefined) stored.metadata.resourceVersion = String(++version);
+      if (stored !== undefined) {
+        stored.metadata.resourceVersion = String(++version);
+      }
     },
     /** The stored value of one Secret, for the test's own comparison; never printed. */
     value(name: string): string | undefined {

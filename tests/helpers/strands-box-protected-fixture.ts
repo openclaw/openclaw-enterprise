@@ -529,7 +529,9 @@ export async function pairedFixture(
           String(input.sourceId),
           live as never,
         );
-        if (live?.harnessModel?.revoked !== undefined) host.modelRevoked = live.harnessModel.revoked;
+        if (live?.harnessModel?.revoked !== undefined) {
+          host.modelRevoked = live.harnessModel.revoked;
+        }
         reply(200, {
           owner: receipt.owner,
           sourceId: receipt.sourceId,
@@ -755,7 +757,9 @@ export async function pairedFixture(
       host.wakeCollect?.();
       const deadline = Date.now() + 10_000;
       while (!host.forgedAnswers.has(ask.askId)) {
-        if (Date.now() > deadline) throw new Error("the Worker did not answer the forged ask");
+        if (Date.now() > deadline) {
+          throw new Error("the Worker did not answer the forged ask");
+        }
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
       host.holdForged = undefined;
