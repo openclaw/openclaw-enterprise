@@ -1,9 +1,9 @@
 import type {
-  CredentialSourceDeviceAuthorization,
+  AgentDeviceAuthorizationResponse,
   CredentialSourceReference,
   InstallationCapabilities,
-  SecretReference,
 } from "@openclaw-enterprise/contracts";
+import type { Static } from "typebox";
 import { requestFailure, responseFields } from "../api-client.mjs";
 import { button, element, setUnavailable } from "../dom.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
@@ -12,11 +12,10 @@ import { message, namespacePath } from "./list.mjs";
 
 // The Console retains the public challenge and reference, never the provider's private state.
 type DeviceChallenge = Pick<
-  CredentialSourceDeviceAuthorization,
-  "verificationUrl" | "userCode" | "expiresAt" | "intervalSeconds"
-> & { session: SecretReference } & (
-    { status: "pending" } | { status: "ready"; source: CredentialSourceReference }
-  );
+  Static<typeof AgentDeviceAuthorizationResponse>["data"],
+  "session" | "verificationUrl" | "userCode" | "expiresAt" | "intervalSeconds"
+> &
+  ({ status: "pending" } | { status: "ready"; source: CredentialSourceReference });
 
 // Without a confirmed session reference, the Console can neither poll nor cancel that start.
 // Keep this outcome in the form draft so restoring it does not offer a duplicate sign-in.
@@ -29,9 +28,8 @@ function readLogin(
 ): DeviceChallenge {
   const { status, userCode, intervalSeconds, expiresAt, verificationUrl, session, source } =
     responseFields(value);
-  const { kind, id, namespaceId: sessionNamespace } = responseFields(session);
+  const { id, namespaceId: sessionNamespace } = responseFields(session);
   if (
-    kind !== "secret" ||
     typeof id !== "string" ||
     sessionNamespace !== namespaceId ||
     (expectedSessionId !== undefined && id !== expectedSessionId) ||
@@ -46,7 +44,7 @@ function readLogin(
     throw new Error("Invalid device authorization response");
   }
   const challenge = { userCode, verificationUrl, intervalSeconds, expiresAt };
-  const reference: SecretReference = { kind, id, namespaceId };
+  const reference = { id, namespaceId };
   if (status === "pending") {
     return { ...challenge, session: reference, status };
   }
