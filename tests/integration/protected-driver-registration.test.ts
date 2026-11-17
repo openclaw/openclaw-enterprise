@@ -2002,7 +2002,9 @@ test("an installed Sandbox can explicitly select its packaged Credential Gateway
         return { error, events };
       };
       const refusal = (message: RegExp) => (error: unknown) =>
-        error instanceof Error && error.name === "DriverSelectionError" && message.test(error.message);
+        error instanceof Error &&
+        error.name === "DriverSelectionError" &&
+        message.test(error.message);
 
       // Built-in admission: the loader binds the repository Driver only as the admission policy.
       const builtIn = await loadRepository();
@@ -2055,7 +2057,8 @@ test("an installed Sandbox can explicitly select its packaged Credential Gateway
       const otherPolicy = (
         await loadRepositoryPolicy({
           backend: {
-            ...configuration.backend[0]!,
+            id: configuration.backend[0]!.id,
+            type: "github",
             configuration: { registryPath },
             drivers: { repo: "other-repo" },
           },
