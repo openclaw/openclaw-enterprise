@@ -211,6 +211,48 @@ covers these implementation commits.
   reviewer authentication. No upstream source, global auth/security setting,
   default Preset, merge or force push was changed to bypass either blocker.
 
+## Simplification pass
+
+Review of `8d3f95dd5` accepted M1–M5. Source commit
+`1279bde62f5765b040b35efb9beeffd08d6f1e15` removes the synthetic full-access
+startup probe, uses the Controller's denial resource, shares one in-flight
+admission check and relay cleanup owner, stabilizes generated resource order,
+and trusts renderer-normalized auth fields. Scope-header and legacy-admission
+checks remain. All 24 changed test files and their distinct outcomes remain.
+Earlier container-probe receipts above are historical; startup now reports
+workspace-write proof not applicable/not performed for explicit full-access.
+
+Diff sizes use base `f2359730f`; authored counts exclude the three generated API files.
+
+| Scope | Reviewed head | After M1–M5 |
+| --- | --- | --- |
+| Total additions/deletions | +8,269/−4,842 | +3,464/−112 |
+| Authored additions/deletions | +3,045/−107 | +2,970/−110 |
+| Generated API reference | +4,835/−4,735 | +105/−2 |
+
+Key source sizes in lines: container probe 75 → 0; seccomp library 1,428 → 1,361;
+preparation entrypoint 88 → 83; relay 327 → 324; Fastify owner 5,431 → 5,424;
+Kubernetes Driver 17,987 → 17,981; API generator 766 → 795. The generator adds
+stable section ordering while removing movement of existing reference sections.
+
+Affected Fastify/IAM, Kubernetes and default seccomp/startup coverage passed
+612 test nodes with zero skips. The Go startup package, build/type, lint,
+format, workspace, OpenAPI, documentation and flow checks passed. Independent
+re-review of this delta is pending.
+
+The real OpenClaw-only HTTP/lifecycle retry uses Compose OCC, PostgreSQL/IAM,
+owned loopback k3d and the unchanged native runtime. Its controller is
+`sha256:a7cf2dcdd53a7fd9e31096f8087540766ecb4cbabfe2e85117b32ae32a446577`.
+The HTTP scenario passed 29 requests: ten JSON completions, two SSE completions
+and two independently verified tool actions. It retained human/service admission,
+conversation isolation and rotation, revocation/replacement/stop interruptions
+and opt-out. Provider-call counts remain unobserved. Workspace-write startup
+proof was not performed; no startup containment claim is made. The selected run
+passed ten test nodes, with zero failures or skips. Cleanup verified no owned
+containers, volumes or networks; private state and temporary model input are
+removed. Default kubeconfig and unrelated resources are unchanged. Known Codex
+SSE failure and canonical reviewer authentication were not retried or bypassed.
+
 ## Manual Notes
 
 ## Changelog
