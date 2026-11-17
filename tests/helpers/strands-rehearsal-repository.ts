@@ -24,8 +24,8 @@ const repository = {
   base: "main",
 };
 
-async function listen(server: Server): Promise<number> {
-  server.listen(0, "127.0.0.1");
+async function listen(server: Server, port = 0): Promise<number> {
+  server.listen(port, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
   assert.ok(address && typeof address !== "string");
@@ -128,6 +128,8 @@ const graphQlRepository = {
 export async function strandsRepositoryOriginFixture(
   t: TestContext,
   faults: RepositoryOriginFaults = { loseDraft: false, losePush: false },
+  /** `port`: a fixed loopback port, for a real Box that dials GitHub's own port 443. */
+  options: { readonly port?: number } = {},
 ) {
   const agent = new Agent({ keepAlive: false, maxCachedSessions: 0 });
   let dispose = async () => {
@@ -379,7 +381,7 @@ export async function strandsRepositoryOriginFixture(
     // the later temporary-directory hook removes the repository.
     await Promise.all([closed, ...operations]);
   };
-  const port = await listen(provider);
+  const port = await listen(provider, options.port);
   agent.createConnection = (options) => {
     assert.ok(options.servername === "github.com" || options.servername === "api.github.com");
     return connect({

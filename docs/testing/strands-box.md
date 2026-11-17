@@ -100,6 +100,16 @@ these cases. Once selected, a missing input fails the case.
   agent directory.
 - `tests/conformance/strands-box-protected-gh.test.ts` pushes and opens a
   draft with stock `git` and `gh`, as described above.
+- `tests/conformance/strands-box-source-native.test.ts` runs a real Box build
+  with the request-time credential source (`strands-box`, with
+  `strands-box-sock-alias` and `strands-box-contain-trampoline` beside it) and
+  stock `git` and `gh` inside Box against the controlled GitHub origin. Box asks
+  the host's credential source for every request and the paired Driver answers
+  with OCE's decision. The host must resolve `github.com` and `api.github.com`
+  to `127.0.0.1` and let the test bind port 443. Set `STRANDS_BOX_SOURCE_BOX` to
+  `strands-box` and `STRANDS_BOX_SOURCE_GH` to stock `gh`. On Linux x86-64 the
+  case sets `EXPERIMENTAL_X86_SUPPORT=TRUE` for `box run`. Keep `TMPDIR` off
+  `/tmp`, because Box gives the workload a private `/tmp`.
 - `tests/conformance/strands-box-turn-network-codex.test.ts` checks that Codex
   applies no network sandbox of its own under the Box turn policy. Put a Linux
   Codex CLI on `PATH` or set `OCE_CODEX_BIN`.

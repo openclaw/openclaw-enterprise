@@ -23,6 +23,13 @@
       ]
     },
     {
+      "path": "tests/conformance/strands-box-source-native.test.ts",
+      "requiredEnv": ["STRANDS_BOX_SOURCE_BOX", "STRANDS_BOX_SOURCE_GH"],
+      "expectedTests": [
+        "a real Box asks OCE for every GitHub request: stock git and gh, renewal without a restart, and refusals before any provider byte"
+      ]
+    },
+    {
       "path": "tests/conformance/strands-box-turn-network-codex.test.ts",
       "expectedTests": [
         "Codex applies no network sandbox of its own under the Box turn policy, so Box egress is the fence"

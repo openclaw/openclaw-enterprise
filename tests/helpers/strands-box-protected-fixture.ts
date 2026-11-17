@@ -152,8 +152,12 @@ export async function installPackage(t: TestContext) {
   return { directory, packageRoot, dist: join(installed, "dist") };
 }
 
-export async function pairedFixture(t: TestContext) {
-  const origin = await strandsRepositoryOriginFixture(t);
+export async function pairedFixture(t: TestContext, options: { originPort?: number } = {}) {
+  const origin = await strandsRepositoryOriginFixture(
+    t,
+    undefined,
+    options.originPort === undefined ? {} : { port: options.originPort },
+  );
   const { directory, dist } = await installPackage(t);
   await chmod(directory, 0o700);
   // The installed build's own module, loaded as the paired loader does.
@@ -276,6 +280,8 @@ export async function pairedFixture(t: TestContext) {
     sourceLive: true,
     collects: 0,
     answers: 0,
+    /** Each answer's outcome as Box received it: "credential" or the refusal code, never a value. */
+    answered: [] as string[],
     deletes: 0,
   };
   const executionId = "box-execution";
@@ -362,6 +368,8 @@ export async function pairedFixture(t: TestContext) {
           reply(200, { asks: await source.collect(Number(input.waitMs), stop.signal) });
         } else {
           host.answers++;
+          const answer = input.answer as Record<string, unknown> | undefined;
+          host.answered.push(typeof answer?.refusal === "string" ? answer.refusal : "credential");
           reply(source.answer(String(input.askId), input.answer) ? 204 : 409);
         }
         return;
@@ -563,15 +571,14 @@ export async function pairedFixture(t: TestContext) {
 }
 
 /**
- * The Stage B end-to-end steps: activation, request-time readiness (no delivery, no restart),
- * stock git push with one OCE decision per request, renewal while Box keeps running, the
- * wrong-repository refusal by OCE, a host outside policy refused by Box, and withdrawal refused
- * by OCE before any provider connection while the execution runs. With `ghPath` the stock gh
- * draft and its refusals run too (manual lane only).
+ * Activation and request-time readiness, as the Worker runs it: before the release nothing is
+ * prepared; without the live source nothing is declared ready; then one install intent and its
+ * confirmation, nothing sent to the host; a Worker restart adopts the confirmed version.
  */
-export async function stageBEndToEnd(t: TestContext, ghPath: string | undefined) {
-  const f = await pairedFixture(t);
-  const signal = AbortSignal.timeout(80_000);
+export async function activateStageB(
+  f: Awaited<ReturnType<typeof pairedFixture>>,
+  signal: AbortSignal,
+) {
   const wiring = await f.release.configure(f.context);
   const bind = f.owner.requireRepositoryGitTransport();
   let binding = await bind(f.authority, f.requests);
@@ -611,6 +618,20 @@ export async function stageBEndToEnd(t: TestContext, ghPath: string | undefined)
   assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "ready");
   const settledAt = f.sandbox.repositoryAccess!.materialSettledAt(f.revision.id);
   assert.equal(typeof settledAt, "number");
+  return { binding, settledAt };
+}
+
+/**
+ * The Stage B end-to-end steps: activation, request-time readiness (no delivery, no restart),
+ * stock git push with one OCE decision per request, renewal while Box keeps running, the
+ * wrong-repository refusal by OCE, a host outside policy refused by Box, and withdrawal refused
+ * by OCE before any provider connection while the execution runs. With `ghPath` the stock gh
+ * draft and its refusals run too (manual lane only).
+ */
+export async function stageBEndToEnd(t: TestContext, ghPath: string | undefined) {
+  const f = await pairedFixture(t);
+  const signal = AbortSignal.timeout(80_000);
+  const { binding, settledAt } = await activateStageB(f, signal);
 
   // The host started `box run` once with exactly these routes, policy and environment: the
   // source bearer is the only value `box run` holds.
