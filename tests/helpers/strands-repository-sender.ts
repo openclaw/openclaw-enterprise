@@ -3,7 +3,7 @@ import { createHash, X509Certificate } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, readFile } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
-import { createServer, request } from "node:https";
+import { Agent, createServer, request } from "node:https";
 import type { Server } from "node:net";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
@@ -290,38 +290,46 @@ export async function strandsRepositorySenderFixture(
         throw new Error("Fixture request exceeds the Git sender body limit.");
       }
       const secureContext = createSecureContext({ cert: leaf.cert, key: leaf.key, ca: caBytes });
-      return new Promise((resolve, reject) => {
-        const req = request(
-          {
-            host: "127.0.0.1",
-            port,
-            path,
-            method: body ? "POST" : "GET",
-            secureContext,
-            agent: false,
-            rejectUnauthorized: true,
-            ...(body
-              ? {
-                  headers: {
-                    "content-type": Buffer.isBuffer(input)
-                      ? "application/x-git-receive-pack-request"
-                      : "application/json",
-                    "content-length": body.length,
-                    ...(gitProtocol === undefined ? {} : { "git-protocol": gitProtocol }),
-                  },
-                }
-              : {}),
-          },
-          (res) => {
-            void readBody(res).then(
-              (bytes) => resolve({ status: res.statusCode ?? 0, body: bytes }),
-              reject,
-            );
-          },
-        );
-        req.once("error", reject);
-        req.end(body);
+      const agent = new Agent({
+        secureContext,
+        rejectUnauthorized: true,
+        keepAlive: false,
+        maxCachedSessions: 0,
       });
+      try {
+        return await new Promise<{ status: number; body: Buffer }>((resolve, reject) => {
+          const req = request(
+            {
+              host: "127.0.0.1",
+              port,
+              path,
+              method: body ? "POST" : "GET",
+              agent,
+              ...(body
+                ? {
+                    headers: {
+                      "content-type": Buffer.isBuffer(input)
+                        ? "application/x-git-receive-pack-request"
+                        : "application/json",
+                      "content-length": body.length,
+                      ...(gitProtocol === undefined ? {} : { "git-protocol": gitProtocol }),
+                    },
+                  }
+                : {}),
+            },
+            (res) => {
+              void readBody(res).then(
+                (bytes) => resolve({ status: res.statusCode ?? 0, body: bytes }),
+                reject,
+              );
+            },
+          );
+          req.once("error", reject);
+          req.end(body);
+        });
+      } finally {
+        agent.destroy();
+      }
     };
     return { remote, remoteGit, call, binding };
   };
