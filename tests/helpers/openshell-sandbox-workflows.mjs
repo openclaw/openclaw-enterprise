@@ -7,6 +7,10 @@ import {
   openShellGatewayGrpcChannel,
   openShellGatewayGrpcMetadata,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import {
+  openShellPolicyCandidate,
+  sameOpenShellPolicy,
+} from "../../apps/controller/src/drivers/sandbox/openshell-policy.ts";
 import { fileURLToPath } from "node:url";
 import { isWorkspaceNodeDeviceId } from "../../packages/utils/src/index.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
@@ -1399,9 +1403,11 @@ function createIntegrationSandboxDriverFactory(
           return value;
         }
         return async (...args) => {
+          let policyWrite;
           try {
             if (property === "updatePolicy") {
-              policyWrites.push({ sandbox: args[0].sandbox, requestId: args[0].requestId });
+              policyWrite = { sandbox: args[0].sandbox, requestId: args[0].requestId };
+              policyWrites.push(policyWrite);
             }
             const result = await value.apply(target, args);
             if (property === "updatePolicy") {
@@ -1409,6 +1415,13 @@ function createIntegrationSandboxDriverFactory(
             }
             return result;
           } catch (error) {
+            if (
+              policyWrite !== undefined &&
+              error?.message ===
+                "OpenShell UpdateConfig failed with gRPC status 10 (reason RESOURCE_VERSION_CONFLICT)."
+            ) {
+              policyWrite.refusedResourceVersion = true;
+            }
             process.stderr.write(
               `OpenShell gateway ${String(property)} failed: ${error?.code ?? ""} ${error?.details ?? error?.message}\n`,
             );
@@ -6072,14 +6085,16 @@ PYTHON`;
     });
     assert.equal(saved.status, 200, JSON.stringify(saved.error));
     version = saved.data.version;
-    const writes = topology.policyWrites.length;
     let wrote = false;
+    let writesAtInterruption;
+    let applicationId;
     if (interruptAfterWrite) {
       // The real UpdateConfig has committed. Withhold its receipt until worker shutdown
       // aborts the in-flight pass; no provider behavior or policy result is replaced.
       topology.setPolicyWriteBarrier(async (signal) => {
         topology.setPolicyWriteBarrier(undefined);
         wrote = true;
+        writesAtInterruption = topology.policyWrites.length;
         await new Promise((_, reject) => {
           if (signal.aborted) {
             reject(signal.reason);
@@ -6089,23 +6104,115 @@ PYTHON`;
         });
       });
     }
-    // Stage the application while the real worker is stopped, then prove durable recovery
-    // through a new worker and database pool before any provider effect occurs.
-    await topology.pauseWorker();
-    try {
+    const submitApplication = async () => {
       const applied = await topology.request("POST", `${policyPath}/apply`, {
         expectedVersion: version,
         revisionId: topology.revision.id,
       });
       assert.equal(applied.status, 202, JSON.stringify(applied.error));
       assert.equal(applied.data.application.state, "pending");
+      const previous = applicationId;
+      applicationId = applied.data.application.id;
+      assert.notEqual(
+        applicationId,
+        previous,
+        "each explicit application needs a new operation ID",
+      );
+    };
+    // Stage the application while the real worker is stopped, then prove durable recovery
+    // through a new worker and database pool before any provider effect occurs.
+    await topology.pauseWorker();
+    try {
+      await submitApplication();
     } finally {
       await topology.resumeWorker();
     }
+    let reapplied = false;
+    const reapplyAfterStaleVersion = async (view) => {
+      const application = view.data.policy.application;
+      assert.equal(application?.id, applicationId);
+      assert.equal(
+        application?.reason,
+        "SANDBOX_POLICY_PROVIDER_FAILED",
+        JSON.stringify(application),
+      );
+      assert.equal(reapplied, false, "only one explicit application retry is allowed");
+      assert.equal(wrote, false, "an interrupted or ambiguous write must not be reapplied");
+      const previousWrites = topology.policyWrites.filter(
+        (write) => write.requestId === applicationId,
+      );
+      assert.ok(
+        previousWrites.length === 0 ||
+          (previousWrites.length === 1 && previousWrites[0].refusedResourceVersion === true),
+        "reapply requires no dispatch or a definitive structured resource-version conflict",
+      );
+      const pinned = await topology.observerPool.query(
+        "SELECT document->'application'->>'expectedProviderVersion' AS version, document->'application'->'snapshot' AS snapshot FROM occ.sandbox_policies WHERE namespace_id=$1 AND agent_id=$2 AND document->'application'->>'id'=$3",
+        [topology.namespaceId, topology.agent.id, applicationId],
+      );
+      assert.equal(pinned.rows.length, 1);
+      assert.match(pinned.rows[0].version ?? "", /^[1-9][0-9]*$/);
+      const current = await topology
+        .gatewayClient()
+        .getSandbox(
+          { workspace: topology.placement, name: topology.sandbox.metadata.name },
+          AbortSignal.timeout(10_000),
+        );
+      assert.ok(current);
+      assert.notEqual(
+        current.resourceVersion,
+        pinned.rows[0].version,
+        "reapply requires proof that the provider moved past the fixed CAS version",
+      );
+      const status = await providerPolicy();
+      assert.notEqual(
+        status.state,
+        "POLICY_STATUS_FAILED",
+        "a failed committed policy must not be reapplied",
+      );
+      assert.notEqual(
+        status.state,
+        "POLICY_STATUS_SUPERSEDED",
+        "a superseded committed policy must not be reapplied",
+      );
+      assert.ok(current.spec?.policy);
+      assert.equal(
+        sameOpenShellPolicy(
+          status.policy,
+          openShellPolicyCandidate(current.spec.policy, pinned.rows[0].snapshot),
+        ),
+        false,
+        "a matching provider policy must not be reapplied under a fresh operation ID",
+      );
+      const refreshed = await topology.request("GET", policyPath);
+      assert.equal(refreshed.status, 200, JSON.stringify(refreshed.error));
+      assert.equal(refreshed.data.policy.version, version);
+      assert.equal(refreshed.data.policy.application.id, applicationId);
+      reapplied = true;
+      process.stderr.write(
+        "OpenShell integration: caller refreshed and explicitly reapplied after a stale provider version.\n",
+      );
+      await submitApplication();
+    };
+    const applicationView = async () => {
+      const view = await topology.request("GET", policyPath);
+      assert.equal(view.status, 200, JSON.stringify(view.error));
+      if (view.data.policy.application?.state === "failed") {
+        await reapplyAfterStaleVersion(view);
+        return undefined;
+      }
+      return view;
+    };
     if (interruptAfterWrite) {
       await waitFor(
         "native UpdateConfig before interruption",
-        async () => (wrote ? true : undefined),
+        async () => {
+          if (wrote) {
+            return true;
+          }
+          await applicationView();
+          return wrote ? true : undefined;
+        },
         30_000,
       );
       await topology.pauseWorker();
@@ -6114,14 +6221,8 @@ PYTHON`;
     await waitFor(
       "matching loaded live network policy",
       async () => {
-        const view = await topology.request("GET", policyPath);
-        assert.equal(view.status, 200, JSON.stringify(view.error));
-        assert.notEqual(
-          view.data.policy.application?.state,
-          "failed",
-          JSON.stringify(view.data.policy.application),
-        );
-        return view.data.policy.application?.state === "applied" ? view.data : undefined;
+        const view = await applicationView();
+        return view?.data.policy.application?.state === "applied" ? view.data : undefined;
       },
       120_000,
     );
@@ -6129,8 +6230,13 @@ PYTHON`;
     if (interruptAfterWrite) {
       assert.equal(
         topology.policyWrites.length,
-        writes + 1,
+        writesAtInterruption,
         "recovery must confirm the committed native write without issuing it again",
+      );
+      assert.equal(
+        topology.policyWrites.filter((write) => write.requestId === applicationId).length,
+        1,
+        "the interrupted application must issue UpdateConfig only once",
       );
       process.stderr.write(
         "OpenShell integration: interrupted native policy write recovered without a duplicate UpdateConfig.\n",
