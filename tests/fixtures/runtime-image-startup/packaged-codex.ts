@@ -115,7 +115,7 @@ export async function probePackagedCodex(
           "openclaw-node-setup-renewal.patch":
             "197104f2792253127894eadcbb4dec350ce0b7da3df4e6d88facc649c700c1e8",
           "openclaw-node-only-setup.patch":
-            "effe00e734c01bae021ba4f6800ac00fbb0784bca1bcdc95099232c3450bebba",
+            "ac4adee637ccf70f571f90d37451161fd4954e1453a815d5b00ffaabd1236092",
           "openclaw-chat-absent-selected-agent.patch":
             "2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899",
         }),
