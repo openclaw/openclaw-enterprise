@@ -232,7 +232,7 @@
 
 ### Credential sources
 
-- [`listCredentialSources`](../api.md#get-namespacesnamespaceidcredentialsources): List readable credential sources without revealing credential values.
+- [`listCredentialSources`](../api.md#get-namespacesnamespaceidcredentialsources): List credential-source metadata, optionally filtered to ready, approved model credentials.
 - [`getCredentialSource`](../api.md#get-namespacesnamespaceidcredentialsourcescredentialsourceid): Get one credential source and its live Credential Gateway status.
 - [`createCredentialSource`](../api.md#post-namespacesnamespaceidcredentialsources): Register a credential source with the selected Credential Gateway.
 - [`updateCredentialSource`](../api.md#patch-namespacesnamespaceidcredentialsourcescredentialsourceid): Push current or replacement Secret values to the Credential Gateway copy.

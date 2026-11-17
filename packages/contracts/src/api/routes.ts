@@ -1251,11 +1251,20 @@ export const occApiRoutes = [
     iamAction: "read",
     resourceKind: "credential_source",
     authorizationTarget: "namespace_and_credential_source_candidates",
-    summary: "List readable credential sources without revealing credential values",
+    summary:
+      "List credential-source metadata, optionally filtered to ready, approved model credentials",
     tags: ["Credential sources"],
     schema: {
       querystring: Type.Object(
-        { modelProviderId: Type.Optional(ModelProviderId) },
+        {
+          modelProviderId: Type.Optional(
+            Type.String({
+              ...ModelProviderId,
+              description:
+                "Return ready credential sources with a matching approved template that the caller can operate.",
+            }),
+          ),
+        },
         { additionalProperties: false },
       ),
       params: NamespaceParams,

@@ -1614,7 +1614,9 @@ export {
 export {
   ConnectionTemplateSchema,
   OAuthConnectionTemplateVersionSchema,
+  StaticKeyConnectionTemplateVersionSchema,
 } from "./api/connection-templates.ts";
+export { ModelProviderSchema, ModelProviderModelSchema } from "./api/model-providers.ts";
 export * from "./api/resources.ts";
 export * from "./api/routes.ts";
 

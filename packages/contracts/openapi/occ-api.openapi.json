@@ -752,63 +752,7 @@
                     "type": "string"
                   },
                   "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
-                  "privatePeer": {
-                    "anyOf": [
-                      {
-                        "additionalProperties": false,
-                        "properties": {
-                          "address": {
-                            "description": "One private IPv4 address for the approved HTTPS hostname.",
-                            "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                            "type": "string"
-                          },
-                          "kind": { "const": "private_ipv4", "type": "string" }
-                        },
-                        "required": ["kind", "address"],
-                        "type": "object"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "properties": {
-                          "address": {
-                            "description": "One private IPv4 address for the approved HTTPS hostname.",
-                            "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                            "type": "string"
-                          },
-                          "kind": { "const": "kubernetes_service", "type": "string" },
-                          "name": {
-                            "maxLength": 63,
-                            "minLength": 1,
-                            "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                            "type": "string"
-                          },
-                          "namespace": {
-                            "maxLength": 63,
-                            "minLength": 1,
-                            "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                            "type": "string"
-                          },
-                          "podSelector": {
-                            "additionalProperties": { "type": "string" },
-                            "minProperties": 1,
-                            "type": "object"
-                          },
-                          "targetPort": { "maximum": 65535, "minimum": 1, "type": "integer" },
-                          "uid": { "minLength": 1, "type": "string" }
-                        },
-                        "required": [
-                          "kind",
-                          "namespace",
-                          "name",
-                          "uid",
-                          "address",
-                          "targetPort",
-                          "podSelector"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
+                  "privatePeer": { "$ref": "#/components/schemas/def-18" },
                   "protocol": {
                     "anyOf": [
                       { "const": "openai-responses", "type": "string" },
@@ -1052,108 +996,7 @@
           "current": {
             "anyOf": [
               { "$ref": "#/components/schemas/def-14" },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "baseUrl": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
-                  "createdAt": { "type": "string" },
-                  "destinations": {
-                    "items": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "host": { "type": "string" },
-                        "method": { "const": "POST", "type": "string" },
-                        "path": { "type": "string" },
-                        "port": { "type": "integer" }
-                      },
-                      "required": ["host", "port", "path", "method"],
-                      "type": "object"
-                    },
-                    "maxItems": 1,
-                    "minItems": 1,
-                    "type": "array"
-                  },
-                  "mode": { "const": "static_bearer", "type": "string" },
-                  "privatePeer": {
-                    "anyOf": [
-                      {
-                        "additionalProperties": false,
-                        "properties": {
-                          "address": {
-                            "description": "One private IPv4 address for the approved HTTPS hostname.",
-                            "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                            "type": "string"
-                          },
-                          "kind": { "const": "private_ipv4", "type": "string" }
-                        },
-                        "required": ["kind", "address"],
-                        "type": "object"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "properties": {
-                          "address": {
-                            "description": "One private IPv4 address for the approved HTTPS hostname.",
-                            "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                            "type": "string"
-                          },
-                          "kind": { "const": "kubernetes_service", "type": "string" },
-                          "name": {
-                            "maxLength": 63,
-                            "minLength": 1,
-                            "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                            "type": "string"
-                          },
-                          "namespace": {
-                            "maxLength": 63,
-                            "minLength": 1,
-                            "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                            "type": "string"
-                          },
-                          "podSelector": {
-                            "additionalProperties": { "type": "string" },
-                            "minProperties": 1,
-                            "type": "object"
-                          },
-                          "targetPort": { "maximum": 65535, "minimum": 1, "type": "integer" },
-                          "uid": { "minLength": 1, "type": "string" }
-                        },
-                        "required": [
-                          "kind",
-                          "namespace",
-                          "name",
-                          "uid",
-                          "address",
-                          "targetPort",
-                          "podSelector"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  "protocol": {
-                    "anyOf": [
-                      { "const": "openai-responses", "type": "string" },
-                      { "const": "openai-completions", "type": "string" }
-                    ]
-                  },
-                  "templateId": {
-                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                    "type": "string"
-                  },
-                  "version": { "minimum": 1, "type": "integer" }
-                },
-                "required": [
-                  "mode",
-                  "baseUrl",
-                  "protocol",
-                  "templateId",
-                  "version",
-                  "createdAt",
-                  "destinations"
-                ],
-                "type": "object"
-              }
+              { "$ref": "#/components/schemas/def-16" }
             ]
           },
           "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
@@ -1168,6 +1011,183 @@
         },
         "required": ["displayName", "id", "current", "createdAt"],
         "title": "Connection template",
+        "type": "object"
+      },
+      "def-16": {
+        "additionalProperties": false,
+        "properties": {
+          "baseUrl": {
+            "description": "Exact HTTPS inference URL with a DNS hostname and a path ending in /v1.",
+            "maxLength": 2048,
+            "pattern": "^https://",
+            "type": "string"
+          },
+          "createdAt": { "type": "string" },
+          "destinations": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "host": { "type": "string" },
+                "method": { "const": "POST", "type": "string" },
+                "path": { "type": "string" },
+                "port": { "type": "integer" }
+              },
+              "required": ["host", "port", "path", "method"],
+              "type": "object"
+            },
+            "maxItems": 1,
+            "minItems": 1,
+            "type": "array"
+          },
+          "mode": { "const": "static_bearer", "type": "string" },
+          "privatePeer": { "$ref": "#/components/schemas/def-18" },
+          "protocol": {
+            "anyOf": [
+              { "const": "openai-responses", "type": "string" },
+              { "const": "openai-completions", "type": "string" }
+            ]
+          },
+          "templateId": {
+            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "version": { "minimum": 1, "type": "integer" }
+        },
+        "required": [
+          "mode",
+          "baseUrl",
+          "protocol",
+          "templateId",
+          "version",
+          "createdAt",
+          "destinations"
+        ],
+        "title": "Static-key connection template version",
+        "type": "object"
+      },
+      "def-17": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "description": "One IPv4 address in 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 for the approved HTTPS hostname.",
+                "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                "type": "string"
+              },
+              "kind": { "const": "private_ipv4", "type": "string" }
+            },
+            "required": ["kind", "address"],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "kubernetes_service", "type": "string" },
+              "name": {
+                "maxLength": 63,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                "type": "string"
+              },
+              "namespace": {
+                "maxLength": 63,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                "type": "string"
+              }
+            },
+            "required": ["kind", "namespace", "name"],
+            "type": "object"
+          }
+        ],
+        "title": "Private inference destination"
+      },
+      "def-18": {
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "description": "One IPv4 address in 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 for the approved HTTPS hostname.",
+                "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                "type": "string"
+              },
+              "kind": { "const": "private_ipv4", "type": "string" }
+            },
+            "required": ["kind", "address"],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "description": "One IPv4 address in 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16 for the approved HTTPS hostname.",
+                "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
+                "type": "string"
+              },
+              "kind": { "const": "kubernetes_service", "type": "string" },
+              "name": {
+                "maxLength": 63,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                "type": "string"
+              },
+              "namespace": {
+                "maxLength": 63,
+                "minLength": 1,
+                "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
+                "type": "string"
+              },
+              "podSelector": {
+                "additionalProperties": { "type": "string" },
+                "minProperties": 1,
+                "type": "object"
+              },
+              "targetPort": { "maximum": 65535, "minimum": 1, "type": "integer" },
+              "uid": { "minLength": 1, "type": "string" }
+            },
+            "required": [
+              "kind",
+              "namespace",
+              "name",
+              "uid",
+              "address",
+              "targetPort",
+              "podSelector"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "Approved private inference receiver"
+      },
+      "def-19": {
+        "additionalProperties": false,
+        "properties": {
+          "contextWindow": { "minimum": 1, "type": "integer" },
+          "cost": {
+            "additionalProperties": false,
+            "description": "Cost in USD per million tokens.",
+            "properties": {
+              "cacheRead": { "minimum": 0, "type": "number" },
+              "cacheWrite": { "minimum": 0, "type": "number" },
+              "input": { "minimum": 0, "type": "number" },
+              "output": { "minimum": 0, "type": "number" }
+            },
+            "required": ["input", "output", "cacheRead", "cacheWrite"],
+            "type": "object"
+          },
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+            "type": "string"
+          },
+          "maxTokens": { "minimum": 1, "type": "integer" },
+          "name": { "maxLength": 200, "minLength": 1, "type": "string" }
+        },
+        "required": ["id"],
+        "title": "Model offered by this provider",
         "type": "object"
       },
       "def-2": {
@@ -1194,6 +1214,63 @@
         "title": "PluginApprovers",
         "type": "array",
         "uniqueItems": true
+      },
+      "def-20": {
+        "additionalProperties": false,
+        "properties": {
+          "baseUrl": {
+            "description": "Exact HTTPS inference URL with a DNS hostname and a path ending in /v1.",
+            "maxLength": 2048,
+            "pattern": "^https://",
+            "type": "string"
+          },
+          "connectionTemplateId": {
+            "description": "Installation-wide static-key template matching the provider URL and protocol.",
+            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "defaultModelId": {
+            "description": "Optional default from the models offered by this provider.",
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
+            "type": "string"
+          },
+          "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+          "id": {
+            "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
+          "models": {
+            "description": "Models offered by this provider. Each model ID must be unique.",
+            "items": { "$ref": "#/components/schemas/def-19" },
+            "maxItems": 256,
+            "minItems": 1,
+            "type": "array"
+          },
+          "protocol": {
+            "anyOf": [
+              { "const": "openai-responses", "type": "string" },
+              { "const": "openai-completions", "type": "string" }
+            ]
+          },
+          "settingsFingerprint": {
+            "description": "Fingerprint of the saved settings, used for conditional updates.",
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "displayName",
+          "baseUrl",
+          "protocol",
+          "models",
+          "connectionTemplateId",
+          "settingsFingerprint"
+        ],
+        "title": "Model Provider",
+        "type": "object"
       },
       "def-3": {
         "additionalProperties": false,
@@ -11459,17 +11536,10 @@
                 "example": {
                   "summary": "Example request",
                   "value": {
-                    "authorizationUrl": "https://accounts.example.com/authorize",
-                    "destinations": [
-                      { "host": "api.example.com", "path": "/profile", "port": 443 }
-                    ],
-                    "displayName": "Example account",
-                    "issuer": "https://accounts.example.com",
-                    "mode": "manual",
-                    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                    "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-                    "scopes": ["profile.read"],
-                    "tokenUrl": "https://accounts.example.com/token"
+                    "baseUrl": "https://inference.example.com/v1",
+                    "displayName": "Research inference",
+                    "mode": "static_bearer",
+                    "protocol": "openai-responses"
                   }
                 }
               },
@@ -11479,8 +11549,9 @@
                     "additionalProperties": false,
                     "properties": {
                       "baseUrl": {
+                        "description": "Exact HTTPS inference URL with a DNS hostname and a path ending in /v1.",
                         "maxLength": 2048,
-                        "pattern": "^https://[^\\s/]",
+                        "pattern": "^https://",
                         "type": "string"
                       },
                       "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
@@ -11489,43 +11560,7 @@
                         "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
                       },
-                      "privatePeer": {
-                        "anyOf": [
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "address": {
-                                "description": "One private IPv4 address for the approved HTTPS hostname.",
-                                "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                                "type": "string"
-                              },
-                              "kind": { "const": "private_ipv4", "type": "string" }
-                            },
-                            "required": ["kind", "address"],
-                            "type": "object"
-                          },
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "kind": { "const": "kubernetes_service", "type": "string" },
-                              "name": {
-                                "maxLength": 63,
-                                "minLength": 1,
-                                "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                                "type": "string"
-                              },
-                              "namespace": {
-                                "maxLength": 63,
-                                "minLength": 1,
-                                "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["kind", "namespace", "name"],
-                            "type": "object"
-                          }
-                        ]
-                      },
+                      "privatePeer": { "$ref": "#/components/schemas/def-17" },
                       "protocol": {
                         "anyOf": [
                           { "const": "openai-responses", "type": "string" },
@@ -11676,23 +11711,23 @@
                       "data": {
                         "createdAt": "2026-10-01T12:00:00.000Z",
                         "current": {
-                          "authorizationParameters": {},
-                          "authorizationUrl": "https://accounts.example.com/authorize",
+                          "baseUrl": "https://inference.example.com/v1",
                           "createdAt": "2026-10-01T12:00:00.000Z",
                           "destinations": [
-                            { "host": "api.example.com", "path": "/profile", "port": 443 }
+                            {
+                              "host": "inference.example.com",
+                              "method": "POST",
+                              "path": "/v1/responses",
+                              "port": 443
+                            }
                           ],
-                          "issuer": "https://accounts.example.com",
-                          "mode": "manual",
-                          "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-                          "scopes": ["profile.read"],
-                          "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
-                          "tokenUrl": "https://accounts.example.com/token",
+                          "mode": "static_bearer",
+                          "protocol": "openai-responses",
+                          "templateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
                           "version": 1
                         },
-                        "displayName": "Example account",
-                        "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
-                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+                        "displayName": "Research inference",
+                        "id": "ctp_223e4567-e89b-42d3-a456-426614174000"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
@@ -12343,49 +12378,14 @@
                     "additionalProperties": false,
                     "properties": {
                       "baseUrl": {
+                        "description": "Exact HTTPS inference URL with a DNS hostname and a path ending in /v1.",
                         "maxLength": 2048,
-                        "pattern": "^https://[^\\s/]",
+                        "pattern": "^https://",
                         "type": "string"
                       },
                       "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
                       "mode": { "const": "static_bearer", "type": "string" },
-                      "privatePeer": {
-                        "anyOf": [
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "address": {
-                                "description": "One private IPv4 address for the approved HTTPS hostname.",
-                                "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                                "type": "string"
-                              },
-                              "kind": { "const": "private_ipv4", "type": "string" }
-                            },
-                            "required": ["kind", "address"],
-                            "type": "object"
-                          },
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "kind": { "const": "kubernetes_service", "type": "string" },
-                              "name": {
-                                "maxLength": 63,
-                                "minLength": 1,
-                                "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                                "type": "string"
-                              },
-                              "namespace": {
-                                "maxLength": 63,
-                                "minLength": 1,
-                                "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["kind", "namespace", "name"],
-                            "type": "object"
-                          }
-                        ]
-                      },
+                      "privatePeer": { "$ref": "#/components/schemas/def-17" },
                       "protocol": {
                         "anyOf": [
                           { "const": "openai-responses", "type": "string" },
@@ -12779,7 +12779,10 @@
                                         },
                                         "type": "array"
                                       },
-                                      "staticKeyBaseUrlConfig": { "type": "string" },
+                                      "staticKeyBaseUrlConfig": {
+                                        "description": "When present, this source type supports static-key template approval; the value names its immutable destination URL config field.",
+                                        "type": "string"
+                                      },
                                       "type": {
                                         "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
                                         "maxLength": 64,
@@ -13204,7 +13207,10 @@
                                         },
                                         "type": "array"
                                       },
-                                      "staticKeyBaseUrlConfig": { "type": "string" },
+                                      "staticKeyBaseUrlConfig": {
+                                        "description": "When present, this source type supports static-key template approval; the value names its immutable destination URL config field.",
+                                        "type": "string"
+                                      },
                                       "type": {
                                         "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
                                         "maxLength": 64,
@@ -13979,7 +13985,7 @@
                       "data": [
                         {
                           "baseUrl": "https://inference.example.com/v1",
-                          "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                          "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
                           "defaultModelId": "research-model",
                           "displayName": "Research inference",
                           "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
@@ -13995,83 +14001,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "data": {
-                      "items": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "baseUrl": {
-                            "maxLength": 2048,
-                            "pattern": "^https://",
-                            "type": "string"
-                          },
-                          "connectionTemplateId": {
-                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "defaultModelId": {
-                            "maxLength": 256,
-                            "minLength": 1,
-                            "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
-                            "type": "string"
-                          },
-                          "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
-                          "id": {
-                            "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "models": {
-                            "items": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "contextWindow": { "minimum": 1, "type": "integer" },
-                                "cost": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "cacheRead": { "minimum": 0, "type": "number" },
-                                    "cacheWrite": { "minimum": 0, "type": "number" },
-                                    "input": { "minimum": 0, "type": "number" },
-                                    "output": { "minimum": 0, "type": "number" }
-                                  },
-                                  "required": ["input", "output", "cacheRead", "cacheWrite"],
-                                  "type": "object"
-                                },
-                                "id": {
-                                  "maxLength": 256,
-                                  "minLength": 1,
-                                  "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
-                                  "type": "string"
-                                },
-                                "maxTokens": { "minimum": 1, "type": "integer" },
-                                "name": { "maxLength": 200, "minLength": 1, "type": "string" }
-                              },
-                              "required": ["id"],
-                              "type": "object"
-                            },
-                            "maxItems": 256,
-                            "minItems": 1,
-                            "type": "array"
-                          },
-                          "protocol": {
-                            "anyOf": [
-                              { "const": "openai-responses", "type": "string" },
-                              { "const": "openai-completions", "type": "string" }
-                            ]
-                          },
-                          "settingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
-                        },
-                        "required": [
-                          "id",
-                          "displayName",
-                          "baseUrl",
-                          "protocol",
-                          "models",
-                          "connectionTemplateId",
-                          "settingsFingerprint"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "array"
-                    },
+                    "data": { "items": { "$ref": "#/components/schemas/def-20" }, "type": "array" },
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
@@ -14165,7 +14095,7 @@
                   "summary": "Example request",
                   "value": {
                     "baseUrl": "https://inference.example.com/v1",
-                    "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                    "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
                     "defaultModelId": "research-model",
                     "displayName": "Research inference",
                     "models": [{ "id": "research-model" }],
@@ -14176,12 +14106,19 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
-                  "baseUrl": { "maxLength": 2048, "pattern": "^https://", "type": "string" },
+                  "baseUrl": {
+                    "description": "Exact HTTPS inference URL with a DNS hostname and a path ending in /v1.",
+                    "maxLength": 2048,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
                   "connectionTemplateId": {
+                    "description": "Installation-wide static-key template matching the provider URL and protocol.",
                     "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                     "type": "string"
                   },
                   "defaultModelId": {
+                    "description": "Optional default from the models offered by this provider.",
                     "maxLength": 256,
                     "minLength": 1,
                     "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
@@ -14189,33 +14126,8 @@
                   },
                   "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
                   "models": {
-                    "items": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "contextWindow": { "minimum": 1, "type": "integer" },
-                        "cost": {
-                          "additionalProperties": false,
-                          "properties": {
-                            "cacheRead": { "minimum": 0, "type": "number" },
-                            "cacheWrite": { "minimum": 0, "type": "number" },
-                            "input": { "minimum": 0, "type": "number" },
-                            "output": { "minimum": 0, "type": "number" }
-                          },
-                          "required": ["input", "output", "cacheRead", "cacheWrite"],
-                          "type": "object"
-                        },
-                        "id": {
-                          "maxLength": 256,
-                          "minLength": 1,
-                          "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
-                          "type": "string"
-                        },
-                        "maxTokens": { "minimum": 1, "type": "integer" },
-                        "name": { "maxLength": 200, "minLength": 1, "type": "string" }
-                      },
-                      "required": ["id"],
-                      "type": "object"
-                    },
+                    "description": "Models offered by this provider. Each model ID must be unique.",
+                    "items": { "$ref": "#/components/schemas/def-19" },
                     "maxItems": 256,
                     "minItems": 1,
                     "type": "array"
@@ -14250,7 +14162,7 @@
                     "value": {
                       "data": {
                         "baseUrl": "https://inference.example.com/v1",
-                        "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                        "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
                         "defaultModelId": "research-model",
                         "displayName": "Research inference",
                         "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
@@ -14265,76 +14177,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "data": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "baseUrl": { "maxLength": 2048, "pattern": "^https://", "type": "string" },
-                        "connectionTemplateId": {
-                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        },
-                        "defaultModelId": {
-                          "maxLength": 256,
-                          "minLength": 1,
-                          "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
-                          "type": "string"
-                        },
-                        "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
-                        "id": {
-                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        },
-                        "models": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "contextWindow": { "minimum": 1, "type": "integer" },
-                              "cost": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "cacheRead": { "minimum": 0, "type": "number" },
-                                  "cacheWrite": { "minimum": 0, "type": "number" },
-                                  "input": { "minimum": 0, "type": "number" },
-                                  "output": { "minimum": 0, "type": "number" }
-                                },
-                                "required": ["input", "output", "cacheRead", "cacheWrite"],
-                                "type": "object"
-                              },
-                              "id": {
-                                "maxLength": 256,
-                                "minLength": 1,
-                                "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
-                                "type": "string"
-                              },
-                              "maxTokens": { "minimum": 1, "type": "integer" },
-                              "name": { "maxLength": 200, "minLength": 1, "type": "string" }
-                            },
-                            "required": ["id"],
-                            "type": "object"
-                          },
-                          "maxItems": 256,
-                          "minItems": 1,
-                          "type": "array"
-                        },
-                        "protocol": {
-                          "anyOf": [
-                            { "const": "openai-responses", "type": "string" },
-                            { "const": "openai-completions", "type": "string" }
-                          ]
-                        },
-                        "settingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
-                      },
-                      "required": [
-                        "id",
-                        "displayName",
-                        "baseUrl",
-                        "protocol",
-                        "models",
-                        "connectionTemplateId",
-                        "settingsFingerprint"
-                      ],
-                      "type": "object"
-                    },
+                    "data": { "$ref": "#/components/schemas/def-20" },
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
@@ -14478,7 +14321,7 @@
                     "value": {
                       "data": {
                         "baseUrl": "https://inference.example.com/v1",
-                        "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                        "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
                         "defaultModelId": "research-model",
                         "displayName": "Research inference",
                         "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
@@ -14493,76 +14336,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "data": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "baseUrl": { "maxLength": 2048, "pattern": "^https://", "type": "string" },
-                        "connectionTemplateId": {
-                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        },
-                        "defaultModelId": {
-                          "maxLength": 256,
-                          "minLength": 1,
-                          "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
-                          "type": "string"
-                        },
-                        "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
-                        "id": {
-                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        },
-                        "models": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "contextWindow": { "minimum": 1, "type": "integer" },
-                              "cost": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "cacheRead": { "minimum": 0, "type": "number" },
-                                  "cacheWrite": { "minimum": 0, "type": "number" },
-                                  "input": { "minimum": 0, "type": "number" },
-                                  "output": { "minimum": 0, "type": "number" }
-                                },
-                                "required": ["input", "output", "cacheRead", "cacheWrite"],
-                                "type": "object"
-                              },
-                              "id": {
-                                "maxLength": 256,
-                                "minLength": 1,
-                                "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
-                                "type": "string"
-                              },
-                              "maxTokens": { "minimum": 1, "type": "integer" },
-                              "name": { "maxLength": 200, "minLength": 1, "type": "string" }
-                            },
-                            "required": ["id"],
-                            "type": "object"
-                          },
-                          "maxItems": 256,
-                          "minItems": 1,
-                          "type": "array"
-                        },
-                        "protocol": {
-                          "anyOf": [
-                            { "const": "openai-responses", "type": "string" },
-                            { "const": "openai-completions", "type": "string" }
-                          ]
-                        },
-                        "settingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
-                      },
-                      "required": [
-                        "id",
-                        "displayName",
-                        "baseUrl",
-                        "protocol",
-                        "models",
-                        "connectionTemplateId",
-                        "settingsFingerprint"
-                      ],
-                      "type": "object"
-                    },
+                    "data": { "$ref": "#/components/schemas/def-20" },
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
@@ -14673,7 +14447,7 @@
                   "summary": "Example request",
                   "value": {
                     "baseUrl": "https://inference.example.com/v1",
-                    "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                    "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
                     "defaultModelId": "research-model",
                     "displayName": "Research inference",
                     "expectedSettingsFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -14685,47 +14459,33 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
-                  "baseUrl": { "maxLength": 2048, "pattern": "^https://", "type": "string" },
+                  "baseUrl": {
+                    "description": "Exact HTTPS inference URL with a DNS hostname and a path ending in /v1.",
+                    "maxLength": 2048,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
                   "connectionTemplateId": {
+                    "description": "Installation-wide static-key template matching the provider URL and protocol.",
                     "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                     "type": "string"
                   },
                   "defaultModelId": {
+                    "description": "Optional default from the models offered by this provider.",
                     "maxLength": 256,
                     "minLength": 1,
                     "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
                     "type": "string"
                   },
                   "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
-                  "expectedSettingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                  "expectedSettingsFingerprint": {
+                    "description": "Fingerprint of the saved settings, used for conditional updates.",
+                    "pattern": "^[a-f0-9]{64}$",
+                    "type": "string"
+                  },
                   "models": {
-                    "items": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "contextWindow": { "minimum": 1, "type": "integer" },
-                        "cost": {
-                          "additionalProperties": false,
-                          "properties": {
-                            "cacheRead": { "minimum": 0, "type": "number" },
-                            "cacheWrite": { "minimum": 0, "type": "number" },
-                            "input": { "minimum": 0, "type": "number" },
-                            "output": { "minimum": 0, "type": "number" }
-                          },
-                          "required": ["input", "output", "cacheRead", "cacheWrite"],
-                          "type": "object"
-                        },
-                        "id": {
-                          "maxLength": 256,
-                          "minLength": 1,
-                          "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
-                          "type": "string"
-                        },
-                        "maxTokens": { "minimum": 1, "type": "integer" },
-                        "name": { "maxLength": 200, "minLength": 1, "type": "string" }
-                      },
-                      "required": ["id"],
-                      "type": "object"
-                    },
+                    "description": "Models offered by this provider. Each model ID must be unique.",
+                    "items": { "$ref": "#/components/schemas/def-19" },
                     "maxItems": 256,
                     "minItems": 1,
                     "type": "array"
@@ -14761,7 +14521,7 @@
                     "value": {
                       "data": {
                         "baseUrl": "https://inference.example.com/v1",
-                        "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                        "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
                         "defaultModelId": "research-model",
                         "displayName": "Research inference",
                         "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
@@ -14776,76 +14536,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "data": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "baseUrl": { "maxLength": 2048, "pattern": "^https://", "type": "string" },
-                        "connectionTemplateId": {
-                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        },
-                        "defaultModelId": {
-                          "maxLength": 256,
-                          "minLength": 1,
-                          "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
-                          "type": "string"
-                        },
-                        "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
-                        "id": {
-                          "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        },
-                        "models": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "contextWindow": { "minimum": 1, "type": "integer" },
-                              "cost": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "cacheRead": { "minimum": 0, "type": "number" },
-                                  "cacheWrite": { "minimum": 0, "type": "number" },
-                                  "input": { "minimum": 0, "type": "number" },
-                                  "output": { "minimum": 0, "type": "number" }
-                                },
-                                "required": ["input", "output", "cacheRead", "cacheWrite"],
-                                "type": "object"
-                              },
-                              "id": {
-                                "maxLength": 256,
-                                "minLength": 1,
-                                "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
-                                "type": "string"
-                              },
-                              "maxTokens": { "minimum": 1, "type": "integer" },
-                              "name": { "maxLength": 200, "minLength": 1, "type": "string" }
-                            },
-                            "required": ["id"],
-                            "type": "object"
-                          },
-                          "maxItems": 256,
-                          "minItems": 1,
-                          "type": "array"
-                        },
-                        "protocol": {
-                          "anyOf": [
-                            { "const": "openai-responses", "type": "string" },
-                            { "const": "openai-completions", "type": "string" }
-                          ]
-                        },
-                        "settingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
-                      },
-                      "required": [
-                        "id",
-                        "displayName",
-                        "baseUrl",
-                        "protocol",
-                        "models",
-                        "connectionTemplateId",
-                        "settingsFingerprint"
-                      ],
-                      "type": "object"
-                    },
+                    "data": { "$ref": "#/components/schemas/def-20" },
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
@@ -15776,7 +15467,10 @@
                                         },
                                         "type": "array"
                                       },
-                                      "staticKeyBaseUrlConfig": { "type": "string" },
+                                      "staticKeyBaseUrlConfig": {
+                                        "description": "When present, this source type supports static-key template approval; the value names its immutable destination URL config field.",
+                                        "type": "string"
+                                      },
                                       "type": {
                                         "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
                                         "maxLength": 64,
@@ -16625,17 +16319,17 @@
                 "example": {
                   "summary": "Example request",
                   "value": {
-                    "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+                    "configurationId": "cfg_223e4567-e89b-42d3-a456-426614174000",
+                    "credentialSources": [
+                      { "sourceId": "cs_223e4567-e89b-42d3-a456-426614174000" }
+                    ],
                     "executionMode": "dedicated",
                     "harnessAuth": {
-                      "method": "api_key",
-                      "source": {
-                        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                        "kind": "secret",
-                        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-                      }
+                      "method": "credential_source",
+                      "sourceId": "cs_223e4567-e89b-42d3-a456-426614174000"
                     },
-                    "name": "Documentation assistant"
+                    "modelProviderId": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                    "name": "Research assistant"
                   }
                 }
               },
@@ -16908,23 +16602,23 @@
                     "value": {
                       "data": {
                         "backendId": null,
-                        "configurationId": "cfg_123e4567-e89b-42d3-a456-426614174000",
+                        "configurationId": "cfg_223e4567-e89b-42d3-a456-426614174000",
                         "createdAt": "2026-10-01T12:00:00.000Z",
+                        "credentialSources": [
+                          { "sourceId": "cs_223e4567-e89b-42d3-a456-426614174000" }
+                        ],
                         "desiredRuntimeState": "stopped",
                         "executionMode": "dedicated",
                         "gatewayManagedMode": true,
                         "harnessAuth": {
-                          "method": "api_key",
-                          "source": {
-                            "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                            "kind": "secret",
-                            "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-                          }
+                          "method": "credential_source",
+                          "sourceId": "cs_223e4567-e89b-42d3-a456-426614174000"
                         },
-                        "id": "agt_123e4567-e89b-42d3-a456-426614174000",
-                        "name": "Documentation assistant",
+                        "id": "agt_223e4567-e89b-42d3-a456-426614174000",
+                        "modelProviderId": "mpr_123e4567-e89b-42d3-a456-426614174000",
+                        "name": "Research assistant",
                         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-                        "servicePrincipalId": "principal-docs-agent",
+                        "servicePrincipalId": "principal-research-agent",
                         "status": "active"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
@@ -23520,67 +23214,7 @@
                               "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
                               "type": "object"
                             },
-                            "privateInferencePeer": {
-                              "anyOf": [
-                                {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "address": {
-                                      "description": "One private IPv4 address for the approved HTTPS hostname.",
-                                      "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                                      "type": "string"
-                                    },
-                                    "kind": { "const": "private_ipv4", "type": "string" }
-                                  },
-                                  "required": ["kind", "address"],
-                                  "type": "object"
-                                },
-                                {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "address": {
-                                      "description": "One private IPv4 address for the approved HTTPS hostname.",
-                                      "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                                      "type": "string"
-                                    },
-                                    "kind": { "const": "kubernetes_service", "type": "string" },
-                                    "name": {
-                                      "maxLength": 63,
-                                      "minLength": 1,
-                                      "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                                      "type": "string"
-                                    },
-                                    "namespace": {
-                                      "maxLength": 63,
-                                      "minLength": 1,
-                                      "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                                      "type": "string"
-                                    },
-                                    "podSelector": {
-                                      "additionalProperties": { "type": "string" },
-                                      "minProperties": 1,
-                                      "type": "object"
-                                    },
-                                    "targetPort": {
-                                      "maximum": 65535,
-                                      "minimum": 1,
-                                      "type": "integer"
-                                    },
-                                    "uid": { "minLength": 1, "type": "string" }
-                                  },
-                                  "required": [
-                                    "kind",
-                                    "namespace",
-                                    "name",
-                                    "uid",
-                                    "address",
-                                    "targetPort",
-                                    "podSelector"
-                                  ],
-                                  "type": "object"
-                                }
-                              ]
-                            },
+                            "privateInferencePeer": { "$ref": "#/components/schemas/def-18" },
                             "version": { "minLength": 1, "type": "string" }
                           },
                           "required": ["id", "version", "mode", "overrides", "configuration"],
@@ -30477,67 +30111,7 @@
                                 "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
                                 "type": "object"
                               },
-                              "privateInferencePeer": {
-                                "anyOf": [
-                                  {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "address": {
-                                        "description": "One private IPv4 address for the approved HTTPS hostname.",
-                                        "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                                        "type": "string"
-                                      },
-                                      "kind": { "const": "private_ipv4", "type": "string" }
-                                    },
-                                    "required": ["kind", "address"],
-                                    "type": "object"
-                                  },
-                                  {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "address": {
-                                        "description": "One private IPv4 address for the approved HTTPS hostname.",
-                                        "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                                        "type": "string"
-                                      },
-                                      "kind": { "const": "kubernetes_service", "type": "string" },
-                                      "name": {
-                                        "maxLength": 63,
-                                        "minLength": 1,
-                                        "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                                        "type": "string"
-                                      },
-                                      "namespace": {
-                                        "maxLength": 63,
-                                        "minLength": 1,
-                                        "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                                        "type": "string"
-                                      },
-                                      "podSelector": {
-                                        "additionalProperties": { "type": "string" },
-                                        "minProperties": 1,
-                                        "type": "object"
-                                      },
-                                      "targetPort": {
-                                        "maximum": 65535,
-                                        "minimum": 1,
-                                        "type": "integer"
-                                      },
-                                      "uid": { "minLength": 1, "type": "string" }
-                                    },
-                                    "required": [
-                                      "kind",
-                                      "namespace",
-                                      "name",
-                                      "uid",
-                                      "address",
-                                      "targetPort",
-                                      "podSelector"
-                                    ],
-                                    "type": "object"
-                                  }
-                                ]
-                              },
+                              "privateInferencePeer": { "$ref": "#/components/schemas/def-18" },
                               "version": { "minLength": 1, "type": "string" }
                             },
                             "required": ["id", "version", "mode"],
@@ -30904,67 +30478,7 @@
                                   "description": "Nonsecret settings owned and validated by the selected Compute Driver.",
                                   "type": "object"
                                 },
-                                "privateInferencePeer": {
-                                  "anyOf": [
-                                    {
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "address": {
-                                          "description": "One private IPv4 address for the approved HTTPS hostname.",
-                                          "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                                          "type": "string"
-                                        },
-                                        "kind": { "const": "private_ipv4", "type": "string" }
-                                      },
-                                      "required": ["kind", "address"],
-                                      "type": "object"
-                                    },
-                                    {
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "address": {
-                                          "description": "One private IPv4 address for the approved HTTPS hostname.",
-                                          "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                                          "type": "string"
-                                        },
-                                        "kind": { "const": "kubernetes_service", "type": "string" },
-                                        "name": {
-                                          "maxLength": 63,
-                                          "minLength": 1,
-                                          "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                                          "type": "string"
-                                        },
-                                        "namespace": {
-                                          "maxLength": 63,
-                                          "minLength": 1,
-                                          "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                                          "type": "string"
-                                        },
-                                        "podSelector": {
-                                          "additionalProperties": { "type": "string" },
-                                          "minProperties": 1,
-                                          "type": "object"
-                                        },
-                                        "targetPort": {
-                                          "maximum": 65535,
-                                          "minimum": 1,
-                                          "type": "integer"
-                                        },
-                                        "uid": { "minLength": 1, "type": "string" }
-                                      },
-                                      "required": [
-                                        "kind",
-                                        "namespace",
-                                        "name",
-                                        "uid",
-                                        "address",
-                                        "targetPort",
-                                        "podSelector"
-                                      ],
-                                      "type": "object"
-                                    }
-                                  ]
-                                },
+                                "privateInferencePeer": { "$ref": "#/components/schemas/def-18" },
                                 "version": { "minLength": 1, "type": "string" }
                               },
                               "required": ["id", "version", "mode", "overrides", "configuration"],
@@ -35505,8 +35019,10 @@
                     "values": {
                       "agents": {
                         "defaults": {
-                          "model": "codex/gpt-5.1-codex",
-                          "models": { "codex/gpt-5.1-codex": { "agentRuntime": { "id": "codex" } } }
+                          "model": "codex/research-model",
+                          "models": {
+                            "codex/research-model": { "agentRuntime": { "id": "codex" } }
+                          }
                         }
                       },
                       "gateway": {
@@ -35527,7 +35043,7 @@
                           "codex": {
                             "api": "openai-responses",
                             "baseUrl": "http://127.0.0.1:9",
-                            "models": [{ "id": "gpt-5.1-codex", "name": "gpt-5.1-codex" }]
+                            "models": [{ "id": "research-model", "name": "research-model" }]
                           }
                         }
                       },
@@ -35619,15 +35135,15 @@
                       "data": {
                         "createdAt": "2026-10-01T12:00:00.000Z",
                         "generation": 1,
-                        "id": "cfg_123e4567-e89b-42d3-a456-426614174000",
+                        "id": "cfg_223e4567-e89b-42d3-a456-426614174000",
                         "kind": "agent",
                         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                         "values": {
                           "agents": {
                             "defaults": {
-                              "model": "codex/gpt-5.1-codex",
+                              "model": "codex/research-model",
                               "models": {
-                                "codex/gpt-5.1-codex": { "agentRuntime": { "id": "codex" } }
+                                "codex/research-model": { "agentRuntime": { "id": "codex" } }
                               }
                             }
                           },
@@ -35649,7 +35165,7 @@
                               "codex": {
                                 "api": "openai-responses",
                                 "baseUrl": "http://127.0.0.1:9",
-                                "models": [{ "id": "gpt-5.1-codex", "name": "gpt-5.1-codex" }]
+                                "models": [{ "id": "research-model", "name": "research-model" }]
                               }
                             }
                           },
@@ -37351,10 +36867,11 @@
     },
     "/namespaces/{namespaceId}/credential-sources": {
       "get": {
-        "description": "Requires read permission on the requested Namespace. Only CredentialSource resources with individual read permission are returned.",
+        "description": "Requires read permission on the requested Namespace. Only CredentialSource resources with individual read permission are returned. Filtering by modelProviderId requires Agent create permission in the requested Namespace. When filtering by modelProviderId, only CredentialSource resources with operate permission are returned.",
         "operationId": "listCredentialSources",
         "parameters": [
           {
+            "description": "Return ready credential sources with a matching approved template that the caller can operate.",
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
@@ -37402,13 +36919,13 @@
                     "value": {
                       "data": [
                         {
-                          "config": {},
-                          "id": "cs_123e4567-e89b-42d3-a456-426614174000",
-                          "name": "Model credentials",
+                          "config": { "authorized_base_url": "https://inference.example.com/v1" },
+                          "id": "cs_223e4567-e89b-42d3-a456-426614174000",
+                          "name": "Research inference key",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                           "ownerCapability": "credential_gateway",
                           "ref": {
-                            "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+                            "id": "cs_223e4567-e89b-42d3-a456-426614174000",
                             "kind": "credential_source",
                             "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                           },
@@ -37420,6 +36937,12 @@
                             }
                           },
                           "state": "ready",
+                          "staticKeyGrant": {
+                            "baseUrl": "https://inference.example.com/v1",
+                            "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                            "connectionTemplateVersion": 1,
+                            "protocol": "openai-responses"
+                          },
                           "type": "openai"
                         }
                       ],
@@ -37537,67 +37060,7 @@
                                 "type": "string"
                               },
                               "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
-                              "privatePeer": {
-                                "anyOf": [
-                                  {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "address": {
-                                        "description": "One private IPv4 address for the approved HTTPS hostname.",
-                                        "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                                        "type": "string"
-                                      },
-                                      "kind": { "const": "private_ipv4", "type": "string" }
-                                    },
-                                    "required": ["kind", "address"],
-                                    "type": "object"
-                                  },
-                                  {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "address": {
-                                        "description": "One private IPv4 address for the approved HTTPS hostname.",
-                                        "pattern": "^(?:10\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.|172\\.(?:1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])$",
-                                        "type": "string"
-                                      },
-                                      "kind": { "const": "kubernetes_service", "type": "string" },
-                                      "name": {
-                                        "maxLength": 63,
-                                        "minLength": 1,
-                                        "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                                        "type": "string"
-                                      },
-                                      "namespace": {
-                                        "maxLength": 63,
-                                        "minLength": 1,
-                                        "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$",
-                                        "type": "string"
-                                      },
-                                      "podSelector": {
-                                        "additionalProperties": { "type": "string" },
-                                        "minProperties": 1,
-                                        "type": "object"
-                                      },
-                                      "targetPort": {
-                                        "maximum": 65535,
-                                        "minimum": 1,
-                                        "type": "integer"
-                                      },
-                                      "uid": { "minLength": 1, "type": "string" }
-                                    },
-                                    "required": [
-                                      "kind",
-                                      "namespace",
-                                      "name",
-                                      "uid",
-                                      "address",
-                                      "targetPort",
-                                      "podSelector"
-                                    ],
-                                    "type": "object"
-                                  }
-                                ]
-                              },
+                              "privatePeer": { "$ref": "#/components/schemas/def-18" },
                               "protocol": {
                                 "anyOf": [
                                   { "const": "openai-responses", "type": "string" },
@@ -37756,11 +37219,23 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "List readable credential sources without revealing credential values",
+        "summary": "List credential-source metadata, optionally filtered to ready, approved model credentials",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "namespace", "scope": "requested" },
-          { "action": "read", "resourceKind": "credential_source", "scope": "each_returned" }
+          { "action": "read", "resourceKind": "credential_source", "scope": "each_returned" },
+          {
+            "action": "create",
+            "condition": "model_provider_filter",
+            "resourceKind": "agent",
+            "scope": "namespace"
+          },
+          {
+            "action": "operate",
+            "condition": "model_provider_filter",
+            "resourceKind": "credential_source",
+            "scope": "each_returned"
+          }
         ]
       },
       "post": {
@@ -37790,8 +37265,9 @@
                 "example": {
                   "summary": "Example request",
                   "value": {
-                    "config": {},
-                    "name": "Model credentials",
+                    "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                    "connectionTemplateVersion": 1,
+                    "name": "Research inference key",
                     "secrets": {
                       "api_key": {
                         "id": "sec_123e4567-e89b-42d3-a456-426614174000",
@@ -37813,10 +37289,15 @@
                     "type": "object"
                   },
                   "connectionTemplateId": {
+                    "description": "Static-key template approved for this credential; requires connectionTemplateVersion.",
                     "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                     "type": "string"
                   },
-                  "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
+                  "connectionTemplateVersion": {
+                    "description": "Approved template version; requires connectionTemplateId.",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
                   "name": {
                     "maxLength": 200,
                     "minLength": 1,
@@ -37869,13 +37350,13 @@
                     "summary": "Example response",
                     "value": {
                       "data": {
-                        "config": {},
-                        "id": "cs_123e4567-e89b-42d3-a456-426614174000",
-                        "name": "Model credentials",
+                        "config": { "authorized_base_url": "https://inference.example.com/v1" },
+                        "id": "cs_223e4567-e89b-42d3-a456-426614174000",
+                        "name": "Research inference key",
                         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                         "ownerCapability": "credential_gateway",
                         "ref": {
-                          "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+                          "id": "cs_223e4567-e89b-42d3-a456-426614174000",
                           "kind": "credential_source",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
@@ -37887,6 +37368,12 @@
                           }
                         },
                         "state": "ready",
+                        "staticKeyGrant": {
+                          "baseUrl": "https://inference.example.com/v1",
+                          "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
+                          "connectionTemplateVersion": 1,
+                          "protocol": "openai-responses"
+                        },
                         "type": "openai"
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
@@ -40755,7 +40242,7 @@
                       "data": [
                         {
                           "baseUrl": "https://inference.example.com/v1",
-                          "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                          "connectionTemplateId": "ctp_223e4567-e89b-42d3-a456-426614174000",
                           "defaultModelId": "research-model",
                           "displayName": "Research inference",
                           "id": "mpr_123e4567-e89b-42d3-a456-426614174000",
@@ -40771,83 +40258,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "data": {
-                      "items": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "baseUrl": {
-                            "maxLength": 2048,
-                            "pattern": "^https://",
-                            "type": "string"
-                          },
-                          "connectionTemplateId": {
-                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "defaultModelId": {
-                            "maxLength": 256,
-                            "minLength": 1,
-                            "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
-                            "type": "string"
-                          },
-                          "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
-                          "id": {
-                            "pattern": "^mpr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "models": {
-                            "items": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "contextWindow": { "minimum": 1, "type": "integer" },
-                                "cost": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "cacheRead": { "minimum": 0, "type": "number" },
-                                    "cacheWrite": { "minimum": 0, "type": "number" },
-                                    "input": { "minimum": 0, "type": "number" },
-                                    "output": { "minimum": 0, "type": "number" }
-                                  },
-                                  "required": ["input", "output", "cacheRead", "cacheWrite"],
-                                  "type": "object"
-                                },
-                                "id": {
-                                  "maxLength": 256,
-                                  "minLength": 1,
-                                  "pattern": "^[^\\s\\x00-\\x1f\\x7f]+$",
-                                  "type": "string"
-                                },
-                                "maxTokens": { "minimum": 1, "type": "integer" },
-                                "name": { "maxLength": 200, "minLength": 1, "type": "string" }
-                              },
-                              "required": ["id"],
-                              "type": "object"
-                            },
-                            "maxItems": 256,
-                            "minItems": 1,
-                            "type": "array"
-                          },
-                          "protocol": {
-                            "anyOf": [
-                              { "const": "openai-responses", "type": "string" },
-                              { "const": "openai-completions", "type": "string" }
-                            ]
-                          },
-                          "settingsFingerprint": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
-                        },
-                        "required": [
-                          "id",
-                          "displayName",
-                          "baseUrl",
-                          "protocol",
-                          "models",
-                          "connectionTemplateId",
-                          "settingsFingerprint"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "array"
-                    },
+                    "data": { "items": { "$ref": "#/components/schemas/def-20" }, "type": "array" },
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
