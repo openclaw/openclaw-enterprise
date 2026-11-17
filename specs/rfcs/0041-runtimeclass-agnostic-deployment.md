@@ -6,7 +6,7 @@ author: sjenning
 
 # Proposal: leave Kubernetes RuntimeClass selection outside OCE
 
-- **ID:** RFC-0040
+- **ID:** RFC-0041
 - **Created:** 2026-11-16
 - **Last updated:** 2026-11-16
 - **RFC and implementation PR:** [#6335](https://github.com/openclaw/openclaw-enterprise/pull/6335)

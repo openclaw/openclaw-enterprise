@@ -1,5 +1,5 @@
 ---
-rfc: ../rfcs/0040-runtimeclass-agnostic-deployment.md
+rfc: ../rfcs/0041-runtimeclass-agnostic-deployment.md
 ---
 
 # Implementation plan: remove OCE RuntimeClass configuration and the PSA exemption
@@ -165,7 +165,7 @@ skipped cases leave proof incomplete; do not replace dependencies with mocks.
 
 ## Blockers and delivery record
 
-- RFC-0040 was submitted in [PR #6335](https://github.com/openclaw/openclaw-enterprise/pull/6335)
+- The proposal now numbered RFC-0041 was submitted as RFC-0040 in [PR #6335](https://github.com/openclaw/openclaw-enterprise/pull/6335)
   at `edbe5ec43` before implementation. Its decision remains Proposed.
 - Implementation removes both Driver settings, emitted class fields, development
   and CI class creation, handler requirements, and API server PSA exemption setup.
