@@ -14,6 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { admitSetupProjection } from "../../deploy/examples/strands-box/host/control.ts";
+import { startWorkspaceNode } from "../../deploy/examples/strands-box/host/installed-workspace-node.ts";
 import { NATIVE_HOOK_DIRECTORY } from "../../deploy/examples/strands-box/host/launch.ts";
 import {
   NATIVE_HOOK_ENTRY,
@@ -255,3 +257,79 @@ test(
     }
   },
 );
+
+function setupCode(url: string, expiresAtMs: number): string {
+  return `oc-pair://${Buffer.from(
+    JSON.stringify({ url, bootstrapToken: "fixture-bootstrap", expiresAtMs }),
+  ).toString("base64url")}`;
+}
+
+test("an expired node setup code is admitted only for a recorded device on the file node", () => {
+  const route = {
+    kind: "workspace-node" as const,
+    url: "wss://gateway.example.test:10443/agents/a/node",
+    address: "10.0.0.1",
+  };
+  const fileNode = { workspaceNode: route, separateWorkspaceNode: {} as never };
+  const inline = { workspaceNode: route };
+  const past = Date.now() - 60_000;
+  const future = Date.now() + 60_000;
+  assert.equal(admitSetupProjection(fileNode, setupCode(route.url, future), undefined), future);
+  assert.equal(admitSetupProjection(fileNode, setupCode(route.url, past), true), past);
+  assert.equal(admitSetupProjection(fileNode, setupCode(route.url, future), true), future);
+  assert.throws(() => admitSetupProjection(fileNode, setupCode(route.url, past), undefined), {
+    message: "setup_projection_outside_owner_route",
+  });
+  // Only `true`, and never for the inline node in Box.
+  for (const [config, recorded] of [
+    [fileNode, false],
+    [fileNode, "true"],
+    [inline, true],
+  ] as const) {
+    assert.throws(() => admitSetupProjection(config, setupCode(route.url, past), recorded), {
+      message: "invalid_setup_projection",
+    });
+  }
+  // A recorded device still needs the owner's route and a bounded expiry.
+  assert.throws(
+    () => admitSetupProjection(fileNode, setupCode("wss://elsewhere.test/node", past), true),
+    { message: "setup_projection_outside_owner_route" },
+  );
+  assert.throws(() => admitSetupProjection(fileNode, setupCode(route.url, 0), true), {
+    message: "setup_projection_outside_owner_route",
+  });
+});
+
+test("the file node starts on an expired code only when its device is recorded", async () => {
+  const input = {
+    installation: {
+      mode: "file-only-v1" as const,
+      rootfs: "/nonexistent-rootfs",
+      rootfsIdentity: { dev: "1", ino: "1" },
+      runtimeSha256: "0".repeat(64),
+      workspaceVolume: { claimUid: "claim", volumeName: "volume" },
+    },
+    workspace: "/nonexistent-workspace",
+    workspaceIdentity: { dev: "1", ino: "2" },
+    stateIdentity: { dev: "1", ino: "3" },
+    volumeMounts: [],
+    runtime: "/nonexistent-runtime",
+    route: {
+      kind: "workspace-node" as const,
+      url: "wss://gateway.example.test:10443/agents/a/node",
+      address: "10.0.0.1",
+    },
+    displayName: "node",
+    setupCode: "fixture",
+    expiresAt: Date.now() - 1,
+  };
+  const signal = new AbortController().signal;
+  await assert.rejects(startWorkspaceNode(input, "/nonexistent-run", signal), {
+    message: "file_node_setup_expired_or_missing",
+  });
+  // Recorded: the expiry gate passes and the next check (the pinned rootfs) refuses instead.
+  await assert.rejects(
+    startWorkspaceNode({ ...input, setupRecorded: true }, "/nonexistent-run", signal),
+    (error: Error) => error.message !== "file_node_setup_expired_or_missing",
+  );
+});

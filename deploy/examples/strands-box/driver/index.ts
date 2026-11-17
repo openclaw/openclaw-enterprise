@@ -432,7 +432,9 @@ export class StrandsBoxDriver implements SandboxDriver {
       // Do not send a one-shot code after another execution appeared during the Secret read.
       execution = await this.readExecution(context.signal);
       if (execution === undefined) {
-        if (setupMaterial && setupMaterial.expiresAtMs <= Date.now()) {
+        // Core's rule: a recorded device may reconnect after bootstrap expiry (the stock node
+        // proves its retained device token); an unpaired code that expired is refused.
+        if (setupMaterial && setupMaterial.expiresAtMs <= Date.now() && !setupMaterial.recorded) {
           throw new DependencyUnavailableError(
             "The exact workspace node setup Secret has expired.",
           );
@@ -445,7 +447,10 @@ export class StrandsBoxDriver implements SandboxDriver {
               ...admission,
               ...(setupMaterial === undefined
                 ? {}
-                : { workspaceNodeSetupCode: setupMaterial.code }),
+                : {
+                    workspaceNodeSetupCode: setupMaterial.code,
+                    ...(setupMaterial.recorded ? { workspaceNodeSetupRecorded: true as const } : {}),
+                  }),
               ...this.executionInputs(),
               ...(inference === undefined ? {} : { controlledInference: inference }),
             },
@@ -723,6 +728,8 @@ export class StrandsBoxDriver implements SandboxDriver {
       return {
         code: Buffer.from(encoded, "base64").toString("utf8"),
         expiresAtMs: setup.expiresAtMs,
+        // validateWorkspaceNodeSetupSecret refused a malformed device ID; present means paired.
+        recorded: typeof record(document?.data)?.deviceId === "string",
       };
     } catch {
       context.signal.throwIfAborted();

@@ -343,6 +343,8 @@ type ControlRequest =
       readonly method: "PUT";
       readonly body: AdmissionRequest & {
         readonly workspaceNodeSetupCode?: string;
+        /** The setup Secret records a paired device: the host may accept an expired code. */
+        readonly workspaceNodeSetupRecorded?: true;
         readonly executionBearer?: string;
         readonly controlledInference?: ControlledInferenceRoute;
       };

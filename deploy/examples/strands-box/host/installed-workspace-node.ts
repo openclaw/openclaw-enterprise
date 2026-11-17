@@ -62,6 +62,8 @@ export interface NodeLaunch {
   readonly displayName: string;
   readonly setupCode?: string;
   readonly expiresAt?: number;
+  /** The setup Secret records this node's paired device: it reconnects with its retained token. */
+  readonly setupRecorded?: true;
   readonly mountinfo?: () => string;
 }
 
@@ -302,7 +304,10 @@ export async function startWorkspaceNode(
 ): Promise<{ readonly done: Promise<number>; stop(): void }> {
   const code = input.setupCode;
   const expiresAt = input.expiresAt;
-  if (code === undefined || expiresAt === undefined || Date.now() >= expiresAt) {
+  // An expired code starts only a recorded device, which proves its retained device token.
+  const expired = () =>
+    expiresAt === undefined || (Date.now() >= expiresAt && input.setupRecorded !== true);
+  if (code === undefined || expired()) {
     throw new Error("file_node_setup_expired_or_missing");
   }
   assertNodeInputs(input);
@@ -347,7 +352,7 @@ export async function startWorkspaceNode(
     await listen(relay.server, paths.socket);
     signal.throwIfAborted();
     assertNodeInputs(input);
-    if (Date.now() >= expiresAt) throw new Error("file_node_setup_expired_or_missing");
+    if (expired()) throw new Error("file_node_setup_expired_or_missing");
     const descriptors: number[] = [];
     const child = (() => {
       try {

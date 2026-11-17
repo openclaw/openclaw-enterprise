@@ -831,6 +831,45 @@ export function splitSelectedHarnessImageCommand(
   return pinnedHarnessImageArgv(standalone);
 }
 
+/**
+ * The node setup code the Driver projected: base64url, for the owner's workspace node route, with a
+ * bounded expiry. Returns that expiry. An expired code is admitted only when the Driver says the
+ * setup Secret records a paired device (core: "a recorded device may reconnect after bootstrap
+ * expiry") and the node is the separate stock file node, which reconnects with the device token it
+ * retained on the claim; the inline node in Box keeps refusing it.
+ */
+export function admitSetupProjection(
+  config: Pick<InstalledConfig, "workspaceNode" | "separateWorkspaceNode">,
+  setupCode: unknown,
+  setupRecorded: unknown,
+): number {
+  if (
+    setupRecorded !== undefined &&
+    (setupRecorded !== true || config.separateWorkspaceNode === undefined)
+  )
+    throw new Error("invalid_setup_projection");
+  const code = string(setupCode, 65_536);
+  if (!/^(?:oc-pair:\/\/)?[A-Za-z0-9_-]+$/i.test(code) || config.workspaceNode === undefined)
+    throw new Error("invalid_setup_projection");
+  const decoded = Buffer.from(code.replace(/^oc-pair:\/\//i, ""), "base64url");
+  try {
+    const envelope = object(JSON.parse(decoded.toString("utf8")) as unknown);
+    if (
+      typeof envelope.url !== "string" ||
+      new URL(envelope.url).toString() !== config.workspaceNode.url ||
+      typeof envelope.expiresAtMs !== "number" ||
+      !Number.isSafeInteger(envelope.expiresAtMs) ||
+      envelope.expiresAtMs <= 0 ||
+      (envelope.expiresAtMs <= Date.now() && setupRecorded !== true)
+    ) {
+      throw new Error("setup_projection_outside_owner_route");
+    }
+    return envelope.expiresAtMs;
+  } finally {
+    decoded.fill(0);
+  }
+}
+
 function admitted(
   config: InstalledConfig,
   requested: Owner,
@@ -997,6 +1036,7 @@ function admitted(
     );
   const egress: EgressRoute[] = [];
   const setupCode = request.workspaceNodeSetupCode;
+  const setupRecorded = request.workspaceNodeSetupRecorded;
   let expiresAt: number | undefined;
   if (
     (phase === "start" && needsSetupCode !== (setupCode !== undefined)) ||
@@ -1004,27 +1044,12 @@ function admitted(
   ) {
     throw new Error("unexpected_or_missing_setup_projection");
   }
+  if (setupCode === undefined && setupRecorded !== undefined)
+    throw new Error("invalid_setup_projection");
   if (setupCode !== undefined) {
-    const code = string(setupCode, 65_536);
-    if (!/^(?:oc-pair:\/\/)?[A-Za-z0-9_-]+$/i.test(code) || config.workspaceNode === undefined)
-      throw new Error("invalid_setup_projection");
-    const decoded = Buffer.from(code.replace(/^oc-pair:\/\//i, ""), "base64url");
-    try {
-      const envelope = object(JSON.parse(decoded.toString("utf8")) as unknown);
-      if (
-        typeof envelope.url !== "string" ||
-        new URL(envelope.url).toString() !== config.workspaceNode.url ||
-        typeof envelope.expiresAtMs !== "number" ||
-        !Number.isSafeInteger(envelope.expiresAtMs) ||
-        envelope.expiresAtMs <= Date.now()
-      ) {
-        throw new Error("setup_projection_outside_owner_route");
-      }
-      expiresAt = envelope.expiresAtMs;
-    } finally {
-      decoded.fill(0);
-    }
-    if (config.separateWorkspaceNode === undefined) egress.push(config.workspaceNode);
+    expiresAt = admitSetupProjection(config, setupCode, setupRecorded);
+    if (config.separateWorkspaceNode === undefined && config.workspaceNode !== undefined)
+      egress.push(config.workspaceNode);
   }
   if (
     !SHA256.test(environment.APP_TOKEN_SHA ?? "") ||
@@ -1105,6 +1130,7 @@ function admitted(
         : { ca: environment.OPENCLAW_NODE_CA_PEM }),
       displayName,
       ...(typeof setupCode === "string" && expiresAt !== undefined ? { setupCode, expiresAt } : {}),
+      ...(setupRecorded === true ? { setupRecorded: true as const } : {}),
     };
     assertNodeInputs(separateNode);
     nodeRuntimeBytes(separateNode);
@@ -1664,6 +1690,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         "requirements",
         "workspaceVolume",
         "workspaceNodeSetupCode",
+        "workspaceNodeSetupRecorded",
         "controlledInference",
         "executionBearer",
       ]);

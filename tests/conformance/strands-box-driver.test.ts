@@ -180,7 +180,11 @@ function objectApi() {
 
 async function fixture(
   t: TestContext,
-  options: { readonly controlledInference?: Record<string, unknown> } = {},
+  options: {
+    readonly controlledInference?: Record<string, unknown>;
+    /** The node setup Secret: its envelope expiry, and the paired device Compute recorded. */
+    readonly setup?: { readonly expiresAtMs: number; readonly deviceId?: string };
+  } = {},
 ) {
   const directory = await temporaryDirectory(t, "strands-driver-");
   const socket = join(directory, "control.sock");
@@ -339,7 +343,7 @@ async function fixture(
     JSON.stringify({
       url: "wss://gateway.pilot.svc.cluster.local/",
       bootstrapToken: "synthetic-pairing-capability",
-      expiresAtMs: Date.now() + 60_000,
+      expiresAtMs: options.setup?.expiresAtMs ?? Date.now() + 60_000,
     }),
   ).toString("base64url")}`;
   const secret = (name: string, data: Record<string, string>) => ({
@@ -358,7 +362,12 @@ async function fixture(
       Object.entries(data).map(([entry, value]) => [entry, Buffer.from(value).toString("base64")]),
     ),
   });
-  kube.stage(secret("node-setup", { setupCode }));
+  kube.stage(
+    secret("node-setup", {
+      setupCode,
+      ...(options.setup?.deviceId === undefined ? {} : { deviceId: options.setup.deviceId }),
+    }),
+  );
   const stageModel = (value: string) => kube.stage(secret("admitted-harness", { [key]: value }));
   stageModel(controlledMarker);
   const requirements: HarnessWorkloadRequirements = {
@@ -620,6 +629,46 @@ test(
       x.driver.harnessEndpoint(x.context),
       /relay does not name the current execution/,
     );
+  },
+);
+
+test(
+  "an expired node setup code reaches the host only for a recorded device, marked recorded",
+  { timeout: 30_000 },
+  async (t) => {
+    // Core's rule (validateWorkspaceNodeSetupSecret): a recorded device may reconnect after
+    // bootstrap expiry. A stopped Agent restarts with the Secret Compute kept for it.
+    const recorded = await fixture(t, {
+      setup: { expiresAtMs: Date.now() - 60_000, deviceId: "device-fixture-1" },
+    });
+    await recorded.driver.provisionHarness!(recorded.context);
+    const put = recorded.requests.find(({ method }) => method === "PUT")?.body;
+    assert.ok(put);
+    assert.equal(put.workspaceNodeSetupCode, recorded.setupCode);
+    assert.equal(put.workspaceNodeSetupRecorded, true);
+
+    // A paired device whose code is still valid is marked recorded too.
+    const current = await fixture(t, {
+      setup: { expiresAtMs: Date.now() + 60_000, deviceId: "device-fixture-2" },
+    });
+    await current.driver.provisionHarness!(current.context);
+    assert.equal(
+      current.requests.find(({ method }) => method === "PUT")?.body?.workspaceNodeSetupRecorded,
+      true,
+    );
+
+    // An unpaired code is never marked, and an expired unpaired code never reaches the host.
+    const fresh = await fixture(t);
+    await fresh.driver.provisionHarness!(fresh.context);
+    const freshPut = fresh.requests.find(({ method }) => method === "PUT")?.body;
+    assert.ok(freshPut);
+    assert.equal(Object.hasOwn(freshPut, "workspaceNodeSetupRecorded"), false);
+    const expired = await fixture(t, { setup: { expiresAtMs: Date.now() - 60_000 } });
+    await assert.rejects(
+      expired.driver.provisionHarness!(expired.context),
+      /setup Secret is unavailable|setup Secret has expired/,
+    );
+    assert.equal(expired.requests.filter(({ method }) => method === "PUT").length, 0);
   },
 );
 
