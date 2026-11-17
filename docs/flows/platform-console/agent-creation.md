@@ -74,7 +74,8 @@ remain unrestricted. An explicit `plugins.entries.codex.enabled: false` survives
 a round trip. Dedicated Codex enables the plugin at startup if the draft passes
 admission. Returning to OpenClaw through the Harness selector or model JSON restores
 the original disabled entry when the projected entry is unchanged. Operator edits
-and deletions survive the switch. The form uses the existing server preflight and
+and deletions to the Dedicated projection of an originally disabled native Codex
+entry survive the switch. The form uses the existing server preflight and
 provisioning admission. A refusal leaves the editable
 Configuration unchanged. See [runtime admission](../../reference/harness-execution.md#native-runtime-selection).
 

@@ -2165,22 +2165,45 @@ for (const finalHarness of ["openclaw", "codex"] as const) {
     const configuration = page.getByLabel("Configuration JSON", { exact: true });
     const harness = page.getByLabel("Harness", { exact: true });
     await harness.selectOption("codex");
-    let repairedPlugins: unknown;
     if (finalHarness === "openclaw") {
-      // The selector can change while an unfinished JSON edit still holds the projected plugin.
+      // Settle the initial model catalog before editing an unfinished Configuration.
+      await settlePageRequests(page);
       const dedicated = JSON.parse(await configuration.inputValue());
+      assert.deepEqual(dedicated.plugins.entries.codex, {
+        enabled: false,
+        config: {
+          appServer: {
+            mode: "guardian",
+            approvalPolicy: "on-request",
+            transport: "websocket",
+            sandbox: "read-only",
+            url: "${APP_SERVER_URL}",
+            authToken: "${APP_SERVER_TOKEN}",
+          },
+        },
+      });
       const native = JSON.stringify({ ...dedicated, agents: base.agents, models: base.models });
-      const incomplete = native.slice(0, -1);
-      await configuration.fill(incomplete);
+      const replaceEditorText = (value: string) =>
+        configuration.evaluate((input, text) => {
+          (input as HTMLTextAreaElement).value = text;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        }, value);
+      const incomplete = JSON.stringify(dedicated).slice(0, -1);
+      await replaceEditorText(incomplete);
+      assert.equal(await configuration.inputValue(), incomplete);
       await harness.selectOption("openclaw");
       assert.equal(await configuration.inputValue(), incomplete);
-      await configuration.fill(native);
-      repairedPlugins = JSON.parse(await configuration.inputValue()).plugins;
+      await replaceEditorText(native);
+      assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, plugins);
       assert.equal(await harness.inputValue(), "openclaw");
       await harness.selectOption("codex");
-    }
-    await harness.selectOption("openclaw");
-    if (finalHarness === "codex") {
+      const edited = JSON.parse(await configuration.inputValue());
+      delete edited.plugins.entries.codex;
+      await replaceEditorText(JSON.stringify(edited));
+      await harness.selectOption("openclaw");
+      assert.equal(JSON.parse(await configuration.inputValue()).plugins.entries.codex, undefined);
+    } else {
+      await harness.selectOption("openclaw");
       assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, plugins);
       await harness.selectOption("codex");
     }
@@ -2194,7 +2217,7 @@ for (const finalHarness of ["openclaw", "codex"] as const) {
     assert.equal(saved.status, 200);
     const expected =
       finalHarness === "openclaw"
-        ? entry
+        ? undefined
         : {
             enabled: false,
             config: {
@@ -2208,14 +2231,14 @@ for (const finalHarness of ["openclaw", "codex"] as const) {
               },
             },
           };
-    assert.deepEqual(saved.data.values.plugins, {
-      ...plugins,
-      entries: { ...plugins.entries, codex: expected },
-    });
-    assert.deepEqual(JSON.parse(configurationBeforeSave).plugins, saved.data.values.plugins);
-    if (finalHarness === "openclaw") {
-      assert.deepEqual(repairedPlugins, plugins);
+    const expectedEntries: Record<string, unknown> = { ...plugins.entries };
+    if (expected === undefined) {
+      delete expectedEntries.codex;
+    } else {
+      expectedEntries.codex = expected;
     }
+    assert.deepEqual(saved.data.values.plugins, { ...plugins, entries: expectedEntries });
+    assert.deepEqual(JSON.parse(configurationBeforeSave).plugins, saved.data.values.plugins);
   });
 }
 
