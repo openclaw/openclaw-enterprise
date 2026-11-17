@@ -10,7 +10,10 @@ import { readFileSync, readdirSync, readlinkSync } from "node:fs";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import {
+  BOOTSTRAP_MS,
   bridge,
+  ENROLLMENT_WAIT_MS,
+  enrollmentBridge,
   INVALID_CAPABILITY,
   listen,
   PORT,
@@ -31,6 +34,12 @@ interface AgentInput {
   projectionSocket?: string;
   /** Protected startup: wait here until the host verified Compute's signed release. */
   releaseSocket?: string;
+  /**
+   * Protected startup: the pre-ready enrollment bridge. Created before the release wait, while
+   * nothing else runs in Box, so the host can pin it before it opens the gate. It forwards only
+   * the two enrollment requests, only to the stock program's own listener, until Codex listens.
+   */
+  enrollmentSocket?: string;
   /** The host's native hook self-check: this command line must answer exactly `expected`. */
   nativeHookProbe?: { command: string; expected: string };
 }
@@ -149,37 +158,65 @@ async function run(input: AgentInput): Promise<number> {
   if (program === undefined) throw new Error("empty_command");
   const env = { ...process.env, NODE_OPTIONS: "--jitless" };
   let projection: string | undefined;
-  if (input.releaseSocket !== undefined) {
-    report("inner", "release", "entered");
-    const held = new AbortController();
-    const stop = () => held.abort();
-    process.once("SIGTERM", stop);
-    process.once("SIGINT", stop);
-    try {
-      await awaitRelease(input.releaseSocket, held.signal);
-    } catch (error) {
-      report("inner", "release", "stopped");
-      throw error;
-    } finally {
-      process.off("SIGTERM", stop);
-      process.off("SIGINT", stop);
-    }
-    report("inner", "release", "observed");
+  // The stock protected program, once spawned: the only process whose listener the bridge reaches.
+  let enrollmentOwner: ProcessIdentity | undefined;
+  let enrollment: ReturnType<typeof enrollmentBridge> | undefined;
+  if (input.enrollmentSocket !== undefined) {
+    if (input.releaseSocket === undefined) throw new Error("enrollment_without_release");
+    enrollment = enrollmentBridge({ host: "127.0.0.1", port: PORT }, async (socket, stopped) => {
+      const owner = enrollmentOwner;
+      if (owner === undefined || socket.localPort === undefined) return false;
+      // The challenge listener: held by the command's own process tree, never by Codex.
+      const holder = findListener(owner, (exe) => exe !== input.codexBin);
+      if (holder === undefined) return false;
+      const clientPort = socket.localPort;
+      try {
+        await waitFor(() => tcpOwnership(holder.process, PORT, clientPort), stopped, 1_000);
+        return sameProcess(owner) && !abort.signal.aborted;
+      } catch {
+        return false;
+      }
+    });
+    await listen(enrollment.server, input.enrollmentSocket);
+    report("inner", "enrollment", "observed");
   }
-  if (input.projectionSocket !== undefined) {
-    report("inner", "projection", "entered");
-    try {
-      projection = await setupCode(input.projectionSocket);
-    } catch (error) {
-      report("inner", "projection", safeReason(error));
-      throw error;
+  try {
+    if (input.releaseSocket !== undefined) {
+      report("inner", "release", "entered");
+      const held = new AbortController();
+      const stop = () => held.abort();
+      process.once("SIGTERM", stop);
+      process.once("SIGINT", stop);
+      try {
+        await awaitRelease(input.releaseSocket, held.signal);
+      } catch (error) {
+        report("inner", "release", "stopped");
+        throw error;
+      } finally {
+        process.off("SIGTERM", stop);
+        process.off("SIGINT", stop);
+      }
+      report("inner", "release", "observed");
     }
-  }
-  if (input.nativeHookProbe !== undefined) {
-    report("inner", "native-hook", "entered");
-    const outcome = await probeNativeHook(input.nativeHookProbe, input.workspace, env);
-    report("inner", "native-hook", outcome);
-    if (outcome !== "observed") throw new Error("native_hook_unrunnable");
+    if (input.projectionSocket !== undefined) {
+      report("inner", "projection", "entered");
+      try {
+        projection = await setupCode(input.projectionSocket);
+      } catch (error) {
+        report("inner", "projection", safeReason(error));
+        throw error;
+      }
+    }
+    if (input.nativeHookProbe !== undefined) {
+      report("inner", "native-hook", "entered");
+      const outcome = await probeNativeHook(input.nativeHookProbe, input.workspace, env);
+      report("inner", "native-hook", outcome);
+      if (outcome !== "observed") throw new Error("native_hook_unrunnable");
+    }
+  } catch (error) {
+    // Stopped or refused before the program ran: the bridge closes with it.
+    enrollment?.close();
+    throw error;
   }
   report("inner", "exec", "entered");
   const child = spawn(program, args, {
@@ -211,11 +248,24 @@ async function run(input: AgentInput): Promise<number> {
   try {
     if (child.pid === undefined) throw new Error("command_start");
     const owned = processIdentity(child.pid);
+    enrollmentOwner = owned;
     report("inner", "owner", "observed");
     phase = "listener";
     report("inner", "listener", "entered");
-    const native = await waitFor(() => findNative(owned, input.codexBin), abort.signal);
+    // A gated run's program first waits for its own enrollment (at most 180 s), then starts Codex.
+    const native = await waitFor(
+      () => findListener(owned, (exe) => exe === input.codexBin),
+      abort.signal,
+      enrollment === undefined ? BOOTSTRAP_MS : ENROLLMENT_WAIT_MS,
+    );
     report("inner", "listener", "observed");
+    if (enrollment !== undefined) {
+      // Codex listens: the program was released. Nothing reaches the port from outside now but
+      // the native bridge below.
+      enrollment.close();
+      enrollmentOwner = undefined;
+      report("inner", "enrollment", "closed");
+    }
     const isOriginal = () =>
       sameProcess(owned) &&
       sameProcess(native.process) &&
@@ -266,6 +316,7 @@ async function run(input: AgentInput): Promise<number> {
     throw error;
   } finally {
     if (watch !== undefined) clearInterval(watch);
+    enrollment?.close();
     relay?.close();
     process.off("SIGTERM", onStop);
     process.off("SIGINT", onStop);
@@ -283,9 +334,10 @@ async function run(input: AgentInput): Promise<number> {
   return retiredByOperator ? 0 : code || 1;
 }
 
-function findNative(
+/** A process of `owner`'s tree whose executable `accepts` holds the listener on `PORT`. */
+function findListener(
   owner: ProcessIdentity,
-  codexBin: string,
+  accepts: (executable: string) => boolean,
 ): { process: ProcessIdentity; listener: string } | undefined {
   if (!sameProcess(owner)) throw new Error("command_exited");
   const processes = new Map<number, ProcessIdentity>();
@@ -315,7 +367,7 @@ function findNative(
     } catch {
       continue;
     }
-    if (executable !== codexBin) continue;
+    if (!accepts(executable)) continue;
     const listener = tcpOwnership(current, PORT);
     if (listener !== undefined) return { process: current, listener };
   }

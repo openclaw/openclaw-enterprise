@@ -37,7 +37,10 @@ import {
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
-import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
+import {
+  computeReleasePublicKey,
+  signComputeExecutionRelease,
+} from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { inflateRawSync } from "node:zlib";
 import {
   assertNodeInputs,
@@ -101,6 +104,20 @@ import {
 } from "../../deploy/examples/strands-box/host/transport.ts";
 
 const unsupported = process.platform !== "linux" || process.getuid?.() === 0;
+
+/**
+ * A gated (protected) run carries Compute's two public enrollment inputs into Box: the stock
+ * protected program verifies the release of its own startup challenge with them (finding 3309).
+ */
+const enrollmentEnvironment = {
+  OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID: "rev_one",
+  OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY: computeReleasePublicKey(
+    generateKeyPairSync("ed25519").privateKey,
+  ),
+};
+function gated<T extends { environment: Readonly<Record<string, string>> }>(input: T): T {
+  return { ...input, environment: { ...input.environment, ...enrollmentEnvironment } };
+}
 
 function temporary(): string {
   return mkdtempSync(join(realpathSync(tmpdir()), "oce-box-test-"));
@@ -282,6 +299,56 @@ test(
         await exited;
         rmSync(root, { recursive: true, force: true });
       }
+    }
+  },
+);
+
+test(
+  "the installed host relays enrollment only for its own held execution, with exactly its fields",
+  { skip: unsupported },
+  async () => {
+    const root = temporary();
+    const config = installedControlFixture(root);
+    const socket = join(config.runtimeDir, "control.sock");
+    const child = spawn(process.execPath, installedControlCommand(config), {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const exited = once(child, "exit");
+    try {
+      const output = createInterface({ input: child.stdout });
+      assert.deepEqual(await once(output, "line", { signal: AbortSignal.timeout(5_000) }), [
+        "strands-box-control: ready",
+      ]);
+      const owner = parseOwner(config.owner);
+      const key = { owner, requirementsDigest: "a".repeat(64), executionId: "box-execution" };
+      // No held, gate-released execution: nothing is relayed into any Box.
+      assert.deepEqual(
+        await controlRequest(socket, "/v1/enrollment", { ...key, transportToken: "bearer" }),
+        { status: 409, body: { error: "enrollment_outside_held_execution" } },
+      );
+      // Only the enrollment fields: anything else (a path, a method, a header) is refused.
+      for (const extra of [{ path: "/" }, { method: "PUT" }, { headers: {} }]) {
+        assert.deepEqual(
+          await controlRequest(socket, "/v1/enrollment", {
+            ...key,
+            transportToken: "bearer",
+            ...extra,
+          }),
+          { status: 422, body: { error: "host_request_refused" } },
+        );
+      }
+      assert.deepEqual(
+        await controlRequest(socket, "/v1/enrollment", {
+          ...key,
+          owner: { ...owner, agentId: "agt_other" },
+          transportToken: "bearer",
+        }),
+        { status: 409, body: { error: "owner_mismatch" } },
+      );
+    } finally {
+      child.kill("SIGTERM");
+      await exited;
+      rmSync(root, { recursive: true, force: true });
     }
   },
 );
@@ -1396,7 +1463,8 @@ test(
     const reservationGeneration = "a".repeat(64);
     const credentialSource = { socket: join(runtimeDir, "source", "oce.sock"), bearer };
     const releaseGate = true as const;
-    const { input } = smokeInput(config);
+    const { input: ordinary } = smokeInput(config);
+    const input = gated(ordinary);
     try {
       for (const refused of [
         { ...input, credentialSource },
@@ -1426,6 +1494,28 @@ test(
         {
           ...input,
           environment: { ...input.environment, OCE_SOURCE_BEARER: "x" },
+          credentialSource,
+          releaseGate,
+          reservationGeneration,
+        },
+        // The enrollment inputs: only on a gated run, both of them, and only a real Ed25519 key.
+        input,
+        { ...ordinary, credentialSource, releaseGate, reservationGeneration },
+        {
+          ...input,
+          environment: {
+            ...input.environment,
+            OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY: computeReleasePublicKey(
+              generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey,
+            ),
+          },
+          credentialSource,
+          releaseGate,
+          reservationGeneration,
+        },
+        {
+          ...input,
+          environment: { ...input.environment, OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY: "A".repeat(59) },
           credentialSource,
           releaseGate,
           reservationGeneration,
@@ -1467,6 +1557,10 @@ test(
         generated,
         /\[agent\.env\][^[]*(?:GITHUB_TOKEN|OCE_GITHUB_GIT_CREDENTIAL|OCE_SOURCE_BEARER)/,
       );
+      // The two public enrollment inputs enter Box for the stock program's own verification.
+      for (const [name, value] of Object.entries(enrollmentEnvironment)) {
+        assert.ok(generated.includes(`\n${name} = ${JSON.stringify(value)}\n`), name);
+      }
       assert.ok(
         readFileSync(join(directory, "generated-policy.dw"), "utf8").includes(githubPolicy()),
       );
@@ -1937,7 +2031,7 @@ test(
     const model = { socket: join(runtimeDir, "source", "model.sock"), path: "/v1/responses" };
     const credentialSource = { socket: join(runtimeDir, "source", "oce.sock"), bearer, model };
     const releaseGate = true as const;
-    const { input } = smokeInput(config);
+    const input = gated(smokeInput(config).input);
     const held = { ...input, egress: [route], releaseGate, reservationGeneration };
     try {
       for (const refused of [
@@ -2136,10 +2230,14 @@ test(
     const waiter = join(directory, "waiter.mjs");
     writeFileSync(
       waiter,
-      `import { readFileSync, writeFileSync, existsSync } from "node:fs";
-       import { createConnection } from "node:net";
+      `import { chmodSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+       import { createConnection, createServer } from "node:net";
        const config = readFileSync(process.argv[2], "utf8");
        const input = JSON.parse(readFileSync(JSON.parse(config.match(/^command = (.*)$/m)[1])[3], "utf8"));
+       // As box-agent: the enrollment bridge exists before the gate, for the host to pin.
+       const bridge = createServer((socket) => socket.destroy());
+       bridge.listen(input.enrollmentSocket, () => chmodSync(input.enrollmentSocket, 0o600));
+       bridge.unref();
        while (!existsSync(input.releaseSocket)) await new Promise((r) => setTimeout(r, 20));
        const socket = createConnection({ path: input.releaseSocket });
        let text = "";
@@ -2173,7 +2271,7 @@ test(
         bearer: randomBytes(32).toString("base64url"),
       };
       const execution = start(config, {
-        ...input,
+        ...gated(input),
         releaseGate: true,
         reservationGeneration,
         credentialSource,

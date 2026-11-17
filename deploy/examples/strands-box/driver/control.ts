@@ -141,6 +141,7 @@ export interface WorkspaceVolume {
 const EXECUTION_PATH = "/v1/execution";
 const ADMISSION_PATH = "/v1/admission";
 const RELEASE_PATH = "/v1/release";
+const ENROLLMENT_PATH = "/v1/enrollment";
 const ASKS_PATH = "/v1/credential-asks";
 const MODEL_REVOKE_PATH = "/v1/model-revoke";
 const ANSWERS_PATH = "/v1/credential-answers";
@@ -468,6 +469,53 @@ export async function releaseExecution(
 }
 
 type ExecutionKey = Pick<Execution, "owner" | "executionId" | "requirementsDigest">;
+
+/** One answer of the stock protected program's enrollment listener in Box, as the host relayed it. */
+export interface HarnessEnrollmentAnswer {
+  readonly status: number;
+  readonly document: unknown;
+}
+
+/**
+ * Relay one request of the stock protected program's own enrollment through the host: without
+ * `release`, read its startup challenge; with it, deliver Compute's signed release. `undefined`
+ * while the program is not listening (still starting, or Codex already listens). Any refusal by
+ * the host (an execution it does not hold, a wrong transport bearer, a release it cannot verify
+ * for the challenge it relayed) is an error.
+ */
+export async function harnessEnrollment(
+  socketPath: string,
+  body: ExecutionKey & {
+    readonly transportToken: string;
+    readonly release?: Readonly<Record<string, unknown>>;
+  },
+  signal: AbortSignal,
+): Promise<HarnessEnrollmentAnswer | undefined> {
+  let reply: { status: number; body: string };
+  try {
+    reply = await send(socketPath, "POST", ENROLLMENT_PATH, body, signal);
+  } catch {
+    signal.throwIfAborted();
+    throw new DependencyUnavailableError("The Strands Box host did not relay the Harness enrollment.");
+  }
+  let answer: Record<string, unknown> | undefined;
+  try {
+    answer = record(JSON.parse(reply.body));
+  } catch {
+    answer = undefined;
+  }
+  if (reply.status === 409 && answer?.error === "harness_enrollment_unavailable") return undefined;
+  if (
+    reply.status !== 200 ||
+    answer === undefined ||
+    Object.keys(answer).sort().join(",") !== "document,status" ||
+    typeof answer.status !== "number" ||
+    !Number.isSafeInteger(answer.status)
+  ) {
+    throw new DependencyUnavailableError("The Strands Box host refused the Harness enrollment.");
+  }
+  return { status: answer.status, document: answer.document };
+}
 
 const ASK_HOSTS = new Set(["github.com", "api.github.com"]);
 const ASK_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);

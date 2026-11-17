@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createPublicKey, randomBytes } from "node:crypto";
 import {
   accessSync,
   chmodSync,
@@ -18,6 +18,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -57,7 +58,10 @@ import {
   verifyNativeHookCommand,
 } from "./native-hook.ts";
 import {
+  BOOTSTRAP_MS,
   bridge,
+  ENROLLMENT_PATH,
+  ENROLLMENT_WAIT_MS,
   INVALID_CAPABILITY,
   listen,
   PORT,
@@ -272,7 +276,97 @@ export interface Execution {
   generation(): string | undefined;
   /** Open the protected startup gate once; only the caller that verified the release calls it. */
   release(): Promise<void>;
+  /**
+   * Protected startup only: one enrollment request to the stock program's own challenge listener
+   * in Box, through the bridge the host pinned before it opened the gate. `undefined` while the
+   * program is not listening yet and after Codex listens (the bridge is closed then).
+   */
+  enrollment(request: EnrollmentRequest): Promise<EnrollmentAnswer | undefined>;
   stop(): Promise<number>;
+}
+
+/** The only two requests the host sends to the stock program's enrollment listener. */
+export type EnrollmentRequest =
+  | { readonly method: "GET"; readonly bearer: string }
+  | { readonly method: "POST"; readonly bearer: string; readonly body: string };
+
+export interface EnrollmentAnswer {
+  readonly status: number;
+  readonly document: unknown;
+}
+
+/** The stock program caps the release body at 4 KiB; its answers are smaller still. */
+export const ENROLLMENT_MAX_BYTES = 4_096;
+const BEARER = /^[A-Za-z0-9\-._~+/]+=*$/;
+
+/**
+ * Send one enrollment request over a Unix socket and read one bounded JSON answer. `undefined`
+ * when nothing answers: no listener, a closed bridge, a timeout, or an oversized answer.
+ */
+export function enrollmentRequest(
+  socketPath: string,
+  input: EnrollmentRequest,
+): Promise<EnrollmentAnswer | undefined> {
+  if (
+    input.bearer.length === 0 ||
+    input.bearer.length > 4_096 ||
+    !BEARER.test(input.bearer) ||
+    (input.method === "POST" && Buffer.byteLength(input.body) > ENROLLMENT_MAX_BYTES)
+  ) {
+    return Promise.reject(new Error("invalid_enrollment_request"));
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (answer: EnrollmentAnswer | undefined) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      outgoing.destroy();
+      resolve(answer);
+    };
+    const outgoing = httpRequest(
+      {
+        socketPath,
+        method: input.method,
+        path: ENROLLMENT_PATH,
+        agent: false,
+        headers: {
+          host: "localhost",
+          authorization: `Bearer ${input.bearer}`,
+          connection: "close",
+          ...(input.method === "POST"
+            ? {
+                "content-type": "application/json",
+                "content-length": String(Buffer.byteLength(input.body)),
+              }
+            : {}),
+        },
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        let length = 0;
+        response.on("data", (chunk: Buffer) => {
+          length += chunk.length;
+          if (length > ENROLLMENT_MAX_BYTES) finish(undefined);
+          else chunks.push(chunk);
+        });
+        response.once("error", () => finish(undefined));
+        response.once("end", () => {
+          let document: unknown;
+          try {
+            document = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+          } catch {
+            document = null;
+          }
+          finish({ status: response.statusCode ?? 0, document });
+        });
+      },
+    );
+    // Inside the host control request's own 5 s and the Worker's.
+    const timer = setTimeout(() => finish(undefined), 3_000);
+    outgoing.once("error", () => finish(undefined));
+    outgoing.end(input.method === "POST" ? input.body : undefined);
+  });
 }
 
 export function object(value: unknown): Record<string, unknown> {
@@ -467,12 +561,45 @@ function outermost(paths: readonly string[]): string[] {
   );
 }
 
+/**
+ * Compute's two public enrollment inputs, which the stock protected program reads to verify its
+ * own release: the admitted revision id and Compute's Ed25519 release verification key (SPKI DER,
+ * base64url, 59 characters). Neither authorizes anything; only a gated run takes them.
+ */
+export const ENROLLMENT_REVISION_ENV = "OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID";
+export const RELEASE_PUBLIC_KEY_ENV = "OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY";
+
+function releaseVerificationKey(value: string): boolean {
+  if (!/^[A-Za-z0-9_-]{59}$/.test(value)) return false;
+  try {
+    return (
+      createPublicKey({ key: Buffer.from(value, "base64url"), format: "der", type: "spki" })
+        .asymmetricKeyType === "ed25519"
+    );
+  } catch {
+    return false;
+  }
+}
+
 function safeEnvironment(
   environment: Readonly<Record<string, string>>,
   hasControlledInference: boolean,
+  gated: boolean,
 ): Record<string, string> {
   const result: Record<string, string> = {};
   for (const [key, value] of Object.entries(environment)) {
+    if (key === ENROLLMENT_REVISION_ENV || key === RELEASE_PUBLIC_KEY_ENV) {
+      if (
+        !gated ||
+        typeof value !== "string" ||
+        (key === RELEASE_PUBLIC_KEY_ENV
+          ? !releaseVerificationKey(value)
+          : !/^[A-Za-z0-9_-]{1,128}$/.test(value))
+      )
+        throw new Error("unsupported_environment");
+      result[key] = value;
+      continue;
+    }
     if (
       !/^[A-Z][A-Z0-9_]*$/.test(key) ||
       /^(?:AWS_|GITHUB_|GIT_|GH_|LD_|DYLD_|PYTHON|OTEL_EXPORTER_OTLP_|SSH_|KUBE)/.test(key) ||
@@ -546,6 +673,11 @@ export function start(
   let boxOwner: ProcessIdentity | undefined;
   let gate: ReturnType<typeof createServer> | undefined;
   let gatePath: string | undefined;
+  // The in-Box enrollment bridge (`box-agent`), its host-only pinned link and its inode.
+  let enrollInner: string | undefined;
+  let enrollPinned: string | undefined;
+  let enrollIdentity: SocketIdentity | undefined;
+  let enrollClosed = false;
   let gateStopped = false;
   let reservation: string | undefined;
   let gateOpened!: () => void;
@@ -577,6 +709,34 @@ export function start(
       ) {
         throw new Error("release_gate_unavailable");
       }
+      // Pin box-agent's enrollment bridge while nothing but box-agent runs in Box: the workload
+      // starts only after this gate opens, so a later replacement of the visible path is ignored.
+      if (enrollIdentity === undefined) {
+        const inner = enrollInner;
+        const pinned = enrollPinned;
+        if (inner === undefined || pinned === undefined) throw new Error("release_gate_unavailable");
+        const identity = await waitFor(
+          () => {
+            try {
+              return socketIdentity(inner);
+            } catch {
+              return undefined;
+            }
+          },
+          abort.signal,
+          3_000,
+        ).catch(() => {
+          throw new Error("enrollment_bridge_unavailable");
+        });
+        if (gate !== undefined || gateStopped || !sameProcess(owner))
+          throw new Error("release_gate_unavailable");
+        linkSync(inner, pinned);
+        if (!sameSocket(pinned, identity)) {
+          unlinkSync(pinned);
+          throw new Error("enrollment_bridge_replaced");
+        }
+        enrollIdentity = identity;
+      }
       gate = createServer((socket) => {
         socket.on("error", () => socket.destroy());
         if (!sameProcess(owner) || abort.signal.aborted) socket.destroy();
@@ -584,6 +744,24 @@ export function start(
       });
       await listen(gate, path);
       gateOpened();
+    },
+    async enrollment(request) {
+      const pinned = enrollPinned;
+      const identity = enrollIdentity;
+      const owner = boxOwner;
+      if (
+        enrollClosed ||
+        gate === undefined ||
+        pinned === undefined ||
+        identity === undefined ||
+        owner === undefined ||
+        !sameProcess(owner) ||
+        abort.signal.aborted ||
+        !sameSocket(pinned, identity)
+      ) {
+        return undefined;
+      }
+      return enrollmentRequest(pinned, request);
     },
     generation: () => reservation,
     boxProcess: () =>
@@ -680,7 +858,15 @@ export function start(
       const environment = safeEnvironment(
         effectiveEnvironment,
         input.egress?.some((route) => route.kind === "controlled-inference") === true,
+        input.releaseGate === true,
       );
+      // The stock protected program verifies its own release with these; without them it fails.
+      if (
+        input.releaseGate === true &&
+        (environment[ENROLLMENT_REVISION_ENV] === undefined ||
+          environment[RELEASE_PUBLIC_KEY_ENV] === undefined)
+      )
+        throw new Error("enrollment_environment_missing");
       const readOnly = input.readOnly.map(cleanPath);
       const hooks = input.nativeHookDirectory;
       if (hooks !== undefined) {
@@ -729,7 +915,10 @@ export function start(
           socketPath: inner,
           ...(input.workspaceNodeSetupCode === undefined ? {} : { projectionSocket: projection }),
           ...(input.releaseGate === true
-            ? { releaseSocket: join(projectionDir, "release.sock") }
+            ? {
+                releaseSocket: join(projectionDir, "release.sock"),
+                enrollmentSocket: join(bridgeDir, "enroll.sock"),
+              }
             : {}),
           // The in-Box agent refuses to start Codex unless this exact hook command runs.
           ...(hooks === undefined ? {} : { nativeHookProbe: nativeHookProbe(hooks) }),
@@ -889,7 +1078,11 @@ export function start(
       });
       if (child.pid === undefined) throw new Error("box_start_failed");
       owner = processIdentity(child.pid);
-      if (input.releaseGate === true) gatePath = join(projectionDir, "release.sock");
+      if (input.releaseGate === true) {
+        gatePath = join(projectionDir, "release.sock");
+        enrollInner = join(bridgeDir, "enroll.sock");
+        enrollPinned = join(run, "enroll-pinned.sock");
+      }
       boxOwner = owner;
       boxRun = {
         bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
@@ -911,14 +1104,23 @@ export function start(
       }
       stage = "wait-original-native";
       report("box", "listener", "entered");
-      pinnedIdentity = await waitFor(() => {
-        try {
-          return socketIdentity(inner);
-        } catch {
-          return undefined;
-        }
-      }, abort.signal);
+      // A gated run's stock program first waits for its own enrollment (at most 180 s).
+      pinnedIdentity = await waitFor(
+        () => {
+          try {
+            return socketIdentity(inner);
+          } catch {
+            return undefined;
+          }
+        },
+        abort.signal,
+        input.releaseGate === true ? ENROLLMENT_WAIT_MS : BOOTSTRAP_MS,
+      );
       report("box", "listener", "observed");
+      // Codex listens: the program was released, so the pre-ready enrollment path ends here.
+      enrollClosed = true;
+      if (enrollIdentity !== undefined && sameSocket(enrollPinned!, enrollIdentity))
+        unlinkSync(enrollPinned!);
       // A host-only hardlink pins the kernel pathname inode before any caller can
       // use it. Replacing the sandbox-visible pathname cannot reroute host traffic.
       linkSync(inner, pinned);
@@ -999,6 +1201,13 @@ export function start(
       if (receiptOwned) removeOwned(finalReceipt);
       if (capabilityOwned) removeOwned(capabilityPath);
       if (pinnedIdentity !== undefined && sameSocket(pinned, pinnedIdentity)) removeOwned(pinned);
+      enrollClosed = true;
+      if (
+        enrollIdentity !== undefined &&
+        enrollPinned !== undefined &&
+        sameSocket(enrollPinned, enrollIdentity)
+      )
+        removeOwned(enrollPinned);
       if (publicIdentity !== undefined && sameSocket(app, publicIdentity)) removeOwned(app);
       if (
         child !== undefined &&

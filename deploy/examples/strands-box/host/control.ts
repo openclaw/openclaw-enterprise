@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, randomUUID, verify } from "node:crypto";
+import { createHash, createPublicKey, randomUUID, timingSafeEqual, verify } from "node:crypto";
 import type { KeyObject } from "node:crypto";
 import { constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -22,6 +22,8 @@ import {
 import type { EgressRoute, RouteView, UpstreamCa } from "./egress.ts";
 import {
   boxHostArch,
+  ENROLLMENT_MAX_BYTES,
+  ENROLLMENT_REVISION_ENV,
   ensureEmpty,
   fields,
   hostConfig,
@@ -30,10 +32,17 @@ import {
   privateDirectory,
   readConfig,
   READY_FILE,
+  RELEASE_PUBLIC_KEY_ENV,
   start,
   string,
 } from "./launch.ts";
-import type { Execution, HostConfig, StartInput } from "./launch.ts";
+import type {
+  EnrollmentAnswer,
+  EnrollmentRequest,
+  Execution,
+  HostConfig,
+  StartInput,
+} from "./launch.ts";
 import { listen, PORT, processIdentity } from "./transport.ts";
 import { CredentialSourceRelay, MAX_COLLECT_WAIT_MS } from "./credential-source.ts";
 import type { ModelAsk, SourceAsk } from "./credential-source.ts";
@@ -77,6 +86,7 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const CONTROL = "/v1/execution";
 const ADMISSION = "/v1/admission";
 const RELEASE = "/v1/release";
+const ENROLLMENT = "/v1/enrollment";
 const MAX_REQUEST = 512_000;
 const ASKS = "/v1/credential-asks";
 const ANSWERS = "/v1/credential-answers";
@@ -191,8 +201,7 @@ interface LaunchPlan extends StartInput {
   readonly harnessModel?: { readonly sourceId: string };
 }
 
-export const ENROLLMENT_REVISION_ENV = "OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID";
-export const RELEASE_PUBLIC_KEY_ENV = "OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY";
+export { ENROLLMENT_REVISION_ENV, RELEASE_PUBLIC_KEY_ENV };
 export const RELEASE_PROFILE = "oce-compute-execution-release-v1";
 export const PROTECTED_WIRING_VERSION = 4;
 
@@ -211,6 +220,8 @@ export interface RepositoryRecipient {
 export interface ProtectedStartup {
   readonly releaseKey: KeyObject;
   readonly plan: Record<string, unknown>;
+  /** The admitted `APP_TOKEN_SHA`: the transport bearer the enrollment relay must be given. */
+  readonly transportSha256?: string;
 }
 
 /**
@@ -377,6 +388,62 @@ export function verifyRelease(
   return { startupId, startupSha256: digest(release) };
 }
 
+const TRANSPORT_BEARER = /^[A-Za-z0-9\-._~+/]+=*$/;
+
+/**
+ * The host's `POST /v1/enrollment`: one of the two requests of the stock protected program's own
+ * enrollment, relayed into Box for the paired Driver (`SandboxDriver.enrollHarness`). Without
+ * `release` it reads the program's startup challenge; with it, it delivers Compute's signed
+ * release of that challenge. The host builds both requests itself and sends nothing else. It
+ * relays only with the admitted transport bearer, and a release only when Compute's signature
+ * verifies for this held execution and its challenge is exactly the one the host relayed last.
+ * `undefined` when the program is not listening (still starting, or Codex already listens).
+ */
+export async function relayEnrollment(
+  held: {
+    readonly startup: ProtectedStartup;
+    readonly expected: Parameters<typeof verifyRelease>[2];
+    /** The challenge this host relayed last; a release must be for exactly this one. */
+    harnessChallenge?: Record<string, unknown> | undefined;
+  },
+  data: Record<string, unknown>,
+  send: (request: EnrollmentRequest) => Promise<EnrollmentAnswer | undefined>,
+  now = Date.now(),
+): Promise<EnrollmentAnswer | undefined> {
+  const bearer = data.transportToken;
+  const expected = held.startup.transportSha256;
+  if (
+    typeof bearer !== "string" ||
+    bearer.length > 4_096 ||
+    !TRANSPORT_BEARER.test(bearer) ||
+    expected === undefined ||
+    !SHA256.test(expected) ||
+    !timingSafeEqual(
+      createHash("sha256").update(bearer).digest(),
+      Buffer.from(expected, "hex"),
+    )
+  ) {
+    throw new Error("transport_bearer_refused");
+  }
+  if (data.release === undefined) {
+    const answer = await send({ method: "GET", bearer });
+    if (answer?.status === 200 && answer.document !== null && typeof answer.document === "object")
+      held.harnessChallenge = structuredClone(answer.document as Record<string, unknown>);
+    return answer;
+  }
+  const release = object(data.release);
+  verifyRelease(held.startup, release, held.expected, now);
+  if (
+    held.harnessChallenge === undefined ||
+    canonical(release.challenge) !== canonical(held.harnessChallenge)
+  ) {
+    throw new Error("release_outside_harness_challenge");
+  }
+  const body = JSON.stringify(release);
+  if (Buffer.byteLength(body) > ENROLLMENT_MAX_BYTES) throw new Error("release_too_large");
+  return send({ method: "POST", bearer, body });
+}
+
 /**
  * The Driver states the exact route it was configured with. The host's own route stays the only
  * one Box receives; a missing, extra or different statement refuses before anything starts.
@@ -462,6 +529,7 @@ function startInstalledExecution(config: InstalledConfig, plan: LaunchPlan): Exe
     boxProcess: () => box.boxProcess(),
     generation: () => box.generation(),
     release: () => box.release(),
+    enrollment: (request) => box.enrollment(request),
     async stop() {
       abort.abort();
       const [code] = await Promise.all([box.stop(), nodeDone]);
@@ -475,6 +543,8 @@ interface LiveRecord {
   execution?: Execution | undefined;
   retiring: boolean;
   protectedStartup?: ProtectedStartup;
+  /** The stock program's startup challenge this host relayed last (`relayEnrollment`). */
+  harnessChallenge?: Record<string, unknown> | undefined;
   workspaceNode?: Pending["workspaceNode"];
   /** Box's credential source for this execution; closed when the execution retires. */
   source?: CredentialSourceRelay;
@@ -1124,14 +1194,17 @@ function admitted(
       )
         throw new Error("invalid_literal_environment");
       if (name === ENROLLMENT_REVISION_ENV || name === RELEASE_PUBLIC_KEY_ENV) {
-        // Compute's enrollment inputs are consumed by the host and never enter Box.
+        // Compute's enrollment inputs: the admitted revision id and Compute's public release
+        // verification key. Both are public and authorize nothing. The host verifies the release
+        // of its startup gate with the key, and both enter Box, where the stock protected program
+        // verifies the release of its own startup challenge (`relayEnrollment`). Only a protected
+        // plan takes them, and the revision id must be this request's.
         if (
           protectedPlan === undefined ||
           (name === ENROLLMENT_REVISION_ENV && env.value !== requested.revisionId)
         )
           throw new Error("unadmitted_enrollment_environment");
         if (name === RELEASE_PUBLIC_KEY_ENV) releasePublicKey = env.value;
-        continue;
       }
       environment[name] = env.value;
     }
@@ -1308,7 +1381,11 @@ function admitted(
       ? {}
       : {
           releaseGate: true as const,
-          protectedStartup: { releaseKey: releaseKey(releasePublicKey), plan: protectedPlan },
+          protectedStartup: {
+            releaseKey: releaseKey(releasePublicKey),
+            plan: protectedPlan,
+            transportSha256: environment.APP_TOKEN_SHA!,
+          },
         }),
     ...(harnessModel === undefined ? {} : { harnessModel }),
   };
@@ -1355,6 +1432,7 @@ function requestLog(): {
     [CONTROL]: "execution",
     [ADMISSION]: "admission",
     [RELEASE]: "release",
+    [ENROLLMENT]: "enrollment",
     [ASKS]: "credential-asks",
     [ANSWERS]: "credential-answers",
   };
@@ -1391,6 +1469,7 @@ function reply(
     | RecordView
     | { error: string }
     | { asks: readonly (SourceAsk | ModelAsk)[] }
+    | EnrollmentAnswer
     | Pick<ModelRevocation, "owner" | "sourceId" | "receiptId" | "revokedAt">
     | {
         state: "held" | "approved";
@@ -1724,6 +1803,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const observing = request.url === ADMISSION && request.method === "POST";
     const releasing = request.url === RELEASE && request.method === "POST";
+    const enrolling = request.url === ENROLLMENT && request.method === "POST";
     const collecting = request.url === ASKS && request.method === "POST";
     const answering = request.url === ANSWERS && request.method === "POST";
     const revoking = request.url === MODEL_REVOKE && request.method === "POST";
@@ -1731,6 +1811,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       request.url !== CONTROL &&
       !observing &&
       !releasing &&
+      !enrolling &&
       !collecting &&
       !answering &&
       !revoking
@@ -1750,6 +1831,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
     if (
       !observing &&
       !releasing &&
+      !enrolling &&
       !collecting &&
       !answering &&
       !revoking &&
@@ -1840,6 +1922,52 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         held.view.protectedStartup = { ...prior, ...verified };
       }
       reply(response, 200, observedView(held));
+      return;
+    }
+    if (enrolling) {
+      fields(data, ["owner", "requirementsDigest", "executionId", "transportToken", "release"]);
+      const held = current;
+      const startup = held?.protectedStartup;
+      const view = held === undefined ? undefined : observedView(held);
+      const recipient = view?.repositoryRecipient;
+      const execution = held?.execution;
+      if (
+        held === undefined ||
+        view === undefined ||
+        held.retiring ||
+        execution === undefined ||
+        startup === undefined ||
+        !sameOwner(held.view.owner, supplied) ||
+        held.view.executionId !== data.executionId ||
+        held.view.requirementsDigest !== requirementsDigest ||
+        recipient === undefined ||
+        // Only after the host's own gate opened on Compute's verified release.
+        view.protectedStartup?.startupSha256 === undefined ||
+        view.state === "failed"
+      ) {
+        reply(response, 409, { error: "enrollment_outside_held_execution" });
+        return;
+      }
+      // Codex listens and the bridge is closed: the program was released.
+      if (view.state !== "starting") {
+        reply(response, 409, { error: "harness_enrollment_unavailable" });
+        return;
+      }
+      const relay = {
+        startup,
+        expected: {
+          executionId: held.view.executionId,
+          processInstanceId: recipient.processInstanceId,
+          bearerSha256: recipient.bearerSha256,
+        },
+        harnessChallenge: held.harnessChallenge,
+      };
+      const answer = await relayEnrollment(relay, data, (request) =>
+        execution.enrollment(request),
+      );
+      held.harnessChallenge = relay.harnessChallenge;
+      if (answer === undefined) reply(response, 409, { error: "harness_enrollment_unavailable" });
+      else reply(response, 200, answer);
       return;
     }
     if (collecting || answering) {

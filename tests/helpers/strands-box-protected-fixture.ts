@@ -21,9 +21,14 @@ import {
   applyModelRevocation,
   harnessModelView,
   parseOwner,
+  relayEnrollment,
   verifyRelease,
   wiringConfiguration as hostWiring,
 } from "../../deploy/examples/strands-box/host/control.ts";
+import type {
+  EnrollmentAnswer,
+  EnrollmentRequest,
+} from "../../deploy/examples/strands-box/host/launch.ts";
 import {
   type ModelAsk,
   CredentialSourceRelay,
@@ -333,6 +338,22 @@ export async function pairedFixture(
     generationSha256: sha("reservation"),
     startup: undefined as { startupId: string; startupSha256: string } | undefined,
     releases: [] as Record<string, unknown>[],
+    /**
+     * Whether the host reports the execution running at once after its gate opens. A case that
+     * runs the stock program behind the bridge clears it and reports running when Codex listens.
+     */
+    readyOnRelease: true,
+    /** The real Box execution's gate, opened after the host verified the release. */
+    onRelease: undefined as (() => Promise<void>) | undefined,
+    /** The real Box execution's enrollment bridge (`Execution.enrollment`); none by default. */
+    enrollment: undefined as
+      | ((request: EnrollmentRequest) => Promise<EnrollmentAnswer | undefined>)
+      | undefined,
+    /** The program's challenge the host relayed last (`relayEnrollment`). */
+    harnessChallenge: undefined as Record<string, unknown> | undefined,
+    /** Every `POST /v1/enrollment` the Worker sent, and the host's refusal codes. */
+    enrollments: [] as Record<string, unknown>[],
+    enrollmentRefusals: [] as string[],
     /** The live `box run` asking the source; one process for the whole execution. */
     sourceLive: true,
     collects: 0,
@@ -468,8 +489,51 @@ export async function pairedFixture(
           reply(403);
           return;
         }
-        host.state = "running";
+        await host.onRelease?.();
+        if (host.readyOnRelease) {
+          host.state = "running";
+        }
         reply(200, record());
+        return;
+      }
+      if (req.method === "POST" && req.url === "/v1/enrollment" && host.present) {
+        // The host's relay (host/control.ts relayEnrollment) for its held, gate-released run.
+        const input = JSON.parse(bytes.toString()) as Record<string, unknown>;
+        host.enrollments.push(input);
+        const { owner: _owner, requirementsDigest: _digest, executionId: held, ...data } = input;
+        if (held !== executionId || host.startup === undefined) {
+          reply(409, { error: "enrollment_outside_held_execution" });
+          return;
+        }
+        if (host.state !== "starting" || host.enrollment === undefined) {
+          reply(409, { error: "harness_enrollment_unavailable" });
+          return;
+        }
+        const relayed = {
+          startup: {
+            releaseKey: keys.publicKey,
+            plan: plan as never,
+            transportSha256: sha(harness.transportToken),
+          },
+          expected: {
+            executionId,
+            processInstanceId: host.processInstanceId,
+            bearerSha256: host.bearerSha256,
+          },
+          harnessChallenge: host.harnessChallenge,
+        };
+        try {
+          const answer = await relayEnrollment(relayed, data, host.enrollment);
+          host.harnessChallenge = relayed.harnessChallenge;
+          if (answer === undefined) {
+            reply(409, { error: "harness_enrollment_unavailable" });
+          } else {
+            reply(200, answer);
+          }
+        } catch (error) {
+          host.enrollmentRefusals.push((error as Error).message);
+          reply(422, { error: "host_request_refused" });
+        }
         return;
       }
       if (

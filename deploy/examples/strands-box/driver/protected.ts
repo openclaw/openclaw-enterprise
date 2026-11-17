@@ -54,6 +54,7 @@ import {
   collectAsks,
   control,
   digest,
+  harnessEnrollment,
   record,
   releaseExecution,
   revokeHarnessModel,
@@ -101,6 +102,36 @@ const GITHUB_HOSTS = ["github.com", "api.github.com"] as const;
 const BOX_SOURCE_IDENTITY = "box-source-sha256:";
 const RELEASE_PUBLIC_KEY_ENV = "OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY";
 const RELEASE_PROFILE = "oce-compute-execution-release-v1";
+const UUID_V4 = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+
+/**
+ * The binding the stock protected Harness program puts in its startup challenge (its runtime
+ * manifest's `egressEnrollment`), projected from the admitted plan exactly as Compute renders it
+ * (core `harnessEgressEnrollment`, which a packaged Driver cannot import; a conformance test pins
+ * this copy to it). For this Driver's plans: online-request, one repository route, no other.
+ */
+export function enrollmentBinding(plan: ProxyPlan): Record<string, unknown> {
+  const { installationId, namespaceId, agentId, servicePrincipalId, revisionId, executionId } =
+    plan.execution;
+  return {
+    ...(plan.repositoryGitAuthorization && {
+      repositoryGitAuthorization: plan.repositoryGitAuthorization,
+    }),
+    routeCount: plan.routes.length + (plan.repositoryGit ? 1 : 0),
+    inference: plan.harnessCredentialSource
+      ? "credential_source"
+      : plan.routes.some((route) => route.binding.grant.kind === "inference"),
+    plan: { id: plan.id, generation: plan.generation },
+    execution: {
+      installationId,
+      namespaceId,
+      agentId,
+      servicePrincipalId,
+      revisionId,
+      executionId,
+    },
+  };
+}
 
 /**
  * The nonsecret wiring for one plan. A plan with a Harness model source adds the model route's
@@ -861,6 +892,16 @@ export function createProtectedRegistration(
       };
     }
 
+    /**
+     * Two releases, both signed by Compute for the committed installation. First the host's own
+     * startup gate (a startupId this Driver chooses): the host verifies it and only then lets
+     * `box run` start the stock protected program. Then, on a later pass, that program's own
+     * startup challenge, read and answered through the host's pre-ready enrollment bridge into
+     * Box with the transport bearer, as the contract and the bundled OpenShell Driver do: profile,
+     * UUIDv4 startupId and the admitted plan's binding are checked before Compute is asked; the
+     * program verifies the release itself. A program that is not listening yet stays pending; a
+     * restarted or expired one (409/410) is read afresh on the next pass.
+     */
     async enrollHarness(
       context: SandboxHarnessStatusContext,
       installation: EgressInstallation,
@@ -880,7 +921,21 @@ export function createProtectedRegistration(
           "The committed installation is not the host's current held Box execution.",
         );
       }
-      if (execution.protectedStartup?.startupSha256 !== undefined) return;
+      if (execution.protectedStartup?.startupSha256 === undefined) {
+        await this.releaseHostGate(context, owner, execution, release);
+        return;
+      }
+      // Ready: Codex listens, so the program accepted its release.
+      if (execution.state !== "starting") return;
+      await this.releaseHarness(context, installation, owner, execution, release);
+    }
+
+    private async releaseHostGate(
+      context: SandboxHarnessStatusContext,
+      owner: Owner,
+      execution: Execution,
+      release: (startupId: string) => Promise<Readonly<Record<string, unknown>>>,
+    ): Promise<void> {
       const startupId = randomUUID();
       const signed = await release(startupId);
       const challenge = record(signed.challenge);
@@ -923,6 +978,57 @@ export function createProtectedRegistration(
         throw new DependencyUnavailableError(
           "The Strands Box host did not acknowledge the release.",
         );
+      }
+    }
+
+    private async releaseHarness(
+      context: SandboxHarnessStatusContext,
+      installation: EgressInstallation,
+      owner: Owner,
+      execution: Execution,
+      release: (startupId: string) => Promise<Readonly<Record<string, unknown>>>,
+    ): Promise<void> {
+      const key = {
+        owner,
+        executionId: execution.executionId,
+        requirementsDigest: execution.requirementsDigest,
+        transportToken: context.transportToken,
+      };
+      const read = await harnessEnrollment(this.options.controlSocket, key, context.signal);
+      // Not listening yet, or no longer serving a challenge: the next pass observes it again.
+      if (read === undefined || read.status !== 200) return;
+      // The challenge comes from inside the sandbox: untrusted until it matches this execution.
+      const challenge = record(read.document);
+      const { profile, startupId, ...binding } = challenge ?? {};
+      if (
+        challenge === undefined ||
+        profile !== RELEASE_PROFILE ||
+        typeof startupId !== "string" ||
+        !UUID_V4.test(startupId) ||
+        !isDeepStrictEqual(binding, enrollmentBinding(installation.plan))
+      ) {
+        throw new DependencyUnavailableError(
+          "The Harness enrollment challenge does not match the admitted execution.",
+        );
+      }
+      const signed = await release(startupId);
+      if (!isDeepStrictEqual(signed.challenge, challenge)) {
+        throw new DependencyUnavailableError(
+          "Compute's release is not for the Harness enrollment challenge.",
+        );
+      }
+      const posted = await harnessEnrollment(
+        this.options.controlSocket,
+        { ...key, release: signed },
+        context.signal,
+      );
+      // Gone, restarted or expired: the next pass reads the fresh challenge.
+      if (posted === undefined || posted.status === 409 || posted.status === 410) return;
+      if (
+        posted.status !== 200 ||
+        !isDeepStrictEqual(posted.document, { enrolled: true, startupId })
+      ) {
+        throw new DependencyUnavailableError("The Harness enrollment was not acknowledged.");
       }
     }
 

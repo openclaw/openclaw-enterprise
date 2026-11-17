@@ -6,6 +6,19 @@ import { setTimeout as delay } from "node:timers/promises";
 export const PORT = 18790;
 export const INVALID_CAPABILITY = "invalid-strands-box-readiness-capability";
 export const BOOTSTRAP_MS = 90_000;
+/**
+ * The stock protected Harness program's enrollment path (core `HARNESS_EGRESS_ENROLLMENT_PATH`):
+ * before Codex starts, the program serves its own startup challenge here on `PORT` and waits for
+ * Compute's signed release of it, at most 180 s.
+ */
+export const ENROLLMENT_PATH = "/openclaw/runtime/egress-enrollment";
+/** A gated run waits this long for the native listener: the program's 180 s, then bootstrap. */
+export const ENROLLMENT_WAIT_MS = 180_000 + BOOTSTRAP_MS;
+/** The only two request lines the pre-ready enrollment bridge forwards. */
+export const ENROLLMENT_REQUEST_LINES = [
+  `GET ${ENROLLMENT_PATH} HTTP/1.1`,
+  `POST ${ENROLLMENT_PATH} HTTP/1.1`,
+] as const;
 const CONNECT_MS = 2_500;
 const MAX_CONNECTIONS = 64;
 
@@ -176,6 +189,79 @@ export function bridge(
         client.pipe(upstream);
       }, close);
     });
+  });
+  server.on("error", () => stop());
+  function stop(): void {
+    stopped.abort();
+    server.close();
+    for (const client of clients) client.destroy();
+  }
+  return { server, close: stop };
+}
+
+/**
+ * The pre-ready enrollment bridge: like `bridge`, but a connection reaches `destination` only when
+ * its first line is one of the two enrollment request lines; anything else is closed unanswered.
+ * The stock program answers each request with `connection: close`, so a connection carries one.
+ */
+export function enrollmentBridge(
+  destination: NetConnectOpts,
+  authorize: (upstream: Socket, signal: AbortSignal) => boolean | Promise<boolean>,
+): { server: Server; close: () => void } {
+  const clients = new Set<Socket>();
+  const stopped = new AbortController();
+  const server = createServer((client) => {
+    if (stopped.signal.aborted || clients.size >= 4) {
+      client.destroy();
+      return;
+    }
+    clients.add(client);
+    client.once("close", () => clients.delete(client));
+    client.once("error", () => client.destroy());
+    client.setTimeout(CONNECT_MS, () => client.destroy());
+    let head = Buffer.alloc(0);
+    const onData = (chunk: Buffer) => {
+      head = Buffer.concat([head, chunk]);
+      const end = head.indexOf("\r\n");
+      if (end < 0) {
+        if (head.length > 128) client.destroy();
+        return;
+      }
+      client.off("data", onData);
+      client.pause();
+      const line = head.subarray(0, end).toString("latin1");
+      if (!(ENROLLMENT_REQUEST_LINES as readonly string[]).includes(line)) {
+        client.destroy();
+        return;
+      }
+      const upstream = createConnection(destination);
+      const close = () => {
+        client.destroy();
+        upstream.destroy();
+      };
+      client.once("close", () => upstream.destroy());
+      upstream.once("error", close);
+      upstream.once("close", () => {
+        if (!client.writableEnded) client.end();
+      });
+      upstream.setTimeout(CONNECT_MS, close);
+      upstream.once("connect", () => {
+        upstream.pause();
+        void Promise.resolve(authorize(upstream, stopped.signal)).then((permitted) => {
+          if (!permitted || stopped.signal.aborted || upstream.destroyed || client.destroyed) {
+            close();
+            return;
+          }
+          upstream.setTimeout(0);
+          client.setTimeout(0);
+          upstream.write(head);
+          upstream.pipe(client);
+          client.pipe(upstream);
+          client.resume();
+        }, close);
+      });
+    };
+    client.on("data", onData);
   });
   server.on("error", () => stop());
   function stop(): void {
