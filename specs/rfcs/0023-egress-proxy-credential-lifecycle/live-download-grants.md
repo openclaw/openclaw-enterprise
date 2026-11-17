@@ -2,106 +2,88 @@
 rfc: ./index.md
 ---
 
-# Change download access for a running protected Agent
+# Change download access on a running protected Agent
 
-An Installation administrator can approve or withdraw a download destination
-for one running protected Agent in the Console. Once OCC confirms the change,
-the user can retry in the same shell. The edit leaves the Agent revision,
-Sandbox and conversation running. Today protected Agents refuse these live
-edits because ordinary policy updates can replace rules the protected Drivers
-own. See the [Agent policy flow](../../../docs/flows/agent-sandbox-policy.md).
+Let an Installation administrator approve or withdraw a download destination
+for one running protected Agent in the Console. The user can retry in the
+same shell after the change is confirmed, without restarting the Agent or
+losing the conversation.
 
-## Authority and scope
+Protected Agents currently reject ordinary live network edits because those
+edits could replace credential rules owned by Sandbox and Credential Proxy.
+This amendment adds a live-update contract for that Driver pair. See the
+[Agent policy flow](../../../docs/flows/agent-sandbox-policy.md).
 
-Protected download editing defaults off. The Installation chooses eligible
-download executables, destinations and exclusions. Within those limits an
-administrator with Agent `manage_policy` and SandboxPolicy `read` and `update`
-can approve a previously unseen eligible hostname for one Agent. A delegated editor can
-enable or disable access within existing approval. Only an administrator can
-expand that approval. Withdrawing approval removes the grants that depend on it.
-OCC records the actor and scope in its existing audit and rechecks authority,
-limits, placement, the running revision and the expected policy version before
-the worker writes to the provider.
+## Access and authority
 
-| Destination           | Allowed access                                                                                                                                               |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Public hostname       | Credential-free HTTPS `GET` and `HEAD` on port 443 by eligible executables.                                                                                  |
-| Shared archive host   | The exact approved canonical path. Each redirect hop needs its own allowed scheme, host, port and path.                                                      |
-| Signed package mirror | Plain HTTP on port 80 only when the Installation explicitly permits that mirror. The package manager verifies signed repository metadata and package hashes. |
+The feature defaults off. Installation settings restrict downloader executables,
+destinations and exclusions. An Installation administrator with Agent
+`manage_policy` and SandboxPolicy `read` and `update` may approve an eligible
+hostname for one Agent. Delegated editors can enable or disable approved
+destinations. Withdrawing approval removes dependent grants. OCC audits the
+actor and scope and rechecks permissions, current limits, placement, revision
+and policy version before dispatch.
 
-The pair denies wildcard hosts, raw IPs, private or metadata destinations,
-overlap with managed routes, and access another rule would keep open after
-withdrawal. It rechecks resolved peers and request scope. The contract excludes
-credential injection, write methods and general TCP tunnels. Keep signed URL
-query values out of saved policy, status and audit. The
-[frozen artifact rules](contracts.md#protected-codex-artifact-downloads) and
-ordinary unprotected editing keep their existing contracts.
+A grant permits credential-free HTTPS `GET` and `HEAD` on port 443 to an exact
+public hostname. Shared archive hosts require an exact canonical object path.
+Each redirect hop requires its own approval. An Installation may explicitly
+allow HTTP on port 80 for a signed package mirror, with repository signatures
+and package hashes still verified. Reject wildcards, raw IPs, private or metadata
+destinations, overlap with managed routes, and rules that would defeat
+withdrawal. Recheck DNS peers and request scope. Exclude credential injection,
+write methods and general TCP tunnels. Keep signed query values out of policy,
+status and audit. Existing [frozen artifact rules](contracts.md#protected-codex-artifact-downloads)
+retain their contract.
 
-## Provider write and confirmation
+## Apply and recover
 
-OCC queues one operation for the running revision. The Sandbox Driver compiles
-the complete policy from the confirmed predecessor and changes only the
-approved download rules. A conditional write binds the original operation,
-immutable Sandbox, enforcing instance, provider version and intended policy.
-Before dispatch, OCC saves that intent and predecessor on the original work
-record. A pair that cannot verify the baseline or preserve the protected routes
-refuses the edit.
+1. OCC atomically saves the desired grant and queues work for the running revision. Before
+   dispatch, it records the original operation, confirmed predecessor, immutable
+   Sandbox and enforcing instance, provider version and intended policy.
+2. Sandbox compiles the complete protected policy, preserving model, Git, plugin
+   and credential bindings, and conditionally writes the approved change.
+   Credential Proxy independently verifies the provider receipt and the policy
+   version and hash loaded by the same supervisor.
+3. OCC rechecks authority, revision and predecessor, then atomically publishes
+   the confirmed policy and credential installation, including matching Git
+   evidence when applicable. Credential authorization requires that installation
+   to match the loaded policy through its final check. The Console reports
+   **Applied** after commit and shows the last confirmed state while work is
+   pending or failed. Saved grants survive restart and are revalidated on deployment.
+4. If the provider reply is lost or publication fails, the recovery owner retains
+   the original work and receipt, blocks further edits to that Sandbox, and
+   reconciles the original provider operation through an authenticated read.
+   A later policy version alone cannot settle it. Recovery may retry publication
+   after fresh checks and must never repeat an uncertain provider write.
+5. Clear recovery state only after publication commits, authorized reconciliation
+   verifies the current published installation, or the exact recipient is
+   confirmed retired. Fence the old writer and verify a replacement independently.
+   Only the recovery owner can read the private data. Preserve it through
+   unfinished deletion and remove the work row on final Agent deletion.
 
-Credential Proxy verifies the provider receipt and the policy version and hash
-loaded by the same supervisor. It confirms that existing model, Git and plugin
-rules, bindings and recipients are preserved. OCC then rechecks the current
-authority, revision and predecessor. It publishes the confirmed policy and
-credential installation together, including matching Git evidence where Git is
-admitted. Credential checks require the verified loaded policy to match the
-published installation through final authorization. A stale edit cannot overwrite
-a credential withdrawal or apply to a replacement. The Console shows **Applied**
-only after publication commits and keeps the last confirmed state visible during
-pending or failed work. Saved grants survive restart and are revalidated on deployment.
-
-## Recover an uncertain outcome
-
-If the write response is lost, the recovery owner reads the original provider
-operation and verifies the loaded policy. A later version alone is insufficient.
-Keep the original intent and any late receipt through restart, failure and
-replacement. Block further edits to that Sandbox while the outcome is uncertain
-or verified but unpublished. Retry publication after rechecking authority and
-the predecessor. Recovery uses the single original provider write.
-
-Settle the retained record when publication commits, authorized reconciliation
-verifies the current published policy, or the exact recipient is confirmed
-retired. Fence the old writer before admitting an edit for a replacement.
-Verify the replacement independently. Old receipts cannot confirm the new
-revision. Only the recovery owner can read private recovery data. Preserve it
-through an unfinished deletion and remove the work record on final Agent
-deletion.
-
-Confirmed withdrawal denies fresh connections to the removed scope. Bytes
-already delivered and transfers in progress can outlast the change.
+A stale edit cannot restore withdrawn access or apply to a replacement.
+Confirmed withdrawal denies fresh connections. Previously delivered bytes and
+in-progress transfers may survive it.
 
 ## Acceptance criteria
 
-Use the [Console fixture](../../../tests/browser/console-sandbox-policy-fixture.ts)
-and [installed OpenShell workflow](../../../docs/testing/openshell-coverage.md)
-against a matched Sandbox and Credential Proxy pair.
+Use the existing [Console fixture](../../../tests/browser/console-sandbox-policy-fixture.ts)
+and [installed OpenShell workflow](../../../docs/testing/openshell-coverage.md) to verify:
 
-1. Deny an unapproved download, approve it from the Console, verify the bytes,
-   then withdraw it and verify a fresh denial. Record grant and withdrawal
-   latency separately. Keep Agent, revision, Sandbox, Pod and supervisor
-   identities fixed. Verify continuing model use and another Agent's denial.
-   For the combined profile, verify authorized Git on the same instance after
-   both grant and withdrawal.
-2. Exercise a signed package mirror and an exact archive after a redirect.
-   Refuse a sibling archive, write method, unapproved hop, unauthorized
-   delegation, stale revision and unsupported pair.
-3. Verify new-hash requests before publication and stale-hash requests after it
-   fail. Race an edit with credential withdrawal and preserve the withdrawal.
-   Verify retention and privacy across replacement and deletion.
-4. Lose a provider reply and restart the worker. Fail the first publication
-   after the original receipt arrives. Keep new edits blocked until the
-   original write is settled, and verify exactly one provider write.
+- A denied download succeeds after Console approval and is denied on a fresh
+  connection after withdrawal. Verify bytes, timing for both changes, unchanged
+  runtime identities, continued model access and isolation from another Agent.
+  A combined profile must also preserve authorized Git on the same instance.
+- A signed mirror and redirected exact archive work within their approvals.
+  Sibling paths, writes, unapproved hops, unauthorized delegation, stale
+  revisions and unsupported pairs are refused.
+- Requests using the new policy hash before publication or the old hash
+  afterward are refused. Racing credential withdrawal remains effective.
+- Lost replies, worker restart and failed publication recover with exactly one
+  provider write. Further edits stay blocked until settlement. Replacement and
+  deletion preserve the required evidence without exposing private recovery data.
 
-[Implementation PR #5908](https://github.com/openclaw/openclaw-enterprise/pull/5908)
-supports live editing for a qualified model-only pair. Its current scope
-refuses protected Git and credential-reduction profiles. Stock OpenShell 0.1.8
-lacks the required matched writer and verifier. Qualify each installed profile before
-enabling it or claiming access and latency results.
+[Implementation #5908](https://github.com/openclaw/openclaw-enterprise/pull/5908)
+covers a qualified model-only pair and refuses protected Git and credential
+reduction. Stock OpenShell 0.1.8 lacks the matched writer and verifier. Installed
+qualification is required for each profile before enabling it or claiming latency.
