@@ -41,11 +41,12 @@ import {
 } from "../fixtures/kubernetes-provider-endpoint.mjs";
 import { supervisorPeerLabels } from "../fixtures/kubernetes-provider-readiness.mjs";
 import {
-  tenant,
-  authContext,
-  digest,
+  firstPeerSelector,
+  podSelector,
   selectorMatches,
-} from "../helpers/kubernetes-routed-scenarios.mjs";
+  serviceSelector,
+} from "../helpers/kubernetes-rendered-resources.ts";
+import { tenant, authContext, digest } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const providerUrl = "ws://tenant--sandbox.openshell.localhost:8080/";
@@ -345,7 +346,7 @@ test("provider Harness endpoint admits only exact node and provider peers", asyn
   const { revision, namespace, read, writes, provisions, peerLookups, gatewayNamespace } = fixture;
   const workspaceNodePolicy = read("NetworkPolicy", "allow-node-gateway");
   assert.equal(
-    selectorMatches(workspaceNodePolicy.spec.podSelector, provisions[0].requirements.labels),
+    selectorMatches(podSelector(workspaceNodePolicy), provisions[0].requirements.labels),
     true,
     "the provider-fenced Harness must retain exact workspace-node Gateway egress",
   );
@@ -407,7 +408,7 @@ test("provider Harness endpoint admits only exact node and provider peers", asyn
   assert.ok(peerLookups.every((id) => id === revision.id));
   const agentServiceName = `agent-${digest(revision.agentId)}`;
   assert.equal(
-    read("Service", agentServiceName).spec.selector["app.kubernetes.io/name"],
+    serviceSelector(read("Service", agentServiceName))["app.kubernetes.io/name"],
     `${agentServiceName}-inactive`,
   );
 });
@@ -497,11 +498,11 @@ test("provider Harness activation replaces broad legacy peers and deletes obsole
   assert.equal(endpoints.length, 2);
   assert.deepEqual(deletedPolicies, [legacyEgress.metadata.name, plainRuntime.metadata.name]);
   assert.equal(read("NetworkPolicy", legacyEgress.metadata.name), undefined);
-  assert.deepEqual(read("NetworkPolicy", legacyIngressName).spec.ingress[0].from[0].podSelector, {
+  assert.deepEqual(firstPeerSelector(read("NetworkPolicy", legacyIngressName), "ingress"), {
     matchLabels: supervisorPeerLabels(revision.id),
   });
   assert.equal(
-    read("Service", agentServiceName).spec.selector["app.kubernetes.io/name"],
+    serviceSelector(read("Service", agentServiceName))["app.kubernetes.io/name"],
     `${agentServiceName}-inactive`,
   );
   const gatewayPolicy = read(
@@ -1488,7 +1489,7 @@ test("provider Harness protected execution is released only on current signed in
       const admission = driver.admitRevision(protectedRevision);
       assert.match(
         admission,
-        /^model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
+        /^http-chat:v1:model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:protected-codex-no-connection-retry:v1$/,
       );
       const admitted = {
         ...protectedRevision,
@@ -1498,7 +1499,9 @@ test("provider Harness protected execution is released only on current signed in
         ...admitted,
         compute: {
           ...admitted.compute,
-          admission: admission.replace("openshell-codex-launch:v1:", ""),
+          admission: admission
+            .replace("http-chat:v1:", "")
+            .replace("openshell-codex-launch:v1:", ""),
         },
       };
       const pod = fixture.pod("protected-revision");
@@ -1513,12 +1516,28 @@ test("provider Harness protected execution is released only on current signed in
           : originalList(request);
       observation = installed;
       current = true;
+      const baselineObjects = structuredClone(objects);
+      const restoreObjects = () => {
+        objects.clear();
+        for (const [key, resource] of baselineObjects) {
+          objects.set(key, structuredClone(resource));
+        }
+      };
       try {
         for (const [target, disabled] of [
           [admitted, true],
           [alreadyAdmitted, true],
           [protectedRevision, false],
         ]) {
+          // These rows represent separate admission histories. Do not reinterpret a
+          // ConfigMap rendered for new HTTP defaults as an older immutable revision.
+          restoreObjects();
+          const gatewayName = `gateway-${digest(target.agentId)}-rev-${digest(target.id)}`;
+          for (const [key, resource] of objects) {
+            if (resource.kind === "ConfigMap" && resource.metadata.name === gatewayName) {
+              objects.delete(key);
+            }
+          }
           const hashes = [];
           const captureCommand = async ({ requirements }) => {
             hashes.push(
@@ -1549,6 +1568,7 @@ test("provider Harness protected execution is released only on current signed in
           );
         }
       } finally {
+        restoreObjects();
         core.listNamespacedPod = originalList;
         sandbox.enrollHarness = enrollHarness;
         sandbox.harnessEndpoint = harnessEndpoint;

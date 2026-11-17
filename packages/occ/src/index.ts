@@ -174,6 +174,7 @@ import type {
   AuthorizationDecision,
   AuthorizationRequest,
   ComputeDriver,
+  AgentChatCompletionsResolution,
   Configuration,
   ConfigurationDriver,
   ConfigurationValidationOptions,
@@ -360,6 +361,7 @@ import {
   PluginPolicyValidationError,
   ProvisioningSecretDriverError,
   QualifiedAuthorizationDeniedError,
+  HiddenResourceAuthorizationDeniedError,
   RepositoryBindingSelectionError,
   RepositoryGitProfileUnsupportedError,
   RepositoryOptionsUnavailableError,
@@ -543,6 +545,7 @@ export {
   PluginPolicyValidationError,
   ProvisioningSecretDriverError,
   QualifiedAuthorizationDeniedError,
+  HiddenResourceAuthorizationDeniedError,
   quotedSettingKey,
   RepositoryBindingSelectionError,
   RepositoryGitProfileUnsupportedError,
@@ -3376,6 +3379,73 @@ export class OpenClawController {
         selected = { id: agent.id, namespaceId: agent.namespaceId };
       }
       return selected;
+    });
+  }
+
+  /** Resolve stored ownership and authorize before consulting the selected Compute Driver. */
+  async resolveAgentChat(
+    principalId: string,
+    agentId: string,
+    namespaceScope?: string,
+  ): Promise<{
+    readonly agent: Readonly<Agent>;
+    readonly revision?: Readonly<AgentRevision>;
+    readonly endpoint: AgentChatCompletionsResolution;
+  }> {
+    const reference = await this.resolveAgentReference((candidate) => candidate.id === agentId);
+    if (!reference) {
+      throw new ScopeViolationError("The requested Agent was not found.");
+    }
+    const resource = { kind: "agent", id: agentId, namespaceId: reference.namespaceId } as const;
+    const outsideCredentialScope =
+      namespaceScope !== undefined && reference.namespaceId !== namespaceScope;
+    try {
+      const authorization = await this.authorize(principalId, "operate", resource);
+      if (outsideCredentialScope) {
+        throw new AuthorizationDeniedError(
+          "The Agent is outside the service credential's Namespace.",
+          authorization.decision.evidence,
+          { action: "operate", resource },
+          principalId,
+        );
+      }
+    } catch (error) {
+      if (
+        error instanceof AuthorizationDeniedError &&
+        (outsideCredentialScope ||
+          !(await this.authorizationDecision(principalId, "read", resource)).decision.allowed)
+      ) {
+        throw new HiddenResourceAuthorizationDeniedError(error);
+      }
+      throw error;
+    }
+    const compute = this.selectedDriver("compute");
+    return this.read(async (state) => {
+      const { agent } = await this.exactAgent(state, reference.namespaceId, agentId);
+      // Capability absence precedes lifecycle checks, including for a stopped Agent.
+      if (!compute.getChatCompletionsEndpoint) {
+        return { agent, endpoint: { status: "unsupported" } };
+      }
+      if (
+        agent.status !== "active" ||
+        agent.desiredRuntimeState !== "running" ||
+        !agent.activeRevisionId
+      ) {
+        return { agent, endpoint: { status: "unavailable" } };
+      }
+      const revision = await state.revisions.findRevision(
+        agent.namespaceId,
+        agent.id,
+        agent.activeRevisionId,
+      );
+      if (
+        !revision ||
+        revision.compute.id !== compute.id ||
+        revision.compute.implementation !== compute.implementation
+      ) {
+        return { agent, endpoint: { status: "unavailable" } };
+      }
+      return { agent, revision, endpoint: compute.getChatCompletionsEndpoint(revision) };
     });
   }
 

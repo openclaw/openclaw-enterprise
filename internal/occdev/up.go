@@ -41,6 +41,13 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	sandboxDriver, controlPlane := profile.SandboxDriver, profile.ControlPlane
+	verificationMode := r.setting("OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE", "workspace-write")
+	if verificationMode != "workspace-write" && verificationMode != "danger-full-access" {
+		return fmt.Errorf("invalid OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE")
+	}
+	if verificationMode == "danger-full-access" && sandboxDriver != "none" {
+		return fmt.Errorf("container-only Codex verification requires Sandbox Driver none")
+	}
 	if err := r.protectedEgressSelection(); err != nil {
 		return err
 	}

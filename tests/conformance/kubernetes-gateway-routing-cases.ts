@@ -777,14 +777,14 @@ export function checkTrustedProxyIdentities() {
     );
     assert.deepEqual(
       renderedRequiredHeaders({ allowUsers: ["occ-workspace-files"] }, machineGrant),
-      configure === routedOptions ? ["x-openclaw-scopes"] : undefined,
+      ["x-openclaw-scopes"],
     );
     assert.deepEqual(
       renderedRequiredHeaders(
         { allowUsers: ["occ-workspace-files"], requiredHeaders: ["x-real-ip"] },
         machineGrant,
       ),
-      configure === routedOptions ? ["x-real-ip", "x-openclaw-scopes"] : ["x-real-ip"],
+      ["x-real-ip", "x-openclaw-scopes"],
     );
     // Header names the Gateway could never match would refuse every request; non-arrays
     // fail its schema at startup. Both are refused before rollout.

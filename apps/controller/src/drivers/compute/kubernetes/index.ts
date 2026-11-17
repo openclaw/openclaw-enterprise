@@ -112,6 +112,7 @@ import type {
   AgentRuntimeCredentialStatus,
   ComputeAgentProvisioningInput,
   ComputeDriver,
+  AgentChatCompletionsResolution,
   ComputeAgentBinding,
   ComputeAgentRevisionBinding,
   ComputePendingReason,
@@ -1259,6 +1260,7 @@ const TRUSTED_PROXY_HEADER = "x-occ-identity";
 // APIs ignore identityScopes: without it, OpenClaw grants its default operator scopes,
 // operator.admin included (finding 2183).
 const TRUSTED_PROXY_SCOPES_HEADER = "x-openclaw-scopes";
+const HTTP_CHAT_ADMISSION = "http-chat:v1:";
 // Request headers every Gateway HTTPRoute removes before the Gateway sees a request.
 const ROUTE_REMOVED_REQUEST_HEADERS: ReadonlySet<string> = new Set([
   "authorization",
@@ -5035,6 +5037,60 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const url = new URL(endpoint);
     url.pathname = `/native-chat${url.pathname}`;
     return url.href;
+  }
+
+  getChatCompletionsEndpoint(revision: AgentRevision): AgentChatCompletionsResolution {
+    const admitted = revision.compute.admission?.startsWith(HTTP_CHAT_ADMISSION) === true;
+    if (revision.compute.admission?.startsWith("http-chat:") && !admitted) {
+      return { status: "unsupported" };
+    }
+    let configuration: OpenClawConfigurationDocument;
+    try {
+      configuration = this.kubernetesGatewayConfigurationDocument(revision.configuration, admitted);
+    } catch {
+      return { status: "unsupported" };
+    }
+    const gateway = asRecord(configuration.gateway);
+    const requiredHeaders = asRecord(asRecord(gateway?.auth)?.trustedProxy)?.requiredHeaders;
+    const agents = asRecord(revision.configuration.agents);
+    const entries = Object.keys(asRecord(agents?.entries) ?? {});
+    const configuredTarget = asRecord(asRecord(agents?.defaults)?.systemAgent)?.agentId;
+    let target: string | undefined;
+    if (revision.harness.mode === "dedicated") {
+      // Dedicated Harness admission already binds workspace execution to native main.
+      target = "main";
+    } else if (typeof configuredTarget === "string") {
+      target = configuredTarget.trim().toLowerCase();
+    } else if (entries.length === 1) {
+      target = entries[0]!.toLowerCase();
+    } else if (entries.length === 0) {
+      target = "main";
+    }
+    if (
+      this.options.executionCluster !== undefined ||
+      this.options.runtime === undefined ||
+      !Array.isArray(requiredHeaders) ||
+      !requiredHeaders.some(
+        (header) =>
+          typeof header === "string" && header.toLowerCase() === TRUSTED_PROXY_SCOPES_HEADER,
+      ) ||
+      target === undefined ||
+      !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(target)
+    ) {
+      return { status: "unsupported" };
+    }
+    const chat = asRecord(asRecord(asRecord(gateway?.http)?.endpoints)?.chatCompletions);
+    if (chat?.enabled === false) {
+      return { status: "disabled" };
+    }
+    const endpoint = this.getGatewayEndpoint(revision);
+    if (!admitted || chat?.enabled !== true || endpoint === undefined) {
+      return { status: "unavailable" };
+    }
+    const url = new URL(endpoint);
+    url.protocol = "https:";
+    url.pathname = `/http-chat${url.pathname}/revisions/${revision.id}/v1/chat/completions`;
+    return { status: "available", url: url.href, model: `openclaw:${target}` };
   }
 
   async getAgentRuntimeCredentialStatus(
@@ -9135,6 +9191,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
     unknownPredecessor = false,
   ): Promise<void> {
     const gatewayNamespace = this.gatewayNamespace(revision, namespace);
+    const chatName = `chat-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
+    const chatOwnership = {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+    };
+    if (this.options.gatewayRouting !== undefined) {
+      await this.deleteGatewayRoute(chatName, chatOwnership, gatewayNamespace, revision.id);
+      await this.deleteOwnedNamespacedResource(
+        "Service",
+        chatName,
+        chatOwnership,
+        gatewayNamespace,
+      );
+    }
     if (unknownPredecessor || this.hasPublicGithubReadAdmission(revision)) {
       await this.deleteOwnedNamespacedResource(
         "NetworkPolicy",
@@ -9444,7 +9515,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   private async deleteOwnedNamespacedResource(
-    kind: "ConfigMap" | "ServiceAccount" | "NetworkPolicy" | "Secret",
+    kind: "ConfigMap" | "ServiceAccount" | "NetworkPolicy" | "Secret" | "Service",
     name: string,
     ownership: Ownership,
     namespace: KubernetesNamespaceAddress,
@@ -9467,6 +9538,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
           await clients.core.deleteNamespacedSecret(request);
         } else if (kind === "ServiceAccount") {
           await clients.core.deleteNamespacedServiceAccount(request);
+        } else if (kind === "Service") {
+          await clients.core.deleteNamespacedService(request);
         } else {
           await clients.networking.deleteNamespacedNetworkPolicy(request);
         }
@@ -13473,7 +13546,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     workspaceNodeId?: string,
     harnessNamespace?: KubernetesNamespaceAddress,
   ): GatewayConfigurationSnapshot {
-    const nativeConfiguration = this.kubernetesGatewayConfigurationDocument(revision.configuration);
+    const nativeConfiguration = this.kubernetesGatewayConfigurationDocument(
+      revision.configuration,
+      revision.compute.admission?.startsWith(HTTP_CHAT_ADMISSION) === true,
+    );
     const usesGatewayPasswordEnv = usesGatewayPasswordEnvironment(
       asRecord(asRecord(nativeConfiguration.gateway)?.auth) ?? {},
       asRecord(nativeConfiguration.secrets),
@@ -13618,6 +13694,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             revision.harness,
             savedModelProvider(revision.harness.configuration),
           ),
+          revision.compute.admission?.startsWith(HTTP_CHAT_ADMISSION) === true,
         ),
       ),
     );
@@ -13691,6 +13768,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
 
   private kubernetesGatewayConfigurationDocument(
     configuration: OpenClawConfigurationDocument,
+    defaultHttpChat = true,
   ): OpenClawConfigurationDocument {
     validatePlaintextNativeGateway(
       configuration,
@@ -13709,6 +13787,25 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       configuration,
       (setting, requirement) => new GatewaySettingFailure(setting, requirement),
     );
+    const http = asRecord(gateway.http);
+    const endpoints = asRecord(http?.endpoints);
+    const chat = asRecord(endpoints?.chatCompletions);
+    for (const [setting, value, record] of [
+      ["gateway.http", gateway.http, http],
+      ["gateway.http.endpoints", http?.endpoints, endpoints],
+      ["gateway.http.endpoints.chatCompletions", endpoints?.chatCompletions, chat],
+    ] as const) {
+      if (value !== undefined && record === undefined) {
+        throw new GatewaySettingFailure(setting, "must be an object");
+      }
+    }
+    if (chat?.enabled !== undefined && typeof chat.enabled !== "boolean") {
+      throw new GatewaySettingFailure(
+        "gateway.http.endpoints.chatCompletions.enabled",
+        "must be a boolean",
+      );
+    }
+    const chatEnabled = chat?.enabled === true || (defaultHttpChat && chat?.enabled !== false);
     const authRecord = asRecord(gateway.auth);
     if (gateway.auth !== undefined && authRecord === undefined) {
       throw new GatewaySettingFailure("gateway.auth", "must be an object");
@@ -13895,6 +13992,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       ...configuration,
       gateway: {
         ...gateway,
+        ...(defaultHttpChat
+          ? {
+              http: {
+                ...http,
+                endpoints: { ...endpoints, chatCompletions: { ...chat, enabled: chatEnabled } },
+              },
+            }
+          : {}),
         // Omitted and auto resolve to loopback unless OpenClaw detects a container,
         // and containerd on cgroup v2 leaves no marker it recognizes (finding 996).
         bind: gateway.bind === "custom" ? "custom" : "lan",
@@ -13905,7 +14010,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           mode: "trusted-proxy",
           trustedProxy: {
             ...trustedProxy,
-            ...(admitsHumans || this.options.gatewayRouting !== undefined
+            ...((defaultHttpChat && chatEnabled) ||
+            admitsHumans ||
+            this.options.gatewayRouting !== undefined
               ? { requiredHeaders: requiredHeadersWithScopes }
               : {}),
             userHeader: TRUSTED_PROXY_HEADER,
@@ -14412,6 +14519,79 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (service === undefined) {
       return;
     }
+    const chatEndpoint = this.getChatCompletionsEndpoint(revision);
+    if (chatEndpoint.status === "available") {
+      const chatName = `chat-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
+      const chatOwnership = { ...ownership, revisionId: revision.id };
+      const chatService = this.service(chatName, chatOwnership, namespace, {
+        ...this.gatewayServiceSelector(revision, name),
+        "openclaw.dev/revision": revision.id,
+      });
+      await this.reconcile(chatService, chatOwnership, namespace);
+      const routing = this.options.gatewayRouting;
+      const chatRoute = this.manifest(
+        GATEWAY_API_VERSION,
+        "HTTPRoute",
+        chatName,
+        chatOwnership,
+        namespace,
+      );
+      await this.reconcile(
+        {
+          ...chatRoute,
+          metadata: {
+            ...chatRoute.metadata,
+            annotations: {
+              ...chatRoute.metadata.annotations,
+              [AGENT_REVISION_ID_ANNOTATION]: revision.id,
+              [AGENT_REVISION_ANNOTATION]: String(revision.revision),
+            },
+          },
+          spec: {
+            hostnames: [this.gatewayRoutingHostname(routing)],
+            parentRefs: [
+              {
+                group: "gateway.networking.k8s.io",
+                kind: "Gateway",
+                namespace: routing.gatewayNamespace,
+                name: routing.gatewayName,
+                sectionName: GATEWAY_LISTENER_SECTION,
+              },
+            ],
+            rules: [
+              {
+                matches: [
+                  {
+                    method: "POST",
+                    path: { type: "Exact", value: new URL(chatEndpoint.url).pathname },
+                  },
+                ],
+                filters: [
+                  {
+                    type: "URLRewrite",
+                    urlRewrite: {
+                      path: { type: "ReplaceFullPath", replaceFullPath: "/v1/chat/completions" },
+                    },
+                  },
+                  this.gatewayRouteHeaderFilter("chat"),
+                ],
+                timeouts: { request: "660s", backendRequest: "600s" },
+                backendRefs: [
+                  {
+                    group: "",
+                    kind: "Service",
+                    name: chatName,
+                    port: this.options.network.gatewayPort,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        chatOwnership,
+        namespace,
+      );
+    }
     const route = this.gatewayRoute(revision, ownership, namespace, service);
     if (route !== undefined) {
       await this.reconcile(route, ownership, namespace);
@@ -14714,7 +14894,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     readonly binding?: KubernetesScratchVolume;
     readonly runtime: string | undefined;
   } {
-    const admission = revision.compute.admission;
+    const saved = revision.compute.admission;
+    if (saved?.startsWith("http-chat:") && !saved.startsWith(HTTP_CHAT_ADMISSION)) {
+      throw new ConfigurationFailure("AgentRevision HTTP chat admission is unsupported.");
+    }
+    const admission = saved?.startsWith(HTTP_CHAT_ADMISSION)
+      ? saved.slice(HTTP_CHAT_ADMISSION.length) || undefined
+      : saved;
     // An admission without a scratch selection never inherits later operator configuration.
     if (!admission?.startsWith("scratch:")) {
       return { runtime: admission };
@@ -14877,11 +15063,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const binding = this.options.runtime?.scratchVolumes?.find(
       (entry) => entry.namespaceId === revision.namespaceId && entry.agentId === revision.agentId,
     );
+    const chat =
+      this.options.runtime !== undefined && this.options.executionCluster === undefined
+        ? HTTP_CHAT_ADMISSION
+        : "";
     if (binding === undefined) {
-      return admission;
+      return chat + (admission ?? "") || undefined;
     }
     this.requireScratchHarness(revision);
-    const selected = `scratch:v1:${JSON.stringify({ binding: scratchVolume(binding), runtime: admission ?? null })}`;
+    const selected = `${chat}scratch:v1:${JSON.stringify({ binding: scratchVolume(binding), runtime: admission ?? null })}`;
     if (selected.length > 1024) {
       throw new ConfigurationFailure(
         "Scratch volume selection exceeds the Compute admission size limit.",

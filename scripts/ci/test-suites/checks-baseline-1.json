@@ -1004,6 +1004,9 @@
       "expectedTests": [
         "controller topology keeps API-only fixture inputs separate from the worker"
       ]
+    },
+    {
+      "path": "tests/integration/agent-http-chat.test.ts"
     }
   ]
 }
