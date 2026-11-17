@@ -70,7 +70,6 @@ import {
   BOX_UPSTREAM_CA_KEY,
   loadUpstreamCa,
   parseRoute,
-  githubCredentialEnvironment,
   githubCredentials,
   githubPolicy,
   policy,
@@ -870,7 +869,7 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
-test("Box's GitHub routes carry one OCE token as two env:// secrets on GitHub's hosts only", () => {
+test("Box's GitHub routes ask one request-time credential source on GitHub's hosts only", () => {
   const rules = policy([], true);
   for (const host of ["github.com", "api.github.com"]) {
     assert.match(
@@ -887,18 +886,32 @@ test("Box's GitHub routes carry one OCE token as two env:// secrets on GitHub's 
   assert.equal(rules.match(/net:connect/g)?.length, 2);
   assert.equal(rules.match(/intercepted == true/g)?.length, 2);
   assert.doesNotMatch(policy([]), /github/);
+  // Both routes name the one source; the tables carry a socket path and variable names only.
   assert.equal(
-    githubCredentials(),
+    githubCredentials({
+      socket: "/run/box/source/oce.sock",
+      bearerEnv: "OCE_SOURCE_BEARER",
+      timeoutMs: 5000,
+      maxBodyBytes: 4194304,
+    }),
     [
+      "[gateway.credential_source.oce]",
+      'endpoint = "unix:///run/box/source/oce.sock"',
+      'bearer = "env://OCE_SOURCE_BEARER"',
+      "timeout_ms = 5000",
+      "max_body_bytes = 4194304",
+      "",
       "[egress.github-git]",
       'destinations = ["github.com"]',
-      'secret.ref = "env://OCE_GITHUB_GIT_CREDENTIAL"',
+      'secret.ref = "source://oce"',
+      'secret.env = "OCE_GITHUB_GIT_CREDENTIAL"',
       'secret.placement = "basic_auth"',
       'secret.inject = "always"',
       "",
       "[egress.github-api]",
       'destinations = ["api.github.com"]',
-      'secret.ref = "env://GITHUB_TOKEN"',
+      'secret.ref = "source://oce"',
+      'secret.env = "GITHUB_TOKEN"',
       'secret.placement = "header"',
       'secret.header = "Authorization"',
       'secret.prefix = "token "',
@@ -906,19 +919,9 @@ test("Box's GitHub routes carry one OCE token as two env:// secrets on GitHub's 
       "",
     ].join("\n"),
   );
-  const token = `ghs_${randomBytes(18).toString("hex")}`;
-  assert.deepEqual(githubCredentialEnvironment(token), {
-    GITHUB_TOKEN: token,
-    OCE_GITHUB_GIT_CREDENTIAL: `x-access-token:${token}`,
-  });
-  for (const refused of ["", "short", "ghs_ has space", `ghs_${"a".repeat(600)}`, "a\nb:c"]) {
-    assert.throws(() => githubCredentialEnvironment(refused), {
-      message: "invalid_github_material",
-    });
-  }
 });
 
-test("the host reports an installed material version only for the live box run holding it", () => {
+test("the host reports the credential source only for the live box run asking it", () => {
   const bearer = randomBytes(32).toString("base64url");
   const recipient = {
     bearerSha256: createHash("sha256").update(bearer).digest("hex"),
@@ -938,18 +941,14 @@ test("the host reports an installed material version only for the live box run h
     endpoint: { url: "wss://box.example.invalid/", workspaceRoot: "/home/node/workspace" },
   };
   const box = { bootId: "boot", pid: 42, startTicks: "99" };
-  const installed = {
-    preparationAttemptId: randomUUID(),
-    materialVersion: randomUUID(),
-    boxProcessInstanceId: "boot:42:99",
-  };
+  const source = { boxProcessInstanceId: "boot:42:99" };
   const live = (state: "starting" | "running" | "failed", current: typeof box | undefined) =>
     observedView({
-      view: { ...view, state, repositoryRecipient: { ...recipient, installed } },
+      view: { ...view, state, repositoryRecipient: { ...recipient, source } },
       execution: { boxProcess: () => current, generation: () => "c".repeat(64) },
     });
-  assert.deepEqual(live("running", box).repositoryRecipient, { ...recipient, installed });
-  // A replaced, exited or failed `box run` no longer holds it; the recipient itself remains.
+  assert.deepEqual(live("running", box).repositoryRecipient, { ...recipient, source });
+  // A replaced, exited or failed `box run` no longer asks it; the recipient itself remains.
   for (const [state, current] of [
     ["running", { ...box, pid: 43 }],
     ["running", undefined],
@@ -969,7 +968,7 @@ test("the host reports an installed material version only for the live box run h
 });
 
 test(
-  "the GitHub material reaches only the box run environment and never the disk",
+  "the source bearer reaches only the box run environment and never the disk",
   { skip: unsupported },
   async () => {
     const directory = temporary();
@@ -989,8 +988,7 @@ test(
       '#!/bin/sh\ncp -- "$3" ../generated-box.toml || exit 3\n' +
         'policy=$(sed -n \'s/^policy = "\\(.*\\)"$/\\1/p\' "$3")\n' +
         'cp -- "$policy" ../generated-policy.dw || exit 4\n' +
-        "printf '%s' \"$GITHUB_TOKEN\" | sha256sum > ../token.sha256\n" +
-        "printf '%s' \"$OCE_GITHUB_GIT_CREDENTIAL\" | sha256sum > ../git.sha256\n" +
+        "printf '%s' \"$OCE_SOURCE_BEARER\" | sha256sum > ../bearer.sha256\n" +
         "env | cut -d= -f1 | sort > ../box-env\n" +
         "sleep 2\nexit 2\n",
       { mode: 0o700 },
@@ -1007,27 +1005,42 @@ test(
       exec: [],
       linuxPreview: true,
     });
-    const token = `ghs_${randomBytes(18).toString("hex")}`;
+    const bearer = randomBytes(32).toString("base64url");
     const reservationGeneration = "a".repeat(64);
-    const github = { token };
+    const credentialSource = { socket: join(runtimeDir, "source", "oce.sock"), bearer };
+    const releaseGate = true as const;
     const { input } = smokeInput(config);
     try {
       for (const refused of [
-        { ...input, github },
+        { ...input, credentialSource },
         { ...input, reservationGeneration },
-        { ...input, github, reservationGeneration, releaseGate: true as const },
-        { ...input, github, reservationGeneration: "short" },
-        { ...input, github: { token: "short" }, reservationGeneration },
+        { ...input, credentialSource, reservationGeneration },
+        { ...input, releaseGate, reservationGeneration },
+        { ...input, credentialSource, releaseGate, reservationGeneration: "short" },
         {
           ...input,
-          environment: { ...input.environment, GITHUB_TOKEN: "x" },
-          github,
+          credentialSource: { ...credentialSource, bearer: "short" },
+          releaseGate,
           reservationGeneration,
         },
         {
           ...input,
-          environment: { ...input.environment, GH_HOST: "x" },
-          releaseGate: true as const,
+          credentialSource: { ...credentialSource, socket: join(directory, "elsewhere.sock") },
+          releaseGate,
+          reservationGeneration,
+        },
+        {
+          ...input,
+          environment: { ...input.environment, GITHUB_TOKEN: "x" },
+          credentialSource,
+          releaseGate,
+          reservationGeneration,
+        },
+        {
+          ...input,
+          environment: { ...input.environment, OCE_SOURCE_BEARER: "x" },
+          credentialSource,
+          releaseGate,
           reservationGeneration,
         },
       ]) {
@@ -1038,30 +1051,41 @@ test(
         await refusedExecution.done.catch(() => undefined);
         assert.equal(refusedExecution.boxProcess(), undefined);
       }
-      // The restarted, already released run: no release gate, its inputs under `installed/`.
-      const execution = start(config, { ...input, github, reservationGeneration });
+      // The one protected start: held at the release gate, with the source routes from the start.
+      const execution = start(config, {
+        ...input,
+        credentialSource,
+        releaseGate,
+        reservationGeneration,
+      });
       await execution.spawned;
       assert.ok(execution.boxProcess());
       assert.equal(execution.generation(), reservationGeneration);
-      await assert.rejects(execution.ready, { message: "startup_refused:wait-original-native" });
+      // The fixture exits while the run is still held at the gate; nothing reaches the workload.
+      await assert.rejects(execution.ready, { message: "startup_refused:wait-release" });
       assert.equal(await execution.done, 2);
       const generated = readFileSync(join(directory, "generated-box.toml"), "utf8");
-      assert.ok(generated.includes(`\n${githubCredentials()}`));
-      assert.match(generated, new RegExp(`box_dir = "${runtimeDir}/installed/box-state"`));
+      assert.ok(
+        generated.includes(
+          `\n${githubCredentials({
+            socket: credentialSource.socket,
+            bearerEnv: "OCE_SOURCE_BEARER",
+            timeoutMs: 5000,
+            maxBodyBytes: 4 * 1024 * 1024,
+          })}`,
+        ),
+      );
+      assert.match(generated, new RegExp(`box_dir = "${runtimeDir}/box-state"`));
       assert.doesNotMatch(
         generated,
-        /\[agent\.env\][^[]*(?:GITHUB_TOKEN|OCE_GITHUB_GIT_CREDENTIAL)/,
+        /\[agent\.env\][^[]*(?:GITHUB_TOKEN|OCE_GITHUB_GIT_CREDENTIAL|OCE_SOURCE_BEARER)/,
       );
       assert.ok(
         readFileSync(join(directory, "generated-policy.dw"), "utf8").includes(githubPolicy()),
       );
       assert.equal(
-        readFileSync(join(directory, "token.sha256"), "utf8").split(" ")[0],
-        createHash("sha256").update(token).digest("hex"),
-      );
-      assert.equal(
-        readFileSync(join(directory, "git.sha256"), "utf8").split(" ")[0],
-        createHash("sha256").update(`x-access-token:${token}`).digest("hex"),
+        readFileSync(join(directory, "bearer.sha256"), "utf8").split(" ")[0],
+        createHash("sha256").update(bearer).digest("hex"),
       );
       assert.deepEqual(
         readFileSync(join(directory, "box-env"), "utf8")
@@ -1070,10 +1094,10 @@ test(
           .filter((name) => !["PWD", "SHLVL", "_", "OLDPWD"].includes(name)),
         [
           "EXPERIMENTAL_LINUX_SUPPORT",
-          "GITHUB_TOKEN",
+          ...(process.arch === "x64" ? ["EXPERIMENTAL_X86_SUPPORT"] : []),
           "HOME",
           "LANG",
-          "OCE_GITHUB_GIT_CREDENTIAL",
+          "OCE_SOURCE_BEARER",
           "PATH",
         ],
       );
@@ -1092,7 +1116,7 @@ test(
       walk(directory);
       assert.ok(files.length > 3);
       for (const file of files) {
-        assert.ok(!readFileSync(file).includes(token), file);
+        assert.ok(!readFileSync(file).includes(bearer), file);
       }
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -1415,11 +1439,11 @@ function protectedFixture() {
 test("the host admits only the paired one-repository plan for its own GitHub routes", () => {
   const { owner, configured, plan, wiring } = protectedFixture();
   assert.deepEqual(wiring.configuration, {
-    version: 2,
+    version: 3,
     protectedRepository: {
       provider: "github",
       hosts: ["github.com", "api.github.com"],
-      delivery: "box-env-v1",
+      delivery: "box-source-v1",
     },
   });
   assert.deepEqual(protectedWiring(configured, wiring, owner), plan);
@@ -1489,7 +1513,7 @@ test("only Compute's signed release for this held box run opens the startup gate
         providerId: "box-sender",
         attachmentEpoch: expected.executionId,
         processInstanceId: expected.processInstanceId,
-        networkInstanceId: `box-phantom-sha256:${bearerSha256}`,
+        networkInstanceId: `box-source-sha256:${bearerSha256}`,
         authorization: "online-request" as const,
         deliveryProfile: "github_repository" as const,
         ...recipient,
@@ -1583,7 +1607,17 @@ test(
     const { input } = smokeInput(config);
     const reservationGeneration = randomBytes(32).toString("hex");
     try {
-      const execution = start(config, { ...input, releaseGate: true, reservationGeneration });
+      // A protected run always carries Box's credential source; the gate holds it all the same.
+      const credentialSource = {
+        socket: join(runtimeDir, "source", "oce.sock"),
+        bearer: randomBytes(32).toString("base64url"),
+      };
+      const execution = start(config, {
+        ...input,
+        releaseGate: true,
+        reservationGeneration,
+        credentialSource,
+      });
       await execution.spawned;
       const generation = execution.generation();
       assert.equal(generation, reservationGeneration);

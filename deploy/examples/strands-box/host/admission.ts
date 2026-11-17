@@ -32,11 +32,11 @@ export interface Pending {
     readonly planSha256: string;
     readonly workspaceVolume: { readonly claimUid: string; readonly volumeName: string };
   };
-  /** The operator approves Box's GitHub routes for the OCE-delivered repository material. */
+  /** The operator approves Box's GitHub routes, which ask OCE for each request's credential. */
   protectedRepository?: {
     readonly provider: "github";
     readonly hosts: readonly string[];
-    readonly delivery: "box-env-v1";
+    readonly delivery: "box-source-v1";
   };
   /** The exact model route this approval admits: name, pinned address and route CA digest. */
   controlledInference?: {

@@ -5,13 +5,12 @@
  * ordinary Driver, so neither can be selected as the other.
  *
  * Custody: the GitHub App key stays in the Worker (prepared-Git owner); OCE's Token Service mints
- * the installation token. STAGE_A_PROTOTYPE: this Worker delivers that token to the Box host
- * over its owner-only control socket, and the host gives it to `box run` as the env:// secret of
- * Box's github.com and api.github.com routes. The workload holds only Box's placeholder; stock
- * `git` and `gh` work unchanged. Box sends without asking OCE per request, which the Credential
- * Proxy contract does not allow ("a material read permits receipt or installation only"), so
- * this stage cannot land. Stage B answers a Box request-phase authorizer from `bindRepositoryGit`
- * here instead of delivering the token (docs/planning/strands-gh-design.md in the workspace).
+ * the installation token. Box injects GitHub auth itself for its github.com and api.github.com
+ * routes, and for each request it asks its request-time credential source, which the Box host
+ * serves and relays to this Worker over the owner-only control socket. This Driver answers each
+ * ask with OCE's own decision (`requests.authorize`, from `bindRepositoryGit`): allow with that
+ * request's credential, or a refusal. Box holds no token between requests; the workload holds
+ * only Box's placeholders; stock `git` and `gh` work unchanged.
  */
 import { createPublicKey, randomBytes, randomUUID, verify } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -22,7 +21,6 @@ import type {
   EgressInstallation,
   EgressRef,
   HarnessWorkloadRequirements,
-  ProtectedGitHubRepositoryMaterial,
   ProtectedRepositoryGitAuthority,
   ProtectedWorkspaceEndpoint,
   ProtectedWorkspaceSandboxDriver,
@@ -32,6 +30,7 @@ import type {
   RepositoryGitBinding,
   RepositoryGitInstallationFence,
   RepositoryGitMaterialVersion,
+  RepositoryGitRequests,
   SandboxHarnessContext,
   SandboxHarnessStatus,
   SandboxHarnessStatusContext,
@@ -43,16 +42,19 @@ import type {
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
 import {
   canonicalJson,
+  collectAsks,
   control,
-  deliverMaterial,
   digest,
   record,
   releaseExecution,
   sameOwner,
-  type DeliveredMaterial,
+  sendAnswer,
   type Execution,
+  type Owner,
+  type SourceAsk,
 } from "./control.ts";
 import type { Options, StrandsBoxDriver } from "./index.ts";
+import { answerAsk, type AskRecord } from "./request-source.ts";
 
 export interface ProtectedRepositoryConfiguration {
   /** The provider whose installation token Box's routes carry. Only GitHub exists. */
@@ -67,9 +69,9 @@ export const protectedRepositorySchema: NonNullable<DriverImplementation["config
 };
 
 /** Equal to the host's `wiringConfiguration` (host/control.ts); the host compares it exactly. */
-const WIRING_VERSION = 2;
+const WIRING_VERSION = 3;
 const GITHUB_HOSTS = ["github.com", "api.github.com"] as const;
-const BOX_PHANTOM_IDENTITY = "box-phantom-sha256:";
+const BOX_SOURCE_IDENTITY = "box-source-sha256:";
 const RELEASE_PUBLIC_KEY_ENV = "OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY";
 const RELEASE_PROFILE = "oce-compute-execution-release-v1";
 
@@ -79,7 +81,7 @@ function wiringConfiguration(configured: ProtectedRepositoryConfiguration) {
     protectedRepository: {
       provider: configured.provider,
       hosts: [...GITHUB_HOSTS],
-      delivery: "box-env-v1",
+      delivery: "box-source-v1",
     },
   };
 }
@@ -120,35 +122,41 @@ function admittedPlan(plan: ProxyPlan | undefined, id: string): plan is ProxyPla
   );
 }
 
-/** Only what Box's routes need: the value and the identifiers the host checks and reports. */
-function hostMaterial(material: ProtectedGitHubRepositoryMaterial): DeliveredMaterial {
-  return {
-    preparationAttemptId: material.preparationAttemptId,
-    materialVersion: material.materialVersion,
-    expiresAt: material.expiresAt,
-    installationId: material.installationId,
-    repositories: material.repositories.map(({ repositoryId, repository }) => ({
-      repositoryId,
-      repository,
-    })),
-    value: material.value,
-  };
-}
+/** How many asks this Driver decides at once; more are refused, never queued without bound. */
+const MAX_IN_FLIGHT = 32;
+/** The host holds a collect call open at most this long (host/credential-source.ts). */
+const COLLECT_WAIT_MS = 4_000;
+/** How many answered asks the Driver remembers (identifiers and outcomes only). */
+const ASK_RECORDS = 256;
 
 interface Recipient {
   readonly executionId: string;
   readonly revisionId: string;
+  readonly owner: Owner;
+  readonly requirementsDigest: string;
   readonly installation: EgressInstallation;
+  /** The committed recipient's bearer digest, which Box's source asks must present. */
+  readonly bearerSha256: string;
   route?: RepositoryGitInstallationFence;
-  /** The intent OCC persisted; a lost install or confirmation is settled from it, never redone. */
+  /** The intent OCC persisted; a lost confirmation is settled from it, never redone. */
   pending?: (RepositoryGitInstallationFence & RepositoryGitMaterialVersion) | undefined;
-  /** The material of `pending`, kept in Worker memory only until the host shows it installed. */
-  delivering?: DeliveredMaterial | undefined;
+  /** The route OCE confirmed for `version`: every ask is decided against it. */
   confirmed?: RepositoryGitInstallationFence;
   version?: RepositoryGitMaterialVersion;
+  /** When the first version became ready; renewals do not reset the workspace connection. */
   settledAt?: number;
-  /** A newer version OCE prepared that stock Box cannot take (Stage A has no refresh). */
-  refused?: RepositoryGitMaterialVersion;
+}
+
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+    function done() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    }
+  });
 }
 
 /** State shared by the paired Sandbox and Credential Proxy of one registration. */
@@ -157,7 +165,12 @@ class Shared {
   readonly wiring: ReturnType<typeof wiringConfiguration>;
   readonly retained = new Map<string, HarnessWorkloadRequirements>();
   authority: ProtectedRepositoryGitAuthority | undefined;
+  requests: RepositoryGitRequests | undefined;
   active: Recipient | undefined;
+  /** Answered asks, newest last: Box's `request_id` beside OCE's `exchangeId`, never a value. */
+  readonly asks: AskRecord[] = [];
+  private serving: { readonly stop: AbortController; readonly done: Promise<void> } | undefined;
+  private inFlight = 0;
   readonly id: string;
   readonly options: Options & {
     readonly protectedRepository: ProtectedRepositoryConfiguration;
@@ -222,7 +235,7 @@ class Shared {
           providerId: this.recipient.id,
           attachmentEpoch: execution.executionId,
           processInstanceId: recipient.processInstanceId,
-          networkInstanceId: `${BOX_PHANTOM_IDENTITY}${recipient.bearerSha256}`,
+          networkInstanceId: `${BOX_SOURCE_IDENTITY}${recipient.bearerSha256}`,
           authorization: "online-request",
           deliveryProfile: "github_repository",
         },
@@ -236,8 +249,12 @@ class Shared {
 
   /**
    * One Worker pass: re-observe the host's current execution and the committed recipient, then
-   * install the eligible material version once. OCE prepares material only for the active
-   * revision, so this runs after the release and the activation, never before.
+   * declare each eligible material version ready once. Box asks per request and holds no value,
+   * so there is nothing to deliver: confirming a version means this recipient is ready to ask per
+   * request (the contract's request-time meaning), and it requires the host to show the live
+   * `box run` started with the source routes. A renewal is confirmed the same way while Box keeps
+   * running. OCE prepares material only for the active revision, so this runs after the release
+   * and the activation, never before.
    */
   async reconcile(signal: AbortSignal): Promise<void> {
     const authority = this.authority;
@@ -245,7 +262,8 @@ class Shared {
     const execution = await this.read(signal);
     const plan = execution?.protectedStartup?.plan as ProxyPlan | undefined;
     const installation = plan === undefined ? undefined : this.installationFrom(plan, execution);
-    if (execution === undefined || installation === undefined) {
+    const bearerSha256 = execution?.repositoryRecipient?.bearerSha256;
+    if (execution === undefined || installation === undefined || bearerSha256 === undefined) {
       this.retire();
       return;
     }
@@ -256,58 +274,45 @@ class Shared {
     ) {
       this.retire();
     }
-    const active = (this.active ??= {
+    const fresh: Recipient = {
       executionId: execution.executionId,
       revisionId: installation.plan.execution.revisionId,
+      owner: execution.owner,
+      requirementsDigest: execution.requirementsDigest,
       installation,
-    });
+      bearerSha256,
+    };
+    const active = (this.active ??= fresh);
     if (active.pending !== undefined) {
       await this.settle(authority, active, execution, signal);
       return;
     }
     const route = await authority.recipients.observe(installation);
     if (route === undefined || this.active !== active) return;
-    active.route = route;
     const git = authority.online.githubRepository;
     const material = git === undefined ? undefined : await git.readMaterial(route, signal);
-    // Withdrawal: OCE retires the attempt and revokes the token at GitHub, so Box's routes are
-    // refused from then on while the chat keeps running. Nothing is sent to the host.
+    // Withdrawal: OCE refuses every ask from now on (`access_withdrawn`), before Box opens any
+    // provider connection. Nothing is sent to the host; `box run` and the chat keep running.
     if (material === undefined || "absent" in material || this.active !== active) return;
     const version = {
       preparationAttemptId: material.preparationAttemptId,
       materialVersion: material.materialVersion,
     };
     if (sameVersion(active.version, version)) return;
-    const installed = execution.repositoryRecipient?.installed;
-    if (
-      active.confirmed !== undefined ||
-      (installed !== undefined && !sameVersion(installed, version))
-    ) {
-      // STAGE_A_PROTOTYPE: stock Box reads its secret once; a renewed version is not installed.
-      // OCE's renewal retires (and revokes) the version Box holds, which ends its access.
-      active.refused = version;
-      return;
-    }
+    if (execution.repositoryRecipient?.source === undefined) return;
     const pending = await authority.recipients.beginInstall(route, version);
     if (this.active !== active) return;
     if (pending === undefined) {
       // OCC refuses an intent for the version its delivery row already holds, which is the state
-      // a restarted Worker finds. Adopt it only when the host shows that exact version in the
-      // live `box run`; the delivery row records nothing else.
-      if (!sameVersion(installed, version)) return;
+      // a restarted Worker finds: that version is confirmed for this recipient, at `route`.
       this.settled(active, route, version);
       return;
     }
     active.pending = pending;
-    active.delivering = hostMaterial(material);
     await this.settle(authority, active, execution, signal);
   }
 
-  /**
-   * Confirm the persisted intent only after reading the exact version back from the host for
-   * the same execution's live `box run`. A delivery whose reply was lost is redelivered with the
-   * same version: the host answers it from its record and never restarts Box twice.
-   */
+  /** Confirm the persisted intent while the host still shows the live `box run` asking it. */
   private async settle(
     authority: ProtectedRepositoryGitAuthority,
     active: Recipient,
@@ -315,28 +320,10 @@ class Shared {
     signal: AbortSignal,
   ): Promise<void> {
     const pending = active.pending!;
-    let current = execution;
     if (
-      current !== undefined &&
-      current.executionId === active.executionId &&
-      current.repositoryRecipient?.installed === undefined &&
-      active.delivering !== undefined
-    ) {
-      current = await deliverMaterial(
-        this.options.controlSocket,
-        {
-          owner: current.owner,
-          executionId: current.executionId,
-          requirementsDigest: current.requirementsDigest,
-          material: active.delivering,
-        },
-        signal,
-      );
-    }
-    if (
-      current === undefined ||
-      current.executionId !== active.executionId ||
-      !sameVersion(current.repositoryRecipient?.installed, pending) ||
+      execution === undefined ||
+      execution.executionId !== active.executionId ||
+      execution.repositoryRecipient?.source === undefined ||
       this.active !== active
     ) {
       return;
@@ -345,7 +332,6 @@ class Shared {
     signal.throwIfAborted();
     if (confirmed === undefined || this.active !== active) return;
     active.pending = undefined;
-    active.delivering = undefined;
     this.settled(active, confirmed, pending);
   }
 
@@ -360,25 +346,119 @@ class Shared {
       preparationAttemptId: version.preparationAttemptId,
       materialVersion: version.materialVersion,
     };
-    active.settledAt = Date.now();
+    active.settledAt ??= Date.now();
   }
 
-  bind(authority: ProtectedRepositoryGitAuthority): RepositoryGitBinding {
-    if (this.authority !== undefined || authority.online.githubRepository === undefined) {
+  /**
+   * Serve Box's credential source from this Worker process for as long as the binding lives:
+   * collect the live execution's asks from the host and answer each with OCE's decision.
+   */
+  private async serve(signal: AbortSignal): Promise<void> {
+    while (!signal.aborted) {
+      const active = this.active;
+      const requests = this.requests;
+      if (active === undefined || requests === undefined) {
+        await pause(250, signal);
+        continue;
+      }
+      let asks: SourceAsk[];
+      try {
+        asks = await collectAsks(
+          this.options.controlSocket,
+          {
+            owner: active.owner,
+            executionId: active.executionId,
+            requirementsDigest: active.requirementsDigest,
+            waitMs: COLLECT_WAIT_MS,
+          },
+          signal,
+        );
+      } catch {
+        await pause(500, signal);
+        continue;
+      }
+      for (const ask of asks) {
+        if (this.inFlight >= MAX_IN_FLIGHT) {
+          void this.answer(active, ask, { refusal: "route_not_ready" }, signal);
+          continue;
+        }
+        this.inFlight++;
+        void this.decide(active, requests, ask, signal).finally(() => {
+          this.inFlight--;
+        });
+      }
+    }
+  }
+
+  private async decide(
+    active: Recipient,
+    requests: RepositoryGitRequests,
+    ask: SourceAsk,
+    signal: AbortSignal,
+  ): Promise<void> {
+    // Decided against the recipient that is live now: a retired or replaced one gets nothing.
+    const live = this.active === active ? active : undefined;
+    const { answer, record } = await answerAsk(ask, {
+      route: live?.confirmed,
+      bearerSha256: live?.bearerSha256,
+      requests,
+      signal,
+    });
+    this.asks.push(record);
+    if (this.asks.length > ASK_RECORDS) this.asks.shift();
+    await this.answer(active, ask, answer, signal);
+  }
+
+  private async answer(
+    active: Recipient,
+    ask: SourceAsk,
+    answer: Parameters<typeof sendAnswer>[1]["answer"],
+    signal: AbortSignal,
+  ): Promise<void> {
+    await sendAnswer(
+      this.options.controlSocket,
+      {
+        owner: active.owner,
+        executionId: active.executionId,
+        requirementsDigest: active.requirementsDigest,
+        askId: ask.askId,
+        answer,
+      },
+      signal,
+    ).catch(() => false);
+  }
+
+  bind(
+    authority: ProtectedRepositoryGitAuthority,
+    requests: RepositoryGitRequests | undefined,
+  ): RepositoryGitBinding {
+    if (
+      this.authority !== undefined ||
+      authority.online.githubRepository === undefined ||
+      requests === undefined
+    ) {
       throw new DependencyUnavailableError(
-        "The selected online GitHub repository authority is unavailable.",
+        "The selected online GitHub repository authority or its request decision is unavailable.",
       );
     }
     this.authority = authority;
+    this.requests = requests;
+    const stop = new AbortController();
+    this.serving = { stop, done: this.serve(stop.signal).catch(() => undefined) };
     return {
       reconcile: (signal) => this.reconcile(signal),
       close: () => this.close(),
     };
   }
 
-  close(): void {
+  async close(): Promise<void> {
+    const serving = this.serving;
+    this.serving = undefined;
     this.authority = undefined;
+    this.requests = undefined;
     this.retire();
+    serving?.stop.abort();
+    await serving?.done;
   }
 }
 
@@ -408,11 +488,11 @@ export function createProtectedRegistration(
           fingerprint: digest(installation.enforcement),
         };
       },
-      // STAGE_A_PROTOTYPE: OCC retires the attempt and revokes the token at GitHub; Box's routes
-      // are refused from then on. The Box execution and its chat keep running.
+      // Box holds no token: from withdrawal on, OCE refuses each ask before any provider
+      // connection, and OCC retires and revokes the token. The Box execution and its chat run on.
       retireExpired: async () => "withdrawn",
       routeReadiness: (revisionId) =>
-        shared.active?.revisionId === revisionId && shared.active.route !== undefined
+        shared.active?.revisionId === revisionId && shared.active.confirmed !== undefined
           ? "ready"
           : "pending",
       materialSettledAt: (revisionId) =>
@@ -442,8 +522,9 @@ export function createProtectedRegistration(
     }
 
     /**
-     * A fresh bearer per PUT: the per-execution recipient identity. The host keeps only its
-     * digest; Stage B presents the bearer to OCE's authorizer for each request.
+     * A fresh bearer per PUT: the per-execution recipient identity. The host keeps its digest and
+     * gives the bearer only to `box run`, which presents it to the credential source per request.
+     * Never logged and never written to a file.
      */
     protected override executionInputs(): Readonly<Record<string, string>> {
       return { executionBearer: randomBytes(32).toString("base64url") };
@@ -592,8 +673,7 @@ export function createProtectedRegistration(
         // In the Worker, prove the host answers. The API process loads the package but never
         // binds; the Worker repeats this check in configure before any wiring.
         if (shared.authority !== undefined) await shared.read(signal);
-        // STAGE_A_PROTOTYPE: this answer claims online authorization so OCE admits the plan, but
-        // stock Box sends without asking OCE per request. Stage B's authorizer makes it true.
+        // Box asks for every request and this Driver answers each with `requests.authorize`.
         return { profile, authorization: "online-request" };
       },
     },
@@ -625,7 +705,7 @@ export function createProtectedRegistration(
       if (shared.active?.revisionId === context.revision.id) shared.retire();
       return true;
     },
-    bindRepositoryGit: async (authority) => shared.bind(authority),
+    bindRepositoryGit: async (authority, requests) => shared.bind(authority, requests),
   };
   return {
     capabilities: { sandbox, credential_proxy: credentialProxy },

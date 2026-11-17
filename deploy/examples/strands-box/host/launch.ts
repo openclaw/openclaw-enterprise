@@ -24,10 +24,14 @@ import {
   BOX_UPSTREAM_CA_KEY,
   CONTROLLED_INFERENCE_MARKER,
   policy,
-  githubCredentialEnvironment,
   githubCredentials,
   upstreamCaPem,
 } from "./egress.ts";
+import {
+  SOURCE_BEARER_ENV,
+  SOURCE_MAX_BODY_BYTES,
+  SOURCE_TIMEOUT_MS,
+} from "./credential-source.ts";
 import {
   collectDiagnostics,
   drainDiagnostics,
@@ -185,14 +189,17 @@ export interface StartInput {
   workspaceNodeSetupExpiresAt?: number;
   egress?: readonly EgressRoute[];
   /**
-   * STAGE_A_PROTOTYPE: the OCE-minted GitHub installation token for this execution, held only in
-   * memory and in the `box run` environment, where Box's two GitHub routes read it once.
+   * Protected startup: Box's request-time credential source for the two GitHub routes. `socket`
+   * is the host's listener in a directory no grant covers; `bearer` is the per-execution bearer
+   * the paired Driver minted, held only in memory and in the `box run` environment. Box presents
+   * it to the source with each ask. No token is ever given to Box.
    */
-  github?: { readonly token: string; readonly caSha256?: string };
-  /**
-   * Protected startup: Box starts, but the command waits until `release()` is called. The
-   * restarted run that carries `github` is already released and never takes the gate.
-   */
+  credentialSource?: {
+    readonly socket: string;
+    readonly bearer: string;
+    readonly caSha256?: string;
+  };
+  /** Protected startup: Box starts, but the command waits until `release()` is called. */
   releaseGate?: true;
   /**
    * Protected startup: the reservation generation the host fixed before any material existed,
@@ -561,9 +568,8 @@ export function start(
   async function run(): Promise<number> {
     let verifiedBootId: string | void;
     const run = config.runtimeDir;
-    // The runtime directory is single-use per run. The one restart that installs GitHub material
-    // keeps its run inputs and Box state in a fresh subdirectory; owner sockets stay at the root.
-    const work = input.github === undefined ? run : join(run, "installed");
+    // The runtime directory is single-use per run; Box starts once per execution.
+    const work = run;
     const authority = join(work, "authority");
     const bridgeDir = join(work, "bridge");
     const projectionDir = join(work, "projection");
@@ -590,7 +596,6 @@ export function start(
     let receiptOwned = false;
     let stage = "stage-inputs";
     try {
-      if (work !== run) mkdirSync(work, { mode: 0o700 });
       const staging = join(work, "input");
       mkdirSync(staging, { mode: 0o700 });
       const effectiveEnvironment = { ...input.environment };
@@ -608,24 +613,27 @@ export function start(
         stagedPaths.push(staged);
         effectiveEnvironment[file.environmentVariable] = staged;
       }
-      const github = input.github;
+      const source = input.credentialSource;
       if (
-        // A protected run is reserved: held at the gate first, then restarted once with the
-        // GitHub routes after its release. An ordinary run takes neither.
-        (input.reservationGeneration === undefined) !==
-          (input.releaseGate !== true && github === undefined) ||
-        (input.releaseGate === true && github !== undefined) ||
+        // A protected run is reserved, held at the gate, and carries the GitHub source routes
+        // from its one start. An ordinary run takes none of them.
+        (input.reservationGeneration === undefined) !== (input.releaseGate !== true) ||
+        (input.releaseGate === true) !== (source !== undefined) ||
         (input.reservationGeneration !== undefined &&
           !/^[a-f0-9]{64}$/.test(input.reservationGeneration)) ||
+        (source !== undefined &&
+          (!/^[A-Za-z0-9_-]{43}$/.test(source.bearer) ||
+            !pathWithin(run, source.socket) ||
+            source.socket === run)) ||
         Object.keys(effectiveEnvironment).some((name) =>
-          /^(?:GITHUB_|GH_|GIT_|OCE_GITHUB_)/.test(name),
+          /^(?:GITHUB_|GH_|GIT_|OCE_GITHUB_|OCE_SOURCE_)/.test(name),
         )
       ) {
         throw new Error("github_route_unadmitted");
       }
-      // Validates the value before any file exists; the result is used only in the spawn below.
-      const githubEnvironment =
-        github === undefined ? undefined : githubCredentialEnvironment(github.token);
+      // Used only in the spawn below; never written to a file.
+      const sourceEnvironment =
+        source === undefined ? undefined : { [SOURCE_BEARER_ENV]: source.bearer };
       const environment = safeEnvironment(
         effectiveEnvironment,
         input.egress?.some((route) => route.kind === "controlled-inference") === true,
@@ -681,7 +689,7 @@ export function start(
       }
       writeFileSync(
         policyFile,
-        policy(input.egress ?? [], github !== undefined) +
+        policy(input.egress ?? [], source !== undefined) +
           (verifier === undefined ? "" : workspaceVerifierPolicy(config.workspace)),
         ownerOnly,
       );
@@ -689,9 +697,13 @@ export function start(
       // that no grant covers, and only when every route Box dials opts in to it again here.
       // Stock Box refuses the key, so it fails closed before any egress.
       // Box trusts the bundle for every upstream, GitHub included: the GitHub routes opt in too.
-      if (github !== undefined && github.caSha256 !== input.upstreamCa?.sha256)
+      if (source !== undefined && source.caSha256 !== input.upstreamCa?.sha256)
         throw new Error("upstream_ca_route_not_declared");
-      const caPem = upstreamCaPem(input.upstreamCa, input.egress ?? []);
+      const caPem =
+        upstreamCaPem(input.upstreamCa, input.egress ?? []) ??
+        (source?.caSha256 === undefined || input.upstreamCa === undefined
+          ? undefined
+          : `${input.upstreamCa.pem.trim()}\n`);
       if (caPem !== undefined) writeFileSync(caFile, caPem, ownerOnly);
       // Box excludes its own box.toml and policy directory from every native grant.
       // Stage the Node input separately: the authority directory is never mounted.
@@ -718,8 +730,10 @@ export function start(
         'name = "oce-strands"',
         `box_dir = ${quoted(join(work, "box-state"))}`,
         `policy = ${quoted(policyFile)}`,
-        ...(caPem === undefined ? [] : [`${BOX_UPSTREAM_CA_KEY} = ${quoted(caFile)}`]),
         "",
+        ...(caPem === undefined
+          ? []
+          : ["[gateway]", `${BOX_UPSTREAM_CA_KEY} = ${quoted(caFile)}`, ""]),
         "[agent]",
         `command = [${[config.nodeBin, "--jitless", agentEntry, visibleAgentInput].map(quoted).join(", ")}]`,
         `workspace = ${quoted(config.workspace)}`,
@@ -733,11 +747,19 @@ export function start(
         ),
         "",
       ].join("\n");
-      // The credential tables name only variables; the token never enters box.toml.
+      // The credential tables name a socket and variables; no credential enters box.toml.
       writeFileSync(
         boxFile,
         configText +
-          (github === undefined ? "" : "\n" + githubCredentials()) +
+          (source === undefined
+            ? ""
+            : "\n" +
+              githubCredentials({
+                socket: source.socket,
+                bearerEnv: SOURCE_BEARER_ENV,
+                timeoutMs: SOURCE_TIMEOUT_MS,
+                maxBodyBytes: SOURCE_MAX_BODY_BYTES,
+              })) +
           (verifier === undefined ? "" : "\n" + workspaceVerifierTool(config.workspace)),
         ownerOnly,
       );
@@ -770,7 +792,9 @@ export function start(
           PATH,
           LANG: "C.UTF-8",
           EXPERIMENTAL_LINUX_SUPPORT: "TRUE",
-          ...githubEnvironment,
+          // Box main runs on Linux x86-64 only with this exact opt-in; ARM64 needs none.
+          ...(process.arch === "x64" ? { EXPERIMENTAL_X86_SUPPORT: "TRUE" } : {}),
+          ...sourceEnvironment,
         },
       });
       child.stdout?.resume();

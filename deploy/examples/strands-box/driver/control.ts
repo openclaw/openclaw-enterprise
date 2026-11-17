@@ -25,7 +25,7 @@ export interface Execution {
   readonly generationSha256?: string;
   /**
    * Host-observed repository recipient: the execution bearer digest, the host control process
-   * that holds the delivered material, and the version installed in the live `box run`.
+   * that serves Box's credential source, and the live `box run` that asks it.
    */
   readonly repositoryRecipient?: RepositoryRecipient;
   /** Protected startup as the host observes it; `plan` is the exact admitted proxy plan. */
@@ -42,22 +42,31 @@ export interface Execution {
 export interface RepositoryRecipient {
   readonly bearerSha256: string;
   readonly processInstanceId: string;
-  readonly installed?: {
-    readonly preparationAttemptId: string;
-    readonly materialVersion: string;
-    readonly boxProcessInstanceId: string;
-  };
+  /** Present while the live `box run` started with the source routes asks this host. */
+  readonly source?: { readonly boxProcessInstanceId: string };
 }
 
-/** STAGE_A_PROTOTYPE: the material the Worker hands the host for Box's GitHub routes. */
-export interface DeliveredMaterial {
-  readonly preparationAttemptId: string;
-  readonly materialVersion: string;
-  readonly expiresAt: string;
-  readonly installationId: string;
-  readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
-  readonly value: string;
+/** One Box credential-source ask as the host relays it (host/credential-source.ts). */
+export interface SourceAsk {
+  readonly askId: string;
+  readonly requestId: string;
+  readonly bearerSha256: string;
+  readonly deadlineUnixMs: number;
+  readonly target: {
+    readonly host: "github.com" | "api.github.com";
+    readonly port: 443;
+    readonly method: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
+    readonly path: string;
+    readonly query: string;
+  };
+  readonly headers: readonly (readonly [string, string])[];
+  /** Standard base64, as Box sent it. */
+  readonly body: string;
 }
+
+/** The Driver's answer for one ask: this request's value with its send-by, or a refusal. */
+export type SourceAnswer =
+  { readonly credential: string; readonly send_by_unix_ms: number } | { readonly refusal: string };
 
 /** The nonsecret controlled inference route: HTTPS origin, pinned private IPv4, route CA digest. */
 export interface ControlledInferenceRoute {
@@ -102,10 +111,13 @@ export interface WorkspaceVolume {
 const EXECUTION_PATH = "/v1/execution";
 const ADMISSION_PATH = "/v1/admission";
 const RELEASE_PATH = "/v1/release";
-const MATERIAL_PATH = "/v1/repository-material";
+const ASKS_PATH = "/v1/credential-asks";
+const ANSWERS_PATH = "/v1/credential-answers";
 const SHA256 = /^[a-f0-9]{64}$/;
 const LIMIT = 32_768;
 const TIMEOUT = 5_000;
+/** A collect reply holds asks with up to about 4 MiB of body, base64, plus their heads. */
+const ASKS_LIMIT = 12 * 1024 * 1024;
 
 export function record(value: unknown): Record<string, unknown> | undefined {
   if (value !== null && typeof value === "object" && !Array.isArray(value)) {
@@ -196,45 +208,34 @@ function parseOwner(value: unknown): Owner | undefined {
 }
 
 const PROCESS_INSTANCE = /^[a-f0-9-]{36}:[1-9][0-9]{0,9}:[1-9][0-9]{0,19}$/;
-const MATERIAL_ID = /^[\x21-\x7e]{1,256}$/;
 
 function parseRecipient(value: unknown): Execution["repositoryRecipient"] {
   if (value === undefined) return undefined;
   const recipient = record(value);
-  const installed = record(recipient?.installed);
+  const source = record(recipient?.source);
   if (
     !recipient ||
     Object.keys(recipient).some(
-      (key) => key !== "bearerSha256" && key !== "processInstanceId" && key !== "installed",
+      (key) => key !== "bearerSha256" && key !== "processInstanceId" && key !== "source",
     ) ||
     typeof recipient.bearerSha256 !== "string" ||
     !SHA256.test(recipient.bearerSha256) ||
     typeof recipient.processInstanceId !== "string" ||
     !PROCESS_INSTANCE.test(recipient.processInstanceId) ||
-    (recipient.installed !== undefined &&
-      (!installed ||
-        Object.keys(installed).length !== 3 ||
-        typeof installed.preparationAttemptId !== "string" ||
-        !MATERIAL_ID.test(installed.preparationAttemptId) ||
-        typeof installed.materialVersion !== "string" ||
-        !MATERIAL_ID.test(installed.materialVersion) ||
-        typeof installed.boxProcessInstanceId !== "string" ||
-        !PROCESS_INSTANCE.test(installed.boxProcessInstanceId)))
+    (recipient.source !== undefined &&
+      (!source ||
+        Object.keys(source).length !== 1 ||
+        typeof source.boxProcessInstanceId !== "string" ||
+        !PROCESS_INSTANCE.test(source.boxProcessInstanceId)))
   ) {
     throw new Error("Invalid repository recipient evidence");
   }
   return {
     bearerSha256: recipient.bearerSha256,
     processInstanceId: recipient.processInstanceId,
-    ...(installed === undefined
+    ...(source === undefined
       ? {}
-      : {
-          installed: {
-            preparationAttemptId: installed.preparationAttemptId as string,
-            materialVersion: installed.materialVersion as string,
-            boxProcessInstanceId: installed.boxProcessInstanceId as string,
-          },
-        }),
+      : { source: { boxProcessInstanceId: source.boxProcessInstanceId as string } }),
   };
 }
 
@@ -399,26 +400,97 @@ export async function releaseExecution(
   }
 }
 
+type ExecutionKey = Pick<Execution, "owner" | "executionId" | "requirementsDigest">;
+
+const ASK_HOSTS = new Set(["github.com", "api.github.com"]);
+const ASK_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
+
+function parseAsk(value: unknown): SourceAsk {
+  const ask = record(value);
+  const target = record(ask?.target);
+  if (
+    !ask ||
+    !target ||
+    typeof ask.askId !== "string" ||
+    !/^[0-9a-f-]{36}$/.test(ask.askId) ||
+    typeof ask.requestId !== "string" ||
+    !/^[0-9a-f]{32}$/.test(ask.requestId) ||
+    typeof ask.bearerSha256 !== "string" ||
+    !SHA256.test(ask.bearerSha256) ||
+    typeof ask.deadlineUnixMs !== "number" ||
+    !Number.isSafeInteger(ask.deadlineUnixMs) ||
+    typeof target.host !== "string" ||
+    !ASK_HOSTS.has(target.host) ||
+    target.port !== 443 ||
+    typeof target.method !== "string" ||
+    !ASK_METHODS.has(target.method) ||
+    typeof target.path !== "string" ||
+    typeof target.query !== "string" ||
+    !Array.isArray(ask.headers) ||
+    !ask.headers.every(
+      (entry: unknown) =>
+        Array.isArray(entry) &&
+        entry.length === 2 &&
+        typeof entry[0] === "string" &&
+        typeof entry[1] === "string",
+    ) ||
+    typeof ask.body !== "string"
+  ) {
+    throw new Error("Invalid credential ask");
+  }
+  return {
+    askId: ask.askId,
+    requestId: ask.requestId,
+    bearerSha256: ask.bearerSha256,
+    deadlineUnixMs: ask.deadlineUnixMs,
+    target: {
+      host: target.host as SourceAsk["target"]["host"],
+      port: 443,
+      method: target.method as SourceAsk["target"]["method"],
+      path: target.path,
+      query: target.query,
+    },
+    headers: (ask.headers as [string, string][]).map(([name, value]) => [name, value] as const),
+    body: ask.body,
+  };
+}
+
 /**
- * STAGE_A_PROTOTYPE: hand the host the material OCE delivered to this execution's committed
- * recipient. The host starts `box run` with it, still held at the release gate.
+ * Collect the credential asks Box sent this execution's source since the last call, waiting up
+ * to `waitMs` for one. The host hands each ask out once.
  */
-export async function deliverMaterial(
+export async function collectAsks(
   socketPath: string,
-  body: Pick<Execution, "owner" | "executionId" | "requirementsDigest"> & {
-    readonly material: DeliveredMaterial;
-  },
+  body: ExecutionKey & { readonly waitMs: number },
   signal: AbortSignal,
-): Promise<Execution> {
+): Promise<SourceAsk[]> {
   try {
-    const reply = await send(socketPath, "POST", MATERIAL_PATH, body, signal);
-    if (reply.status !== 200) throw new Error("Refused material");
-    return parseExecution(JSON.parse(reply.body));
+    const reply = await send(socketPath, "POST", ASKS_PATH, body, signal, false, {
+      limit: ASKS_LIMIT,
+      timeout: body.waitMs + TIMEOUT,
+    });
+    if (reply.status !== 200) throw new Error("Refused collect");
+    const asks = record(JSON.parse(reply.body))?.asks;
+    if (!Array.isArray(asks)) throw new Error("Invalid asks");
+    return asks.map(parseAsk);
   } catch {
     signal.throwIfAborted();
-    throw new DependencyUnavailableError(
-      "The Strands Box host did not confirm the repository material.",
-    );
+    throw new DependencyUnavailableError("The Strands Box host did not return credential asks.");
+  }
+}
+
+/** Answer one ask. False when the host no longer holds it (it expired, or the execution ended). */
+export async function sendAnswer(
+  socketPath: string,
+  body: ExecutionKey & { readonly askId: string; readonly answer: SourceAnswer },
+  signal: AbortSignal,
+): Promise<boolean> {
+  try {
+    const reply = await send(socketPath, "POST", ANSWERS_PATH, body, signal);
+    return reply.status === 204;
+  } catch {
+    signal.throwIfAborted();
+    return false;
   }
 }
 
@@ -474,6 +546,7 @@ async function send(
   body: unknown,
   signal: AbortSignal,
   initialProvision = false,
+  { limit = LIMIT, timeout = TIMEOUT }: { limit?: number; timeout?: number } = {},
 ): Promise<{ status: number; body: string }> {
   signal.throwIfAborted();
   const socket = await lstat(socketPath).catch(async (error: unknown) => {
@@ -515,7 +588,7 @@ async function send(
         method,
         path,
         agent: false,
-        signal: AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT)]),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(timeout)]),
         headers: {
           accept: "application/json",
           ...(payload === undefined
@@ -532,7 +605,7 @@ async function send(
         response.once("error", reject);
         response.on("data", (chunk: Buffer) => {
           bytes += chunk.length;
-          if (bytes > LIMIT) {
+          if (bytes > limit) {
             response.destroy(new Error("Oversize response"));
           } else {
             chunks.push(chunk);

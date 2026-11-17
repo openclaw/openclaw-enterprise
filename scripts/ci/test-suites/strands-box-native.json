@@ -19,7 +19,7 @@
     {
       "path": "tests/conformance/strands-box-protected-gh.test.ts",
       "expectedTests": [
-        "after activation the Worker installs OCE's token in Box once; stock git and gh push and open one draft, and withdrawal refuses fresh requests while the execution runs"
+        "Box asks OCE for every request: stock git and gh push and open one draft with one decision per request, and after withdrawal OCE refuses the next request before any provider connection"
       ]
     },
     {

@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, randomUUID, verify } from "node:crypto";
 import type { KeyObject } from "node:crypto";
-import { constants, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { constants, lstatSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve, sep } from "node:path";
@@ -14,7 +14,6 @@ import {
   parseRoute,
   EXECUTION_BEARER,
   GITHUB_HOSTS,
-  GITHUB_TOKEN_VALUE,
   routeView,
   sameRouteView,
 } from "./egress.ts";
@@ -32,6 +31,8 @@ import {
 } from "./launch.ts";
 import type { Execution, HostConfig, StartInput } from "./launch.ts";
 import { listen, PORT, processIdentity } from "./transport.ts";
+import { CredentialSourceRelay, MAX_COLLECT_WAIT_MS } from "./credential-source.ts";
+import type { SourceAsk } from "./credential-source.ts";
 
 import {
   approve,
@@ -73,6 +74,10 @@ const CONTROL = "/v1/execution";
 const ADMISSION = "/v1/admission";
 const RELEASE = "/v1/release";
 const MAX_REQUEST = 512_000;
+const ASKS = "/v1/credential-asks";
+const ANSWERS = "/v1/credential-answers";
+/** Box's credential source socket: `<runtimeDir>/source/oce.sock`, outside every Box grant. */
+const SOURCE_DIRECTORY = "source";
 const WORKER_CONTROL = "worker-control";
 const WORKSPACE = "/home/node/workspace";
 const MOUNTS = {
@@ -99,9 +104,9 @@ interface InstalledConfig extends HostConfig {
   separateWorkspaceNode?: NodeInstallation;
   controlledInference?: EgressRoute;
   /**
-   * STAGE_A_PROTOTYPE: protected repository access on this host. Box injects the OCE-minted
-   * GitHub installation token for `github.com` and `api.github.com` itself. `caSha256` opts the
-   * GitHub routes in to `upstreamCa`, which Box applies to every upstream.
+   * Protected repository access on this host. Box injects GitHub auth for `github.com` and
+   * `api.github.com` itself and asks OCE for each request through this host's credential source.
+   * `caSha256` opts the GitHub routes in to `upstreamCa`, which Box applies to every upstream.
    */
   protectedRepository?: ProtectedRepository;
   upstreamCa?: UpstreamCa;
@@ -117,10 +122,11 @@ export interface RecordView {
   workspaceVolume?: NodeInstallation["workspaceVolume"];
   generationSha256?: string;
   /**
-   * Host-observed recipient of this execution's repository material: the digest of the
-   * per-execution bearer the Driver minted (never the bearer), `bootId:pid:startTicks` of this
-   * host process, which receives the material, and, once `box run` holds it, the exact material
-   * version and that live `box run` process. The Driver binds these into the recipient it reports.
+   * Host-observed recipient of this execution's repository access: the digest of the
+   * per-execution bearer the Driver minted (never the bearer), which Box presents to the
+   * credential source, `bootId:pid:startTicks` of this host process, which serves the source, and,
+   * while the live `box run` was started with the source routes, that process. The Driver binds
+   * these into the recipient it reports.
    */
   repositoryRecipient?: RepositoryRecipient;
   /**
@@ -146,8 +152,7 @@ interface LaunchPlan extends StartInput {
 export const ENROLLMENT_REVISION_ENV = "OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID";
 export const RELEASE_PUBLIC_KEY_ENV = "OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY";
 export const RELEASE_PROFILE = "oce-compute-execution-release-v1";
-export const PROTECTED_WIRING_VERSION = 2;
-export const MATERIAL = "/v1/repository-material";
+export const PROTECTED_WIRING_VERSION = 3;
 
 export interface ProtectedRepository {
   readonly provider: "github";
@@ -157,21 +162,8 @@ export interface ProtectedRepository {
 export interface RepositoryRecipient {
   bearerSha256: string;
   processInstanceId: string;
-  installed?: {
-    preparationAttemptId: string;
-    materialVersion: string;
-    boxProcessInstanceId: string;
-  };
-}
-
-/** STAGE_A_PROTOTYPE: the material the Worker delivers once per execution. */
-export interface DeliveredMaterial {
-  readonly preparationAttemptId: string;
-  readonly materialVersion: string;
-  readonly expiresAt: string;
-  readonly installationId: string;
-  readonly repositories: readonly { readonly repositoryId: string; readonly repository: string }[];
-  readonly value: string;
+  /** The live `box run` that asks this host's credential source; absent once it is gone. */
+  source?: { boxProcessInstanceId: string };
 }
 
 export interface ProtectedStartup {
@@ -180,8 +172,8 @@ export interface ProtectedStartup {
 }
 
 /**
- * The exact nonsecret wiring the paired Driver and this host agree on for protected access.
- * STAGE_A_PROTOTYPE: Box injects the installation token for the two public GitHub hosts itself.
+ * The exact nonsecret wiring the paired Driver and this host agree on for protected access:
+ * Box injects for the two public GitHub hosts and asks OCE for each request's credential.
  */
 export function wiringConfiguration(provider: "github") {
   return {
@@ -189,7 +181,7 @@ export function wiringConfiguration(provider: "github") {
     protectedRepository: {
       provider,
       hosts: [...GITHUB_HOSTS] as readonly string[],
-      delivery: "box-env-v1" as const,
+      delivery: "box-source-v1" as const,
     },
   };
 }
@@ -231,57 +223,6 @@ export function protectedWiring(
     throw new Error("unadmitted_protected_wiring");
   }
   return plan;
-}
-
-const ID = /^[\x21-\x7e]{1,256}$/;
-
-/** STAGE_A_PROTOTYPE: refuse anything but one complete, unexpired installation token. */
-export function deliveredMaterial(value: unknown): DeliveredMaterial {
-  const material = object(value);
-  fields(material, [
-    "preparationAttemptId",
-    "materialVersion",
-    "expiresAt",
-    "installationId",
-    "repositories",
-    "value",
-  ]);
-  const repositories = material.repositories;
-  if (
-    typeof material.preparationAttemptId !== "string" ||
-    !ID.test(material.preparationAttemptId) ||
-    typeof material.materialVersion !== "string" ||
-    !ID.test(material.materialVersion) ||
-    typeof material.expiresAt !== "string" ||
-    !(Date.parse(material.expiresAt) > Date.now()) ||
-    typeof material.installationId !== "string" ||
-    !ID.test(material.installationId) ||
-    typeof material.value !== "string" ||
-    !GITHUB_TOKEN_VALUE.test(material.value) ||
-    !Array.isArray(repositories) ||
-    repositories.length < 1 ||
-    repositories.length > 100
-  )
-    throw new Error("invalid_github_material");
-  return {
-    preparationAttemptId: material.preparationAttemptId,
-    materialVersion: material.materialVersion,
-    expiresAt: material.expiresAt,
-    installationId: material.installationId,
-    repositories: repositories.map((entry) => {
-      const repository = object(entry);
-      fields(repository, ["repositoryId", "repository"]);
-      if (
-        typeof repository.repositoryId !== "string" ||
-        !ID.test(repository.repositoryId) ||
-        typeof repository.repository !== "string" ||
-        !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(repository.repository)
-      )
-        throw new Error("invalid_github_material");
-      return { repositoryId: repository.repositoryId, repository: repository.repository };
-    }),
-    value: material.value,
-  };
 }
 
 function releaseKey(value: string): KeyObject {
@@ -347,7 +288,7 @@ export function verifyRelease(
     installation.instanceId !== expected.executionId ||
     installation.peerKeyId !== undefined ||
     recipient.processInstanceId !== expected.processInstanceId ||
-    recipient.networkInstanceId !== `box-phantom-sha256:${expected.bearerSha256}` ||
+    recipient.networkInstanceId !== `box-source-sha256:${expected.bearerSha256}` ||
     recipient.attachmentEpoch !== expected.executionId ||
     recipient.authorization !== "online-request" ||
     recipient.deliveryProfile !== "github_repository"
@@ -415,11 +356,7 @@ function startInstalledExecution(config: InstalledConfig, plan: LaunchPlan): Exe
 
   const abort = new AbortController();
   const startNode = () =>
-    startWorkspaceNode(
-      input,
-      join(config.runtimeDir, plan.github === undefined ? "file-node" : "file-node-installed"),
-      abort.signal,
-    );
+    startWorkspaceNode(input, join(config.runtimeDir, "file-node"), abort.signal);
   const node = image === undefined ? startNode() : box.spawned.then(startNode);
   const nodeDone = node.then(
     (process) => process.done,
@@ -459,16 +396,9 @@ interface LiveRecord {
   execution?: Execution | undefined;
   retiring: boolean;
   protectedStartup?: ProtectedStartup;
-  /** The admitted launch, kept so the protected install can restart `box run` with material. */
-  plan?: LaunchPlan;
   workspaceNode?: Pending["workspaceNode"];
-  /**
-   * STAGE_A_PROTOTYPE: the one material version this execution accepted. Set before the restart
-   * begins, so a lost reply is answered from it and never installs a second time.
-   */
-  installing?: { readonly preparationAttemptId: string; readonly materialVersion: string };
-  /** The replaced run's stop while the install restart is under way; shutdown waits for it. */
-  restarting?: Promise<unknown> | undefined;
+  /** Box's credential source for this execution; closed when the execution retires. */
+  source?: CredentialSourceRelay;
 }
 
 /** Canonical JSON for the operator profile and the exact Worker request. */
@@ -1221,6 +1151,7 @@ function reply(
   body?:
     | RecordView
     | { error: string }
+    | { asks: readonly SourceAsk[] }
     | {
         state: "held" | "approved";
         owner: Owner;
@@ -1317,20 +1248,20 @@ export function observedView(record: {
 }): RecordView {
   const recipient = record.view.repositoryRecipient;
   if (recipient === undefined) return record.view;
-  // The installed version is reported only while the `box run` that holds it is the same live
-  // process; a replaced or exited Box reports none.
+  // The source is reported only while the `box run` that asks it is the same live process; an
+  // exited or failed Box reports none.
   const box = record.view.state === "failed" ? undefined : record.execution?.boxProcess();
-  const installed = recipient.installed;
+  const source = recipient.source;
   const live =
-    installed !== undefined &&
+    source !== undefined &&
     box !== undefined &&
-    installed.boxProcessInstanceId === `${box.bootId}:${box.pid}:${box.startTicks}`;
+    source.boxProcessInstanceId === `${box.bootId}:${box.pid}:${box.startTicks}`;
   return {
     ...record.view,
     repositoryRecipient: {
       bearerSha256: recipient.bearerSha256,
       processInstanceId: recipient.processInstanceId,
-      ...(live ? { installed: { ...installed } } : {}),
+      ...(live ? { source: { ...source } } : {}),
     },
   };
 }
@@ -1367,7 +1298,8 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       shuttingDown = true;
       server.close();
       server.closeAllConnections();
-      void Promise.resolve(current?.execution?.stop() ?? current?.restarting).then(
+      current?.source?.close();
+      void Promise.resolve(current?.execution?.stop()).then(
         () => resolve(),
         () => {
           process.exitCode = 1;
@@ -1432,8 +1364,9 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const observing = request.url === ADMISSION && request.method === "POST";
     const releasing = request.url === RELEASE && request.method === "POST";
-    const delivering = request.url === MATERIAL && request.method === "POST";
-    if (request.url !== CONTROL && !observing && !releasing && !delivering) {
+    const collecting = request.url === ASKS && request.method === "POST";
+    const answering = request.url === ANSWERS && request.method === "POST";
+    if (request.url !== CONTROL && !observing && !releasing && !collecting && !answering) {
       reply(response, 404, { error: "unknown_path" });
       return;
     }
@@ -1449,7 +1382,8 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
     if (
       !observing &&
       !releasing &&
-      !delivering &&
+      !collecting &&
+      !answering &&
       request.method !== "PUT" &&
       request.method !== "DELETE"
     ) {
@@ -1509,89 +1443,40 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       reply(response, 200, observedView(held));
       return;
     }
-    if (delivering) {
-      // STAGE_A_PROTOTYPE: the Worker delivers the installation token OCE's Token Service minted
-      // for this execution's committed recipient (this host control process). OCE prepares it
-      // only after the revision activates, and stock Box reads an env:// secret once at start,
-      // so the host restarts the released `box run` once with Box's two GitHub routes. One
-      // version per execution: Box cannot take a renewed token, so another version is refused.
-      fields(data, ["owner", "requirementsDigest", "executionId", "material"]);
+    if (collecting || answering) {
+      // The Worker collects this execution's credential asks and answers them. Only the same
+      // owner, execution and requirements digest reach the queue of the live source.
+      fields(
+        data,
+        collecting
+          ? ["owner", "requirementsDigest", "executionId", "waitMs"]
+          : ["owner", "requirementsDigest", "executionId", "askId", "answer"],
+      );
       const held = current;
-      const recipient = held?.view.repositoryRecipient;
-      const material = deliveredMaterial(data.material);
-      const version = {
-        preparationAttemptId: material.preparationAttemptId,
-        materialVersion: material.materialVersion,
-      };
+      const source = held?.source;
       if (
         held === undefined ||
-        recipient === undefined ||
+        source === undefined ||
         held.retiring ||
-        held.execution === undefined ||
-        held.plan === undefined ||
         !sameOwner(held.view.owner, supplied) ||
         held.view.executionId !== data.executionId ||
-        held.view.requirementsDigest !== requirementsDigest ||
-        held.view.protectedStartup?.startupSha256 === undefined ||
-        held.view.state === "failed"
+        held.view.requirementsDigest !== requirementsDigest
       ) {
-        reply(response, 409, { error: "material_outside_released_execution" });
+        reply(response, 409, { error: "source_outside_execution" });
         return;
       }
-      if (held.installing !== undefined) {
-        const installed = observedView(held).repositoryRecipient?.installed;
-        const same =
-          held.installing.preparationAttemptId === version.preparationAttemptId &&
-          held.installing.materialVersion === version.materialVersion;
-        if (same && installed !== undefined) reply(response, 200, observedView(held));
-        else
-          reply(response, 409, {
-            error: same ? "material_install_unsettled" : "material_refresh_unsupported",
-          });
+      if (collecting) {
+        const waitMs = data.waitMs;
+        if (typeof waitMs !== "number" || !Number.isSafeInteger(waitMs) || waitMs < 0)
+          throw new Error("invalid_wait");
+        const stop = new AbortController();
+        response.once("close", () => stop.abort());
+        const asks = await source.collect(Math.min(waitMs, MAX_COLLECT_WAIT_MS), stop.signal);
+        if (!response.destroyed) reply(response, 200, { asks });
         return;
       }
-      held.installing = version;
-      const previous = held.execution;
-      // Detach the released run first, so its exit is not reported as this execution failing.
-      held.execution = undefined;
-      held.view.state = "starting";
-      held.restarting = previous.stop().catch(() => undefined);
-      await held.restarting;
-      held.restarting = undefined;
-      if (shuttingDown || held.retiring || current !== held) {
-        reply(response, 503, { error: "host_stopping" });
-        return;
-      }
-      let execution: Execution;
-      try {
-        execution = startInstalledExecution(config, {
-          ...held.plan,
-          github: {
-            token: material.value,
-            ...(config.protectedRepository?.caSha256 === undefined
-              ? {}
-              : { caSha256: config.protectedRepository.caSha256 }),
-          },
-        });
-        held.execution = execution;
-      } catch {
-        held.view.state = "failed";
-        reply(response, 503, { error: "start_outcome_unknown" });
-        return;
-      }
-      track(held, execution, held.workspaceNode);
-      await execution.spawned.catch(() => undefined);
-      const box = execution.boxProcess();
-      if (box === undefined || (held.view.state as RecordView["state"]) === "failed") {
-        held.view.state = "failed";
-        reply(response, 503, { error: "start_outcome_unknown" });
-        return;
-      }
-      recipient.installed = {
-        ...version,
-        boxProcessInstanceId: `${box.bootId}:${box.pid}:${box.startTicks}`,
-      };
-      reply(response, 200, observedView(held));
+      const askId = string(data.askId, 64);
+      reply(response, source.answer(askId, data.answer) ? 204 : 409);
       return;
     }
     if (observing) {
@@ -1788,29 +1673,71 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
           reservedAt: new Date().toISOString(),
           generationSha256: generation,
         };
-      const plan: LaunchPlan =
-        generation === undefined ? input : { ...input, reservationGeneration: generation };
       const running: LiveRecord = {
         view,
         retiring: false,
-        plan,
         workspaceNode,
         ...(input.protectedStartup === undefined
           ? {}
           : { protectedStartup: input.protectedStartup }),
       };
       current = running;
+      let plan: LaunchPlan = input;
+      if (generation !== undefined && bearerSha256 !== undefined && typeof bearer === "string") {
+        // Box's credential source: listening before `box run` loads its config, and answering
+        // only once Compute's release was verified and while the execution is not retiring.
+        const directory = join(config.runtimeDir, SOURCE_DIRECTORY);
+        const socket = join(directory, "oce.sock");
+        const source = new CredentialSourceRelay(
+          bearerSha256,
+          () =>
+            current === running &&
+            !running.retiring &&
+            running.view.state !== "failed" &&
+            running.view.protectedStartup?.startupSha256 !== undefined,
+        );
+        try {
+          mkdirSync(directory, { mode: 0o700 });
+          await source.listen(socket);
+        } catch {
+          source.close();
+          view.state = "failed";
+          reply(response, 503, { error: "start_outcome_unknown" });
+          return;
+        }
+        running.source = source;
+        plan = {
+          ...input,
+          reservationGeneration: generation,
+          credentialSource: {
+            socket,
+            bearer,
+            ...(config.protectedRepository?.caSha256 === undefined
+              ? {}
+              : { caSha256: config.protectedRepository.caSha256 }),
+          },
+        };
+      }
       let execution: Execution;
       try {
         execution = startInstalledExecution(config, plan);
         running.execution = execution;
       } catch {
+        running.source?.close();
         view.state = "failed";
         reply(response, 503, { error: "start_outcome_unknown" });
         return;
       }
       track(running, execution, workspaceNode);
-      reply(response, 202, view);
+      if (running.source !== undefined && view.repositoryRecipient !== undefined) {
+        await execution.spawned.catch(() => undefined);
+        const box = execution.boxProcess();
+        if (box !== undefined)
+          view.repositoryRecipient.source = {
+            boxProcessInstanceId: `${box.bootId}:${box.pid}:${box.startTicks}`,
+          };
+      }
+      reply(response, 202, observedView(running));
       return;
     }
     fields(data, ["owner", "requirementsDigest", "executionId"]);
@@ -1827,20 +1754,12 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       reply(response, 409, { error: "execution_mismatch" });
       return;
     }
-    if (retiring.execution === undefined && retiring.restarting !== undefined) {
-      // Retired during the install restart: the replaced run is stopping and, seeing
-      // `retiring`, the delivery starts no other.
-      retiring.retiring = true;
-      await retiring.restarting;
-      if (current === retiring) current = undefined;
-      reply(response, 204);
-      return;
-    }
     if (retiring.execution === undefined) {
       reply(response, 503, { error: "start_outcome_unknown" });
       return;
     }
     retiring.retiring = true;
+    retiring.source?.close();
     await retiring.execution.stop();
     if (current === retiring) current = undefined;
     reply(response, 204);

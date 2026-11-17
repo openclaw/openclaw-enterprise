@@ -18,7 +18,7 @@ import {
   publicCa,
   relay,
   sha,
-  stageAEndToEnd,
+  stageBEndToEnd,
 } from "../helpers/strands-box-protected-fixture.ts";
 
 test(
@@ -110,7 +110,7 @@ test(
     );
 
     // The held reservation is the installation: its recipient is the host control process and
-    // the execution bearer, fixed before Box starts and unchanged when Box restarts to install.
+    // the execution bearer, fixed before Box starts; Box presents the bearer to the source.
     const endpoint = (
       f.sandbox as unknown as {
         protectedWorkspaceEndpoint(c: object): Promise<Record<string, unknown> | undefined>;
@@ -134,7 +134,7 @@ test(
       providerId: `${id}-box-egress`,
       attachmentEpoch: "box-execution",
       processInstanceId: f.host.processInstanceId,
-      networkInstanceId: `box-phantom-sha256:${f.host.bearerSha256}`,
+      networkInstanceId: `box-source-sha256:${f.host.bearerSha256}`,
       authorization: "online-request",
       deliveryProfile: "github_repository",
     });
@@ -203,12 +203,12 @@ test(
   },
 );
 
-// The Git steps of the Stage A end-to-end case run here, everywhere; the stock gh
+// The Git steps of the Stage B end-to-end case run here, everywhere; the stock gh
 // steps need a host input CI does not stage and run in strands-box-protected-gh.test.ts.
 test(
-  "after activation the Worker installs OCE's token in Box once; stock git pushes, the wrong repository is refused, and withdrawal refuses fresh requests while the execution runs",
+  "Box asks OCE for every request: stock git pushes with one decision per request, renewal needs no restart, OCE refuses the wrong repository and, after withdrawal, the next request before any provider connection",
   { timeout: 90_000 },
   async (t) => {
-    await stageAEndToEnd(t, undefined);
+    await stageBEndToEnd(t, undefined);
   },
 );
