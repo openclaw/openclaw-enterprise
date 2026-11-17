@@ -582,9 +582,9 @@ function resolveModelPolicy(
     return runtimes.length === 0 ? noRunnableRuntime("it") : `set it to ${runtimes.join(" or ")}`;
   };
   const defaultSelection = configuredModels(defaults?.model, defaultModelMessage);
-  const defaultCandidates = defaultSelection.length
-    ? [...new Set([...defaultSelection, ...selectableCatalogModels(defaults)])]
-    : defaultSelection;
+  const defaultCandidates = [
+    ...new Set([...defaultSelection, ...selectableCatalogModels(defaults)]),
+  ];
   const defaultModels = asRecord(defaults?.models);
   // The runtime a provider catalog row or the provider sets for `model`, read without the
   // catalog's refusals, which deployment names later.
@@ -630,7 +630,7 @@ function resolveModelPolicy(
     models: readonly string[];
     entry?: Readonly<Record<string, unknown>>;
     key?: string;
-  }> = [{ models: defaultCandidates }];
+  }> = [];
   // The first candidate: every selection's primary must be this one.
   let primary = defaultSelection[0];
 
@@ -705,6 +705,10 @@ function resolveModelPolicy(
     }
   }
 
+  if (primary !== undefined) {
+    // Default session choices also apply when the roster supplies the shared primary.
+    selections.unshift({ models: defaultCandidates });
+  }
   requireSelectedCatalogRows(
     providerConfigurations,
     selections.map(({ models }) => models),
@@ -888,8 +892,8 @@ function resolveModelPolicy(
         model,
         entryPolicy,
         key,
-        policyRuntime(entryModels?.[models[0]!]) !== undefined,
-        models[0]!,
+        policyRuntime(entryModels?.[primary]) !== undefined,
+        primary,
       );
       if (harness !== undefined) {
         resolved.add(harness);

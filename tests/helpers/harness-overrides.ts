@@ -350,6 +350,25 @@ export async function exerciseNamedProvider(
   assert.ok(route && route.binding.grant.kind === "inference");
   assert.deepEqual(route.binding.grant.models, ["fixture-model", "another-model"]);
   assert.deepEqual(next.harness, revision.harness);
+  // Promote the alternate and deselect the old primary. A roster entry can retain
+  // runtime metadata for the old model without granting it to this revision.
+  const oldPrimary = defaults.model.primary;
+  const oldPolicy = defaults.models[oldPrimary];
+  defaults.model = "codex/another-model";
+  defaults.modelPolicy.allow = [defaults.model];
+  delete defaults.models[oldPrimary];
+  config.agents.entries = {
+    main: {
+      models: { [oldPrimary]: oldPolicy, [defaults.model]: defaults.models[defaults.model] },
+    },
+  };
+  await request("PATCH", configPath, { values: config }, 200);
+  const promoted = await request("POST", second + "/deploy", {}, 202);
+  assert.deepEqual(promoted.configuration.models.providers.codex.models, [
+    { id: "another-model", name: "Larger", contextWindow: 16384 },
+  ]);
+  assert.deepEqual(promoted.configuration.agents.entries.main.models[oldPrimary], oldPolicy);
+
   await request(
     "POST",
     first + "/deploy",

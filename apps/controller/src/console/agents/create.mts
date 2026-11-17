@@ -4106,7 +4106,7 @@ function renderAgentForm(
     // Bound Codex Presets may use either supported provider prefix; OpenClaw keeps its provider.
     const primaryPrefixes = hasBoundModelCredential
       ? fallbackPrefixes
-      : [harness.value === "codex" ? "codex/" : `${providerFamily()}/`];
+      : [`${configuredProviderKey(values)}/`];
     if (
       (!binding || hasBoundModelCredential) &&
       !primaryPrefixes.some((prefix) => primaryModel === `${prefix}${model.value.trim()}`)

@@ -184,7 +184,7 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
     "openai/research-model",
   );
   assert.equal(await useLarge.isChecked(), true);
-  await editorJson.fill(standard);
+  await defaultLarge.check();
   const savedAgent = responseTo(
     page,
     "POST",
@@ -200,11 +200,11 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
     "GET",
     "/namespaces/" + namespace.id + "/configurations/" + agent.configurationId,
   );
-  assert.deepEqual(config.data.values.agents.defaults.modelPolicy.allow, [
-    "codex/research-large",
-    "codex/research-model",
-  ]);
-  assert.equal(config.data.values.agents.defaults.model, "codex/research-large");
+  assert.deepEqual(
+    new Set(config.data.values.agents.defaults.modelPolicy.allow),
+    new Set(["openai/research-model", "openai/research-large"]),
+  );
+  assert.equal(config.data.values.agents.defaults.model, "openai/research-large");
 });
 
 async function createFromConsole(page: Page, name: string, value: string) {

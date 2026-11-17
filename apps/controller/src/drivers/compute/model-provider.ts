@@ -1,4 +1,3 @@
-import { modelSelections } from "./kubernetes/configuration-rules.ts";
 import { nativeOpenAiModelSelections } from "../native-openai-catalog.ts";
 import type {
   ModelProvider,
@@ -12,7 +11,7 @@ import {
   StoredCredentialSourceConfigError,
   ResourceStateConflictError,
 } from "@openclaw-enterprise/occ";
-import { asRecord, splitModelRef } from "@openclaw-enterprise/utils";
+import { asRecord } from "@openclaw-enterprise/utils";
 import { normalizeOpenAiBaseUrl, openAiBaseUrlRewritesIpv4 } from "../openai-endpoint.ts";
 
 export const MODEL_PROVIDER_REFERENCE_REQUIREMENT =
@@ -112,7 +111,8 @@ export function resolveKubernetesModelProvider(
   const settings = normalizeHarnessSettings({
     modelProvider: { baseUrl: provider.baseUrl, protocol: provider.protocol },
   });
-  const primary = nativeOpenAiModelSelections(configuration)?.[0];
+  const selected = nativeOpenAiModelSelections(configuration) ?? [];
+  const [primary] = selected;
   if (
     !primary ||
     (primary.provider !== "openai" && !(harness.id === "codex" && primary.provider === "codex"))
@@ -121,23 +121,18 @@ export function resolveKubernetesModelProvider(
       "Select a provider-qualified model for the named Model Provider.",
     );
   }
-  const selected = new Set<string>();
   const entries = new Map(provider.models.map((row) => [row.id, row]));
-  for (const { reference } of modelSelections(configuration)) {
-    const ref = typeof reference === "string" ? splitModelRef(reference) : undefined;
-    if (!ref?.id || ref.provider !== primary.provider || !entries.has(ref.id)) {
+  const rows = selected.map(({ provider: providerId, id }) => {
+    const row = id === undefined ? undefined : entries.get(id);
+    if (!row || providerId !== primary.provider) {
       throw new ConfigurationHarnessError(
         "Each selected model must be an explicit model offered by the named Model Provider.",
       );
     }
-    selected.add(ref.id);
-  }
+    return { ...row, name: row.name ?? row.id };
+  });
   const models = asRecord(configuration.models);
   const providers = asRecord(models?.providers);
-  const rows = [...selected].map((id) => {
-    const row = entries.get(id)!;
-    return { ...row, name: row.name ?? id };
-  });
   const values = {
     ...configuration,
     models: {

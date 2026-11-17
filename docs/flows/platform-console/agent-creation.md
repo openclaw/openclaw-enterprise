@@ -19,7 +19,7 @@ For a saved provider, the form loads the Installation catalog through the Namesp
 Create Agent writes the default model to `agents.defaults.model`. Saved providers show their model catalog with a checkbox and default radio per row in `apps/controller/src/console/agents/named-provider-choices.mts`. Built-in provider checkboxes in
 `apps/controller/src/console/agents/additional-models.mts` update `agents.defaults.modelPolicy.allow`,
 the per-model Harness settings, and the selected provider's catalog. OCC admits those explicit catalog
-choices in `packages/occ/src/configured-harness.ts`. Dedicated OpenClaw uses the same concrete
+choices in `packages/occ/src/configured-harness.ts`, including when roster entries supply the shared primary. For a saved provider, Compute projects catalog rows for the primary, fallbacks, and models explicitly allowed for session switching. A roster entry can retain runtime settings for a deselected model. Dedicated OpenClaw uses the same concrete
 choices for the worker catalog and the credential destination check in
 `apps/controller/src/drivers/native-openai-catalog.ts`. Changing the session model leaves the
 revision's primary and automatic fallbacks intact. If a Credential Proxy protects inference, OCC also pins these explicit IDs in its grant. The sender checks the request body's model before it reads the credential.
