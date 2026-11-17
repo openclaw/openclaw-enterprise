@@ -217,11 +217,20 @@ export function gatewayChatCall(
     "--json",
   ];
 }
+// The stock CLI loads most of OpenClaw per call. On an emulated host one call can take
+// a minute; BOX_REPRO_CLI_TIMEOUT_MS (10000 to 600000) bounds it there.
+export function gatewayCliTimeoutMs(value = process.env.BOX_REPRO_CLI_TIMEOUT_MS): number {
+  if (value === undefined) return 10000;
+  const ms = Number(value);
+  if (!Number.isSafeInteger(ms) || ms < 10000 || ms > 600000) throw Error("CLI_TIMEOUT_REFUSED");
+  return ms;
+}
 function callGateway(cli: string, args: string[]) {
   const env = { ...process.env };
   delete env.APP_SERVER_TOKEN;
   delete env.APP_SERVER_URL;
-  return spawnSync(cli, args, { encoding: "utf8", maxBuffer: 128 * 1024, timeout: 10000, env });
+  const timeout = gatewayCliTimeoutMs();
+  return spawnSync(cli, args, { encoding: "utf8", maxBuffer: 128 * 1024, timeout, env });
 }
 function runDirectory(root: string | undefined): string {
   if (!root?.startsWith("/") || realpathSync(root) !== root) throw Error("REPRO_ROOT_REFUSED");

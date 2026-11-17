@@ -107,7 +107,7 @@ test("actual loopback fixture submits one approved tool and refuses replay", asy
       cmd: `${path} --refused-alternate; ${path}`,
       workdir: "/home/node/workspace",
       login: false,
-      yield_time_ms: 10000,
+      yield_time_ms: 30000,
       max_output_tokens: 1000,
     });
     const id = tool.call_id;

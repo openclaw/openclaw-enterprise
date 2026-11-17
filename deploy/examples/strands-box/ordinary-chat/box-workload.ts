@@ -240,7 +240,10 @@ export function controlledModelRequests(
           cmd: `${verifier} ${alternate}; ${verifier}`,
           workdir: "/home/node/workspace",
           login: false,
-          yield_time_ms: 10000,
+          // Native Codex returns as soon as the command exits. Under software CPU
+          // emulation shell startup plus two brokered spawns took about 10.5 s, so
+          // a 10 s yield returned a running session instead of the evidence.
+          yield_time_ms: 30000,
           max_output_tokens: 1000,
         }),
       });
