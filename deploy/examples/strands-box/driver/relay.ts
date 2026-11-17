@@ -604,9 +604,20 @@ export class Relay {
     return observed!;
   }
 
-  async cleanup(context: SandboxNamespaceContext, owner: Partial<Owner>): Promise<void> {
+  /**
+   * Removes the Namespace's relay. A revision cleanup (`retire`) leaves a relay object that
+   * carries another revision of this Namespace in place: it is the successor's, and this
+   * revision has none. Once one object is the successor's, a later one of this revision is
+   * a relay mid-replacement and is refused rather than deleted from under the successor.
+   */
+  async cleanup(
+    context: SandboxNamespaceContext,
+    owner: Partial<Owner>,
+    retire = false,
+  ): Promise<void> {
+    let successor = false;
     for (const kind of ["Deployment", "ConfigMap", "NetworkPolicy"] as const) {
-      if (kind === "ConfigMap") {
+      if (kind === "ConfigMap" && !successor) {
         await this.confirmNoPods(context);
       }
       const header = this.header(kind, context.namespace.name);
@@ -624,11 +635,23 @@ export class Relay {
         metadata.namespace !== header.metadata.namespace ||
         labels?.[INSTANCE] !== this.options.installation ||
         labels[APP] !== APP_VALUE ||
-        labels[NAMESPACE] !== context.namespace.id ||
-        (owner.agentId !== undefined && labels[AGENT] !== owner.agentId) ||
-        (owner.revisionId !== undefined && labels[REVISION] !== owner.revisionId)
+        labels[NAMESPACE] !== context.namespace.id
       ) {
         throw new DependencyUnavailableError("Refusing to delete a foreign Strands Box relay.");
+      }
+      const other =
+        (owner.agentId !== undefined && labels[AGENT] !== owner.agentId) ||
+        (owner.revisionId !== undefined && labels[REVISION] !== owner.revisionId);
+      if (other && retire) {
+        successor = true;
+        continue;
+      }
+      if (other || successor) {
+        throw new DependencyUnavailableError(
+          successor
+            ? "The Strands Box relay is being replaced by another revision."
+            : "Refusing to delete a foreign Strands Box relay.",
+        );
       }
       if (typeof metadata.uid !== "string" || typeof metadata.resourceVersion !== "string") {
         throw new DependencyUnavailableError(

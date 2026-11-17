@@ -922,6 +922,40 @@ test(
   },
 );
 
+test(
+  "retiring an earlier revision leaves the successor's Box and relay running",
+  { timeout: 30_000 },
+  async (t) => {
+    const x = await fixture(t);
+    assert.ok(x.driver.provisionHarness);
+    await x.driver.provisionHarness(x.context);
+    const requests = x.requests.length;
+    const actions = x.kube.actions.length;
+    // The Worker activates the successor first, then retires every earlier revision.
+    const earlier = { ...x.context, revision: { ...x.context.revision, id: "rev_earlier" } };
+    await x.driver.cleanup(earlier);
+    assert.deepEqual(
+      x.requests.slice(requests).map(({ method }) => method),
+      ["GET"],
+    );
+    assert.deepEqual(x.kube.actions.slice(actions), []);
+    // Another Namespace's execution is still refused, and the successor is removed by its own cleanup.
+    await assert.rejects(
+      x.driver.cleanup({
+        ...earlier,
+        namespace: { ...x.context.namespace, id: "ns_other" },
+        revision: { ...earlier.revision, namespaceId: "ns_other" },
+      }),
+      /foreign Strands Box execution/,
+    );
+    await x.driver.cleanup(x.context);
+    assert.deepEqual(
+      x.kube.actions.slice(-3).map((action) => action.split("/")[0]),
+      ["delete:Deployment", "delete:ConfigMap", "delete:NetworkPolicy"],
+    );
+  },
+);
+
 async function readinessFixture(t: TestContext) {
   return strandsBoxReadinessProbe(await temporaryDirectory(t, "strands-readiness-"));
 }

@@ -521,19 +521,21 @@ export class StrandsBoxDriver implements SandboxDriver {
     const owner = context.revision
       ? this.owner({ namespace: context.namespace, revision: context.revision })
       : undefined;
-    const execution = await this.readExecution(context.signal);
+    const held = await this.readExecution(context.signal);
     if (
-      execution &&
-      (owner
-        ? !sameOwner(execution.owner, owner)
-        : execution.owner.namespaceId !== context.namespace.id ||
-          execution.owner.namespaceName !== context.namespace.name ||
-          execution.owner.driverId !== this.id ||
-          execution.owner.implementation !== this.implementation)
+      held &&
+      (held.owner.namespaceId !== context.namespace.id ||
+        held.owner.namespaceName !== context.namespace.name ||
+        held.owner.driverId !== this.id ||
+        held.owner.implementation !== this.implementation)
     ) {
       throw new DependencyUnavailableError("Refusing to remove a foreign Strands Box execution.");
     }
-    await this.relay.cleanup(context, owner ?? execution?.owner ?? {});
+    // The host runs one execution. While it holds another revision of this Namespace (the
+    // successor the Worker activated before retiring this one), this revision has nothing
+    // on the host to remove, and the successor's execution and relay stay untouched.
+    const execution = held && owner && !sameOwner(held.owner, owner) ? undefined : held;
+    await this.relay.cleanup(context, owner ?? execution?.owner ?? {}, owner !== undefined);
     if (!execution) return;
     const observed = await this.readExecution(context.signal);
     if (!observed) return;
