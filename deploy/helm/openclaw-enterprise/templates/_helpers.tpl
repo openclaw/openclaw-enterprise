@@ -410,6 +410,23 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- $sandboxControlClaim := .Values.worker.sandboxControlClaimName -}}
+{{- /* --reuse-values may omit a setting absent from the prior chart defaults. */ -}}
+{{- if hasKey .Values.worker "sandboxControlClaimName" -}}
+{{- include "openclaw.requireString" (dict "label" "worker.sandboxControlClaimName" "value" $sandboxControlClaim) -}}
+{{- end -}}
+{{- if $sandboxControlClaim -}}
+{{- include "openclaw.validateResourceName" (dict "label" "worker.sandboxControlClaimName" "value" $sandboxControlClaim) -}}
+{{- if not (and (kindIs "map" .Values.controlPlane.nodeSelector) (get .Values.controlPlane.nodeSelector "kubernetes.io/hostname")) -}}
+{{- fail "worker.sandboxControlClaimName requires controlPlane.nodeSelector kubernetes.io/hostname for the Sandbox host node" -}}
+{{- end -}}
+{{- if .Values.executionCluster.enabled -}}
+{{- fail "worker.sandboxControlClaimName requires same-cluster execution" -}}
+{{- end -}}
+{{- if eq $sandboxControlClaim .Values.bootstrap.password.claimName -}}
+{{- fail "worker.sandboxControlClaimName must not reuse the bootstrap password claim" -}}
+{{- end -}}
+{{- end -}}
 {{- if .Values.controlPlane.installationChecksum -}}{{- include "openclaw.requireString" (dict "label" "controlPlane.installationChecksum" "value" .Values.controlPlane.installationChecksum) -}}{{- end -}}
 {{- if and .Values.controlPlane.installationChecksum (not (regexMatch "^[a-f0-9]{64}$" .Values.controlPlane.installationChecksum)) -}}{{- fail "controlPlane.installationChecksum must be an empty string or a lowercase SHA-256 digest" -}}{{- end -}}
 {{- range $label, $key := dict "database.appUrlKey" .Values.database.appUrlKey "database.migrationUrlKey" .Values.database.migrationUrlKey -}}
@@ -479,6 +496,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- /* Linux kubelet makes relative mounts absolute; the runtime resolves dot segments, trailing slashes and image symlinks. Compare destinations without changing the emitted operator path. */ -}}
 {{- $caDestination := include "openclaw.runtimeMountDestination" .Values.database.caMountPath -}}
+{{- if and $sandboxControlClaim (or (eq $caDestination "/run/openclaw-sandbox-control") (hasPrefix "/run/openclaw-sandbox-control/" $caDestination) (hasPrefix (printf "%s/" (trimSuffix "/" $caDestination)) "/run/openclaw-sandbox-control")) -}}
+{{- fail "database.caMountPath must not overlap the Worker Sandbox control directory" -}}
+{{- end -}}
 {{- range $mount := $reservedCaMounts -}}
 {{- if eq $caDestination (include "openclaw.runtimeMountDestination" $mount) -}}
 {{- fail "database.caMountPath must be distinct from other active mounts in the production database clients" -}}
