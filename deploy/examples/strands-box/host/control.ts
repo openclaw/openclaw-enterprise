@@ -1146,6 +1146,54 @@ async function readBody(request: IncomingMessage): Promise<Record<string, unknow
   }
 }
 
+// The refusal code each reply carried, for the host's one-line request log.
+const replyErrors = new WeakMap<ServerResponse, string>();
+const REASON = /^[a-z][a-z0-9_:-]{0,79}$/;
+
+/**
+ * One stderr line per control reply that differs from the previous one: method, fixed route,
+ * status and the reply's own refusal code, or the reason a request was refused. Never a body,
+ * header, bearer or identity; repeated polls collapse into a count.
+ */
+function requestLog(): {
+  replied(method: string | undefined, url: string | undefined, response: ServerResponse): void;
+  refused(error: unknown): void;
+} {
+  let last: string | undefined;
+  let repeats = 0;
+  const routes: Record<string, string> = {
+    [CONTROL]: "execution",
+    [ADMISSION]: "admission",
+    [RELEASE]: "release",
+    [ASKS]: "credential-asks",
+    [ANSWERS]: "credential-answers",
+  };
+  function line(text: string): void {
+    if (text === last) {
+      repeats += 1;
+      return;
+    }
+    if (repeats > 0)
+      process.stderr.write(`strands-box-control: (previous line ${repeats} more times)\n`);
+    last = text;
+    repeats = 0;
+    process.stderr.write(`strands-box-control: ${text}\n`);
+  }
+  return {
+    replied(method, url, response) {
+      const verb = ["GET", "PUT", "POST", "DELETE"].includes(method ?? "") ? method : "OTHER";
+      const route = (url !== undefined && Object.hasOwn(routes, url) && routes[url]) || "unknown";
+      const error = replyErrors.get(response);
+      line(`${verb} ${route} ${response.statusCode}${error === undefined ? "" : ` ${error}`}`);
+    },
+    refused(error) {
+      const reason =
+        error instanceof Error && REASON.test(error.message) ? error.message : "unclassified";
+      line(`refused reason=${reason}`);
+    },
+  };
+}
+
 function reply(
   response: ServerResponse,
   code: number,
@@ -1160,6 +1208,13 @@ function reply(
         controlledInference?: RouteView;
       },
 ): void {
+  if (
+    body !== undefined &&
+    "error" in body &&
+    typeof body.error === "string" &&
+    REASON.test(body.error)
+  )
+    replyErrors.set(response, body.error);
   response.writeHead(code, {
     "Cache-Control": "no-store",
     "Content-Type": "application/json",
@@ -1280,10 +1335,13 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
   let current: LiveRecord | undefined;
   let attempted = false;
   let shuttingDown = false;
+  const log = requestLog();
   const server = createServer(
     { requestTimeout: 5_000, headersTimeout: 5_000, maxHeaderSize: 4_096 },
     (request, response) => {
-      void handle(request, response).catch(() => {
+      response.once("finish", () => log.replied(request.method, request.url, response));
+      void handle(request, response).catch((error: unknown) => {
+        log.refused(error);
         if (!response.headersSent && !response.destroyed)
           reply(response, 422, { error: "host_request_refused" });
       });

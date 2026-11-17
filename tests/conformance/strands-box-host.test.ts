@@ -80,6 +80,8 @@ import {
 } from "../../deploy/examples/strands-box/host/egress.ts";
 import { verifyHarnessImageFile } from "../../deploy/examples/strands-box/host/installed-harness-image.ts";
 import { hostConfig, smokeInput, start } from "../../deploy/examples/strands-box/host/launch.ts";
+import { collectDiagnostics } from "../../deploy/examples/strands-box/host/diagnostics.ts";
+import { PassThrough } from "node:stream";
 import {
   bridge,
   listen,
@@ -179,9 +181,11 @@ test(
         "control.sock",
       );
       const child = spawn(process.execPath, installedControlCommand(config), {
-        stdio: ["ignore", "pipe", "inherit"],
+        stdio: ["ignore", "pipe", "pipe"],
       });
       const exited = once(child, "exit");
+      let log = "";
+      child.stderr.setEncoding("utf8").on("data", (chunk: string) => (log += chunk));
       try {
         const output = createInterface({ input: child.stdout });
         assert.deepEqual(await once(output, "line", { signal: AbortSignal.timeout(5_000) }), [
@@ -223,6 +227,24 @@ test(
           }),
           { status: 422, body: { error: "host_request_refused" } },
         );
+        // The host names each reply and refusal on stderr: route, status, code, never a body.
+        const deadline = Date.now() + 2_000;
+        while (!log.includes("POST admission 422") && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        assert.deepEqual(
+          log
+            .trim()
+            .split("\n")
+            .map((line) => line.replace(/reason=\S+$/, "reason=<code>")),
+          [
+            "strands-box-control: GET execution 404 execution_absent",
+            "strands-box-control: POST admission 409 owner_mismatch",
+            "strands-box-control: refused reason=<code>",
+            "strands-box-control: POST admission 422 host_request_refused",
+          ],
+        );
+        assert(!log.includes(config.owner.agentId) && !log.includes("agt_other"));
         assert.deepEqual(readdirSync(config.approvalDir), []);
         if (controlSocketMode === undefined) {
           assert.deepEqual(readdirSync(config.runtimeDir), ["control.sock"]);
@@ -571,6 +593,88 @@ test(
     assert(!output.includes("fixture-private"));
   },
 );
+
+test("Harness startup lines reach the host log as fixed-shape fields only", async (t) => {
+  const observed: string[] = [];
+  const writes = t.mock.method(process.stderr, "write", (value: unknown) => {
+    if (typeof value === "string") {
+      observed.push(value);
+    }
+    return true;
+  });
+  try {
+    // Inside Box: the command's stderr, as the runtime Harness prints it.
+    const command = new PassThrough();
+    const inner = collectDiagnostics(command, "command");
+    command.end(
+      [
+        JSON.stringify({
+          event: "runtime.startup_phase",
+          container: "agent",
+          phase: "codex-login",
+          outcome: "ok",
+          ms: 4,
+        }),
+        JSON.stringify({
+          event: "codex.model_probe",
+          attempt: 1,
+          elapsedMs: 30001,
+          exitCode: null,
+          signal: "SIGKILL",
+          code: "MODEL_PROBE_TIMEOUT",
+          cause: { kind: "PROCESS_EXIT", detail: "signal-SIGKILL" },
+          failureClass: "network",
+        }),
+        JSON.stringify({
+          event: "codex.model_probe",
+          attempt: 2,
+          code: "fixture-private-code",
+          cause: { kind: "x" },
+        }),
+        JSON.stringify({
+          event: "runtime.startup_phase",
+          phase: "model-probe",
+          outcome: "failed",
+          code: "fixture private",
+        }),
+        JSON.stringify({ event: "codex.model_probe", attempt: 1, code: "READY" }),
+        '{"event":"runtime.startup_phase","phase":"fixture-private-' +
+          "x".repeat(40) +
+          '","outcome":"ok"}',
+        "Harness model authentication probe failed. fixture-private-text",
+        "",
+      ].join("\n"),
+    );
+    await inner;
+    const forwarded = observed.join("");
+    assert.match(forwarded, /^strands-box-harness phase=codex-login outcome=ok$/m);
+    assert.match(
+      forwarded,
+      /^strands-box-harness phase=model-probe-attempt outcome=failed attempt=1 code=MODEL_PROBE_TIMEOUT cause=PROCESS_EXIT\/signal-SIGKILL class=network$/m,
+    );
+    assert.match(forwarded, /^strands-box-harness phase=model-probe outcome=failed$/m);
+    assert.match(
+      forwarded,
+      /^strands-box-harness phase=model-probe-attempt outcome=ok attempt=1$/m,
+    );
+    assert(!forwarded.includes("fixture-private"));
+    // On the host: Box's stderr carries the in-Box agent's lines; each one is re-checked.
+    observed.length = 0;
+    const box = new PassThrough();
+    const host = collectDiagnostics(box, "box");
+    box.end(
+      forwarded +
+        "strands-box-harness phase=model-probe outcome=failed code=fixture-private\n" +
+        "strands-box-harness phase=x outcome=ok class=fixture private\n",
+    );
+    await host;
+    const logged = observed.join("");
+    assert.equal(logged, forwarded);
+    assert(!logged.includes("fixture-private"));
+  } finally {
+    writes.mock.restore();
+  }
+});
 
 test(
   "a pre-exec refusal stops the launcher before the Box child is spawned",
@@ -1905,11 +2009,16 @@ test(
 test("the file node mount inventory admits a host's namespace file binds", () => {
   const root = mkdtempSync(join(tmpdir(), "box-node-inventory-"));
   try {
-    const [rootfs, workspace, node] = ["rootfs", "workspace", "node"].map((name) => {
+    const directory = (name: string) => {
       const path = join(root, name);
       mkdirSync(path, { mode: 0o700 });
       return path;
-    });
+    };
+    const [rootfs, workspace, node] = [
+      directory("rootfs"),
+      directory("workspace"),
+      directory("node"),
+    ];
     const line = (id: number, device: string, source: string, path: string) =>
       `${id} 1 ${device} ${source} ${path} rw,relatime - ext4 /dev/vda1 rw`;
     const input = (extra: string) => ({

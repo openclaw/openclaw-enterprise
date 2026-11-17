@@ -96,6 +96,126 @@ export function report(source: Source, stage: Stage, reason: Reason): void {
   process.stderr.write(`strands-box-diagnostic source=${source} stage=${stage} reason=${reason}\n`);
 }
 
+/** One of the Harness's own structured startup lines (the runtime prints them as JSON on stderr).
+ * Only fixed-shape fields are kept: a phase name, an outcome, an attempt number, upper-case
+ * codes, a probe cause and a lower-case failure class. Free text never survives the shapes.
+ */
+interface HarnessEvent {
+  phase: string;
+  outcome: "ok" | "failed";
+  attempt?: number;
+  code?: string;
+  cause?: string;
+  failureClass?: string;
+}
+
+const harnessShapes = {
+  phase: /^[a-z][a-z0-9-]{0,39}$/,
+  code: /^[A-Z][A-Z0-9_]{0,63}$/,
+  cause: /^[A-Z][A-Z_]{0,31}(?:\/[A-Za-z0-9][A-Za-z0-9_-]{0,47})?$/,
+  failureClass: /^[a-z][a-z0-9_]{0,31}$/,
+} as const;
+
+function harnessLine(event: HarnessEvent): string {
+  return [
+    "strands-box-harness",
+    `phase=${event.phase}`,
+    `outcome=${event.outcome}`,
+    ...(event.attempt === undefined ? [] : [`attempt=${event.attempt}`]),
+    ...(event.code === undefined ? [] : [`code=${event.code}`]),
+    ...(event.cause === undefined ? [] : [`cause=${event.cause}`]),
+    ...(event.failureClass === undefined ? [] : [`class=${event.failureClass}`]),
+  ].join(" ");
+}
+
+function shaped(value: unknown, shape: RegExp): string | undefined {
+  return typeof value === "string" && shape.test(value) ? value : undefined;
+}
+
+function harnessEvent(event: HarnessEvent): HarnessEvent | undefined {
+  if (!harnessShapes.phase.test(event.phase)) return undefined;
+  if (
+    event.attempt !== undefined &&
+    !(Number.isInteger(event.attempt) && event.attempt >= 1 && event.attempt <= 9)
+  )
+    return undefined;
+  for (const key of ["code", "cause", "failureClass"] as const) {
+    if (event[key] !== undefined && !harnessShapes[key].test(event[key])) return undefined;
+  }
+  return event;
+}
+
+/** The Harness's JSON startup lines: runtime.startup_phase, codex.model_probe and codex.login. */
+function harnessFromCommand(line: string): HarnessEvent | undefined {
+  if (!line.startsWith("{")) return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const attempt = typeof record.attempt === "number" ? record.attempt : undefined;
+  const failureClass = shaped(record.failureClass, harnessShapes.failureClass);
+  if (record.event === "runtime.startup_phase") {
+    const phase = shaped(record.phase, harnessShapes.phase);
+    if (phase === undefined || (record.outcome !== "ok" && record.outcome !== "failed"))
+      return undefined;
+    return harnessEvent({
+      phase,
+      outcome: record.outcome,
+      ...(shaped(record.code, harnessShapes.code) === undefined
+        ? {}
+        : { code: record.code as string }),
+      ...(failureClass === undefined ? {} : { failureClass }),
+    });
+  }
+  if (record.event === "codex.model_probe") {
+    const code = shaped(record.code, harnessShapes.code);
+    if (code === undefined) return undefined;
+    const cause = record.cause as Record<string, unknown> | undefined;
+    const kind = cause === undefined ? undefined : shaped(cause?.kind, /^[A-Z][A-Z_]{0,31}$/);
+    const detail =
+      kind === undefined ? undefined : shaped(cause?.detail, /^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$/);
+    return harnessEvent({
+      phase: "model-probe-attempt",
+      outcome: code === "READY" ? "ok" : "failed",
+      ...(attempt === undefined ? {} : { attempt }),
+      ...(code === "READY" ? {} : { code }),
+      ...(kind === undefined ? {} : { cause: detail === undefined ? kind : `${kind}/${detail}` }),
+      ...(failureClass === undefined ? {} : { failureClass }),
+    });
+  }
+  if (record.event === "codex.login") {
+    return harnessEvent({
+      phase: "codex-login-attempt",
+      outcome: "failed",
+      ...(attempt === undefined ? {} : { attempt }),
+      ...(failureClass === undefined ? {} : { failureClass }),
+    });
+  }
+  return undefined;
+}
+
+/** A Harness line forwarded through Box's stderr by the in-Box agent, re-checked field by field. */
+function harnessForwarded(line: string): HarnessEvent | undefined {
+  const match =
+    /^strands-box-harness phase=(\S+) outcome=(ok|failed)(?: attempt=([1-9]))?(?: code=(\S+))?(?: cause=(\S+))?(?: class=(\S+))?$/.exec(
+      line,
+    );
+  if (match === null) return undefined;
+  const [, phase, outcome, attempt, code, cause, failureClass] = match;
+  return harnessEvent({
+    phase: phase!,
+    outcome: outcome as "ok" | "failed",
+    ...(attempt === undefined ? {} : { attempt: Number(attempt) }),
+    ...(code === undefined ? {} : { code }),
+    ...(cause === undefined ? {} : { cause }),
+    ...(failureClass === undefined ? {} : { failureClass }),
+  });
+}
+
 function runtimeFailure(line: string, source: "box" | "command"): Event | undefined {
   if (/^[^:\r\n]+: error while loading shared libraries: /.test(line))
     return { source, stage: "exec", reason: "dynamic-loader" };
@@ -221,11 +341,15 @@ function fromLine(line: string, source: "box" | "command"): Event | undefined {
 }
 
 /** Drain the source, classify only complete bounded lines, and emit enums.
+ * The Harness's structured startup lines are re-rendered from their fixed-shape fields
+ * (`strands-box-harness phase=... outcome=...`), so a held start names its phase and code.
  * Never forward stderr, partial lines, captured bytes or arbitrary values.
  */
 export function collectDiagnostics(stream: Readable, source: "box" | "command"): Promise<void> {
   return new Promise((resolve) => {
     const seen = new Set<string>();
+    const harnessSeen = new Set<string>();
+    const maxHarnessEvents = 24;
     let line = "";
     let overflow = false;
     let opaque = false;
@@ -236,7 +360,10 @@ export function collectDiagnostics(stream: Readable, source: "box" | "command"):
     function finish(): void {
       if (finished) return;
       finished = true;
-      if (unrecognizedError || ((opaque || overflow || line !== "") && seen.size === 0))
+      if (
+        unrecognizedError ||
+        ((opaque || overflow || line !== "") && seen.size === 0 && harnessSeen.size === 0)
+      )
         report(source, "stderr", "unrecognized");
       line = "";
       resolve();
@@ -247,8 +374,17 @@ export function collectDiagnostics(stream: Readable, source: "box" | "command"):
         if (character === "\n") {
           if (overflow) opaque = true;
           else if (line !== "" && line !== "\r") {
-            const event = fromLine(line.replace(/\r$/, ""), source);
-            if (event === undefined) {
+            const text = line.replace(/\r$/, "");
+            const harness =
+              source === "command" ? harnessFromCommand(text) : harnessForwarded(text);
+            const event = harness === undefined ? fromLine(text, source) : undefined;
+            if (harness !== undefined) {
+              const rendered = harnessLine(harness);
+              if (harnessSeen.size < maxHarnessEvents && !harnessSeen.has(rendered)) {
+                harnessSeen.add(rendered);
+                process.stderr.write(`${rendered}\n`);
+              }
+            } else if (event === undefined) {
               opaque = true;
               unrecognizedError ||= line.startsWith("strands-box: error: ");
             } else {
