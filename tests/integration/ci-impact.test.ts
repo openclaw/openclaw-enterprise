@@ -3859,7 +3859,7 @@ test("shared runtime consumers omit idle builders and preserve source builders",
   }
 });
 
-test("full aggregate attributes lane coverage to its matrix and producer jobs", (t) => {
+test("full integration selects images and gates runtime artifact consumers", (t) => {
   const workflow = loadYaml(".github/workflows/full-integration-execution.yml");
   type SelectorOutputs = Partial<
     Record<"gateway-image" | "agent-image" | "use-runtime-artifact", string>
@@ -4085,13 +4085,11 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
   }
   // This workflow uses !cancelled(), which disables GitHub's implicit success()
   // guard. A failed producer must therefore be rejected explicitly.
-  const condition = present(present(workflow.jobs["image-lanes-same-sha"]).if)
-    .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
-    .replaceAll("needs.runtime-artifact", 'needs["runtime-artifact"]');
+  const condition = present(present(workflow.jobs["image-lanes-same-sha"]).if);
   for (const producer of ["success", "failure", "cancelled", "skipped"]) {
     for (const runAll of ["true", "false"]) {
       assert.equal(
-        evaluateInContext(condition, {
+        evaluate(condition, {
           cancelled: () => false,
           github: {
             repository: "openclaw/openclaw-enterprise",
@@ -4109,6 +4107,10 @@ test("full aggregate attributes lane coverage to its matrix and producer jobs", 
       );
     }
   }
+});
+
+test("full aggregate attributes lane coverage to its matrix and producer jobs", (t) => {
+  const workflow = loadYaml(".github/workflows/full-integration-execution.yml");
   const script = present(
     present(workflow.jobs["full-aggregate"]).steps.find(
       (step) => step.name === "Write selected job state",

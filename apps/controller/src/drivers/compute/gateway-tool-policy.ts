@@ -426,7 +426,7 @@ function requireGatewayToolPolicyRuntime() {
 // refusal as its root read issue, which names OpenClaw's GatewayLockNamespaceError.
 class GatewayStateLockError extends Error {
   constructor(refusal) {
-    super("The dedicated Gateway cannot start: an earlier Gateway process did not stop cleanly and still holds the Gateway state lock, and this container cannot verify that it stopped. It remains unready; stop the Agent and recover the lock as the Agent troubleshooting guide describes for an unverifiable state owner. OpenClaw reported: " + refusal);
+    super("The Gateway cannot start: an earlier Gateway process did not stop cleanly and still holds the Gateway state lock, and this container cannot verify that it stopped. It remains unready; stop the Agent and recover the lock as the Agent troubleshooting guide describes for an unverifiable state owner. OpenClaw reported: " + refusal);
   }
 }
 function gatewayStateLockRefusal(stdout) {
