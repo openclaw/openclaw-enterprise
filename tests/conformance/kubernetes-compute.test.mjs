@@ -70,6 +70,7 @@ import { writeSafeKubeconfig, writeUnsafeKubeconfigs } from "../helpers/unsafe-k
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
+  createDedicatedDeployEnrollmentFixture,
   createDedicatedDeployKubernetesFixture,
   nativeHarnessResource,
   nativeSandboxIdentity,
@@ -583,32 +584,7 @@ function dedicatedFirstDeployFixture({
   splitCluster = false,
   revision: revisionOverrides = {},
 } = {}) {
-  const state = {
-    setupCalls: 0,
-    connected: false,
-    // A retained setup receipt can name a device that is currently disconnected.
-    redeemedDeviceId: undefined,
-    setupDelivery: "confirmed",
-    // Registry presence does not imply a completed token-authenticated connection.
-    possessionAvailable: undefined,
-    possessionDevices: [],
-    enrollmentAvailable: true,
-    // The node OpenClaw reports applied through the wrapper's runtime status,
-    // or the reason it has not.
-    gatewayWorkspaceNodeId: undefined,
-    gatewayWorkspaceNodeFailure: undefined,
-    gatewayAppliesBinding: true,
-    // With a fake clock: when set, the node host pairs this long after its setup
-    // reaches the Harness.
-    pairAfterSetupMs: undefined,
-    // The wait each setup observation was given.
-    observeWaits: [],
-    // With a fake clock: when the node pairs, and when a waiting observation fails.
-    pairAtMs: undefined,
-    failAtMs: undefined,
-    // With a fake clock: observe poll by poll, asking `stopWaiting` between reads.
-    stepObservations: false,
-  };
+  const { state, nodeEnrollment } = createDedicatedDeployEnrollmentFixture(clock);
   const driver = new KubernetesComputeDriver(
     routedOptions({
       ...(splitCluster ? { executionCluster: twoClusterOptions().executionCluster } : {}),
@@ -635,77 +611,7 @@ function dedicatedFirstDeployFixture({
       sandboxDriver,
       ...(openShellGit === undefined ? {} : { openShellGit }),
       credentialGatewayDriver,
-      nodeEnrollment: {
-        async createSetup() {
-          state.setupCalls++;
-          return { setupId: "setup-1", setupCode: "setup-code", expiresAtMs: Date.now() + 60000 };
-        },
-        async observeSetup(_url, _setupId, signal, options) {
-          if (!state.enrollmentAvailable) {
-            throw new Error("Gateway is restarting after the Harness replacement");
-          }
-          // Like the client: one connection, re-read until connected or the wait ends.
-          state.observeWaits.push(options?.waitMs ?? 0);
-          if (state.redeemedDeviceId !== undefined) {
-            return {
-              deviceId: state.redeemedDeviceId,
-              connected: state.connected,
-              delivery: state.setupDelivery,
-            };
-          }
-          if (clock !== undefined && state.stepObservations) {
-            // Like the client, poll by poll: read, then ask whether other Work
-            // is waiting for the worker before the next read.
-            const deadline = clock.now + (options?.waitMs ?? 0);
-            for (;;) {
-              if (state.pairAtMs !== undefined && state.pairAtMs <= clock.now) {
-                state.connected = true;
-              }
-              if (
-                state.connected ||
-                clock.now + 250 > deadline ||
-                (options?.stopWaiting !== undefined && (await options.stopWaiting()))
-              ) {
-                return state.connected
-                  ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
-                  : undefined;
-              }
-              clock.now += 250;
-            }
-          }
-          if (clock !== undefined) {
-            const deadline = clock.now + (options?.waitMs ?? 0);
-            if (state.failAtMs !== undefined && state.failAtMs <= deadline) {
-              clock.now = Math.max(clock.now, state.failAtMs);
-              throw new Error("Gateway connection closed");
-            }
-            if (!state.connected && state.pairAtMs !== undefined && state.pairAtMs <= deadline) {
-              clock.now = Math.max(clock.now, state.pairAtMs);
-              state.connected = true;
-            } else if (!state.connected) {
-              clock.now = deadline;
-            }
-            return state.connected
-              ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
-              : undefined;
-          }
-          const deadline = Date.now() + (options?.waitMs ?? 0);
-          while (!state.connected && Date.now() < deadline) {
-            if (options?.stopWaiting !== undefined && (await options.stopWaiting())) {
-              break;
-            }
-            signal.throwIfAborted();
-            await new Promise((resolve) => setTimeout(resolve, 2));
-          }
-          return state.connected
-            ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
-            : undefined;
-        },
-        async isConnected(_url, deviceId) {
-          state.possessionDevices.push(deviceId);
-          return state.possessionAvailable ?? state.connected;
-        },
-      },
+      nodeEnrollment,
     },
   );
   if (clock === undefined) {
