@@ -129,3 +129,59 @@ test("the hook checks: a marker write and one no-progress call the dry-run model
   assert.match(gitCommand(plan, nonce, "touch"), /^printf '%s\\n' (?:a1)+ > \/home\/node\/workspace\/x5-touch-a1a1a1a1a1a1\.txt && echo wrote$/);
   assert.equal(gitCommand(plan, nonce, "gateway-loop"), "printf x5-loop-a1a1a1a1a1a1");
 });
+
+test("the outside-write step uses Codex's own patch tool to add one file under the Harness home", async () => {
+  const { controlledGitModelRequests, OUTSIDE_WRITE_PATH, outsideWritePatch } = await import(
+    "../../deploy/examples/strands-box/git/controlled-git-model.ts"
+  );
+  assert.equal(OUTSIDE_WRITE_PATH, "/home/node/outside-workspace-check.txt");
+  const patch = outsideWritePatch(nonce);
+  assert.equal(
+    patch,
+    `*** Begin Patch\n*** Add File: /home/node/outside-workspace-check.txt\n+x5 outside-workspace check a1a1a1a1a1a1\n*** End Patch\n`,
+  );
+  assert.doesNotMatch(patch, /\.codex|\.oce-native-hooks|\/workspace\//);
+  // Without an apply_patch tool, the shell's apply_patch (which Codex intercepts) is the fallback.
+  assert.equal(gitCommand(plan, nonce, "outside-write"), `apply_patch <<'EOF'\n${patch}EOF`);
+  const rows: Record<string, unknown>[] = [];
+  const handler = controlledGitModelRequests(nonce, plan, (row) => rows.push(row), {
+    address: "10.0.0.9",
+  });
+  const call = async (tools: unknown[]) => {
+    const body = Buffer.from(
+      JSON.stringify({
+        model: "gpt-5",
+        input: [{ role: "user", content: [{ type: "input_text", text: gitPromptFor(nonce, "outside-write") }] }],
+        tools,
+      }),
+    );
+    const req = Object.assign(
+      (async function* () {
+        yield body;
+      })(),
+      { socket: { remoteAddress: "10.0.0.9" }, method: "POST", url: "/v1/responses", headers: {} },
+    );
+    let text = "";
+    const res = {
+      headersSent: false,
+      writeHead: () => ({ end() {} }),
+      setHeader() {},
+      write: (chunk: string) => ((text += chunk), true),
+      end: (chunk?: string) => void (chunk && (text += chunk)),
+      destroy() {},
+    };
+    await handler(req as never, res as never);
+    return text;
+  };
+  const custom = await call([{ name: "exec_command" }, { type: "custom", name: "apply_patch" }]);
+  assert.match(custom, /custom_tool_call/);
+  assert.match(custom, /apply_patch/);
+  const fn = await call([{ name: "exec_command" }, { type: "function", name: "apply_patch" }]);
+  assert.match(fn, /"name\\?":\\?"apply_patch\\?"/);
+  const shell = await call([{ name: "exec_command" }]);
+  assert.match(shell, /exec_command/);
+  assert.deepEqual(
+    rows.map((row) => row.via),
+    ["apply_patch:custom", "apply_patch:function", "exec_command"],
+  );
+});
