@@ -71,6 +71,7 @@ import {
   assertUpstreamCaScope,
   BOX_UPSTREAM_CA_KEY,
   loadUpstreamCa,
+  nativeHookRoute,
   parseRoute,
   githubCredentials,
   githubPolicy,
@@ -860,6 +861,60 @@ test("held approval binds the exact original request and controller", { skip: un
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("the native hook route is the workspace node's Gateway hook prefix: POST, one relay", () => {
+  const node = parseRoute(
+    { url: "wss://gateway.invalid:10443/namespaces/ns_1/agents/agt_1/node", address: "10.2.3.5" },
+    "workspace-node",
+  );
+  const hook = nativeHookRoute(node, "a".repeat(64));
+  assert.deepEqual(hook, {
+    kind: "native-hook",
+    url: "https://gateway.invalid:10443/namespaces/ns_1/agents/agt_1/node/__openclaw__/native-hook/",
+    address: "10.2.3.5",
+    caSha256: "a".repeat(64),
+  });
+  const rules = policy([hook]);
+  const prefix = "/namespaces/ns_1/agents/agt_1/node/__openclaw__/native-hook/";
+  assert.match(rules, /context.input.host == "gateway.invalid" && context.input.port == 10443/);
+  assert.match(rules, /context.input has ip4 && context.input.ip4 == "10.2.3.5"/);
+  assert.ok(
+    rules.includes(
+      `context.input.method == "POST" && context.input.path like "${prefix}codex-*" && !(context.input.path like "${prefix}codex-*/*") && context.input.intercepted == true`,
+    ),
+  );
+  // Exactly one request rule, and no GET or exact-path rule for the node path itself.
+  assert.equal(rules.match(/http:request/g)?.length, 1);
+  assert.doesNotMatch(rules, /"GET"/);
+  // Only a workspace node route derives it; a hook route is never configured on its own.
+  assert.throws(
+    () =>
+      nativeHookRoute(
+        parseRoute({ url: "https://fixture.invalid:8444/v1", address: "10.2.3.4" }, "controlled-inference"),
+      ),
+    { message: "invalid_fixed_egress" },
+  );
+  assert.throws(
+    () =>
+      parseRoute(
+        { url: "https://gateway.invalid:10443/elsewhere/", address: "10.2.3.5" },
+        "native-hook",
+      ),
+    { message: "invalid_fixed_egress" },
+  );
+  // Box applies the upstream bundle to the hook route too, so it must opt in.
+  assert.deepEqual(
+    boxDialedRoutes({ workspaceNode: node, separateWorkspaceNode: {}, nativeHookRelay: hook }).map(
+      ({ kind }) => kind,
+    ),
+    ["native-hook"],
+  );
+  assert.throws(
+    () =>
+      assertUpstreamCaScope({ sha256: "b".repeat(64), pem: "" }, [nativeHookRoute(node)]),
+    { message: "upstream_ca_route_not_declared" },
+  );
 });
 
 test("the operator route pins a private address and exact method and path", () => {

@@ -11,6 +11,7 @@ import {
   assertUpstreamCaScope,
   CONTROLLED_INFERENCE_MARKER,
   loadUpstreamCa,
+  nativeHookRoute,
   parseRoute,
   EXECUTION_BEARER,
   GITHUB_HOSTS,
@@ -23,6 +24,7 @@ import {
   ensureEmpty,
   fields,
   hostConfig,
+  NATIVE_HOOK_DIRECTORY,
   object,
   privateDirectory,
   readConfig,
@@ -104,6 +106,14 @@ interface InstalledConfig extends HostConfig {
   workspaceNode?: EgressRoute;
   separateWorkspaceNode?: NodeInstallation;
   controlledInference?: EgressRoute;
+  /**
+   * The Gateway's native hook route, derived from `workspaceNode` (same name, port and address).
+   * Compute relays native hooks for every dedicated Codex revision behind Gateway routing: the
+   * Gateway writes each relay credential into `NATIVE_HOOK_DIRECTORY` through Codex, and the hook
+   * command inside Box posts to this route through Box's proxy. `caSha256` opts it in to
+   * `upstreamCa`, which must then hold the Gateway's root.
+   */
+  nativeHookRelay?: EgressRoute;
   /**
    * Protected repository access on this host. Box injects GitHub auth for `github.com` and
    * `api.github.com` itself and asks OCE for each request through this host's credential source.
@@ -539,6 +549,7 @@ function installedConfig(value: unknown): InstalledConfig {
     "workspaceNode",
     "separateWorkspaceNode",
     "controlledInference",
+    "nativeHookRelay",
     "protectedRepository",
     "upstreamCa",
   ]);
@@ -655,10 +666,11 @@ function installedConfig(value: unknown): InstalledConfig {
     data.controlledInference === undefined
       ? undefined
       : parseRoute(data.controlledInference, "controlled-inference");
+  const nativeHookRelay = parseNativeHookRelay(data.nativeHookRelay, workspaceNode);
   const upstreamCa = data.upstreamCa === undefined ? undefined : loadUpstreamCa(data.upstreamCa);
   assertUpstreamCaScope(
     upstreamCa,
-    boxDialedRoutes({ workspaceNode, separateWorkspaceNode, controlledInference }),
+    boxDialedRoutes({ workspaceNode, separateWorkspaceNode, controlledInference, nativeHookRelay }),
   );
   const protectedRepository = parseProtectedRepository(data.protectedRepository);
   // Box applies the bundle to its GitHub upstreams too, so those routes must opt in as well.
@@ -685,9 +697,27 @@ function installedConfig(value: unknown): InstalledConfig {
     ...(workspaceNode === undefined ? {} : { workspaceNode }),
     ...(separateWorkspaceNode === undefined ? {} : { separateWorkspaceNode }),
     ...(controlledInference === undefined ? {} : { controlledInference }),
+    ...(nativeHookRelay === undefined ? {} : { nativeHookRelay }),
     ...(upstreamCa === undefined ? {} : { upstreamCa }),
     ...(protectedRepository === undefined ? {} : { protectedRepository }),
   };
+}
+
+/** `{}` or `{caSha256}`: the hook route is always the workspace node's, never configured apart. */
+function parseNativeHookRelay(
+  value: unknown,
+  workspaceNode: EgressRoute | undefined,
+): EgressRoute | undefined {
+  if (value === undefined) return undefined;
+  const configured = object(value);
+  fields(configured, ["caSha256"]);
+  if (
+    workspaceNode === undefined ||
+    (configured.caSha256 !== undefined &&
+      (typeof configured.caSha256 !== "string" || !SHA256.test(configured.caSha256)))
+  )
+    throw new Error("invalid_native_hook_relay");
+  return nativeHookRoute(workspaceNode, configured.caSha256 as string | undefined);
 }
 
 function parseProtectedRepository(value: unknown): ProtectedRepository | undefined {
@@ -715,12 +745,14 @@ export function boxDialedRoutes(config: {
   readonly workspaceNode?: EgressRoute | undefined;
   readonly separateWorkspaceNode?: unknown;
   readonly controlledInference?: EgressRoute | undefined;
+  readonly nativeHookRelay?: EgressRoute | undefined;
 }): EgressRoute[] {
   return [
     ...(config.workspaceNode !== undefined && config.separateWorkspaceNode === undefined
       ? [config.workspaceNode]
       : []),
     ...(config.controlledInference === undefined ? [] : [config.controlledInference]),
+    ...(config.nativeHookRelay === undefined ? [] : [config.nativeHookRelay]),
   ];
 }
 
@@ -1028,6 +1060,9 @@ function admitted(
     environment.OPENAI_API_KEY = CONTROLLED_INFERENCE_MARKER;
     egress.push(config.controlledInference);
   }
+  // The hook command inside Box reaches only the Gateway's native hook route, and Codex gets one
+  // fresh private directory for the relay credentials the Gateway writes (`launch.ts`).
+  if (config.nativeHookRelay !== undefined) egress.push(config.nativeHookRelay);
   let separateNode: NodeLaunch | undefined;
   if ((request.workspaceVolume === undefined) !== (config.separateWorkspaceNode === undefined)) {
     throw new Error("file_node_workspace_volume_missing_or_unselected");
@@ -1112,6 +1147,9 @@ function admitted(
     readOnly: [],
     writable: [...mounts.keys(), ...config.writableState],
     egress,
+    ...(config.nativeHookRelay === undefined
+      ? {}
+      : { nativeHookDirectory: NATIVE_HOOK_DIRECTORY }),
     ...(config.upstreamCa === undefined ? {} : { upstreamCa: config.upstreamCa }),
     ...(separateNode === undefined && typeof setupCode === "string" && expiresAt !== undefined
       ? { workspaceNodeSetupCode: setupCode, workspaceNodeSetupExpiresAt: expiresAt }

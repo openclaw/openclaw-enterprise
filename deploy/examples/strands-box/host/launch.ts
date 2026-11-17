@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   accessSync,
+  chmodSync,
   closeSync,
   constants,
   linkSync,
@@ -65,6 +66,12 @@ const ownerOnly = { mode: 0o600, flag: "wx" } as const;
 export const PATH = "/usr/local/bin:/usr/bin:/bin";
 export const APP_SOCKET = "app-server.sock";
 export const READY_FILE = "ready.json";
+/**
+ * The Harness HOME's native hook credential directory (Compute's NATIVE_HOOK_CREDENTIAL_DIRECTORY).
+ * The stock Harness program that prepares it does not run in Box, so the host gives each
+ * execution a fresh, empty, private one; Codex writes only the Gateway's relay credentials there.
+ */
+export const NATIVE_HOOK_DIRECTORY = "/home/node/.oce-native-hooks";
 export const OWNER_STOP_MS = 10_000;
 // Box hosts: Linux ARM64 (released Box) or Linux x86-64 (Box main and fork builds, which the
 // launcher starts with EXPERIMENTAL_X86_SUPPORT=TRUE). Box itself refuses any other platform.
@@ -213,6 +220,8 @@ export interface StartInput {
   reservationGeneration?: string;
   /** The execution's one extra upstream CA bundle; every route in `egress` must opt in to it. */
   upstreamCa?: UpstreamCa;
+  /** Recreate this exact directory empty (0700) and grant it writable: `NATIVE_HOOK_DIRECTORY`. */
+  nativeHookDirectory?: string;
 }
 
 /** The trusted `box run` process of this execution, read from /proc after spawn. */
@@ -644,7 +653,23 @@ export function start(
         input.egress?.some((route) => route.kind === "controlled-inference") === true,
       );
       const readOnly = input.readOnly.map(cleanPath);
-      const writable = input.writable.map(privateDirectory);
+      const hooks = input.nativeHookDirectory;
+      if (hooks !== undefined) {
+        if (
+          hooks !== NATIVE_HOOK_DIRECTORY ||
+          environment.HOME !== dirname(hooks) ||
+          input.writable.some((path) => pathWithin(path, hooks) || pathWithin(hooks, path))
+        )
+          throw new Error("native_hook_directory");
+        // As the stock Harness does for its HOME: remove whatever is there (a link itself, never
+        // its target) and start each execution with an empty private directory.
+        rmSync(hooks, { recursive: true, force: true });
+        mkdirSync(hooks, { mode: 0o700 });
+        chmodSync(hooks, 0o700);
+      }
+      const writable = [...input.writable, ...(hooks === undefined ? [] : [hooks])].map(
+        privateDirectory,
+      );
       for (const path of [...readOnly, ...writable]) {
         if (pathWithin(run, path) || pathWithin(path, run))
           throw new Error("mount_covers_owner_state");

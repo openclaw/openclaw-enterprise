@@ -43,12 +43,35 @@ export interface UpstreamCa {
   readonly pem: string;
 }
 
+/**
+ * The Gateway route a native hook command calls for each relay, below the workspace node's
+ * Gateway path (Compute renders `<endpoint>/node/__openclaw__/native-hook/<relayId>`).
+ */
+export const NATIVE_HOOK_ROUTE = "/__openclaw__/native-hook/";
+
 export interface EgressRoute {
-  readonly kind: "workspace-node" | "controlled-inference";
+  readonly kind: "workspace-node" | "controlled-inference" | "native-hook";
   readonly url: string;
   readonly address: string;
   /** The route opts in to the execution's upstream CA bundle by naming its digest. */
   readonly caSha256?: string;
+}
+
+/**
+ * The native hook route of a workspace node route: same Gateway name, port and pinned address,
+ * the hook prefix below the node path. The host derives it; it is never configured separately.
+ */
+export function nativeHookRoute(workspaceNode: EgressRoute, caSha256?: string): EgressRoute {
+  if (workspaceNode.kind !== "workspace-node") throw new Error("invalid_fixed_egress");
+  const node = new URL(workspaceNode.url);
+  const url = `https://${node.host}${node.pathname.replace(/\/$/, "")}${NATIVE_HOOK_ROUTE}`;
+  exactRoute(url, workspaceNode.address, "native-hook");
+  return {
+    kind: "native-hook",
+    url,
+    address: workspaceNode.address,
+    ...(caSha256 === undefined ? {} : { caSha256 }),
+  };
 }
 
 /** The nonsecret route identity that the Driver, the operator approval and the host compare. */
@@ -88,7 +111,9 @@ function exactRoute(url: string, address: string, kind: EgressRoute["kind"]): UR
     parsed.hash ||
     (kind === "workspace-node"
       ? parsed.protocol !== "wss:"
-      : parsed.protocol !== "https:" || parsed.pathname !== "/v1")
+      : kind === "native-hook"
+        ? parsed.protocol !== "https:" || !parsed.pathname.endsWith(`/node${NATIVE_HOOK_ROUTE}`)
+        : parsed.protocol !== "https:" || parsed.pathname !== "/v1")
   ) {
     throw new Error("invalid_fixed_egress");
   }
@@ -290,6 +315,17 @@ export function policy(routes: readonly EgressRoute[], github = false): string {
       'permit (principal, action == Box::Action::"net:connect", resource)',
       `when { ${condition} && !(context.input has ip6) && (!(context.input has ip4) || (context.input has ip4 && context.input.ip4 == ${JSON.stringify(route.address)})) };`,
     );
+    if (route.kind === "native-hook") {
+      // One relay per request: POST to exactly one `codex-<id>` segment below the prefix (Box
+      // judges the canonical path, without the query). The Gateway checks the relay's token.
+      const relay = JSON.stringify(`${url.pathname}codex-*`);
+      const nested = JSON.stringify(`${url.pathname}codex-*/*`);
+      text.push(
+        'permit (principal, action == Box::Action::"http:request", resource)',
+        `when { ${condition} && context.input.method == "POST" && context.input.path like ${relay} && !(context.input.path like ${nested}) && context.input.intercepted == true };`,
+      );
+      continue;
+    }
     for (const [method, path] of requests) {
       text.push(
         'permit (principal, action == Box::Action::"http:request", resource)',
