@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0041-installation-network-policy-ceiling.md
+rfc: ../rfcs/0042-installation-network-policy-ceiling.md
 ---
 
 # Implementation plan: Manage the Installation network policy ceiling
 
-- **ID:** RFC-0041
+- **ID:** RFC-0042
 - **Delivery status:** In progress
 - **Owner:** russellb
-- **Authority:** [RFC-0041](../rfcs/0041-installation-network-policy-ceiling.md)
+- **Authority:** [RFC-0042](../rfcs/0042-installation-network-policy-ceiling.md)
 - **Source baseline:** `6bf16386658e8b1f81a7f90a04ccd0697c23805c`
 
 ## Outcome and scope
@@ -274,6 +274,21 @@ and ceiling browser 5/5, without skips. The retired configuration regression
 passes 1/1. Scoped local backend and Console reviews report no actionable defects;
 they do not replace final external review. Rebuilt Storybook captures show the
 dynamic editor, but native GitHub uploads remain unavailable.
+
+## RFC numbering refresh, 2026-11-17, continued
+
+Main at `2821a6004` assigns RFC-0041 to RuntimeClass-agnostic deployment.
+This ceiling proposal and its primary plan now use RFC-0042. The lookup preserves
+both proposals and the ceiling's former filenames. Proposed / Partially
+implemented status, dynamic-only ownership, migrations 0081–0082 and published
+history remain unchanged. Earlier verification records refer to their original
+revisions; the merged source needs current-head CI.
+
+Merged-source owner 9/9, readiness 1/1, Agent policy 45/45 and ceiling browser
+5/5 checks pass without skips. The platform-state memory contract file passes;
+types, formatting, workspace/module boundaries, OpenAPI, CI inventories and
+documentation/specification checks pass. No runtime or native attachment gap is
+closed by this numbering refresh.
 
 ## Manual Notes
 

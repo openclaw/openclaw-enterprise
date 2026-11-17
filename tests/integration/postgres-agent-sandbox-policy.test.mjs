@@ -44,7 +44,6 @@ async function createPolicyApp(
   const sandboxConfiguration = {
     gateway: { workspaceMode: "operator" },
     kubernetes: {
-      runtimeClassName: "openshell-sandbox",
       serviceAccount: { mode: "gatewayConfigured" },
       sandboxDataMount: {
         subPath: "workspace",

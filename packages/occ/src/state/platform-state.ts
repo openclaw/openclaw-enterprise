@@ -1414,74 +1414,52 @@ function storedCopy<T>(value: T): Readonly<T> {
   return copy;
 }
 
+function copyStoredMap<K, V>(source: ReadonlyMap<K, V>): Map<K, Readonly<V>> {
+  const copy = new Map<K, Readonly<V>>();
+  for (const [key, value] of source) {
+    copy.set(key, storedCopy(value));
+  }
+  return copy;
+}
+
 function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
   return {
     ceiling: snapshot.ceiling,
     installation:
       snapshot.installation === undefined ? undefined : storedCopy(snapshot.installation),
-    namespaces: new Map(
-      Array.from(snapshot.namespaces, ([key, namespace]) => [key, storedCopy(namespace)]),
-    ),
-    configurations: new Map(
-      Array.from(snapshot.configurations, ([key, configuration]) => [
-        key,
-        storedCopy(configuration),
-      ]),
-    ),
+    namespaces: copyStoredMap(snapshot.namespaces),
+    configurations: copyStoredMap(snapshot.configurations),
     connectionTemplates: new Map(snapshot.connectionTemplates),
     clientRegistrations: new Map(snapshot.clientRegistrations),
     oauthConnectionTemplateVersions: new Map(snapshot.oauthConnectionTemplateVersions),
     connectionTokenCustody: new Map(snapshot.connectionTokenCustody),
     savedConnections: new Map(snapshot.savedConnections),
     connectionSessions: new Map(snapshot.connectionSessions),
-    presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, storedCopy(preset)])),
-    secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, storedCopy(secret)])),
+    presets: copyStoredMap(snapshot.presets),
+    secrets: copyStoredMap(snapshot.secrets),
     egressRejected: new Set(snapshot.egressRejected),
     egressSendReceipts: new Map(snapshot.egressSendReceipts),
-    egressInstallations: new Map(
-      Array.from(snapshot.egressInstallations, ([key, value]) => [key, storedCopy(value)]),
-    ),
+    egressInstallations: copyStoredMap(snapshot.egressInstallations),
     credentialPolicyReductions: new Map(snapshot.credentialPolicyReductions),
-    credentialWithdrawals: new Map(
-      Array.from(snapshot.credentialWithdrawals, ([key, withdrawal]) => [
-        key,
-        storedCopy(withdrawal),
-      ]),
-    ),
-    credentialSources: new Map(
-      Array.from(snapshot.credentialSources, ([key, source]) => [key, storedCopy(source)]),
-    ),
-    serviceAccounts: new Map(
-      Array.from(snapshot.serviceAccounts, ([key, account]) => [key, storedCopy(account)]),
-    ),
-    agents: new Map(Array.from(snapshot.agents, ([key, agent]) => [key, storedCopy(agent)])),
-    predecessorReplacements: new Map(
-      Array.from(snapshot.predecessorReplacements, ([key, record]) => [key, storedCopy(record)]),
-    ),
-    sandboxPolicies: new Map(
-      Array.from(snapshot.sandboxPolicies, ([key, policy]) => [key, storedCopy(policy)]),
-    ),
-    workspaceSetups: new Map(
-      Array.from(snapshot.workspaceSetups, ([key, setup]) => [key, storedCopy(setup)]),
-    ),
+    credentialWithdrawals: copyStoredMap(snapshot.credentialWithdrawals),
+    credentialSources: copyStoredMap(snapshot.credentialSources),
+    serviceAccounts: copyStoredMap(snapshot.serviceAccounts),
+    agents: copyStoredMap(snapshot.agents),
+    predecessorReplacements: copyStoredMap(snapshot.predecessorReplacements),
+    sandboxPolicies: copyStoredMap(snapshot.sandboxPolicies),
+    workspaceSetups: copyStoredMap(snapshot.workspaceSetups),
     // Revisions are copied on ingress/egress; writes replace frozen history arrays.
     // A separate Map isolates this snapshot's future writes without copying history.
     revisions: new Map(snapshot.revisions),
     firstDeploymentDigests: new Map(snapshot.firstDeploymentDigests),
-    roles: new Map(Array.from(snapshot.roles, ([key, role]) => [key, storedCopy(role)])),
-    bindings: new Map(
-      Array.from(snapshot.bindings, ([key, binding]) => [key, storedCopy(binding)]),
-    ),
+    roles: copyStoredMap(snapshot.roles),
+    bindings: copyStoredMap(snapshot.bindings),
     servicePrincipals: new Map(snapshot.servicePrincipals),
     repositoryStandingExecutions: new Map(snapshot.repositoryStandingExecutions),
     repositoryStandingApprovals: new Map(snapshot.repositoryStandingApprovals),
     repositoryWithdrawals: new Map(snapshot.repositoryWithdrawals),
-    repositorySessions: new Map(
-      Array.from(snapshot.repositorySessions, ([key, attempt]) => [key, storedCopy(attempt)]),
-    ),
-    repositoryBrokerReceipts: new Map(
-      Array.from(snapshot.repositoryBrokerReceipts, ([key, receipt]) => [key, storedCopy(receipt)]),
-    ),
+    repositorySessions: copyStoredMap(snapshot.repositorySessions),
+    repositoryBrokerReceipts: copyStoredMap(snapshot.repositoryBrokerReceipts),
     audit: snapshot.audit.map((event) => storedCopy(event)),
     operations: snapshot.operations.map((operation) => storedCopy(operation)),
   };
@@ -1838,6 +1816,18 @@ function assertCredentialSource(source: CredentialSource): void {
   }
 }
 
+function namespaceResourceExists(
+  resources: Iterable<{ readonly namespaceId: string }>,
+  namespaceId: string,
+): boolean {
+  for (const resource of resources) {
+    if (resource.namespaceId === namespaceId) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // A write stores an `immutableCopy` and returns that same value: it is a deep-frozen clone of
 // plain data, so the caller cannot change the stored state through it. That holds while the
 // stored contract types carry no Date, Map, Set or typed array (see `immutableSnapshot` in
@@ -1956,11 +1946,9 @@ function repositories(
       return immutableCopy(namespace);
     },
     hasAgents: async (namespaceId) =>
-      Array.from(snapshot.agents.values()).some((agent) => agent.namespaceId === namespaceId),
+      namespaceResourceExists(snapshot.agents.values(), namespaceId),
     hasConfigurations: async (namespaceId) =>
-      Array.from(snapshot.configurations.values()).some(
-        (configuration) => configuration.namespaceId === namespaceId,
-      ),
+      namespaceResourceExists(snapshot.configurations.values(), namespaceId),
     listConfigurationIds: async (namespaceId) =>
       Object.freeze(
         Array.from(snapshot.configurations.values())
@@ -1972,17 +1960,13 @@ function repositories(
           .map((configuration) => configuration.id),
       ),
     hasPresets: async (namespaceId) =>
-      Array.from(snapshot.presets.values()).some((preset) => preset.namespaceId === namespaceId),
+      namespaceResourceExists(snapshot.presets.values(), namespaceId),
     hasServiceAccounts: async (namespaceId) =>
-      Array.from(snapshot.serviceAccounts.values()).some(
-        (account) => account.namespaceId === namespaceId,
-      ),
+      namespaceResourceExists(snapshot.serviceAccounts.values(), namespaceId),
     hasSecrets: async (namespaceId) =>
-      Array.from(snapshot.secrets.values()).some((secret) => secret.namespaceId === namespaceId),
+      namespaceResourceExists(snapshot.secrets.values(), namespaceId),
     hasCredentialSources: async (namespaceId) =>
-      Array.from(snapshot.credentialSources.values()).some(
-        (source) => source.namespaceId === namespaceId,
-      ),
+      namespaceResourceExists(snapshot.credentialSources.values(), namespaceId),
     transitionNamespaceStatus: async (namespaceId, expected, next) => {
       const key = namespaceId;
       const namespace = snapshot.namespaces.get(key);
@@ -2016,22 +2000,12 @@ function repositories(
         return immutableCopy(namespace);
       }
       if (
-        Array.from(snapshot.agents.values()).some((agent) => agent.namespaceId === namespaceId) ||
-        Array.from(snapshot.configurations.values()).some(
-          (configuration) => configuration.namespaceId === namespaceId,
-        ) ||
-        Array.from(snapshot.presets.values()).some(
-          (preset) => preset.namespaceId === namespaceId,
-        ) ||
-        Array.from(snapshot.serviceAccounts.values()).some(
-          (account) => account.namespaceId === namespaceId,
-        ) ||
-        Array.from(snapshot.secrets.values()).some(
-          (secret) => secret.namespaceId === namespaceId,
-        ) ||
-        Array.from(snapshot.credentialSources.values()).some(
-          (source) => source.namespaceId === namespaceId,
-        )
+        namespaceResourceExists(snapshot.agents.values(), namespaceId) ||
+        namespaceResourceExists(snapshot.configurations.values(), namespaceId) ||
+        namespaceResourceExists(snapshot.presets.values(), namespaceId) ||
+        namespaceResourceExists(snapshot.serviceAccounts.values(), namespaceId) ||
+        namespaceResourceExists(snapshot.secrets.values(), namespaceId) ||
+        namespaceResourceExists(snapshot.credentialSources.values(), namespaceId)
       ) {
         throw new ScopeViolationError("A nonempty Namespace cannot be tombstoned.");
       }

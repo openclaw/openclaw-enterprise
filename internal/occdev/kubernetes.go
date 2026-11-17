@@ -579,8 +579,7 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 				},
 			},
 			"kubernetes": map[string]any{
-				"runtimeClassName": openShellRuntimeClass,
-				"userNamespaces":   false,
+				"userNamespaces": false,
 				// Provider-owned Harness Pods need the same budget as Compute-owned
 				// Harnesses; otherwise the namespace's smaller default applies.
 				"agentResources":   harnessResources,

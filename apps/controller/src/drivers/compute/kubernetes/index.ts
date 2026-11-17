@@ -64,6 +64,7 @@ import {
 } from "node:crypto";
 import { BlockList, isIP } from "node:net";
 import { isAbsolute, posix } from "node:path";
+import { gatewayRoutingHostname } from "./gateway-routing-hostname.ts";
 import { isKubernetesNamespaceName, isKubernetesResourceName } from "./resource-name.ts";
 import {
   MODEL_EGRESS_EXCLUDED_IPV4_CIDRS,
@@ -5007,7 +5008,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (routing === undefined) {
       return undefined;
     }
-    const hostname = this.gatewayRoutingHostname(routing);
+    const hostname = gatewayRoutingHostname(routing);
     const authority =
       routing.endpointPort === undefined || routing.endpointPort === 443
         ? hostname
@@ -14236,16 +14237,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     };
   }
 
-  private gatewayRoutingHostname(routing: KubernetesGatewayRoutingOptions): string {
-    if (routing.hostname !== undefined && routing.hostname.length > 0) {
-      return routing.hostname;
-    }
-    return `occ-gateway-${sha256Hex(
-      `${routing.gatewayNamespace}/${routing.gatewayName}`,
-      12,
-    )}.${routing.envoyNamespace}.svc`;
-  }
-
   private verifyGatewayRoutingConfiguration(revision: {
     readonly configuration: OpenClawConfigurationDocument;
     readonly harness: Pick<RevisionHarnessDescriptor, "mode">;
@@ -14356,9 +14347,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       },
       spec: {
         hostnames: [
-          access === "sandbox"
-            ? new URL(sandboxOrigin!).hostname
-            : this.gatewayRoutingHostname(routing),
+          access === "sandbox" ? new URL(sandboxOrigin!).hostname : gatewayRoutingHostname(routing),
         ],
         parentRefs: [
           {
@@ -14548,7 +14537,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             },
           },
           spec: {
-            hostnames: [this.gatewayRoutingHostname(routing)],
+            hostnames: [gatewayRoutingHostname(routing)],
             parentRefs: [
               {
                 group: "gateway.networking.k8s.io",

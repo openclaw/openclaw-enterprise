@@ -5339,10 +5339,11 @@ export class OpenClawController {
     }
     try {
       return await this.mutate(async (state) => {
+        await holdSession?.(state);
+        await this.holdAuthority(state);
         await this.lockNamespace(state, namespaceId);
         await this.authorizeConnectionCreation(principalId, namespaceId);
         await this.assertConnectionTemplateScope(session.connectionTemplateId, namespaceId);
-        await holdSession?.(state);
         await this.grantConnectionOwner(state, namespaceId, principalId, credentialSourceId);
         const ready = await state.credentialSources.markCredentialSourceReady(
           namespaceId,
@@ -6962,6 +6963,7 @@ export class OpenClawController {
     }
     const skip = options.skipRefusedRefresh ?? "none";
     await this.mutate(async (state) => {
+      await this.holdAuthority(state);
       await this.authorize(principalId, "administer", {
         kind: "installation",
         id: this.installation.id,
@@ -12866,6 +12868,9 @@ export class OpenClawController {
       input.pluginApprovers === null ? null : normalizeAgentPluginApprovers(input.pluginApprovers);
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
+      if (input.repositoryStandingApproval !== undefined) {
+        await this.holdAuthority(state);
+      }
       const target = { kind: "agent", id: input.agentId, namespaceId: input.namespaceId } as const;
       await this.authorize(principalId, "update", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
