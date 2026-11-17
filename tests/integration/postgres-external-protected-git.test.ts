@@ -645,8 +645,19 @@ function externalGitJourney(
             authenticatedJourney ? { tokenLifetimeMs: 300_000, maximumIssues: 2 } : undefined,
           )
         : undefined;
+    const repository = broad
+      ? undefined
+      : await standingGitOrigin(
+          t,
+          namespaceId,
+          300_000,
+          undefined,
+          false,
+          undefined,
+          scope === "repository" && !artifactAdmissionOnly,
+        );
     const { registry, backendId, origin, gh, tls, privateKeyPath, custodyKeyPath } =
-      broad ?? (await standingGitOrigin(t, namespaceId, 300_000));
+      broad ?? repository!;
     const installationApiOrigin = broad?.gh.origin;
     const conversation = modelExecutable
       ? await standingGitConversation(t, modelExecutable)
@@ -1590,6 +1601,170 @@ function externalGitJourney(
       };
       const initialFetch = await transfer(await origin.ref("main"));
       rehearsal?.gitFetched(initialFetch);
+      const commitWork = async (message: string) => {
+        await git([
+          "-c",
+          "user.name=Cedar",
+          "-c",
+          "user.email=cedar@example.test",
+          "commit",
+          "--quiet",
+          "--allow-empty",
+          "-m",
+          message,
+        ]);
+        return (await git(["rev-parse", "HEAD"])).stdout.trim();
+      };
+      if (scope === "repository") {
+        assert.ok(repository);
+        // The ordinary Git client creates a new commit from the fetched object. Both pushes
+        // use the same live grant and installed sender. Only the granted review ref may move.
+        await git(["checkout", "--quiet", "-b", "review", "FETCH_HEAD"]);
+        const commit = await commitWork("Work for the granted review ref");
+        const reviewRef = "refs/heads/review";
+        const otherRef = "refs/heads/existing-branch";
+        const beforeRef = await origin.ref(otherRef);
+        const push = (ref: string) =>
+          git(["-c", auth, "push", "--quiet", remote, `HEAD:${ref}`], true);
+        assert.equal(
+          (
+            await run("git", ["show-ref", "--verify", "--quiet", reviewRef], {
+              cwd: origin.bare,
+              allowFailure: true,
+            })
+          ).code,
+          1,
+          "the review ref must be absent before the granted push",
+        );
+        const beforePush = peer.decisions.length;
+        const accepted = await push(reviewRef);
+        assert.equal(accepted.code, 0, "the granted review ref must accept the push");
+        assert.equal(await origin.ref(reviewRef), commit);
+        assert.deepEqual(
+          peer.decisions.slice(beforePush).map(({ operation }) => operation),
+          ["advertise-receive-pack", "receive-pack"],
+        );
+
+        const beforeDeniedPush = traffic();
+        const deniedPush = await push(otherRef);
+        assert.notEqual(deniedPush.code, 0);
+        assert.match(deniedPush.stderr, /403/);
+        assert.deepEqual(peer.decisions.at(-1), {
+          operation: "receive-pack",
+          decision: { kind: "denied", reason: "unavailable" },
+        });
+        assert.deepEqual(
+          traffic(),
+          {
+            connections: beforeDeniedPush.connections + 1,
+            requests: beforeDeniedPush.requests + 1,
+          },
+          "only discovery, never the refused ref update, may reach the origin",
+        );
+        assert.equal(origin.trace.at(-1)?.path, `/${origin.repository}.git/info/refs`);
+        assert.equal(await origin.ref(otherRef), beforeRef);
+        assert.equal(await origin.ref(reviewRef), commit);
+
+        // Both draft requests are valid for this head and base, with distinct titles and
+        // sender-generated operation IDs. The durable grant may fund exactly one create.
+        const draftPath = `/repos/${origin.repository}/pulls`;
+        const openDraft = (title: string) =>
+          new Promise<{ status: number | undefined; body: unknown }>((resolve, reject) => {
+            request(
+              peer.url,
+              {
+                method: "POST",
+                path: draftPath,
+                ca: tls.ca,
+                agent: false,
+                signal: t.signal,
+                headers: {
+                  host: peer.apiUrl.host,
+                  authorization: peer.clientHeader.slice("Authorization: ".length),
+                  "content-type": "application/json",
+                },
+              },
+              (res) => {
+                if (res.statusCode === 201) {
+                  void json(res).then((body) => resolve({ status: res.statusCode, body }), reject);
+                } else {
+                  res.resume();
+                  resolve({ status: res.statusCode, body: undefined });
+                }
+              },
+            )
+              .once("error", reject)
+              .end(
+                JSON.stringify({
+                  title,
+                  head: "review",
+                  base: "main",
+                  body: "",
+                  draft: true,
+                  maintainer_can_modify: false,
+                }),
+              );
+          });
+        const { gh: provider } = repository;
+        const draftCalls = () =>
+          provider.trace.filter(({ method, target }) => method === "POST" && target === draftPath);
+        assert.equal(draftCalls().length, 0);
+        const firstTitle = "Review the granted change";
+        const draft = await openDraft(firstTitle);
+        assert.equal(draft.status, 201);
+        const authorization = peer.decisions.at(-1);
+        assert.equal(authorization?.operation, "create-draft-pull");
+        const permit = authorization?.decision;
+        assert.ok(permit && typeof permit === "object" && "exchangeId" in permit);
+        assert.partialDeepStrictEqual(permit, {
+          kind: "permit",
+          materialVersion: first.materialVersion,
+        });
+        const draftClaims = async () =>
+          (
+            await pool.query(
+              `SELECT receipt_id, operation_id, outcome FROM occ.prepared_repository_draft_pulls
+             WHERE material_version=$1`,
+              [first.materialVersion],
+            )
+          ).rows;
+        const claims = await draftClaims();
+        assert.equal(claims.length, 1);
+        assert.equal(claims[0].receipt_id, permit.exchangeId);
+        assert.match(claims[0].operation_id, /^[0-9a-f-]{36}$/);
+        assert.equal(claims[0].outcome, "outcome_unknown");
+        assert.equal(draftCalls().length, 1);
+        assert.equal(draftCalls()[0]?.usedBearer, true);
+        assert.equal(draftCalls()[0]?.forwardedOperationId, false);
+        assert.equal(provider.pulls.size, 1);
+        const [created] = provider.pulls.values();
+        assert.ok(created);
+        const expectedDraft = {
+          number: created.number,
+          title: firstTitle,
+          draft: true,
+          state: "open",
+          head: { ref: "review" },
+          base: { ref: "main" },
+        };
+        assert.partialDeepStrictEqual(draft.body, expectedDraft);
+        assert.partialDeepStrictEqual(created, expectedDraft);
+
+        const deniedDraft = await openDraft("Try a distinct second draft");
+        assert.equal(deniedDraft.status, 403);
+        assert.deepEqual(peer.decisions.at(-1), {
+          operation: "create-draft-pull",
+          decision: { kind: "denied", reason: "draft_already_opened" },
+        });
+        assert.equal(draftCalls().length, 1, "the second draft must never reach the provider");
+        assert.equal(provider.pulls.size, 1);
+        assert.deepEqual(
+          await draftClaims(),
+          claims,
+          "the second draft did not spend another allowance",
+        );
+        t.diagnostic("git-write grant advanced review, refused another ref, and opened one draft");
+      }
       if (broad) {
         const provider = broad.installation;
         const { repositories, apiRequests } = provider;
@@ -1612,20 +1787,6 @@ function externalGitJourney(
         );
 
         await git(["checkout", "--quiet", "-b", "installation-feature", "FETCH_HEAD"]);
-        const commitWork = async (message: string) => {
-          await git([
-            "-c",
-            "user.name=Cedar",
-            "-c",
-            "user.email=cedar@example.test",
-            "commit",
-            "--quiet",
-            "--allow-empty",
-            "-m",
-            message,
-          ]);
-          return (await git(["rev-parse", "HEAD"])).stdout.trim();
-        };
         const commit = await commitWork("Work in the second private repository");
         const providerGit = (args: string[], allowFailure = false) =>
           run("git", ["-C", origin.bare, ...args], { env, allowFailure });
