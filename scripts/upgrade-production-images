@@ -1147,6 +1147,10 @@ No ${writer_qualifier}OCC writer was stopped; the old release keeps serving. Cor
             [[ -n "${message// /}" ]] || message="no output (see preflight-$component-status.json). "
             if ((resume)); then
               message="the $component application identity preflight failed: ${message}No additional OCC writer was stopped. Preserve the original evidence and writer freeze; reconcile the application connection before --resume."
+            elif grep -q '^Candidate application database Installation identity could not be verified: this Pod could not open a connection to the database\.' \
+              "$evidence_dir/preflight-$component.log"; then
+              # Not an Installation refusal: the database, its sign-in or the egress that reaches it.
+              message="the selected controller image cannot start the $component with the candidate Installation: ${message}No ${writer_qualifier}OCC writer was stopped; correct the database, the chart's database values (database.cidrs) or the network policies that admit this Pod's database egress, then start again with a new evidence directory."
             else
               message="the selected controller image cannot start the $component with the candidate Installation: ${message}No ${writer_qualifier}OCC writer was stopped; correct the Installation and start again with a new evidence directory."
             fi
