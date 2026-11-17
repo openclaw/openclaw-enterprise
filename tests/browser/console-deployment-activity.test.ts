@@ -381,6 +381,7 @@ for (const viewport of [
       const { fixture, namespace, agent, revisionId, url, control, unavailableDuring } =
         await deploymentFixture(t);
       const { page } = await newPage(t, fixture, { context: { viewport } });
+      await trackSettledFetches(page);
       const region = page.getByRole("region", { name: "Deployment activity" });
       const details = region.locator("details");
       const run = page.getByRole("button", { name: "Run diagnostics for this version" });
@@ -467,6 +468,9 @@ for (const viewport of [
       const now = await page.evaluate(() => Date.now());
       await page.clock.pauseAt(new Date(now + 1000));
       async function poll(expected: Outcome) {
+        // The page arms its next poll only once it has handled the last read: an unchanged
+        // answer shows nothing new to wait for, so wait for the read itself (finding 3269).
+        await waitForIdleFetches(page);
         const response = next();
         await page.clock.runFor(DEPLOYMENT_POLL_MS);
         await received(response, expected, expected === 503);
@@ -716,6 +720,7 @@ test("a pending cleanup after a final outcome keeps the reader's fold until it e
   control.failed = true;
   control.cleanup = "queued";
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const region = page.getByRole("region", { name: "Deployment activity" });
   const details = region.locator("details");
   // A failed version that is not current offers no diagnostics: the reader moves on to its record.
@@ -757,6 +762,8 @@ test("a pending cleanup after a final outcome keeps the reader's fold until it e
   await page.evaluate(() => document.fonts.ready);
   await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
   async function poll(cleanup: string | null) {
+    // The page arms its next poll only once it has handled the last read.
+    await waitForIdleFetches(page);
     const response = next();
     await page.clock.runFor(DEPLOYMENT_POLL_MS);
     await received(response, cleanup);
