@@ -77,6 +77,21 @@ test(
       typeof (sandbox as { protectedWorkspaceEndpoint?: unknown }).protectedWorkspaceEndpoint,
       "function",
     );
+    // Protected dedicated-Codex deploys need the artifact-policy acknowledgement; Box declares no
+    // credential-free artifact rules, so the snapshot is empty and carries no Agent additions.
+    assert.equal("admitProtectedCodexArtifactPolicy" in plain, false);
+    assert.deepEqual(sandbox.admitProtectedCodexArtifactPolicy?.(3), {
+      purpose: "protected-codex-artifacts",
+      declaredRuleNames: [],
+      snapshot: {
+        driverId: sandbox.id,
+        implementation: sandbox.implementation,
+        version: 3,
+        defaults: {},
+        additions: [],
+      },
+    });
+    assert.throws(() => sandbox.admitProtectedCodexArtifactPolicy?.(0), /positive policy version/);
     const proxy = owner.require("credential_proxy");
     assert.deepEqual(
       await proxy.sourceControl.assertAvailable?.(AbortSignal.timeout(1_000), "github_repository"),

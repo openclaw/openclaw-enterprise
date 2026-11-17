@@ -21,6 +21,7 @@ import type {
   EgressInstallation,
   EgressRef,
   HarnessWorkloadRequirements,
+  ProtectedCodexArtifactPolicyAdmission,
   ProtectedRepositoryGitAuthority,
   ProtectedWorkspaceEndpoint,
   ProtectedWorkspaceSandboxDriver,
@@ -505,6 +506,29 @@ export function createProtectedRegistration(
         shared.active?.revisionId === revisionId ? shared.active.settledAt : undefined,
       isRouteBlockedError: () => false,
     };
+
+    /**
+     * Protected dedicated-Codex execution needs an explicit artifact-policy acknowledgement
+     * (OCC refuses the deploy without one). Box enforces the egress the host renders from the
+     * revision itself; this Driver declares no credential-free artifact rules and carries no
+     * Agent additions, so the acknowledged snapshot is empty. Side-effect free.
+     */
+    admitProtectedCodexArtifactPolicy(version: number): ProtectedCodexArtifactPolicyAdmission {
+      if (!Number.isSafeInteger(version) || version < 1) {
+        throw new Error("The protected artifact policy needs a positive policy version.");
+      }
+      return {
+        purpose: "protected-codex-artifacts",
+        declaredRuleNames: [],
+        snapshot: {
+          driverId: this.id,
+          implementation: this.implementation,
+          version,
+          defaults: {},
+          additions: [],
+        },
+      };
+    }
 
     protected override admit(context: SandboxHarnessContext): void {
       const { revision, requirements } = context;
