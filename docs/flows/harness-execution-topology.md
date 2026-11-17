@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-11
-last_updated_session: authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792
+updated: 2026-11-15
+last_updated_session: authoring-run/d20d75ce-b474-4edf-99bd-1930f0284a3f
 ---
 
 # Harness Execution Topology Flow
@@ -125,21 +125,22 @@ only beside its storage label.
 The [upgrade requirements](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
 own the operator boundary.
 
-`ensureNamespace` prepares one single-cluster tenant namespace, including adopted
-targets; its storage-role label enables discovery. Two-cluster Gateways retain
-their control-cluster target. Dedicated Gateway and Harness Pods, identities,
-and PVCs remain separate. `deliverGatewaySecrets` validates canonical sources;
+`ensureNamespace` prepares single-cluster tenants, including adopted targets,
+with storage-role labels for discovery. Two-cluster Gateways retain their
+control-cluster target. Dedicated Gateway/Harness Pods, identities and PVCs stay
+separate. `deliverGatewaySecrets` validates canonical sources;
 `deliverHarnessAuth` creates selected model/transport projections.
-Transport and Gateway passwords use separate sources across modes. Compute
-retains legacy combined sources for older Pods and copies their password before
-new templates reference the separate source. Concurrent creation adopts only an
-exact-owned, identical password; foreign or conflicting sources fail.
+Transport/Gateway passwords have separate sources. Compute copies legacy
+combined-source passwords for older Pods before referencing separate sources.
+Concurrent creation adopts only exact-owned, identical passwords;
+foreign/conflicting sources fail.
 [Namespaces and isolation](../reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation)
 owns qualified DNS and exact NetworkPolicy/Service selectors. Harness selectors
 include version and network profile; Gateway selectors omit version for stability.
-`deploy/helm/openclaw-execution/templates/routing.yaml` validates DNS and Envoy peer maps
-before rendering NetworkPolicies. Values must be strings or native null; type
-errors identify the setting.
+`deploy/helm/openclaw-execution/templates/routing.yaml` validates DNS/Envoy maps
+(strings or native null), naming type errors before rendering policies. It
+hashes dotted or hash-shaped Service names; Gateway identity and explicit Harness
+hostname stay unchanged. See [execution-chart naming](../testing/kubernetes.md#upgrade-the-execution-chart).
 `runtime.gatewayNodeSelector` places Gateways and private-state initializers.
 `runtime-entrypoints.ts:agentRuntimeReady` and the Docker healthcheck require
 Codex initialization for Compute-owned launches; provider commands remain
@@ -358,6 +359,8 @@ removal.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-15 10:05: Trace separate Service names for dotted execution Gateways. (authoring-run/d20d75ce-b474-4edf-99bd-1930f0284a3f - c1ece768d5d104dfd26b66ed2afeae0b059adaf8)
 
 - 2026-11-11 06:50: Trace configured Gateway claim capacity and mismatch refusal. (authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792 - 036845b2f70f4c5d13b7f180e3642865ca891a8a)
 

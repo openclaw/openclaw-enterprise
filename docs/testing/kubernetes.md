@@ -372,16 +372,16 @@ reference deployment or live EKS behavior.
 
 ## Two-cluster validation
 
-This experimental profile runs OCE and dedicated Codex Harnesses in separate
-clusters. It excludes embedded execution, cloud provisioning and repository
-credential delivery. Re-run it against current images before claiming acceptance.
+Experimental: OCE and dedicated Codex Harnesses run in separate clusters;
+embedded execution, cloud provisioning and repository credentials are excluded.
+Requalify current images.
 
 ### Prepare isolated infrastructure
 
-Use two disposable k3d clusters with Kubernetes 1.35 or later, distinct Pod and
-Service CIDRs, enforcing NetworkPolicies, and loopback kubeconfigs. Select an
-existing disposable Linux VM through its Docker context. Do not change the
-default Docker context or kubeconfig. Use unused names and ports:
+Use two disposable k3d clusters (Kubernetes 1.35+) on an existing disposable Linux
+VM: distinct Pod/Service CIDRs, enforcing NetworkPolicies, loopback kubeconfigs
+and unused names/ports. Explicitly select its Docker context; preserve the
+default context and kubeconfig:
 
 ```sh
 umask 077
@@ -417,10 +417,10 @@ kubectl --kubeconfig "$OCE_TEST_DIR/dp.kubeconfig" label \
   node k3d-openclaw-k8s-local-dp-server-0 oce-role=agents
 ```
 
-Keep the private kubeconfigs out of Git and runtime images. Install Envoy Gateway
-in both clusters and cert-manager in the control plane (CP). Provide independent
-RWO Gateway storage in CP and Harness storage in the execution cluster (DP).
-Import approved immutable images and install the Codex seccomp profile on DP.
+Keep kubeconfigs out of Git/runtime images. Install Envoy Gateway in both
+clusters and cert-manager in the control plane (CP). Provision independent RWO
+Gateway storage in CP and Harness storage in the execution cluster (DP).
+Import approved immutable images and install DP's Codex seccomp profile.
 
 After CoreDNS installs, place `coredns.yaml.skip` under
 `/var/lib/rancher/k3s/server/manifests/` on each owned test node to retain local
@@ -428,11 +428,11 @@ DNS settings across restarts. This is fixture setup, not production DNS setup.
 
 ### Configure the network and credentials
 
-All cross-cluster traffic uses verified HTTPS. Set reachable DNS names,
-certificates, observed CIDRs, and cluster API access. Do not use cluster-local
-`.svc` addresses across clusters. CP API and worker use separate scoped DP
-kubeconfigs; Gateway uses the exact-Agent transport token to reach the Harness,
-and the workspace node uses its node-only identity to reach Gateway.
+Cross-cluster traffic requires verified HTTPS, reachable DNS, certificates,
+observed CIDRs and cluster API access; cluster-local `.svc` addresses cannot
+cross clusters. CP API and worker use separate scoped DP kubeconfigs. Gateway
+reaches Harness with the exact-Agent transport token; the workspace node reaches
+Gateway with its node-only identity.
 
 Create a DP TLS Secret and install `deploy/helm/openclaw-execution` with
 `routing.hostname`, `gatewayClassName`, `tlsSecretName`, and
@@ -523,13 +523,21 @@ Remove the private test directory when you no longer need its kubeconfigs.
 
 ### Upgrade the execution chart
 
-Upgrade the execution release before the control-plane image upgrade:
+Upgrade execution before control-plane images:
 
 ```bash
 helm upgrade <execution-release> deploy/helm/openclaw-execution \
   --kube-context <execution-context> --namespace <execution-system-namespace> \
   -f <execution-values.yaml>
 ```
+
+Gateway identity/selectors stay unchanged. Dotted and `occ-harness-<12 lowercase
+hex>` names use Service `occ-harness-<first 12 hex of SHA-256(namespace/gatewayName)>`,
+preventing aliases; others, including `oce-harnesses`, retain Service names. Hash-shaped names change Service addresses on upgrade:
+refresh external DNS/load-balancer targets from
+`EnvoyProxy.spec.provider.kubernetes.envoyService.name`. Match Installation
+`executionCluster.harnessRouting.gatewayName`/`.hostname` to chart
+`routing.gatewayName`/`.hostname`.
 
 Pass the installation values; do not use `--reuse-values`. Keep
 `agentRuntimeLogs.enabled` equal to the CP chart value. The control-plane

@@ -1,6 +1,7 @@
 routing:
   hostname: ""
   gatewayClassName: ""
+  # Dotted names and occ-harness-<12 hex> names use a namespace-qualified, hashed Service name.
   gatewayName: oce-harnesses
   envoyNamespace: envoy-gateway-system
   tlsSecretName: ""
