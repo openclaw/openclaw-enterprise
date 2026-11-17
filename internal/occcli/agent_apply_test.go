@@ -217,18 +217,18 @@ func TestAgentApplyStopsWhenTheAgentIsRebound(t *testing.T) {
 
 func TestAgentApplyDeployAdviceDependsOnWhetherOCCRefused(t *testing.T) {
 	changed := `{"name":"existing","configuration":{"kind":"agent","values":{"a":1}}}`
-	lost := &applyServer{deploy: func(writer http.ResponseWriter) {
-		connection, _, _ := writer.(http.Hijacker).Hijack()
-		_ = connection.Close()
-	}}
-	if message, err := runApply(t, lost, changed); err == nil || !strings.Contains(message, "deploy result is unknown") || strings.Contains(message, "occ agent deploy") {
-		t.Fatalf("lost reply: message = %q, err = %v", message, err)
-	}
-	gateway := &applyServer{deploy: func(writer http.ResponseWriter) {
-		writer.WriteHeader(http.StatusBadGateway)
-	}}
-	if message, err := runApply(t, gateway, changed); err == nil || !strings.Contains(message, "deploy result is unknown") {
-		t.Fatalf("5xx reply: message = %q, err = %v", message, err)
+	for name, deploy := range map[string]func(http.ResponseWriter){
+		"lost reply": func(writer http.ResponseWriter) {
+			connection, _, _ := writer.(http.Hijacker).Hijack()
+			_ = connection.Close()
+		},
+		"5xx reply":     func(writer http.ResponseWriter) { writer.WriteHeader(http.StatusBadGateway) },
+		"timeout reply": func(writer http.ResponseWriter) { writer.WriteHeader(http.StatusRequestTimeout) },
+	} {
+		message, err := runApply(t, &applyServer{deploy: deploy}, changed)
+		if err == nil || !strings.Contains(message, "deploy result is unknown") || !strings.Contains(message, "Agent settings") || strings.Contains(message, "agent deploy") {
+			t.Fatalf("%s: message = %q, err = %v", name, message, err)
+		}
 	}
 	refused := &applyServer{deploy: func(writer http.ResponseWriter) {
 		writer.WriteHeader(http.StatusConflict)

@@ -1174,13 +1174,19 @@ func revisionSummary(client *occclient.Client, namespace, agentID, revisionID st
 	}
 }
 
+// isDefiniteRefusal reports a reply that proves OCC did not admit the request.
+// A 5xx or 408 can follow a committed admission, so it stays unknown.
+func isDefiniteRefusal(err error) bool {
+	var apiErr *occclient.APIError
+	return errors.As(err, &apiErr) && apiErr.Status < http.StatusInternalServerError && apiErr.Status != http.StatusRequestTimeout
+}
+
 func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespace, agentID string, intent occclient.FirstDeploymentIntent, err error, overridesFile string) {
 	var dial *net.OpError
 	if errors.As(err, &dial) && dial.Op == "dial" {
 		return
 	}
-	var apiErr *occclient.APIError
-	if errors.As(err, &apiErr) && apiErr.Status < http.StatusInternalServerError && apiErr.Status != http.StatusRequestTimeout {
+	if isDefiniteRefusal(err) {
 		return
 	}
 	// A lost or unreadable reply, timeout, or server failure does not establish

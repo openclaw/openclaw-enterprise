@@ -75,9 +75,10 @@ saves stay. The error prints the next command with the selected Namespace and
 connection settings. After an Agent patch failure, fix the file and run `apply`
 again; if it reports `unchanged`, run the printed `occ agent deploy ID`. A deploy
 failure leaves the saved Configuration unchanged on the next `apply`, so the error
-asks for the same command. A 4xx reply is a refusal. If the reply is lost or is a
-5xx, the result is unknown, and the error says to check `occ agent revisions ID`
-before deploying again.
+asks for the same command. A 4xx reply other than 408 is a refusal. If the reply is
+lost, a 408 or a 5xx, the result is unknown, and the error says to check
+`occ agent revisions ID` for a revision with the saved Configuration generation and
+the Agent settings from the file before deploying again.
 
 ## Debugging and Verification
 

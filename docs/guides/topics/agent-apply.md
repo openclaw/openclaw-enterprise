@@ -31,8 +31,9 @@ settings. The other three apply only when the Agent is created.
 Deployment checks the saved Configuration against the Agent. If the deploy fails
 after the save, the error names the cause and the full `occ agent deploy ID` command, with your
 Namespace and connection settings. Fix the cause, then run that command. If the
-reply was lost or was a server error, the error says the result is unknown. Check `occ agent revisions ID` for
-a revision with the saved generation before you deploy again. If the Agent update
+reply was lost, timed out (408) or was a server error, the error says the result is unknown. Check
+`occ agent revisions ID` for a revision with the saved Configuration generation and the Agent settings from
+the file before you deploy again. If the Agent update
 fails after the Configuration is saved, fix the file and run `apply` again; when it
 reports `unchanged`, run the printed deploy command. A second `apply`
 reports `unchanged`, because the values are saved.

@@ -4,10 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
-	"errors"
 	"fmt"
 	"maps"
-	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -228,12 +226,11 @@ func (app *application) updateAgent(client *occclient.Client, namespace string, 
 		return nil, err
 	}
 	revision, err := client.DeployAgent(namespace, agentID, nil)
-	var refusal *occclient.APIError
-	if errors.As(err, &refusal) && refusal.Status < http.StatusInternalServerError {
+	if isDefiniteRefusal(err) {
 		return nil, fmt.Errorf("saved the changes but could not deploy; run \"%s\": %w", agentCommand("deploy"), err)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("saved the changes; the deploy result is unknown. Run \"%s\" and deploy only if no revision has the saved generation: %w", agentCommand("revisions"), err)
+		return nil, fmt.Errorf("saved the changes; the deploy result is unknown. Run \"%s\" and deploy only if no revision has the saved Configuration generation and the Agent settings from the file: %w", agentCommand("revisions"), err)
 	}
 	deployed, _ := revision.(map[string]any)
 	return map[string]any{"result": "updated", "agentId": agentID, "revisionId": deployed["id"]}, nil
