@@ -13,6 +13,9 @@ import {
   ConnectionTemplateSchema,
   OAuthConnectionTemplateVersionSchema,
   CredentialSourceResponse,
+  RegisterTokenServiceSourceBody,
+  UpdateTokenServiceSourceBody,
+  TokenServiceSourceMetadata,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
   isSecretHarnessAuth,
@@ -4796,6 +4799,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.addSchema(CredentialSourceResponse);
     routes.addSchema(OAuthConnectionTemplateVersionSchema);
     routes.addSchema(ConnectionTemplateSchema);
+    routes.addSchema(RegisterTokenServiceSourceBody);
+    routes.addSchema(UpdateTokenServiceSourceBody);
+    routes.addSchema(TokenServiceSourceMetadata);
     routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       nativeAdminReturnOperation.path,
       {

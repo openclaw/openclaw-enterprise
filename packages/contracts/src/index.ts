@@ -1592,6 +1592,11 @@ export {
   ConnectionTemplateSchema,
   OAuthConnectionTemplateVersionSchema,
 } from "./api/connection-templates.ts";
+export {
+  RegisterTokenServiceSourceBody,
+  UpdateTokenServiceSourceBody,
+  TokenServiceSourceMetadata,
+} from "./api/token-service-sources.ts";
 export * from "./api/resources.ts";
 export * from "./api/routes.ts";
 

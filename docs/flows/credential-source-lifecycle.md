@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-13
-last_updated_session: authoring-run/f3a542b0-ca6b-426f-8759-3ca2500f79ce
+updated: 2026-11-17
+last_updated_session: 01a1eb01-0dea-7f01-8613-761574377d3f
 ---
 
 # Credential source lifecycle Flow
@@ -81,7 +81,10 @@ with `ResourceConflictError` before effects. OCC commits intermediate State befo
 `apps/controller/src/http/credential-sources.ts:createCredentialSource`,
 `packages/occ/src/index.ts:createCredentialSource`
 
-The route accepts `name`, `type`, optional `config` and lowercase-keyed `secrets`.
+The current route accepts `name`, `type`, optional `config` and lowercase-keyed `secrets`.
+Fastify also publishes [TokenService source schemas](../../packages/contracts/src/api/token-service-sources.ts)
+as OpenAPI components. The [CRUD routes](../../packages/contracts/src/api/routes.ts) continue to use
+Secret references until the registration handler, source store and callers switch to the selected owner.
 One transaction authorizes `credential_source:create`, locks the ready Namespace,
 requires its selected source Driver, then reads the catalog.
 An unoffered type returns `CredentialSourceTypeNotOfferedError` (`409`). Unknown
@@ -374,6 +377,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 
 ## Changelog
 
+- 2026-11-17 19:44: Distinguish the published TokenService schemas from the current registration handler. (01a1eb01-0dea-7f01-8613-761574377d3f - 23b54e285)
+
 - 2026-11-13 15:44: Recheck the Git-only model lifecycle before Kubernetes attachment and release. (authoring-run/f3a542b0-ca6b-426f-8759-3ca2500f79ce - a14ccd99)
 
 - 2026-11-11 19:04: Keep ordinary Gateway model delivery independent of Git Proxy selection. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb511)
@@ -409,13 +414,5 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 - 2026-10-14 01:11: Reconcile endpoint validation and provider ownership with external OAuth custody in the accompanying merge. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - c5fb4880ebf2df2aedae12f99adb1992a930ba1b)
 
 - 2026-10-13 20:07: Check provider ownership before profile updates. (authoring-run/01a136d4-3550-7042-834c-cf11f51f41f2 - 146c80ef66b5860cb9bea296d2574156468a103c)
-
-- 2026-10-12 14:00: Every source, including `openai`, owns its OpenShell profile; no profile is shared by type. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - e0bb26d84)
-
-- 2026-10-10 04:53: Reconcile credential refresh; report invalid offered-source values as field-specific 400 before effects. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 90268463bbd255c3c13a0e0bdeb437728189eb1a)
-
-- 2026-10-13 18:56: Use source-owned OpenShell profiles for Codex OAuth. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - af184d6224af7c60b81027ca307097ecfc5007cc)
-
-- 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
 
 [Credential source lifecycle documentation history](credential-source-lifecycle/history.md) preserves the older dated entries.
