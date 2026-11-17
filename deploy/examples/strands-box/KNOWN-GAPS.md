@@ -14,15 +14,15 @@ entries use the same four fields.
   adds another CA.
 - **Workaround:** name the endpoint with an operator DNS name pinned to one
   private IPv4 address, then either use a publicly trusted certificate for that
-  name, or use a Box build that reads the `upstream-ca-file` key and set the
-  host's upstream CA bundle. Box trusts that bundle for every upstream it dials,
+  name, or use a Box build that reads `[gateway] upstream_ca_file` (the fork's
+  `dogfood/main`) and set the host's upstream CA bundle. Box trusts that bundle for every upstream it dials,
   so the host refuses to start unless every route Box dials declares the
   bundle's digest. An inline workspace node must opt in or use the separate file
   node. See [Controlled inference route](driver/README.md#controlled-inference-route).
 - **Upstream status:** reported as
   [strands-agents/box#54](https://github.com/strands-agents/box/issues/54).
   [strands-agents/box#147](https://github.com/strands-agents/box/pull/147) is open
-  and adds the gateway-wide `upstream-ca-file` key that the host writes. Per-route
+  and adds the gateway-wide `upstream_ca_file` key that the host writes. Per-route
   CA scoping upstream would remove the need for every route to opt in.
 
 ## Box presents no client certificate
@@ -37,44 +37,65 @@ entries use the same four fields.
   with the host control process, as the committed recipient.
 - **Upstream status:** not yet reported to strands-agents/box.
 
-## GitHub access through Box (Stage A prototype)
+## GitHub access needs the Box fork's request-time credential source
 
-- **Symptom:** the paired registration gives stock `git` and `gh` GitHub access,
-  but OCE neither authorizes nor records individual requests. Any branch, base,
-  number of draft pull requests or API call the installation token permits
-  succeeds. `occ.credential_deliveries` records the install, but no request
-  exchange or draft receipt rows exist for the execution.
-- **Cause:** Box v0.2.2 has no request-phase hook that asks an external service
-  before it attaches a credential. Its `EffectInterceptor` is internal and sees
-  only method, path and body length. The host therefore delivers the installation
-  token to `box run`, and Box sends with it on its own. The Credential Proxy
-  contract permits material reads for receipt or installation only, not as
-  authorization to send, so this stage cannot land.
-- **Workaround:** use only on a dogfood host with a test repository. Keep
-  branch protection on the base branch. Grant the App only Contents, Pull
-  requests and Metadata on the selected repository.
-  A Worker restart between OCE's install intent and its confirmation leaves the
-  delivery row pending; Box keeps the token, so access is unaffected.
-- **Upstream status:** a Box fork adds a request-time credential source: after
-  Box's policy permits a request, Box asks an operator endpoint for that
-  request's credential, and a refusal or timeout fails closed. Drafts for
-  strands-agents/box go to the owner first; nothing is filed yet.
+- **Symptom:** a released Box v0.2.2 refuses the host's `box.toml` for a
+  protected execution: `[gateway.credential_source.oce]`, `source://` route
+  secrets and `[gateway] upstream_ca_file` are unknown keys.
+- **Cause:** the paired registration lets Box inject GitHub credentials itself
+  and ask OCE for each request. After Box's policy permits a request, Box sends
+  it to the host's credential source, the host relays it to the paired Driver
+  in the Worker, and OCE's `requests.authorize` decides it and records the use.
+  Only a Box build with the request-time credential source can ask. Released
+  Box has no such hook.
+- **Workaround:** build `strands-box`, `strands-box-sock-alias` and
+  `strands-box-contain-trampoline` from the fork's `dogfood/main` and install
+  them side by side. Use a fresh `box_dir`, because the fork writes record
+  versions v0.2.2 cannot read. On Linux x86-64, the host sets
+  `EXPERIMENTAL_X86_SUPPORT=TRUE` for `box run`. Use only on a dogfood host
+  with a test repository.
+- **Upstream status:** the fork's credential source is drafted for
+  strands-agents/box with the owner. Nothing is filed yet.
 
-## Box reads env:// credentials once at start
+## OCE applies no draft or branch rule to gh's GitHub API requests
 
-- **Symptom:** the Box host restarts the released `box run` once, right after
-  the revision activates, and Codex restarts with it. About an hour after the
-  token was minted, or as soon as OCE renews it, the execution's GitHub requests
-  fail with `401` until the Agent is redeployed.
-- **Cause:** OCE prepares installation tokens only for the Agent's active
-  revision, and activation needs the Harness serving, so the token cannot exist
-  before Box starts. Box v0.2.2 reads each `env://` secret once at start and has
-  no refreshable source. OCE's renewal retires, and revokes, the token Box holds.
-- **Workaround:** redeploy the Agent after access ends. The restart happens
-  before the revision serves traffic, and the Compute install check waits for
-  the node to reconnect after it.
-- **Upstream status:** the same fork's request-time source returns a fresh
-  credential per request. Not yet reported to strands-agents/box.
+- **Symptom:** OCE authorizes and records every request, but a non-draft pull
+  request, a second draft, or a push to any branch that the installation token
+  permits succeeds.
+- **Cause:** stock `gh pr create` uses GitHub GraphQL, so the Driver asks OCE
+  with the `github_repository` profile. That profile checks the repository,
+  method and route, but it has no draft, ref or one-draft rule, the same as
+  OpenShell. Those rules exist only in the `repository_git` profile, and its
+  classifier refuses GitHub REST and GraphQL requests.
+- **Workaround:** keep branch protection on the base branch. Grant the App only
+  Contents, Pull requests and Metadata on the selected repository.
+- **Upstream status:** an OCE gap, not a Box one. A draft rule for GraphQL
+  `createPullRequest` under `github_repository` needs an OCE decision.
+
+## GitHub requests fail while the Worker is unavailable
+
+- **Symptom:** while the Worker restarts, or before it confirms a renewed
+  installation token, GitHub requests from the execution fail with `403` and
+  `credential refused by its source: route_not_ready`. The chat keeps running.
+- **Cause:** Box asks for every request and the host has no credential of its
+  own. Only the Worker's paired Driver can ask OCE. The host refuses an ask that
+  gets no answer within Box's 5-second timeout, and the Driver refuses an ask
+  until OCE's current token version is confirmed for the execution.
+- **Workaround:** retry the command once the Worker is back. The Worker confirms
+  a renewed token on its next reconcile pass, about a second later. Box keeps
+  running throughout, so no restart is needed.
+- **Upstream status:** by design. The request-time source fails closed.
+
+## Box connects to GitHub before it asks the source
+
+- **Symptom:** a request that OCE refuses still opens a TCP connection from the
+  Box host to `github.com` or `api.github.com`. GitHub receives no request bytes
+  and no credential.
+- **Cause:** Box dials the upstream when the workload's `CONNECT` arrives. Its
+  policy and credential source see the request only after the TLS tunnel exists.
+- **Workaround:** none needed for credential custody. Count refusals from OCE's
+  use records, not from connection logs.
+- **Upstream status:** Box behavior; not reported.
 
 ## A phantom credential cannot carry Git's first request
 
@@ -155,6 +176,8 @@ entries use the same four fields.
 - **Cause:** the release publishes Linux ARM64 and macOS ARM64 builds only. This
   example uses the Linux build.
 - **Workaround:** use an ARM64 Linux host, or a full-system ARM64 virtual machine.
+  A build of the fork's `dogfood/main` also runs on Linux x86-64 when the operator
+  environment sets `EXPERIMENTAL_X86_SUPPORT=TRUE`; the host sets it for `box run`.
   User-mode emulation is not enough, because Box needs user and network
   namespaces and Bubblewrap from the kernel it runs on. API, Worker and the
   workspace volume must sit on the same node, so that node is ARM64 too.

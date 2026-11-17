@@ -2,10 +2,12 @@
 
 The paired Strands Box test runs stock `git` and stock `gh` against a controlled
 GitHub origin, through a stand-in for Box egress that applies the exact
-credential routes and policy the Strands Box host generates. It checks the
-Worker's material install, the host's delivery record, the push, one draft pull
-request, refusal of another repository and refusal after withdrawal. It does
-not start Box, Kubernetes or an installed OpenClaw Enterprise (OCE) deployment.
+credential routes and policy the Strands Box host generates and asks the host's
+real credential source for every request. It checks request-time readiness, one
+OCE decision per request, renewal without restarting `box run`, the push, one
+draft pull request, refusal of another repository and refusal after withdrawal.
+It does not start Box, Kubernetes or an installed OpenClaw Enterprise (OCE)
+deployment.
 
 ## Run the test
 
@@ -34,38 +36,40 @@ changing any expected outcome; native hosts keep the default of 1.
 ## What the test observes
 
 1. Before the Compute release and activation, the Worker reads no material and
-   delivers nothing to the host.
-2. After the release, one install intent is persisted, the host receives the
-   material once over its owner-only control socket, and the intent is
-   confirmed only after the host reports that exact version in the live
-   `box run`. A lost delivery reply is settled from the host's record without a
-   second intent or a second restart. A Worker restart adopts the installed
-   version. A renewed version is not installed.
+   prepares nothing.
+2. After the release, the Worker persists one install intent for the version
+   and confirms it only while the host reports the live `box run` asking it.
+   Nothing is sent to the host. A Worker restart adopts the confirmed version.
 3. Stock `git push https://github.com/<owner>/<repo>.git <branch>` updates the
-   branch, and stock `gh pr create --draft` opens one draft. The workload
-   environment holds only Box placeholders, Box's proxy and Box's CA files.
-4. Another repository is refused by the origin, which models an installation
-   token scoped to one repository. A host outside the generated policy is
-   refused at `CONNECT`.
-5. After withdrawal the Worker sends nothing to the host, and the execution
-   keeps running. The origin models the revoked installation token, so fresh
-   Git and `gh` requests fail with GitHub's `401` and nothing is written.
+   branch, and stock `gh pr create --draft` opens one draft. Each request Box
+   sends is asked once, decided once by OCE's `requests.authorize` and
+   recorded with its own `exchangeId`. The workload environment holds only Box
+   placeholders, Box's proxy and Box's CA files, never the token or the source
+   bearer.
+4. A renewed version is refused with `route_not_ready` until the Worker
+   confirms it, then works in the same `box run`. The host is not asked to
+   restart.
+5. Another repository is refused by OCE with `request_not_allowed` before any
+   provider connection. A host outside the generated policy is refused by Box
+   at `CONNECT`, and OCE is not asked.
+6. After withdrawal OCE refuses the next Git and `gh` request with
+   `access_withdrawn` before any provider connection, nothing is written, and
+   the execution keeps running.
 
 ## Interpret the result
 
 The Box stand-in ([`boxGitHubEgress`](../../tests/helpers/strands-box-egress.ts))
 reproduces only the behavior the test relies on: TLS interception with its own
 CA, the permitted host and method, placeholder replacement for a phantom route,
-attachment to every request for an `inject = "always"` route, identity
-encoding and response scrubbing. It does not prove Box containment, Box's
-actual route semantics, GitHub's token scope or revocation timing. Check those
-on an installed run; see [Strands Box validation](../../deploy/examples/strands-box/VALIDATION.md).
+attachment to every request for an `inject = "always"` route, the
+request-time source wire, identity encoding and response scrubbing. It does not
+prove Box containment, Box's actual route semantics, GitHub's token scope or
+revocation timing. Check those on an installed run; see [Strands Box validation](../../deploy/examples/strands-box/VALIDATION.md).
 
-Withdrawal reaches GitHub in this mode: the refused request arrives at the
-origin and is rejected there, because Box does not ask OCE before each request.
-The earlier rehearsal that required a withdrawn request never to reach the
-origin returns when Box can call OCE's request authorization; see
-[known gaps](../../deploy/examples/strands-box/KNOWN-GAPS.md).
+The stand-in opens the upstream connection only after the source answers. Real
+Box dials the upstream at `CONNECT`, before it asks, so on an installed run a
+refused request may still open a TCP connection that carries no request bytes;
+see [known gaps](../../deploy/examples/strands-box/KNOWN-GAPS.md).
 
 ## Reuse the controlled services
 

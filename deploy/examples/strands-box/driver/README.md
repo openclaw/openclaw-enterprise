@@ -143,10 +143,10 @@ and [verify the live mount](worker-control.md#verify-the-live-worker-control-mou
 ## Paired protected registration
 
 > [!WARNING]
-> Prototype stage: Box injects the installation token on every GitHub request
-> without asking OCE, which the Credential Proxy contract does not allow. Do
+> Dogfood stage: the host needs a Box build with the request-time credential
+> source, and OCE applies no draft or branch rule to `gh`'s API requests. Do
 > not use this beyond a dogfood host. See the
-> [known gaps](../KNOWN-GAPS.md#github-access-through-box-stage-a-prototype).
+> [known gaps](../KNOWN-GAPS.md#github-access-needs-the-box-forks-request-time-credential-source).
 
 Add `protectedRepository` to the Driver configuration and select the same Driver
 as `drivers.credential_proxy` with an empty configuration:
@@ -185,21 +185,50 @@ The registration provides:
   the signature and opens the startup gate only for that held execution.
 - the Credential Proxy (`sourceControl`, `configureRevision`, `wiringStatus`,
   `verifyInstallation`, `removeRevision`, `bindRepositoryGit`). The installation
-  that Compute commits is built only from what the host reports. After the
-  revision activates, OCE prepares the installation token. The Worker
-  persists the install intent, delivers the token with
-  `POST /v1/repository-material` on the owner-only control socket, and confirms
-  the install only after the host reports that exact version in the live
-  `box run`. A lost reply is settled from the host's record, never installed
-  twice.
+  that Compute commits is built only from what the host reports. The binding
+  needs OCE's `requests` port. No token is delivered to the host. After the
+  revision activates, OCE prepares the installation token, and the Worker
+  confirms each version, the first and every renewal, as ready to be asked for.
+  It confirms only while the host reports the live `box run` asking it.
 
-The host restarts the released `box run` once with Box's two GitHub routes:
-`github.com` attaches `x-access-token:<token>` as Basic authentication to
-every request, and `api.github.com` replaces the `GITHUB_TOKEN` placeholder in
-`Authorization: token <placeholder>`. Box reads both values once at start, so
-a renewed token is not installed and access ends when OCE retires the
-installed one. Withdrawing the repository assignment revokes the token at
-GitHub; the Box execution and its chat keep running.
+Box injects GitHub credentials itself and asks for each request. The host
+starts the released `box run` with one request-time credential source,
+`[gateway.credential_source.oce]`, on `<runtimeDir>/source/oce.sock`. The
+directory has mode `0700` and no workload grant covers it. Box authenticates
+with the execution bearer, which only the `box run` environment holds, as
+`OCE_SOURCE_BEARER`. Two routes use the source:
+
+- `github.com` (`github-git`): Basic authentication `x-access-token:<token>`,
+  attached to every request (`inject = "always"`), because Git's first request
+  carries no credential.
+- `api.github.com` (`github-api`): `Authorization: token <token>`, replacing
+  the `GITHUB_TOKEN` placeholder.
+
+For each request that Box's policy permits:
+
+1. Box posts the request (target, headers, base64 body, a request ID) to the
+   source socket.
+2. The host checks the bearer's SHA-256, the target (the two hosts on port 443,
+   the route's methods) and the body cap (4 MiB). It queues the ask for the
+   Worker, which collects asks with `POST /v1/credential-asks` on the owner-only
+   control socket.
+3. The Driver checks the ask against the committed recipient and its confirmed
+   route, then calls `requests.authorize` with the `github_repository`
+   profile. OCE classifies the request, applies the grant's rules, records one
+   use and answers.
+4. The Driver answers with `POST /v1/credential-answers`. An allow becomes
+   `{credential, send_by_unix_ms}`: `x-access-token:<token>` for Git, the bare
+   token for the API. A refusal becomes `{refusal: <reason code>}`, which Box
+   shows the workload as `credential refused by its source: <code>`.
+5. Box places the value for that one request and sends it.
+
+Every failure is a refusal. That includes an unknown execution, a wrong bearer,
+a malformed ask, a request outside the two routes, a body over the cap, a past
+deadline, and no answer within Box's timeout. The host keeps no credential and
+nothing is retried. Renewal needs no restart: the next ask gets the new token.
+After the repository assignment is withdrawn, OCE refuses the next request with
+`access_withdrawn` before Box sends it, and the Box execution and its chat keep
+running.
 
 The Agent Gateway sends a protected Box turn with the same
 `externalSandbox` policy and `networkAccess: "restricted"` as an ordinary Box

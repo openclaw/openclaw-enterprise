@@ -5,11 +5,12 @@ through the ordinary OpenClaw Enterprise (OCE) workflow. By default the example
 Driver refuses protected repository delivery. Configuring `protectedRepository`
 selects the [paired protected registration](driver/README.md#paired-protected-registration)
 instead: the same package then supplies the protected Sandbox Driver and its
-Credential Proxy. The Worker delivers the GitHub App installation token that
-OCE mints to the Box host, and Box injects it on its own `github.com` and
-`api.github.com` routes, so the Agent uses [stock `git` and `gh`](git/README.md).
-This is a prototype stage that cannot ship: Box does not ask OCE before each
-request. See the [known gaps](KNOWN-GAPS.md#github-access-through-box-stage-a-prototype).
+Credential Proxy. Box injects GitHub credentials on its own `github.com` and
+`api.github.com` routes and asks OCE for each request through the Worker, so
+the Agent uses [stock `git` and `gh`](git/README.md). This stage needs a Box
+build with the request-time credential source, and OCE applies no draft rule to
+`gh`'s API requests. See the
+[known gaps](KNOWN-GAPS.md#github-access-needs-the-box-forks-request-time-credential-source).
 The pairing has component tests against controlled origins. It has yet to be
 verified on an installed Box Agent. The GitHub steps below are acceptance
 checks for that pairing on one execution.
@@ -231,14 +232,14 @@ before deploying the version under test. Repeat the chat and isolation checks
 on that execution, then run the GitHub checks below. See
 [repository access levels](../../../docs/reference/repository-credentials/access-levels.md)
 and [protected sender selection](../../../docs/reference/drivers/selection.md#select-a-protected-sender).
-The Worker keeps the App signing key; OCE mints the installation token. The
-Box host holds that token only in memory and in the `box run` environment.
-Keep the App key, the token and any host Git credentials out of the Agent's
-environment, files and prompts.
+The Worker keeps the App signing key; OCE mints the installation token and
+returns it for one request at a time. The Box host passes each value to Box
+once and keeps none. Keep the App key, the token and any host Git credentials
+out of the Agent's environment, files and prompts.
 
-The Box host restarts the released `box run` once, right after the revision
-activates, to give Box the token. Start the checks after that restart: the
-host's `GET /v1/execution` reports `repositoryRecipient.installed`.
+The Box host starts the released `box run` once, with its credential source.
+Start the checks once the host's `GET /v1/execution` reports
+`repositoryRecipient.source`.
 
 1. In the original chat, ask the Agent to change one file, push one branch
    with `git push https://github.com/<owner>/<repo>.git <branch>` and open a
@@ -248,15 +249,14 @@ host's `GET /v1/execution` reports `repositoryRecipient.installed`.
    on GitHub, and that GitHub records the App's bot account as the author of
    the pull request.
 2. Try a push and a draft against another repository in the same account.
-   GitHub refuses both because the installation token covers only the assigned
-   repository. Verify that the attempted ref stays unchanged.
+   OCE refuses both with `request_not_allowed` before Box sends them. Verify
+   that the attempted ref stays unchanged.
 3. Withdraw the active Agent's repository assignment through OCE without
-   stopping the Agent. OCE revokes the installation token at GitHub. From the
-   same execution, attempt a fresh fetch, push and draft. Verify that GitHub
-   refuses each with `401` and that the attempted ref stays unchanged. Send an
-   ordinary message and verify that the same chat still replies. Removing a
-   repository from a saved draft does not by itself prove withdrawal from the
-   running Agent.
+   stopping the Agent. From the same execution, attempt a fresh fetch, push and
+   draft. Verify that Box refuses each with the source's `access_withdrawn`
+   code and that the attempted ref stays unchanged. Send an ordinary message
+   and verify that the same chat still replies. Removing a repository from a
+   saved draft does not by itself prove withdrawal from the running Agent.
 
 Keep the observed host, chat and GitHub results separate. If a push or PR
 request loses its response, check the original ref or PR before retrying. When
