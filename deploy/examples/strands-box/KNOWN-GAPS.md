@@ -53,6 +53,8 @@ entries use the same four fields.
 - **Workaround:** use only on a dogfood host with a test repository. Keep
   branch protection on the base branch. Grant the App only Contents, Pull
   requests and Metadata on the selected repository.
+  A Worker restart between OCE's install intent and its confirmation leaves the
+  delivery row pending; Box keeps the token, so access is unaffected.
 - **Upstream status:** a Box fork adds a request-time credential source: after
   Box's policy permits a request, Box asks an operator endpoint for that
   request's credential, and a refusal or timeout fails closed. Drafts for
@@ -92,23 +94,49 @@ entries use the same four fields.
 
 - **Symptom:** any process in the execution, including tools and MCP servers,
   can send authenticated requests to GitHub through Box's routes.
-- **Cause:** Box routes are per execution, not per process. The host also
-  passes the token in the `box run` process environment, which processes of
-  the same host user can read from `/proc`.
-  Code that escapes Box's sandbox to the host account therefore reads the
-  installation token itself. It then has the GitHub App installation's
-  permissions on the assigned repositories (contents, pull requests, metadata)
-  from any network location, until OCE revokes the token at withdrawal or
-  retires it at renewal, at most the token's one-hour lifetime. The execution
-  bearer gives it nothing: the host keeps only its digest and Box never uses it.
-- **Workaround:** run one Agent per Box execution, run the host as a dedicated
-  operator account with no other processes, and grant the App only the
+- **Cause:** Box routes are per execution, not per process.
+- **Workaround:** run one Agent per Box execution and grant the App only the
   repositories and permissions the Agent needs.
-- **Upstream status:** Box runs its credential-holding process in the same
-  host account as the workload. A request-time credential source in the Box fork
-  keeps the token out of the `box run` environment and lets OCE refuse each
-  request; running that process apart from the workload is an ask for the Box
-  team.
+- **Upstream status:** by design in Box v0.2.2.
+
+## Any local process on the Box host can use Box's egress gateway
+
+- **Symptom:** a process on the Box host outside the execution, including code
+  that escapes Box's sandbox as the host user, can send requests through the
+  execution's egress gateway. On the `github.com` route, which uses
+  `inject = "always"`, Box attaches the installation token to them.
+- **Cause:** `box run` starts its gateway on host loopback (`127.0.0.1:0`) with
+  no peer check and no token. The gateway crate supports an owner-only Unix
+  socket that `box run` does not use. Unchanged on upstream main.
+- **Workaround:** run one Box host per virtual machine or dedicated host, as a
+  dedicated user, with no other untrusted local processes.
+- **Upstream status:** not yet reported to strands-agents/box. The ask is for
+  `box run` to serve its gateway on an owner-only Unix socket or to require a
+  per-execution token.
+
+## Box's trusted process shares a kernel with the workload
+
+- **Symptom:** code that escapes Box's sandbox lands on the same host, and in
+  the same host account, as the process that holds the installation token.
+- **Cause:** Box's boundary is operating-system process sandboxing, not a
+  virtual machine; its egress gateway and credential handling run in the one
+  trusted `box run` process on the workload's kernel. A kernel escape defeats
+  it, and Box lists kernel-exploit resistance as a non-goal.
+- **Workaround:** none in Box. The `box run` process is not dumpable, so its
+  environment, which holds the token in this stage, is readable only by root
+  or a ptrace-capable process. A same-user escape cannot read the token but
+  can use it through the loopback gateway above. Code that obtains the token
+  has the App installation's permissions on the assigned repositories from any
+  network location, until OCE revokes it at withdrawal or retires it at
+  renewal: at most the token's one-hour lifetime. The execution bearer gives it
+  nothing; the host keeps only its digest. Keep the host dedicated and its
+  kernel patched.
+- **Upstream status:** open upstream as
+  [strands-agents/box#24](https://github.com/strands-agents/box/issues/24)
+  (host-side gateway and credential vault outside the workload's kernel) and
+  [strands-agents/box#25](https://github.com/strands-agents/box/issues/25)
+  (host-assigned sandbox identity). A request-time credential source in the Box
+  fork keeps the token out of `box run` and lets OCE refuse each request.
 
 ## Box refuses protocol upgrades on HTTP egress
 
