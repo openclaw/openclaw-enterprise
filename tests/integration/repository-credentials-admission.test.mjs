@@ -84,7 +84,6 @@ function repositorySandbox(registry, id = "repository-admission-openshell", user
     {
       gateway: { workspaceMode: "operator" },
       kubernetes: {
-        runtimeClassName: "openshell-sandbox",
         ...(userNamespaces === undefined ? {} : { userNamespaces }),
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {

@@ -54,7 +54,6 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
       gateway: { workspaceMode: "operator" },
       kubernetes: {
         userNamespaces: false,
-        runtimeClassName: "openshell-sandbox",
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {
           subPath: "workspace",
