@@ -190,6 +190,9 @@ test(
       const methods = ["GET", "HEAD", "GET", "HEAD", "GET", "HEAD"] as const;
       const probes = methods.map((method) => send(method));
       await waitUntil(() => arrived === enteredBefore + methods.length, "all six routes entered");
+      // Route entry precedes the dedicated startup-lease check. Wait for the real
+      // application-pool query before measuring its shared admission.
+      await waitUntil(() => readinessQueries > before, "readiness reaches the application pool");
       assert.equal(readinessQueries - before, 1, "one readiness query is admitted");
       assert.equal(pool.waitingCount, 2, "only authentication and readiness wait for the client");
       await busy;
@@ -217,6 +220,10 @@ test(
       const failureEntered = arrived;
       const failures = methods.map((method) => send(method));
       await waitUntil(() => arrived === failureEntered + methods.length, "failure callers entered");
+      await waitUntil(
+        () => readinessQueries > failureBefore,
+        "failure readiness reaches the application pool",
+      );
       assert.equal(readinessQueries - failureBefore, 1);
       assert.equal(pool.waitingCount, 1);
       heldClient.release();
