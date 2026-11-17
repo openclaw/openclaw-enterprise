@@ -257,7 +257,7 @@ RUN echo '197104f2792253127894eadcbb4dec350ce0b7da3df4e6d88facc649c700c1e8  /tmp
 
 # Issue first-install node setup from the Gateway's own pairing store before it starts.
 COPY deploy/runtime/openclaw-node-only-setup.patch /tmp/openclaw-node-only-setup.patch
-RUN echo 'effe00e734c01bae021ba4f6800ac00fbb0784bca1bcdc95099232c3450bebba  /tmp/openclaw-node-only-setup.patch' | sha256sum --check --strict \
+RUN echo 'ac4adee637ccf70f571f90d37451161fd4954e1453a815d5b00ffaabd1236092  /tmp/openclaw-node-only-setup.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-only-setup.patch
 
 # Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.

@@ -19,21 +19,31 @@ index 89b19e6..e223ed8 100644
  - `--no-ascii`: skip ASCII QR rendering
  - `--json`: emit JSON (`setupCode`, `gatewayUrl`, optional `gatewayUrls`, `auth`, `access`, optional `accessDowngraded`, `urlSource`)
 diff --git a/src/cli/qr-cli.test.ts b/src/cli/qr-cli.test.ts
-index daab31a..a3a3cfe 100644
+index daab31a..8f16427 100644
 --- a/src/cli/qr-cli.test.ts
 +++ b/src/cli/qr-cli.test.ts
-@@ -247,6 +247,15 @@ describe("registerQrCli", () => {
+@@ -247,6 +247,25 @@ describe("registerQrCli", () => {
      },
    );
  
 +  it.each([
-+    { args: ["--node-only", "--url", "wss://gateway.example.test/node"] },
-+    { args: ["--node-only", "--json"] },
-+    { args: ["--node-only", "--json", "--url", "wss://gateway.example.test/node", "--voice-node"] },
-+  ])("refuses conflicting or incomplete node-only options before issuance ($args)", async ({ args }) => {
-+    await expectQrExit(args);
-+    expect(issueDevicePairSetupBootstrapToken).not.toHaveBeenCalled();
-+  });
++    {
++      args: ["--node-only", "--url", "wss://gateway.example.test/node"],
++      message: "--node-only requires --json and --url.",
++    },
++    { args: ["--node-only", "--json"], message: "--node-only requires --json and --url." },
++    {
++      args: ["--node-only", "--json", "--url", "wss://gateway.example.test/node", "--voice-node"],
++      message: "--node-only cannot be combined with another pairing or authentication option.",
++    },
++  ])(
++    "refuses conflicting or incomplete node-only options before issuance ($args)",
++    async ({ args, message }) => {
++      await expect(runQr(args)).rejects.toThrow(message);
++      expect(runtimeExit).not.toHaveBeenCalled();
++      expect(issueDevicePairSetupBootstrapToken).not.toHaveBeenCalled();
++    },
++  );
 +
    it("uses the bounded bootstrap profile with --limited", async () => {
      loadConfig.mockReturnValue(createTokenGatewayConfig());
