@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 
 import { Type } from "typebox";
 import { Check } from "typebox/value";
@@ -13,6 +14,9 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import { redactFailure } from "../../scripts/ci/failure-redaction.ts";
+import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { nativeWorkerTurnObservation } from "../helpers/local-first-agent-native.mjs";
 import {
   assertNativeWorkNotFailed,
   waitForNativeRedeploy,
@@ -167,6 +171,118 @@ function diagnosticRequests(responses: readonly (DeploymentWork | ProbePage | Er
 }
 
 export function registerNativeTerminalFailureCases(): void {
+  test("native worker failure receipts retain only producer-owned timeout and provider facts", () => {
+    // This is the self-contained projector shipped into the trusted controller,
+    // not a substitute worker. The pinned agent.wait producer exposes these
+    // terminal fields but no originating worker code or process-spawn receipt.
+    const observe = runInNewContext(
+      `(${nativeWorkerTurnObservation.toString()})`,
+    ) as typeof nativeWorkerTurnObservation;
+    const privateValue = syntheticCredentialUrl({
+      username: "private-fixture",
+      password: "withheld-fixture",
+      host: "worker.invalid",
+    });
+    for (const [timeoutPhase, providerStarted] of [
+      ["queue", false],
+      ["preflight", false],
+      ["provider", true],
+      ["tool_execution", true],
+      ["post_turn", true],
+      ["gateway_draining", false],
+    ] as const) {
+      const observation = observe({
+        outcome: {
+          status: timeoutPhase === "queue" ? "pending" : "timeout",
+          timeoutPhase,
+          providerStarted,
+          error: privateValue,
+        },
+        error: undefined,
+        messages: undefined,
+        runId: undefined,
+        historyLookup: undefined,
+      });
+      const receipt = nativeFirstAgentProofDiagnostic("model-outcome", observation);
+      assert.ok(receipt && "worker" in receipt);
+      assert.equal(receipt.worker.turnTimeoutPhase, timeoutPhase);
+      assert.equal(receipt.worker.providerStarted, providerStarted);
+      assert.equal(receipt.worker.turnPendingError, undefined);
+      assert.doesNotMatch(
+        JSON.stringify(receipt),
+        /private-fixture|withheld-fixture|worker\.invalid/,
+      );
+    }
+
+    const pending = nativeFirstAgentProofDiagnostic(
+      "model-outcome",
+      observe({
+        outcome: {
+          status: "timeout",
+          pendingError: true,
+          providerStarted: true,
+          error: privateValue,
+        },
+        error: undefined,
+        messages: undefined,
+        runId: undefined,
+        historyLookup: undefined,
+      }),
+    );
+    assert.ok(pending && "worker" in pending);
+    assert.equal(pending.worker.turnPendingError, true);
+    assert.equal(pending.worker.turnTimeoutPhase, "absent");
+    assert.doesNotMatch(
+      JSON.stringify(pending),
+      /private-fixture|withheld-fixture|worker\.invalid/,
+    );
+
+    // Missing facts remain missing; neither an error message nor an unknown
+    // field may be promoted into a dispatch/process/provider-start assertion.
+    for (const [outcome, timeoutPhase] of [
+      [undefined, "absent"],
+      [{ status: "error", error: privateValue }, "absent"],
+      [
+        {
+          status: "error",
+          timeoutPhase: privateValue,
+          providerStarted: privateValue,
+          pendingError: privateValue,
+        },
+        "other",
+      ],
+    ] as const) {
+      const receipt = nativeFirstAgentProofDiagnostic(
+        "model-outcome",
+        observe({
+          outcome,
+          error: undefined,
+          messages: undefined,
+          runId: undefined,
+          historyLookup: undefined,
+        }),
+      );
+      assert.ok(receipt && "worker" in receipt);
+      assert.equal(receipt.worker.turnTimeoutPhase, timeoutPhase);
+      assert.equal(receipt.worker.providerStarted, undefined);
+      assert.equal(receipt.worker.turnPendingError, undefined);
+      assert.doesNotMatch(
+        JSON.stringify(receipt),
+        /private-fixture|withheld-fixture|worker\.invalid/,
+      );
+    }
+    const receipt = nativeFirstAgentProofDiagnostic("model-outcome", {
+      turnTimeoutPhase: privateValue,
+      turnPendingError: privateValue,
+      providerStarted: privateValue,
+      dispatchStarted: true,
+      processSpawned: true,
+      errorCode: privateValue,
+    });
+    assert.ok(receipt && "worker" in receipt);
+    assert.deepEqual(receipt.worker, { turnTimeoutPhase: "other" });
+  });
+
   test("native terminal failures report only fixed failure codes", async (t) => {
     const namespaceId = `ns_${randomUUID()}`;
     const agentId = `agt_${randomUUID()}`;

@@ -195,6 +195,14 @@ export function nativeFirstAgentProofDiagnostic(failureStage: unknown, worker: u
       "runtime-error",
     ],
     turnStatus: ["ok", "error", "timeout", "pending"],
+    turnTimeoutPhase: [
+      "queue",
+      "preflight",
+      "provider",
+      "tool_execution",
+      "post_turn",
+      "gateway_draining",
+    ],
     turnError: turnErrors,
     proofError: turnErrors,
     assistantError: turnErrors,
@@ -260,6 +268,7 @@ export function nativeFirstAgentProofDiagnostic(failureStage: unknown, worker: u
     "expectedNodePaired",
     "expectedNodeSessionHost",
     "providerStarted",
+    "turnPendingError",
   ]) {
     if (typeof worker[field] === "boolean") {
       safe[field] = worker[field];

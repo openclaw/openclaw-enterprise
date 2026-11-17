@@ -24,6 +24,7 @@ import {
   nativeFirstAgentProofTimeout,
 } from "../helpers/local-first-agent-native.mjs";
 import { localOpenShellGatewayIdentity } from "../helpers/local-openshell-gateway.mjs";
+import { openShellAgentName } from "../helpers/openshell-kubernetes-real.mjs";
 import {
   localFirstAgentStack,
   ownFirstAgentWork,
@@ -1340,31 +1341,79 @@ test(
         ],
         "the Agent Service",
       );
-      // Both Services share the canonical tenant namespace. The Gateway serves
-      // traffic, while OpenShell's advertised endpoint keeps the direct Harness
-      // Service parked so it cannot bypass the provider's authenticated route.
-      assert.equal(services.items.length, 2);
+      const routes = await readKubernetesJson(
+        kube,
+        [
+          "get",
+          "httproutes",
+          "--namespace",
+          namespaces.items[0].metadata.name,
+          "--selector",
+          `openclaw.dev/agent=${first.identity.agentId}`,
+        ],
+        "the Agent revision's HTTP chat route",
+      );
+      const chatPath = `/http-chat/namespaces/${first.namespaceId}/agents/${first.identity.agentId}/revisions/${first.identity.revisionId}/v1/chat/completions`;
+      const chatRoutes = routes.items.filter((route) =>
+        route.spec.rules.some((rule) =>
+          rule.matches.some((match) => match.path?.value === chatPath),
+        ),
+      );
+      assert.equal(chatRoutes.length, 1);
+      const chatRoute = chatRoutes[0];
+      assert.equal(
+        chatRoute.metadata.annotations["openclaw.dev/agent-revision-id"],
+        first.identity.revisionId,
+      );
+      assert.equal(chatRoute.spec.rules.length, 1);
+      const chatRule = chatRoute.spec.rules[0];
+      assert.deepEqual(chatRule.matches, [
+        { method: "POST", path: { type: "Exact", value: chatPath } },
+      ]);
+      assert.equal(chatRule.backendRefs.length, 1);
+      assert.equal(chatRule.backendRefs[0].kind, "Service");
+      assert.equal(chatRule.backendRefs[0].group, "");
+      assert.equal(chatRule.backendRefs[0].name, chatRoute.metadata.name);
+      const harnessServiceName = openShellAgentName(first.identity.agentId);
+      // HTTP chat adds a revision-pinned Gateway Service. Derive its identity
+      // from the actual revision route, not another copy of Compute's naming.
+      // The direct Harness must remain parked behind OpenShell authentication.
+      assert.equal(services.items.length, 3);
+      assert.deepEqual(
+        services.items.map((service) => service.metadata.name).sort(),
+        [gateway.metadata.name, harnessServiceName, chatRoute.metadata.name].sort(),
+      );
       const gatewayService = services.items.find(
-        (service) => service.spec.selector["openclaw.dev/workload-role"] === "gateway",
+        (service) => service.metadata.name === gateway.metadata.name,
       );
       const harnessService = services.items.find(
-        (service) => service.spec.selector["openclaw.dev/workload-role"] === "agent",
+        (service) => service.metadata.name === harnessServiceName,
+      );
+      const chatService = services.items.find(
+        (service) => service.metadata.name === chatRoute.metadata.name,
       );
       assert.ok(gatewayService, "the Agent must retain its serving Gateway Service");
       assert.ok(harnessService, "the direct Harness Service must remain parked");
-      assert.deepEqual(gatewayService.spec.selector, {
+      assert.ok(chatService, "HTTP chat must retain its revision-pinned Gateway Service");
+      const gatewaySelector = {
         "openclaw.dev/namespace": first.namespaceId,
         "openclaw.dev/agent": first.identity.agentId,
         "openclaw.dev/workload-role": "gateway",
         "app.kubernetes.io/name": gateway.spec.template.metadata.labels["app.kubernetes.io/name"],
+      };
+      assert.deepEqual(gatewayService.spec.selector, gatewaySelector);
+      assert.deepEqual(chatService.spec.selector, {
+        ...gatewaySelector,
+        "openclaw.dev/revision": first.identity.revisionId,
       });
-      assert.equal(harnessService.spec.selector["openclaw.dev/namespace"], first.namespaceId);
-      assert.equal(harnessService.spec.selector["openclaw.dev/agent"], first.identity.agentId);
-      assert.equal(
-        harnessService.spec.selector["openclaw.dev/revision"],
-        first.identity.revisionId,
-      );
-      assert.match(harnessService.spec.selector["app.kubernetes.io/name"], /-inactive$/);
+      assert.deepEqual(harnessService.spec.selector, {
+        "openclaw.dev/namespace": first.namespaceId,
+        "openclaw.dev/agent": first.identity.agentId,
+        "openclaw.dev/revision": first.identity.revisionId,
+        "openclaw.dev/workload-role": "agent",
+        "openclaw.dev/network-profile": "provider-fenced-v1",
+        "app.kubernetes.io/name": `${harnessServiceName}-inactive`,
+      });
     }
     const reuseEnv = { ...env };
     delete reuseEnv.OPENCLAW_FIRST_AGENT_MODEL;

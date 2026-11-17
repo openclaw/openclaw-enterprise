@@ -337,6 +337,18 @@ export function nativeWorkerTurnObservation({ outcome, error, messages, runId, h
       "error",
       "aborted",
     ]),
+    // agent.wait publishes these fixed terminal facts, not the worker's
+    // originating error code or process-spawn state. Never infer those from
+    // private error text or treat an absent providerStarted as false.
+    turnTimeoutPhase: category(outcome?.timeoutPhase, [
+      "queue",
+      "preflight",
+      "provider",
+      "tool_execution",
+      "post_turn",
+      "gateway_draining",
+    ]),
+    turnPendingError: typeof outcome?.pendingError === "boolean" ? outcome.pendingError : undefined,
     providerStarted:
       typeof outcome?.providerStarted === "boolean" ? outcome.providerStarted : undefined,
     historyLookup: category(historyLookup, ["found", "unavailable", "invalid", "absent"]),

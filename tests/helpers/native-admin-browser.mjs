@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { chromium } from "playwright";
 
 import { runControllerProbe } from "./envoy-workspace-gateway.mjs";
-import { createKubernetesClient, explicitK3dSelection } from "./kubernetes-real.mjs";
+import { createKubernetesClient, explicitK3dSelection } from "./kubernetes-real.ts";
 
 import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
 import {
