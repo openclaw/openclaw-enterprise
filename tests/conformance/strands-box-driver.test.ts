@@ -15,6 +15,8 @@ import {
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import { initializeNativeVerifier } from "../../deploy/examples/strands-box/verify-native.ts";
+import type { StrandsBoxDriver } from "../../deploy/examples/strands-box/driver/index.ts";
+import type { Execution } from "../../deploy/examples/strands-box/driver/control.ts";
 import type {
   AgentRevision,
   HarnessWorkloadRequirements,
@@ -1332,3 +1334,71 @@ test(
     await assert.rejects(x.driver.harnessEndpoint(x.context), /model route differs/);
   },
 );
+
+test("a protected file-only run reports its reserved workspace owner generation while it waits for release", async (t) => {
+  // Compute releases a protected run only after provisioning, and provisioning needs the endpoint:
+  // the endpoint of a protected run carries the generation the host reserved before release.
+  const { packageRoot } = await installStrandsBoxDriverPackage(
+    await temporaryDirectory(t, "strands-driver-"),
+  );
+  const loaded = await loadDriverPackage({ package: packageName }, "sandbox", packageRoot, false);
+  assert.ok(loaded);
+  const { StrandsBoxDriver: Driver } = loaded.module as unknown as {
+    StrandsBoxDriver: typeof StrandsBoxDriver;
+  };
+  class Endpoint extends Driver {
+    of(execution: Execution) {
+      return this.exactEndpoint(execution);
+    }
+  }
+  const caBundle = "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n";
+  const driver = new Endpoint(id, implementation, {
+    namespace: namespace.name,
+    controlSocket: "/run/strands-box/control.sock",
+    nativeEndpoint: endpoint.url,
+    nativeCaBundle: caBundle,
+    workspaceRoot: endpoint.workspaceRoot,
+    workspaceNodeMode: "file-only-v1",
+    controlledInference: { modelBaseUrl, address: modelRoute.address },
+    relay: {
+      image: `registry.example/relay@sha256:${"f".repeat(64)}`,
+      hostAddress: "10.0.0.7",
+      installation: "pilot",
+      workerPeer: { namespace: "control", podLabels: { app: "worker" } },
+    },
+  } as never);
+  const reserved = "1".repeat(64);
+  const ready = "2".repeat(64);
+  const starting = {
+    owner: {},
+    requirementsDigest: "a".repeat(64),
+    executionId: "execution-fixture",
+    state: "starting",
+    endpoint,
+    workspaceNodeMode: "file-only-v1",
+  } as unknown as Execution;
+  const stillStarting = { message: "The original Strands Box workspace owner is still starting." };
+  assert.throws(() => driver.of(starting), stillStarting);
+  const startup = { plan: {}, reservedAt: "2026-11-17T00:00:00.000Z" };
+  assert.throws(() => driver.of({ ...starting, protectedStartup: startup }), stillStarting);
+  assert.deepEqual(
+    driver.of({ ...starting, protectedStartup: { ...startup, generationSha256: reserved } }),
+    { ...endpoint, tls: { caBundle }, externalWorkspaceOwner: { generationSha256: reserved } },
+  );
+  // Once ready, the host reports the generation itself (for a protected run, the same one).
+  assert.deepEqual(
+    driver.of({
+      ...starting,
+      state: "running",
+      generationSha256: ready,
+      protectedStartup: { ...startup, generationSha256: reserved },
+    }).externalWorkspaceOwner,
+    { generationSha256: ready },
+  );
+  assert.deepEqual(
+    driver.of({ ...starting, state: "running", generationSha256: ready }).externalWorkspaceOwner,
+    {
+      generationSha256: ready,
+    },
+  );
+});

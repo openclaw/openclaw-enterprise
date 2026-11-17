@@ -886,7 +886,13 @@ export class StrandsBoxDriver implements SandboxDriver {
         "The Strands Box endpoint differs from the Installation's exact origin and workspace.",
       );
     }
-    if (execution.workspaceNodeMode !== undefined && execution.generationSha256 === undefined) {
+    // A protected run's workspace owner generation is the one the host reserved before release
+    // (the Gateway pins it, and ready.json repeats it). Its endpoint is known while the run waits
+    // for the release that Compute sends only after provisioning; an ordinary run's generation
+    // exists once it is ready.
+    const generationSha256 =
+      execution.generationSha256 ?? execution.protectedStartup?.generationSha256;
+    if (execution.workspaceNodeMode !== undefined && generationSha256 === undefined) {
       throw new TransientDependencyError(
         "sandbox_gateway",
         "unavailable",
@@ -896,9 +902,9 @@ export class StrandsBoxDriver implements SandboxDriver {
     return {
       ...execution.endpoint,
       tls: { caBundle: this.options.nativeCaBundle },
-      ...(execution.generationSha256 === undefined
+      ...(generationSha256 === undefined
         ? {}
-        : { externalWorkspaceOwner: { generationSha256: execution.generationSha256 } }),
+        : { externalWorkspaceOwner: { generationSha256 } }),
     };
   }
 
