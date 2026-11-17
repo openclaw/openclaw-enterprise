@@ -17,7 +17,7 @@ import reporter from "../../scripts/ci/reporter.ts";
 import { readFileEvidence, type FileEvidence } from "../../scripts/ci/runner-reporter-output.ts";
 import {
   observeDeadline,
-  pendingLine,
+  pendingMessage,
   readinessReceipt,
   timeoutReceipt,
 } from "../helpers/ci-runner-deadline.ts";
@@ -600,9 +600,12 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
                  if (path === agentPath) {
                  if (${pendingActivation}) {
                    writeFileSync(${JSON.stringify(activationPoll)}, "polling");
-                   if (${controlledDeadline}) process.stdout.write(${JSON.stringify(pendingLine)});
+                   if (${controlledDeadline}) t.log(${JSON.stringify(pendingMessage)});
                    // Keep Node alive while the real activation poll and its caller are pending.
-                   const hold = setInterval(() => {}, 1000);
+                   const hold = setInterval(() => {
+                     // Wake a pending stdout read without emitting progress.
+                     if (${controlledDeadline}) process.stdout.write("\\n");
+                   }, 1000);
                    t.signal.addEventListener("abort", () => clearInterval(hold), { once: true });
                    return new Promise(() => {});
                  }

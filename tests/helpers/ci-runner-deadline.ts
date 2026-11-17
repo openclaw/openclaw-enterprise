@@ -6,7 +6,6 @@ import { mock } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import {
-  boundedProgressLines,
   openShellProgressPrefix,
   upstreamOutageCase,
 } from "../../scripts/ci/openshell-progress.mjs";
@@ -18,7 +17,7 @@ export * from "../../scripts/ci/runner-process.ts";
 
 export const timeoutReceipt = "state/deadline-timeout.json";
 export const readinessReceipt = "state/deadline-readiness.json";
-export const pendingLine = "deadline-fixture: activation poll pending\n";
+export const pendingMessage = "deadline-fixture: activation poll pending";
 const barrier = {
   kind: "openshell-installation",
   stage: "workspace-helm",
@@ -142,12 +141,6 @@ export default async function* deadlineReporter(source: Parameters<typeof report
   const lifecycle: unknown[][] = [];
   const progress: unknown[] = [];
   let poll = 0;
-  // Native test:stdout events expose chunks of the worker's stream.
-  const readPoll = boundedProgressLines((line: string) => {
-    if (line === pendingLine.slice(0, -1)) {
-      poll++;
-    }
-  });
   let selected = false;
   let announced = false;
   async function* observe() {
@@ -177,12 +170,13 @@ export default async function* deadlineReporter(source: Parameters<typeof report
           event.type === "test:dequeue" && isDeepStrictEqual([file, entryFile, name], selectedCase);
       }
       if (
-        event.type === "test:stdout" &&
+        event.type === "test:log" &&
         isRecord(data) &&
-        data.file === entry &&
-        typeof data.message === "string"
+        data.message === pendingMessage &&
+        data.nesting === 0 &&
+        isDeepStrictEqual([data.file, data.entryFile, data.name], selectedCase)
       ) {
-        readPoll(data.message);
+        poll++;
       }
       if (
         !announced &&
