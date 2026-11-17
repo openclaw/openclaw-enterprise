@@ -292,8 +292,11 @@ export async function relayAgentChat(options: AgentChatOptions): Promise<void> {
       ) {
         throw dependencyUnavailable();
       }
-      // A stop or revocation can finish upstream before the periodic check runs.
-      // Verify delivery authority before releasing the retained terminal bytes.
+      // A periodic check can predate body completion. Let it settle and clear its
+      // owner, then run a fresh check before releasing the retained terminal bytes.
+      if (inFlightCheck !== undefined) {
+        await inFlightCheck;
+      }
       await verifyCurrentAdmission();
       finished = true;
       result = response.statusCode === 200 && !nativeStreamError ? "completed" : "failed";

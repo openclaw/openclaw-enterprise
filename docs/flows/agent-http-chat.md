@@ -1,6 +1,6 @@
 ---
 created: "2026-11-16"
-updated: "2026-11-17 01:37"
+updated: "2026-11-17 02:02"
 last_updated_session: "authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a"
 ---
 
@@ -91,10 +91,10 @@ request. No retry or redirect follows.
 
 `apps/controller/src/http/agent-chat.ts:relayAgentChat` streams bytes with
 backpressure. A timer reauthenticates and reauthorizes the pinned revision.
-Periodic and terminal callers share one in-flight check; completed checks are
-cleared so later callers obtain a fresh decision. A final bounded check runs
-before releasing terminal bytes, so a fast
-stop or revocation cannot finish between the timer and response completion.
+After the native body completes, terminal delivery awaits any in-flight periodic
+check and its cleanup, then starts a fresh bounded admission/revision check.
+Checks do not overlap, and terminal bytes stay withheld until the fresh check
+succeeds. A check started before body completion cannot authorize delivery.
 Failure, revision change, client disconnect or deadline aborts the upstream
 connection. One outer cleanup clears the timers and disconnect listeners, aborts
 the upstream and appends one terminal audit after admission. Before headers, OCC
@@ -122,6 +122,8 @@ without message content. An audit-write failure emits `http.audit_append_failed`
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-17 02:02: Await the periodic check, then require a fresh post-body delivery check. (authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a - d7c1c305e)
 
 - 2026-11-17 01:37: Share one admission recheck and relay cleanup owner; use stored denial resources. (authoring-run/28767d0f-55e0-4d91-abb6-1f25ff793a2a - 8d3f95dd5)
 
