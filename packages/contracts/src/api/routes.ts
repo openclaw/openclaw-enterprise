@@ -446,7 +446,7 @@ export const occApiRoutes = [
     tags: ["Installation"],
     schema: {
       querystring: EmptyQuery,
-      response: { 200: ModelProviderListResponse, ...readErrors, 501: ErrorResponseRef },
+      response: { 200: ModelProviderListResponse, ...readErrors },
     },
   },
   {
@@ -462,7 +462,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: ModelProviderParams,
-      response: { 200: ModelProviderResponse, ...readErrors, 501: ErrorResponseRef },
+      response: { 200: ModelProviderResponse, ...readErrors },
     },
   },
   {
@@ -478,7 +478,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       body: ModelProviderBody,
-      response: { 201: ModelProviderResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 201: ModelProviderResponse, ...createErrors },
     },
   },
   {
@@ -495,7 +495,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: ModelProviderParams,
       body: UpdateModelProviderBody,
-      response: { 200: ModelProviderResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 200: ModelProviderResponse, ...createErrors },
     },
   },
   {
@@ -511,7 +511,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
-      response: { 200: ModelProviderListResponse, ...readErrors, 501: ErrorResponseRef },
+      response: { 200: ModelProviderListResponse, ...readErrors },
     },
   },
   {
@@ -542,7 +542,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       body: CreateConnectionTemplateBody,
-      response: { 201: ConnectionTemplateResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 201: ConnectionTemplateResponse, ...createErrors },
     },
   },
   {
@@ -575,7 +575,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: ConnectionTemplateParams,
       body: UpdateConnectionTemplateBody,
-      response: { 200: ConnectionTemplateResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 200: ConnectionTemplateResponse, ...createErrors },
     },
   },
   {
@@ -1240,7 +1240,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: CreateCredentialSourceBody,
-      response: { 201: CredentialSourceResponseRef, ...createErrors, 501: ErrorResponseRef },
+      response: { 201: CredentialSourceResponseRef, ...createErrors },
     },
   },
   {
@@ -1259,7 +1259,7 @@ export const occApiRoutes = [
         { additionalProperties: false },
       ),
       params: NamespaceParams,
-      response: { 200: CredentialSourceListResponse, ...readErrors, 501: ErrorResponseRef },
+      response: { 200: CredentialSourceListResponse, ...readErrors },
     },
   },
   {
