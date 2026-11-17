@@ -197,8 +197,8 @@ Deployment. Use the same procedure, with these changes:
    heartbeat alone cannot establish this. A force-deleted holder Pod leaves no
    container ID: record its name from the log's `holder N at POD_NAME/pid-ns`
    text, and the infrastructure operator verifies that the container runtime on
-   its node lists no sandbox or container for it, for example with `crictl pods
-   --name POD_NAME`. If its node is unreachable, keep the
+   its node lists no sandbox or container for it, for example with
+   `crictl pods --name POD_NAME`. If its node is unreachable, keep the
    Agent stopped until the infrastructure operator verifies shutdown.
    [Stop and resume](../../reference/agents/deployment.md#stop-and-resume)
 2. Keep other writers off the volume. Start a maintenance container from the
@@ -208,8 +208,9 @@ Deployment. Use the same procedure, with these changes:
    `securityContext`, `prepare-private-state` init container and volumes, and
    the `gateway` container's mounts and `OPENCLAW_STATE_DIR`, but leave out the
    configuration ConfigMaps: the stop deleted them and `recover-lock` does not
-   need them. Without the init container the command fails with `No safe
-   OpenClaw temp root is available`. Inspect the holders without starting a Gateway.
+   need them. Without the init container the command fails with
+   `No safe OpenClaw temp root is available`. Inspect the holders without
+   starting a Gateway.
 
    ```sh
    node /app/openclaw.mjs gateway recover-lock --json
