@@ -18,8 +18,10 @@ export interface RelayOptions {
 }
 
 const INSTANCE = "box.openclaw.dev/installation";
-const APP = "app.kubernetes.io/name";
-const APP_VALUE = "box-harness-relay";
+// The relay names itself with its own key: Compute labels the Harness Pods it requires with
+// `app.kubernetes.io/name` (its workload name), and the relay Pods carry every required label.
+const APP = "box.openclaw.dev/component";
+const APP_VALUE = "harness-relay";
 const NAMESPACE = "openclaw.dev/namespace";
 const AGENT = "openclaw.dev/agent";
 const REVISION = "openclaw.dev/revision";

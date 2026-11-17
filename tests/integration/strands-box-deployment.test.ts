@@ -457,7 +457,7 @@ test(
                   address: "10.43.0.50",
                   port: 8443,
                   podLabels: {
-                    "app.kubernetes.io/name": "box-harness-relay",
+                    "box.openclaw.dev/component": "harness-relay",
                     "box.openclaw.dev/installation": "pilot",
                   },
                 },
@@ -748,7 +748,7 @@ test(
     );
     assert.ok(
       ![...api.objects.values()].some(
-        ({ metadata }) => metadata.labels?.["app.kubernetes.io/name"] === "box-harness-relay",
+        ({ metadata }) => metadata.labels?.["box.openclaw.dev/component"] === "harness-relay",
       ),
     );
     const work = await new PostgresWorkQueue(fixture.pool).findWork(

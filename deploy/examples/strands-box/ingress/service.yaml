@@ -6,12 +6,12 @@ metadata:
   name: box-harness
   namespace: pilot
   labels:
-    app.kubernetes.io/name: box-harness-relay
+    box.openclaw.dev/component: harness-relay
     box.openclaw.dev/installation: pilot-box
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: box-harness-relay
+    box.openclaw.dev/component: harness-relay
     box.openclaw.dev/installation: pilot-box
   ports:
     - name: native-wss
