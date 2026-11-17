@@ -159,9 +159,13 @@ function operatorDnsName(hostname: string): boolean {
   );
 }
 
+/** `/v1`, optionally below a fixed prefix; the host checks the same (host/egress.ts). */
+const MODEL_BASE_PATH = /^(?:\/(?!\.{1,2}(?:\/|$))[A-Za-z0-9._~-]+)*\/v1$/;
+
 /**
- * The exact controlled inference route the host must also hold: the HTTPS /v1 origin, either a
- * private IPv4 literal or an operator DNS name, and the one private IPv4 address Box may dial.
+ * The exact controlled inference route the host must also hold: the HTTPS `/v1` base (optionally
+ * below a fixed path prefix, as Compute accepts it), either a private IPv4 literal or an operator
+ * DNS name, and the one private IPv4 address Box may dial.
  */
 export function inferenceRoute(
   value: NonNullable<Options["controlledInference"]>,
@@ -172,7 +176,7 @@ export function inferenceRoute(
     const address = value.address ?? (literal ? url.hostname : undefined);
     if (
       url.protocol !== "https:" ||
-      url.pathname !== "/v1" ||
+      !MODEL_BASE_PATH.test(url.pathname) ||
       url.username ||
       url.password ||
       url.search ||
