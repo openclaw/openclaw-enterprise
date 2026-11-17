@@ -3688,6 +3688,22 @@ export class PostgresPlatformState implements PlatformStateStore {
              AND p.namespace_id = a.namespace_id AND p.agent_id = a.id AND p.id = $3
              AND c.namespace_id = a.namespace_id AND c.agent_id = a.id AND c.id = $4
              AND c.revision_number > p.revision_number
+             AND ($8::double precision IS NULL OR (
+               a.status = 'active' AND a.desired_runtime_state = 'running'
+               AND a.predecessor_replacement->>'predecessorRevisionId' = $3
+               AND a.predecessor_replacement->>'candidateRevisionId' = $4
+               AND a.predecessor_replacement->>'phase' = 'pre-stop'
+               AND ($7::text IS NULL OR a.predecessor_replacement->>'executionIdentity' = $7)
+               AND (a.predecessor_replacement->>'completionStartedAt')::timestamptz
+                   + $8::double precision * interval '1 millisecond' > clock_timestamp()
+               AND EXISTS (
+                 SELECT 1 FROM occ.controller_work AS work
+                 WHERE work.idempotency_key = $9 AND work.claim_token = $10::uuid
+                   AND work.state = 'claimed' AND work.lease_expires_at > clock_timestamp()
+                   AND work.namespace_id = a.namespace_id AND work.agent_id = a.id
+                   AND work.revision_id = $4
+               )
+             ))
            RETURNING a.predecessor_replacement`,
               [
                 namespaceId,
@@ -3697,6 +3713,9 @@ export class PostgresPlatformState implements PlatformStateStore {
                 input.phase,
                 input.beginCompletion === true,
                 input.executionIdentity ?? null,
+                input.completionClaim?.windowMs ?? null,
+                input.completionClaim?.idempotencyKey ?? null,
+                input.completionClaim?.claimToken ?? null,
               ],
             )
           ).rows,

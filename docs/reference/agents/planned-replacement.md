@@ -28,9 +28,9 @@ passes preserve its completion start and execution identity across retries,
 Controller restarts and candidate changes. They renew a short Gateway lease and
 yield the existing Work claim while admitted tasks or delivery remain active.
 This interval, capped at 30 minutes, does not consume the ordinary convergence
-budget. While a predecessor is waiting, a Gateway stop for another Agent yields
-to due completion work even after its ordinary convergence deadline. This lets
-one worker renew the lease, with the original 30-minute cutoff unchanged.
+budget. After a different Agent's Gateway stop reaches its ordinary convergence
+deadline, its drain can continue while the worker claims a due renewal for the
+waiting Agent. The renewal keeps the original 30-minute cutoff.
 
 A ready observation is not permission to stop. The Driver calls the worker's
 claim-checked `commitStopping` callback, then commits a handoff to that exact

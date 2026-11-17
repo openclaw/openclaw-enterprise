@@ -61,6 +61,8 @@ export interface ClaimRequest {
   readonly claimToken?: string;
   /** Require an audit append in the same database statement as the claim. */
   readonly recordAudit?: boolean;
+  /** Claim only a replacement with an identified predecessor and time left to renew. */
+  readonly predecessorCompletionWindowMs?: number;
 }
 
 export interface RecoveryRequest {
@@ -1094,6 +1096,18 @@ export class PostgresWorkQueue {
       SELECT work.idempotency_key
       FROM occ.controller_work AS work
       WHERE ${this.claimablePredicate("$2")}
+        AND ($5::double precision IS NULL OR EXISTS (
+          SELECT 1 FROM occ.agents AS agent
+          WHERE agent.id = work.agent_id AND agent.namespace_id = work.namespace_id
+            AND agent.status = 'active' AND agent.desired_runtime_state = 'running'
+            AND agent.active_revision_id = agent.predecessor_replacement->>'predecessorRevisionId'
+            AND agent.predecessor_replacement->>'phase' = 'pre-stop'
+            AND agent.predecessor_replacement->>'executionIdentity' IS NOT NULL
+            AND (agent.predecessor_replacement->>'completionStartedAt')::timestamptz
+                + $5::double precision * interval '1 millisecond' > clock_timestamp()
+            AND work.revision_id = agent.predecessor_replacement->>'candidateRevisionId'
+            AND work.idempotency_key = 'agent_revision:' || work.revision_id || ':reconcile'
+        ))
       ORDER BY work.available_at, work.created_at, work.idempotency_key
       FOR UPDATE OF work SKIP LOCKED
       LIMIT 1
@@ -1116,6 +1130,7 @@ export class PostgresWorkQueue {
       this.maxAttempts,
       this.leaseDurationMs,
       recordAudit ? randomUUID() : null,
+      input.predecessorCompletionWindowMs ?? null,
     ];
     const claimSql = recordAudit
       ? `${candidate}, transitioned AS (${transition}), ${INSERT_CLAIM_EVIDENCE_CTE_SQL}
@@ -1163,7 +1178,6 @@ export class PostgresWorkQueue {
   async claimableWorkWaiting(
     options: {
       readonly except?: readonly string[];
-      readonly predecessorCompletionOnly?: boolean;
     } = {},
   ): Promise<boolean> {
     const except = options.except ?? [];
@@ -1176,18 +1190,8 @@ export class PostgresWorkQueue {
          FROM occ.controller_work AS work
          WHERE ${this.claimablePredicate("$1")}
            AND work.idempotency_key <> ALL($2::text[])
-           AND (NOT $3::boolean OR EXISTS (
-             SELECT 1 FROM occ.agents AS agent
-             WHERE agent.id = work.agent_id AND agent.namespace_id = work.namespace_id
-               AND agent.desired_runtime_state = 'running'
-               AND agent.active_revision_id = agent.predecessor_replacement->>'predecessorRevisionId'
-               AND agent.predecessor_replacement->>'phase' = 'pre-stop'
-               AND agent.predecessor_replacement ? 'completionStartedAt'
-               AND work.revision_id = agent.predecessor_replacement->>'candidateRevisionId'
-               AND work.idempotency_key = 'agent_revision:' || work.revision_id || ':reconcile'
-           ))
        ) AS waiting`,
-      [this.maxAttempts, except, options.predecessorCompletionOnly ?? false],
+      [this.maxAttempts, except],
     );
     const value = (waiting.rows[0] as { waiting?: unknown } | undefined)?.waiting;
     if (typeof value !== "boolean") {

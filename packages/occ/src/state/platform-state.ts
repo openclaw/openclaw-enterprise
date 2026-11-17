@@ -240,6 +240,12 @@ export interface AgentRepository extends AgentReadRepository {
       readonly phase: "pre-stop" | "stopping";
       readonly beginCompletion?: true;
       readonly executionIdentity?: string;
+      /** Require the existing candidate's pre-stop phase and unexpired completion window. */
+      readonly completionClaim?: {
+        readonly idempotencyKey: string;
+        readonly claimToken: string;
+        readonly windowMs: number;
+      };
     },
   ): Promise<Readonly<PredecessorReplacement> | undefined>;
   /** Caller holds the Namespace and Agent locks. Confirm only the same committed stop. */
