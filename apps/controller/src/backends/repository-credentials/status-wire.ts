@@ -1,4 +1,5 @@
-import { hasControlCharacter } from "../../drivers/repo/access/client-contracts.ts";
+import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
+import { isRepositoryCredentialIdentity } from "../../drivers/repo/access/grant-identity.ts";
 
 /** Identical private JSON primitives; each boundary owns its failure diagnostic. */
 export function createStatusWirePrimitives(invalid: () => never) {
@@ -16,12 +17,7 @@ export function createStatusWirePrimitives(invalid: () => never) {
   }
 
   function identity(value: unknown): string {
-    if (
-      typeof value !== "string" ||
-      value.length === 0 ||
-      Buffer.byteLength(value) > 512 ||
-      hasControlCharacter(value)
-    ) {
+    if (!isRepositoryCredentialIdentity(value)) {
       return invalid();
     }
     return value;
@@ -56,5 +52,38 @@ export function createStatusWirePrimitives(invalid: () => never) {
     };
   }
 
-  return { object, identity, counter, parseCleanup };
+  function sessionStatusObject(value: unknown): Record<string, unknown> {
+    return object(value, [
+      "sessionId",
+      "state",
+      "deadlineWallMs",
+      "binding",
+      "activeUses",
+      "cleanup",
+    ]);
+  }
+
+  function grantIdentityObject(value: unknown): Record<string, unknown> {
+    return object(value, ["providerInstanceId", "repositoryId", "grantId"]);
+  }
+
+  function projectGrantIdentity(
+    parsed: Record<string, unknown>,
+  ): RepositoryCredentialGrantIdentity {
+    return {
+      providerInstanceId: identity(parsed.providerInstanceId),
+      repositoryId: identity(parsed.repositoryId),
+      grantId: identity(parsed.grantId),
+    };
+  }
+
+  return {
+    object,
+    identity,
+    counter,
+    parseCleanup,
+    sessionStatusObject,
+    grantIdentityObject,
+    projectGrantIdentity,
+  };
 }

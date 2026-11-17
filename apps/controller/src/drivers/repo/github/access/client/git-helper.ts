@@ -1,13 +1,15 @@
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readClientConfiguration } from "./config.ts";
+import { hasControlCharacter } from "../../../access/client-contracts.ts";
+import { isClientBearer, readClientConfiguration } from "./config.ts";
 import {
+  buildOperatorRepositoryManifest,
   inheritedRepositoryBinding,
   readRuntimeRepositoryManifest,
   requireCurrentBinding,
   type RuntimeRepositoryBinding,
 } from "./manifest.ts";
-import { readPrivateFile } from "./private-files.ts";
+import { clientSessionFileMaxBytes, readPrivateFile } from "./private-files.ts";
 import { selectGitCredential } from "./targets.ts";
 
 async function readCredentialRequest(): Promise<ReadonlyMap<string, string>> {
@@ -18,13 +20,7 @@ async function readCredentialRequest(): Promise<ReadonlyMap<string, string>> {
       throw new Error("invalid-helper-request");
     }
   }
-  if (
-    [...input].some((character) => {
-      const code = character.charCodeAt(0);
-      return (code <= 0x1f && code !== 0x0a) || code === 0x7f;
-    }) ||
-    !input.endsWith("\n")
-  ) {
+  if (!input.endsWith("\n")) {
     throw new Error("invalid-helper-request");
   }
   const lines = input.split("\n");
@@ -32,13 +28,10 @@ async function readCredentialRequest(): Promise<ReadonlyMap<string, string>> {
   if (lines.at(-1) === "") {
     lines.pop();
   }
-  if (lines.some((line) => !line)) {
-    throw new Error("invalid-helper-request");
-  }
   const fields = new Map<string, string>();
   for (const line of lines) {
     const offset = line.indexOf("=");
-    if (offset < 1 || line.includes("\r") || line.includes("\0")) {
+    if (offset < 1 || hasControlCharacter(line)) {
       throw new Error("invalid-helper-request");
     }
     const key = line.slice(0, offset);
@@ -97,23 +90,20 @@ async function run(): Promise<void> {
     );
   } else {
     const configuration = await readClientConfiguration(directory);
-    const single: RuntimeRepositoryBinding = {
-      repositoryRef: "operator",
-      sessionId: configuration.sessionId,
-      deadlineWallMs: configuration.deadlineWallMs,
-      directory: resolve(directory),
-      materialDirectory: resolve(directory),
-      client: configuration.client,
-      configuration,
-    };
-    binding = selectGitCredential({ generation: "", bindings: [single] }, fields);
+    binding = selectGitCredential(
+      buildOperatorRepositoryManifest(directory, configuration),
+      fields,
+    );
   }
   requireCurrentBinding(binding);
-  const bytes = await readPrivateFile(join(binding.directory, "bearer"), 256);
+  const bytes = await readPrivateFile(
+    join(binding.directory, "bearer"),
+    clientSessionFileMaxBytes.bearer,
+  );
   try {
     requireCurrentBinding(binding);
     const bearer = bytes.toString("utf8");
-    if (!/^[A-Za-z0-9_-]{32,256}$/.test(bearer)) {
+    if (!isClientBearer(bearer)) {
       throw new Error("invalid-client-bearer");
     }
     process.stdout.write(`username=${binding.client.gitUsername}\npassword=${bearer}\n\n`);

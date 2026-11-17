@@ -16,11 +16,13 @@ import test, { type TestContext } from "node:test";
 import type { Dialog, Locator, Page, Request } from "playwright";
 
 import { normalizePresetTemplate } from "../../packages/contracts/src/presets.ts";
-import type {
-  HarnessAuthBinding,
-  Preset,
-  PresetTemplate,
-  PresetVariable,
+import {
+  WORKSPACE_DEFAULTS,
+  WORKSPACE_DEFAULTS_ID,
+  type HarnessAuthBinding,
+  type Preset,
+  type PresetTemplate,
+  type PresetVariable,
 } from "../../packages/contracts/src/index.ts";
 import type { CreateAgentBody, CreateSecretBody } from "../../packages/contracts/src/api/common.ts";
 import type {
@@ -41,10 +43,6 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
-import {
-  WORKSPACE_DEFAULTS,
-  WORKSPACE_DEFAULTS_ID,
-} from "../../packages/contracts/src/workspace-defaults.mjs";
 import {
   createConsoleAppFixture as createBaseConsoleAppFixture,
   backendFixtures,
@@ -92,8 +90,8 @@ import {
   KUBERNETES_ALLOW_USERS_REFUSAL,
 } from "../helpers/refusal-text.mjs";
 import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
-import { within } from "../helpers/wait-for.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
+import { within } from "../helpers/wait-for.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createBaseConsoleAppFixture>>;
 type FixtureResponse<Data> = Omit<Awaited<ReturnType<ConsoleFixture["request"]>>, "data"> & {

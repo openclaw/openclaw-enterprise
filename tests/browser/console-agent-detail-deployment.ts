@@ -69,6 +69,7 @@ import {
   READ_UNAVAILABLE,
   SAVED_CONFIGURATION_CHANGED,
   KUBERNETES_ALLOW_USERS_REFUSAL,
+  KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL,
   codexPluginRefusal,
   configIncludeRefusal,
   invalidSecretProviderDefaultsRefusal,
@@ -1794,6 +1795,95 @@ for (const viewport of [
       await card.getByText("Ready to deploy.", { exact: true }).waitFor();
       await waitForEnabled(card.getByRole("button", { name: "Deploy new version", exact: true }));
       assert.equal(await card.getByText(reason, { exact: true }).count(), 0);
+      assert.deepEqual(
+        pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/validate`),
+        [],
+      );
+    });
+  });
+}
+
+// A Dedicated Codex Gateway that applies its workspace node at runtime signs in with the generated
+// gateway password, and Kubernetes Compute refuses a Dedicated Codex row without one there
+// (finding 3132; the console fixture enables private status). A row an older release saved
+// without gateway.auth.password holds Deploy with deploy's refusal and the gateway password step,
+// through the same Compute preflight as the rows above, and following the step makes the draft
+// ready (finding 3138). An OpenClaw Agent without a password is left to deploy and sends no
+// preflight for it.
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`A Dedicated Codex row without the gateway password holds Deploy at ${viewport.width}px`, async (t) => {
+    const withoutPassword = (values: { gateway: Record<string, unknown> }) => {
+      const copy = structuredClone(values);
+      const auth = { ...asObject(copy.gateway.auth) };
+      delete auth.password;
+      return { ...copy, gateway: { ...copy.gateway, auth } };
+    };
+    await t.test("Dedicated Codex", async (t) => {
+      const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
+      const fixture = await createConsoleAppFixture(t, { configurationDriver });
+      await fixture.bootstrap();
+      const namespace = await fixture.createNamespace("Codex gateway password", { ready: true });
+      const values = nativeValues("codex-gateway-password", { harnessId: "codex" });
+      const agent = await fixture.createAgent(namespace.id, "Codex gateway password", values, {
+        executionMode: "dedicated",
+      });
+      // The row as a release before the save rule stored it.
+      await storeRefusedConfiguration(
+        fixture,
+        configurationDriver,
+        agent,
+        withoutPassword(values),
+        KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL,
+      );
+
+      const { page } = await newPage(t, fixture, { context: { viewport } });
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      );
+      const card = draftActions(page);
+      await expectDeployHeld(
+        card,
+        KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL,
+        "Fix the gateway password · ",
+      );
+      // Deploy admission refuses the stored row with the text the page shows.
+      await expectDeployRefused(fixture, agent, KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL);
+
+      // The step, followed in the editor, saves and the draft is ready.
+      await saveConfigurationUntilReady(page, card, values);
+      await expectNoHorizontalScroll(page);
+    });
+
+    await t.test("OpenClaw Agent", async (t) => {
+      const fixture = await createConsoleAppFixture(t);
+      await fixture.bootstrap();
+      const namespace = await fixture.createNamespace("OpenClaw gateway password", {
+        ready: true,
+      });
+      // The native admin opt-in's trusted-proxy auth sets no gateway.auth.password.
+      const values = nativeAdminValues("openclaw-no-password", "http://127.0.0.1:18789");
+      assert.equal(asObject(values.gateway.auth).password, undefined);
+      const agent = await fixture.createAgent(namespace.id, "OpenClaw no password", values);
+
+      const { page } = await newPage(t, fixture, { context: { viewport } });
+      const requests = apiRequests(page, fixture.origin);
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      );
+      const card = draftActions(page);
+      await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+      await waitForEnabled(card.getByRole("button", { name: "Deploy new version", exact: true }));
+      assert.equal(
+        await card.getByText(KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL, { exact: true }).count(),
+        0,
+      );
       assert.deepEqual(
         pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/validate`),
         [],

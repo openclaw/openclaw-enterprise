@@ -46,11 +46,11 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/ci/cli-release.mjs validate
+        run: node scripts/ci/cli-release.ts validate
       - name: Cross-compile and verify four CLI binaries
         id: package
         run: |
-          node scripts/ci/cli-release.mjs package "$RUNNER_TEMP/occ-cli"
+          node scripts/ci/cli-release.ts package "$RUNNER_TEMP/occ-cli"
           echo "artifact_name=occ-cli-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -87,4 +87,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CI_ATTEMPT: ${{ needs.prepare.outputs.ci_attempt }}
-        run: node scripts/ci/cli-release.mjs publish "$RUNNER_TEMP/occ-cli"
+        run: node scripts/ci/cli-release.ts publish "$RUNNER_TEMP/occ-cli"

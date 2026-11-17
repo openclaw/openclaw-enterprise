@@ -21,6 +21,7 @@ import {
   ModelProviderListResponse,
 } from "./model-providers.ts";
 import { Type } from "typebox";
+import { AgentAuditQuery, AgentAuditResponse } from "./agent-audit.ts";
 import {
   ConnectionStartResponse,
   SavedConnectionListResponse,
@@ -49,6 +50,7 @@ import {
   FirstDeploymentRecoveryTuple,
   AgentId,
   NamespaceId,
+  ModelProviderId,
   SecretId,
   AgentProvisioningParams,
   PresetParams,
@@ -444,7 +446,7 @@ export const occApiRoutes = [
     tags: ["Installation"],
     schema: {
       querystring: EmptyQuery,
-      response: { 200: ModelProviderListResponse, ...readErrors },
+      response: { 200: ModelProviderListResponse, ...readErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -460,7 +462,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: ModelProviderParams,
-      response: { 200: ModelProviderResponse, ...readErrors },
+      response: { 200: ModelProviderResponse, ...readErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -476,7 +478,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       body: ModelProviderBody,
-      response: { 201: ModelProviderResponse, ...createErrors },
+      response: { 201: ModelProviderResponse, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -493,7 +495,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: ModelProviderParams,
       body: UpdateModelProviderBody,
-      response: { 200: ModelProviderResponse, ...createErrors },
+      response: { 200: ModelProviderResponse, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -509,7 +511,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
-      response: { 200: ModelProviderListResponse, ...readErrors },
+      response: { 200: ModelProviderListResponse, ...readErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -540,7 +542,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       body: CreateConnectionTemplateBody,
-      response: { 201: ConnectionTemplateResponse, ...createErrors },
+      response: { 201: ConnectionTemplateResponse, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -573,7 +575,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: ConnectionTemplateParams,
       body: UpdateConnectionTemplateBody,
-      response: { 200: ConnectionTemplateResponse, ...createErrors },
+      response: { 200: ConnectionTemplateResponse, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1238,7 +1240,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: CreateCredentialSourceBody,
-      response: { 201: CredentialSourceResponseRef, ...createErrors },
+      response: { 201: CredentialSourceResponseRef, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1252,9 +1254,12 @@ export const occApiRoutes = [
     summary: "List readable credential sources without revealing credential values",
     tags: ["Credential sources"],
     schema: {
-      querystring: EmptyQuery,
+      querystring: Type.Object(
+        { modelProviderId: Type.Optional(ModelProviderId) },
+        { additionalProperties: false },
+      ),
       params: NamespaceParams,
-      response: { 200: CredentialSourceListResponse, ...readErrors },
+      response: { 200: CredentialSourceListResponse, ...readErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1319,7 +1324,22 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: CredentialSourceParams,
-      response: { 204: Type.Null(), ...mutationErrors },
+      response: {
+        204: Type.Null(),
+        ...mutationErrors,
+        503: {
+          allOf: [ErrorResponseRef],
+          headers: {
+            "Retry-After": Type.Optional(
+              Type.String({
+                pattern: "^[1-9][0-9]*$",
+                description:
+                  "Whole seconds before retrying DELETE when error.reason is credential_registration_pending. Absent for other dependency failures.",
+              }),
+            ),
+          },
+        },
+      },
     },
   },
   {
@@ -1622,7 +1642,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: ProvisionAgentBody,
-      response: { 202: AgentProvisioningResponse, ...createErrors },
+      response: { 202: AgentProvisioningResponse, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1684,7 +1704,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: CreateAgentBody,
-      response: { 201: AgentResponse, ...createErrors },
+      response: { 201: AgentResponse, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1702,7 +1722,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: ValidateAgentCreateBody,
-      response: { 204: Type.Null(), ...createErrors },
+      response: { 204: Type.Null(), ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1811,7 +1831,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       body: UpdateAgentBody,
-      response: { 200: AgentResponse, ...createErrors },
+      response: { 200: AgentResponse, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1919,7 +1939,8 @@ export const occApiRoutes = [
     iamAction: "manage_policy",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Apply the saved policy to the running Agent revision",
+    summary:
+      "Queue policy application to the running Agent revision, optionally replacing saved additions",
     tags: ["Agents"],
     schema: {
       params: SandboxPolicyParams,
@@ -1982,6 +2003,22 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       response: { 200: AgentReadResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "listAgentAuditEvents",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/audit-events",
+    action: "openclaw.audit.agent.read",
+    iamAction: "read_audit",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "List audit metadata for one Agent",
+    tags: ["Agents"],
+    schema: {
+      params: AgentParams,
+      querystring: AgentAuditQuery,
+      response: { 200: AgentAuditResponse, ...readErrors, 501: ErrorResponseRef },
     },
   },
   {

@@ -3,18 +3,22 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { loadYaml, dumpYaml, waitFor, yamlDocuments } from "./qa-utils.mjs";
-import { protectedText, grantQaSecret } from "./qa-secrets.mjs";
-import { slackApi } from "./harness-topology-k3d-real.mjs";
-import { allMessages, assertSlackBotAuthor, verifySingleSlackDelivery } from "./slack-delivery.mjs";
-import { sessionEvidenceScript } from "./normal-agent-tools.mjs";
+import { asRecord } from "../../packages/utils/src/objects.ts";
+import { dumpYaml, loadYaml, yamlDocuments, yamlMapping } from "./kubernetes-yaml.ts";
+import { waitFor } from "./qa-wait.ts";
+import { protectedText, grantQaSecret } from "./qa-secrets.ts";
+import { slackApi } from "./slack-web-api.ts";
+import { allMessages, assertSlackBotAuthor, verifySingleSlackDelivery } from "./slack-delivery.ts";
+import { parseGatewayObservation } from "./normal-agent-observation-receipts.ts";
+import { sessionEvidenceScript } from "./normal-agent-gateway-evidence.ts";
 
 export async function prepareQaSlack(f) {
   const configuration = f.configuration.drivers.compute.configuration;
   if (f.controlPlane === "compose") {
     const path = join(f.stateDirectory, "compose.yaml");
     const compose = loadYaml(await readFile(path, "utf8"));
-    compose.services["slack-proxy"] = {
+    const services = yamlMapping(compose, "services");
+    services["slack-proxy"] = {
       image: f.controllerDockerImage,
       entrypoint: ["node", "apps/controller/src/slack-proxy.mjs"],
       environment: { NODE_ENV: "production", OCC_SLACK_PROXY_PORT: "3128" },
@@ -32,7 +36,7 @@ export async function prepareQaSlack(f) {
     ].IPAddress;
     const proxyUrl = `http://${ip}:3128`;
     configuration.runtime.channels = { proxyUrl };
-    compose.services.controller.environment.OCC_CHANNEL_DIRECTORY_PROXY_URL = proxyUrl;
+    yamlMapping(services, "controller", "environment").OCC_CHANNEL_DIRECTORY_PROXY_URL = proxyUrl;
     await writeFile(path, dumpYaml(compose), { mode: 0o600 });
   } else {
     const hostname = `openclaw-enterprise-slack-proxy.${f.state.platformNamespace}.svc`;
@@ -64,11 +68,12 @@ export async function prepareQaSlack(f) {
     ]);
     const selected = yamlDocuments(manifests)
       .filter((doc) => {
-        const object = loadYaml(doc);
+        const object = asRecord(loadYaml(doc));
+        const name = asRecord(object?.metadata)?.name;
         return (
-          object?.metadata?.name?.includes("slack-proxy") ||
-          (["Deployment", "NetworkPolicy"].includes(object?.kind) &&
-            object?.metadata?.name === "openclaw-enterprise-api")
+          (typeof name === "string" && name.includes("slack-proxy")) ||
+          ((object?.kind === "Deployment" || object?.kind === "NetworkPolicy") &&
+            name === "openclaw-enterprise-api")
         );
       })
       .join("\n---\n");
@@ -166,7 +171,7 @@ export async function verifyQaSlack(f, agent) {
     const keys = JSON.parse((await f.execRole(agent, "gateway", ["node", "-e", probe])).stdout);
     const matches = [];
     for (const key of keys.filter((key) => key.includes("slack"))) {
-      const proof = JSON.parse(
+      const proof = parseGatewayObservation(
         (
           await f.execRole(agent, "gateway", [
             "node",
@@ -266,8 +271,9 @@ async function verifyNativeSlackRoot(f, agent, slack, identity) {
     await delay(4_000);
   }
   assert.ok(reply, "native message tool must create its intended root message");
+  /** @param {string[]} tools @param {string} pattern */
   const read = async (tools, pattern) =>
-    JSON.parse(
+    parseGatewayObservation(
       (
         await f.execRole(agent, "gateway", [
           "node",
@@ -282,13 +288,19 @@ async function verifyNativeSlackRoot(f, agent, slack, identity) {
       ).stdout,
     );
   const discovered = await read([], reply.ts);
+  assert.ok(discovered.diagnostics, "missing Gateway tool inventory");
   const names = discovered.diagnostics.observedToolNames.filter((name) =>
     /(?:^|[_.])message$/.test(name),
   );
   assert.equal(names.length, 1, "root send must use the native message tool");
   const evidence = await read(names, reply.ts);
+  assert.ok(
+    evidence.calls && evidence.results && evidence.codexTurns,
+    "missing Gateway transcript",
+  );
   assert.equal(evidence.calls.length, 1, "native root send must be attempted only once");
   const call = evidence.calls[0];
+  assert.ok(call?.id, "the native message call must have an identity");
   const result = evidence.results.find((value) => value.toolCallId === call.id);
   assert.ok(
     result && !result.isError && result.matchesResult && result.seq > call.seq,

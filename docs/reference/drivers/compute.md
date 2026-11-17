@@ -21,6 +21,8 @@ kind: reference/driver
 - [Methods](#methods)
   - [`ensureNamespace`](#method-ensure-namespace)
   - [`deleteNamespace`](#method-delete-namespace)
+  - [`checkNamespaceDeletion`](#method-check-namespace-deletion)
+  - [`resolveSandboxNamespaceContext`](#method-resolve-sandbox-namespace-context)
   - [`prepareRevision`](#method-prepare-revision)
   - [`stopRevision`](#method-stop-revision)
   - [`retireRevision`](#method-retire-revision)
@@ -39,6 +41,7 @@ kind: reference/driver
   - [`validateRepositoryCredentials`](#method-validate-repository-credentials)
   - [`validateExecutionAdmission`](#method-validate-execution-admission)
   - [`admitRevision`](#method-admit-revision)
+  - [`snapshotRuntimeInputs`](#method-snapshot-runtime-inputs)
   - [`activateRevision`](#method-activate-revision)
   - [`deactivateRevision`](#method-deactivate-revision)
   - [`requiresStoppedPredecessors`](#method-requires-stopped-predecessors)
@@ -65,7 +68,7 @@ kind: reference/driver
 
 ## Overview
 
-Compute manages Namespaces, Agent workloads, identity, isolation, readiness, and
+Compute manages Namespace infrastructure, Agent workloads, identity, isolation, readiness, and
 gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 
 ## Interface
@@ -80,7 +83,8 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 | <a id="property-capability"></a>`capability`                                              | Required    | Must be `"compute"`.                                                                                                                                                            |
 | <a id="property-activation-order"></a>`activationOrder`                                   | Optional    | Defaults to `"afterCommit"`; controls traffic switching relative to saving the selected revision.                                                                               |
 | <a id="property-agent-provisioning"></a>`agentProvisioning`                               | Optional    | Lists supported execution modes; OCC rejects unlisted modes. Omission does not disable provisioning.                                                                            |
-| <a id="property-compute-lifecycle-hooks"></a>`computeLifecycleHooks`                      | Optional    | Inherited from `Driver`. Installed packages supply hooks on the registration. See [selected-driver hooks](#optional-selected-driver-hooks).                                     |
+| <a id="property-compute-lifecycle-hooks"></a>`computeLifecycleHooks`                      | Optional    | [Workload hooks](#optional-selected-driver-hooks).                                                                                                                              |
+| `namespaceLifecycleHooks`                                                                 | Optional    | [Registration-level Namespace hooks](namespace-lifecycle.md).                                                                                                                   |
 | <a id="property-maintenance-interval-ms"></a>`maintenanceIntervalMs`                      | Optional    | Interval between maintenance passes, in milliseconds; positive safe integer.                                                                                                    |
 | <a id="property-requires-agent-runtime-credentials"></a>`requiresAgentRuntimeCredentials` | Optional    | When `true`, OCC checks transport credentials before deployment and can create them before the first revision. Missing status/provisioning methods mean dependency unavailable. |
 | <a id="property-runtime-logging"></a>`runtimeLogging`                                     | Optional    | Defaults to `"platform"`; `"driver"` gives Compute ownership of native logging configuration and delivery.                                                                      |
@@ -94,8 +98,10 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 
 | Method                                                                                                               | Requirement | Caller and behavior                                                                                                                                                                                                                                                                                                                                       |
 | -------------------------------------------------------------------------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| <a id="method-ensure-namespace"></a>`ensureNamespace`                                                                | Required    | Prepare or check isolation for the supplied Namespace, before an Agent exists. Return `namespaceReady` when ready.                                                                                                                                                                                                                                        |
+| <a id="method-ensure-namespace"></a>`ensureNamespace`                                                                | Required    | Prepare or verify Namespace isolation before Agents; return `namespaceReady` when ready.                                                                                                                                                                                                                                                                  |
 | <a id="method-delete-namespace"></a>`deleteNamespace`                                                                | Required    | Remove supported infrastructure for an empty Namespace. Return `namespaceDeleted` only after teardown. Refuse deletion of infrastructure outside the Driver's ownership.                                                                                                                                                                                  |
+| <a id="method-check-namespace-deletion"></a>`checkNamespaceDeletion`                                                 | Conditional | Read-only eligibility before participant cleanup.                                                                                                                                                                                                                                                                                                         |
+| <a id="method-resolve-sandbox-namespace-context"></a>`resolveSandboxNamespaceContext`                                | Conditional | Resolve Sandbox placement and client without provisioning.                                                                                                                                                                                                                                                                                                |
 | <a id="method-prepare-revision"></a>`prepareRevision`                                                                | Required    | Create or reuse the gateway and prepare the Harness. Return readiness for the requested Namespace, Agent, and revision. The worker supplies authorized revision context.                                                                                                                                                                                  |
 | <a id="method-stop-revision"></a>`stopRevision`                                                                      | Required    | Remove inbound routing and stop execution, including applicable Driver hooks and Sandbox cleanup. Keep Agent credentials, workspace data, and saved revisions. Repeated calls must be safe.                                                                                                                                                               |
 | <a id="method-retire-revision"></a>`retireRevision`                                                                  | Required    | Revoke workload access, stop the workload, and complete applicable Sandbox cleanup. Preserve the replacement's gateway.                                                                                                                                                                                                                                   |
@@ -114,6 +120,7 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 | <a id="method-validate-repository-credentials"></a>`validateRepositoryCredentials`                                   | Optional    | Check repository bindings against the requested Harness and Sandbox. OCC refuses bindings if it cannot validate them.                                                                                                                                                                                                                                     |
 | <a id="method-validate-execution-admission"></a>`validateExecutionAdmission`                                         | Optional    | Check whether Compute supports the requested execution at admission and again before release. Without it the platform admits ordinary unprotected execution only.                                                                                                                                                                                         |
 | <a id="method-admit-revision"></a>`admitRevision`                                                                    | Optional    | Return Driver-owned admission data for OCC to save with the revision. Without it, OCC stores the revision without Driver admission data.                                                                                                                                                                                                                  |
+| <a id="method-snapshot-runtime-inputs"></a>`snapshotRuntimeInputs`                                                   | Optional    | Capture bounded private launch inputs after admission; omission preserves legacy behavior. These facts are not execution authority.                                                                                                                                                                                                                       |
 | <a id="method-activate-revision"></a>`activateRevision`, <a id="method-deactivate-revision"></a>`deactivateRevision` | Optional    | Switch traffic to a ready revision or withdraw an unpublished candidate. Production startup checks for both. A Driver selecting `beforeCommit` must also implement activation in development.                                                                                                                                                             |
 | <a id="method-requires-stopped-predecessors"></a>`requiresStoppedPredecessors`                                       | Optional    | Return `true` to stop older revisions before preparing a replacement. Otherwise the previous route can serve during preparation.                                                                                                                                                                                                                          |
 | <a id="method-describe-prepare-revision-failure"></a>`describePrepareRevisionFailure`                                | Optional    | Supply safe diagnostic fields for a rejected preparation. The worker validates the fields and excludes raw provider errors.                                                                                                                                                                                                                               |
@@ -148,10 +155,9 @@ uses a 10-second timeout and accepts up to 4 MiB per response, ten pages, and
 
 ### Namespace and gateway results
 
-Return the requested `namespaceId`. Failures are `retryable` or `permanent`;
-ready/deleted flags succeed only without failure. Worker-log failure reasons allow
-256 characters: letters, digits, spaces, and `. _ : / @ -`. Exclude provider
-output and other tenants' values.
+Namespace results follow the [shared lifecycle contract](namespace-lifecycle.md).
+Worker-log failure reasons allow up to 256 characters: letters, digits, spaces, and
+`. _ : / @ -`. Exclude provider output and other tenants' values.
 
 Derive [gateway endpoints](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes)
 from trusted settings and approved resource IDs, independently of readiness and authorization.
@@ -186,12 +192,13 @@ belongs to the [Credential Refresh Driver](credential-refresh.md#device-authoriz
 
 An ordinary `ready: false` keeps preparation pending. Return a
 [`pendingReason`](../agents/deployment.md#pending-deployment-progress) if known.
-The worker rejects a readiness result for another revision. For a held startup
+The worker rejects another revision's readiness result. For a held startup
 failure, return validated `runtimeFailure` evidence for this revision:
 `component`, `check`, `checkedAt`, `code`, and an optional
 [`cause`](../agents/deployment.md#model-check-failure-cause). Omit credentials,
 provider messages, and untrusted observations. The [worker flow](../controller/reconciliation.md#deferred-namespace-and-agent-convergence)
-explains which failures end deployment immediately and which wait until its deadline.
+explains which failures end deployment immediately, such as
+[`crash-loop`](kubernetes-compute.md#troubleshooting), and which wait until its deadline.
 
 Throw `ComputePreparationFailedError` for terminal initialization failure.
 The worker records the failed deployment and queues `stopRevision` for that
@@ -280,11 +287,9 @@ and `REPOSITORY_GIT_ROUTE_PENDING` without a runtime failure, the worker can
 record the selection. The original work stays queued until that revision is ready;
 only then does the worker activate it, retire its predecessor, and complete the work.
 
-Exclusive replacement closes earlier credential sessions and stops each earlier
-revision, including failed candidates, before preparation. A failed stop blocks
-the successor. Older work and maintenance cannot recreate the stopped execution.
-Compute must confirm resource release and preserve workspace data on repeated
-stops. This policy permits downtime. Recover by deploying a newer revision.
+Exclusive replacement crosses the [shared stop boundary](../agents/planned-replacement.md)
+before closing credentials and stopping predecessors. Failed stop blocks preparation.
+Repeated stops must preserve workspace data; stopped revisions cannot be recreated.
 
 ### SandboxDriver coordination
 

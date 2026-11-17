@@ -77,15 +77,33 @@ export const credentialSourceHandlers = {
     reply.status(201).send({ data: source, meta: { requestId: request.id } });
   },
   async listCredentialSources({ controller, context, request, reply, namespaceId }) {
-    const sources = await controller.listCredentialSources(context.actorId, namespaceId);
+    const query = request.query as { modelProviderId?: string };
+    const sources = await controller.listCredentialSources(
+      context.actorId,
+      namespaceId,
+      query.modelProviderId,
+    );
     reply.send({ data: sources.map(clientCredentialSource), meta: { requestId: request.id } });
   },
-  async getCredentialSource({ controller, context, request, reply, params, namespaceId }) {
+  async getCredentialSource({
+    controller,
+    context,
+    request,
+    reply,
+    params,
+    namespaceId,
+    setAuditReadTarget,
+  }) {
     const source = await controller.readCredentialSource(
       context.actorId,
       namespaceId,
       params.credentialSourceId as string,
     );
+    setAuditReadTarget({
+      kind: "credential_source",
+      id: source.id,
+      namespaceId: source.namespaceId,
+    });
     reply.send({ data: clientCredentialSource(source), meta: { requestId: request.id } });
   },
   async updateCredentialSource({

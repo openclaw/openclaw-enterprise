@@ -5,7 +5,9 @@ import type {
   AuthorityIdentity,
   Clock,
   CredentialRef,
+  FinalizeOutcome,
   RepositoryBackend,
+  RetireOutcome,
 } from "./backend-contracts.ts";
 import type { CapturedCredential, CustodyOwner } from "./custody.ts";
 import { waitWithin } from "./provider-queue.ts";
@@ -312,14 +314,18 @@ export function createLifecycle(options: {
       maintain();
     });
   }
-  function retire(record: CapturedCredential) {
-    record.retiring = true;
+  function startCleanup(record?: CapturedCredential) {
+    if (record) {
+      record.retiring = true;
+    }
     let invoked = false;
     state.activeActions++;
     const controller = new AbortController();
     let deadline = Infinity;
-    const owned = attempt("retire", controller, () => deadline);
-    custody.bindRetirement(owned.context, record);
+    const owned = attempt(record ? "retire" : "finalize", controller, () => deadline);
+    if (record) {
+      custody.bindRetirement(owned.context, record);
+    }
     void queue
       .run(
         controller.signal,
@@ -328,71 +334,37 @@ export function createLifecycle(options: {
           const cancel = clock.schedule(options.providerActionMs, () => controller.abort());
           try {
             invoked = true;
-            record.retirementAttempted = true;
-            const outcome = await driver.retire(owned.context, record.ref);
-            await driver.settle(outcome);
-            custody.endAttempt(owned.context);
-            if (outcome.attemptId !== owned.context.id) {
-              throw new Error("FOREIGN_OUTCOME");
-            }
-            if (outcome.kind === "revoked") {
-              record.disposition = "revoked";
-              state.revoked++;
-            } else if (outcome.kind === "expired") {
-              record.disposition = "expired";
-              state.expired++;
+            let outcome: RetireOutcome | FinalizeOutcome;
+            if (record) {
+              record.retirementAttempted = true;
+              outcome = await driver.retire(owned.context, record.ref);
             } else {
-              record.disposition = outcome.kind === "uncertain" ? "uncertain" : "pending";
+              state.finalizeAttempted = true;
+              outcome = await driver.finalize(owned.context);
             }
-          } catch {
-            record.disposition = "uncertain";
-            await new Promise<void>(() => {});
-          } finally {
-            cancel();
-          }
-        },
-        "cleanup",
-      )
-      .catch(() => {
-        if (invoked) {
-          record.disposition = "uncertain";
-        } else {
-          custody.endAttempt(owned.context);
-          waitForCleanupCapacity();
-        }
-      })
-      .finally(() => {
-        record.retiring = false;
-        state.activeActions--;
-        changed();
-      });
-  }
-  function finalize() {
-    let invoked = false;
-    state.activeActions++;
-    const controller = new AbortController();
-    let deadline = Infinity;
-    const owned = attempt("finalize", controller, () => deadline);
-    void queue
-      .run(
-        controller.signal,
-        async () => {
-          deadline = clock.monotonicNow() + options.providerActionMs;
-          const cancel = clock.schedule(options.providerActionMs, () => controller.abort());
-          try {
-            invoked = true;
-            state.finalizeAttempted = true;
-            const outcome = await driver.finalize(owned.context);
             await driver.settle(outcome);
             custody.endAttempt(owned.context);
             if (outcome.attemptId !== owned.context.id) {
               throw new Error("FOREIGN_OUTCOME");
             }
-            if (outcome.kind === "finalized") {
+            if (record) {
+              if (outcome.kind === "revoked") {
+                record.disposition = "revoked";
+                state.revoked++;
+              } else if (outcome.kind === "expired") {
+                record.disposition = "expired";
+                state.expired++;
+              } else {
+                record.disposition = outcome.kind === "uncertain" ? "uncertain" : "pending";
+              }
+            } else if (outcome.kind === "finalized") {
               await custody.disposeAllRenewal();
               state.finalized = true;
             }
           } catch {
+            if (record) {
+              record.disposition = "uncertain";
+            }
             await new Promise<void>(() => {});
           } finally {
             cancel();
@@ -404,9 +376,14 @@ export function createLifecycle(options: {
         if (!invoked) {
           custody.endAttempt(owned.context);
           waitForCleanupCapacity();
+        } else if (record) {
+          record.disposition = "uncertain";
         }
       })
       .finally(() => {
+        if (record) {
+          record.retiring = false;
+        }
         state.activeActions--;
         changed();
       });
@@ -438,7 +415,7 @@ export function createLifecycle(options: {
       }
       if (driver.cleanup === "revocable") {
         if (!record.retirementAttempted && !state.cleanupWaiting) {
-          retire(record);
+          startCleanup(record);
         }
         continue;
       }
@@ -463,7 +440,7 @@ export function createLifecycle(options: {
       !state.cleanupWaiting &&
       !state.finalizeAttempted
     ) {
-      finalize();
+      startCleanup();
     }
     options.changed();
   }

@@ -63,7 +63,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PUBLISH: ${{ inputs.publish }}
-        run: node scripts/ci/container-release.mjs validate
+        run: node scripts/ci/container-release.ts validate
 
   prepare:
     needs: validate
@@ -104,10 +104,10 @@ jobs:
           IMAGE: ${{ matrix.image }}
           CI_ATTEMPT: ${{ needs.validate.outputs.ci_attempt }}
         run: |
-          node scripts/ci/container-release.mjs assemble "$RUNNER_TEMP/oci"
+          node scripts/ci/container-release.ts assemble "$RUNNER_TEMP/oci"
           IMAGE_DIGEST="$(sed -n 's/^digest=//p' "$GITHUB_OUTPUT")"
           export IMAGE_DIGEST
-          node scripts/ci/container-release.mjs seal "$RUNNER_TEMP/oci"
+          node scripts/ci/container-release.ts seal "$RUNNER_TEMP/oci"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: container-${{ matrix.image }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -151,7 +151,7 @@ jobs:
           GHCR_CONTROLLER_IMAGE: ${{ vars.GHCR_CONTROLLER_IMAGE }}
           GHCR_RUNTIME_IMAGE: ${{ vars.GHCR_RUNTIME_IMAGE }}
           PUBLISH: "true"
-        run: node scripts/ci/container-release.mjs publish "$RUNNER_TEMP/prepared"
+        run: node scripts/ci/container-release.ts publish "$RUNNER_TEMP/prepared"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: container-publication-${{ github.run_id }}-${{ github.run_attempt }}
@@ -202,7 +202,7 @@ jobs:
           GHCR_CONTROLLER_IMAGE: ${{ vars.GHCR_CONTROLLER_IMAGE }}
           GHCR_RUNTIME_IMAGE: ${{ vars.GHCR_RUNTIME_IMAGE }}
           PUBLISH: "true"
-        run: node scripts/ci/chart-release.mjs publish "$RUNNER_TEMP/prepared"
+        run: node scripts/ci/chart-release.ts publish "$RUNNER_TEMP/prepared"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: chart-publication-${{ github.run_id }}-${{ github.run_attempt }}

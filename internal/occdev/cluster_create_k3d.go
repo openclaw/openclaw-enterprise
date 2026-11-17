@@ -44,6 +44,17 @@ func (r *runner) createK3dCluster(ctx context.Context, args ...string) error {
 	}
 }
 
+// k3dCreateFailure is a failed k3d cluster create. rolledBack records that
+// k3d reported rolling back every change it made.
+type k3dCreateFailure struct {
+	err        error
+	message    string
+	rolledBack bool
+}
+
+func (f *k3dCreateFailure) Error() string { return f.message }
+func (f *k3dCreateFailure) Unwrap() error { return f.err }
+
 // k3dCreateError repeats k3d's last error line, which a caller showing only
 // the tail of startup output would otherwise lose behind the rollback, and
 // adds at most one hint chosen by k3dFailureHint.
@@ -55,7 +66,7 @@ func k3dCreateError(err error, output []byte, legacyNATUnconfirmed bool) error {
 	if hint := k3dFailureHint(output, legacyNATUnconfirmed); hint != "" {
 		detail.WriteString("\n" + hint)
 	}
-	return fmt.Errorf("k3d failed: %w%s", err, detail.String())
+	return &k3dCreateFailure{err: err, message: fmt.Sprintf("k3d failed: %v%s", err, detail.String()), rolledBack: k3dRolledBack.Match(output)}
 }
 
 // k3d resolves a +channel image through update.k3s.io before it creates

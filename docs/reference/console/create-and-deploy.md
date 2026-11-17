@@ -73,12 +73,11 @@ as the reason Dedicated OpenClaw is disabled.
    newlines. See [initial contents](../agents.md#initial-contents-at-creation) for limits.
 8. Select **Create Agent** to submit Configuration, Secret references, Agent inputs,
    repositories, and workspace files for supported Dedicated provisioning.
-   Provisioning waits for deployment activation or failure, naming the deployment's current wait
-   when you can read the deployment.
-   Success opens Agent details. If a newer deployment takes over, Create stays open
-   and offers no retry or link. The job identifies only the deployment that ended.
-   For a failed deployment, open the linked Agent and version and follow its recovery
-   guidance. After a Stop, deploy again when ready.
+   Create opens the first revision's **Deployment** tab for progress and recovery as soon as
+   it can read the deployment. If Create sees job success first, it opens **Configuration**.
+   If a newer deployment takes over while Create is open, Create offers no retry or link.
+   For a failure on Create, follow the linked version's recovery guidance. After a Stop,
+   deploy again when ready.
    Ordinary creation saves Configuration first and opens a draft on **Open draft**,
    without a workload. After deployment, use the
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
@@ -168,8 +167,6 @@ If the configuration check times out, your entries stay in the form. Select
 **Create Agent** again to repeat the check and continue.
 If a create response is missing or identifies a different resource, the write may still
 have succeeded. Check the displayed IDs and the Agents list before starting again.
-For an uncertain Credential Source, select **Check credential registration** to look up
-that registration without creating another. Give your operator the request ID if the outcome is unclear.
 
 If the Console cannot confirm a ChatGPT OAuth sign-in started, it blocks another
 start in that form. Without the session reference it cannot poll or cancel the
@@ -183,8 +180,11 @@ resends the original request. A refused retry of a confirmed failure names the
 reason when available; **Create Agent** then starts a new request. Saved
 Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
-**Check credential registration** recovers an uncertain source. If absent,
-**Create Agent** retries its name/references; uniqueness fences late commits. **Remove failed credential registration** deletes a source left
+**Check credential registration** looks up the source without retrying writes.
+An empty result preserves any known refusal and the saved Secret. Resolve the refusal,
+then select **Create Agent** to retry the same name/references; uniqueness fences late commits.
+Give your operator the request ID if the outcome is unclear.
+**Remove failed credential registration** deletes a source left
 `registering`/`deleting`, requiring source `delete`. Retry removal after the gateway's
 registration safety window if needed. See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
 

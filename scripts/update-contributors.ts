@@ -175,7 +175,16 @@ function escapeAttribute(value: string) {
 }
 
 function updateContributors() {
-  assert.equal(process.argv.length, 2, "Usage: node scripts/update-contributors.ts");
+  const args = process.argv.slice(2);
+  assert.ok(
+    args.length === 0 ||
+      (args.length === 2 &&
+        args[0] === "--expected-base" &&
+        typeof args[1] === "string" &&
+        /^[0-9a-f]{40}$/.test(args[1])),
+    "Usage: node scripts/update-contributors.ts [--expected-base SHA]",
+  );
+  const expectedBase = args[1];
   const readme = readFileSync(readmePath, "utf8");
   assert.ok(
     readme.split(startMarker).length === 2 && readme.split(endMarker).length === 2,
@@ -200,6 +209,13 @@ function updateContributors() {
   );
   const baseline = branch.sha;
   assert.match(baseline, /^[0-9a-f]{40}$/, "GitHub returned an invalid default-branch SHA.");
+  if (expectedBase !== undefined) {
+    assert.equal(
+      baseline,
+      expectedBase,
+      "Default branch does not match the expected base; start a fresh run. README unchanged.",
+    );
+  }
   const ids = new Set<string>();
   for (const user of github(`repos/${repository}/contributors?per_page=100`, true)) {
     ids.add(accountId(user));

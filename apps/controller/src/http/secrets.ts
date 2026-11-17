@@ -51,7 +51,16 @@ export const secretHandlers = {
     const secrets = await controller.listSecrets(context.actorId, namespaceId);
     reply.send({ data: secrets.map(clientSecret), meta: { requestId: request.id } });
   },
-  async getSecret({ controller, context, request, reply, params, namespaceId, callerMay }) {
+  async getSecret({
+    controller,
+    context,
+    request,
+    reply,
+    params,
+    namespaceId,
+    callerMay,
+    setAuditReadTarget,
+  }) {
     const secret = await controller.readSecret(
       context.actorId,
       namespaceId,
@@ -65,6 +74,7 @@ export const secretHandlers = {
       callerMay("update", target),
       callerMay("delete", target),
     ]);
+    setAuditReadTarget({ kind: "secret", id: secret.id, namespaceId: secret.namespaceId });
     reply.send({
       data: { ...clientSecretDetail(secret), callerPermissions: { update, delete: remove } },
       meta: { requestId: request.id },

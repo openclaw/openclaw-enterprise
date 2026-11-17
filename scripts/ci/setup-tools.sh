@@ -239,6 +239,8 @@ install_browser_dependencies() {
         echo "Selected CI browser executable is unavailable." >&2
         return 1
       fi
+      # A system browser does not include Playwright's video recorder binary.
+      pnpm exec playwright install ffmpeg
       # Verify the selected host browser before building runtime images. Keep job
       # credentials out of its environment and preserve Chromium's sandbox.
       node --input-type=module <<'NODE'

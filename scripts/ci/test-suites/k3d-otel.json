@@ -31,7 +31,7 @@
   ],
   "files": [
     {
-      "path": "tests/integration/harness-topology-k3d-otel-real.test.mjs",
+      "path": "tests/integration/harness-topology-k3d-otel-real.test.ts",
       "expectedTests": [
         "production embedded runtime emits actual OTLP logs during a real model turn",
         "production dedicated runtime emits actual OTLP logs during a real model turn"

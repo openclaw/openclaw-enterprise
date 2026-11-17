@@ -32,7 +32,8 @@ The [exported interface](../../../packages/contracts/src/drivers/sandbox/index.t
 | `harnessHome`                  | Optional    | Normalized absolute Harness user home. Compute uses it for Harness-local paths. Default: `/home/node`.                                                       |
 | `repositoryAccess`             | Optional    | Verify repository execution and route readiness, retire access, and optionally assess [worker replacement](../repository-credentials/worker-replacement.md). |
 | `networkPolicy`                | Optional    | Declare support for [network policy operations](#optional-network-policy-operations).                                                                        |
-| `computeLifecycleHooks`        | Optional    | Inherited from `Driver`. Installed packages supply hooks on the registration and must omit them on the capability object.                                    |
+| `computeLifecycleHooks`        | Optional    | Workload hooks, supplied on the registration for installed packages.                                                                                         |
+| `namespaceLifecycleHooks`      | Optional    | [Registration-level Namespace setup and cleanup](namespace-lifecycle.md).                                                                                    |
 
 ### Harness mode support
 
@@ -62,7 +63,7 @@ Construct a new Driver after changing Installation settings.
 | `cleanup`                                    | Required              | Compute passes the Agent revision on stop or retirement. For Namespace cleanup, it omits the revision.                                                                                                                                                    |
 | `configureAgent`                             | Optional              | Synchronously transform Configuration values for the resolved Harness. OCC validates the result and stores it in the Agent revision. OCC uses the original values by default.                                                                             |
 | `validateWorkspaceSetup`                     | Optional              | Synchronously checks the projected configuration. Without it, Compute rejects initial workspace files in a Sandbox. Compute still checks storage and workload identity.                                                                                   |
-| `ensureNamespace`                            | Optional              | Prepare the backend after Compute prepares baseline Namespace isolation. Without it, Compute proceeds.                                                                                                                                                    |
+| `ensureNamespace`                            | Optional              | Prepare the backend after Compute prepares baseline Namespace isolation. Composition adapts it to OCC Namespace lifecycle hooks.                                                                                                                          |
 | `provisionHarness`                           | Optional              | Creates a dedicated Harness and returns its stable [resource identity](#sandbox-resource-identity). Without it, Compute rejects dedicated native OpenClaw and revisions that bind credential sources.                                                     |
 | `harnessEndpoint`, `harnessStatus`           | Optional              | Compute calls `harnessEndpoint` for the transport and `harnessStatus` to check startup. See [Sandbox-provided Harness transport](#harness-transport).                                                                                                     |
 | `withdrawHarnessExposure`                    | Optional              | Remove the temporary Harness status endpoint after the dedicated worker's workspace node enrolls.                                                                                                                                                         |
@@ -243,8 +244,7 @@ the same cleanup operation with or without an Agent revision.
 
 Dedicated native OpenClaw requires a selected Sandbox that implements
 `provisionHarness` and declares networking, filesystem, and process containment.
-Other dedicated Harnesses may use a subset of facets or no Sandbox according to
-their Compute contract.
+Other dedicated Harnesses may use fewer facets or no Sandbox.
 
 ```mermaid
 sequenceDiagram
@@ -254,7 +254,7 @@ sequenceDiagram
     O->>C: Prepare Namespace
     C->>C: Establish isolation
     opt ensureNamespace supplied
-        C->>S: ensureNamespace
+        O->>S: ensureNamespace through registration adapter
     end
     O->>O: Resolve Harness
     opt configureAgent supplied

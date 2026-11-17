@@ -275,7 +275,11 @@ Open the console, choose a running Agent with a selected version, and verify **O
 
 Full runtime proof still requires a real browser test that loads native assets through OCC, reconnects native WebSocket traffic, verifies the OCE session cookie never reaches the native gateway, and completes an authorized action against a disposable Agent. A native configuration edit requires [Gateway managed mode](../../reference/agents/gateway-managed-mode.md) to be off.
 
+For retained overlong domains, follow [domain recovery](native-admin-domain-recovery.md).
+
 ## Troubleshooting
+
+Match the refused request’s ID to `http.completed`. HTTP admission refusals carry `nativeAdmissionReason`; early guards and post-admission failures may omit it.
 
 | Symptom                                             | Check                                                                                                                                                                                                                     |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -288,6 +292,7 @@ Full runtime proof still requires a real browser test that loads native assets t
 | Console panel is hidden                             | Feature enablement and exact Agent `operate` or `administer` permission.                                                                                                                                                  |
 | Panel or status API reports `stopped`               | A stopped Agent with no selected version returns only `data.status: "stopped"`, without an origin. Deploy the Agent if native admin access is intended.                                                                   |
 | Panel or status API reports `unavailable`           | No version is serving: there is no selected version yet, or a newer dedicated deployment stopped it and is starting or failed. Check Deployment activity, fix a failure, and redeploy.                                    |
+| Panel says browser chat is off                      | The selected version's Configuration does not turn on the browser UI. Add the settings in [Configure each Agent](#configure-each-agent), then deploy.                                                                     |
 | Panel reports unsupported                           | Check the selected version's [native configuration requirements](../../reference/agent-native-admin.md#requirements) and Compute support for `getGatewayChatEndpoint` in chat mode or `getGatewayEndpoint` in admin mode. |
 | Native tab cannot load                              | Browser wildcard DNS/TLS to API, the selected session mode, host-to-Agent resolution, native `controlUi.allowedOrigins`, and private gateway routing.                                                                     |
 | Browser reports service-worker registration failure | Expected for the pilot. OCC blocks native service-worker script requests and adds `worker-src 'none'` to proxied responses.                                                                                               |
@@ -309,6 +314,9 @@ may have expired, or your access may have changed. If OCE asks you to sign in,
 it checks your access again and returns you to that Agent’s detail page. Select
 **Open Agent UI** to continue. With an older runtime, open the Agent root
 or its console page to start the same recovery.
+
+If the Agent host returns `503 DEPENDENCY_UNAVAILABLE`, check the controller and
+session store and retry after they recover.
 
 If expiry coincides with controller restarts, check persistent session storage
 and whether the configured auth secret changed. In-memory sessions disappear

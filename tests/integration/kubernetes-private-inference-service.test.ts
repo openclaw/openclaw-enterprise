@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import {
+  createProvisioningApiFixture,
+  createProvisioningContext,
+  readProvisioningResponse,
+} from "../helpers/kubernetes-provisioning-api.ts";
+import { ConnectionTemplateResponse } from "../../packages/contracts/src/api/connection-templates.ts";
+import {
   assertKubernetesFixtureAvailable,
   createDriver,
-  createProvisioningApiFixture,
   createScopedController,
   deleteNamespaces,
   hash,
@@ -26,9 +31,10 @@ test(
     const controller = await createScopedController(context, installationId, platformNamespace);
     const { driver } = await createDriver({ authentication: controller.authentication });
     const { request } = await createProvisioningApiFixture(
-      context,
+      createProvisioningContext(context),
       driver,
       controller.authentication,
+      () => {},
     );
 
     const service = JSON.parse(
@@ -80,6 +86,11 @@ test(
     );
     const created = await create();
     assert.equal(created.status, 201, JSON.stringify(created.body));
+    const createdTemplate = readProvisioningResponse(ConnectionTemplateResponse, created).data;
+    assert.equal(createdTemplate.current.mode, "static_bearer");
+    if (createdTemplate.current.mode !== "static_bearer") {
+      assert.fail("Expected a static-key template");
+    }
     const peer = {
       ...settings.privatePeer,
       uid: service.metadata.uid,
@@ -87,9 +98,9 @@ test(
       podSelector: { app: "inference" },
       targetPort: 8443,
     };
-    const templatePath = `/connection-templates/${created.data.id}`;
-    assert.deepEqual(created.data.current.privatePeer, peer);
-    assert.deepEqual(created.data.current.destinations, [
+    const templatePath = `/connection-templates/${createdTemplate.id}`;
+    assert.deepEqual(createdTemplate.current.privatePeer, peer);
+    assert.deepEqual(createdTemplate.current.destinations, [
       { host, port: 443, path: "/v1/responses", method: "POST" },
     ]);
 
@@ -107,11 +118,20 @@ test(
     );
     const saved = await request("GET", templatePath, undefined);
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
-    assert.deepEqual(saved.data.current.privatePeer, peer);
+    const savedTemplate = readProvisioningResponse(ConnectionTemplateResponse, saved).data;
+    assert.equal(savedTemplate.current.mode, "static_bearer");
+    assert.deepEqual(
+      savedTemplate.current.mode === "static_bearer" && savedTemplate.current.privatePeer,
+      peer,
+    );
     const updated = await request("PATCH", templatePath, settings);
     assert.equal(updated.status, 200, JSON.stringify(updated.body));
-    assert.equal(updated.data.current.version, created.data.current.version + 1);
-    assert.deepEqual(updated.data.current.privatePeer, { ...peer, targetPort: 9443 });
+    const updatedTemplate = readProvisioningResponse(ConnectionTemplateResponse, updated).data;
+    assert.equal(updatedTemplate.current.version, createdTemplate.current.version + 1);
+    assert.deepEqual(
+      updatedTemplate.current.mode === "static_bearer" && updatedTemplate.current.privatePeer,
+      { ...peer, targetPort: 9443 },
+    );
     const deleted = await request("DELETE", templatePath, undefined);
     assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
   },

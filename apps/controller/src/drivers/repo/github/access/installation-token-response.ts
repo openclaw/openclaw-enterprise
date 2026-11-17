@@ -1,5 +1,5 @@
 import type { ProviderScope } from "./provider-transport/request-options.ts";
-import { parseJsonMembers } from "../../access/json-members.ts";
+import { parseJsonMembers } from "../../../json-members.ts";
 import { providerClockSkewMs, tokenLifetimeMs } from "./driver/lifetime.ts";
 import { isGitHubWireCredential } from "./wire-credential.ts";
 

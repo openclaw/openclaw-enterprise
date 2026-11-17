@@ -35,7 +35,7 @@ import {
   SECRET_UPDATE_DENIED,
   tooManyRequestsIn,
 } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { consoleStorage } from "../helpers/console-storage.ts";
@@ -55,6 +55,7 @@ import {
   pathRequests,
   settledView,
 } from "./console-agents-browser-helpers.ts";
+import { grantMember } from "../helpers/console-app.mjs";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { responseTo } from "./console-action-helpers.ts";
 
@@ -134,6 +135,28 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
     connectionTemplateVersion: 1,
   });
 
+  // A creator can discover approved sources without reading the admin template or raw Secret.
+  const member = await fixture.createNamespaceMember("provider-picker", namespace.id, [
+    ["read", "namespace"],
+    ["read", "credential_source"],
+  ]);
+  const memberSession = await fixture.signIn(member.credentials);
+  const filteredPath =
+    "/namespaces/" + namespace.id + "/credential-sources?modelProviderId=" + provider.id;
+  const memberChoices = () => fixture.request("GET", filteredPath, { session: memberSession });
+  assert.equal((await memberChoices()).status, 403);
+  grantMember(fixture, "provider-picker", [["create", "agent"]]);
+  assert.deepEqual((await memberChoices()).data, []);
+  grantMember(fixture, "provider-picker", [["operate", "credential_source"]]);
+  assert.deepEqual(
+    (await memberChoices()).data.map((item: CredentialSourceMetadata) => item.id),
+    [key.id],
+  );
+  assert.equal(
+    (await fixture.request("GET", "/connection-templates", { session: memberSession })).status,
+    403,
+  );
+
   // This Installation saves drafts. An existing approved key can be reused without registering another source.
   await page.goto(fixture.origin + "/console/agents/new?namespace=" + namespace.id);
   const start = page.getByRole("button", { name: "Start without Preset" });
@@ -145,6 +168,40 @@ test("An Agent reuses a provider saved in Settings and a credential approved in 
   await page.getByLabel("Agent name").fill("Research assistant");
   await providerPicker.selectOption({ label: "Research inference" });
   await page.getByLabel("Inference credential", { exact: true }).selectOption({ label: key.name });
+  const updateReceiver = async (address: string) => {
+    const edited = await fixture.request(
+      "PATCH",
+      "/connection-templates/" + provider.connectionTemplateId,
+      {
+        body: {
+          displayName: "Research key",
+          mode: "static_bearer",
+          baseUrl: modelProvider.baseUrl,
+          protocol: "openai-responses",
+          privatePeer: { kind: "private_ipv4", address },
+        },
+      },
+    );
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+    return edited.data.current.version;
+  };
+  // A creator can leave this form open while an administrator changes the receiver.
+  // Recheck before the first write, remove the stale selection and explain reapproval.
+  const credentialPicker = page.getByLabel("Inference credential", { exact: true });
+  assert.equal(await updateReceiver("10.20.30.41"), 2);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page
+    .getByText("The selected credential is no longer available for this provider.", {
+      exact: false,
+    })
+    .waitFor();
+  assert.equal(await credentialPicker.inputValue(), "");
+  assert.equal(await credentialPicker.locator("option").filter({ hasText: key.name }).count(), 0);
+  // Reinstating the receiver approved in v1 makes that same credential eligible in v3.
+  assert.equal(await updateReceiver("10.20.30.40"), 3);
+  await providerPicker.selectOption("openai");
+  await providerPicker.selectOption({ label: "Research inference" });
+  await credentialPicker.selectOption({ label: key.name });
   const models = page.getByRole("table", { name: "Models offered by this provider" });
   const defaultSmall = models.getByRole("radio", { name: "Default research-model", exact: true });
   const defaultLarge = models.getByRole("radio", { name: "Default research-large", exact: true });
@@ -581,35 +638,45 @@ test("deleting a template and client targets the selected availability and prese
   );
   assert.ok(google);
   const { issuer, authorizationUrl, tokenUrl, destinations } = google.current;
+  const templateBody = {
+    namespaceId: namespace.id,
+    displayName: google.displayName,
+    mode: "manual",
+    issuer,
+    authorizationUrl,
+    tokenUrl,
+    scopes: [],
+    destinations,
+  };
   const local = await fixture.request("POST", "/connection-templates", {
-    body: {
-      namespaceId: namespace.id,
-      displayName: google.displayName,
-      mode: "manual",
-      issuer,
-      authorizationUrl,
-      tokenUrl,
-      scopes: [],
-      destinations,
-    },
+    body: templateBody,
   });
   assert.equal(local.status, 201);
-  // Both rows have the same visible name. Only their availability and resource IDs distinguish them.
-  async function register(templateId: string) {
+  const draft = await fixture.request("POST", "/connection-templates", {
+    body: { ...templateBody, displayName: "Google OAuth draft" },
+  });
+  assert.equal(draft.status, 201);
+  // The two registrations share a provider client ID but have separate names and record IDs.
+  async function register(
+    templateId: string,
+    displayName: string,
+    providerClientId = "google-app",
+  ) {
     const result = await fixture.request("POST", "/oauth-clients", {
       body: {
         connectionTemplateId: templateId,
         connectionTemplateVersion: 1,
-        displayName: "Google app",
-        clientId: "google-app",
+        displayName,
+        clientId: providerClientId,
         tokenEndpointAuthMethod: "none",
       },
     });
     assert.equal(result.status, 201);
     return result.data.id as string;
   }
-  const clientId = await register(google.id);
-  await register(local.data.id);
+  const clientId = await register(google.id, "Google app");
+  const localClientId = await register(local.data.id, "Support app");
+  assert.notEqual(clientId, localClientId);
   const { page } = await newPage(t, fixture, {
     browser,
     context: { viewport: { width: 390, height: 844 } },
@@ -641,6 +708,22 @@ test("deleting a template and client targets the selected availability and prese
   await removeClient.waitFor();
 
   await sections.getByRole("link", { name: "Connection templates", exact: true }).click();
+  const catalog = page.getByRole("table", { name: "Connection templates", exact: true });
+  const templateRow = (action: string) => catalog.getByRole("row").filter({ has: button(action) });
+  const draftRow = catalog.getByRole("row").filter({
+    has: page.getByRole("rowheader", { name: "Google OAuth draft", exact: true }),
+  });
+  const localTemplate = "Delete Google OAuth (Namespace · Customer support)";
+  await templateRow("Delete Google OAuth (Installation-wide)")
+    .getByRole("cell", { name: "Google app", exact: true })
+    .waitFor();
+  await templateRow(localTemplate)
+    .getByRole("cell", { name: "Support app", exact: true })
+    .waitFor();
+  await draftRow.getByRole("cell", { name: "No OAuth client assigned", exact: true }).waitFor();
+
+  // A registration created after the list loaded must appear when deletion refreshes the catalog.
+  await register(draft.data.id, "Google app", "draft-app");
   await removeTemplate.click();
   assert.match(await templateDialog.innerText(), /Google OAuth/);
   assert.match(await templateDialog.innerText(), /Installation-wide/);
@@ -654,8 +737,12 @@ test("deleting a template and client targets the selected availability and prese
     .click();
   assert.equal((await deletedTemplate).status(), 204);
   await page.getByText("Deleted Google OAuth.", { exact: true }).waitFor();
+  await draftRow.getByRole("cell", { name: "Google app", exact: true }).waitFor();
+  await templateRow(localTemplate)
+    .getByRole("cell", { name: "Support app", exact: true })
+    .waitFor();
   await page.reload();
-  await button("Delete Google OAuth (Namespace · Customer support)").waitFor();
+  await button(localTemplate).waitFor();
   assert.equal(await removeTemplate.count(), 0);
 
   await sections.getByRole("link", { name: "OAuth clients", exact: true }).click();
