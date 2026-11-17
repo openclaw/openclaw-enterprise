@@ -211,7 +211,6 @@ async function withdrawalFirst<T>(
 async function createFixture(t: TestContext) {
   const preparedTokens = new TokenService();
   const secretDriver = createTestSecretDriver();
-  let provision: NonNullable<ControllerAppOptions["provisionAuthAccount"]>;
   const fixture = await createPostgresAgentApp(t, {
     label: "durable-authority",
     authSecret: "durable-authority-fixture-session-secret",
@@ -231,7 +230,12 @@ async function createFixture(t: TestContext) {
     controller.installation.id,
     betterAuthIssuer(controller.installation.id),
   );
-  provision = async (seed, audit, prepared, external) => {
+  const provision: NonNullable<ControllerAppOptions["provisionAuthAccount"]> = async (
+    seed,
+    audit,
+    prepared,
+    external,
+  ) => {
     validateAuthAccountPrincipalSeed(
       seed,
       await state.loadNativeIAMState(controller.installation.id),
