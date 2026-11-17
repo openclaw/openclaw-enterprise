@@ -6,10 +6,10 @@ import {
   type OutgoingHttpHeaders,
 } from "node:http";
 import { request } from "node:https";
-import { createControlledClock } from "./clock.mjs";
-import { createTlsMaterial } from "./process.mjs";
+import { createControlledClock } from "./clock.ts";
+import { createTlsMaterial } from "./process.ts";
 import { startGitHubFixture } from "./github.ts";
-import { startGitSmartHttpFixture } from "./git.mjs";
+import { startGitSmartHttpFixture } from "./git.ts";
 import { createResourceScope, createTestResourceScope, type FixtureOwner } from "./resources.ts";
 import { socketDirectory } from "../../helpers/socket-directory.ts";
 import { waitFor } from "../../helpers/wait-for.ts";

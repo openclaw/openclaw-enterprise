@@ -12,7 +12,7 @@ import {
 } from "../../apps/controller/src/composition/workspace-files.ts";
 import type { ControllerWorkspaceFileReadRequest } from "../../apps/controller/src/gateway/contracts.ts";
 import { createReadyComputeDriver } from "../helpers/development.ts";
-import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.ts";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import { jsonEvent, requireLogRecord } from "../helpers/json-lines.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";

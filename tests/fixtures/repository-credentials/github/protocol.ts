@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { KeyObject } from "node:crypto";
 import type { IncomingMessage, OutgoingHttpHeaders, ServerResponse } from "node:http";
-import { sharedRsaKeyPair } from "../shared-keys.mjs";
+import { sharedRsaKeyPair } from "../shared-keys.ts";
 import { fixtureInstallationId, fixtureRepository, fixtureRepositoryId } from "./metadata.ts";
 import { createTokenAuthority, type Permissions, type WallClock } from "./token-authority.ts";
 import {
@@ -116,9 +116,12 @@ export function createGitHubProtocol({
   ];
   const trace: RequestTrace[] = [];
   const errors: string[] = [];
-  let disconnectMutation: string | undefined;
+  let disconnectMutation: { method: string; matches: (path: string) => boolean } | undefined;
   function disconnect(request: IncomingMessage, response: ServerResponse, url: URL) {
-    if (disconnectMutation !== `${request.method} ${url.pathname}`) {
+    if (
+      disconnectMutation?.method !== request.method ||
+      !disconnectMutation?.matches(url.pathname)
+    ) {
       return false;
     }
     disconnectMutation = undefined;
@@ -324,8 +327,12 @@ export function createGitHubProtocol({
       issueStatus = status;
       issueBody = body;
     },
-    disconnectAfterMutation(method: string, target: string) {
-      disconnectMutation = `${method} ${target}`;
+    disconnectAfterMutation(method: string, target: string | RegExp) {
+      disconnectMutation = {
+        method,
+        matches:
+          typeof target === "string" ? (path) => path === target : (path) => target.test(path),
+      };
     },
   };
 }

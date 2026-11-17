@@ -80,7 +80,7 @@ import {
   POD_QUOTA_FULL,
   PROVISIONING_NOT_COMPLETED,
 } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),

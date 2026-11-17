@@ -18,11 +18,13 @@ import {
 } from "../helpers/ci-runner-fixture.ts";
 import {
   collectNativeWorkerFailure,
-  nativeWorkerHistoryEvidence,
-  nativeWorkerProofProgram,
   nativeWorkerPlacementObservation,
   nativeWorkerTurnObservation,
 } from "../helpers/local-first-agent-native.mjs";
+import {
+  nativeWorkerHistoryEvidence,
+  nativeWorkerProofProgram,
+} from "../helpers/native-worker-history-proof.ts";
 import {
   firstRunnerRecord,
   parseRunnerRecord,

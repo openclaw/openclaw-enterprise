@@ -12,7 +12,7 @@ import type { AuditEvent } from "../../packages/contracts/src/index.ts";
 
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { grantRole, restrict } from "../helpers/iam-grants.mjs";
+import { grantRole, restrict } from "../helpers/iam-grants.ts";
 import {
   CONSOLE_NAMESPACE_CREATE_DENIED,
   NAMESPACE_NAME_CONFLICT,

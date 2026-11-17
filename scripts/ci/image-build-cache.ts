@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { boundedImageCommand } from "./k3d-image-admission.ts";
+import { assertImmutableImageReference, boundedImageCommand } from "./k3d-image-admission.ts";
 import { isOpenShellLane } from "./openshell-full-integration.ts";
 import { execFile } from "./prepare-command.ts";
 
@@ -25,6 +25,13 @@ export const imageCacheLanes = new Map([
   ["images-runtime-startup-2", { localStore: false }],
   ["images-runtime-startup-3", { localStore: false }],
 ]);
+
+export function assertNodeBaseImage(image: string | undefined): asserts image is string {
+  assertImmutableImageReference(image, "NODE_BASE_IMAGE");
+  if (!/(?:^|[/:])node:24[.-]/.test(image)) {
+    throw new Error("NODE_BASE_IMAGE must select an approved Node 24 image.");
+  }
+}
 
 function imageCache(role: ImageRole) {
   return `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1`;

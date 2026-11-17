@@ -91,7 +91,7 @@ import {
   KUBERNETES_ALLOW_USERS_REFUSAL,
 } from "../helpers/refusal-text.mjs";
 import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
 import { within } from "../helpers/wait-for.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createBaseConsoleAppFixture>>;

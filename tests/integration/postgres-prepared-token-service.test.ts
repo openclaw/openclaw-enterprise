@@ -42,7 +42,7 @@ import {
   EgressSendReceipts,
   type SendAttempt,
 } from "../../packages/occ/src/egress-send-receipts.ts";
-import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.mjs";
+import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.ts";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import {
@@ -52,7 +52,7 @@ import {
 } from "../helpers/github-metadata-exchange.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
-import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
+import { temporaryDirectory } from "../fixtures/repository-credentials/process.ts";
 import {
   startGitHubFixture,
   fixtureAppId,

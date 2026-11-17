@@ -11,9 +11,9 @@ import type {
 } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type { ExchangeOutcome } from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
 import type { JsonValue } from "../../apps/controller/src/drivers/repo/access/json-value.ts";
-import { appModule } from "../fixtures/repository-credentials/runtime.mjs";
+import { appModule } from "../fixtures/repository-credentials/runtime.ts";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
-import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
+import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.ts";
 import {
   gatewayRequest as untypedGatewayRequest,
   startCredentialServiceFixture,

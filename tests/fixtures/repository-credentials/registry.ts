@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { createControlledClock } from "./clock.mjs";
+import { createControlledClock } from "./clock.ts";
 import type { Clock } from "../../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
 import type {
   ServiceConfig,
@@ -7,7 +7,7 @@ import type {
 } from "../../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { appFunction } from "./app-functions.ts";
 import { validateFixtureServiceConfiguration } from "./service-fixture.ts";
-import { createTlsMaterial } from "./process.mjs";
+import { createTlsMaterial } from "./process.ts";
 import { createResourceScope, type FixtureOwner } from "./resources.ts";
 import { socketDirectory } from "../../helpers/socket-directory.ts";
 import { writeSessionClientConfiguration } from "./service-resources.ts";

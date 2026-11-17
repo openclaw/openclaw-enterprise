@@ -30,7 +30,7 @@ import type {
   OpenShellBackendConfiguration,
 } from "../../packages/contracts/src/index.ts";
 import { bindReservedPortInProcess, reservePort } from "../helpers/available-port.ts";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { loader } from "../helpers/openshell-grpc-sdk.ts";
 import { storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";

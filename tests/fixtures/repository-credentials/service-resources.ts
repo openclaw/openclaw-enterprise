@@ -17,7 +17,7 @@ import type {
 } from "../../../apps/controller/src/drivers/repo/github/access/types.ts";
 import { appFunction } from "./app-functions.ts";
 import type { FixtureOwner } from "./resources.ts";
-import { temporaryDirectory, type createTlsMaterial } from "./process.mjs";
+import { temporaryDirectory, type createTlsMaterial } from "./process.ts";
 import { githubTokenConfigurationData } from "./builders.ts";
 import { fixtureRepositoryId, fixtureRepository, type startGitHubFixture } from "./github.ts";
 

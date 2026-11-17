@@ -1,0 +1,731 @@
+diff --git a/src/gateway/server-methods.session-main-start.test.ts b/src/gateway/server-methods.session-main-start.test.ts
+new file mode 100644
+index 000000000..a882a6c35
+--- /dev/null
++++ b/src/gateway/server-methods.session-main-start.test.ts
+@@ -0,0 +1,161 @@
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { GATEWAY_CLIENT_CAPS } from "../../packages/gateway-protocol/src/client-info.js";
++import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
++import * as sessions from "../config/sessions/session-accessor.js";
++import type { OpenClawConfig } from "../config/types.openclaw.js";
++import { prepareUserProfileCatalog } from "../state/user-profile-list.js";
++import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
++import { prepareGatewayRecipientProfile } from "./expected-profile.js";
++import { gatewayRequest } from "./request-frame.test-support.js";
++import { makeClient } from "./server-broadcast.test-helpers.js";
++import { createSessionMessageSubscriberRegistry } from "./server-chat-state.js";
++import { handleGatewayRequest } from "./server-methods.js";
++import { createHistoryReadContext } from "./server-methods/chat-history.test-helpers.js";
++import { sessionsDiffHandlers } from "./server-methods/sessions-diff.js";
++import { sessionsFilesHandlers } from "./server-methods/sessions-files.js";
++import { sessionSubscriptionHandlers } from "./server-methods/sessions-subscriptions.js";
++import type { GatewayRequestHandlers } from "./server-methods/types.js";
++import { roleClient, rolePolicyConfig } from "./session-sharing.test-utils.js";
++
++// A session writer may open an agent's main conversation before anyone has used it.
++afterEach(() => vi.restoreAllMocks());
++
++const MAIN = "agent:main:main";
++const WRITE = ["operator.sessions.write"];
++const hidden = { ok: false, subscribed: false };
++const admitted = { ok: true, subscribed: true };
++
++function withMainWriter(
++  cfg: OpenClawConfig,
++  run: (fixture: Awaited<ReturnType<typeof createFixture>>) => Promise<void>,
++  role: Parameters<typeof roleClient>[0] = "view",
++) {
++  return withOpenClawTestState(
++    { scenario: "minimal", prepareProfileCatalog: true },
++    async (state) => {
++      using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
++      await state.writeConfig(cfg);
++      await run(await createFixture(cfg, role));
++    },
++  );
++}
++
++async function createFixture(cfg: OpenClawConfig, role: Parameters<typeof roleClient>[0]) {
++  const peer = makeClient("main-writer", "operator", []);
++  Object.assign(peer.client, roleClient(role, "main-writer"));
++  const writer = peer.client;
++  writer.connect.scopes = WRITE;
++  writer.connect.caps = [GATEWAY_CLIENT_CAPS.SESSION_SCOPED_EVENTS];
++  prepareGatewayRecipientProfile(writer);
++  setRuntimeConfigSnapshot(cfg);
++  const subscribers = createSessionMessageSubscriberRegistry();
++  const context = await createHistoryReadContext({
++    getRuntimeConfig: () => cfg,
++    subscribeSessionMessageEvents: subscribers.subscribe,
++  });
++  let seq = 0;
++  const call = async (
++    method: string,
++    params: Record<string, unknown>,
++    options: { scopes?: string[]; extraHandlers?: GatewayRequestHandlers } = {},
++  ) => {
++    const connId = `${method}-${++seq}`;
++    const client = {
++      ...writer,
++      connId,
++      connect: { ...writer.connect, scopes: options.scopes ?? WRITE },
++    };
++    const respond = vi.fn();
++    await handleGatewayRequest({
++      req: gatewayRequest(connId, method, params),
++      client,
++      context,
++      respond,
++      isWebchatConnect: () => false,
++      extraHandlers: { ...sessionSubscriptionHandlers, ...options.extraHandlers },
++    });
++    const [ok, payload, error] = respond.mock.calls[0] ?? [];
++    return { ok, payload, error, connId };
++  };
++  const subscribe = async (key: string, opt: { scopes?: string[]; canonicalKey?: string } = {}) => {
++    const result = await call("sessions.messages.subscribe", { key }, opt);
++    return {
++      ok: result.ok,
++      subscribed: subscribers.get(opt.canonicalKey ?? key).has(result.connId),
++    };
++  };
++  // Another creator's draft main conversation.
++  const seedForeignDraft = () =>
++    sessions.upsertSessionEntryCore(
++      { agentId: "main", sessionKey: MAIN },
++      {
++        sessionId: "foreign-main",
++        updatedAt: 1,
++        visibility: "draft",
++        createdActor: { type: "human", source: "profile", id: "main-owner" },
++      },
++    );
++  return { call, subscribe, seedForeignDraft };
++}
++
++describe("starting an agent's main conversation", () => {
++  it.each([false, true])(
++    "admits a session writer only to its own absent main conversation (roles=%s)",
++    async (roles) => {
++      const cfg = roles ? rolePolicyConfig() : {};
++      await withMainWriter(cfg, async ({ subscribe, seedForeignDraft }) => {
++        // The first turn would create main for this writer, so its absence is not a secret.
++        expect(await subscribe(MAIN)).toEqual(admitted);
++        // Other absent keys, and readers that cannot start a conversation, stay hidden.
++        expect(await subscribe("agent:main:other")).toEqual(hidden);
++        expect(await subscribe(MAIN, { scopes: ["operator.sessions.read"] })).toEqual(hidden);
++        // Another creator's draft main stays hidden from the same writer.
++        await seedForeignDraft();
++        expect(await subscribe(MAIN)).toEqual(hidden);
++      });
++    },
++  );
++
++  it.each([
++    { agents: ["main"], expected: admitted },
++    { agents: ["other"], expected: hidden },
++  ])("follows the role's agent limit ($agents)", async ({ agents, expected }) => {
++    await withMainWriter(
++      rolePolicyConfig(agents),
++      async ({ subscribe }) => {
++        // A first turn on an excluded agent is refused, so its main stays indistinguishable.
++        expect(await subscribe(MAIN)).toEqual(expected);
++      },
++      "write",
++    );
++  });
++
++  const work = { session: { mainKey: "work" } };
++  it.each([
++    { name: "unprefixed", cfg: {}, key: "main", canonicalKey: MAIN },
++    { name: "uppercase", cfg: {}, key: "AGENT:MAIN:MAIN", canonicalKey: MAIN },
++    { name: "mainKey", cfg: work, key: "agent:main:work" },
++    { name: "unprefixed mainKey", cfg: work, key: "work" },
++    { name: "non-main", cfg: work, key: "agent:main:other", canonicalKey: "agent:main:other" },
++  ])("canonicalizes the $name key under the main alias rules", async (alias) => {
++    const expected = alias.name === "non-main" ? hidden : admitted;
++    const canonicalKey = alias.canonicalKey ?? "agent:main:work";
++    await withMainWriter(alias.cfg, async ({ subscribe }) => {
++      expect(await subscribe(alias.key, { canonicalKey })).toEqual(expected);
++    });
++  });
++
++  it.each(["sessions.files.list", "sessions.diff"])(
++    "keeps %s on an absent main hidden",
++    async (method) => {
++      await withMainWriter(rolePolicyConfig(), async ({ call, subscribe }) => {
++        expect(await subscribe(MAIN)).toEqual(admitted);
++        const extraHandlers = { ...sessionsFilesHandlers, ...sessionsDiffHandlers };
++        expect(await call(method, { sessionKey: MAIN }, { extraHandlers })).toMatchObject({
++          ok: false,
++          error: { message: expect.stringContaining("was not found") },
++        });
++      });
++    },
++  );
++});
+diff --git a/src/gateway/server-methods/session-scoped-read.ts b/src/gateway/server-methods/session-scoped-read.ts
+index 2d7057eec..fa1e1b172 100644
+--- a/src/gateway/server-methods/session-scoped-read.ts
++++ b/src/gateway/server-methods/session-scoped-read.ts
+@@ -1,7 +1,12 @@
++import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
+ import type { SessionEntryReadScope } from "../../config/sessions/session-accessor.types.js";
+ import type { OpenClawConfig } from "../../config/types.openclaw.js";
+ import { operatorScopeSatisfied } from "../../shared/operator-scope-compat.js";
+-import { operatorSessionCap, resolveGatewayOperatorRoleActor } from "../operator-role-policy.js";
++import {
++  authorizeGatewaySessionCreation,
++  operatorSessionCap,
++  resolveGatewayOperatorRoleActor,
++} from "../operator-role-policy.js";
+ import {
+   hasSessionReadAccessChanged,
+   hiddenSessionNotFound,
+@@ -13,9 +18,36 @@ import {
+   createSessionListEntryFilter,
+   SessionMutationAuthorizationChangedError,
+ } from "../session-sharing.js";
++import { resolveSessionStoreIdentity } from "../session-store-key.js";
+ import { retainGatewaySessionEntryReadOnly } from "../session-utils-read-lifetime.js";
+ import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
+-import type { GatewayRequestHandlerOptions } from "./types.js";
++import type { GatewayClient, GatewayRequestHandlerOptions } from "./types.js";
++
++/**
++ * A session writer allowed to start sessions for the agent creates its main conversation with its
++ * first turn and becomes its creator, so its absence discloses nothing. Every other missing key,
++ * including main for an agent the caller's role excludes, stays indistinguishable from a hidden
++ * one for narrow readers.
++ */
++function isStartableMainSession(params: {
++  cfg: OpenClawConfig;
++  client: GatewayClient | null | undefined;
++  sessionKey: string;
++  agentId: string;
++}): boolean {
++  const { cfg, client, agentId } = params;
++  if (
++    !operatorScopeSatisfied("operator.sessions.write", client?.connect.scopes ?? []) ||
++    authorizeGatewaySessionCreation({ cfg, client, agentId })
++  ) {
++    return false;
++  }
++  const canonicalKey = (sessionKey: string) =>
++    resolveSessionStoreIdentity({ cfg, sessionKey, agentId }).canonicalKey;
++  return (
++    canonicalKey(params.sessionKey) === canonicalKey(resolveAgentMainSessionKey({ cfg, agentId }))
++  );
++}
+ 
+ /** Person-owned reads retain visibility, row generation and the physical store through I/O. */
+ export async function retainSessionScopedRead(
+@@ -24,6 +56,8 @@ export async function retainSessionScopedRead(
+   agentId: string,
+   readOptions: {
+     requireMaterialized?: boolean;
++    /** Admit the caller's own not-yet-created main conversation despite requireMaterialized. */
++    allowStartableMain?: boolean;
+     allowMetadataChanges?: boolean;
+     retain?: boolean;
+     projection?: SessionEntryReadScope["projection"];
+@@ -89,7 +123,13 @@ export async function retainSessionScopedRead(
+       (narrow &&
+         !operatorScopeSatisfied("operator.sessions.read", options.client?.connect.scopes ?? [])) ||
+       sharingIdentity(options.client, currentActor)?.id !== profileId ||
+-      (readOptions.requireMaterialized && !read.entry?.sessionId) ||
++      (readOptions.requireMaterialized &&
++        !read.entry?.sessionId &&
++        !(
++          readOptions.allowStartableMain &&
++          !read.entry &&
++          isStartableMainSession({ cfg: currentCfg, client: options.client, sessionKey, agentId })
++        )) ||
+       !read.isCurrentAtResponse() ||
+       (read.entry && visible?.(read.legacyKey ?? read.canonicalKey, read.entry) === false)
+     ) {
+diff --git a/src/gateway/server-methods/sessions-subscriptions.ts b/src/gateway/server-methods/sessions-subscriptions.ts
+index 78b2f715a..8a50e53b3 100644
+--- a/src/gateway/server-methods/sessions-subscriptions.ts
++++ b/src/gateway/server-methods/sessions-subscriptions.ts
+@@ -133,6 +133,8 @@ export const sessionSubscriptionHandlers: GatewayRequestHandlers = {
+           allowMetadataChanges: true,
+           requireMaterialized:
+             readGatewayRequestMutationAuthority(options).sessionScope === "operator.sessions.read",
++          // Its creator observes the first turn; delivery still filters every event by visibility.
++          allowStartableMain: true,
+         });
+         options.sessionMutationCommitGuard?.();
+         const includeApprovals = Boolean(connId) && params.includeApprovals === true;
+diff --git a/src/gateway/server.chat-main-session-narrow.test.ts b/src/gateway/server.chat-main-session-narrow.test.ts
+new file mode 100644
+index 000000000..5f76092ee
+--- /dev/null
++++ b/src/gateway/server.chat-main-session-narrow.test.ts
+@@ -0,0 +1,191 @@
++import path from "node:path";
++import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
++import { expect, test } from "vitest";
++import type { WebSocket } from "ws";
++import type { GatewayOperatorRolesConfig } from "../config/types.gateway.js";
++import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
++import { ensureProfileForEmail } from "../state/user-profiles.js";
++import type { OperatorScope } from "./operator-scopes.js";
++import {
++  BROWSER_ORIGIN,
++  CONTROL_UI_CLIENT,
++  TRUSTED_BROWSER_HEADERS,
++  browserProxyAuth,
++  configureBrowserAuth,
++  connectReq,
++  installGatewayTestHooks,
++  onceMessage,
++  openWs,
++  rpcReq,
++  waitForWsClose,
++  withGatewayServer,
++} from "./server.auth.test-helpers.js";
++
++installGatewayTestHooks({ scope: "suite" });
++
++const IDENTITY = "workspace-files";
++const MEMBER = "member@example.test";
++const OWNER = "owner@example.test";
++const MAIN = "agent:main:main";
++const READ_WRITE: OperatorScope[] = ["operator.read", "operator.write"];
++const role = (others: "none" | "view", scopes = READ_WRITE) => ({
++  sessions: { others },
++  agents: "*" as const,
++  scopes,
++});
++// The same scopes with a narrower session cap, and no scopes at all.
++const ROLES = {
++  default: "view",
++  definitions: { view: role("view"), none: role("none"), viewNoScopes: role("view", []) },
++} satisfies GatewayOperatorRolesConfig;
++
++// A proxy that caps each browser to conversation access per route.
++async function connect(port: number, user: string, scope = "operator.sessions.write") {
++  const ws = await openWs(port, {
++    ...TRUSTED_BROWSER_HEADERS,
++    "x-forwarded-user": user,
++    "x-openclaw-scopes": scope,
++  });
++  const root = path.join(process.env.OPENCLAW_STATE_DIR!, user);
++  const connected = await connectReq(ws, {
++    prePairDevice: true,
++    client: CONTROL_UI_CLIENT,
++    browserOrigin: BROWSER_ORIGIN,
++    skipDefaultAuth: true,
++    scopes: ["operator.admin", "operator.read", "operator.write"],
++    deviceIdentityPath: path.join(root, "client", "credentials.sqlite"),
++  });
++  expect(connected.ok, JSON.stringify(connected.error)).toBe(true);
++  expect(connected.payload).toMatchObject({ auth: { scopes: scope.split(",") } });
++  // Every frame this socket receives about main, in wire order.
++  const frames: Array<{ event?: string }> = [];
++  ws.on("message", (data) => {
++    const text = rawDataToString(data);
++    if (text.includes(MAIN)) {
++      frames.push(JSON.parse(text));
++    }
++  });
++  return { ws, frames };
++}
++
++async function configure(roles?: GatewayOperatorRolesConfig) {
++  await configureBrowserAuth(
++    browserProxyAuth({
++      identityScopes: { [IDENTITY]: ["operator.admin"] },
++      trustedProxy: {
++        userHeader: "x-forwarded-user",
++        requiredHeaders: ["x-forwarded-proto", "x-openclaw-scopes"],
++        allowUsers: [IDENTITY, MEMBER, OWNER],
++        allowLoopback: true,
++      },
++    }),
++    roles ? { roles } : {},
++  );
++}
++
++// A pong follows every frame the Gateway wrote to the socket before it.
++const flush = (ws: WebSocket) =>
++  new Promise((resolve) => {
++    ws.once("pong", resolve);
++    ws.ping();
++  });
++
++test("a session-scoped browser starts the main conversation without broader access", async () => {
++  await configure();
++  await withGatewayServer(async ({ port }) => {
++    const { ws } = await connect(port, IDENTITY);
++    try {
++      const subscribed = await rpcReq(ws, "sessions.messages.subscribe", {
++        key: MAIN,
++        initialHistory: {},
++      });
++      expect(subscribed.ok, JSON.stringify(subscribed.error)).toBe(true);
++      expect(subscribed.payload).toMatchObject({
++        subscribed: true,
++        key: MAIN,
++        initialHistory: { ok: true, payload: { messages: [] } },
++      });
++      // No session ID: a successful read that proves the conversation does not exist yet.
++      const history = (
++        subscribed.payload as { initialHistory: { payload: { sessionId?: unknown } } }
++      ).initialHistory.payload;
++      expect(history.sessionId ?? null).toBeNull();
++
++      // Absence of any other conversation stays indistinguishable from a hidden one.
++      const other = await rpcReq(ws, "sessions.messages.subscribe", { key: "agent:main:other" });
++      expect(other).toMatchObject({
++        ok: false,
++        error: { message: expect.stringContaining("not found") },
++      });
++
++      const sent = await rpcReq(ws, "chat.send", {
++        sessionKey: MAIN,
++        message: "hello",
++        idempotencyKey: "narrow-main-first-turn",
++      });
++      expect(sent.ok, JSON.stringify(sent.error)).toBe(true);
++
++      // The connection keeps its cap: no configuration or approval access.
++      expect(await rpcReq(ws, "config.get", {})).toMatchObject({
++        ok: false,
++        error: { code: "FORBIDDEN", details: { missingScope: "operator.read" } },
++      });
++    } finally {
++      ws.close();
++    }
++  });
++});
++
++// The subscription is admitted while main is absent; each event is authorized when it is sent.
++test("an admitted subscriber to absent main receives only what it may currently read", async () => {
++  await configure(ROLES);
++  await withGatewayServer(async ({ port }) => {
++    const member = await connect(port, MEMBER);
++    // The owner may also change sharing.
++    const owner = await connect(port, OWNER, "operator.read,operator.write");
++    let turns = 0;
++    // The member's main-session frames written while the owner runs one turn.
++    const ownerTurn = async (open = true) => {
++      member.frames.length = 0;
++      const turn = { sessionKey: MAIN, message: "private", idempotencyKey: `turn-${++turns}` };
++      const saw = onceMessage(owner.ws, (frame) => frame.event === "session.message");
++      expect((await rpcReq(owner.ws, "chat.send", turn)).ok).toBe(true);
++      await saw;
++      if (open) {
++        await flush(member.ws);
++      }
++      return member.frames.map((frame) => frame.event);
++    };
++    try {
++      const subscribe = (ws: WebSocket) => rpcReq(ws, "sessions.messages.subscribe", { key: MAIN });
++      expect((await subscribe(member.ws)).ok).toBe(true);
++      const draft = await rpcReq(owner.ws, "sessions.create", { key: MAIN, visibility: "draft" });
++      expect(draft.ok, JSON.stringify(draft.error)).toBe(true);
++      expect((await subscribe(owner.ws)).ok).toBe(true);
++      // Another creator's draft main stays hidden, and its turns stay the creator's.
++      expect(await ownerTurn()).toEqual([]);
++      const send = { sessionKey: MAIN, message: "hi", idempotencyKey: "member-turn" };
++      expect((await rpcReq(member.ws, "chat.send", send)).ok).toBe(false);
++      // Control: once shared, the same subscription receives the conversation.
++      const visibility = { sessionKey: MAIN, visibility: "shared" };
++      const shared = await rpcReq(owner.ws, "session.visibility.set", visibility);
++      expect(shared.ok, JSON.stringify(shared.error)).toBe(true);
++      expect(await ownerTurn()).toContain("session.message");
++      // A narrower session cap keeps the socket but stops delivery at send time.
++      const memberId = ensureProfileForEmail(MEMBER).id;
++      setUserProfileRole(memberId, "none");
++      expect(await waitForWsClose(member.ws, 200)).toBe(false);
++      expect(await ownerTurn()).toEqual([]);
++      // Losing the connection's scopes stops delivery even where the session cap still shows the
++      // conversation. This source keeps the socket open; upstream closes it since
++      // openclaw#192722, which is newer than this source.
++      setUserProfileRole(memberId, "view");
++      expect(await ownerTurn()).toContain("session.message");
++      setUserProfileRole(memberId, "viewNoScopes");
++      expect(await ownerTurn()).toEqual([]);
++    } finally {
++      member.ws.close();
++      owner.ws.close();
++    }
++  });
++});
+diff --git a/ui/src/lib/session-method-access.test.ts b/ui/src/lib/session-method-access.test.ts
+index 06a5a8a76..7e2db5cc6 100644
+--- a/ui/src/lib/session-method-access.test.ts
++++ b/ui/src/lib/session-method-access.test.ts
+@@ -128,6 +128,49 @@ describe("readSessionMethodAccess", () => {
+     ).toEqual({ allowed: true, requiredScope: "operator.sessions.write" });
+   });
+ 
++  it("lets a session writer send the first turn only to a session proven absent", () => {
++    const scoped = snapshot({
++      methods: ["chat.send", "sessions.patch"],
++      scopes: ["operator.sessions.write"],
++    });
++    const send = {
++      method: "chat.send",
++      requiredScope: "operator.write",
++      sessionScope: true,
++    } as const;
++    expect(readSessionMethodAccess(scoped, { ...send, sessionAbsent: true })).toEqual({
++      allowed: true,
++      requiredScope: "operator.sessions.write",
++    });
++    // Unproven absence and another creator's row keep the ownership requirement.
++    for (const request of [
++      send,
++      { ...send, sessionAbsent: true, session: { sharingRole: "member" } },
++      {
++        method: "sessions.patch",
++        params: { key: "agent:main:main", label: "Renamed" },
++        sessionScope: true,
++        sessionAbsent: true,
++      },
++    ] as const) {
++      expect(readSessionMethodAccess(scoped, request)).toMatchObject({
++        allowed: false,
++        cause: "session-not-owned",
++      });
++    }
++    // Absence never lends a session writer broad or administrative scope.
++    expect(
++      readSessionMethodAccess(scoped, { ...send, sessionScope: false, sessionAbsent: true }),
++    ).toMatchObject({ allowed: false, cause: "missing-scope", requiredScope: "operator.write" });
++    expect(
++      access(["operator.sessions.write"], {
++        method: "chat.send",
++        requiredScope: "operator.admin",
++        sessionAbsent: true,
++      }),
++    ).toMatchObject({ allowed: false, cause: "missing-scope", requiredScope: "operator.admin" });
++  });
++
+   it("keeps context-window changes separate from write-scoped effort access", () => {
+     expect(
+       access(["operator.write"], {
+diff --git a/ui/src/lib/session-method-access.ts b/ui/src/lib/session-method-access.ts
+index 242241de0..8417eba4a 100644
+--- a/ui/src/lib/session-method-access.ts
++++ b/ui/src/lib/session-method-access.ts
+@@ -31,6 +31,8 @@ export type SessionMethodAccessRequest = {
+   /** Opt into the explicit desired-state mutation allowlist. */
+   allowDeferred?: boolean;
+   session?: SessionAccessRow;
++  /** A read proved no session row exists yet; the Gateway binds the first turn to the caller. */
++  sessionAbsent?: boolean;
+ };
+ 
+ export function sessionAccessRowForBatch(rows: readonly SessionAccessRow[]) {
+@@ -95,14 +97,16 @@ export function readSessionMethodScopeAccess(
+     isRecord(patch) &&
+     (typeof patch.archived === "boolean" || Object.hasOwn(patch, "communication")) &&
+     !roleScopesAllow({ role, requestedScopes: ["operator.admin"], allowedScopes: scopes });
+-  // Only parentless creation has no existing row whose ownership must be checked.
++  // Parentless creation, and the first turn of a session proven absent, have no existing
++  // row whose ownership must be checked: the Gateway records the caller as its creator.
+   const createsWithoutParent =
+-    request.method === "sessions.create" &&
+-    !(
+-      isRecord(request.params) &&
+-      typeof request.params.parentSessionKey === "string" &&
+-      request.params.parentSessionKey.trim()
+-    );
++    (request.method === "sessions.create" &&
++      !(
++        isRecord(request.params) &&
++        typeof request.params.parentSessionKey === "string" &&
++        request.params.parentSessionKey.trim()
++      )) ||
++    (request.method === "chat.send" && request.sessionAbsent === true && !request.session);
+   if (
+     (patchNeedsOwner ||
+       (requiredScope === "operator.sessions.write" &&
+diff --git a/ui/src/pages/chat/chat-history-state.ts b/ui/src/pages/chat/chat-history-state.ts
+index 46fbfaac1..d86329f1b 100644
+--- a/ui/src/pages/chat/chat-history-state.ts
++++ b/ui/src/pages/chat/chat-history-state.ts
+@@ -277,22 +277,32 @@ export function getAcceptedChatHistorySession(state: ChatState) {
+     : undefined;
+ }
+ 
+-/** A successful scoped read can prove an ephemeral session is gone; roster absence cannot. */
+-export function isExpiredIncognitoSession(
++/** A successful read on this connection can prove a session has no row; roster absence cannot. */
++export function isChatSessionProvenAbsent(
+   state: ChatState,
+   sessionKey = state.sessionKey,
+ ): boolean {
+   const accepted = chatHistoryRequests(state).acceptedHistory;
+-  const creation = state.chatSubmissions?.creation;
+   return (
+-    isIncognitoSessionKey(sessionKey) &&
+     accepted?.sessionId === null &&
+     state.connected &&
+     state.client === accepted.client &&
+     state.sessions === accepted.sessions &&
+     state.connectionEpoch === accepted.connectionEpoch &&
+     state.sessionKey === sessionKey &&
+-    accepted.sessionKey === sessionKey &&
++    accepted.sessionKey === sessionKey
++  );
++}
++
++/** A successful scoped read can prove an ephemeral session is gone; roster absence cannot. */
++export function isExpiredIncognitoSession(
++  state: ChatState,
++  sessionKey = state.sessionKey,
++): boolean {
++  const creation = state.chatSubmissions?.creation;
++  return (
++    isIncognitoSessionKey(sessionKey) &&
++    isChatSessionProvenAbsent(state, sessionKey) &&
+     !(creation?.sessionKey === sessionKey && !creation.admitted) &&
+     !state.hasPendingInitialTurn?.(sessionKey)
+   );
+diff --git a/ui/src/pages/chat/chat-main-session-absent.test.ts b/ui/src/pages/chat/chat-main-session-absent.test.ts
+new file mode 100644
+index 000000000..e2ac1d004
+--- /dev/null
++++ b/ui/src/pages/chat/chat-main-session-absent.test.ts
+@@ -0,0 +1,55 @@
++/* @vitest-environment jsdom */
++import { expect, it } from "vitest";
++import type { GatewaySessionRow } from "../../api/types.ts";
++import { createApplicationGatewaySnapshot } from "../../test-helpers/application-context-fixtures.ts";
++import { sessionMutationGatewayHello } from "../../test-helpers/gateway-methods.ts";
++import { loadChatHistory } from "./chat-history.ts";
++import { makeChatHost } from "./chat-host.test-support.ts";
++import { readChatPaneRouteMutationAccess } from "./chat-pane-session-controls.ts";
++import { useChatSendBrowserFixture } from "./outbox-browser.test-support.ts";
++
++useChatSendBrowserFixture();
++
++const mainKey = "agent:main:main";
++const row = (sharingRole: GatewaySessionRow["sharingRole"]): GatewaySessionRow => ({
++  key: mainKey,
++  kind: "direct",
++  sessionId: "created-by-someone",
++  sharingRole,
++});
++
++it("gates the first turn on proven absence only until the session has a row", async () => {
++  let history: { messages: never[]; sessionId?: string } = { messages: [] };
++  const host = makeChatHost({
++    sessionKey: mainKey,
++    hello: sessionMutationGatewayHello(["operator.sessions.write"]),
++    requestHandlers: { "chat.history": () => history },
++  });
++  const snapshot = createApplicationGatewaySnapshot({
++    client: host.client,
++    phase: "connected",
++    hello: host.hello,
++  });
++  const canSend = (session?: GatewaySessionRow) =>
++    readChatPaneRouteMutationAccess(snapshot, host, session).composeScope.allowed;
++
++  // Roster absence alone proves nothing.
++  expect(canSend()).toBe(false);
++  await loadChatHistory(host);
++  expect(canSend()).toBe(true);
++  // A row that arrives later takes over, whatever the earlier read proved.
++  expect(canSend(row("viewer"))).toBe(false);
++  expect(canSend(row("member"))).toBe(false);
++  expect(canSend(row("owner"))).toBe(true);
++
++  // A later read that finds the session replaces the proof.
++  history = { messages: [], sessionId: "created-by-someone" };
++  await loadChatHistory(host);
++  expect(canSend()).toBe(false);
++  history = { messages: [] };
++  await loadChatHistory(host);
++  expect(canSend()).toBe(true);
++  // The proof belongs to the connection that read it.
++  host.connectionEpoch += 1;
++  expect(canSend()).toBe(false);
++});
+diff --git a/ui/src/pages/chat/chat-pane-render.ts b/ui/src/pages/chat/chat-pane-render.ts
+index eb47d8377..563c5589c 100644
+--- a/ui/src/pages/chat/chat-pane-render.ts
++++ b/ui/src/pages/chat/chat-pane-render.ts
+@@ -30,7 +30,7 @@ import {
+   createChatPaneQueuedEditProps,
+   createChatPaneSessionActionCallbacks,
+   canDismissChatPendingInputs,
+-  readChatPaneMutationAccess,
++  readChatPaneRouteMutationAccess,
+   renderChatPaneComposerControls,
+ } from "./chat-pane-session-controls.ts";
+ import {
+@@ -86,9 +86,9 @@ export class ChatPaneRuntime extends ChatPaneLayoutRender {
+     const progressPresentation = this.progressCardPresentation;
+     const cachedSession = this.cachedSessionStatePending() ? this.cachedSessionState() : undefined;
+     const selectedSessionArchived = cachedSession?.archived ?? this.isCurrentSessionArchived(state);
+-    const mutationAccess = readChatPaneMutationAccess(
++    const mutationAccess = readChatPaneRouteMutationAccess(
+       this.context.gateway.snapshot,
+-      state.sessionKey,
++      state,
+       selectedSession,
+     );
+     const observerDigest = pickFreshestObserverDigest(
+diff --git a/ui/src/pages/chat/chat-pane-session-controls.ts b/ui/src/pages/chat/chat-pane-session-controls.ts
+index 878885c1d..e75cd4f18 100644
+--- a/ui/src/pages/chat/chat-pane-session-controls.ts
++++ b/ui/src/pages/chat/chat-pane-session-controls.ts
+@@ -17,11 +17,12 @@ import {
+ import { areUiSessionKeysEquivalent } from "../../lib/sessions/session-key.ts";
+ import { captureChatConnectionOwner } from "./chat-connection-owner.ts";
+ import { projectChatFields } from "./chat-field-projection.ts";
+-import { getAcceptedChatHistorySession } from "./chat-history-state.ts";
++import { getAcceptedChatHistorySession, isChatSessionProvenAbsent } from "./chat-history-state.ts";
+ import { ChatPaneModelControl } from "./chat-pane-model-control.tsx";
+ import { readChatSessionActionAccess } from "./chat-session-action-access.ts";
+ import { switchChatModel, switchChatSetting } from "./chat-session.ts";
+ import { patchChatSessionSettings } from "./chat-settings-patches.ts";
++import type { ChatState } from "./chat-state-contract.ts";
+ import type { ChatPageHost } from "./chat-state-host.ts";
+ import {
+   readChatModelCatalogState,
+@@ -78,6 +79,7 @@ export function readChatPaneMutationAccess(
+   snapshot: ApplicationGatewaySnapshot,
+   sessionKey: string,
+   session?: GatewaySessionRow,
++  sessionAbsent = false,
+ ) {
+   const scopedPatchAccess = (patch: SessionPatch) =>
+     readSessionMethodAccess(snapshot, {
+@@ -92,6 +94,7 @@ export function readChatPaneMutationAccess(
+       requiredScope: "operator.write",
+       sessionScope: true,
+       session,
++      sessionAbsent,
+     }),
+     model: scopedPatchAccess({ model: null }),
+     effort: scopedPatchAccess({ thinkingLevel: null }),
+@@ -109,6 +112,20 @@ export function readChatPaneMutationAccess(
+   };
+ }
+ 
++/** Without a row, only a read that proved the routed session absent admits its first turn. */
++export function readChatPaneRouteMutationAccess(
++  snapshot: ApplicationGatewaySnapshot,
++  state: ChatState,
++  session?: GatewaySessionRow,
++) {
++  return readChatPaneMutationAccess(
++    snapshot,
++    state.sessionKey,
++    session,
++    !session && isChatSessionProvenAbsent(state),
++  );
++}
++
+ export function canDismissChatPendingInputs(
+   access: ReturnType<typeof readChatPaneMutationAccess>,
+   session: Pick<GatewaySessionRow, "sharingRole"> | undefined,

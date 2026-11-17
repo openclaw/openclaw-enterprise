@@ -46,7 +46,7 @@ import {
   REPOSITORY_ACCESS_NOT_CONFIGURED,
   REPOSITORY_SETUP_ASK,
 } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
 
 test("Agent repository access labels target the right repository when references overlap", async (t) => {
   const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>

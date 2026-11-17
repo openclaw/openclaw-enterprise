@@ -14,7 +14,7 @@ import {
   createDevelopmentComputeDriver,
   registerAndSelectDrivers,
 } from "../helpers/development.ts";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 
 const installation = Object.freeze({

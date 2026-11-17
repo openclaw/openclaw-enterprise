@@ -22,9 +22,9 @@ import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-dat
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
 import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts";
 import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
-import { sessionAttempt } from "../conformance/repository-sessions.contract.mjs";
+import { sessionAttempt } from "../conformance/repository-sessions.contract.ts";
 import { disposeBrokerSession, fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
-import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import {
   createLoopbackServiceConfiguration,

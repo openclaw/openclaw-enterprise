@@ -7,10 +7,10 @@ import { fileURLToPath } from "node:url";
 import { parseUnambiguousJson } from "../../apps/controller/src/drivers/json-members.ts";
 import type { JsonObject } from "../../apps/controller/src/drivers/repo/access/json-value.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
-import { run } from "../fixtures/repository-credentials/process.mjs";
+import { run } from "../fixtures/repository-credentials/process.ts";
 import { refusingPort } from "../helpers/available-port.ts";
-import { signedLeaf } from "../helpers/certificates.mjs";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { signedLeaf } from "../helpers/certificates.ts";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { listen } from "../helpers/listen.ts";
 
 const helper = fileURLToPath(

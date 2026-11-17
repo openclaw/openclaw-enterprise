@@ -161,7 +161,20 @@ export async function preserveRetryBudgetAfterHealthFailure(context: TestContext
   );
   const completed = await fixture.work(candidate, "succeeded");
   assert.equal(completed.attempt_count, 1);
-  assert.ok(events.some(({ code }) => code === "HEALTH_UNAVAILABLE"));
+  // Each failed check names the step that failed and the error class, never the error's
+  // message (finding 3259). Only the first check after start warns, because a sidecar can
+  // still be starting; the checks after it, during the same 2.6 s pass, fail the same way
+  // and log errors, so an outage that lasts is not hidden.
+  const failures = events
+    .filter(({ code }) => code === "HEALTH_UNAVAILABLE")
+    .map(({ event, code, dependency, cause }) => ({ event, code, dependency, cause }));
+  const failure = { code: "HEALTH_UNAVAILABLE", dependency: "readiness-report", cause: "Error" };
+  assert.ok(failures.length >= 2, "the pass must outlast more than one health check");
+  assert.deepEqual(failures, [
+    { event: "worker.health-warning", ...failure },
+    ...failures.slice(1).map(() => ({ event: "worker.error", ...failure })),
+  ]);
+  assert.equal(JSON.stringify(events).includes("readiness sink unavailable"), false);
   assert.equal(
     events.some(({ code }) => code === "CLAIM_LOST"),
     false,

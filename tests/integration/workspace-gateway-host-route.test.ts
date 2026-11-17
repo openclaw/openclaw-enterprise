@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { createServer, get } from "node:https";
 import test, { type TestContext } from "node:test";
 import { getCACertificates, setDefaultCACertificates, TLSSocket } from "node:tls";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { startWorkspaceGatewayHostRelay } from "../helpers/workspace-gateway-host-relay.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 

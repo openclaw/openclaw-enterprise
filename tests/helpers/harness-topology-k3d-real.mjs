@@ -133,68 +133,6 @@ const {
   databaseUrl,
 });
 
-async function slackApi(method, token, body = {}) {
-  assert.ok(
-    [
-      "auth.test",
-      "conversations.info",
-      "conversations.history",
-      "conversations.replies",
-      "chat.postMessage",
-    ].includes(method),
-    "unsupported Slack proof operation",
-  );
-  const writesMessage = method === "chat.postMessage";
-  const url = new URL(`https://slack.com/api/${method}`);
-  if (!writesMessage) {
-    for (const [key, value] of Object.entries(body)) {
-      url.searchParams.set(key, String(value));
-    }
-  }
-  let response;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      response = await fetch(url, {
-        // The credential file is an explicitly selected Slack token. Send it
-        // only to Slack's API, never to a redirected credential recipient.
-        redirect: "error",
-        method: writesMessage ? "POST" : "GET",
-        headers: {
-          authorization: `Bearer ${token}`,
-          ...(writesMessage ? { "content-type": "application/json; charset=utf-8" } : {}),
-        },
-        ...(writesMessage ? { body: JSON.stringify(body) } : {}),
-        signal: AbortSignal.timeout(30_000),
-      });
-    } catch (error) {
-      const transient =
-        error?.name === "TimeoutError" ||
-        error?.message === "fetch failed" ||
-        ["UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "ECONNRESET", "EPIPE", "ETIMEDOUT"].includes(
-          error?.cause?.code ?? error?.code,
-        );
-      if (writesMessage || attempt === 2 || !transient) {
-        throw error;
-      }
-      await delay(250 * 2 ** attempt);
-      continue;
-    }
-    if (writesMessage || attempt === 2 || (response.status !== 429 && response.status < 500)) {
-      break;
-    }
-    const retryAfterSeconds = Number(response.headers.get("retry-after"));
-    const retryDelay =
-      Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
-        ? Math.min(retryAfterSeconds * 1_000, 5_000)
-        : 250 * 2 ** attempt;
-    await delay(retryDelay);
-  }
-  assert.equal(response.status, 200, `Slack ${method} returned HTTP ${response.status}.`);
-  const result = await response.json();
-  assert.equal(result.ok, true, `Slack ${method} failed: ${result.error ?? "unknown_error"}.`);
-  return result;
-}
-
 async function validatePrerequisites() {
   assert.ok(
     process.env.OPENAI_API_KEY,
@@ -3681,6 +3619,10 @@ async function assertRetainedArtifact(
   return artifact.id;
 }
 
+function hasReadyCondition(pod) {
+  return pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True");
+}
+
 async function assertGatewayPodContinuity(context, topology, privateClaim) {
   const sessionKey = `agent:main:durability-${randomUUID()}`;
   const nonce = `OCE-BEFORE-${randomUUID()}`;
@@ -3802,7 +3744,7 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
         !pod.metadata.deletionTimestamp &&
         pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id &&
         pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
-        pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
+        hasReadyCondition(pod),
     ),
   );
   const retained = await assertGatewayPrivateResources(topology);
@@ -4107,11 +4049,49 @@ async function assertDedicatedNativeChildRelay(topology) {
   assert.ok(parentThreadId, "the Gateway transcript must identify the native parent thread");
 
   // A parent can repeat the marker without spawning. Read the native child, not just its summary.
-  const evidence = JSON.parse(
-    await execNode(
-      topology.gatewayPlacement,
-      topology.gatewayPod.metadata.name,
-      `
+  const evidence = await readDedicatedNativeChildEvidence(
+    topology.gatewayPlacement,
+    topology.gatewayPod.metadata.name,
+    parentThreadId,
+    marker,
+    childTask,
+  );
+  assert.equal(evidence.parentThreadId, parentThreadId);
+  assert.notEqual(evidence.childThreadId, parentThreadId);
+  process.stderr.write(`k3d native child observation: ${JSON.stringify(evidence.observation)}\n`);
+  const completedHistory = await assertConversation(topology, sessionKey, marker);
+  assert.equal(
+    assistantMessageContaining(completedHistory, marker).idempotencyKey?.match(
+      /^codex-app-server:([^:]+):/,
+    )?.[1],
+    parentThreadId,
+    "the exact child answer must return through the same Gateway parent thread",
+  );
+}
+
+const nativeChildEvidenceStages = [
+  "connect",
+  "initialize",
+  "parent-read",
+  "child-read",
+  "child-completion",
+  "complete",
+];
+
+export async function readDedicatedNativeChildEvidence(
+  namespace,
+  pod,
+  parentThreadId,
+  marker,
+  childTask,
+  run = execNode,
+) {
+  // Derive the stdout receipt in both processes so its value stays out of the exec command.
+  const receipt = createHash("sha256").update(marker).digest("hex");
+  const output = await run(
+    namespace,
+    pod,
+    `
       const assert = require("node:assert/strict");
       const WebSocket = require("ws");
       const socket = new WebSocket(process.env.APP_SERVER_URL, {
@@ -4146,6 +4126,7 @@ async function assertDedicatedNativeChildRelay(topology) {
       });
       const expiresAt = Date.now() + 20_000;
       const deadline = setTimeout(() => socket.terminate(), 20_000);
+      const marker = ${JSON.stringify(marker)};
       (async () => {
         try {
           await new Promise((resolve, reject) => {
@@ -4195,16 +4176,16 @@ async function assertDedicatedNativeChildRelay(topology) {
                 item.type === "collabAgentToolCall" && item.tool === "spawnAgent" &&
                 item.receiverThreadIds.includes(childId) && typeof item.prompt === "string");
               observation.spawnPromptCount = spawnPrompts.length;
-              observation.spawnPromptNonceSeen = spawnPrompts.some((item) => item.prompt.includes(${JSON.stringify(marker)}));
+              observation.spawnPromptNonceSeen = spawnPrompts.some((item) => item.prompt.includes(marker));
               observation.spawnPromptMatchesTask = spawnPrompts.some((item) => item.prompt === ${JSON.stringify(childTask)});
               const userTexts = child.turns.flatMap((turn) => turn.items).filter((item) => item.type === "userMessage")
                 .flatMap((item) => item.content.filter((block) => block.type === "text").map((block) => block.text));
               observation.childUserTextCount = userTexts.length;
-              observation.childUserNonceSeen = userTexts.some((text) => text.includes(${JSON.stringify(marker)}));
+              observation.childUserNonceSeen = userTexts.some((text) => text.includes(marker));
               observation.childUserTaskSeen = userTexts.some((text) => text === ${JSON.stringify(childTask)});
               const messages = child.turns.flatMap((turn) => turn.items).filter((item) => item.type === "agentMessage");
               observation.agentMessageCount = messages.length;
-              observation.exactNonceMessages = messages.filter((item) => item.text.trim() === ${JSON.stringify(marker)}).length;
+              observation.exactNonceMessages = messages.filter((item) => item.text.trim() === marker).length;
               observation.messageShapes = messages.slice(-10).map((item) => {
                 const text = item.text.trim();
                 const lines = text.split(/\\r?\\n/);
@@ -4218,15 +4199,15 @@ async function assertDedicatedNativeChildRelay(topology) {
                   phase,
                   textBytes: Buffer.byteLength(item.text),
                   lineCount: lines.length,
-                  containsNonce: text.includes(${JSON.stringify(marker)}),
-                  jsonQuotedNonce: text === JSON.stringify(${JSON.stringify(marker)}),
-                  backtickQuotedNonce: text === "\u0060" + ${JSON.stringify(marker)} + "\u0060",
+                  containsNonce: text.includes(marker),
+                  jsonQuotedNonce: text === JSON.stringify(marker),
+                  backtickQuotedNonce: text === "\u0060" + marker + "\u0060",
                   fencedNonce: lines.length === 3 && /^\u0060\u0060\u0060(?:text|plaintext)?$/.test(lines[0]) &&
-                    lines[1] === ${JSON.stringify(marker)} && lines[2] === "\u0060\u0060\u0060",
+                    lines[1] === marker && lines[2] === "\u0060\u0060\u0060",
                 };
               });
               const completed = child.turns.find((turn) => turn.status === "completed" && turn.items.some(
-                (item) => item.type === "agentMessage" && item.text.trim() === ${JSON.stringify(marker)},
+                (item) => item.type === "agentMessage" && item.text.trim() === marker,
               ));
               observation.completedNonceTurn = Boolean(completed);
               if (completed) {
@@ -4248,22 +4229,28 @@ async function assertDedicatedNativeChildRelay(topology) {
       })().catch((error) => {
         const failure = error.code === "ERR_ASSERTION" ? "assertion" : "transport-or-protocol";
         console.error("Native child evidence " + failure + "; observation: " + JSON.stringify(observation));
+        const receipt = require("node:crypto").createHash("sha256").update(marker).digest("hex");
+        process.stdout.write(JSON.stringify({ receipt, stage: observation.stage }));
         process.exitCode = 1;
       });
     `,
-    ),
-  );
-  assert.equal(evidence.parentThreadId, parentThreadId);
-  assert.notEqual(evidence.childThreadId, parentThreadId);
-  process.stderr.write(`k3d native child observation: ${JSON.stringify(evidence.observation)}\n`);
-  const completedHistory = await assertConversation(topology, sessionKey, marker);
-  assert.equal(
-    assistantMessageContaining(completedHistory, marker).idempotencyKey?.match(
-      /^codex-app-server:([^:]+):/,
-    )?.[1],
-    parentThreadId,
-    "the exact child answer must return through the same Gateway parent thread",
-  );
+  ).catch((error) => {
+    // A rejected execFile retains stdout. Match only its complete, invocation-bound receipt.
+    if (error?.code === 1) {
+      const stage = nativeChildEvidenceStages.find(
+        (stage) => error.stdout === JSON.stringify({ receipt, stage }),
+      );
+      if (stage !== undefined) {
+        try {
+          error.openclawCiDiagnostic = { kind: "topology-native-child", stage };
+        } catch {
+          // Some executors may reject with a read-only error. Keep the exec failure.
+        }
+      }
+    }
+    throw error;
+  });
+  return JSON.parse(output);
 }
 
 async function requestFreshDedicatedHarnessTurn(topology) {
@@ -4422,18 +4409,23 @@ async function assertDedicatedAgentsInstructionsInFreshSession(topology) {
   assert.match(response.trimEnd(), /enterprise openclaw[.!?]*$/);
 }
 
+function isTopologyAgentPod(pod, topology) {
+  return (
+    pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
+    pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id
+  );
+}
+
 async function waitForReadyAgentPod(topology, revisionId, previousUid) {
-  return waitFor(`dedicated Codex Pod for revision ${revisionId}`, async () => {
-    const ready = (await topologyPods(topology)).find(
+  return waitFor(`dedicated Codex Pod for revision ${revisionId}`, async () =>
+    (await topologyPods(topology)).find(
       (pod) =>
         pod.metadata.uid !== previousUid &&
-        pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
-        pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id &&
+        isTopologyAgentPod(pod, topology) &&
         pod.metadata.labels?.["openclaw.dev/revision"] === revisionId &&
-        pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
-    );
-    return ready;
-  });
+        hasReadyCondition(pod),
+    ),
+  );
 }
 
 async function kubectlInReadyAgentPod(topology, ...args) {
@@ -4441,13 +4433,10 @@ async function kubectlInReadyAgentPod(topology, ...args) {
     const pod = (await topologyPods(topology)).find(
       (candidate) =>
         candidate.metadata.deletionTimestamp === undefined &&
-        candidate.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
-        candidate.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id &&
+        isTopologyAgentPod(candidate, topology) &&
         candidate.metadata.labels?.["openclaw.dev/revision"] === topology.revision.id &&
         candidate.status.phase === "Running" &&
-        candidate.status.conditions?.some(
-          ({ type, status }) => type === "Ready" && status === "True",
-        ),
+        hasReadyCondition(candidate),
     );
     if (pod === undefined) {
       return undefined;
@@ -4475,17 +4464,16 @@ async function kubectlInReadyAgentPod(topology, ...args) {
 }
 
 async function waitForReadyGatewayPod(topology, revisionId, previousUid) {
-  return waitFor(`embedded OpenClaw gateway Pod for revision ${revisionId}`, async () => {
-    const ready = (await resources("pods", topology.gatewayPlacement)).find(
+  return waitFor(`embedded OpenClaw gateway Pod for revision ${revisionId}`, async () =>
+    (await resources("pods", topology.gatewayPlacement)).find(
       (pod) =>
         (previousUid === undefined || pod.metadata.uid !== previousUid) &&
         pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
         pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id &&
         gatewayConsumesRevision(pod, topology.agent.id, revisionId) &&
-        pod.status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
-    );
-    return ready;
-  });
+        hasReadyCondition(pod),
+    ),
+  );
 }
 
 async function deployEmbeddedAgentAndWait(topology, agentId, description, options = {}) {
@@ -6240,7 +6228,6 @@ export {
   resources,
   secretRotationProbe,
   storedSecret,
-  slackApi,
   waitFor,
   waitForReadyGatewayPod,
 };

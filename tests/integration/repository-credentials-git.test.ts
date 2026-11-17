@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { ClientCommand } from "../fixtures/repository-credentials/clients.ts";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -8,12 +7,11 @@ import {
   eventually,
   startCredentialServiceFixture,
 } from "../fixtures/repository-credentials/service-fixture.ts";
-import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
+import { run } from "../fixtures/repository-credentials/process.ts";
 import { exerciseGit } from "../fixtures/repository-credentials/workflows.ts";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.ts";
 
 type GatewayOptions = NonNullable<Parameters<typeof gatewayRequest>[2]>;
-const run = runProcess as ClientCommand;
 
 test("real Git clones, fetches, switches and pushes using an explicit development token", async (t) => {
   if (await runInFixtureContainer(t, "tests/integration/repository-credentials-git.test.ts")) {
@@ -199,7 +197,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
         context: import("node:test").TestContext,
         prefix?: string,
       ) => Promise<string>;
-    } = await import("../fixtures/repository-credentials/process.mjs");
+    } = await import("../fixtures/repository-credentials/process.ts");
     const { runPinnedClients } = await import("../fixtures/repository-credentials/clients.ts");
     const seed = join(await temporaryDirectory(t, "git-large-seed-"), "seed");
     await run("git", ["init", "--initial-branch=main", seed]);

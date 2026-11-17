@@ -3,9 +3,9 @@ import { spawnSync } from "node:child_process";
 import { buffer } from "node:stream/consumers";
 import type { TestContext } from "node:test";
 import type { preparedStandingGitPeer } from "./prepared-standing-git-peer.ts";
-import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
+import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.ts";
 import { fixtureRepository } from "../fixtures/repository-credentials/github.ts";
-import { cleanEnvironment } from "../fixtures/repository-credentials/process.mjs";
+import { cleanEnvironment } from "../fixtures/repository-credentials/process.ts";
 
 type Peer = Awaited<ReturnType<typeof preparedStandingGitPeer>>;
 

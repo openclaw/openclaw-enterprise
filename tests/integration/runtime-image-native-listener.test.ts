@@ -3,7 +3,7 @@
 // proves why Compute admission refuses native listener TLS and binds that
 // cannot serve Pod-IP traffic.
 import type { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.mjs";
+import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.ts";
 import assert from "node:assert/strict";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { randomBytes } from "node:crypto";
@@ -38,13 +38,14 @@ type BindSettings = {
   customBindHost?: string;
 };
 type ScopeExpectation =
-  | { status: number; body?: RegExp; nativeSessions?: boolean; scopes?: never }
-  | { status: "hello"; scopes: string[]; body?: never; nativeSessions?: never }
+  | { status: number; body?: RegExp; nativeSessions?: boolean; scopes?: never; absentMain?: never }
+  | { status: "hello"; scopes: string[]; body?: never; nativeSessions?: never; absentMain?: never }
   | {
       status: "connect-error" | "operation-ok" | "operation-denied";
       body?: RegExp;
       scopes?: never;
       nativeSessions?: never;
+      absentMain?: boolean;
     };
 type ScopeCase = [
   label: string,
@@ -572,6 +573,31 @@ test(
             },
             { status: "operation-ok" },
           ],
+          // Finding 3190 (openclaw#197151): the chat route's paired browser opens the Agent's
+          // unused main conversation with empty history, so its first turn can create it.
+          // Any other absent key stays as hidden as another creator's draft.
+          [
+            {
+              kind: "ws",
+              paired: true,
+              identity: "occ-workspace-files",
+              scopes: "operator.sessions.write",
+              method: "sessions.messages.subscribe",
+              params: { key: "agent:main:main", initialHistory: {} },
+            },
+            { status: "operation-ok", absentMain: true },
+          ],
+          [
+            {
+              kind: "ws",
+              paired: true,
+              identity: "occ-workspace-files",
+              scopes: "operator.sessions.write",
+              method: "sessions.messages.subscribe",
+              params: { key: "agent:main:other" },
+            },
+            { status: "operation-denied", body: /not found/ },
+          ],
           [
             {
               kind: "ws",
@@ -688,6 +714,17 @@ test(
           assert.equal(body?.ok, true, description);
           assert.ok(Array.isArray(details?.sessions), description);
           assert.equal(details.count, details.sessions.length, description);
+        }
+        if (expected.absentMain) {
+          assert.ok(typeof outcome.body === "string", description);
+          const subscribed = asRecord(JSON.parse(outcome.body));
+          const initialHistory = asRecord(subscribed?.initialHistory);
+          const payload = asRecord(initialHistory?.payload);
+          assert.equal(subscribed?.subscribed, true, description);
+          assert.equal(subscribed?.key, "agent:main:main", description);
+          assert.equal(initialHistory?.ok, true, description);
+          assert.deepEqual(payload?.messages, [], description);
+          assert.equal(payload?.sessionId ?? null, null, description);
         }
         if (expected.scopes !== undefined) {
           assert.ok(isStringArray(outcome.scopes), description);

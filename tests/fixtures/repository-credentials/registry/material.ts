@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { GitHubRepositoryRegistration } from "../../../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { fixtureAppId, fixtureInstallationId } from "../github.ts";
-import { temporaryDirectory } from "../process.mjs";
+import { temporaryDirectory } from "../process.ts";
 
 import type { FixtureOwner } from "../resources.ts";
 

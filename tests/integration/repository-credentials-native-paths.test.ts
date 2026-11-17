@@ -4,19 +4,14 @@ import { request } from "node:https";
 import type { IncomingHttpHeaders } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
-import type {
-  ClientCommand,
-  CredentialClientFixture,
-} from "../fixtures/repository-credentials/clients.ts";
+import type { CredentialClientFixture } from "../fixtures/repository-credentials/clients.ts";
 import { runPinnedClients } from "../fixtures/repository-credentials/clients.ts";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.ts";
-import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
+import { run } from "../fixtures/repository-credentials/process.ts";
 import {
   gatewayRequest,
   startCredentialServiceFixture,
 } from "../fixtures/repository-credentials/service-fixture.ts";
-
-const run = runProcess as ClientCommand;
 
 type RawRequestOptions = { method?: string; headers?: Record<string, string> };
 

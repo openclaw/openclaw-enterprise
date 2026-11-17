@@ -6,7 +6,7 @@ import { connect as connectTcp } from "node:net";
 import { connect as connectTls } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 import { within } from "../helpers/wait-for.ts";
-import { listen } from "../fixtures/repository-credentials/process.mjs";
+import { listen } from "../fixtures/repository-credentials/process.ts";
 import { startTokenServiceScope } from "../fixtures/repository-credentials/service-fixture.ts";
 import { fixtureRepository } from "../fixtures/repository-credentials/github.ts";
 import {
