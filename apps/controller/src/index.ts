@@ -2051,6 +2051,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const params = request.params as Record<string, unknown>;
     if (
       Object.keys(request.query as Record<string, unknown>).length > 0 &&
+      operation.operationId !== "listCredentialSources" &&
       operation.operationId !== "listRepositoryOptions" &&
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&

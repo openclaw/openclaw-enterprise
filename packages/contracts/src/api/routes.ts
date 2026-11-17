@@ -50,6 +50,7 @@ import {
   FirstDeploymentRecoveryTuple,
   AgentId,
   NamespaceId,
+  ModelProviderId,
   SecretId,
   AgentProvisioningParams,
   PresetParams,
@@ -445,7 +446,7 @@ export const occApiRoutes = [
     tags: ["Installation"],
     schema: {
       querystring: EmptyQuery,
-      response: { 200: ModelProviderListResponse, ...readErrors },
+      response: { 200: ModelProviderListResponse, ...readErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -461,7 +462,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: ModelProviderParams,
-      response: { 200: ModelProviderResponse, ...readErrors },
+      response: { 200: ModelProviderResponse, ...readErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -477,7 +478,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       body: ModelProviderBody,
-      response: { 201: ModelProviderResponse, ...createErrors },
+      response: { 201: ModelProviderResponse, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -494,7 +495,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: ModelProviderParams,
       body: UpdateModelProviderBody,
-      response: { 200: ModelProviderResponse, ...createErrors },
+      response: { 200: ModelProviderResponse, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -510,7 +511,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
-      response: { 200: ModelProviderListResponse, ...readErrors },
+      response: { 200: ModelProviderListResponse, ...readErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -541,7 +542,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       body: CreateConnectionTemplateBody,
-      response: { 201: ConnectionTemplateResponse, ...createErrors },
+      response: { 201: ConnectionTemplateResponse, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -574,7 +575,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: ConnectionTemplateParams,
       body: UpdateConnectionTemplateBody,
-      response: { 200: ConnectionTemplateResponse, ...createErrors },
+      response: { 200: ConnectionTemplateResponse, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1239,7 +1240,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: CreateCredentialSourceBody,
-      response: { 201: CredentialSourceResponseRef, ...createErrors },
+      response: { 201: CredentialSourceResponseRef, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1253,9 +1254,12 @@ export const occApiRoutes = [
     summary: "List readable credential sources without revealing credential values",
     tags: ["Credential sources"],
     schema: {
-      querystring: EmptyQuery,
+      querystring: Type.Object(
+        { modelProviderId: Type.Optional(ModelProviderId) },
+        { additionalProperties: false },
+      ),
       params: NamespaceParams,
-      response: { 200: CredentialSourceListResponse, ...readErrors },
+      response: { 200: CredentialSourceListResponse, ...readErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1638,7 +1642,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: ProvisionAgentBody,
-      response: { 202: AgentProvisioningResponse, ...createErrors },
+      response: { 202: AgentProvisioningResponse, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1700,7 +1704,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: CreateAgentBody,
-      response: { 201: AgentResponse, ...createErrors },
+      response: { 201: AgentResponse, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1718,7 +1722,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: ValidateAgentCreateBody,
-      response: { 204: Type.Null(), ...createErrors },
+      response: { 204: Type.Null(), ...createErrors, 501: ErrorResponseRef },
     },
   },
   {
@@ -1827,7 +1831,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       body: UpdateAgentBody,
-      response: { 200: AgentResponse, ...createErrors },
+      response: { 200: AgentResponse, ...createErrors, 501: ErrorResponseRef },
     },
   },
   {

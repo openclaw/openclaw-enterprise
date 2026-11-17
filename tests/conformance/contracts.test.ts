@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import {
+  connectionValuesChanged,
+  type StaticKeyTemplateValues,
   CONFIGURATION_KINDS,
   DRIVER_CAPABILITIES,
   LOGGING_LEVELS,
@@ -31,6 +33,37 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import { registerConfigurationCases } from "./contracts-configuration-cases.ts";
 import { registerRuntimeDiagnosticCases } from "./contracts-runtime-diagnostic-cases.ts";
+
+test("replacing or removing a static template's approved Service requires fresh consent", () => {
+  const base: StaticKeyTemplateValues = {
+    mode: "static_bearer",
+    baseUrl: "https://inference.example.test/v1",
+    protocol: "openai-responses",
+    destinations: [
+      { host: "inference.example.test", port: 443, path: "/v1/responses", method: "POST" },
+    ],
+  };
+  const peer = {
+    kind: "kubernetes_service" as const,
+    namespace: "research",
+    name: "inference",
+    uid: randomUUID(),
+    address: "10.32.0.18",
+    targetPort: 8443,
+    podSelector: { app: "inference" },
+  };
+  const current = { ...base, privatePeer: peer };
+  assert.equal(connectionValuesChanged(current, structuredClone(current)), false);
+  assert.equal(
+    connectionValuesChanged(current, { ...base, privatePeer: { ...peer, uid: randomUUID() } }),
+    true,
+  );
+  assert.equal(
+    connectionValuesChanged(current, { ...base, privatePeer: { ...peer, targetPort: 9443 } }),
+    true,
+  );
+  assert.equal(connectionValuesChanged(current, base), true);
+});
 
 test("network delegation covers every requested host label and port without broadening executables", () => {
   const grant = {
