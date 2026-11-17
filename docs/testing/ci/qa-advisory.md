@@ -84,7 +84,7 @@ See [HTTP chat verification](../agent-http-chat.md).
 
 To run OpenShell scenarios locally, prepare the matching fixture for
 [network policy](../openshell-coverage.md#qa-matrix-selector),
-[scratch storage](../openshell.md#openshell-sandbox), or
+[scratch storage](../openshell.md#openshell), or
 [plugin installation](../openshell.md#codex-plugin-installation).
 
 `model-ui` checks Console sign-in and Agent use, then redeploys with a provider
@@ -176,7 +176,7 @@ For only OpenShell, use [Full Integration](full-integration.md#run-a-protected-i
 with `lane=openshell`.
 
 Local instructions run the **QA matrix only**. For other suites, follow
-[OpenShell setup](../openshell.md#openshell-sandbox) or
+[OpenShell setup](../openshell.md#openshell) or
 [local installation tests](../kubernetes.md#local-kubernetes-installation).
 
 ### Select scenarios
@@ -203,7 +203,7 @@ for inputs, execution and proof limits. It does not use the ordinary matrix's
 installation launcher.
 
 Select `scratch-volume` with `kubernetes` and `Codex`. The
-[fixture](../openshell.md#openshell-sandbox) uses an OpenAI API key for
+[fixture](../openshell.md#openshell) uses an OpenAI API key for
 `https://api.openai.com/v1`. NVMe and node-loss recovery need separate proof.
 
 Select `codex-search-config` alone. It requires `OCC_TEST_QA_CODEX_MODEL_BASE_URL`,

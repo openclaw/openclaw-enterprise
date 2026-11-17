@@ -180,8 +180,7 @@ separately requires screenshots and video.
 
 ## OpenShell
 
-For an OIDC-authenticated external gateway, see
-[Use an external OpenShell gateway](../guides/deploy/external-openshell-gateway.md).
+See [external OpenShell gateways](../guides/deploy/external-openshell-gateway.md).
 
 The real Sandbox suite checks Codex Gateway access, model/tool turns, credentials,
 filesystem/network restrictions, replacement and cleanup. Local fixtures alone
