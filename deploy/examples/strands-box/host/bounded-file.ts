@@ -13,13 +13,34 @@ interface FilePolicy {
   readonly maxBytes: number;
   readonly refusal: string;
   readonly canonical?: boolean;
+  readonly allowMissing?: boolean;
   readonly accepts?: (stat: BigIntStats) => boolean;
 }
 
+interface BoundedFile {
+  readonly bytes: Buffer;
+  readonly stat: BigIntStats;
+}
+
 /** Check the open file and read at most one byte beyond the validated size. */
-export function readBoundedFile(path: string, policy: FilePolicy) {
-  const { maxBytes, refusal, accepts, canonical } = policy;
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+export function readBoundedFile(
+  path: string,
+  policy: FilePolicy & { readonly allowMissing: true },
+): BoundedFile | undefined;
+export function readBoundedFile(
+  path: string,
+  policy: FilePolicy & { readonly allowMissing?: false },
+): BoundedFile;
+export function readBoundedFile(path: string, policy: FilePolicy): BoundedFile | undefined {
+  const { maxBytes, refusal, accepts, canonical, allowMissing } = policy;
+  let fd: number;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    // Only absence at open can select the caller's optional-file default.
+    if (allowMissing && (error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
   try {
     const stat = fstatSync(fd, { bigint: true });
     if (

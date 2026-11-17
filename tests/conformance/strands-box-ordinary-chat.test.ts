@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { once } from "node:events";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -13,6 +16,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import type { OperatorRace } from "../fixtures/strands-box/operator-race-preload.ts";
 import {
   answerFor,
   promptFor,
@@ -300,4 +305,197 @@ test(
       rmSync(parent, { recursive: true, force: true });
     }
   },
+);
+
+const operator = fileURLToPath(
+  new URL("../../deploy/examples/strands-box/ordinary-chat/operator.ts", import.meta.url),
+);
+const operatorPreload = new URL(
+  "../fixtures/strands-box/operator-race-preload.ts",
+  import.meta.url,
+);
+const installedUrl = "wss://installed.example.test/";
+const otherInstalledUrl = "wss://alternate.example.test/";
+const standaloneUrl = "ws://127.0.0.1:18789";
+
+function withOperatorFixture(
+  use: (fixture: {
+    base: string;
+    original: string;
+    alternate: string;
+    put: (path: string, row: object) => void;
+    invoke: (args: string[], race?: OperatorRace) => SpawnSyncReturns<string>;
+    runSubmit: (race?: OperatorRace) => SpawnSyncReturns<string>;
+  }) => void,
+) {
+  const base = mkdtempSync(join(realpathSync(tmpdir()), "box-operator-"));
+  const original = join(base, "original", "run");
+  const alternate = join(base, "alternate", "run");
+  const cli = join(base, "gateway-cli.ts");
+  const put = (path: string, row: object) =>
+    writeFileSync(path, JSON.stringify(row), { flag: "wx", mode: 0o600 });
+  const invoke = (args: string[], race?: OperatorRace) =>
+    spawnSync(process.execPath, ["--import", operatorPreload.href, ...args], {
+      env: { STRANDS_TEST_OPERATOR_ROOT: base, STRANDS_TEST_OPERATOR_RACE: race },
+      encoding: "utf8",
+      timeout: 10000,
+    });
+  const runSubmit = (race?: OperatorRace) => invoke([operator, "submit", original, cli], race);
+  try {
+    for (const directory of [original, alternate, join(base, "workspace")]) {
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+    }
+    writeFileSync(
+      cli,
+      `#!${process.execPath}
+${readFileSync(operatorPreload, "utf8")}`,
+      {
+        mode: 0o700,
+      },
+    );
+    const seeded = invoke([operator, "seed", original]);
+    assert.equal(seeded.status, 0, seeded.stderr);
+    const originalExpected = JSON.parse(readFileSync(join(original, "expected.json"), "utf8")) as {
+      nonce: string;
+    };
+    const differentNonce = originalExpected.nonce === otherNonce ? nonce : otherNonce;
+    put(join(alternate, "expected.json"), { ...originalExpected, nonce: differentNonce });
+    const ownerReceipt = (char: string) => ({
+      stage: "original_box_wss",
+      verifiedTls: true,
+      generationSha256: char.repeat(64),
+      ingressLeafSha256: "1".repeat(64),
+    });
+    put(join(original, "owner-wss.json"), ownerReceipt("a"));
+    put(join(alternate, "owner-wss.json"), ownerReceipt("b"));
+    put(join(alternate, "gateway.json"), { url: otherInstalledUrl });
+    use({ base, original, alternate, put, invoke, runSubmit });
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
+function assertSubmission(base: string, run: string, url: string) {
+  const intent = JSON.parse(readFileSync(join(run, "intent.json"), "utf8")) as {
+    gatewayUrl: string;
+    generationSha256: string;
+    nonce: string;
+  };
+  const expected = JSON.parse(readFileSync(join(run, "expected.json"), "utf8")) as {
+    nonce: string;
+  };
+  assert.equal(intent.nonce, expected.nonce);
+  assert.equal(intent.generationSha256, "a".repeat(64));
+  assert.equal(intent.gatewayUrl, url);
+  assert.deepEqual(JSON.parse(readFileSync(join(run, "client-exit.json"), "utf8")), {
+    code: 0,
+    signal: null,
+    accepted: true,
+  });
+  const invoked = JSON.parse(readFileSync(join(base, "cli.jsonl"), "utf8")) as string[];
+  assert.equal(invoked[4], url);
+}
+
+for (const gateway of [undefined, installedUrl]) {
+  test(
+    `ordinary chat submits to ${gateway ?? standaloneUrl} with its own intent`,
+    { skip: process.platform !== "linux" },
+    () =>
+      withOperatorFixture(({ base, original, put, runSubmit }) => {
+        if (gateway) {
+          put(join(original, "gateway.json"), { url: gateway });
+        }
+        const submitted = runSubmit();
+        assert.equal(submitted.status, 0, submitted.stderr);
+        assert.equal(submitted.stdout, "BOX_REPRO_CHAT_ACCEPTED\n");
+        assertSubmission(base, original, gateway ?? standaloneUrl);
+      }),
+  );
+}
+
+for (const [race, refusal] of [
+  ["gateway-removed", "BOX_REPRO_REFUSED"],
+  ["gateway-removed-after-read", "INSTALLED_GATEWAY_ORIGIN_REFUSED"],
+] as const) {
+  test(
+    `installed Gateway disappearance refuses without standalone submission (${race})`,
+    { skip: process.platform !== "linux" },
+    () =>
+      withOperatorFixture(({ base, original, put, runSubmit }) => {
+        put(join(original, "gateway.json"), { url: installedUrl });
+        const submitted = runSubmit(race);
+        assert.equal(existsSync(join(original, "gateway.json.moved")), true);
+        assert.equal(submitted.status, 1, submitted.stderr);
+        assert.equal(submitted.stderr, refusal + "\n");
+        assert.equal(existsSync(join(original, "intent.json")), false);
+        assert.equal(existsSync(join(original, "client-exit.json")), false);
+        assert.equal(existsSync(join(base, "cli.jsonl")), false);
+      }),
+  );
+}
+
+test(
+  "ordinary chat refuses a replaced workspace after checking its original marker",
+  { skip: process.platform !== "linux" },
+  () =>
+    withOperatorFixture(({ base, original, put, runSubmit }) => {
+      put(join(original, "gateway.json"), { url: installedUrl });
+      const submitted = runSubmit("workspace-replaced-after-marker");
+      assert.equal(existsSync(join(base, "moved-workspace", ".oce-model-marker")), true);
+      assert.equal(existsSync(join(base, "workspace", ".oce-model-marker")), false);
+      assert.equal(submitted.status, 1, submitted.stderr);
+      assert.equal(submitted.stderr, "WORKSPACE_PATH_REFUSED\n");
+      assert.equal(existsSync(join(original, "intent.json")), false);
+      assert.equal(existsSync(join(original, "client-exit.json")), false);
+      assert.equal(existsSync(join(base, "cli.jsonl")), false);
+    }),
+);
+
+test(
+  "seeded nonce stays in the admitted directory after ancestor symlink substitution",
+  { skip: process.platform !== "linux" },
+  () =>
+    withOperatorFixture(({ base, original, alternate, invoke }) => {
+      const nonceAt = (run: string) =>
+        (JSON.parse(readFileSync(join(run, "expected.json"), "utf8")) as { nonce: string }).nonce;
+      const expected = nonceAt(original);
+      const foreign = nonceAt(alternate);
+      assert.notEqual(expected, foreign);
+      const observed = invoke(
+        [
+          "--input-type=module",
+          "-e",
+          `import { seededNonce } from ${JSON.stringify(operator)}; process.stdout.write(seededNonce(process.argv[1]));`,
+          original,
+        ],
+        "ancestor-at-expected",
+      );
+      assert.equal(nonceAt(join(base, "moved", "run")), expected);
+      assert.equal(nonceAt(original), foreign);
+      assert.equal(observed.status, 0, observed.stderr);
+      assert.equal(observed.stdout, expected);
+    }),
+);
+
+test(
+  "ordinary chat refuses a replaced run before calling the Gateway",
+  { skip: process.platform !== "linux" },
+  () =>
+    withOperatorFixture(({ base, original, put, runSubmit }) => {
+      put(join(original, "gateway.json"), { url: installedUrl });
+      const submitted = runSubmit("directory-at-intent");
+      assert.equal(submitted.status, 1, submitted.stderr);
+      assert.equal(submitted.stderr, "REPRO_ROOT_REFUSED\n");
+      // The exclusive write was already underway. Its intent stays with run A,
+      // and the post-write custody check refuses before invoking the client.
+      const moved = join(base, "moved");
+      const intent = JSON.parse(readFileSync(join(moved, "intent.json"), "utf8")) as {
+        gatewayUrl: string;
+      };
+      assert.equal(intent.gatewayUrl, installedUrl);
+      assert.equal(existsSync(join(moved, "client-exit.json")), false);
+      assert.equal(existsSync(join(base, "cli.jsonl")), false);
+      assert.equal(existsSync(join(original, "intent.json")), false);
+      assert.equal(existsSync(join(original, "client-exit.json")), false);
+    }),
 );

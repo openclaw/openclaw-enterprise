@@ -1,36 +1,50 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { lstatSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readlinkSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
+import type { BigIntStats } from "node:fs";
 import { join } from "node:path";
 import { readBoundedFile } from "../host/bounded-file.ts";
 import { answerFor, isNonce, promptFor, replyPrefix } from "./box-workload.ts";
+
 const workspace = "/home/node/workspace";
-const marker = join(workspace, ".oce-model-marker");
+const markerName = ".oce-model-marker";
 const gatewayUrl = "ws://127.0.0.1:18789";
 
 const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 type Obj = Record<string, unknown>;
 const obj = (x: unknown): Obj =>
   x && typeof x === "object" && !Array.isArray(x) ? (x as Obj) : {};
-function privateFile(file: string, maxBytes: number, refusal = "PRIVATE_INPUT_REFUSED") {
-  return readBoundedFile(file, {
+function privateInputPolicy(maxBytes: number, refusal = "PRIVATE_INPUT_REFUSED") {
+  return {
     maxBytes,
     refusal,
-    accepts: (stat) =>
+    accepts: (stat: BigIntStats) =>
       stat.nlink === 1n &&
       (stat.mode & 0o077n) === 0n &&
       stat.uid === BigInt(process.getuid?.() ?? -1) &&
       stat.size > 0n,
-  });
+  };
 }
 function privateRead(file: string, maxBytes: number) {
-  return privateFile(file, maxBytes).bytes.toString("utf8");
+  return readBoundedFile(file, privateInputPolicy(maxBytes)).bytes.toString("utf8");
 }
 function save(path: string, row: Obj) {
   writeFileSync(path, JSON.stringify(row) + "\n", { mode: 0o600, flag: "wx" });
 }
-function checkMarker() {
-  const { bytes, stat } = privateFile(marker, 49, "MARKER_IDENTITY_REFUSED");
+function checkMarker(root: string) {
+  const { bytes, stat } = readBoundedFile(
+    join(root, markerName),
+    privateInputPolicy(49, "MARKER_IDENTITY_REFUSED"),
+  );
   if (bytes.length !== 49) throw Error("MARKER_IDENTITY_REFUSED");
   return {
     markerSha256: sha(bytes),
@@ -38,11 +52,15 @@ function checkMarker() {
     inode: stat.ino.toString(),
   };
 }
-function seed(root: string) {
-  if (realpathSync(workspace) !== workspace) throw Error("WORKSPACE_PATH_REFUSED");
-  writeFileSync(marker, randomBytes(24).toString("hex") + "\n", { mode: 0o600, flag: "wx" });
+function seed(root: string, workspaceRoot: string, assertCurrent: () => void) {
+  writeFileSync(join(workspaceRoot, markerName), randomBytes(24).toString("hex") + "\n", {
+    mode: 0o600,
+    flag: "wx",
+  });
+  const seeded = checkMarker(workspaceRoot);
+  assertCurrent();
   save(join(root, "expected.json"), {
-    ...checkMarker(),
+    ...seeded,
     sessionKey: `agent:main:box-repro-${randomUUID()}`,
     nonce: randomBytes(24).toString("hex"),
   });
@@ -171,7 +189,7 @@ function executable(value: string | undefined) {
 }
 function ownerReceipt(root: string, fresh: boolean) {
   const path = join(root, "owner-wss.json");
-  const { bytes, stat } = privateFile(path, 2048);
+  const { bytes, stat } = readBoundedFile(path, privateInputPolicy(2048));
   const row = obj(JSON.parse(bytes.toString("utf8")) as unknown);
   if (
     row.stage !== "original_box_wss" ||
@@ -221,24 +239,69 @@ function callGateway(cli: string, args: string[]) {
   delete env.APP_SERVER_URL;
   return spawnSync(cli, args, { encoding: "utf8", maxBuffer: 128 * 1024, timeout: 10000, env });
 }
-function runDirectory(root: string | undefined): string {
-  if (!root?.startsWith("/") || realpathSync(root) !== root) throw Error("REPRO_ROOT_REFUSED");
-  const st = lstatSync(root);
-  if (!st.isDirectory() || st.uid !== process.getuid?.() || (st.mode & 0o077) !== 0)
-    throw Error("REPRO_ROOT_REFUSED");
-  return root;
+function withDirectory<T>(
+  path: string | undefined,
+  refusal: string,
+  use: (pinnedPath: string, stat: BigIntStats, assertCurrent: () => void) => T,
+): T {
+  if (process.platform !== "linux" || !path?.startsWith("/")) throw Error(refusal);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    // Resolve the opened directory itself. Subsequent lookups walk from this FD.
+    const pinnedPath = `/proc/self/fd/${fd}`;
+    const original = fstatSync(fd, { bigint: true });
+    const assertCurrent = () => {
+      const current = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+      if (
+        readlinkSync(pinnedPath) !== path ||
+        !current ||
+        current.dev !== original.dev ||
+        current.ino !== original.ino ||
+        current.mode !== original.mode ||
+        current.uid !== original.uid
+      ) {
+        throw Error(refusal);
+      }
+    };
+    assertCurrent();
+    return use(pinnedPath, original, assertCurrent);
+  } finally {
+    closeSync(fd);
+  }
 }
 
-function installedGatewayUrl(root: string): string {
-  const file = join(root, "gateway.json");
-  let contents: string;
-  try {
-    contents = privateRead(file, 2048);
-  } catch (error) {
-    if (obj(error).code === "ENOENT") return gatewayUrl;
-    throw error;
-  }
-  const gateway = obj(JSON.parse(contents));
+function withRunDirectory<T>(
+  root: string | undefined,
+  use: (pinnedPath: string, assertCurrent: () => void) => T,
+): T {
+  return withDirectory(root, "REPRO_ROOT_REFUSED", (pinnedPath, stat, assertCurrent) => {
+    if (stat.uid !== BigInt(process.getuid?.() ?? -1) || (stat.mode & 0o077n) !== 0n)
+      throw Error("REPRO_ROOT_REFUSED");
+    return use(pinnedPath, assertCurrent);
+  });
+}
+
+function selectedGateway(root: string) {
+  const path = join(root, "gateway.json");
+  const file = readBoundedFile(path, {
+    ...privateInputPolicy(2048),
+    allowMissing: true,
+  });
+  const assertCurrent = () => {
+    const current = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+    if (
+      file
+        ? !current ||
+          current.dev !== file.stat.dev ||
+          current.ino !== file.stat.ino ||
+          current.ctimeNs !== file.stat.ctimeNs
+        : current !== undefined
+    ) {
+      throw Error("INSTALLED_GATEWAY_ORIGIN_REFUSED");
+    }
+  };
+  if (!file) return { url: gatewayUrl, assertCurrent };
+  const gateway = obj(JSON.parse(file.bytes.toString("utf8")) as unknown);
   if (Object.keys(gateway).length !== 1 || typeof gateway.url !== "string") {
     throw Error("INSTALLED_GATEWAY_ORIGIN_REFUSED");
   }
@@ -253,29 +316,38 @@ function installedGatewayUrl(root: string): string {
   ) {
     throw Error("INSTALLED_GATEWAY_ORIGIN_REFUSED");
   }
-  return url.href;
+  return { url: url.href, assertCurrent };
 }
 export function seededNonce(root: string | undefined): string {
-  const expected = obj(
-    JSON.parse(privateRead(join(runDirectory(root), "expected.json"), 2048)) as unknown,
-  );
-  if (!isNonce(expected.nonce)) throw Error("PROBE_NONCE_REFUSED");
-  return expected.nonce;
+  return withRunDirectory(root, (pinnedPath) => {
+    const expected = obj(
+      JSON.parse(privateRead(join(pinnedPath, "expected.json"), 2048)) as unknown,
+    );
+    if (!isNonce(expected.nonce)) throw Error("PROBE_NONCE_REFUSED");
+    return expected.nonce;
+  });
 }
-function main() {
-  process.umask(0o077);
-  const [mode, run, arg] = process.argv.slice(2);
-  const root = runDirectory(run);
-  if (process.argv.length > 5) throw Error("USAGE_REFUSED");
+function operate(
+  root: string,
+  workspaceRoot: string,
+  mode: string | undefined,
+  arg: string | undefined,
+  assertCurrent: () => void,
+) {
   if (mode === "seed" && !arg) {
-    seed(root);
+    seed(root, workspaceRoot, assertCurrent);
     return;
   }
   const expected = obj(JSON.parse(privateRead(join(root, "expected.json"), 2048)) as unknown);
   const nonce = expected.nonce;
   if (!isNonce(nonce)) throw Error("PROBE_NONCE_REFUSED");
-  const expectedUrl = installedGatewayUrl(root);
-  const current = checkMarker();
+  const gateway = selectedGateway(root);
+  const expectedUrl = gateway.url;
+  const current = checkMarker(workspaceRoot);
+  const assertInputsCurrent = () => {
+    gateway.assertCurrent();
+    assertCurrent();
+  };
   const key = expected.sessionKey;
   if (
     current.markerSha256 !== expected.markerSha256 ||
@@ -289,6 +361,7 @@ function main() {
     const cli = executable(arg);
     const owner = ownerReceipt(root, true);
     const runId = randomUUID();
+    assertInputsCurrent();
     save(join(root, "intent.json"), {
       stage: "one_chat_intent",
       sessionKey: key,
@@ -298,11 +371,13 @@ function main() {
       prompt: promptFor(nonce),
       gatewayUrl: expectedUrl,
     });
+    assertInputsCurrent();
     const result = callGateway(cli, gatewayChatCall("chat.send", key, runId, nonce, expectedUrl));
     const reply = result.status === 0 ? obj(JSON.parse(result.stdout) as unknown) : {};
     const accepted =
       reply.runId === runId && (reply.status === "started" || reply.status === "accepted");
     save(join(root, "client-exit.json"), { code: result.status, signal: result.signal, accepted });
+    assertInputsCurrent();
     if (!accepted) throw Error("CHAT_CLIENT_UNCERTAIN");
     process.stdout.write("BOX_REPRO_CHAT_ACCEPTED\n");
   } else if (mode === "verify") {
@@ -323,12 +398,14 @@ function main() {
       throw Error("ORIGINAL_CHAT_INTENT_REQUIRED");
     if (!inspectPolicyRecords(privateRead(join(root, "box-records.jsonl"), 1024 * 1024)))
       throw Error("STOCK_POLICY_RECEIPT_REQUIRED");
+    assertInputsCurrent();
     const waited = callGateway(
       cli,
       gatewayChatCall("agent.wait", key, intent.runId, nonce, expectedUrl),
     );
     if (waited.status !== 0 || !inspectTerminal(JSON.parse(waited.stdout) as unknown, intent.runId))
       throw Error("ORIGINAL_CHAT_TERMINAL_REQUIRED");
+    assertInputsCurrent();
     const read = callGateway(
       cli,
       gatewayChatCall("chat.history", key, intent.runId, nonce, expectedUrl),
@@ -343,6 +420,7 @@ function main() {
       .split("\n")
       .map((line) => JSON.parse(line) as unknown);
     if (!inspectFixture(records, nonce, current)) throw Error("SAME_MARKER_TOOL_RECEIPT_REQUIRED");
+    assertInputsCurrent();
     process.stdout.write(
       JSON.stringify({
         stage: "ordinary_chat_verified",
@@ -352,6 +430,22 @@ function main() {
       }) + "\n",
     );
   } else throw Error("USAGE_REFUSED");
+}
+function main() {
+  process.umask(0o077);
+  const [mode, run, arg] = process.argv.slice(2);
+  if (process.argv.length > 5) throw Error("USAGE_REFUSED");
+  withRunDirectory(run, (root, assertRunCurrent) => {
+    withDirectory(
+      workspace,
+      "WORKSPACE_PATH_REFUSED",
+      (workspaceRoot, _stat, assertWorkspaceCurrent) =>
+        operate(root, workspaceRoot, mode, arg, () => {
+          assertWorkspaceCurrent();
+          assertRunCurrent();
+        }),
+    );
+  });
 }
 if (import.meta.main)
   try {
