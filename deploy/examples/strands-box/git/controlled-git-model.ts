@@ -5,12 +5,15 @@
 // through it: the placeholder step prints only digests and lengths of the workload's variables.
 //
 //   node controlled-git-model.ts <config.json>
-//   config: { address, port, boxAddress, certificate, key, runDirectory, nonce, plan }
+//   config: { address, port, boxAddress, certificate, key, runDirectory, nonce, plan, bearerSha256? }
 //   plan:   { repository, otherRepository, branch, otherRef, base }
+//   bearerSha256: the SHA-256 (hex) of each model key the fixture accepts (a protected Agent's key, which
+//   Box injects). Without it the fixture accepts only the controlled route's public marker. Every
+//   request's bearer digest (never the bearer) goes to `model-requests.jsonl` in the run directory.
 import { appendFileSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:https";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONTROLLED_INFERENCE_MARKER } from "../host/egress.ts";
@@ -235,22 +238,53 @@ function patchCall(callId: string, tool: Obj, patch: string): Obj {
 const obj = (x: unknown): Obj =>
   x && typeof x === "object" && !Array.isArray(x) ? (x as Obj) : {};
 
+const SHA256 = /^[0-9a-f]{64}$/;
+
+/** The SHA-256 of the bearer an `Authorization` header carries, or `null`; never the bearer. */
+export function bearerDigest(header: unknown): string | null {
+  if (typeof header !== "string" || !header.startsWith("Bearer ") || header.length > 4_103) return null;
+  return createHash("sha256").update(header.slice("Bearer ".length)).digest("hex");
+}
+
+export interface GitModelPeer {
+  readonly address: string;
+  /** The exact `Authorization` header to accept when no key digests are configured. */
+  readonly authorization?: string;
+  /** Accept a request only when its bearer's SHA-256 is one of these (a protected model key). */
+  readonly bearerSha256?: readonly string[];
+  /** One row per request that reached the fixture: its bearer's digest and whether it was accepted. */
+  readonly requests?: (row: Obj) => void;
+}
+
 /** One request handler for the whole run; each step's tool call is answered once. */
 export function controlledGitModelRequests(
   nonce: string,
   plan: GitPlan,
   receipt: (row: Obj) => void,
-  peer: { readonly address: string; readonly authorization?: string },
+  peer: GitModelPeer,
 ) {
   const calls = new Map<string, GitStep>();
   const answered = new Set<string>();
   return async (req: IncomingMessage, res: ServerResponse) => {
     try {
+      const presented = bearerDigest(req.headers.authorization);
+      const authorized =
+        peer.bearerSha256 === undefined
+          ? req.headers.authorization === peer.authorization
+          : presented !== null && peer.bearerSha256.includes(presented);
+      peer.requests?.({
+        at: new Date().toISOString(),
+        method: String(req.method).slice(0, 16),
+        path: String(req.url).slice(0, 200),
+        fromBox: req.socket.remoteAddress === peer.address,
+        bearerSha256: presented,
+        authorized,
+      });
       if (
         req.socket.remoteAddress !== peer.address ||
         req.method !== "POST" ||
         req.url !== "/v1/responses" ||
-        req.headers.authorization !== peer.authorization
+        !authorized
       ) {
         res.writeHead(404).end();
         return;
@@ -377,7 +411,7 @@ export function controlledGitModelRequests(
 
 function start(path: string) {
   const data = object(readConfig(path));
-  fields(data, ["address", "port", "boxAddress", "certificate", "key", "runDirectory", "nonce", "plan"]);
+  fields(data, ["address", "port", "boxAddress", "certificate", "key", "runDirectory", "nonce", "plan", "bearerSha256"]);
   const nonce = data.nonce;
   const port = data.port;
   if (!isNonce(nonce) || typeof port !== "number" || !Number.isInteger(port) || port < 1024)
@@ -386,6 +420,18 @@ function start(path: string) {
   const runDirectory = privateDirectory(data.runDirectory);
   const receipt = join(runDirectory, "controlled-git.jsonl");
   appendFileSync(receipt, "", { flag: "wx", mode: 0o600 });
+  const keys = data.bearerSha256;
+  if (
+    keys !== undefined &&
+    (!Array.isArray(keys) ||
+      keys.length === 0 ||
+      keys.length > 4 ||
+      !keys.every((key) => typeof key === "string" && SHA256.test(key)))
+  )
+    throw new Error("bearerSha256 must list one to four SHA-256 hex digests.");
+  const requests = join(runDirectory, "model-requests.jsonl");
+  appendFileSync(requests, "", { flag: "wx", mode: 0o600 });
+  const log = (row: Obj) => appendFileSync(requests, JSON.stringify(row) + "\n");
   const server = createServer(
     {
       cert: readFileSync(string(data.certificate)),
@@ -398,8 +444,18 @@ function start(path: string) {
       nonce,
       plan,
       (row) => appendFileSync(receipt, JSON.stringify(row) + "\n"),
-      { address: string(data.boxAddress), authorization: `Bearer ${CONTROLLED_INFERENCE_MARKER}` },
+      {
+        address: string(data.boxAddress),
+        ...(keys === undefined
+          ? { authorization: `Bearer ${CONTROLLED_INFERENCE_MARKER}` }
+          : { bearerSha256: keys as string[] }),
+        requests: log,
+      },
     ),
+  );
+  // TCP connections too: a refused model request must open none.
+  server.on("connection", (socket) =>
+    log({ at: new Date().toISOString(), stage: "connection", fromBox: socket.remoteAddress === data.boxAddress }),
   );
   server.maxConnections = 8;
   server.listen(port, string(data.address), () =>
