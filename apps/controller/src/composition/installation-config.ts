@@ -1539,101 +1539,101 @@ async function composeInstallationConfiguration(
         "sandboxDriver" | "protectedDriver" | "packagedGatewayRegistration" | "repositoryTransport"
       >
     > => {
-    if (sandbox === undefined) {
-      return {};
-    }
-    if (
-      proxySelection === undefined &&
-      packageGatewayId === undefined &&
-      options.createSandboxDriver !== undefined
-    ) {
-      return {
-        sandboxDriver: validateCreatedSandboxDriver(
-          options.createSandboxDriver(sandbox, openShell),
-          sandbox,
-        ),
-      };
-    }
-    if (sandboxPackage !== undefined) {
-      if (proxySelection === undefined && packageGatewayId === undefined) {
+      if (sandbox === undefined) {
+        return {};
+      }
+      if (
+        proxySelection === undefined &&
+        packageGatewayId === undefined &&
+        options.createSandboxDriver !== undefined
+      ) {
         return {
-          sandboxDriver: createExternalDriver(
-            sandboxPackage.module,
+          sandboxDriver: validateCreatedSandboxDriver(
+            options.createSandboxDriver(sandbox, openShell),
             sandbox,
-            "sandbox",
-          ) as SandboxDriver,
+          ),
         };
       }
-      // One registration supplies every selected view of the package.
-      const owner = await createExternalSandboxRegistration(
-        sandboxPackage.module,
+      if (sandboxPackage !== undefined) {
+        if (proxySelection === undefined && packageGatewayId === undefined) {
+          return {
+            sandboxDriver: createExternalDriver(
+              sandboxPackage.module,
+              sandbox,
+              "sandbox",
+            ) as SandboxDriver,
+          };
+        }
+        // One registration supplies every selected view of the package.
+        const owner = await createExternalSandboxRegistration(
+          sandboxPackage.module,
+          sandbox,
+          [
+            ...(packageGatewayId === undefined ? [] : (["credential_gateway"] as const)),
+            ...(proxySelection === undefined ? [] : (["credential_proxy"] as const)),
+          ],
+          repositoryDeliveryMode === "protected" ? repositoryRuntime?.authorityIdentity : undefined,
+        );
+        loaded.externalOwner = owner;
+        return {
+          sandboxDriver: owner.require("sandbox"),
+          ...(proxySelection === undefined ? {} : { protectedDriver: owner }),
+          ...(packageGatewayId === undefined ? {} : { packagedGatewayRegistration: owner }),
+        };
+      }
+      const { createOpenShellCapabilities } =
+        await import("../drivers/egress-proxy/openshell-registration.ts");
+      const capabilities = createOpenShellCapabilities({
         sandbox,
-        [
-          ...(packageGatewayId === undefined ? [] : (["credential_gateway"] as const)),
-          ...(proxySelection === undefined ? [] : (["credential_proxy"] as const)),
-        ],
-        repositoryDeliveryMode === "protected" ? repositoryRuntime?.authorityIdentity : undefined,
+        backend: openShell!,
+        operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
+        createSandbox: (configuration, selection) =>
+          new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection),
+        ...(proxySelection === undefined
+          ? {}
+          : {
+              repository: repositoryDelivery,
+              proxy: {
+                id: proxySelection.id,
+                configuration: proxySelection.configuration as unknown as OpenShellProxyOptions,
+                preparedProviders: preparedGitHub ? [githubMetadataProvider] : [],
+                ...(egressAuthority && { exchangeAuthority: egressAuthority }),
+              },
+            }),
+      });
+      if (proxySelection === undefined) {
+        return { sandboxDriver: capabilities.sandbox };
+      }
+      // One configured OpenShell owner, with the original capability IDs retained for v2 revisions.
+      const repositoryTransport = capabilities.repositoryTransport;
+      const owner = new InstalledDriver(
+        {
+          ...sandbox,
+          retiredStaticProviderRefs: [openAiStaticProviderRef],
+          repositoryOnly: repositoryTransport !== undefined && egressAuthority === undefined,
+          configuration: {
+            sandbox: sandbox.configuration,
+            backend: openShellBackend,
+            proxy: drivers.credential_proxy,
+            ...(repositoryTransport && {
+              repositoryAuthorityIdentity: repositoryRuntime!.authorityIdentity,
+              modelGateway: drivers.credential_gateway,
+            }),
+            namespaceBinding,
+          },
+        },
+        {
+          capabilities: { sandbox: capabilities.sandbox, credential_proxy: capabilities.proxy! },
+          close: capabilities.close,
+        },
+        { sandbox: sandbox.id, credential_proxy: proxySelection.id },
       );
-      loaded.externalOwner = owner;
       return {
         sandboxDriver: owner.require("sandbox"),
-        ...(proxySelection === undefined ? {} : { protectedDriver: owner }),
-        ...(packageGatewayId === undefined ? {} : { packagedGatewayRegistration: owner }),
+        protectedDriver: owner,
+        ...(repositoryTransport && { repositoryTransport }),
       };
-    }
-    const { createOpenShellCapabilities } =
-      await import("../drivers/egress-proxy/openshell-registration.ts");
-    const capabilities = createOpenShellCapabilities({
-      sandbox,
-      backend: openShell!,
-      operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
-      createSandbox: (configuration, selection) =>
-        new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection),
-      ...(proxySelection === undefined
-        ? {}
-        : {
-            repository: repositoryDelivery,
-            proxy: {
-              id: proxySelection.id,
-              configuration: proxySelection.configuration as unknown as OpenShellProxyOptions,
-              preparedProviders: preparedGitHub ? [githubMetadataProvider] : [],
-              ...(egressAuthority && { exchangeAuthority: egressAuthority }),
-            },
-          }),
-    });
-    if (proxySelection === undefined) {
-      return { sandboxDriver: capabilities.sandbox };
-    }
-    // One configured OpenShell owner, with the original capability IDs retained for v2 revisions.
-    const repositoryTransport = capabilities.repositoryTransport;
-    const owner = new InstalledDriver(
-      {
-        ...sandbox,
-        retiredStaticProviderRefs: [openAiStaticProviderRef],
-        repositoryOnly: repositoryTransport !== undefined && egressAuthority === undefined,
-        configuration: {
-          sandbox: sandbox.configuration,
-          backend: openShellBackend,
-          proxy: drivers.credential_proxy,
-          ...(repositoryTransport && {
-            repositoryAuthorityIdentity: repositoryRuntime!.authorityIdentity,
-            modelGateway: drivers.credential_gateway,
-          }),
-          namespaceBinding,
-        },
-      },
-      {
-        capabilities: { sandbox: capabilities.sandbox, credential_proxy: capabilities.proxy! },
-        close: capabilities.close,
-      },
-      { sandbox: sandbox.id, credential_proxy: proxySelection.id },
-    );
-    return {
-      sandboxDriver: owner.require("sandbox"),
-      protectedDriver: owner,
-      ...(repositoryTransport && { repositoryTransport }),
-    };
-  })();
+    })();
   const credentialGatewayDriver =
     packagedGatewayRegistration?.require("credential_gateway") ?? bundledCredentialGateway;
   const credentialRefreshDriver =
