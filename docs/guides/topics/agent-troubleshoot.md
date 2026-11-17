@@ -19,8 +19,6 @@ If a dedicated Codex Agent on OpenShell reports `Codex did not grant the request
 - `sandbox-externalSandbox`: Codex returned a different sandbox mode. Ask the operator to check the selected native profile and runtime compatibility.
 - `nonobject-result`, `field-absent`, `field-null`, `field-not-object`, `type-not-string`, or `type-unrecognized`: the response did not provide a recognized sandbox. Check the packaged runtime version and response contract before attributing the failure to account policy.
 
-Without this category, the error cannot distinguish a restricted grant from an incompatible response.
-
 Login, source readiness, and a model reply under another profile cannot prove compatibility. Use an approved compatible credential or policy change. [Update copied API-key or PAT sources](../../reference/credential-sources.md#update-a-source). For device login, sign in again and replace the Agent binding. Redeploy, then [verify a model response from the Agent](../operate/model-verification.md). Keep the Gateway permission check and OpenShell isolation in place.
 
 ## Deploy requires a Sandbox Driver that supports protected Codex artifact admission
@@ -60,8 +58,7 @@ inspect the latest deployment you can read:
 occ --namespace NAMESPACE_ID agent deployment-status AGENT_ID --output json
 ```
 
-Inspect the deployment error before changing credentials. If it
-failed, follow the next step in `error.message`. See the
+Inspect the deployment error before changing credentials. See the
 [deployment status reference](../../reference/agents.md#deployment-status).
 
 On Kubernetes, open the Agent's **Open draft** draft, then
@@ -186,7 +183,7 @@ Deployment. Use the same procedure, with these changes:
   `Runtime pin store owner is unsafe`. Mount only the subPath, not the claim
   root, at the same path, and set `OPENCLAW_STATE_DIR` to
   `/home/node/.openclaw-node`. The lock file names depend on this path. A
-  Harness has no configuration mount or profile; skip those items.
+  Harness has no profile.
 - Step 3: Run the inspection and `--confirm` in the same container, for example
   a Pod that sleeps, with `kubectl exec` for each command. A new Pod can change
   the lock files' metadata, and OpenClaw then reports a changed record.
@@ -197,16 +194,22 @@ Deployment. Use the same procedure, with these changes:
 1. Record the Agent, state volume and original container ID. On Kubernetes,
    also record the Pod UID and node, and save the Gateway Deployment's manifest. Stop the Agent in OCC and verify with the
    compute provider that the exact container exited. A missing Pod or expired
-   heartbeat alone cannot establish this. If its node is unreachable, keep the
+   heartbeat alone cannot establish this. A force-deleted holder Pod leaves no
+   container ID: record its name from the log's `holder N at POD_NAME/pid-ns`
+   text, and the infrastructure operator verifies that the container runtime on
+   its node lists no sandbox or container for it, for example with `crictl pods
+   --name POD_NAME`. If its node is unreachable, keep the
    Agent stopped until the infrastructure operator verifies shutdown.
    [Stop and resume](../../reference/agents/deployment.md#stop-and-resume)
 2. Keep other writers off the volume. Start a maintenance container from the
-   Gateway's pinned image as its runtime user. Mount the retained volume and
-   configuration at the Gateway's paths and use its state directory and profile.
-   On Kubernetes, also copy the Gateway Pod's `securityContext`, its
-   `prepare-private-state` init container and that container's volumes; without
-   them the command fails with `No safe OpenClaw temp root is available`.
-   Inspect the holders without starting a Gateway.
+   Gateway's pinned image as its runtime user. Mount the retained volume and,
+   on Docker, the configuration at the Gateway's paths, and use its state
+   directory and profile. On Kubernetes, copy from the saved manifest the Pod's
+   `securityContext`, `prepare-private-state` init container and volumes, and
+   the `gateway` container's mounts and `OPENCLAW_STATE_DIR`, but leave out the
+   configuration ConfigMaps: the stop deleted them and `recover-lock` does not
+   need them. Without the init container the command fails with `No safe
+   OpenClaw temp root is available`. Inspect the holders without starting a Gateway.
 
    ```sh
    node /app/openclaw.mjs gateway recover-lock --json
@@ -259,10 +262,8 @@ the few seconds this takes, then `running`; chat usually answers again within a
 minute. A plain `starting`, with no code, is a first start. A Harness that keeps
 exiting stays `HARNESS_RESTARTING` with a growing restart number while OpenShell
 backs off (up to three minutes between attempts), and the version's diagnostics
-lead with a failed `agent` `sandbox` check with that code. OpenShell reports a
-signal as 128 plus its number, such as 137 for a killed process. Read the [Sandbox
-logs](agent-logs.md#sandbox-source) for the cause. A version deployed by an older
-controller keeps the old behavior until the Agent is deployed again.
+lead with a failed `agent` `sandbox` check with that code. Read the [Sandbox
+logs](agent-logs.md#sandbox-source) for the cause.
 
 OCE does not replace a Sandbox whose Pod was deleted or evicted, or that a node
 restart stopped. The Agent stays `active` while every chat fails. `occ agent get`
@@ -274,9 +275,8 @@ failed `agent` `sandbox` check carrying the same code. Deploy the Agent again
 (`occ agent deploy AGENT_ID`): the new version gets a new Sandbox and the old one
 is removed. `unknown (UNAVAILABLE)` means OCC could not read the Sandbox record.
 
-An older development Sandbox can also fail exact-content adoption after a
-controller upgrade changes its immutable command. Deploy the Agent again;
-OCE does not rewrite the existing Sandbox command.
+If a controller upgrade changes an older development Sandbox's immutable
+command, exact-content adoption can fail; deploy the Agent again.
 
 ## Read OpenShell sandbox and supervisor logs
 
