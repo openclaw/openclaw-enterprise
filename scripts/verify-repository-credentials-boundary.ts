@@ -242,8 +242,9 @@ const reviewedImports: ReviewedModules = {
   "drivers/repo/github/access/grants.ts": { "node:crypto": ["createHash"] },
   // Hash the canonical public CA bundle for issuer trust identity.
   "drivers/repo/github/access/origin.ts": { "node:crypto": ["createHash"] },
-  // Worker only: digest of the classified request view and its exchange ID. The material
-  // value is read through the caller's authority port and only placed in the returned header.
+  // The exchange ID of each possible use the shared GitHub request decision records, and the
+  // requests port's digest of the classified view. The port reads the material value through
+  // the caller's authority and places it only in the allow it returns.
   "drivers/repo/github/access/protected-requests.ts": {
     "node:crypto": ["createHash", "randomUUID"],
   },

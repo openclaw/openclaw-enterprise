@@ -3,7 +3,7 @@ import type {
   GitHubRequestDecision,
   GitHubRequestOperation,
   GitHubRequestReasonCode,
-  GitHubRequestRefusal,
+  GitHubRequestRefusal as Refusal,
   GitHubRequestView,
   PreparedGitHubInstallationUseRequest,
   PreparedGitHubRepositoryUseRequest,
@@ -25,10 +25,15 @@ import {
 import type { InstalledGitMaterial } from "./prepared-repository-git.ts";
 import { selectGitHubRequest } from "./routes/request-selection.ts";
 
-// OCE's one decision for a protected GitHub request, shared by every sender: the bundled
-// OpenShell route calls decideGitHubRequest from its request hook; an installed Driver
-// package receives createRepositoryGitRequests(authority) from the Worker at bind time.
-// Classification is routes/request-selection.ts; the durable checks are the authority's.
+// OCE's one decision for a protected GitHub request, shared by every sender: classify it for
+// the binding, record one possible use with the authority and check the answer against this
+// exact request and material. The bundled OpenShell route calls decideGitHubRequest from its
+// request hook; an installed Driver package receives createRepositoryGitRequests(authority)
+// from the Worker at bind time. Classification is routes/request-selection.ts; the durable
+// checks are the authority's.
+
+/** The refusals decideGitHubRequest gives; the requests port adds `material_unavailable`. */
+export type GitHubRequestRefusal = Exclude<Refusal, "material_unavailable">;
 
 type Use =
   | PreparedGitHubUseRequest
@@ -69,7 +74,7 @@ export type GitHubRequestBinding =
 
 /** What the Agent is told for each refusal; binding_mismatch stays generic. */
 export const githubRequestReasonCodes: Readonly<
-  Record<GitHubRequestRefusal, GitHubRequestReasonCode | undefined>
+  Record<Refusal, GitHubRequestReasonCode | undefined>
 > = Object.freeze({
   binding_mismatch: undefined,
   request_invalid: "request_not_allowed",
@@ -152,7 +157,7 @@ type AllowedDecision =
  * execution, validates the binding and supplies a digest of the request view it will send.
  */
 export async function decideGitHubRequest<Decision extends AllowedDecision>(options: {
-  readonly request: GitHubRequestView & { readonly target: { readonly reportedScheme?: "https" } };
+  readonly request: GitHubRequestView;
   readonly binding: GitHubRequestBinding;
   readonly deadlineAt: string;
   readonly signal: AbortSignal;
@@ -171,6 +176,7 @@ export async function decideGitHubRequest<Decision extends AllowedDecision>(opti
     operation === undefined
       ? { kind: "refused", refusal }
       : { kind: "refused", refusal, operation };
+  // The caller verified TLS to the target; the classifier does not read the scheme.
   const selection = selectGitHubRequest(
     { ...request, target: { ...request.target, reportedScheme: "https" } },
     binding,
@@ -406,7 +412,7 @@ export function createRepositoryGitRequests(
     ): Promise<GitHubRequestDecision> {
       const { route, profile, authorization, request, signal } = input;
       const refuse = (
-        refusal: GitHubRequestRefusal,
+        refusal: Refusal,
         operation?: GitHubRequestOperation,
       ): GitHubRequestDecision => {
         const reasonCode = githubRequestReasonCodes[refusal];

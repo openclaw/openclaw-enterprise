@@ -3,7 +3,6 @@ import type { InstalledGitMaterial } from "../repo/github/access/prepared-reposi
 import { createHash } from "node:crypto";
 import type { Server } from "@grpc/grpc-js";
 import type {
-  GitHubRequestRefusal,
   RepositoryGitOnlineDecision,
   PreparedGitHubInstallationUseRequest,
   PreparedGitHubRepositoryUseRequest,
@@ -14,6 +13,7 @@ import {
   githubRequestReasonCodes,
   validGitHubRequestBinding,
   type GitHubRequestBinding,
+  type GitHubRequestRefusal,
 } from "../repo/github/access/protected-requests.ts";
 import {
   createOpenShellOnlineHttpAuthority,
@@ -96,8 +96,8 @@ export interface OpenShellOnlineGitRefusal {
 }
 
 /** Why the authority refused a request it could attribute to a live binding, or a request
- * whose shape it rejected before approval. The bundled route reads its own material. */
-export type OpenShellOnlineGitDenialReason = Exclude<GitHubRequestRefusal, "material_unavailable">;
+ * whose shape it rejected before approval. */
+export type OpenShellOnlineGitDenialReason = GitHubRequestRefusal;
 
 export interface OpenShellOnlineGitDenial {
   readonly reason: OpenShellOnlineGitDenialReason;
@@ -210,7 +210,7 @@ export function createOpenShellOnlineGitAuthority(
         // A supervisor that has received the allow may finish the request after withdrawal.
         return { kind: "allow", replyBy: outcome.decision.replyBy };
       }
-      return deny(outcome.refusal as OpenShellOnlineGitDenialReason, outcome.operation);
+      return deny(outcome.refusal, outcome.operation);
     },
   });
 }
