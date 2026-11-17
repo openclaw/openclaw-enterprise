@@ -7,7 +7,11 @@ import {
 import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
-import { EXITED_GATEWAY_STATE_RELEASE } from "../embedded-gateway-owner.ts";
+import {
+  EXITED_OPENCLAW_STATE_RELEASE,
+  OPENCLAW_STATE_LOCK_INSPECTION,
+  unverifiableStateLockLine,
+} from "../embedded-gateway-owner.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { compactNodeChildArguments, nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
@@ -2664,9 +2668,10 @@ ${GATEWAY_TOOL_POLICY_RUNTIME}
 ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
 ${startupPhaseHelper("gateway")}
-${openClawStateMigrationHelper("Gateway", "restart the Pod")}
+${openClawStateMigrationHelper("Gateway", "restart the Pod", { releaseExitedState: true })}
 ${OPENCLAW_CONFIG_ISSUE_HELPER}
-${EXITED_GATEWAY_STATE_RELEASE}
+${EXITED_OPENCLAW_STATE_RELEASE}
+${OPENCLAW_STATE_LOCK_INSPECTION}
 
 function nativeGatewayAnswers(path) {
   return new Promise((resolve) => {
@@ -3391,51 +3396,28 @@ function holdInvalidGatewayConfiguration(code, signal) {
 // owner lease of a Gateway this container cannot verify stopped, such as one in a force-deleted
 // Pod, is not what validate reads. OpenClaw waits up to 95 s, logs the holder and exits 1, and
 // each container restart repeats that (finding 3288). So after a Gateway that never served
-// exits 1, the wrapper runs OpenClaw's lock inspection: recover-lock without --confirm reads a
-// private snapshot and changes nothing. Holders that the exit release above left are held as
+// exits 1, the wrapper runs OpenClaw's lock inspection (OPENCLAW_STATE_LOCK_INSPECTION), which
+// changes nothing. Holders that the exit release above left are held as
 // check gateway-state-lock with the tool policy step's log line. The wrapper never recovers a
 // lock it cannot prove stopped; an operator does. A held wrapper inspects again every 5
 // minutes: once no holder remains, it restarts its container on purpose and the next start
 // takes the lock. An inspection that fails, or finds no holder, exits 1 as before.
 const GATEWAY_STATE_LOCK_RECHECK_MS = 300_000;
-// OpenClaw lists at most three lock files and then the owner lease, which the recovery steps
-// name; each holder is cut on its own so that a long one never drops the lease.
-const GATEWAY_STATE_LOCK_HOLDER_CHARS = 500;
-function gatewayStateLockHolders() {
-  const inspection = pluginSpawnSync("node", ["/app/openclaw.mjs", "gateway", "recover-lock", "--json"], {
-    env: { ...gatewayEnvironment(), OPENCLAW_CONFIG_READONLY: "1" },
-    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, maxBuffer: 1024 * 1024,
-  });
-  if (inspection.error !== undefined || inspection.status !== 0) return undefined;
-  let report;
-  try {
-    report = JSON.parse(inspection.stdout);
-  } catch {
-    return undefined;
-  }
-  if (typeof report?.present !== "boolean" || !Array.isArray(report.holders)) return undefined;
-  const holders = report.holders.filter((holder) => typeof holder === "string" && holder !== "");
-  // Only the holder descriptions: the confirmation would recover the lock without that proof.
-  return holders.length === report.holders.length && report.present === holders.length > 0
-    ? holders : undefined;
-}
 function holdGatewayStateLock(code) {
   if (runtimeStatusPort() === undefined) return false;
-  const holders = gatewayStateLockHolders();
+  const holders = openClawStateLockHolders(gatewayEnvironment());
   if (holders === undefined || holders.length === 0) return false;
   gatewayStartupHeld = true;
-  holdGatewayToolPolicyFailure(new GatewayStateLockError(
-    holders.map((holder) => holder.slice(0, GATEWAY_STATE_LOCK_HOLDER_CHARS)).join(" "),
-  ));
+  holdGatewayToolPolicyFailure(new GatewayStateLockError(holders.join(" ")));
   const recheck = setInterval(() => {
     if (gatewayTerminating) return;
     // A failed exit release (it timed out, or a foreign record made OpenClaw keep every lock)
     // would otherwise hold the child's own records for ever. This namespace still lives, so the
     // release can still prove the child dead; a retry runs at most 60 s, the inspection 30 s.
     if (exitedGatewayStateKept) {
-      exitedGatewayStateKept = !releaseExitedGatewayState(code, gatewayEnvironment());
+      exitedGatewayStateKept = !releaseExitedOpenClawState(gatewayEnvironment());
     }
-    const current = gatewayStateLockHolders();
+    const current = openClawStateLockHolders(gatewayEnvironment());
     if (current !== undefined && current.length > 0) return;
     clearInterval(recheck);
     if (current === undefined) process.exit(code);
@@ -3457,8 +3439,9 @@ function startGatewayProcess() {
     spawned.on("exit", (code, signal) => {
       if (spawned === child) {
         childRunning = false;
-        // Before the wrapper exits or starts another Gateway (finding 3257).
-        exitedGatewayStateKept = !releaseExitedGatewayState(code, gatewayEnvironment());
+        // Before the wrapper exits or starts another Gateway (finding 3257). A clean exit
+        // (status 0) released them.
+        exitedGatewayStateKept = code !== 0 && !releaseExitedOpenClawState(gatewayEnvironment());
       }
       resolve();
       if (stoppingContainer) {
@@ -4966,7 +4949,9 @@ const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
-${openClawStateMigrationHelper("Harness", "deploy the Agent again")}
+${openClawStateMigrationHelper("Harness", "deploy the Agent again", { releaseExitedState: true })}
+${EXITED_OPENCLAW_STATE_RELEASE}
+${OPENCLAW_STATE_LOCK_INSPECTION}
 // The Codex child serves this container's runtime status, and it starts only after the
 // node state is current and the workspace is initialized. A failure before then is held
 // here with the named step in the log and its check served in Codex's place.
@@ -5072,6 +5057,17 @@ function workspaceBaselineReport(path) {
   return (summary === "" ? "reported no error message" : "reported: " + summary) +
     (settings.length > 0 ? " (invalid settings: " + settings.join(", ") + ")." : ".");
 }
+// Doctor and native setup take the node state's owner lock, which every later revision's
+// Harness on the workspace claim needs. When OpenClaw refuses a holder it cannot verify
+// stopped, such as a Pod killed while it held the lock, a failed step is held as check
+// gateway-state-lock, the Gateway's, with OpenClaw's holders in the log (findings 3288,
+// 3345). The Harness never recovers a lock it cannot prove stopped; an operator does.
+function holdUnverifiableStateLock(check) {
+  const holders = openClawStateLockHolders(nodeEnv);
+  const locked = holders !== undefined && holders.length > 0;
+  if (locked) console.error(${JSON.stringify(unverifiableStateLockLine("Harness"))} + holders.join(" "));
+  holdStartupFailure(locked ? "gateway-state-lock" : check, "UNAVAILABLE");
+}
 // The node state on the Agent's workspace claim outlives runtime image upgrades.
 // Native setup and both children open it, so Doctor migrates it first, with the
 // node's environment only: no model credential reaches Doctor. A failure holds
@@ -5079,7 +5075,7 @@ function workspaceBaselineReport(path) {
 (async () => {
 const outdatedDatabases = outdatedOpenClawDatabases(state);
 if ((outdatedDatabases.length > 0 || openClawMaintenancePending(state)) && !(await migrateOpenClawState(state, outdatedDatabases, nodeEnv))) {
-  holdStartupFailure("state-migration", "UNAVAILABLE");
+  holdUnverifiableStateLock("state-migration");
   return;
 }
 // The workspace belongs to the Harness. Native setup creates missing defaults
@@ -5111,6 +5107,8 @@ try {
   closeSync(baselineResult);
   closeSync(baselineOutput);
 }
+// A setup that started and did not exit 0, such as one killed, may leave its records.
+if (!baseline.error && baseline.status !== 0) releaseExitedOpenClawState(nodeEnv);
 if (baseline.terminating) process.exit(0);
 try {
   for (const line of workspaceBaselineOutput(baselineOutputPath, true).split("\n")) {
@@ -5128,7 +5126,7 @@ if (baseline.error || baseline.status !== 0) {
       ") " + workspaceBaselineReport(baselineResultPath) +
       " Codex was not started. Fix the cause, then deploy the Agent again.",
   );
-  holdStartupFailure("workspace-baseline", "UNAVAILABLE");
+  holdUnverifiableStateLock("workspace-baseline");
   return;
 }
 logStartupPhase("workspace-baseline", baselineStartedAt);
@@ -5486,7 +5484,8 @@ ${MANAGED_INSTALL_HELPERS}
 ${MANAGED_PLUGIN_CREDENTIAL_HELPER}
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
-${openClawStateMigrationHelper("Native worker", "deploy the Agent again")}
+${openClawStateMigrationHelper("Native worker", "deploy the Agent again", { releaseExitedState: true })}
+${EXITED_OPENCLAW_STATE_RELEASE}
 
 // A held failure (the model check, or the node state migration) is served on the
 // Compute status port beside readiness, or, for a provider-owned worker (APP_TOKEN_SHA

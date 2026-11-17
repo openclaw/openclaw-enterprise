@@ -40,8 +40,8 @@ export const RUNTIME_FAILURE_CHECKS: readonly string[] = Object.freeze([
   "repository-git-route",
   // A dedicated Harness's native workspace setup (`openclaw setup --baseline`) failed (finding 2686).
   "workspace-baseline",
-  // A dedicated Gateway cannot verify that an earlier process holding its state lock stopped
-  // (finding 2864).
+  // A dedicated Gateway, or a Kubernetes Harness for its workspace node state, cannot verify
+  // that an earlier process holding its state lock stopped (findings 2864, 3345).
   "gateway-state-lock",
   // A Kubernetes Gateway exited before it served, and OpenClaw's validator reports its
   // configuration invalid, such as a plugin entry that fails its schema (finding 3043); or a

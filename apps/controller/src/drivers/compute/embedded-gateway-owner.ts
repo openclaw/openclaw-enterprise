@@ -53,30 +53,77 @@ export function embeddedGatewayRecoveryPreamble(namespace?: GatewayPidNamespace)
   return namespace ? "{\n" + recover(JSON.stringify(namespace)) + "\n}\n" : "";
 }
 
-// A runtime wrapper is its native Gateway's parent in the same PID namespace. A
-// native Gateway that exits without a clean stop leaves its records on retained
-// state: a kill, or a stop signal before OpenClaw installs its handler, which it
-// does only after it takes the state lock. A Gateway in another container, such
-// as a replacement Pod, cannot verify that holder and stays unready until an
-// operator recovers it (finding 3257). Here the wrapper has reaped that process.
-// Given this namespace, OpenClaw recovers only records written in it, and only
-// once it finds each holder PID dead here; any other holder, live or foreign,
-// keeps every lock. A clean exit (status 0) released them. It returns false when
-// OpenClaw kept the locks. Running it again for the same exit is safe while this
-// namespace lives: with nothing left it recovers nothing and succeeds.
-export const EXITED_GATEWAY_STATE_RELEASE = String.raw`
-function releaseExitedGatewayState(code, environment) {
-  if (code === 0) return true;
+// A Kubernetes runtime wrapper is the parent, in the same PID namespace, of each
+// OpenClaw process that takes a state directory's locks: the native Gateway, and
+// Doctor and native setup before it. One that exits without a clean stop leaves its
+// records on retained state: a kill, or a stop signal before OpenClaw installs its
+// handler, which it does only after it takes the state lock; Doctor's launcher kills
+// the CLI it respawns about 2 s after forwarding a stop. A process in another
+// container, such as a replacement Pod, cannot verify that holder and stays unready
+// until an operator recovers it (findings 3257, 3345). Call this once the wrapper has
+// reaped the process, with the environment it ran with. Given this namespace,
+// OpenClaw recovers only records written in it, and only once it finds each holder
+// PID dead here; any other holder, live or foreign, keeps every lock. It returns
+// false when OpenClaw kept the locks. Running it again is safe while this namespace
+// lives: with nothing left it recovers nothing and succeeds.
+export const EXITED_OPENCLAW_STATE_RELEASE = String.raw`
+function releaseExitedOpenClawState(environment) {
   let namespace;
   try { namespace = ${GATEWAY_NAMESPACE_PROBE}; } catch { return false; }
   const released = require("node:child_process").spawnSync(process.execPath,
     ["/app/openclaw.mjs", "gateway", "recover-lock", "--terminated-namespace", JSON.stringify(namespace), "--json"],
     { env: environment, stdio: ["ignore", "inherit", "inherit"], timeout: 60000 });
   if (released.status === 0) return true;
-  console.error("OpenClaw kept the Gateway state locks; see the recover-lock output above.");
+  console.error("OpenClaw kept the state locks of the process that exited; see the recover-lock output above.");
   return false;
 }
 `;
+
+// OpenClaw's lock inspection of the state directory `environment` names: recover-lock
+// without --confirm reads a private snapshot and changes nothing. Returns the holders as
+// OpenClaw describes them (holder PID, Pod and PID namespace), an empty list when no lock is
+// held, and undefined when the inspection failed or its report is malformed. OpenClaw lists
+// at most three lock files and then the owner lease, which the recovery steps name; each
+// holder is cut on its own so that a long one never drops the lease. Only the holder
+// descriptions: the confirmation would recover the lock without proof that the holder stopped.
+export const OPENCLAW_STATE_LOCK_INSPECTION = String.raw`
+const OPENCLAW_STATE_LOCK_HOLDER_CHARS = 500;
+function openClawStateLockHolders(environment) {
+  const inspection = require("node:child_process").spawnSync("node", ["/app/openclaw.mjs", "gateway", "recover-lock", "--json"], {
+    env: { ...environment, OPENCLAW_CONFIG_READONLY: "1" },
+    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, maxBuffer: 1024 * 1024,
+  });
+  if (inspection.error !== undefined || inspection.status !== 0) return undefined;
+  let report;
+  try {
+    report = JSON.parse(inspection.stdout);
+  } catch {
+    return undefined;
+  }
+  if (typeof report?.present !== "boolean" || !Array.isArray(report.holders)) return undefined;
+  const holders = report.holders.filter((holder) => typeof holder === "string" && holder !== "");
+  return holders.length === report.holders.length && report.present === holders.length > 0
+    ? holders.map((holder) => holder.slice(0, OPENCLAW_STATE_LOCK_HOLDER_CHARS)) : undefined;
+}
+`;
+
+/**
+ * The log line of a startup held on a state lock whose holder this container cannot verify
+ * stopped, up to OpenClaw's report of the holders, which follows it. The Gateway's names the
+ * Gateway state lock (finding 3288); the Harness's, the workspace node's (finding 3345).
+ */
+export function unverifiableStateLockLine(owner: "Gateway" | "Harness"): string {
+  const [holder, lock] =
+    owner === "Gateway"
+      ? ["an earlier Gateway process", "the Gateway state lock"]
+      : ["an earlier OpenClaw process", "the workspace node's state lock"];
+  return (
+    `The ${owner} cannot start: ${holder} did not stop cleanly and still holds ${lock}, and` +
+    " this container cannot verify that it stopped. It remains unready; stop the Agent and" +
+    " recover the lock as the Agent troubleshooting guide describes for an unverifiable state" +
+    " owner. OpenClaw reported: "
+  );
+}
 
 // Run this in a short-lived process. By the time the Gateway can load a plugin
 // or accept a model turn, the private key is unlinked and its process has exited.

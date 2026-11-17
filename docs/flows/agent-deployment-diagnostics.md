@@ -172,6 +172,11 @@ state after admission.
   inspects again, and restarts on purpose (exit 75) once no holder remains. A
   failed inspection, or one with no holder, exits 1 as before. Follow
   [unverifiable state owner recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
+- An `agent` `gateway-state-lock` check is a Kubernetes Harness whose Doctor or
+  native setup failed while OpenClaw's read-only inspection listed node state
+  lock holders, such as a Pod killed during Doctor. The log line quotes them;
+  recover as above. A Kubernetes wrapper first releases an exited Doctor's or
+  setup's own records (`releaseExitedOpenClawState`).
 - A dedicated Gateway held at `gateway-tool-policy` with code
   `INCOMPATIBLE_RESPONSE` can have a runtime image provenance failure.
   `apps/controller/src/drivers/compute/gateway-tool-policy.ts:requireGatewayToolPolicyRuntime`
@@ -249,6 +254,8 @@ state after admission.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-17 23:35: Release a Kubernetes Doctor's or Harness setup's own records when it did not complete, and hold a Harness step that met an unverifiable node state lock holder as `gateway-state-lock`. (fix-harness-lock-3345, finding 3345)
 
 - 2026-11-17 12:30: Hold a Kubernetes Gateway whose own start refused an unverifiable state lock owner as check `gateway-state-lock`, after a read-only lock inspection; the recheck retries a failed release of its own child's records. (fix-gateway-lock-check, finding 3288)
 

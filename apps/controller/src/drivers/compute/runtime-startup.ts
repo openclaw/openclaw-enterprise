@@ -115,10 +115,14 @@ export const OPENCLAW_STATE_DATABASE_SCHEMA_VERSION = 40;
 // the step is named
 // and the wrapper must not start OpenClaw; `retry` completes the log line's
 // remedy. The wrapper provides `spawn`, `logStartupPhase` and
-// `publishRuntimeFailure`.
+// `publishRuntimeFailure`. A Kubernetes wrapper also passes `releaseExitedState`
+// and provides `releaseExitedOpenClawState` (EXITED_OPENCLAW_STATE_RELEASE): a Doctor
+// that ends without settling, stopped with the Pod or killed, may leave the state
+// directory's owner lock, which no later Pod can verify (finding 3345).
 export function openClawStateMigrationHelper(
   owner: "Gateway" | "Harness" | "Native worker",
   retry: string,
+  { releaseExitedState = false }: { releaseExitedState?: boolean } = {},
 ): string {
   return String.raw`
 // This private presence marker survives a failed or interrupted repair even when
@@ -315,7 +319,12 @@ async function migrateOpenClawState(stateDirectory, outdated, environment) {
       " with openclaw doctor --fix.",
   );
   setOpenClawMaintenancePending(stateDirectory, true);
-  const doctor = await runStateMigrationDoctor(environment);
+  const doctor = await runStateMigrationDoctor(environment);${
+    releaseExitedState
+      ? "\n  // Before the wrapper exits or holds. A Doctor that completed released its own locks.\n" +
+        "  if (!doctor.completed) releaseExitedOpenClawState(environment);"
+      : ""
+  }
   if (doctor.terminating) process.exit(0);
   const remaining = outdatedOpenClawDatabases(stateDirectory);
   if (doctor.completed && remaining.length === 0) {

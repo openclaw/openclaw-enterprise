@@ -26,6 +26,17 @@ import {
   listener,
   workspaceNodeDirectory,
 } from "./runtime-gateway-state-migration-node-fixture.ts";
+import {
+  confirmation,
+  expectedInspection,
+  freeLock,
+  heldLock,
+  inspection,
+  keptLocks,
+  lockFileHolder,
+  lockHoldLine,
+  released,
+} from "../helpers/openclaw-state-lock.ts";
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -36,7 +47,8 @@ function harnessChild() {
   });
 }
 
-type HarnessDoctor = (child: ReturnType<typeof harnessChild>) => void;
+// `stop` delivers SIGTERM to the Harness, as the kubelet does when the Pod is deleted.
+type HarnessDoctor = (child: ReturnType<typeof harnessChild>, stop: () => void) => void;
 type HarnessChildName = "doctor" | "setup" | "node" | "codex";
 
 interface HarnessSpawnOptions extends SpawnOptions {
@@ -51,11 +63,28 @@ type SetupResult =
   | { status: number | null; signal?: NodeJS.Signals | null; error?: never }
   | { status: null; error: NodeJS.ErrnoException };
 
+type LockCommandResult = { status: number | null; stdout: string; error?: Error };
+
 interface HarnessOptions {
   env?: NodeJS.ProcessEnv;
   setup?: (options: SetupOptions) => SetupResult;
   bindError?: string;
+  // OpenClaw's read-only lock inspection, and the own-namespace release of an exited child.
+  lockInspection?: LockCommandResult;
+  exitRelease?: LockCommandResult;
 }
+
+// One OpenClaw lock command the Harness ran: the release of its own exited child's records
+// (with the namespace it named), or the read-only inspection.
+type LockCall =
+  | { kind: "release"; command: string; stateDirectory: string | undefined; namespace: unknown }
+  | {
+      kind: "inspect";
+      command: string;
+      args: readonly string[];
+      stateDirectory: string | undefined;
+      readOnly: string | undefined;
+    };
 
 function assertSetupDescriptors(options: HarnessSpawnOptions): asserts options is SetupOptions {
   assert.ok(Array.isArray(options.stdio));
@@ -75,13 +104,28 @@ function assertSetupDescriptors(options: HarnessSpawnOptions): asserts options i
 async function runHarness(
   directory: string,
   doctor: HarnessDoctor = () => assert.fail("Doctor must not run"),
-  { env = {}, setup = () => ({ status: 0 }), bindError }: HarnessOptions = {},
+  {
+    env = {},
+    setup = () => ({ status: 0 }),
+    bindError,
+    lockInspection = freeLock,
+    exitRelease = released,
+  }: HarnessOptions = {},
 ) {
   const spawned: Array<{ name: HarnessChildName; env: NodeJS.ProcessEnv }> = [];
+  const lockCalls: LockCall[] = [];
+  // Lock commands and exits in order.
+  const ends: string[] = [];
+  const stopHandlers: Array<() => void> = [];
   const errors: string[] = [];
   const servers: CapturedServer[] = [];
   const fixtureFailure = Promise.withResolvers<never>();
   let holds = 0;
+  let stopped = false;
+  const stop = () => {
+    stopped = true;
+    for (const handler of [...stopHandlers]) handler();
+  };
   const context = {
     Buffer,
     Date,
@@ -105,9 +149,18 @@ async function runHarness(
       },
       stdout: { write() {} },
       execPath: "/usr/local/bin/node",
-      on() {},
-      off() {},
-      exit: (code: number) => assert.fail(`Harness exited ${code}: ${errors.join("\n")}`),
+      on(signal: string, handler: () => void) {
+        if (signal === "SIGTERM") stopHandlers.push(handler);
+      },
+      off(signal: string, handler: () => void) {
+        const index = stopHandlers.indexOf(handler);
+        if (signal === "SIGTERM" && index >= 0) stopHandlers.splice(index, 1);
+      },
+      // Only a stop exits; the program then runs on, so tests read `ends` up to the exit.
+      exit: (code: number) => {
+        assert.ok(stopped, `Harness exited ${code}: ${errors.join("\n")}`);
+        ends.push(`exit ${code}`);
+      },
     },
     setInterval: () => {
       holds += 1;
@@ -121,6 +174,29 @@ async function runHarness(
       }
       return {
         execFile() {},
+        spawnSync(command: string, args: readonly string[], options: HarnessSpawnOptions) {
+          assert.equal(args[1], "gateway");
+          assert.equal(args[2], "recover-lock");
+          if (args[3] === "--terminated-namespace") {
+            lockCalls.push({
+              kind: "release",
+              command,
+              stateDirectory: options.env.OPENCLAW_STATE_DIR,
+              namespace: JSON.parse(String(args[4])),
+            });
+            ends.push("release");
+            return exitRelease;
+          }
+          lockCalls.push({
+            kind: "inspect",
+            command,
+            args: [...args],
+            stateDirectory: options.env.OPENCLAW_STATE_DIR,
+            readOnly: options.env.OPENCLAW_CONFIG_READONLY,
+          });
+          ends.push("inspect");
+          return lockInspection;
+        },
         spawn(_command: string, args: string[], options: HarnessSpawnOptions) {
           const child = harnessChild();
           const role = args[1];
@@ -128,7 +204,7 @@ async function runHarness(
           spawned.push({ name, env: options.env });
           if (name === "doctor") {
             void nextTurn()
-              .then(() => doctor(child))
+              .then(() => doctor(child, stop))
               .catch(fixtureFailure.reject);
           } else if (name === "setup") {
             // Setup writes its result and diagnostics while its descriptors are open.
@@ -160,7 +236,7 @@ async function runHarness(
   for (let turn = 0; turn < 100 && holds === 0 && spawned.length < 3; turn += 1) {
     await Promise.race([nextTurn(), fixtureFailure.promise]);
   }
-  return { spawned, synchronous, errors, holds, servers };
+  return { spawned, synchronous, errors, holds, servers, lockCalls, ends };
 }
 
 test("Harness starts current and fresh workspace node state without Doctor", async (t) => {
@@ -203,6 +279,8 @@ test("Harness migrates older workspace node state with the node's environment be
   assert.equal(doctor.env.OPENAI_API_KEY, undefined);
   assert.equal(codex.env.OPENAI_API_KEY, "sk-fixture-harness-model-credential");
   assert.ok(outcome.errors.some((line) => /"phase":"state-migration","outcome":"ok"/.test(line)));
+  // Doctor and setup completed and released their own locks.
+  assert.deepEqual(outcome.lockCalls, []);
 });
 
 test("Harness retries refused maintenance after schemas advance and skips it only after successful settlement", async (t) => {
@@ -474,5 +552,121 @@ test("Harness names a failed native setup that reported no message", async (t) =
       run.errors.at(-1),
       `Workspace initialization failed: openclaw setup --baseline (${outcome}) reported no error message. Codex was not started. Fix the cause, then deploy the Agent again.`,
     );
+  }
+});
+
+// A Harness Pod of the old revision that was killed while its Doctor held the node state's
+// owner lock on the workspace claim (finding 3345), as OpenClaw names it from another Pod.
+function nodeStateHolder(directory: string) {
+  return lockFileHolder(
+    `${join(directory, "node-state")}/tmp/openclaw-1000/state.0cfe46fce1a1930a.lock`,
+    34,
+    "agent-0123456789ab-556c5c9cc7-ngtm8",
+    "last renewed 107 s ago",
+  );
+}
+
+function assertReleasedOwnNamespace(call: unknown, directory: string) {
+  assert.ok(call && typeof call === "object" && "kind" in call && call.kind === "release");
+  assert.ok("command" in call && "stateDirectory" in call && "namespace" in call);
+  assert.equal(call.command, "/usr/local/bin/node");
+  assert.equal(call.stateDirectory, join(directory, "node-state"));
+  // The namespace this container runs in, read from /proc.
+  assert.ok(call.namespace && typeof call.namespace === "object");
+  assert.ok("pidNsInode" in call.namespace && /^\d+$/.test(String(call.namespace.pidNsInode)));
+}
+
+test("Harness releases the node state of a Doctor stopped with its Pod before it exits", async (t) => {
+  const directory = await workspaceNodeDirectory(t, STATE_CURRENT - 1);
+  const outcome = await runHarness(directory, (child, stop) => {
+    // OpenClaw's launcher kills the Doctor CLI it respawned about 2 s after the stop.
+    stop();
+    child.emit("close", null, "SIGKILL");
+  });
+  assert.deepEqual(
+    outcome.spawned.map(({ name }) => name),
+    ["doctor"],
+  );
+  assert.deepEqual(outcome.ends.slice(0, 2), ["release", "exit 0"]);
+  assertReleasedOwnNamespace(outcome.lockCalls[0], directory);
+});
+
+test("Harness holds a node state lock whose holder it cannot verify stopped, naming OpenClaw's holders", async (t) => {
+  // A later revision's Pod meets the lock of a Pod killed during Doctor or native setup: no
+  // process here can prove that holder stopped, so OpenClaw keeps the lock and the step fails.
+  const failedSteps: Array<[label: string, version: number | undefined, options: HarnessOptions]> =
+    [
+      ["state migration", STATE_CURRENT - 1, {}],
+      ["native setup", undefined, { setup: () => ({ status: 1, signal: null }) }],
+    ];
+  for (const [label, version, options] of failedSteps) {
+    for (const env of [COMPUTE_STATUS_ENV, PROVIDER_TRANSPORT_ENV]) {
+      await t.test(`${label} ${env === COMPUTE_STATUS_ENV ? "Compute" : "provider"}`, async (t) => {
+        const directory = await workspaceNodeDirectory(t, version);
+        const holder = nodeStateHolder(directory);
+        const outcome = await runHarness(directory, (child) => child.emit("close", 1, null), {
+          ...options,
+          env,
+          lockInspection: inspection([holder]),
+          exitRelease: keptLocks,
+        });
+        assert.equal(outcome.holds, 1);
+        assert.equal(outcome.spawned.length, 1, "neither child starts");
+        // Its own child exited without a clean end: the release runs first and finds the
+        // foreign holder, so OpenClaw keeps every lock; the read-only inspection names it.
+        assert.deepEqual(outcome.ends, ["release", "inspect"]);
+        assertReleasedOwnNamespace(outcome.lockCalls[0], directory);
+        assert.deepEqual(outcome.lockCalls[1], {
+          kind: "inspect",
+          ...expectedInspection,
+          stateDirectory: join(directory, "node-state"),
+        });
+        assert.equal(outcome.errors.at(-1), lockHoldLine(holder, "Harness"));
+        // The confirmation would recover the lock without proof that the holder stopped.
+        assert.equal(outcome.errors.join("\n").includes(confirmation), false);
+        await assertHeldFailureServed(outcome.servers, env, "gateway-state-lock");
+      });
+    }
+  }
+});
+
+test("Harness keeps the failed step's check when the inspection names no holder", async (t) => {
+  for (const [label, lockInspection] of [
+    ["a free lock", freeLock],
+    ["a failed inspection", { status: 1, stdout: "" }],
+    ["holders without a lock", inspection(["holder"], false)],
+  ] satisfies Array<[string, LockCommandResult]>) {
+    await t.test(label, async (t) => {
+      const directory = await workspaceNodeDirectory(t, STATE_CURRENT - 1);
+      const outcome = await runHarness(directory, (child) => child.emit("close", 1, null), {
+        env: COMPUTE_STATUS_ENV,
+        lockInspection,
+      });
+      assert.deepEqual(outcome.ends, ["release", "inspect"]);
+      assert.equal(
+        outcome.errors.some((line) => line.includes("state lock")),
+        false,
+      );
+      await assertHeldFailureServed(outcome.servers, COMPUTE_STATUS_ENV, "state-migration");
+    });
+  }
+});
+
+test("Harness releases a native setup that did not exit 0 and never one that did not start", async (t) => {
+  for (const [result, ends] of [
+    [{ status: null, signal: "SIGKILL" }, ["release", "inspect"]],
+    [{ status: 2, signal: null }, ["release", "inspect"]],
+    [
+      { status: null, error: Object.assign(new Error("spawn"), { code: "EACCES" }) },
+      ["inspect"],
+    ],
+    [{ status: 0, signal: null }, []],
+  ] satisfies Array<[SetupResult, string[]]>) {
+    const directory = await workspaceNodeDirectory(t);
+    const outcome = await runHarness(directory, undefined, {
+      setup: () => result,
+      lockInspection: heldLock,
+    });
+    assert.deepEqual(outcome.ends, ends, JSON.stringify(result));
   }
 });

@@ -154,10 +154,12 @@ AGENT_ID --source gateway` quotes the holder. If the holder stops cleanly, the
 Gateway restarts within 5 minutes; otherwise use the same procedure, which stops
 the Agent first.
 
-A dedicated Harness Pod that stops without a clean shutdown during native setup,
-for example on a node failure, can leave the lock in its workspace node state. Each
-later version then fails the check `workspace-baseline`, and its log says `cannot
-verify Gateway ownership`. This applies to the Harness Deployment that
+A dedicated Harness Pod killed while Doctor or native setup holds its workspace
+node state, for example on a node failure or during an upgrade, can leave the lock
+there. Each later version then fails the check `gateway-state-lock`, and `occ agent
+logs AGENT_ID --source agent` quotes the holder after `The Harness cannot start`.
+If OCE already deleted the version's Pods, only `RUNTIME_STARTUP_FAILED` remains;
+the inspection in step 2 names the holder. This applies to the Harness Deployment that
 Kubernetes Compute creates; a Harness run by a SandboxDriver has no such
 Deployment. Use the same procedure, with these changes:
 

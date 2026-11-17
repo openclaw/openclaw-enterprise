@@ -2,6 +2,18 @@ import assert from "node:assert/strict";
 import { dirname } from "node:path";
 import test from "node:test";
 import { invalidGatewayConfiguration } from "../helpers/openclaw-config-validation.ts";
+import {
+  confirmation,
+  expectedInspection,
+  freeLock,
+  heldLock,
+  inspection,
+  keptLocks,
+  leaseHolder,
+  lockFileHolder,
+  lockHoldLine,
+  released,
+} from "../helpers/openclaw-state-lock.ts";
 import { property, record, required, text } from "./plugin-compute-fixtures.ts";
 import { readReadyStatusFromHandler } from "./plugin-compute-status.ts";
 import {
@@ -12,60 +24,8 @@ import {
 
 type GatewaySupervisor = Awaited<ReturnType<typeof startCodexGatewaySupervisor>>;
 
-// What the pinned OpenClaw's `gateway recover-lock --json` prints without --confirm, as a
-// production-shaped test install printed it inside a Gateway Pod after the Gateway Pod before
-// it was force-deleted (finding 3288): the successor's own start refused that owner lease
-// after `config validate` passed.
-const recovery =
-  "Stop the holder before retrying; if it has already stopped, run `openclaw gateway" +
-  " recover-lock` to inspect and explicitly recover the unchanged owner.";
-const leaseHolder =
-  "SQLite Gateway owner lease: holder 44 at gateway-804a2e28f577-6d77574958-v8sp7/pid-ns" +
-  ` 4026536354, last renewed 452 s ago. ${recovery}`;
-// OpenClaw lists each lock file it finds before the lease, in the same shape.
-function lockFileHolder(path: string, pid = 44) {
-  return (
-    `${path}: holder ${pid} at gateway-804a2e28f577-6d77574958-v8sp7/pid-ns 4026536354,` +
-    ` last heartbeat 452 s ago. ${recovery}`
-  );
-}
-const confirmation = "10e3e307222372d1013b3d238518fc59804660f0bd41e674ba543c63f9a903c0";
-function inspection(holders: readonly string[], present = holders.length > 0) {
-  return {
-    status: 0,
-    stdout: JSON.stringify({
-      present,
-      holders,
-      confirmation,
-      command: `openclaw gateway recover-lock --confirm ${confirmation}`,
-    }),
-  };
-}
-const heldLock = inspection([leaseHolder]);
-const freeLock = inspection([]);
-// What the exited-state release prints when it recovered the records of this container's own
-// child, which it proved dead in this live PID namespace.
-const released = { status: 0, stdout: JSON.stringify({ recovered: true, removed: 1 }) };
-// What it does when one record is not attributable to this namespace: it recovers nothing.
-const keptLocks = { status: 1, stdout: "" };
 // A record the wrapper's own native Gateway wrote in this namespace before it exited.
 const ownHolder = lockFileHolder("/home/node/.openclaw/state/gateway.lock", 7);
-// The inspection the wrapper may run: never --confirm, which would recover the lock.
-const expectedInspection = {
-  command: "node",
-  args: ["/app/openclaw.mjs", "gateway", "recover-lock", "--json"],
-  readOnly: "1",
-};
-// The same line the tool policy step logs when `config validate` meets the lock first.
-// An embedded Gateway reaches the same hold, so the line names no Gateway kind.
-function lockHoldLine(reported = leaseHolder) {
-  return (
-    "The Gateway cannot start: an earlier Gateway process did not stop cleanly and still holds" +
-    " the Gateway state lock, and this container cannot verify that it stopped. It remains" +
-    " unready; stop the Agent and recover the lock as the Agent troubleshooting guide describes" +
-    ` for an unverifiable state owner. OpenClaw reported: ${reported}`
-  );
-}
 const RECHECK_MS = 300_000;
 
 // The directory of the configuration the Gateway runs with is writable here, so only the

@@ -24,6 +24,10 @@ import {
 } from "./runtime-gateway-state-migration-fixture.ts";
 
 const helper = openClawStateMigrationHelper("Gateway", "restart the Pod");
+// A Kubernetes wrapper's helper: it releases the records of a Doctor that did not complete.
+const releasingHelper = openClawStateMigrationHelper("Gateway", "restart the Pod", {
+  releaseExitedState: true,
+});
 const nodeRequire = createRequire(import.meta.url);
 
 type StopSignal = Extract<NodeJS.Signals, "SIGTERM" | "SIGINT">;
@@ -52,6 +56,7 @@ type Doctor = (
 async function migrate(
   directory: string,
   doctor: Doctor = () => assert.fail("Doctor must not run"),
+  program = helper,
 ) {
   const spawned: Array<
     Pick<Required<SpawnOptions>, "env" | "stdio"> & { command: string; args: string[] }
@@ -62,6 +67,9 @@ async function migrate(
   const stdout: string[] = [];
   const listeners: StopListeners = { SIGTERM: [], SIGINT: [] };
   const exits: number[] = [];
+  // The wrapper's own-namespace release, each exit and each published failure, in order.
+  const ends: string[] = [];
+  const releases: NodeJS.ProcessEnv[] = [];
   let holds = 0;
   const exited = new Error("process exited");
   const fixtureFailure = Promise.withResolvers<never>();
@@ -77,6 +85,7 @@ async function migrate(
       },
       exit: (code: number): never => {
         exits.push(code);
+        ends.push(`exit ${code}`);
         throw exited;
       },
     },
@@ -91,13 +100,21 @@ async function migrate(
     },
     logStartupPhase: (phase: string, _startedAt: number, outcome = "ok") =>
       phases.push({ phase, outcome }),
-    publishRuntimeFailure: (check: string, code: string) => failures.push({ check, code }),
+    publishRuntimeFailure: (check: string, code: string) => {
+      failures.push({ check, code });
+      ends.push(`failure ${check}`);
+    },
+    releaseExitedOpenClawState: (environment: NodeJS.ProcessEnv) => {
+      releases.push(environment);
+      ends.push("release");
+      return true;
+    },
     setInterval: () => {
       holds += 1;
     },
   };
   const result: unknown = vm.runInNewContext(
-    `${helper}\nconst outdated = outdatedOpenClawDatabases(process.env.OPENCLAW_STATE_DIR);\n` +
+    `${program}\nconst outdated = outdatedOpenClawDatabases(process.env.OPENCLAW_STATE_DIR);\n` +
       "outdated.length === 0 && !openClawMaintenancePending(process.env.OPENCLAW_STATE_DIR) ? Promise.resolve(true)\n" +
       "  : migrateOpenClawState(process.env.OPENCLAW_STATE_DIR, outdated, process.env);",
     context,
@@ -112,7 +129,19 @@ async function migrate(
       throw error;
     }
   }
-  return { started, spawned, phases, failures, errors, stdout, exits, holds, listeners };
+  return {
+    started,
+    spawned,
+    phases,
+    failures,
+    errors,
+    stdout,
+    exits,
+    ends,
+    releases,
+    holds,
+    listeners,
+  };
 }
 
 test("Gateway state migration skips fresh, current, uninitialized and newer databases", async (t) => {
@@ -338,4 +367,58 @@ test("Gateway state migration stops Doctor with the signal it got and exits", as
     assert.equal(restarted.spawned.length, 1);
     assert.equal(restarted.started, true);
   }
+});
+
+// A stop forwarded to Doctor reaches the CLI that OpenClaw's launcher respawns, which the
+// launcher kills about 2 s later, as does a kill or a crash: such a Doctor leaves the state
+// directory's owner lock, which a later Pod cannot verify stopped (finding 3345). A Kubernetes
+// wrapper releases its own dead child's records first; Docker keeps its recovery at start.
+test("Kubernetes state migration releases a Doctor that did not complete before it exits or holds", async (t) => {
+  const stopped: Doctor = (child, listeners) => {
+    child.on("killed", (received) => child.emit("close", null, received));
+    for (const listener of listeners.SIGTERM) {
+      listener();
+    }
+  };
+  for (const [label, doctor, ends] of [
+    ["stopped", stopped, ["release", "exit 0"]],
+    ["killed", (child) => child.emit("close", null, "SIGKILL"), ["release", "failure state-migration"]],
+    ["exited 1", (child) => child.emit("close", 1, null), ["release", "failure state-migration"]],
+    [
+      "refused maintenance",
+      (child) =>
+        finishDoctor(child, {
+          status: "error",
+          maintenanceRefusal: { kind: "deferred", reason: "coordinator-contention" },
+        }),
+      ["release", "failure state-migration"],
+    ],
+  ] satisfies Array<[label: string, doctor: Doctor, ends: string[]]>) {
+    await t.test(label, async (t) => {
+      const directory = await stateDirectory(t, { main: CURRENT - 1 });
+      const outcome = await migrate(directory, doctor, releasingHelper);
+      assert.deepEqual(outcome.ends, ends);
+      // The release names the state directory Doctor ran on.
+      assert.deepEqual(
+        outcome.releases.map((environment) => environment.OPENCLAW_STATE_DIR),
+        [directory],
+      );
+      // Docker's wrapper never runs it.
+      const docker = await migrate(await stateDirectory(t, { main: CURRENT - 1 }), doctor);
+      assert.deepEqual(docker.ends, ends.slice(1));
+      assert.deepEqual(docker.releases, []);
+    });
+  }
+  // A completed Doctor released its own locks.
+  const directory = await stateDirectory(t, { main: CURRENT - 1 });
+  const completed = await migrate(
+    directory,
+    (child) => {
+      setVersion(databasePath(directory, "main"), CURRENT);
+      finishDoctor(child);
+    },
+    releasingHelper,
+  );
+  assert.equal(completed.started, true);
+  assert.deepEqual(completed.ends, []);
 });
