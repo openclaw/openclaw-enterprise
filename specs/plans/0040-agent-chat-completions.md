@@ -150,6 +150,15 @@ nodes, ten failed nodes (including parent aggregates), and no skips.
 
 Independent review retried with the existing route and CLI 0.171.0-alpha.9.
 The helper planned two passes and failed authentication on pass 1 without a report.
+At `625a3f77d`, embedded OpenClaw passed the complete selected HTTP scenario:
+10 JSON responses, two SSE responses and two verified tool actions. This included
+the previously failing stop case, replacement, revocation, read-only denial,
+isolation, conversation separation, rotation and opt-out. Dedicated Codex then
+completed one human JSON response and tool action. Its native turn trace verified
+`danger-full-access` and `on-request`; its following SSE response contained a
+native application error. Structured native SSE diagnostics were added for the
+next retry. Service-key Codex turns remain unverified.
+
 The HTTP acceptance matrix remains incomplete.
 
 ## Manual Notes

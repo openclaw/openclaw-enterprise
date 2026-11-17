@@ -104,7 +104,30 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
       }
       interrupted = true;
     }
-    if (response.statusCode === 500) {
+    const nativeErrors: string[] = [];
+    if (response.statusCode === 500 || (body.stream === true && response.statusCode === 200)) {
+      const payloads =
+        body.stream === true
+          ? text
+              .split("\n")
+              .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+              .map((line) => line.slice(6))
+          : [text];
+      for (const payload of payloads) {
+        try {
+          const message = JSON.parse(payload)?.error?.message;
+          if (typeof message === "string") {
+            nativeErrors.push(
+              redactedQaTail(message, f.env, { lines: 3, lineChars: 600 }).join(" "),
+            );
+          }
+        } catch {
+          // Only structured native errors are diagnostic output.
+        }
+      }
+    }
+    if (response.statusCode === 500 || nativeErrors.length > 0) {
+      await f.record(`http-chat-${agent.id}-native-response-error`, { messages: nativeErrors });
       try {
         const logs = await f.api(
           "GET",
@@ -127,6 +150,7 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
     }
     return {
       status: response.statusCode,
+      nativeErrors,
       text,
       chunks,
       firstChunkAt,
@@ -310,7 +334,7 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
         .map((line) => JSON.parse(line.slice(6)));
       assert.ok(
         events.every((event) => event.error === undefined),
-        "native SSE must not report an application error",
+        `native SSE must not report an application error: ${streamed.nativeErrors.join("; ")}`,
       );
       const answer = events
         .flatMap((event) => event.choices ?? [])
