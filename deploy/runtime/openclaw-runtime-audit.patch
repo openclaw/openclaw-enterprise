@@ -436,7 +436,7 @@ index 499c995..586b46e 100644
    const { installGatewayDatabaseEngine } = await import("./server-database-engine.js");
    await installGatewayDatabaseEngine(
 diff --git a/src/gateway/worker-environments/inference-runtime.test.ts b/src/gateway/worker-environments/inference-runtime.test.ts
-index 7d6b879..075b9dd 100644
+index 7d6b879..6aeee25 100644
 --- a/src/gateway/worker-environments/inference-runtime.test.ts
 +++ b/src/gateway/worker-environments/inference-runtime.test.ts
 @@ -1,4 +1,5 @@
@@ -464,7 +464,7 @@ index 7d6b879..075b9dd 100644
  import type { AssistantMessage, AssistantMessageEvent, StreamFn } from "../../llm/types.js";
  import { createAssistantMessageEventStream } from "../../llm/utils/event-stream.js";
  import type { ProviderWrapStreamFnContext } from "../../plugins/provider-transport.types.js";
-@@ -106,6 +116,62 @@ describe("worker inference provider runtime", () => {
+@@ -106,6 +116,66 @@ describe("worker inference provider runtime", () => {
      expect(runtime.releaseRuntime).toHaveBeenCalledOnce();
    });
  
@@ -476,14 +476,18 @@ index 7d6b879..075b9dd 100644
 +    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_URL", "http://127.0.0.1:1/audit");
 +    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_TOKEN", "test-audit-token");
 +    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH", undefined);
-+    const post = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => {
++    const originalFetch = globalThis.fetch;
++    globalThis.fetch = async (_url, options) => {
 +      auditEvents.push(JSON.parse(String(options?.body)) as OpenClawRuntimeAuditEvent);
 +      return new Response(null, { status: 201 });
-+    });
++    };
 +    const rpcContext = new AsyncResource("test-dedicated-worker-rpc");
 +    try {
-+      initializeOpenClawRuntimeAudit();
-+      post.mockRestore();
++      try {
++        initializeOpenClawRuntimeAudit();
++      } finally {
++        globalThis.fetch = originalFetch;
++      }
 +      const turn = { runId: input.runId, sessionId: input.sessionId };
 +      await withOpenClawRuntimeAuditTurn(
 +        turn,
@@ -528,7 +532,7 @@ index 7d6b879..075b9dd 100644
      {
        name: "boundary rotation",
 diff --git a/src/gateway/worker-environments/worker-exec-approval.test.ts b/src/gateway/worker-environments/worker-exec-approval.test.ts
-index 242dbec..1202cfc 100644
+index 242dbec..514d3b3 100644
 --- a/src/gateway/worker-environments/worker-exec-approval.test.ts
 +++ b/src/gateway/worker-environments/worker-exec-approval.test.ts
 @@ -11,6 +11,13 @@ import { makeProviderModelFixture } from "../../agents/test-helpers/provider-mod
@@ -567,7 +571,7 @@ index 242dbec..1202cfc 100644
          signal: new AbortController().signal,
          turnSource: options.turnSource,
          transcript: () => ({
-@@ -175,8 +188,38 @@ describe.skipIf(process.platform === "win32")("worker exec approval boundary", (
+@@ -175,8 +188,42 @@ describe.skipIf(process.platform === "win32")("worker exec approval boundary", (
    }
  
    it("reviews automatic worker exec on the Gateway and executes without a loopback call", async () => {
@@ -575,15 +579,19 @@ index 242dbec..1202cfc 100644
 -    const result = await tool.execute("worker-print", { command: "/bin/echo worker-approved" });
 +    const { tool, identity } = await fixture();
 +    const auditEvents: OpenClawRuntimeAuditEvent[] = [];
-+    const post = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => {
++    const originalFetch = globalThis.fetch;
++    globalThis.fetch = async (_url, options) => {
 +      auditEvents.push(JSON.parse(String(options?.body)) as OpenClawRuntimeAuditEvent);
 +      return new Response(null, { status: 201 });
-+    });
++    };
 +    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_URL", "http://127.0.0.1:1/audit");
 +    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_TOKEN", "fixture-audit-token");
 +    vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH", undefined);
-+    initializeOpenClawRuntimeAudit();
-+    post.mockRestore();
++    try {
++      initializeOpenClawRuntimeAudit();
++    } finally {
++      globalThis.fetch = originalFetch;
++    }
 +    const turn = { sessionId: identity.sessionId!, runId: identity.runId! };
 +    const result = await withOpenClawRuntimeAuditTurn(
 +      turn,
@@ -646,7 +654,7 @@ index e2958ea..6f5fc13 100644
      transcript: () =>
        buildExecAutoReviewTranscript({ messages: manager.buildSessionContext().messages }),
 diff --git a/src/gateway/worker-environments/worker-turn-admission.test.ts b/src/gateway/worker-environments/worker-turn-admission.test.ts
-index b4be35b..c5c7269 100644
+index b4be35b..65cfe5d 100644
 --- a/src/gateway/worker-environments/worker-turn-admission.test.ts
 +++ b/src/gateway/worker-environments/worker-turn-admission.test.ts
 @@ -8,6 +8,11 @@ import { createSolidPngBuffer } from "../../../test/helpers/image-fixtures.js";
@@ -661,7 +669,7 @@ index b4be35b..c5c7269 100644
  import {
    initializeGlobalHookRunner,
    resetGlobalHookRunner,
-@@ -119,6 +124,19 @@ describe("worker-side before_agent_run admission", () => {
+@@ -119,6 +124,23 @@ describe("worker-side before_agent_run admission", () => {
              input: { text: input.prompt },
            })
          : undefined;
@@ -671,17 +679,21 @@ index b4be35b..c5c7269 100644
 +        vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_URL", "http://127.0.0.1:1/audit");
 +        vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_TOKEN", "fixture-audit-token");
 +        vi.stubEnv("OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH", undefined);
-+        const post = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => {
++        const originalFetch = globalThis.fetch;
++        globalThis.fetch = async (_url, options) => {
 +          auditEvents.push(JSON.parse(String(options?.body)) as OpenClawRuntimeAuditEvent);
 +          return new Response(null, { status: 201 });
-+        });
-+        initializeOpenClawRuntimeAudit();
-+        post.mockRestore();
++        };
++        try {
++          initializeOpenClawRuntimeAudit();
++        } finally {
++          globalThis.fetch = originalFetch;
++        }
 +      }
        let messagesAtGate: unknown[] | undefined;
        const handler = vi.fn(async (event: PluginHookBeforeAgentRunEvent) => {
          // Both Gateway persistence owners must wait for the policy decision.
-@@ -156,6 +174,12 @@ describe("worker-side before_agent_run admission", () => {
+@@ -156,6 +178,12 @@ describe("worker-side before_agent_run admission", () => {
        let promptForWorker: string | undefined;
        const stream = vi.fn<Parameters<typeof runWorkerEmbeddedTurn>[0]["inference"]["stream"]>(
          ({ context }) => {
@@ -694,7 +706,7 @@ index b4be35b..c5c7269 100644
            expect(
              context.messages.flatMap((message) =>
                Array.isArray(message.content)
-@@ -273,15 +297,23 @@ describe("worker-side before_agent_run admission", () => {
+@@ -273,15 +301,23 @@ describe("worker-side before_agent_run admission", () => {
          },
        );
        try {
@@ -727,7 +739,7 @@ index b4be35b..c5c7269 100644
          if (block) {
            const result = await execution;
            expect(result.meta.error?.kind).toBe("hook_block");
-@@ -300,6 +332,24 @@ describe("worker-side before_agent_run admission", () => {
+@@ -300,6 +336,24 @@ describe("worker-side before_agent_run admission", () => {
          } else {
            await expect(execution).rejects.toThrow(observedModel.message);
            expect(stream).toHaveBeenCalledOnce();

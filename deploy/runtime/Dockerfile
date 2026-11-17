@@ -259,7 +259,7 @@ RUN echo '2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899  /tmp
 
 # Record runtime audit observations at the OpenClaw and Codex Gateway owners.
 COPY deploy/runtime/openclaw-runtime-audit.patch /tmp/openclaw-runtime-audit.patch
-RUN echo '20f9f3fca4c660ec9a3ebc21073f07795b58b55a8cf72d5ab9e75ef64e307ce3  /tmp/openclaw-runtime-audit.patch' | sha256sum --check --strict \
+RUN echo 'af75310ee1b32d0f5007b602b4c2936cdf4f9c3c917f766fb8a7134c70e21b7c  /tmp/openclaw-runtime-audit.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-runtime-audit.patch
 
 COPY deploy/runtime/openclaw-codex-runtime-audit.patch /tmp/openclaw-codex-runtime-audit.patch
@@ -327,6 +327,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/gateway/server.chat-main-session-narrow.test.ts \
     src/gateway/server-methods/sessions-lifecycle-dormant.test.ts src/infra/openclaw-runtime-audit.test.ts \
     src/gateway/worker-environments/inference-runtime.test.ts \
+    src/gateway/worker-environments/worker-exec-approval.test.ts \
     src/gateway/worker-environments/worker-turn-admission.test.ts \
     extensions/codex/src/app-server/run-attempt-runtime-audit.test.ts \
     extensions/codex/src/app-server/thread-lifecycle.test.ts \
