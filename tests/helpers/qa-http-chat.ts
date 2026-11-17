@@ -4,6 +4,7 @@ import { request as httpRequest } from "node:http";
 import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
 import { createConsoleFixtureTransport } from "./console-fixture-transport.ts";
 import { parseNativeRolloutProvenance } from "./native-rollout-provenance.ts";
+import { runQaHttpChatWithCleanup } from "./qa-http-chat-cleanup.ts";
 import { verifyQaHttpChatIsolation } from "./qa-http-chat-isolation.ts";
 import { redactedQaTail, registerQaSecret } from "./qa-secrets.ts";
 import { createQaAgent, type createQaInstallation } from "./qa-installation.mjs";
@@ -183,7 +184,7 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
     evidence.completedJsonResponses += 1;
     return String(json.choices[0].message.content);
   };
-  try {
+  const verify = async () => {
     await verifyQaHttpChatIsolation(f, agent);
     const reader = await f.api("POST", `${base}/iam/service-principals`, {});
     const readRole = await f.api("POST", `${base}/iam/roles`, {
@@ -543,16 +544,18 @@ export async function verifyQaHttpChat(f: Fixture, agent: Agent): Promise<void> 
     assert.equal((await send(rotated, message("Do not execute this request."))).status, 503);
     await f.api("POST", `${base}/agents/${agent.id}/stop`);
     assert.equal((await send(rotated, message("Do not execute this request."))).status, 503);
-  } finally {
-    await f.record(`http-chat-${agent.id}-outcomes`, {
-      ...evidence,
-      preset: agent.preset,
-      verificationMode: process.env.OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE || "workspace-write",
-      // These count HTTP completions, not internal provider calls or automatic retries.
-      providerCallCount: "unobserved",
-    });
-    for (const id of issuedKeys) {
-      await f.api("DELETE", `/api/auth/service-keys/${id}`);
-    }
-  }
+  };
+  await runQaHttpChatWithCleanup({
+    verify,
+    record: () =>
+      f.record(`http-chat-${agent.id}-outcomes`, {
+        ...evidence,
+        preset: agent.preset,
+        verificationMode: process.env.OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE || "workspace-write",
+        // These count HTTP completions, not internal provider calls or automatic retries.
+        providerCallCount: "unobserved",
+      }),
+    cleanupHandles: issuedKeys,
+    dispose: (id) => f.api("DELETE", `/api/auth/service-keys/${id}`),
+  });
 }
