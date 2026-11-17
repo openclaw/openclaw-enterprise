@@ -95,8 +95,8 @@ async function timeStartupPhase(phase, run) {
  * a released Gateway and a released workspace node fail when a pin moves either;
  * update them with the pin.
  */
-export const OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION = 40;
-export const OPENCLAW_STATE_DATABASE_SCHEMA_VERSION = 39;
+export const OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION = 42;
+export const OPENCLAW_STATE_DATABASE_SCHEMA_VERSION = 40;
 
 // A Gateway and a dedicated Harness's workspace node keep OpenClaw state across
 // runtime image upgrades. OpenClaw refuses an older agent database (exit 78) and

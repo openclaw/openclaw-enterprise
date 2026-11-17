@@ -314,12 +314,14 @@ export function uncleanStopRestartTest(recovery: Recovery, title: string): void 
       // The restart did inspect the unreleased database in the background
       // after its listener bound: the window this readiness must cover.
       assert.match(restarted.snapshot.output, /previous release not observed/);
-      // The full integrity gate, which runs when the restart cannot prove from
-      // its own PID namespace that the killed owner is dead. OpenClaw logs this
-      // line only with that refusal's cause, which depends on whether the
-      // restart got the owner's PID; a dead owner in the same namespace gets
-      // the deferred check instead and no such line.
-      assert.match(restarted.snapshot.output, /integrityGateReason=stale-lease-full because=[a-z]/);
+      // The deferred integrity gate: the restart cannot prove from its own PID
+      // namespace that the killed owner is dead, so admission starts with the
+      // clean-close seal unproven and the gate settles in the background after
+      // the listener binds. The stale lease line above carries the refusal cause.
+      assert.match(
+        restarted.snapshot.output,
+        /agent database integrity gate for [a-z-]+: reason=[a-z-]+, mode=deferred, outcome=pending/,
+      );
       assert.match(restarted.snapshot.output, /recovered after background inspection/);
       if (gatewayManagedMode) {
         // The launcher sets these only on its native Gateway child, including after a restart.
