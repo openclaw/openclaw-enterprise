@@ -501,6 +501,7 @@ export async function migrateWithHistory(
             throw new AggregateError(
               [error, rollbackError],
               "Historical migration rollback failed.",
+              { cause: rollbackError },
             );
           }
           throw error;

@@ -2492,8 +2492,9 @@ test(
         assert.equal(before.receipts.length, 81);
         assert.deepEqual(
           await runHistoryMigration(db, "development", undefined, undefined, (error) => {
-            assert.equal(error.code, "23514");
-            assert.equal(error.constraint, "agent_revisions_execution_admission");
+            const failure = error?.cause ?? error;
+            assert.equal(failure?.code, "23514");
+            assert.equal(failure?.constraint, "agent_revisions_execution_admission");
           }),
           { ok: false, code: "MIGRATION_FAILED" },
         );
