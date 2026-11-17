@@ -49,7 +49,7 @@ Current behavior is documented in the [Agent plugins reference](../../docs/refer
    - Remove the hardcoded `openai-curated` catalog, `catalogSource` selector, controller-side reader, and its `codexExecutable`, `codexHome`, and `requestTimeoutMs` settings. The Codex Driver configuration becomes `{}`. Preserve native `openai-curated-remote` IDs and Harness installation.
    - Update production profiles, quickstarts, upgrade checks, Console fixtures, and current documentation. Ensure OCC can reach the hosted catalog. Verify account-specific discovery with valid authentication, rejection of missing or invalid credentials and obsolete settings, and native installation on the Harness.
    - Audit the unused shared `PluginDriver.listCatalog(context)` contract separately; remove it only through a reviewed contract change that updates all implementations.
-   - **Status:** Not done; independent of steps 1–7. This RFC proposes the Codex Driver configuration change.
+   - **Status:** Draft PR [#6375](https://github.com/openclaw/openclaw-enterprise/pull/6375); independent of steps 1–7. The shared contract audit and live native-install qualification remain open.
 
 ## Acceptance gates
 
