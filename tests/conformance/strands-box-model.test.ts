@@ -782,17 +782,18 @@ async function registerModelKey(
   namespaceId: string,
   sourceId: string,
   signal: AbortSignal,
+  route = MODEL_ROUTE,
 ) {
   const key = testModelKey();
   await gateway.registerSource(
     {
       namespace: { ...namespace, id: namespaceId },
-      source: source({ id: sourceId, namespaceId }),
+      source: source({ id: sourceId, namespaceId, config: { authorized_base_url: route } }),
       signal,
     },
     {
       type: MODEL_SOURCE_TYPE,
-      config: { authorized_base_url: MODEL_ROUTE },
+      config: { authorized_base_url: route },
       secrets: { api_key: key },
     },
   );
@@ -1021,7 +1022,10 @@ test(
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     const readsDuring = kube.calls.length;
-    assert.equal(await f.proxy.removeRevision!({ ...f.context, revision: f.revision } as never), true);
+    assert.equal(
+      await f.proxy.removeRevision!({ ...f.context, revision: f.revision } as never),
+      true,
+    );
     f.state.observeHold = undefined;
     resume();
     assert.deepEqual(await during, { refusal: "route_not_ready" });
@@ -1233,9 +1237,12 @@ test(
     ]) {
       // The host refuses them at load (the Driver's same refusals: strands-box-driver.test.ts).
       // The URL parser's own normalisation of dot segments changes the spelling, refused too.
-      assert.throws(() => parseRoute({ url: spelling, address: "10.0.0.9" }, "controlled-inference"), {
-        message: "invalid_fixed_egress",
-      });
+      assert.throws(
+        () => parseRoute({ url: spelling, address: "10.0.0.9" }, "controlled-inference"),
+        {
+          message: "invalid_fixed_egress",
+        },
+      );
     }
     const parsed = parseRoute({ url: route, address: "10.0.0.9" }, "controlled-inference");
     // Box's policy: exactly one request rule for the route, POST and the exact full path.
@@ -1243,7 +1250,10 @@ test(
       .split("\n")
       .filter((line) => line.includes("context.input.path"));
     assert.equal(rules.length, 1);
-    assert.match(rules[0]!, /context\.input\.method == "POST" && context\.input\.path == "\/openai\/v1\/responses" &&/);
+    assert.match(
+      rules[0]!,
+      /context\.input\.method == "POST" && context\.input\.path == "\/openai\/v1\/responses" &&/,
+    );
     // Box's credential route names the same full path, never the bare prefix or /v1.
     const tables = modelCredentials(parsed, {
       socket: "/run/oce-box/revision/source/model.sock",
@@ -1275,7 +1285,11 @@ test(
     await relay.listenModel(socket, { host: "10.0.0.9", port: 8444, path }, () => false);
     t.after(() => relay.close());
     for (const sibling of siblings) {
-      const reply = await askSource(socket, bearer, boxModelRequest(requestId(), { path: sibling }));
+      const reply = await askSource(
+        socket,
+        bearer,
+        boxModelRequest(requestId(), { path: sibling }),
+      );
       assert.equal(reply.body?.refusal, "route_unsupported", sibling);
     }
     assert.deepEqual(await relay.collect(0, AbortSignal.timeout(5_000)), []);
@@ -1286,7 +1300,7 @@ test(
     const signal = AbortSignal.timeout(80_000);
     const { binding } = await activateStageB(f, signal);
     t.after(() => binding.close());
-    const key = await registerModelKey(f.gateway!, namespace.id, MODEL_SOURCE_ID, signal);
+    const key = await registerModelKey(f.gateway!, namespace.id, MODEL_SOURCE_ID, signal, route);
     const ask = (target: string) =>
       ({
         kind: "model",
