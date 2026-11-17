@@ -52,6 +52,7 @@ import {
   canonical,
   harnessModelView,
   readModelRevocation,
+  releasedRuntimeManifest,
   confirmControlledInference,
   digest,
   observedView,
@@ -482,6 +483,64 @@ test(
     }
   },
 );
+
+test("a protected run's Harness gets its runtime manifest without the enrollment the host consumes", () => {
+  const execution = {
+    installationId: "installation",
+    namespaceId: "ns_one",
+    agentId: "agt_one",
+    servicePrincipalId: "sp_one",
+    revisionId: "rev_one",
+    executionId: "compute-execution",
+  };
+  const plan = {
+    id: "plan_one",
+    generation: 2,
+    execution,
+    repositoryGitAuthorization: "online-request",
+  };
+  const manifest = {
+    kind: "codex",
+    selections: { plugins: [] },
+    egressEnrollment: {
+      plan: { id: "plan_one", generation: 2 },
+      execution,
+      inference: "credential_source",
+      routeCount: 1,
+      repositoryGitAuthorization: "online-request",
+    },
+    providerTools: "none",
+    modelEndpoint: {
+      modelProvider: "openai-compatible",
+      baseUrl: "https://model.example.test:8444/v1",
+    },
+  };
+  const released = JSON.parse(releasedRuntimeManifest(JSON.stringify(manifest), plan)) as Record<
+    string,
+    unknown
+  >;
+  const { egressEnrollment: _consumed, ...rest } = manifest;
+  assert.deepEqual(released, rest);
+  const refused = { message: "unadmitted_enrollment_manifest" };
+  for (const enrollment of [
+    { ...manifest.egressEnrollment, plan: { id: "plan_other", generation: 2 } },
+    { ...manifest.egressEnrollment, plan: { id: "plan_one", generation: 3 } },
+    { ...manifest.egressEnrollment, execution: { ...execution, executionId: "other" } },
+    { ...manifest.egressEnrollment, repositoryGitAuthorization: "request-hook-observed" },
+  ]) {
+    assert.throws(
+      () =>
+        releasedRuntimeManifest(
+          JSON.stringify({ ...manifest, egressEnrollment: enrollment }),
+          plan,
+        ),
+      refused,
+    );
+  }
+  assert.throws(() => releasedRuntimeManifest(JSON.stringify(rest), plan), {
+    message: "invalid_object",
+  });
+});
 
 test("the file-only mode splits the protected Codex program into its own child, byte for byte", () => {
   // A protected Codex whose model comes from a credential source: Compute renders the protected
