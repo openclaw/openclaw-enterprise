@@ -126,8 +126,9 @@ saves the claim and `controller_work.claimed` record together. The worker starts
 after commit. An insert failure leaves work queued. Each attempt has a new ID,
 even when the count repeats. The lease token stays in the queue.
 
-`health()` queries work, calls `onHealthy`, and emits
-`worker.health`. Serialized `HEALTH_UNAVAILABLE` failures consume no retries.
+`health()` queries work, checks broker admission readiness, calls `onHealthy`,
+and emits `worker.health`. A failure logs `HEALTH_UNAVAILABLE` with the failed
+step; only the first check after start warns. Serialized failures consume no retries.
 
 `onProgress` marks pass start and renewal. Probes restart stalled workers. See
 [worker settings](../reference/settings/operations.md#controller-worker-environment).
