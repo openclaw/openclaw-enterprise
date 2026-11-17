@@ -216,6 +216,20 @@ entries use the same four fields.
 - **Upstream status:** an OCE question: a Worker-side read of OCE's own Secret
   would remove the copy.
 
+## The API can read the package's model key Secrets back
+
+- **Symptom:** the [Role](model-gateway-rbac.yaml) gives the API `get` on
+  Secrets in `modelGateway.secretNamespace`, so the API process can read every
+  stored model key, not only write it.
+- **Cause:** the API reports a source's state (`sourceStatus`, behind OCE's
+  credential source reads) from the Secret, and it checks the owner annotations
+  and the `resourceVersion` before it replaces or removes a Secret. Kubernetes
+  has no verb that answers those without returning the value.
+- **Workaround:** none needed beyond the Role: the API already reads the value
+  from OCE's own Secret store when it registers or rotates a source, so `get`
+  here adds no new reader. Keep the namespace for these Secrets only.
+- **Upstream status:** an OCE question, the same as the stored copy above.
+
 ## Code that escapes Box can use the model key too
 
 - **Symptom:** the [shared-kernel gap](#boxs-trusted-process-shares-a-kernel-with-the-workload)
