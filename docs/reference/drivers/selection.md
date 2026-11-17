@@ -5,7 +5,7 @@
 Select Drivers in the Installation configuration to choose where OCC stores
 configuration, authorizes operations, and runs Agents. Only the Installation
 operator can select Drivers, add controller dependencies, or publish controller
-images; individual Agents cannot choose their own implementations.
+images; individual Agents cannot choose implementations.
 
 ## Choose a bundled Driver
 
@@ -16,7 +16,7 @@ images; individual Agents cannot choose their own implementations.
    If you need embedded OpenClaw on existing Linux hosts with credentials
    supplied on those hosts, start with [SSH Compute](ssh-compute.md) instead.
 2. Select the required Configuration, IAM, Compute, and Secret implementations.
-   The table below lists each capability and its allowed choices. Omit optional
+   The table lists each capability and its allowed choices. Omit optional
    Sandbox, Credential Gateway, ServiceAccount, Plugin, and Repo selections
    unless you need them.
 3. Set `OCC_CONFIG_PATH` to the absolute path of that trusted YAML and select
@@ -105,7 +105,8 @@ recipient before release.
 | v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.                                                                                                        |
 
 Observed OpenShell Git routes keep their launch acknowledgment through rotation and
-reopen only when the model provider observation matches the new shared environment.
+reopen only when the model provider observation matches the new shared environment;
+stale or incomplete observations leave the route pending.
 
 A lost authorization reply records possible use. Do not retry the exchange.
 Stock OpenShell lacks v7 qualification. For isolation and release requirements,
@@ -243,7 +244,7 @@ metadata alone, before any package code runs; neither the file's contents nor
 Node's `--no-experimental-detect-module` flag changes it. Accepting detected
 ESM would tie startup to Node's detection heuristic, which has changed between
 releases, and the only way to read a detected format without running the file
-is Node's process-lifetime module hooks. Node itself treats the shape as a
+is Node's process-lifetime module hooks. Node treats the shape as a
 mistake: outside `node_modules` it warns about such a file and asks for
 `"type": "module"`. To fix a refusal, add `"type": "module"` to the
 `package.json` it names, or rename the entry to `.mjs`.
@@ -334,7 +335,7 @@ drivers:
         mode: inCluster
 ```
 
-Include the existing required `occ` settings and use the
+Include the required `occ` settings and use the
 [complete production Installation example](../../guides/deploy/production-installation.md#configure-the-installation)
 as the baseline for the selected Drivers. Each Driver owns its closed
 configuration schema; bundled Kubernetes settings apply only when that bundled
