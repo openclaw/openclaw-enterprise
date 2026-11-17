@@ -405,7 +405,7 @@ test(
     // Exactly one bounded request per connection: no upgrade, no chunked or oversized body, no
     // keep-alive, and nothing pipelined after it.
     const get = `GET ${ENROLLMENT_PATH} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${token}`;
-    const post = (length: number, extra = "") =>
+    const rawPost = (length: number, extra = "") =>
       `POST ${ENROLLMENT_PATH} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${token}` +
       `\r\nContent-Type: application/json${extra}\r\nContent-Length: ${length}\r\n\r\n` +
       "{".repeat(Math.min(length, 5_000));
@@ -414,8 +414,8 @@ test(
       ["keep-alive", `${get}\r\nConnection: keep-alive\r\n\r\n`],
       ["chunked", `${get}\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n`],
       ["GET body", `${get}\r\nContent-Length: 2\r\n\r\n{}`],
-      ["oversized body", post(4_097)],
-      ["expect", post(2, "\r\nExpect: 100-continue")],
+      ["oversized body", rawPost(4_097)],
+      ["expect", rawPost(2, "\r\nExpect: 100-continue")],
       ["pipelined", `${get}\r\n\r\n${get}\r\n\r\n`],
       ["oversized head", `${get}\r\nX-Fill: ${"a".repeat(5_000)}\r\n\r\n`],
     ] as const) {
