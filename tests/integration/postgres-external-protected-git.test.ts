@@ -1611,7 +1611,13 @@ function externalGitJourney(
           origin.trace.filter(
             (entry) => entry.method === "POST" && entry.path.endsWith("/git-receive-pack"),
           ).length;
-        const draft = (base: string) =>
+        // Draft POSTs at provider ingress, recorded before token validation.
+        const draftPosts = () =>
+          gh.trace.filter(
+            (entry) =>
+              entry.method === "POST" && entry.target === "/repos/" + origin.repository + "/pulls",
+          ).length;
+        const draft = (base: string, fields: Record<string, unknown> = { draft: true }) =>
           new Promise<{ status: number; data: Record<string, unknown> }>((resolve, reject) => {
             request(
               peer.apiUrl,
@@ -1638,7 +1644,7 @@ function externalGitJourney(
               },
             )
               .once("error", reject)
-              .end(JSON.stringify({ title: "Review", head: "review", base, draft: true }));
+              .end(JSON.stringify({ title: "Review", head: "review", base, ...fields }));
           });
         const outcomes = (from: number) =>
           peer.decisions.slice(from).map(({ operation, decision }) => {
@@ -1689,6 +1695,12 @@ function externalGitJourney(
         );
         assert.equal((await draft("elsewhere")).status, 403, "only the granted base");
         assert.equal(pulls.size, 0, "a refused draft never reaches the provider");
+        // A regular pull request is refused by the sender before OCC or the provider sees it.
+        for (const regular of [{}, { draft: false }]) {
+          assert.equal((await draft("main", regular)).status, 403, "only a draft");
+        }
+        assert.equal(draftPosts(), 0, "no refused pull request reaches provider ingress");
+        assert.equal(outcomes(start).length, 5, "the sender asks OCC only for a draft");
         const created = await draft("main");
         assert.equal(created.status, 201);
         assert.equal(created.data.draft, true);
@@ -1698,6 +1710,7 @@ function externalGitJourney(
         );
         assert.equal((await draft("main")).status, 403, "the grant allows one draft");
         assert.equal(pulls.size, 1, "the second draft never reaches the provider");
+        assert.equal(draftPosts(), 1, "only the allowed draft reaches provider ingress");
         assert.deepEqual(outcomes(start), [
           ["advertise-receive-pack", "allow"],
           ["receive-pack", "allow"],
@@ -1773,6 +1786,7 @@ function externalGitJourney(
         const writeTraffic = () => ({
           git: traffic(),
           pulls: pulls.size,
+          draftPosts: draftPosts(),
           issues: gh.issuesOfTokens.length,
         });
         const before = writeTraffic();
@@ -1791,9 +1805,13 @@ function externalGitJourney(
         assert.notEqual(deniedPush.code, 0);
         assert.equal((await draft("main")).status, 403);
         assert.deepEqual(writeTraffic(), before, "no Git, API or issuance after withdrawal");
+        // OCC refuses each request itself: the sender asked for fetch, push and draft in turn.
         const refusals = outcomes(decisions);
-        assert.deepEqual(refusals[0], ["advertise-upload-pack", "access_withdrawn"]);
-        assert.ok(refusals.every(([, outcome]) => outcome === "access_withdrawn"));
+        assert.deepEqual(refusals, [
+          ["advertise-upload-pack", "access_withdrawn"],
+          ["advertise-receive-pack", "access_withdrawn"],
+          ["create-draft-pull", "access_withdrawn"],
+        ]);
         await nextMaintenancePass(f, revision, completions);
         assertNoPreparationAfterWithdrawal();
         assert.deepEqual(writeTraffic(), before, "maintenance after withdrawal prepares nothing");

@@ -673,17 +673,29 @@ export function createDriver(options: {
           let pushRef = broad ? undefined : m.pushRef;
           let pull: PreparedGitHubPullScope | undefined;
           if (api && !broad) {
-            let fields: { head?: unknown; base?: unknown } = {};
+            let fields: Record<string, unknown> = {};
             try {
-              fields = JSON.parse(body.toString("utf8")) as typeof fields;
+              const parsed: unknown = JSON.parse(body.toString("utf8"));
+              if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                fields = parsed as typeof fields;
+              }
             } catch {
               // Refused below.
             }
-            const { head, base } = fields ?? {};
+            // OCE's own draft path accepts only these fields, and only a draft; anything else is
+            // refused here, before OCC spends the allowance or the provider sees it.
+            const { title, head, base, body: text = "", draft } = fields;
             if (
               method !== "POST" ||
               path !== "/repos/" + m.repository + "/pulls" ||
               req.headers["content-type"] !== "application/json" ||
+              Object.keys(fields).some(
+                (key) => !["title", "head", "base", "body", "draft"].includes(key),
+              ) ||
+              draft !== true ||
+              typeof title !== "string" ||
+              !title.trim() ||
+              typeof text !== "string" ||
               typeof head !== "string" ||
               typeof base !== "string"
             ) {

@@ -36,8 +36,9 @@ the installed external Driver, workload, placement and GitHub API are fixtures.
 The `git-write` journey admits one repository grant with a single draft pull request
 for online authorization. The installed sender pushes the granted ref; OCC refuses
 another ref before any pack reaches the origin, refuses a wrong base, accepts one
-draft and refuses a second. After withdrawal every fresh fetch, push and draft is
-refused with no origin, provider or issuance traffic. The case reads OCC's use
+draft and refuses a second. The sender refuses a non-draft pull request before asking
+OCC. After withdrawal OCC refuses each fresh fetch, push and draft, with no origin,
+provider or issuance traffic. The case reads OCC's use
 rows, the spent draft allowance and the delivery record.
 
 The default file-based GitHub policy case signs in a persisted account through Fastify,
