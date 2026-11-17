@@ -1758,6 +1758,7 @@ export function createAgentDetailScenarios({
           "Fold Deployment details and Tab to Refresh deployment. About five seconds after v7 appears, the quiet poll starts. The button stays enabled and focused.",
           "Press Enter while that poll is pending. The button becomes busy and keeps focus. When the refresh discovers v8 and replaces the panel, its Refresh deployment button keeps focus in the same position.",
           "Wait for the v8 retry notice. Refresh deployment is enabled again and remains focused. Reset the story to repeat.",
+          "Reset and repeat the refresh. While it is pending, press Shift+Tab to focus Deployment details. When the v8 retry notice appears, Enter folds the focused disclosure and Space reopens it.",
         ],
         gap: "Storybook simulates the version list and the failed deployment read. The Controller browser regression covers the real version discovery and read failure.",
       },

@@ -69,7 +69,7 @@ ALTER TABLE occ.agent_revisions
     AND (admitted_spec #>> '{harness,mode}') IN ('embedded', 'dedicated')
     AND jsonb_typeof(admitted_spec->'compute') = 'object'
     AND ((admitted_spec->'compute') ?& ARRAY['id', 'implementation'])
-    AND ((admitted_spec->'compute') - 'id' - 'implementation' - 'admission' - 'serviceAccess') = '{}'::jsonb
+    AND ((admitted_spec->'compute') - 'id' - 'implementation' - 'admission' - 'runtimeInputs' - 'serviceAccess') = '{}'::jsonb
     AND jsonb_typeof(admitted_spec #> '{compute,id}') = 'string'
     AND COALESCE(btrim(admitted_spec #>> '{compute,id}'), '') <> ''
     AND jsonb_typeof(admitted_spec #> '{compute,implementation}') = 'string'
@@ -79,6 +79,12 @@ ALTER TABLE occ.agent_revisions
       OR (jsonb_typeof(admitted_spec #> '{compute,admission}') = 'string'
           AND char_length(admitted_spec #>> '{compute,admission}') BETWEEN 1 AND 1024
           AND (admitted_spec #>> '{compute,admission}') ~ '^[ -~]+$')
+    )
+    AND (
+      NOT ((admitted_spec->'compute') ? 'runtimeInputs')
+      OR (jsonb_typeof(admitted_spec #> '{compute,runtimeInputs}') = 'string'
+          AND char_length(admitted_spec #>> '{compute,runtimeInputs}') BETWEEN 1 AND 4096
+          AND (admitted_spec #>> '{compute,runtimeInputs}') ~ '^[ -~]+$')
     )
     AND (
       NOT (admitted_spec ? 'sandbox_driver_id')

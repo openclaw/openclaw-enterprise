@@ -42,6 +42,7 @@ kind: reference/driver
   - [`validateExecutionAdmission`](#method-validate-execution-admission)
   - [`admitServiceAccess`](#method-admit-service-access)
   - [`admitRevision`](#method-admit-revision)
+  - [`snapshotRuntimeInputs`](#method-snapshot-runtime-inputs)
   - [`activateRevision`](#method-activate-revision)
   - [`deactivateRevision`](#method-deactivate-revision)
   - [`requiresStoppedPredecessors`](#method-requires-stopped-predecessors)
@@ -121,7 +122,8 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 | <a id="method-validate-repository-credentials"></a>`validateRepositoryCredentials`                                   | Optional    | Check repository bindings against the requested Harness and Sandbox. OCC refuses bindings if it cannot validate them.                                                                                                                                                                                                                                     |
 | <a id="method-validate-execution-admission"></a>`validateExecutionAdmission`                                         | Optional    | Check whether Compute supports the requested execution at admission and again before release. Without it the platform admits ordinary unprotected execution only.                                                                                                                                                                                         |
 | <a id="method-admit-service-access"></a>`admitServiceAccess`                                                         | Optional    | [Select and freeze services](compute-admission.md#service-admission) using OCC runtime identity.                                                                                                                                                                                                                                                          |
-| <a id="method-admit-revision"></a>`admitRevision`                                                                    | Optional    | Return revision admission data; omission stores none.                                                                                                                                                                                                                                                                                                     |
+| <a id="method-admit-revision"></a>`admitRevision`                                                                    | Optional    | Return Driver-owned revision admission data; omission stores none.                                                                                                                                                                                                                                                                                        |
+| <a id="method-snapshot-runtime-inputs"></a>`snapshotRuntimeInputs`                                                   | Optional    | Capture bounded private launch inputs after admission; omission preserves legacy behavior. These facts are not execution authority.                                                                                                                                                                                                                       |
 | <a id="method-activate-revision"></a>`activateRevision`, <a id="method-deactivate-revision"></a>`deactivateRevision` | Optional    | Switch traffic to a ready revision or withdraw an unpublished candidate. Production startup checks for both. A Driver selecting `beforeCommit` must also implement activation in development.                                                                                                                                                             |
 | <a id="method-requires-stopped-predecessors"></a>`requiresStoppedPredecessors`                                       | Optional    | Return `true` to stop older revisions before preparing a replacement. Otherwise the previous route can serve during preparation.                                                                                                                                                                                                                          |
 | <a id="method-describe-prepare-revision-failure"></a>`describePrepareRevisionFailure`                                | Optional    | Supply safe diagnostic fields for a rejected preparation. The worker validates the fields and excludes raw provider errors.                                                                                                                                                                                                                               |
@@ -289,11 +291,9 @@ and `REPOSITORY_GIT_ROUTE_PENDING` without a runtime failure, the worker can
 record the selection. The original work stays queued until that revision is ready;
 only then does the worker activate it, retire its predecessor, and complete the work.
 
-Exclusive replacement closes earlier credential sessions and stops each earlier
-revision, including failed candidates, before preparation. A failed stop blocks
-the successor. Older work and maintenance cannot recreate the stopped execution.
-Compute must confirm resource release and preserve workspace data on repeated
-stops. This policy permits downtime. Recover by deploying a newer revision.
+Exclusive replacement crosses the [shared stop boundary](../agents/planned-replacement.md)
+before closing credentials and stopping predecessors. Failed stop blocks preparation.
+Repeated stops must preserve workspace data; stopped revisions cannot be recreated.
 
 ### SandboxDriver coordination
 

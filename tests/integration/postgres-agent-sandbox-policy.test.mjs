@@ -1284,6 +1284,8 @@ for (const mode of ["ordinary", "protected", "compute-only"]) {
         f.controller.installation.id,
       );
       if (mode === "compute-only") {
+        // Runtime launch inputs and reader service facts share the persisted Compute snapshot.
+        assert.equal(typeof reloaded.compute.runtimeInputs, "string");
         assert.equal(reloaded.sandboxPolicy, undefined);
       } else {
         assert.deepEqual(reloaded.sandboxPolicy.serviceAccess, reloaded.compute.serviceAccess);
