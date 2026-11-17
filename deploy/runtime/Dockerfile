@@ -167,8 +167,13 @@ RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp
     && git apply /tmp/openclaw-codex-full-access-profile.patch
 # Bind external Codex turn policy to the Compute-owned Box generation and its WSS peer.
 COPY deploy/runtime/openclaw-codex-box-owner.patch /tmp/openclaw-codex-box-owner.patch
-RUN echo 'fab67fe3aa048d3dd152e4e39c00c986888a6d1e64e39358dd36e1f575b36d88  /tmp/openclaw-codex-box-owner.patch' | sha256sum --check --strict \
+RUN echo '4a2aacf4358afe63891f1762d3b94cccff93fa65c6916795e4d604ea734295e4  /tmp/openclaw-codex-box-owner.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-box-owner.patch
+# A dedicated native hook relay call honours Node's own env-proxy switch, which an
+# explicit-proxy Sandbox sets; without it the call still dials the Gateway directly.
+COPY deploy/runtime/openclaw-native-hook-env-proxy.patch /tmp/openclaw-native-hook-env-proxy.patch
+RUN echo '57c2b925521589f43c0db245a3ebbf34d9b68edb66a07ec55d6241b367130c43  /tmp/openclaw-native-hook-env-proxy.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-native-hook-env-proxy.patch
 COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 RUN node /tmp/build-runtime-assets.ts inputs /source /inputs \
     && rm /tmp/build-runtime-assets.ts /tmp/lib/openclaw-source.ts
@@ -323,6 +328,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     test/node-host-launcher.test.ts \
     src/plugins/computer-use-contract.test.ts \
     extensions/codex/src/app-server/provider-box-owner.test.ts \
+    src/agents/harness/native-hook-relay-remote-client.test.ts \
     extensions/codex/src/app-server/turn-params.test.ts \
     src/daemon/program-args.test.ts \
     && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \

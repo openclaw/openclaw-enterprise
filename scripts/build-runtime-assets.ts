@@ -40,7 +40,11 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-codex-box-owner.patch",
-    sha256: "fab67fe3aa048d3dd152e4e39c00c986888a6d1e64e39358dd36e1f575b36d88",
+    sha256: "4a2aacf4358afe63891f1762d3b94cccff93fa65c6916795e4d604ea734295e4",
+  },
+  {
+    file: "openclaw-native-hook-env-proxy.patch",
+    sha256: "57c2b925521589f43c0db245a3ebbf34d9b68edb66a07ec55d6241b367130c43",
   },
   {
     file: "openclaw-required-worker-authority-regression.patch",

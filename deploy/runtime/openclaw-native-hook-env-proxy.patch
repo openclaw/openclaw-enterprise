@@ -1,0 +1,135 @@
+diff --git a/src/agents/harness/native-hook-relay-remote-client.test.ts b/src/agents/harness/native-hook-relay-remote-client.test.ts
+index 2f1e67b..499cd58 100644
+--- a/src/agents/harness/native-hook-relay-remote-client.test.ts
++++ b/src/agents/harness/native-hook-relay-remote-client.test.ts
+@@ -1,6 +1,8 @@
+ import { spawnSync } from "node:child_process";
+ import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
++import { createServer as createPlainServer } from "node:http";
+ import { createServer } from "node:https";
++import { connect } from "node:net";
+ import os from "node:os";
+ import path from "node:path";
+ import { buffer } from "node:stream/consumers";
+@@ -137,3 +139,65 @@ it("verifies TLS and sends only the relay capability; refuses redirects and boun
+     await rm(dir, { recursive: true, force: true });
+   }
+ }, 15_000);
++
++it("tunnels through the explicit proxy only when Node's env-proxy switch is on", async () => {
++  const dir = await mkdtemp(path.join(os.tmpdir(), "native-hook-proxy-"));
++  const originalCAs = tls.getCACertificates("default");
++  const originalEnv = { ...process.env };
++  const tunnels: string[] = [];
++  let received = 0;
++  const server = createServer({ key, cert }, (req, res) => {
++    received++;
++    void buffer(req).then(() =>
++      res.end(JSON.stringify({ ok: true, result: { stdout: "allow", stderr: "", exitCode: 0 } })),
++    );
++  });
++  // A minimal CONNECT proxy, as an explicit-proxy Sandbox gives its workload.
++  const proxy = createPlainServer((_req, res) => res.writeHead(405).end());
++  proxy.on("connect", (req, socket, head) => {
++    tunnels.push(req.url ?? "");
++    const [host, port] = (req.url ?? "").split(":");
++    const upstream = connect(Number(port), host, () => {
++      socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
++      upstream.write(head);
++      upstream.pipe(socket).pipe(upstream);
++    });
++    upstream.on("error", () => socket.destroy());
++    socket.on("error", () => upstream.destroy());
++  });
++  try {
++    const url = `${await httpFixtures.listenLoopback(server, "https")}/__openclaw__/native-hook/relay`;
++    const proxyUrl = await httpFixtures.listenLoopback(proxy, "http");
++    const credential = path.join(dir, "credential.json");
++    await writeFile(credential, JSON.stringify({ url, token: "synthetic-relay-capability" }));
++    tls.setDefaultCACertificates([...originalCAs, cert]);
++    const invoke = () =>
++      invokeRelay(
++        credential,
++        { provider: "codex", relayId: "relay", generation: "current", event: "pre_tool_use", rawPayload: {} },
++        AbortSignal.timeout(5_000),
++      );
++    process.env.HTTPS_PROXY = proxyUrl;
++    process.env.https_proxy = proxyUrl;
++    process.env.NO_PROXY = "";
++    process.env.no_proxy = "";
++    delete process.env.NODE_USE_ENV_PROXY;
++    await expect(invoke()).resolves.toMatchObject({ stdout: "allow" });
++    expect(tunnels).toEqual([]);
++    process.env.NODE_USE_ENV_PROXY = "1";
++    await expect(invoke()).resolves.toMatchObject({ stdout: "allow" });
++    expect(tunnels).toEqual([new URL(url).host]);
++    expect(received).toBe(2);
++  } finally {
++    for (const name of ["HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "NODE_USE_ENV_PROXY"]) {
++      if (originalEnv[name] === undefined) delete process.env[name];
++      else process.env[name] = originalEnv[name];
++    }
++    tls.setDefaultCACertificates(originalCAs);
++    server.closeAllConnections();
++    proxy.closeAllConnections();
++    await new Promise<void>((resolve) => server.close(() => resolve()));
++    await new Promise<void>((resolve) => proxy.close(() => resolve()));
++    await rm(dir, { recursive: true, force: true });
++  }
++}, 15_000);
+diff --git a/src/agents/harness/native-hook-relay-remote-client.ts b/src/agents/harness/native-hook-relay-remote-client.ts
+index 4d386ae..7e34a0f 100644
+--- a/src/agents/harness/native-hook-relay-remote-client.ts
++++ b/src/agents/harness/native-hook-relay-remote-client.ts
+@@ -1,4 +1,4 @@
+-import { request } from "node:https";
++import { Agent, request } from "node:https";
+ import { readRegularFile } from "@openclaw/fs-safe/advanced";
+ import type {
+   InvokeNativeHookRelayParams,
+@@ -8,6 +8,18 @@ import type {
+ const MAX_CREDENTIAL_BYTES = 16_384;
+ const MAX_RESPONSE_BYTES = 1024 * 1024;
+ 
++/**
++ * A Sandbox that routes egress through an explicit proxy opts Node in with Node's own
++ * NODE_USE_ENV_PROXY switch, which Node applies to its global agent only. Honour it here on
++ * a fresh agent that never pools, so the cold relay still owns its one socket through close.
++ * Without the switch the relay dials the Gateway directly, as before.
++ */
++function relayAgent(): Agent | false {
++  return process.env.NODE_USE_ENV_PROXY === "1"
++    ? new Agent({ keepAlive: false, maxSockets: 1, proxyEnv: process.env })
++    : false;
++}
++
+ /** Read a dedicated credential, never a Gateway config or shared state database. */
+ export async function invokeRemoteNativeHookRelay(
+   credentialPath: string,
+@@ -43,6 +55,7 @@ export async function invokeRemoteNativeHookRelay(
+   }
+   signal.throwIfAborted();
+   const body = JSON.stringify(params);
++  const agent = relayAgent();
+   return await new Promise((resolve, reject) => {
+     let outcome:
+       | { ok: true; value: NativeHookRelayProcessResponse }
+@@ -59,7 +72,7 @@ export async function invokeRemoteNativeHookRelay(
+       {
+         method: "POST",
+         // The cold relay owns this socket through close, never an idle pooled connection.
+-        agent: false,
++        agent,
+         signal,
+         headers: {
+           authorization: `Bearer ${credential.token}`,
+@@ -107,6 +120,9 @@ export async function invokeRemoteNativeHookRelay(
+     req.on("error", () => fail("Native hook callback connection failed"));
+     // An error or response end does not yet prove the owned socket closed.
+     req.once("close", () => {
++      if (agent) {
++        agent.destroy();
++      }
+       if (outcome?.ok) {
+         resolve(outcome.value);
+       } else {

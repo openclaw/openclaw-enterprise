@@ -111,10 +111,10 @@ index a8e7a87..6c62a07 100644
        .toSorted(([left], [right]) => left.localeCompare(right))
 diff --git a/extensions/codex/src/app-server/provider-box-owner.test.ts b/extensions/codex/src/app-server/provider-box-owner.test.ts
 new file mode 100644
-index 0000000..8d5c0f3
+index 0000000..c0fd3a6
 --- /dev/null
 +++ b/extensions/codex/src/app-server/provider-box-owner.test.ts
-@@ -0,0 +1,349 @@
+@@ -0,0 +1,459 @@
 +import { execFileSync } from "node:child_process";
 +import { once } from "node:events";
 +import {
@@ -464,12 +464,122 @@ index 0000000..8d5c0f3
 +    await new Promise<void>((resolve) => server.close(() => resolve()));
 +  }
 +});
++
++it("admits only the native hook relay credential file and refuses every other filesystem call", () => {
++  const relayId = `codex-${"0123456789abcdef".repeat(3).slice(0, 40)}`;
++  const generation = "3f2b8c1e-9d4a-4b7e-8c21-5a6f0e9d1b72";
++  const directory = "/home/node/.oce-native-hooks";
++  const path = `${directory}/${relayId}.${generation}.json`;
++  const url = `https://gateway.example.test:10443/namespaces/ns/agents/agent/node/__openclaw__/native-hook/${relayId}`;
++  const document = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64");
++  const dataBase64 = document({ url, token: "7d9e2f4a-1b3c-4d5e-8f60-7a8b9c0d1e2f" });
++  const write = (params: unknown) => providerBoxRequestRefusal(owner, "fs/writeFile", params);
++  const remove = (params: unknown) => providerBoxRequestRefusal(owner, "fs/remove", params);
++
++  // The two accepted forms, exactly as native-hook-relay-remote.ts sends them.
++  expect(write({ path, dataBase64 })).toBeUndefined();
++  expect(remove({ path, force: true, recursive: false })).toBeUndefined();
++
++  // Paths: sibling directory, nested, prefix collision, relative, dot segments, trailing
++  // slash, NUL, symlink-looking or other names and extensions, the directory itself.
++  const name = `${relayId}.${generation}.json`;
++  for (const candidate of [
++    `/home/node/.oce-native-hooks-x/${name}`,
++    `/home/node/.oce-native-hooksx/${name}`,
++    `/home/node/${name}`,
++    `/home/node/workspace/${name}`,
++    `/home/other/.oce-native-hooks/${name}`,
++    `${directory}/nested/${name}`,
++    `${directory}/../.oce-native-hooks/${name}`,
++    `${directory}/./${name}`,
++    `${directory}//${name}`,
++    `${directory}/${name}/`,
++    `${directory}/${name}\0`,
++    `.oce-native-hooks/${name}`,
++    `~/.oce-native-hooks/${name}`,
++    `${directory}/${relayId}.${generation}.json.lnk`,
++    `${directory}/${relayId}.${generation}.jsonx`,
++    `${directory}/${relayId}.${generation}.toml`,
++    `${directory}/${relayId}.${generation}`,
++    `${directory}/gateway-ca.pem`,
++    `${directory}/${relayId.toUpperCase()}.${generation}.json`,
++    `${directory}/codex-${"a".repeat(39)}.${generation}.json`,
++    `${directory}/${relayId}.${generation.toUpperCase()}.json`,
++    `${directory}/${relayId}.current.json`,
++    `${directory}/${relayId}%2F..%2F.${generation}.json`,
++    directory,
++    `${directory}/`,
++    undefined,
++    7,
++  ]) {
++    expect(write({ path: candidate, dataBase64 })).not.toBeUndefined();
++    expect(remove({ path: candidate, force: true, recursive: false })).not.toBeUndefined();
++  }
++
++  // Parameters: missing, extra, inherited or of another form.
++  expect(write(undefined)).toBe("fs/writeFile:params");
++  expect(write([path, dataBase64])).toBe("fs/writeFile:params");
++  expect(write({ path })).toBe("fs/writeFile:params");
++  expect(write({ path, dataBase64, append: true })).toBe("fs/writeFile:params");
++  expect(write(Object.assign(Object.create({ dataBase64 }), { path }))).toBe("fs/writeFile:params");
++  expect(remove({ path, force: true })).toBe("fs/remove:params");
++  expect(remove({ path, force: true, recursive: true })).toBe("fs/remove:params");
++  expect(remove({ path, force: false, recursive: false })).toBe("fs/remove:params");
++  expect(remove({ path, force: "true", recursive: false })).toBe("fs/remove:params");
++  expect(remove({ path, force: true, recursive: false, extra: 1 })).toBe("fs/remove:params");
++
++  // Data: only the canonical credential document for the relay the file names.
++  for (const data of [
++    "",
++    "not base64!",
++    `${dataBase64}\n`,
++    dataBase64.slice(0, -1),
++    `${dataBase64.slice(0, -2)}=${dataBase64.slice(-1)}`,
++    Buffer.from("x".repeat(5000)).toString("base64"),
++    document({ token: "7d9e2f4a-1b3c-4d5e-8f60-7a8b9c0d1e2f", url }),
++    document({ url, token: "7d9e2f4a-1b3c-4d5e-8f60-7a8b9c0d1e2f", extra: true }),
++    document({ url, token: "" }),
++    document({ url, token: "synthetic token" }),
++    document({ url: url.replace(relayId, `codex-${"b".repeat(40)}`), token: "7d9e2f4a-1b3c-4d5e-8f60-7a8b9c0d1e2f" }),
++    document({ url: url.replace("https:", "http:"), token: "7d9e2f4a-1b3c-4d5e-8f60-7a8b9c0d1e2f" }),
++    document({ url: `${url}?q=1`, token: "7d9e2f4a-1b3c-4d5e-8f60-7a8b9c0d1e2f" }),
++    document({ url: url.replace("https://", "https://user@"), token: "7d9e2f4a-1b3c-4d5e-8f60-7a8b9c0d1e2f" }),
++    document({ url: "https://gateway.example.test/elsewhere", token: "7d9e2f4a-1b3c-4d5e-8f60-7a8b9c0d1e2f" }),
++    Buffer.from(` ${JSON.stringify({ url, token: "7d9e2f4a-1b3c-4d5e-8f60-7a8b9c0d1e2f" })}`).toString("base64"),
++    Buffer.from([0xff, 0xfe]).toString("base64"),
++    7,
++  ]) {
++    expect(write({ path, dataBase64: data })).toBe("fs/writeFile:data");
++  }
++
++  // Every other filesystem method stays refused, whatever it names.
++  for (const method of [
++    "fs/readFile",
++    "fs/readDirectory",
++    "fs/createDirectory",
++    "fs/getMetadata",
++    "fs/copy",
++    "fs/rename",
++    "fs/watch",
++    "fs/unwatch",
++  ]) {
++    expect(providerBoxRequestRefusal(owner, method, { path })).toBe("rpc-not-allowed");
++    expect(providerBoxRequestRefusal(owner, method, { path: directory, recursive: true })).toBe(
++      "rpc-not-allowed",
++    );
++  }
++
++  // Refusals are fixed codes: neither the path nor the capability is ever echoed.
++  const refusal = String(write({ path: `${directory}/private-caller-name`, dataBase64 }));
++  expect(refusal).toBe("fs/writeFile:path");
++  expect(refusal).not.toContain("private-caller-name");
++});
 diff --git a/extensions/codex/src/app-server/provider-box-owner.ts b/extensions/codex/src/app-server/provider-box-owner.ts
 new file mode 100644
-index 0000000..732a641
+index 0000000..3f205b7
 --- /dev/null
 +++ b/extensions/codex/src/app-server/provider-box-owner.ts
-@@ -0,0 +1,424 @@
+@@ -0,0 +1,525 @@
 +import { X509Certificate } from "node:crypto";
 +import {
 +  closeSync,
@@ -495,6 +605,11 @@ index 0000000..732a641
 +  ancestry: ["etc", "openclaw-box-owner"],
 +  uid: 0,
 +};
++// The Harness HOME of a provider-owned Box. The owner binding pins the workspace root
++// below it, and the host refuses a Harness environment with any other HOME, so the hook
++// credential directory is fixed here and never taken from a request.
++const PROVIDER_BOX_HOME = "/home/node";
++const PROVIDER_BOX_WORKSPACE = `${PROVIDER_BOX_HOME}/workspace`;
 +const isAbsent = (error: unknown) =>
 +  error instanceof Error && "code" in error && error.code === "ENOENT";
 +
@@ -661,7 +776,7 @@ index 0000000..732a641
 +    if (
 +      Object.keys(binding).length !== 3 ||
 +      typeof url !== "string" ||
-+      workspaceRoot !== "/home/node/workspace" ||
++      workspaceRoot !== PROVIDER_BOX_WORKSPACE ||
 +      typeof generationSha256 !== "string" ||
 +      !SHA256.test(generationSha256) ||
 +      input.transport !== "websocket" ||
@@ -791,8 +906,100 @@ index 0000000..732a641
 +  knownDeniedRpcEntries,
 +);
 +
++// The Gateway projects each native hook relay credential into the Harness with exactly
++// these two calls (native-hook-relay-remote.ts). The file is a direct child of the fixed
++// directory, named `<relayId>.<generation>.json` with the relay id of
++// buildCodexNativeHookRelayId (`codex-` and 40 hex digits) and a random UUID generation.
++const NATIVE_HOOK_CREDENTIAL_DIRECTORY = `${PROVIDER_BOX_HOME}/.oce-native-hooks`;
++const NATIVE_HOOK_CREDENTIAL_NAME =
++  /^(codex-[0-9a-f]{40})\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/;
++const NATIVE_HOOK_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
++const NATIVE_HOOK_ROUTE = "/node/__openclaw__/native-hook/";
++const MAX_NATIVE_HOOK_CREDENTIAL_BYTES = 4096;
++const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
++
++function plainRecord(value: unknown, keys: readonly string[]): Record<string, unknown> | undefined {
++  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
++  const prototype = Object.getPrototypeOf(value);
++  if (prototype !== Object.prototype && prototype !== null) return undefined;
++  const own = Reflect.ownKeys(value);
++  return own.length === keys.length && keys.every((key) => Object.hasOwn(value, key))
++    ? (value as Record<string, unknown>)
++    : undefined;
++}
++
++/** The relay id named by an exact credential path, or undefined for anything else. */
++function nativeHookCredentialRelay(path: unknown): string | undefined {
++  if (
++    typeof path !== "string" ||
++    path.includes("\0") ||
++    path.endsWith("/") ||
++    posix.normalize(path) !== path ||
++    posix.dirname(path) !== NATIVE_HOOK_CREDENTIAL_DIRECTORY
++  ) {
++    return undefined;
++  }
++  return NATIVE_HOOK_CREDENTIAL_NAME.exec(posix.basename(path))?.[1];
++}
++
++/** The one credential document the Gateway writes: `{url, token}` for this relay, canonical. */
++function nativeHookCredentialData(data: unknown, relayId: string): boolean {
++  if (
++    typeof data !== "string" ||
++    data.length === 0 ||
++    data.length > Math.ceil(MAX_NATIVE_HOOK_CREDENTIAL_BYTES / 3) * 4 ||
++    !BASE64.test(data)
++  ) {
++    return false;
++  }
++  const bytes = Buffer.from(data, "base64");
++  if (bytes.toString("base64") !== data) return false;
++  try {
++    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
++    const document: unknown = JSON.parse(text);
++    const credential = plainRecord(document, ["url", "token"]);
++    if (!credential || JSON.stringify({ url: credential.url, token: credential.token }) !== text) {
++      return false;
++    }
++    const { url, token } = credential;
++    if (typeof url !== "string" || typeof token !== "string" || !NATIVE_HOOK_TOKEN.test(token)) {
++      return false;
++    }
++    const target = new URL(url);
++    return (
++      target.protocol === "https:" &&
++      !target.username &&
++      !target.password &&
++      !target.search &&
++      !target.hash &&
++      target.href === url &&
++      target.pathname.endsWith(`${NATIVE_HOOK_ROUTE}${relayId}`)
++    );
++  } catch {
++    return false;
++  }
++}
++
++function nativeHookCredentialRefusal(
++  method: "fs/writeFile" | "fs/remove",
++  params: unknown,
++): `${"fs/writeFile" | "fs/remove"}:${"params" | "path" | "data"}` | undefined {
++  const record = plainRecord(
++    params,
++    method === "fs/writeFile" ? ["path", "dataBase64"] : ["path", "force", "recursive"],
++  );
++  if (!record) return `${method}:params`;
++  const relayId = nativeHookCredentialRelay(record.path);
++  if (relayId === undefined) return `${method}:path`;
++  if (method === "fs/remove") {
++    return record.force === true && record.recursive === false ? undefined : "fs/remove:params";
++  }
++  return nativeHookCredentialData(record.dataBase64, relayId) ? undefined : "fs/writeFile:data";
++}
++
 +type ProviderBoxRequestRefusal =
 +  | "rpc-not-allowed"
++  | `${"fs/writeFile" | "fs/remove"}:${"params" | "path" | "data"}`
 +  | ProviderBoxKnownDeniedRpc
 +  | `thread/${"start" | "resume" | "fork"}:${"params" | "cwd" | "permissions" | "environments" | "roots" | "path" | "sandbox-policy" | "sandbox" | "config"}`
 +  | `turn/start:${"params" | "cwd" | "permissions" | "environments" | "roots" | "sandbox" | "sandbox-policy" | "external-policy" | "read-only-policy" | "workspace-write-policy"}`;
@@ -810,6 +1017,10 @@ index 0000000..732a641
 +  params: unknown,
 +): ProviderBoxRequestRefusal | undefined {
 +  if (CHAT_CONTROL.has(method)) return;
++  // Only the native hook relay's own credential file; every other filesystem call stays refused.
++  if (method === "fs/writeFile" || method === "fs/remove") {
++    return nativeHookCredentialRefusal(method, params);
++  }
 +  if (method !== "turn/start" && !isProviderBoxThreadBinding(method)) {
 +    return KNOWN_DENIED_RPC_DIAGNOSTICS.get(method) ?? "rpc-not-allowed";
 +  }
