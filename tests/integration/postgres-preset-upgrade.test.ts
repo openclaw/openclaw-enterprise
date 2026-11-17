@@ -10,7 +10,7 @@ import {
   privateBootstrapDirectory,
   productionBootstrapEnvironment,
 } from "../helpers/bootstrap-installation.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 
 const run = promisify(execFile);
 const repository = fileURLToPath(new URL("../..", import.meta.url));
