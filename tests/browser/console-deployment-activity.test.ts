@@ -7,6 +7,7 @@ import type {
   PlatformStateStore,
 } from "../../packages/occ/src/state/platform-state.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { callbackGate } from "../helpers/wait-for.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";
 import {
   AGENT_READ,
@@ -182,7 +183,7 @@ for (const source of ["selected", "automatic", "overlapping refresh", "regrant"]
       const refresh = card.getByRole("button", { name: "Refresh record", exact: true });
       const release = Promise.withResolvers<void>();
       if (source === "overlapping refresh") {
-        const ready = Promise.withResolvers<void>();
+        const ready = callbackGate("the overlapping refresh's held Agent read");
         let held = false;
         await page.route(agentUrl, async (request) => {
           if (held) {
@@ -190,17 +191,19 @@ for (const source of ["selected", "automatic", "overlapping refresh", "regrant"]
             return;
           }
           held = true;
-          const response = await request.fetch();
-          assert.equal(response.status(), 200);
-          assert.equal((await response.json()).data.activeRevisionId, undefined);
-          ready.resolve();
-          await release.promise;
-          await request.fulfill({ response });
+          await ready.run(async () => {
+            const response = await request.fetch();
+            assert.equal(response.status(), 200);
+            assert.equal((await response.json()).data.activeRevisionId, undefined);
+            ready.resolve();
+            await release.promise;
+            await request.fulfill({ response });
+          });
         });
         // The full refresh already owns an overview read. Its captured old Agent response
         // must be discarded, then one fresh pair must establish the new current version.
         await activity.getByRole("button", { name: "Refresh deployment" }).click();
-        await ready.promise;
+        await ready.reached();
       }
       let restore: (() => void) | undefined;
       if (source === "regrant") {
@@ -318,7 +321,7 @@ test(
         revisionReads++;
       }
     });
-    const held = Promise.withResolvers<void>();
+    const held = callbackGate("the retried overview's held Agent read");
     const release = Promise.withResolvers<void>();
     t.after(() => release.resolve());
     await page.route(agentUrl, async (route) => {
@@ -327,12 +330,14 @@ test(
         await route.abort("connectionfailed");
         return;
       }
-      const response = await route.fetch();
-      assert.equal(response.status(), 200);
-      assert.equal((await response.json()).data.activeRevisionId, revisionId);
-      held.resolve();
-      await release.promise;
-      await route.fulfill({ response });
+      await held.run(async () => {
+        const response = await route.fetch();
+        assert.equal(response.status(), 200);
+        assert.equal((await response.json()).data.activeRevisionId, revisionId);
+        held.resolve();
+        await release.promise;
+        await route.fulfill({ response });
+      });
     });
     await fixture.activateRevision(namespace.id, agent.id, revisionId, undefined);
     control.succeeded = true;
@@ -352,7 +357,7 @@ test(
     // Only an explicit fresh record retries the failed overview. Another successful
     // record while that pair is held shares it instead of discarding or duplicating it.
     await refresh.press("Enter");
-    await held.promise;
+    await held.reached();
     const repeated = page.waitForResponse(url);
     await refresh.press("Enter");
     assert.equal((await repeated).status(), 200);
@@ -811,7 +816,7 @@ for (const refusal of [403, 404] as const) {
     const activity = page.getByRole("region", { name: "Deployment activity" });
     await card.getByText("Recorded outcome: Queued", { exact: true }).waitFor();
     await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
-    const captured = Promise.withResolvers<void>();
+    const captured = callbackGate("the held record read");
     const delivery = Promise.withResolvers<void>();
     t.after(() => delivery.resolve());
     let holdNext = true;
@@ -821,15 +826,17 @@ for (const refusal of [403, 404] as const) {
         return;
       }
       holdNext = false;
-      const response = await route.fetch();
-      assert.equal(response.status(), 200);
-      assert.equal((await response.json()).data.deploymentId, revisionId);
-      captured.resolve();
-      await delivery.promise;
-      await route.fulfill({ response });
+      await captured.run(async () => {
+        const response = await route.fetch();
+        assert.equal(response.status(), 200);
+        assert.equal((await response.json()).data.deploymentId, revisionId);
+        captured.resolve();
+        await delivery.promise;
+        await route.fulfill({ response });
+      });
     });
     await card.getByRole("button", { name: "Refresh record", exact: true }).click();
-    await captured.promise;
+    await captured.reached();
     if (refusal === 403) {
       fixture.policy.restrictions.push({
         id: `deny-record-${revisionId}`,
@@ -930,7 +937,7 @@ for (const refusal of [403, 404] as const) {
         const refresh = card.getByRole("button", { name: "Refresh record", exact: true });
         await card.getByText("Recorded outcome: Queued", { exact: true }).waitFor();
         await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 100));
-        const held = Promise.withResolvers<void>();
+        const held = callbackGate("the held polled record read");
         const release = Promise.withResolvers<void>();
         t.after(() => release.resolve());
         const responses: number[] = [];
@@ -946,23 +953,25 @@ for (const refusal of [403, 404] as const) {
             return;
           }
           first = false;
-          // A late success was fetched before revocation. A transient response is
-          // fetched after revocation is lifted, without any successful record read.
-          const response = delayed === 200 ? await route.fetch() : null;
-          if (response) {
-            assert.equal(response.status(), 200);
-            assert.equal((await response.json()).data.deploymentId, revisionId);
-          }
-          held.resolve();
-          await release.promise;
-          if (response) {
-            await route.fulfill({ response });
-          } else {
-            await route.continue();
-          }
+          await held.run(async () => {
+            // A late success was fetched before revocation. A transient response is
+            // fetched after revocation is lifted, without any successful record read.
+            const response = delayed === 200 ? await route.fetch() : null;
+            if (response) {
+              assert.equal(response.status(), 200);
+              assert.equal((await response.json()).data.deploymentId, revisionId);
+            }
+            held.resolve();
+            await release.promise;
+            if (response) {
+              await route.fulfill({ response });
+            } else {
+              await route.continue();
+            }
+          });
         });
         await page.clock.runFor(DEPLOYMENT_POLL_MS + 1);
-        await held.promise;
+        await held.reached();
         if (refusal === 403) {
           denyRevisionRead(fixture, namespace, { id: revisionId });
         } else {
@@ -1084,7 +1093,10 @@ for (const refusal of [403, 404] as const) {
     await card.getByText("Recorded outcome: Queued", { exact: true }).waitFor();
     await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 100));
     await waitForIdleFetches(page);
-    const captured = [Promise.withResolvers<void>(), Promise.withResolvers<void>()] as const;
+    const captured = [
+      callbackGate("the first held record read"),
+      callbackGate("the second held record read"),
+    ] as const;
     const release = [Promise.withResolvers<void>(), Promise.withResolvers<void>()] as const;
     t.after(() => release.forEach((gate) => gate.resolve()));
     let requests = 0;
@@ -1100,28 +1112,30 @@ for (const refusal of [403, 404] as const) {
         await route.continue();
         return;
       }
-      const response = await route.fetch();
-      assert.equal(response.status(), index === 0 ? 200 : refusal);
-      const body = await response.json();
-      if (index === 0) {
-        assert.equal(body.data.deploymentId, revisionId);
-      } else {
-        assert.equal(body.data, undefined);
-        assert.equal(body.error.code, refusal === 403 ? "FORBIDDEN" : "NOT_FOUND");
-      }
-      captured[index].resolve();
-      await release[index].promise;
-      await route.fulfill({ response });
+      await captured[index].run(async () => {
+        const response = await route.fetch();
+        assert.equal(response.status(), index === 0 ? 200 : refusal);
+        const body = await response.json();
+        if (index === 0) {
+          assert.equal(body.data.deploymentId, revisionId);
+        } else {
+          assert.equal(body.data, undefined);
+          assert.equal(body.error.code, refusal === 403 ? "FORBIDDEN" : "NOT_FOUND");
+        }
+        captured[index].resolve();
+        await release[index].promise;
+        await route.fulfill({ response });
+      });
     });
     await page.clock.runFor(DEPLOYMENT_POLL_MS + 1);
-    await captured[0].promise;
+    await captured[0].reached();
     if (refusal === 403) {
       denyRevisionRead(fixture, namespace, { id: revisionId });
     } else {
       control.missingRevision = true;
     }
     await refresh.press("Enter");
-    await captured[1].promise;
+    await captured[1].reached();
     assert.equal(await card.locator("button").first().getAttribute("aria-disabled"), "true");
     const accepted = page.waitForResponse(url);
     release[0].resolve();
@@ -1173,7 +1187,7 @@ for (const delayed of [200, 403] as const) {
     const refresh = card.getByRole("button", { name: "Refresh record", exact: true });
     await card.getByText("Recorded outcome: Queued", { exact: true }).waitFor();
     await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 100));
-    const held = Promise.withResolvers<void>();
+    const held = callbackGate("the held polled record read");
     const release = Promise.withResolvers<void>();
     t.after(() => release.resolve());
     if (delayed === 403) {
@@ -1186,18 +1200,20 @@ for (const delayed of [200, 403] as const) {
         return;
       }
       first = false;
-      const response = await route.fetch();
-      assert.equal(response.status(), delayed);
-      const body = await response.json();
-      if (delayed === 200) {
-        assert.equal(body.data.deploymentId, revisionId);
-        assert.equal(body.data.status, "queued");
-      } else {
-        assert.equal(body.error.code, "FORBIDDEN");
-      }
-      held.resolve();
-      await release.promise;
-      await route.fulfill({ response });
+      await held.run(async () => {
+        const response = await route.fetch();
+        assert.equal(response.status(), delayed);
+        const body = await response.json();
+        if (delayed === 200) {
+          assert.equal(body.data.deploymentId, revisionId);
+          assert.equal(body.data.status, "queued");
+        } else {
+          assert.equal(body.error.code, "FORBIDDEN");
+        }
+        held.resolve();
+        await release.promise;
+        await route.fulfill({ response });
+      });
     });
     const replies: number[] = [];
     page.on("response", (response) => {
@@ -1206,7 +1222,7 @@ for (const delayed of [200, 403] as const) {
       }
     });
     await page.clock.runFor(DEPLOYMENT_POLL_MS + 1);
-    await held.promise;
+    await held.reached();
     if (delayed === 403) {
       fixture.policy.restrictions.pop();
     }
@@ -1319,15 +1335,15 @@ for (const scenario of ["selected first", "overview first", "newer cleanup"] as 
     const agentUrl = url.split("/deployments/")[0]!;
     const release = Promise.withResolvers<void>();
     const selectedRelease = Promise.withResolvers<void>();
-    const selectedCaptured = Promise.withResolvers<void>();
+    const selectedCaptured = callbackGate("the selected version's held record read");
     t.after(() => {
       release.resolve();
       selectedRelease.resolve();
     });
     const captured = [
-      Promise.withResolvers<void>(),
-      Promise.withResolvers<void>(),
-      Promise.withResolvers<void>(),
+      callbackGate("the held record read"),
+      callbackGate("the held Agent read"),
+      callbackGate("the held revisions read"),
     ];
     const counts = { record: 0, agent: 0, revisions: 0, next: 0 };
     page.on("request", (request) => {
@@ -1346,43 +1362,45 @@ for (const scenario of ["selected first", "overview first", "newer cleanup"] as 
     });
     for (const [index, target] of [url, agentUrl, `${agentUrl}/revisions*`].entries()) {
       let first = true;
-      await page.route(target, async (route) => {
-        const response = await route.fetch();
-        assert.equal(response.status(), 200);
-        const body = (await response.json()).data;
-        if (!first) {
-          assert.equal(index, 0, "overview must not be reread to resolve an overlap");
-          assert.equal(body.cleanup.status, "succeeded");
-          selectedCaptured.resolve();
-          if (scenario === "overview first") {
-            await selectedRelease.promise;
+      await page.route(target, (route) =>
+        (first ? captured[index]! : selectedCaptured).run(async () => {
+          const response = await route.fetch();
+          assert.equal(response.status(), 200);
+          const body = (await response.json()).data;
+          if (!first) {
+            assert.equal(index, 0, "overview must not be reread to resolve an overlap");
+            assert.equal(body.cleanup.status, "succeeded");
+            selectedCaptured.resolve();
+            if (scenario === "overview first") {
+              await selectedRelease.promise;
+            }
+            await route.fulfill({ response });
+            return;
           }
+          first = false;
+          if (index === 0) {
+            assert.equal(body.cleanup.status, "queued");
+          }
+          if (index === 1) {
+            assert.equal(body.activeRevisionId, revisionId);
+          }
+          if (index === 2 && next) {
+            assert.ok(body.some((item: { id: string }) => item.id === next.id));
+          }
+          captured[index]!.resolve();
+          await release.promise;
           await route.fulfill({ response });
-          return;
-        }
-        first = false;
-        if (index === 0) {
-          assert.equal(body.cleanup.status, "queued");
-        }
-        if (index === 1) {
-          assert.equal(body.activeRevisionId, revisionId);
-        }
-        if (index === 2 && next) {
-          assert.ok(body.some((item: { id: string }) => item.id === next.id));
-        }
-        captured[index]!.resolve();
-        await release.promise;
-        await route.fulfill({ response });
-      });
+        }),
+      );
     }
     await refresh.click();
-    await Promise.all(captured.map((item) => item.promise));
+    await Promise.all(captured.map((item) => item.reached()));
     assert.equal(await refresh.getAttribute("aria-disabled"), "true");
     // This later genuine GET has the same terminal status but newer cleanup evidence.
     control.cleanup = "succeeded";
     const selected = page.waitForResponse(url);
     await selectedRefresh.press("Enter");
-    await selectedCaptured.promise;
+    await selectedCaptured.reached();
     if (scenario === "overview first") {
       release.resolve();
       await page
@@ -1458,9 +1476,9 @@ for (const scenario of [
     const agentUrl = url.split("/deployments/")[0]!;
     const release = Promise.withResolvers<void>();
     const captured = [
-      Promise.withResolvers<void>(),
-      Promise.withResolvers<void>(),
-      Promise.withResolvers<void>(),
+      callbackGate("the held record read"),
+      callbackGate("the held Agent read"),
+      callbackGate("the held revisions read"),
     ];
     t.after(() => release.resolve());
     const oldRefusal = scenario.startsWith("old") || scenario === "mixed 401";
@@ -1489,33 +1507,35 @@ for (const scenario of [
           return;
         }
         first = false;
-        // Obtain the real denial before expiring sessions. The same read batch
-        // then contains both 403 and 401; authentication must take precedence.
-        if (scenario === "mixed 401" && index !== 0) {
-          await captured[0]!.promise;
-          expireSessions(fixture);
-        }
-        const response = await route.fetch();
-        let expected = 200;
-        if (index === 0 && oldRefusal) {
-          expected = refusalStatus;
-        } else if (scenario === "mixed 401" && index !== 0) {
-          expected = 401;
-        }
-        assert.equal(response.status(), expected);
-        const body = await response.json();
-        if (expected !== 200) {
-          assert.ok(body.error.code);
-        } else if (index === 0) {
-          assert.equal(body.data.status, "succeeded");
-        }
-        captured[index]!.resolve();
-        await release.promise;
-        await route.fulfill({ response });
+        await captured[index]!.run(async () => {
+          // Obtain the real denial before expiring sessions. The same read batch
+          // then contains both 403 and 401; authentication must take precedence.
+          if (scenario === "mixed 401" && index !== 0) {
+            await captured[0]!.reached();
+            expireSessions(fixture);
+          }
+          const response = await route.fetch();
+          let expected = 200;
+          if (index === 0 && oldRefusal) {
+            expected = refusalStatus;
+          } else if (scenario === "mixed 401" && index !== 0) {
+            expected = 401;
+          }
+          assert.equal(response.status(), expected);
+          const body = await response.json();
+          if (expected !== 200) {
+            assert.ok(body.error.code);
+          } else if (index === 0) {
+            assert.equal(body.data.status, "succeeded");
+          }
+          captured[index]!.resolve();
+          await release.promise;
+          await route.fulfill({ response });
+        });
       });
     }
     await activity.getByRole("button", { name: "Refresh deployment" }).click();
-    await Promise.all(captured.map((item) => item.promise));
+    await Promise.all(captured.map((item) => item.reached()));
     if (scenario === "navigation") {
       await page.getByRole("link", { name: "Agents", exact: true }).click();
     } else if (scenario !== "mixed 401") {
