@@ -177,6 +177,7 @@ function matchesBody(op: GoogleOperation, request: OpenShellOnlineHttpRequest) {
 function validGoogleRequest(
   scope: GoogleRequestScope,
   request: OpenShellOnlineHttpRequest,
+  purpose: "action" | "discovery" | "all",
 ): boolean {
   const { host, path, query, port, reportedScheme, method } = request.target;
   const names = request.headers.map(([name]) => name);
@@ -208,6 +209,7 @@ function validGoogleRequest(
   }
   if (path.startsWith("/discovery/v1/apis") || path === "/$discovery/rest") {
     return (
+      purpose !== "action" &&
       method === "GET" &&
       !request.body.length &&
       googleDiscoveryRequests(scope).some(
@@ -215,7 +217,11 @@ function validGoogleRequest(
       )
     );
   }
-  if (host !== scope.host || !googleSourcePathMatches(scope.path, path)) {
+  if (
+    purpose === "discovery" ||
+    host !== scope.host ||
+    !googleSourcePathMatches(scope.path, path)
+  ) {
     return false;
   }
   if (
@@ -284,13 +290,23 @@ function validGoogleRequest(
   );
 }
 
-export const googleWorkspaceRequestPolicy = {
-  releaseSha256: googleReleaseSha256,
-  acceptsScope(raw: string): boolean {
-    return googleScopeFromString(raw) !== undefined;
-  },
-  allows(request: OpenShellOnlineHttpRequest): boolean {
-    const scope = googleScopeFromString(request.bindingConfig);
-    return scope !== undefined && validGoogleRequest(scope, request);
-  },
+function requestPolicy(purpose: "action" | "discovery" | "all") {
+  return {
+    id: purpose === "all" ? googleReleaseSha256 : `${googleReleaseSha256}-${purpose}`,
+    releaseSha256: googleReleaseSha256,
+    acceptsScope(raw: string): boolean {
+      return googleScopeFromString(raw) !== undefined;
+    },
+    allows(request: OpenShellOnlineHttpRequest): boolean {
+      const scope = googleScopeFromString(request.bindingConfig);
+      return scope !== undefined && validGoogleRequest(scope, request, purpose);
+    },
+  };
+}
+
+export const googleWorkspaceRequestPolicies = {
+  action: requestPolicy("action"),
+  discovery: requestPolicy("discovery"),
+  // The existing OpenShell registration routes both request classes through a single middleware.
+  all: requestPolicy("all"),
 };

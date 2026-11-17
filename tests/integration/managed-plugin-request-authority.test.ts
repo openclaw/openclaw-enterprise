@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { startPluginRequestGuard } from "../../apps/controller/src/plugin-request-guard.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   managedPluginMiddleware,
   managedPluginMiddlewareAudience,
@@ -143,6 +144,44 @@ test("the signed OpenShell request guard intersects the source envelope with the
   assert.equal(await evaluate({ ...request, target: discovery }), 1);
   const fallback = { ...target, path: "/$discovery/rest", query: "version=v1" };
   assert.equal(await evaluate({ ...request, target: fallback }), 1);
+  // On the same host, a Google action may use the account while public discovery must
+  // not. Ask the signed guard to evaluate both requests under the IDs the Plugin declares.
+  const sourceRef = {
+    kind: "credential_source",
+    namespaceId: "ns_google",
+    id: "cs_google",
+  } as const;
+  const description = await new OCCPluginDriver().describeDeployment({
+    pluginId: managedGoogleInstall.id,
+    selection: {
+      enabled: true,
+      driverPolicy: {
+        releaseSha256: managedGoogleInstall.releaseSha256,
+        credentials: { account: sourceRef.id },
+      },
+    },
+    connections: { account: { default: sourceRef } },
+  });
+  const account = description.credentials.account?.default;
+  assert.ok(account);
+  const policies = description.networkRequirements.filter(
+    ({ match }) => match.host === target.host,
+  );
+  const configFor = (credentialed: boolean) => {
+    const rule = policies.find(
+      ({ id }) => account.networkRequirementIds.includes(id) === credentialed,
+    );
+    const evaluator = rule?.match.requestPolicy;
+    assert.ok(evaluator?.type === "evaluator");
+    assert.equal(evaluator.digest, managedGoogleInstall.releaseSha256);
+    return { fields: { ...config.fields, binding_id: { stringValue: evaluator.id } } };
+  };
+  const action = configFor(true);
+  const discoveryOnly = configFor(false);
+  assert.equal(await evaluate({ ...request, config: action }), 1);
+  assert.equal(await evaluate({ ...request, config: action, target: fallback }), 2);
+  assert.equal(await evaluate({ ...request, config: discoveryOnly }), 2);
+  assert.equal(await evaluate({ ...request, config: discoveryOnly, target: fallback }), 1);
   assert.equal(await evaluate({ ...request, target: { ...fallback, query: "version=v2" } }), 2);
   assert.equal(
     await evaluate({

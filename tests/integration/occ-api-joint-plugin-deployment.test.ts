@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
 import { listManagedMcpToolNames } from "../../apps/controller/src/connections/mcp-tool-discovery.ts";
@@ -487,10 +489,108 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const savedSlack = record(record(record(saved.data).plugins)[pluginId]);
   assert.deepEqual(record(savedSlack.driverPolicy).toolNames, ["slack_send_message"]);
+  // Deployment consumes these internal Driver results. Record the real implementation's
+  // returns so the test also exercises OCC's selection and source-reference mapping.
+  const describe = t.mock.method(pluginDriver, "describeDeployment");
   const deployed = await request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   assert.deepEqual(record(record(deployed.data).plugins).plugins, approved);
   assert.deepEqual(record(deployed.data).credentialSources, credentialSources);
+
+  const descriptionFor = (id: string) => {
+    const call = describe.mock.calls.find(({ arguments: [input] }) => input.pluginId === id);
+    assert.ok(call?.result, `deployment must describe ${id}`);
+    return call.result;
+  };
+  const catalog = new URL("../../apps/controller/plugins/", import.meta.url);
+  const fileDigest = async (path: string) =>
+    createHash("sha256")
+      .update(await readFile(new URL(path, catalog)))
+      .digest("hex");
+  const slack = await descriptionFor(pluginId);
+  assert.equal(slack.releaseSha256, slot.releaseSha256);
+  const [server] = slack.tools;
+  assert.ok(server);
+  assert.equal(server.role, "harness");
+  assert.deepEqual(server.installation, {
+    kind: "hosted-mcp",
+    endpoint: "https://mcp.slack.com/mcp",
+    configuration: {
+      kind: "image-manifest",
+      path: "/usr/local/lib/oce/plugin-catalog/oce-slack/mcp.json",
+      server: "slack",
+      sha256: await fileDigest("oce-slack/mcp.json"),
+    },
+  });
+  assert.deepEqual(server.selectedTools, ["slack_send_message"]);
+  const account = slack.credentials.account?.default;
+  assert.ok(account);
+  assert.deepEqual(account.sourceRef, { kind: "credential_source", namespaceId, id: sourceId });
+  assert.deepEqual(account.toolIds, [server.id]);
+  assert.deepEqual(account.projection, { environment: "SLACK_MCP_TOKEN", presentation: "bearer" });
+  const calls = slack.networkRequirements.filter(
+    (rule) =>
+      account.networkRequirementIds.includes(rule.id) &&
+      rule.match.requestPolicy?.type === "mcp" &&
+      rule.match.requestPolicy.method === "tools/call",
+  );
+  assert.deepEqual(
+    calls.map(({ toolId, purpose, match }) => ({ toolId, purpose, match })),
+    [
+      {
+        toolId: server.id,
+        purpose: "invocation",
+        match: {
+          binary: "/usr/local/bin/node",
+          host: "mcp.slack.com",
+          ports: [{ from: 443, to: 443 }],
+          requestPolicy: {
+            type: "mcp",
+            path: "/mcp",
+            method: "tools/call",
+            toolName: "slack_send_message",
+          },
+        },
+      },
+    ],
+  );
+
+  // An installed Google plugin still supplies both image artifacts without a connected account.
+  const workspace = await descriptionFor("occ-plugin:google@1.0.0");
+  assert.deepEqual(workspace.credentials, { account: {} });
+  assert.deepEqual(workspace.networkRequirements, []);
+  const release = record(
+    JSON.parse(
+      await readFile(new URL("oce-google-workspace/ai.openclaw.oce/release.json", catalog), "utf8"),
+    ),
+  );
+  const binaryPins = Object.fromEntries(
+    Object.entries(record(release.artifacts)).map(([platform, artifact]) => [
+      platform,
+      string(record(artifact).binarySha256),
+    ]),
+  );
+  assert.deepEqual(
+    workspace.tools.map(({ role, installation }) => ({ role, installation })),
+    [
+      {
+        role: "gateway",
+        installation: {
+          kind: "image-skill",
+          sha256: await fileDigest("oce-google-workspace/skills/oce-google/SKILL.md"),
+          path: "/usr/local/lib/oce/plugin-catalog/oce-google-workspace/skills/oce-google/SKILL.md",
+        },
+      },
+      {
+        role: "harness",
+        installation: {
+          kind: "image-executable",
+          path: "/usr/local/lib/oce/plugins/google/bin/gog",
+          binarySha256ByPlatform: binaryPins,
+        },
+      },
+    ],
+  );
 
   const cleared = await save(google);
   assert.equal(cleared.status, 200, JSON.stringify(cleared.body));

@@ -2,6 +2,8 @@ import type {
   OpenClawConfigurationDocument,
   PluginCatalogEntry,
   PluginApprovalMode,
+  PluginDeploymentContract,
+  PluginDeploymentDescription,
   PluginDesiredState,
   PluginApprovers,
 } from "@openclaw-enterprise/contracts";
@@ -1006,6 +1008,17 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     };
   }
 
+  function openClawToolSelection(pluginId: string, selection: Record<string, unknown>) {
+    const descriptor = openClawCatalogDescriptor(pluginId);
+    const policies = toolPolicies(selection);
+    const toolDefaults = defaults(selection);
+    const deniedTools = descriptor.toolNames.filter((toolId) => {
+      const policy = Object.hasOwn(policies, toolId) ? policies[toolId]! : {};
+      return (policy.enabled ?? toolDefaults.enabled ?? true) === false;
+    });
+    return { descriptor, deniedTools };
+  }
+
   function openClawRuntimeArtifact(
     selections: unknown,
     failures: unknown = [],
@@ -1019,17 +1032,8 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     const alsoAllow: string[] = [];
     const deny: string[] = [];
     for (const [pluginId, selection] of selectionEntries(selections)) {
-      const nativeId = openClawNativeIdFromPluginId(pluginId);
-      const descriptor = nativeCatalog.find((entry) => entry.nativeId === nativeId);
-      if (descriptor === undefined) {
-        throw new Error("Unknown OpenClaw plugin selection.");
-      }
-      const policies = toolPolicies(selection);
-      const toolDefaults = defaults(selection);
-      const deniedTools = descriptor.toolNames.filter((toolId) => {
-        const policy = Object.hasOwn(policies, toolId) ? policies[toolId]! : {};
-        return (policy.enabled ?? toolDefaults.enabled ?? true) === false;
-      });
+      const { descriptor, deniedTools } = openClawToolSelection(pluginId, selection);
+      const { nativeId } = descriptor;
       const pluginEnabled = selectionEnabledAfterFailures(pluginId, selection, failedPluginIds);
       if (pluginEnabled) {
         deny.push(...deniedTools);
@@ -1102,6 +1106,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     codexRuntimeArtifact,
     openClawCatalogEntries,
     openClawManagedEntryConfig,
+    openClawToolSelection,
     openClawRuntimeArtifact,
   };
 }
@@ -1148,6 +1153,56 @@ export function openClawRuntimeArtifact(
     defaultApprovers,
     gatewayPublicOrigin,
   ) as PluginRuntimeResolvedArtifacts;
+}
+
+export function describeNativeOpenClawDeployment({
+  pluginId,
+  selection,
+  connections,
+}: Parameters<PluginDeploymentContract["describeDeployment"]>[0]): PluginDeploymentDescription {
+  if (Object.keys(connections).length > 0) {
+    throw new Error("Native OpenClaw plugins do not declare credential requirements.");
+  }
+  const { descriptor, deniedTools } = pluginRuntimeTranslator.openClawToolSelection(pluginId, {
+    ...selection,
+  });
+  const toolId = descriptor.nativeId;
+  const node = "/usr/local/bin/node";
+  return {
+    // The Gateway installs each selected package, including a disabled one.
+    tools: [
+      {
+        id: toolId,
+        role: "gateway",
+        installation: {
+          kind: "openclaw-package",
+          package: `${descriptor.packageName}@${descriptor.version}`,
+          integrity: descriptor.integrity,
+        },
+        selectedTools: selection.enabled
+          ? descriptor.toolNames.filter((id) => !deniedTools.includes(id))
+          : [],
+      },
+    ],
+    workloadRequirements: [
+      {
+        role: "gateway",
+        mounts: [
+          { path: "/home/node", readOnly: false },
+          { path: "/tmp", readOnly: false },
+        ],
+      },
+    ],
+    networkRequirements: [
+      {
+        id: "npm-install",
+        toolId,
+        purpose: "installation",
+        match: { binary: node, host: "registry.npmjs.org", ports: [{ from: 443, to: 443 }] },
+      },
+    ],
+    credentials: {},
+  };
 }
 
 // The plugins.entries keys Kubernetes Compute renders for OpenClaw catalog selections.

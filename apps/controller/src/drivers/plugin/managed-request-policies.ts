@@ -1,21 +1,24 @@
 import { createHash } from "node:crypto";
 import type { OpenShellOnlineHttpRequest } from "../egress-proxy/openshell-online-authority.ts";
-import { googleWorkspaceRequestPolicy } from "./google-workspace/request-policy.ts";
+import { googleWorkspaceRequestPolicies } from "./google-workspace/request-policy.ts";
 
 interface PluginRequestPolicy {
+  readonly releaseSha256: string;
   acceptsScope(scope: string): boolean;
   allows(request: OpenShellOnlineHttpRequest): boolean;
 }
 
 // The guard loads reviewed policies from this image. The signed supervisor selects one
 // by its release digest and supplies the source envelope admitted for that deployment.
-const releasedPolicies = new Map<string, PluginRequestPolicy>([
-  [googleWorkspaceRequestPolicy.releaseSha256, googleWorkspaceRequestPolicy],
-]);
+const releasedPolicies = new Map<string, PluginRequestPolicy>(
+  Object.values(googleWorkspaceRequestPolicies).map((policy) => [policy.id, policy]),
+);
 
 // The Gateway advertises one implementation version per registration. Pin the whole set
 // at admission and each individual release in the Sandbox's binding.
-const releases = [...releasedPolicies.keys()].sort();
+const releases = [
+  ...new Set([...releasedPolicies.values()].map((policy) => policy.releaseSha256)),
+].sort();
 export const managedPluginGuardVersion =
   releases.length === 1
     ? releases[0]!
