@@ -7,13 +7,13 @@ author: stevenlee-oai
 # RFC-0040: Managed OpenClaw plugins
 
 - **Created:** 2026-10-21
-- **Last updated:** 2026-11-17
+- **Last updated:** 2026-11-18
 - **RFC PR:** [#3142](https://github.com/openclaw/openclaw-enterprise/pull/3142)
 - **Implementation plan:** [Managed OpenClaw plugins](../plans/0040-managed-openclaw-plugins.md)
 
 ## Decision
 
-OpenClaw Enterprise (OCE) lets an administrator select reviewed plugins, connect accounts through the existing credential system, and choose which tools an Agent can use before deployment. The Plugin Driver describes the plugin and its requested permissions. OpenClaw Control Plane (OCC) admits the selection only when the selected credential and execution stack can enforce those permissions. The Credential Proxy authorizes credentialed requests, and the Sandbox prevents the Harness from bypassing that path.
+OpenClaw Enterprise (OCE) lets an administrator select reviewed plugins, connect accounts through the existing credential system, and choose which tools an Agent can use before deployment. The Plugin Driver describes the plugin and its requested permissions. OpenClaw Control Plane (OCC) admits the selection only when the selected credential and execution stack can enforce its request policy. The Credential Proxy authorizes credentialed requests, and the Sandbox prevents the Harness from bypassing that path. A separate Gateway policy can require human approval for native MCP invocations; that approval does not constrain scripts that use the same credential.
 
 ## Plugins and deployment
 
@@ -44,6 +44,12 @@ The Plugin Driver declares policy requirements in implementation-neutral terms f
 OCC checks compatibility when an administrator saves the credential binding and again when it admits a deployment. The admitted policy can narrow the connection template and credential grant, but cannot expand either. OCC does not offer an enforcement setting that the selected stack cannot implement. OpenClaw can still filter the tools visible to the model, but that filter is not an execution-wide credential restriction. If a saved policy cannot be enforced at deployment, OCC rejects the candidate before releasing it to serve. The execution stack must verify that the admitted enforcement is installed; failure or an unavailable authorizer denies credentialed traffic.
 
 For hosted MCP, the concrete Credential Proxy inspects the actual JSON-RPC request before credential injection. It authorizes required protocol traffic separately from `tools/call`, and permits a call only when `params.name` is in the selected set for that account binding and endpoint. Model-facing aliases and untrusted server annotations are not authorization keys. The worker's `toolFilter` and the Gateway's tool allowlist expose the same selection to the model, but they do not replace request authorization: a script can construct an MCP request without going through native tool dispatch. The Sandbox routes both callers through the same protected egress path and prevents direct bypass.
+
+For selected MCP tools, the Plugin Driver accepts the existing `tools[id].approval` setting. An omitted setting or `none` adds no approval; `all_actions` requires human approval for every native invocation of that tool. Tool IDs must resolve to the selected plugin instance, account-qualified server, and upstream tool name. A disabled tool remains disabled through the existing tool selection and credential policy. The Driver must report approval support per plugin so enabling MCP approval does not advertise it for unsupported plugins such as Diffs.
+
+Compute installs one OCE-managed Gateway node policy for MCP calls. OpenClaw admits an enabled tool without an approval requirement for same-node Harness execution when other policy permits it. It routes an approval-required tool through the Gateway, which presents the final arguments to an Agent-wide approver and invokes the MCP client on the Harness only after an allow-once decision. Missing policy registration, denied or expired approval, changed arguments, and stale turn authority must block the native call. OCC freezes the selected approval settings in the Agent revision; Compute renders its Gateway policy and tool placement for that revision on deployment.
+
+This approval covers native Gateway dispatch only. A script can call the same enabled upstream tool through its credential placeholder without that approval: [#4450](https://github.com/openclaw/openclaw-enterprise/pull/4450) demonstrated a direct Node script invoking an enabled Slack tool. Enforcing human approval on direct credentialed requests is later work; disabled-tool request denial still applies to scripts.
 
 For a CLI or custom script calling an API, the connector supplies the reviewed operation definitions and the concrete Credential Proxy enforces them before injection. A Google operation may depend on the path, method, query, body, and granted scopes; HTTP method alone does not classify reads and writes. If an account is bound more narrowly than its saved grant, authorization must enforce the narrower binding. A broader independent route to the same credential must not defeat a restriction presented as enforceable. When the execution stack cannot distinguish overlapping bindings, OCC rejects that configuration.
 
@@ -94,9 +100,11 @@ flowchart TB
 - **AC-1 — Deployment:** An administrator selects a reviewed skill, CLI, or hosted MCP release for a dedicated OpenClaw Agent. The correct Gateway context and worker artifact become available after deployment; an incompatible placement is rejected before cutover.
 - **AC-2 — Accounts:** A user connects an account through OCC, grants an Agent access, and binds the account to a plugin instance. Discovery and execution use the authorized account and Token Service renewal without exposing tokens to the Plugin Driver or Harness. Withdrawing one Agent's grant leaves other grants usable.
 - **AC-3 — Enforcement:** With an account that can read and write, a selected MCP read tool succeeds through native dispatch and a direct script. A disabled write tool reaches neither the upstream server nor a credential-bearing alternate route. Unsupported policy or ambiguous account routing is rejected before deployment.
+- **AC-4 — Native human approval:** An enabled MCP tool without an approval requirement uses same-node execution when eligible. An approval-required native call reaches the server only after a human permits that invocation. Rejection, timeout, missing policy, or stale authority prevents it. Direct scripts are outside this approval guarantee.
 
 Detailed delivery steps and verification evidence belong in the [implementation plan](../plans/0040-managed-openclaw-plugins.md). Current supported behavior belongs in [Agent plugins](../../docs/reference/agent-plugins.md).
 
 ## Changelog
 
 - 2026-11-17: Separate plugin, account, and request-enforcement ownership; move delivery status to the implementation plan.
+- 2026-11-18: Scope human approval to native managed MCP invocations, with selective Gateway routing and the explicit direct-script gap.
