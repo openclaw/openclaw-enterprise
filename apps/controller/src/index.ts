@@ -310,6 +310,7 @@ const RESOURCE_ID_PREFIX = {
   configurationId: "cfg_",
   serviceAccountId: "sa_",
   secretId: "sec_",
+  sessionId: "sec_",
   credentialSourceId: "cs_",
   agentId: "agt_",
   revisionId: "rev_",

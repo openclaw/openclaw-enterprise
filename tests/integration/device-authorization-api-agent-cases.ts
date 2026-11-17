@@ -29,6 +29,8 @@ export function registerDeviceAuthorizationAgentCases(): void {
     assertDeviceAudit(fixture, "start");
     const startResponse = fixture.responses.at(-1);
     assert.ok(Check(AgentDeviceAuthorizationResponse, startResponse), "start response envelope");
+    const sessionHandle = { id: login.session.id, namespaceId: fixture.namespace.id };
+    assert.deepEqual(startResponse.data.session, sessionHandle);
     const startRequestId = startResponse.meta.requestId;
     const sourceId = (await fixture.stored(login)).sourceId;
     const startEvents = fixture.auditSink.events.filter(
@@ -90,6 +92,7 @@ export function registerDeviceAuthorizationAgentCases(): void {
       "poll after device approval",
     ).data;
     assert.equal(ready.status, "ready");
+    assert.deepEqual(ready.session, sessionHandle);
     assert.equal(ready.source?.kind, "credential_source");
     assertDeviceAudit(fixture, "poll");
     const stored: Record<string, unknown> = await fixture.stored(login);
