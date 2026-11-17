@@ -103,7 +103,7 @@ export async function probePackagedCodex(
         }
       : {
           "openclaw-codex-box-owner.patch":
-            "573ca6d0860117fd730200b59c33538fb6d675ab2c68d0d450e47147481abf1e",
+            "748e8cc2eb6b1a950b5fb90cecc823998d9162ef90ef6de97029c2d1aefaf287",
           "openclaw-native-hook-env-proxy.patch":
             "57c2b925521589f43c0db245a3ebbf34d9b68edb66a07ec55d6241b367130c43",
           "openclaw-control-ui-browser-reconnect.patch":

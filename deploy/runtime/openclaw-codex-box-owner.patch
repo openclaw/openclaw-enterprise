@@ -1,5 +1,5 @@
 diff --git a/extensions/codex/src/app-server/client.ts b/extensions/codex/src/app-server/client.ts
-index 793ec66..94d39b8 100644
+index 793ec66..b7264ba 100644
 --- a/extensions/codex/src/app-server/client.ts
 +++ b/extensions/codex/src/app-server/client.ts
 @@ -55,6 +55,12 @@ import {
@@ -15,34 +15,34 @@ index 793ec66..94d39b8 100644
  import { dispatchCodexRequestAttempt } from "./request-admission.js";
  import { createCodexRequestAttempt, remainingCodexRequestTime } from "./request-attempt.js";
  import type { CodexRequestWaiterFinished } from "./request-observation.js";
-@@ -176,9 +182,13 @@ export class CodexAppServerClient {
+@@ -176,9 +182,11 @@ export class CodexAppServerClient {
    private stderrTail = "";
    private readonly privateTransportSecrets = new Set<string>();
    private privateStderrPending = "";
 +  private readonly providerBoxFence: ProviderBoxRequestFence | undefined;
  
 -  private constructor(child: CodexAppServerTransport) {
-+  private constructor(child: CodexAppServerTransport, providerBoxOwner?: ProviderBoxOwner) {
++  private constructor(child: CodexAppServerTransport, providerBoxFence?: ProviderBoxRequestFence) {
      this.child = child;
-+    this.providerBoxFence = providerBoxOwner
-+      ? createProviderBoxRequestFence(providerBoxOwner)
-+      : undefined;
++    this.providerBoxFence = providerBoxFence;
      this.closeMessageReader = listenCodexAppServerLines(
        child.stdout,
        (line) => {
-@@ -228,7 +238,10 @@ export class CodexAppServerClient {
+@@ -228,7 +236,12 @@ export class CodexAppServerClient {
      }
      if (startOptions.transport === "websocket" || startOptions.transport === "unix") {
        await assertCurrent?.();
 -      return new CodexAppServerClient(createWebSocketTransport(startOptions));
-+      return new CodexAppServerClient(
-+        createWebSocketTransport(startOptions),
-+        startOptions.providerBoxOwner,
-+      );
++      // One fence per connection: the client and its transport's frame check share the threads
++      // this connection bound, so the session policy handoff passes both and nothing else does.
++      const fence = startOptions.providerBoxOwner
++        ? createProviderBoxRequestFence(startOptions.providerBoxOwner)
++        : undefined;
++      return new CodexAppServerClient(createWebSocketTransport(startOptions, fence), fence);
      }
      // The spawn callback runs synchronously before registration; initialization
      // stays blocked until registration finishes, without losing startup errors.
-@@ -262,8 +275,11 @@ export class CodexAppServerClient {
+@@ -262,8 +275,14 @@ export class CodexAppServerClient {
    }
  
    /** Wraps an externally owned transport, including worker duplex connections. */
@@ -52,11 +52,14 @@ index 793ec66..94d39b8 100644
 +    child: CodexAppServerTransport,
 +    providerBoxOwner?: ProviderBoxOwner,
 +  ): CodexAppServerClient {
-+    return new CodexAppServerClient(child, providerBoxOwner);
++    return new CodexAppServerClient(
++      child,
++      providerBoxOwner ? createProviderBoxRequestFence(providerBoxOwner) : undefined,
++    );
    }
  
    async initialize(): Promise<void> {
-@@ -338,10 +354,29 @@ export class CodexAppServerClient {
+@@ -338,10 +357,29 @@ export class CodexAppServerClient {
    ): Promise<T>;
    request<T = JsonValue | undefined>(
      method: string,
@@ -87,7 +90,7 @@ index 793ec66..94d39b8 100644
      if (this.closed) {
        return Promise.reject(this.closeError ?? new Error("codex app-server client is closed"));
      }
-@@ -451,7 +486,16 @@ export class CodexAppServerClient {
+@@ -451,7 +489,16 @@ export class CodexAppServerClient {
        }
        return result;
      };
@@ -179,10 +182,10 @@ index a8e7a87..570e35c 100644
        .toSorted(([left], [right]) => left.localeCompare(right))
 diff --git a/extensions/codex/src/app-server/provider-box-owner.test.ts b/extensions/codex/src/app-server/provider-box-owner.test.ts
 new file mode 100644
-index 0000000..47aec39
+index 0000000..8535124
 --- /dev/null
 +++ b/extensions/codex/src/app-server/provider-box-owner.test.ts
-@@ -0,0 +1,939 @@
+@@ -0,0 +1,1042 @@
 +import { execFileSync } from "node:child_process";
 +import { EventEmitter, once } from "node:events";
 +import {
@@ -392,44 +395,44 @@ index 0000000..47aec39
 +  }
 +});
 +
-+it("delivers native frames only on the CA-pinned original generation, including after withdrawal", async () => {
++/** A one-day self-signed CA for 127.0.0.1, as the CA-pinned Box owner peer serves it. */
++async function boxOwnerTestCertificate(): Promise<[string, string]> {
 +  const directory = await mkdtemp(join(tmpdir(), "openclaw-box-owner-tls-"));
 +  const certPath = join(directory, "cert.pem");
 +  const keyPath = join(directory, "key.pem");
-+  const [cert, key] = await (async () => {
-+    try {
-+      execFileSync(
-+        "openssl",
-+        [
-+          "req",
-+          "-new",
-+          "-x509",
-+          "-newkey",
-+          "rsa:2048",
-+          "-nodes",
-+          "-days",
-+          "1",
-+          "-subj",
-+          "/CN=Box owner test CA",
-+          "-addext",
-+          "basicConstraints=critical,CA:TRUE",
-+          "-addext",
-+          "subjectAltName=IP:127.0.0.1",
-+          "-out",
-+          certPath,
-+          "-keyout",
-+          keyPath,
-+        ],
-+        { stdio: "ignore" },
-+      );
-+      return await Promise.all([
-+        readFile(certPath, "utf8"),
-+        readFile(keyPath, "utf8"),
-+      ]);
-+    } finally {
-+      await rm(directory, { recursive: true, force: true });
-+    }
-+  })();
++  try {
++    execFileSync(
++      "openssl",
++      [
++        "req",
++        "-new",
++        "-x509",
++        "-newkey",
++        "rsa:2048",
++        "-nodes",
++        "-days",
++        "1",
++        "-subj",
++        "/CN=Box owner test CA",
++        "-addext",
++        "basicConstraints=critical,CA:TRUE",
++        "-addext",
++        "subjectAltName=IP:127.0.0.1",
++        "-out",
++        certPath,
++        "-keyout",
++        keyPath,
++      ],
++      { stdio: "ignore" },
++    );
++    return await Promise.all([readFile(certPath, "utf8"), readFile(keyPath, "utf8")]);
++  } finally {
++    await rm(directory, { recursive: true, force: true });
++  }
++}
++
++it("delivers native frames only on the CA-pinned original generation, including after withdrawal", async () => {
++  const [cert, key] = await boxOwnerTestCertificate();
 +  const server = createServer({ cert, key });
 +  const peer = new WebSocketServer({ server });
 +  let generation = generationSha256;
@@ -1122,6 +1125,109 @@ index 0000000..47aec39
 +    close();
 +  }
 +});
++
++it("lets the handoff frame through the WebSocket fence it shares with its client, only into a bound thread (3331)", async () => {
++  const [cert, key] = await boxOwnerTestCertificate();
++  const server = createServer({ cert, key });
++  const peer = new WebSocketServer({ server });
++  const injected: unknown[] = [];
++  peer.on("headers", (headers) => headers.push(`${header}: ${generationSha256}`));
++  peer.on("connection", (socket) =>
++    socket.on("message", (data) => {
++      const frame = JSON.parse(data.toString()) as {
++        id?: unknown;
++        method?: unknown;
++        params?: { threadId?: unknown };
++      };
++      if (frame.method === "thread/inject_items") injected.push(frame.params);
++      if (frame.id === undefined || typeof frame.method !== "string") return;
++      const result = frame.method === "thread/resume" ? { thread: { id: frame.params?.threadId } } : {};
++      socket.send(JSON.stringify({ id: frame.id, result }));
++    }),
++  );
++  const refusal = (transport: CodexAppServerTransport) =>
++    new Promise<unknown>((resolve) => transport.once("error", resolve));
++  const refused = expect.objectContaining({ message: expect.stringContaining("request was refused") });
++  try {
++    server.listen(0, "127.0.0.1");
++    await once(server, "listening");
++    const address = server.address();
++    if (!address || typeof address === "string") {
++      throw new Error("Expected the test's TLS listener.");
++    }
++    const url = `wss://127.0.0.1:${address.port}/`;
++    const providerBoxOwner = { url, workspaceRoot, generationSha256, ca: cert, assertCurrent() {} };
++    const start = {
++      transport: "websocket" as const,
++      url,
++      authToken,
++      headers: {},
++      command: "codex",
++      args: [],
++      providerBoxOwner,
++    };
++    const threadId = "019a6f0e-5d2c-7b11-9c3e-1f2a3b4c5d6e";
++    // The real client over the real WSS transport: after a resume on this connection the handoff
++    // reaches Codex, so the transport's frame check knows the thread the client bound.
++    const client = await CodexAppServerClient.start(start);
++    try {
++      const request = (method: string, params: unknown) => client.request(method, params);
++      await request("thread/resume", { threadId, cwd: workspaceRoot, sandbox: "workspace-write" });
++      await refreshCodexThreadPolicy({
++        client,
++        threadId,
++        developerInstructions: "Generic policy.",
++        timeoutMs: 5_000,
++      });
++      expect(injected).toEqual([expect.objectContaining({ threadId })]);
++    } finally {
++      client.close();
++    }
++
++    // The frame check itself, with a fence that bound the thread: the handoff frame is sent, and
++    // an assistant message into the same thread is refused before it is sent.
++    const fence = createProviderBoxRequestFence(providerBoxOwner);
++    fence.settled("thread/resume", { threadId }, { thread: { id: threadId } });
++    const shared = createWebSocketTransport(start, fence);
++    const passed = new Promise<void>((resolve) =>
++      peer.once("connection", (socket) => socket.once("message", () => resolve())),
++    );
++    shared.stdin.write(`${JSON.stringify({ id: 1, method: "thread/inject_items", params: handoff(threadId) })}\n`);
++    await passed;
++    expect(injected).toHaveLength(2);
++    const sharedRefusal = refusal(shared);
++    shared.stdin.write(
++      `${JSON.stringify({
++        id: 2,
++        method: "thread/inject_items",
++        params: {
++          threadId,
++          items: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Done." }] }],
++        },
++      })}\n`,
++    );
++    await expect(sharedRefusal).resolves.toEqual(refused);
++
++    // A fence that bound nothing, and a transport with no fence, refuse the same handoff frame.
++    for (const transport of [
++      createWebSocketTransport(start, createProviderBoxRequestFence(providerBoxOwner)),
++      createWebSocketTransport(start),
++    ]) {
++      const blocked = refusal(transport);
++      transport.stdin.write(
++        `${JSON.stringify({ id: 3, method: "thread/inject_items", params: handoff(threadId) })}\n`,
++      );
++      await expect(blocked).resolves.toEqual(refused);
++    }
++    expect(injected).toHaveLength(2);
++  } finally {
++    for (const socket of peer.clients) {
++      socket.terminate();
++    }
++    peer.close();
++    await new Promise<void>((resolve) => server.close(() => resolve()));
++  }
++});
 diff --git a/extensions/codex/src/app-server/provider-box-owner.ts b/extensions/codex/src/app-server/provider-box-owner.ts
 new file mode 100644
 index 0000000..52393b9
@@ -1764,10 +1870,10 @@ index 0000000..52393b9
 +  };
 +}
 diff --git a/extensions/codex/src/app-server/transport-websocket.ts b/extensions/codex/src/app-server/transport-websocket.ts
-index 48945c0..62de0fc 100644
+index 48945c0..b2639f5 100644
 --- a/extensions/codex/src/app-server/transport-websocket.ts
 +++ b/extensions/codex/src/app-server/transport-websocket.ts
-@@ -3,8 +3,18 @@ import net from "node:net";
+@@ -3,8 +3,19 @@ import net from "node:net";
  import path from "node:path";
  import { PassThrough, Writable } from "node:stream";
  import { StringDecoder } from "node:string_decoder";
@@ -1784,11 +1890,12 @@ index 48945c0..62de0fc 100644
 +import {
 +  allowsProviderBoxRequest,
 +  matchesProviderBoxOwner,
++  type ProviderBoxRequestFence,
 +} from "./provider-box-owner.js";
  import type { CodexAppServerTransport } from "./transport.js";
  import { codexWebSocketDataToBuffer } from "./websocket-data.js";
  
-@@ -19,7 +29,10 @@ export function isCodexWebSocketOpenFailure(error: unknown): boolean {
+@@ -19,7 +30,10 @@ export function isCodexWebSocketOpenFailure(error: unknown): boolean {
    let current = error;
    while (current instanceof Error && !seen.has(current)) {
      seen.add(current);
@@ -1800,7 +1907,14 @@ index 48945c0..62de0fc 100644
        return true;
      }
      current = current.cause;
-@@ -36,15 +49,31 @@ export function createWebSocketTransport(
+@@ -30,21 +44,38 @@ export function isCodexWebSocketOpenFailure(error: unknown): boolean {
+ /** Opens a WebSocket app-server transport and maps newline-delimited frames to stdout/stdin. */
+ export function createWebSocketTransport(
+   options: CodexAppServerStartOptions,
++  providerBoxFence?: ProviderBoxRequestFence,
+ ): CodexAppServerTransport {
+   if (!options.url) {
+     throw new Error(
        "codex app-server websocket transport requires plugins.entries.codex.config.appServer.url",
      );
    }
@@ -1833,7 +1947,7 @@ index 48945c0..62de0fc 100644
      // Codex app-server closes Unix upgrade handshakes that offer compression.
      perMessageDeflate: false,
      ...(options.transport === "websocket"
-@@ -69,6 +98,12 @@ export function createWebSocketTransport(
+@@ -69,6 +100,12 @@ export function createWebSocketTransport(
    let expectedPong: Buffer | undefined;
    let consecutiveMissedPongs = 0;
    let heartbeatSequence = 0;
@@ -1846,7 +1960,7 @@ index 48945c0..62de0fc 100644
  
    const clearConnectionHealthTimers = () => {
      clearTimeout(pingTimeout);
-@@ -127,12 +162,48 @@ export function createWebSocketTransport(
+@@ -127,12 +164,52 @@ export function createWebSocketTransport(
      scheduleHeartbeatPing();
    };
  
@@ -1861,8 +1975,12 @@ index 48945c0..62de0fc 100644
 +        string,
 +        unknown
 +      >;
++      // With its client's fence, the frame check also admits the session policy handoff into a
++      // thread that connection bound; without one, the stateless check refuses every injection.
 +      if (typeof method === "string")
-+        return allowsProviderBoxRequest(boxOwner, method, params);
++        return providerBoxFence
++          ? providerBoxFence.refusal(method, params) === undefined
++          : allowsProviderBoxRequest(boxOwner, method, params);
 +      return (
 +        method === undefined &&
 +        params === undefined &&
@@ -1896,7 +2014,7 @@ index 48945c0..62de0fc 100644
        socket.send(trimmed);
        return;
      }
-@@ -142,9 +213,21 @@ export function createWebSocketTransport(
+@@ -142,9 +219,21 @@ export function createWebSocketTransport(
    // `initialize` can be written before the WebSocket open event fires. Buffer
    // whole JSON-RPC frames so stdio and websocket transports share call timing.
    socket.once("open", () => {
@@ -1919,7 +2037,7 @@ index 48945c0..62de0fc 100644
      }
      scheduleHeartbeatPing();
    });
-@@ -181,6 +264,9 @@ export function createWebSocketTransport(
+@@ -181,6 +270,9 @@ export function createWebSocketTransport(
      events.emit("exit", code, reason.toString("utf8"));
    });
    socket.on("message", (data) => {
@@ -1929,7 +2047,7 @@ index 48945c0..62de0fc 100644
      if (options.transport === "websocket") {
        recordConnectionActivity();
      }
-@@ -215,7 +301,10 @@ export function createWebSocketTransport(
+@@ -215,7 +307,10 @@ export function createWebSocketTransport(
      },
    });
    const closeSocket = () => {
