@@ -471,19 +471,21 @@ export async function createExternalSandboxRegistration(
     if (!registration || !asRecord(registration.capabilities)) {
       throw new Error("The selected Sandbox package must return one Driver registration.");
     }
-    // A package that supplies the selected Gateway beside a repository Git Proxy with no static
-    // model provider is repository-only, as the bundled OpenShell owner is: ordinary model
-    // sources stay with its Gateway. The InstalledDriver still requires the Git transport.
-    const providers = asRecord(asRecord(asRecord(registration.capabilities)?.credential_proxy)?.sourceControl)
-      ?.providers;
+    // A package that supplies the selected Gateway beside its own repository Git Proxy, with no
+    // static provider and an installed repository authority, is repository-only, as the bundled
+    // OpenShell owner is: ordinary model sources stay with its Gateway. A package without that
+    // transport keeps the static-provider rule; the InstalledDriver rechecks the transport.
+    const views = asRecord(registration.capabilities);
+    const proxyView = asRecord(views?.credential_proxy);
+    const providers = asRecord(proxyView?.sourceControl)?.providers;
     const repositoryOnly =
       repositoryAuthorityIdentity !== undefined &&
       selected.includes("credential_gateway") &&
       selected.includes("credential_proxy") &&
+      asRecord(asRecord(views?.sandbox)?.repositoryAccess) !== undefined &&
+      typeof proxyView?.bindRepositoryGit === "function" &&
       Array.isArray(providers) &&
-      !providers.some(
-        (provider) => asRecord(asRecord(provider)?.sourceType)?.harnessAuth !== undefined,
-      );
+      providers.length === 0;
     const owner = new InstalledDriver(
       repositoryAuthorityIdentity === undefined
         ? selection

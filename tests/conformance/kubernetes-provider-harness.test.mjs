@@ -32,6 +32,11 @@ import {
   InstalledDriver,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
+import { createExternalSandboxRegistration } from "../../apps/controller/src/composition/driver-packages.ts";
+import { installPackagedGatewayRegistration } from "../../apps/controller/src/composition/installation-config.ts";
+import * as packagedGatewayFixture from "../fixtures/driver-packages/protected-execution-driver/model-gateway.ts";
+import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
 import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
 import { createCodexStartup, login, probe, timedOut } from "../fixtures/codex-native-startup.mjs";
 import {
@@ -1648,5 +1653,274 @@ test("provider Harness protected execution is released only on current signed in
         assert.equal(runtime.status().runtimeFailure?.code, failure);
       }
     },
+  );
+});
+
+test("a packaged Credential Gateway attaches the protected Harness model source exactly once", async (t) => {
+  const fixture = await preparedEndpoint(
+    providerEndpointFixture({
+      servicePrincipalCredentials: { mode: "disabled" },
+      revisionOverrides: {
+        id: "rev_7a1c2e70-5a4c-4d4e-9d61-2f0c8a2b6c11",
+        agentId: "agt_4f0e9a52-8c1b-4b55-a7d4-63c0d0f7e2a9",
+        servicePrincipalId: "spn_1b7d4c80-2e3f-4a91-8b6e-0c5a9d3f7e21",
+      },
+    }),
+  );
+  const { revision, core, save } = fixture;
+  // The package's peer reports the installed receipt for the fixture's own release protocol.
+  let installed;
+  const { cert, key } = await createTlsMaterial(t);
+  const peer = createHttpsServer({ cert, key }, (req, res) => {
+    assert.equal(req.headers.authorization, "Bearer test-supervisor");
+    res.writeHead(200).end(JSON.stringify(installed));
+  });
+  const endpoint = "https://127.0.0.1:" + (await listen(t, peer));
+  const id = fixture.sandbox.id;
+  const implementation = fixture.sandbox.implementation;
+  const sourceId = "cs_00000000-0000-4000-8000-000000000661";
+  const sourceType = {
+    type: "packaged-model",
+    config: [],
+    secrets: [{ name: "api_key", required: true }],
+    rotation: "none",
+    harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+  };
+  const source = {
+    id: sourceId,
+    namespaceId: tenant.id,
+    name: "model",
+    type: sourceType.type,
+    config: {},
+    secrets: {},
+    ownerCapability: "credential_gateway",
+    driverId: id,
+    state: "ready",
+    createdAt: tenant.createdAt,
+  };
+  // Compute sees only the paired Sandbox through Kubernetes. Its other views are the
+  // installed package's own Credential Proxy and Credential Gateway.
+  let enrolled;
+  const released = new DependencyUnavailableError("stop after the enrollment boundary");
+  const sandbox = {
+    ...fixture.sandbox,
+    capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    facets: ["networking"],
+    cleanup: assert.fail,
+    harnessStatus: async () => ({ state: "serving" }),
+    // Release must not read repository material; only its presence admits a Git plan.
+    repositoryAccess: {
+      verifyExecution: assert.fail,
+      retireExpired: assert.fail,
+      routeReadiness: assert.fail,
+      materialSettledAt: assert.fail,
+      isRouteBlockedError: assert.fail,
+    },
+    async enrollHarness(context) {
+      enrolled = context;
+      throw released;
+    },
+  };
+  const owner = await createExternalSandboxRegistration(
+    {
+      createDriver(options) {
+        const registration = packagedGatewayFixture.createDriver(options);
+        const proxy = registration.capabilities.credential_proxy;
+        return {
+          ...registration,
+          capabilities: {
+            ...registration.capabilities,
+            sandbox,
+            // The paired Proxy confirms the per-request repository Git sender guarantee.
+            credential_proxy: {
+              ...proxy,
+              sourceControl: {
+                ...proxy.sourceControl,
+                assertAvailable: async (_signal, profile) =>
+                  profile === "github_repository"
+                    ? { profile, authorization: "online-request" }
+                    : assert.fail(`unexpected repository profile ${profile}`),
+              },
+              bindRepositoryGit: assert.fail,
+            },
+          },
+        };
+      },
+    },
+    { id, implementation, configuration: { endpoint, ca: cert.toString("utf8") } },
+    ["credential_gateway", "credential_proxy"],
+  );
+  t.after(() => owner.close());
+  const gateway = owner.require("credential_gateway");
+  const attachments = [];
+  t.mock.method(gateway, "listSourceTypes", async () => [sourceType]);
+  t.mock.method(gateway, "attachForRevision", async (context) => {
+    attachments.push(context.sources.map((entry) => entry.id));
+    return context.sources.map((entry) => ({ sourceId: entry.id, ref: "packaged-model-ref" }));
+  });
+  // OCC accepts the packaged Gateway only with the Sandbox and Proxy of the same registration.
+  const occ = new OpenClawController({
+    id: "installation",
+    name: "installation",
+    createdAt: "2026-10-01T00:00:00Z",
+  });
+  installPackagedGatewayRegistration(occ, owner, {
+    sandbox: owner.require("sandbox"),
+    gateway,
+    protectedOwner: owner,
+    proxy: owner.require("credential_proxy"),
+  });
+  await occ.validateBackendConfiguration();
+  const driver = new KubernetesComputeDriver(fixture.driver.options, {
+    protectedDriver: owner,
+    credentialGatewayDriver: gateway,
+    nodeEnrollment: fixture.driver.nodeEnrollment,
+  });
+  driver.apiClients = Promise.resolve(fixture.clients);
+
+  const execution = {
+    installationId: "ins_00000000-0000-4000-8000-000000000001",
+    namespaceId: tenant.id,
+    agentId: revision.agentId,
+    servicePrincipalId: revision.servicePrincipalId,
+    revisionId: "ar_00000000-0000-4000-8000-000000000662",
+    executionId: "00000000-0000-4000-8000-000000000662",
+  };
+  const repositoryGit = {
+    driver: { id: "repository", implementation: "github" },
+    bindings: [
+      {
+        repositoryRef: "project",
+        profile: "github-repository",
+        backendId: "github-primary",
+        grant: { providerInstanceId: "github", repositoryId: "42", grantId: "project" },
+      },
+    ],
+    deadlineWallMs: Date.now() + 600_000,
+  };
+  const harnessAuth = {
+    method: "credential_source",
+    sourceId,
+    credentialGatewayId: gateway.id,
+    sourceType: sourceType.type,
+    loginMode: "api_key",
+  };
+  const plan = {
+    id: "00000000-0000-4000-8000-000000000663",
+    generation: 1,
+    execution,
+    driver: owner.ref,
+    sandboxDriverId: id,
+    egressDriverId: id,
+    routes: [],
+    harnessCredentialSource: harnessAuth,
+    repositoryGit,
+    repositoryGitAuthorization: "online-request",
+  };
+  const protectedRevision = {
+    ...revision,
+    id: execution.revisionId,
+    revision: revision.revision + 1,
+    executionAdmission: { version: 5, mode: "protected" },
+    harnessAuth,
+    egressPlan: plan,
+    credentialSources: [{ sourceId, credentialGatewayId: gateway.id, sourceType: source.type }],
+  };
+  installed = {
+    plan,
+    sandboxId: "packaged-sandbox",
+    sender: owner.require("credential_proxy").sourceControl.sender,
+    installedAt: "2026-10-14T00:00:00.000Z",
+    enforcement: {
+      instanceId: "packaged-instance",
+      configurationId: "packaged-configuration",
+      authorityScope: "execution",
+      policyHash: "packaged-policy",
+    },
+  };
+  // Admission: the paired Compute release accepts this registration's exact plan.
+  driver.validateExecutionAdmission(protectedRevision, owner);
+  assert.ok(driver.admitRevision(protectedRevision));
+
+  const setup = await core.readNamespacedSecret({ name: driver.workspaceNodeName(revision) });
+  const seedNode = (target) =>
+    save({
+      ...setup,
+      metadata: {
+        ...setup.metadata,
+        name: driver.workspaceNodeName(target),
+        labels: { ...setup.metadata.labels, "openclaw.dev/revision": target.id },
+      },
+    });
+  let committed;
+  const custody = {
+    async recordEgressInstallation(value) {
+      committed = value;
+    },
+    currentEgressInstallation: async () => committed ?? installed,
+  };
+  const environmentOf = (requirements) =>
+    Object.fromEntries(
+      requirements.environment.flatMap((entry) =>
+        "value" in entry ? [[entry.name, entry.value]] : [],
+      ),
+    );
+
+  // Release: the packaged Gateway attaches the one bound model source, and nothing else.
+  seedNode(protectedRevision);
+  await assert.rejects(
+    // The Worker resolves the Harness model source apart from other bound sources.
+    driver.prepareRevision(protectedRevision, {
+      ...custody,
+      harnessAuth: { ...harnessAuth, source },
+      credentialSources: [],
+    }),
+    (error) => error === released,
+  );
+  assert.deepEqual(attachments, [[sourceId]]);
+  assert.deepEqual(enrolled.requirements.credentialAttachments, [
+    { sourceId, ref: "packaged-model-ref" },
+  ]);
+  const modelEnvironment = environmentOf(enrolled.requirements);
+  assert.equal(modelEnvironment.CODEX_LOGIN_MODE, "api_key");
+  assert.equal(modelEnvironment.OPENAI_API_KEY, undefined, "the model key is not rendered");
+
+  // A runtime revision of the same package has no inference enrollment and no attachment.
+  const { harnessCredentialSource: _source, ...runtimePlan } = plan;
+  const runtimeRevision = {
+    ...protectedRevision,
+    id: "ar_00000000-0000-4000-8000-000000000664",
+    revision: protectedRevision.revision + 1,
+    harnessAuth: { method: "runtime" },
+    credentialSources: [],
+    egressPlan: {
+      ...runtimePlan,
+      id: "00000000-0000-4000-8000-000000000665",
+      execution: {
+        ...execution,
+        revisionId: "ar_00000000-0000-4000-8000-000000000664",
+        executionId: "00000000-0000-4000-8000-000000000664",
+      },
+    },
+  };
+  installed = { ...installed, plan: runtimeRevision.egressPlan };
+  committed = undefined;
+  enrolled = undefined;
+  seedNode(runtimeRevision);
+  driver.validateExecutionAdmission(runtimeRevision, owner);
+  await assert.rejects(
+    driver.prepareRevision(runtimeRevision, {
+      ...custody,
+      harnessAuth: { method: "runtime" },
+      credentialSources: [],
+    }),
+    (error) => error === released,
+  );
+  assert.deepEqual(attachments, [[sourceId]], "no attachment without an inference enrollment");
+  assert.deepEqual(enrolled.requirements.credentialAttachments, []);
+  assert.equal(
+    environmentOf(enrolled.requirements).CODEX_LOGIN_MODE,
+    "protected-no-inference",
   );
 });

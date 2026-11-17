@@ -1472,6 +1472,93 @@ test("an installed Sandbox can explicitly select its packaged Credential Gateway
       assert.equal((await update(controller(withProxy, true), packagedSource.id)).state, "ready");
       await remove(controller(withProxy, true), packagedSource.id);
       assert.equal(operations.at(-1), "remove");
+
+      // A packaged Gateway beside a Proxy that binds repository Git and has no static model
+      // provider is repository-only: an ordinary model source enrolls while that Proxy is
+      // selected, so the paired Sandbox configuration is final before the owner is pinned.
+      const repositoryOnlyPackage = {
+        createDriver(options: Parameters<typeof fixture.createDriver>[0]) {
+          const registration = fixture.createDriver(options);
+          const { sandbox: view, credential_proxy: proxyView } = registration.capabilities;
+          assert.ok(view && proxyView);
+          return {
+            ...registration,
+            capabilities: {
+              ...registration.capabilities,
+              sandbox: {
+                ...view,
+                repositoryAccess: {
+                  verifyExecution: assert.fail,
+                  retireExpired: assert.fail,
+                  routeReadiness: assert.fail,
+                  materialSettledAt: assert.fail,
+                  isRouteBlockedError: assert.fail,
+                },
+              },
+              credential_proxy: {
+                ...proxyView,
+                sourceControl: { ...proxyView.sourceControl, providers: [] },
+                bindRepositoryGit: assert.fail,
+              },
+            },
+          };
+        },
+      };
+      const registerRepositoryOnly = (authority?: string) =>
+        createExternalSandboxRegistration(
+          repositoryOnlyPackage as unknown as Parameters<
+            typeof createExternalSandboxRegistration
+          >[0],
+          selection,
+          ["credential_gateway", "credential_proxy"],
+          authority,
+        );
+      const repositoryOnly = await registerRepositoryOnly("fixture-repository-authority");
+      const withoutRepository = await registerRepositoryOnly();
+      scenario.after(() => Promise.all([repositoryOnly.close(), withoutRepository.close()]));
+      assert.equal(repositoryOnly.allowsOrdinaryCredentialGateway(), true);
+      assert.equal(withoutRepository.allowsOrdinaryCredentialGateway(), false);
+      // Repository authority does not take part in the Gateway owner pin.
+      assert.equal(repositoryOnly.credentialGatewayOwnerId, firstOwner.credentialGatewayOwnerId);
+      const modelType = {
+        type: "owner-model",
+        config: [],
+        secrets: [{ name: "input", required: true }],
+        rotation: "none",
+        harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+      } as const;
+      for (const owner of [repositoryOnly, withoutRepository]) {
+        const view = owner.require("credential_gateway");
+        for (const key of [
+          "validateSourceConfig",
+          "registerSource",
+          "updateSource",
+          "sourceStatus",
+          "removeSource",
+        ] as const) {
+          scenario.mock.method(view, key, methods[key]);
+        }
+        scenario.mock.method(view, "listSourceTypes", async () => [modelType]);
+      }
+      const modelInput = {
+        namespaceId: namespace.id,
+        type: modelType.type,
+        secrets: { input: secret.ref },
+        name: "model",
+      };
+      // Without repository Git the Proxy has no path for a model source.
+      await assert.rejects(
+        controller(withoutRepository, true).createCredentialSource(actor, modelInput),
+        { name: "ResourceStateConflictError" },
+      );
+      const modelSource = await controller(repositoryOnly, true).createCredentialSource(
+        actor,
+        modelInput,
+      );
+      now += 71_000;
+      assert.equal((await update(controller(repositoryOnly, true), modelSource.id)).state, "ready");
+      assert.equal((await update(controller(firstOwner), modelSource.id)).state, "ready");
+      await refuse(controller(changedOwner), modelSource.id);
     },
   );
 
@@ -1491,7 +1578,7 @@ test("an installed Sandbox can explicitly select its packaged Credential Gateway
               host: "127.0.0.1",
               databaseUrl: "unused",
               drivers,
-              authSecret: "fixture",
+              authSecret: "packaged-gateway-early-failure-fixture-secret",
               authBaseURL: "http://localhost:3000",
               serviceAccountDriverFactory: () => {},
             }),
