@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-13"
-last_updated_session: "authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c"
+updated: "2026-11-18"
+last_updated_session: "01a1eb01-27e9-7d91-a1e5-c673380d2fc8"
 ---
 
 # Agent sandbox policy flow
@@ -60,18 +60,21 @@ Agent discovery and policy GET
 use the same descriptor with owner-generated facet action URLs and current
 availability. The registry never selects a Driver from submitted additions.
 
-`validateAgentSandboxPolicy` authorizes the exact Agent and policy, checks the
-current editing flag, expected version, and pending application, then runs shared
-schema/semantic validation, the Driver contribution (which can only narrow it), and
-current ceiling/provider admission. An empty or reversed port range is never inside
-the ceiling. It returns a configuration result without entering a mutation
-transaction. Schema and semantic refusals carry safe `error.details`; stale or
-unauthorized requests retain their resource errors. Every later mutation repeats
-these checks. Ceiling refusal keeps its Installation-delegation cause; unsupported
-wildcard/range refusal names the Driver capability limit. Both retain field details.
-`internal/occclient/transport.go:APIError.Error` prints up to 32 public detail
-records as escaped JSON and omits records with Unicode control characters, so
-CLI callers retain the same field and cause without terminal controls.
+`validateAgentSandboxPolicy` authorizes the Agent and policy, checks editing,
+version and pending work, then validates grants against the shared schema and
+the Driver's narrower rules. `packages/contracts/src/deployment-policy.ts:networkGrantAdmissionDetails`
+checks each executable, hostname and complete port range against the Installation
+ceiling and the Sandbox's wildcard and port-range capabilities. Preview writes
+nothing. Save and deploy repeat admission.
+
+Validation errors identify the field and the violated ceiling or capability.
+Stale and unauthorized requests retain their resource errors.
+`internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details,
+omitting records with Unicode control characters.
+
+Network admission grants no credential authority. The staged
+`deploymentPolicyAdmissionDetails` contract also requires each binding's reviewed
+presentation and request allowlist. Agent revision admission still needs to supply these inputs.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
@@ -269,6 +272,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-18 03:52: Trace the shared network admission check used by the Agent policy and revision paths. (01a1eb01-27e9-7d91-a1e5-c673380d2fc8 - 23b54e2855d0a8d60b2168588fe8c7d7f06e9b36)
 
 - 2026-11-13 22:21: Reject policy saves that remove a pending application. (authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c - cf0370780b4e885e35ee463033b6926e5d3109ef)
 
