@@ -620,8 +620,10 @@ function installedConfig(value: unknown): InstalledConfig {
       config.read.length !== 2 ||
       !config.read.includes("/app") ||
       !config.read.includes("/opt/oce/runtime") ||
-      config.exec.length !== 1 ||
       config.exec[0] !== "/usr/bin/tini" ||
+      // A protected host also grants the stock Git and gh it runs: the overlap check below
+      // still keeps every grant away from the file node's state and root.
+      (config.exec.length !== 1 && data.protectedRepository === undefined) ||
       contains(FILE_NODE_STATE, separateWorkspaceNode.rootfs) ||
       contains(separateWorkspaceNode.rootfs, FILE_NODE_STATE) ||
       isolated.some((isolatedPath) =>
