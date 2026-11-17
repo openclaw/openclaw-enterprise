@@ -8,7 +8,7 @@ import { temporaryDirectory } from "./temporary-directory.mjs";
 export async function protectedDriverPackage(
   t: TestContext,
   id: string,
-  filename: "index" | "repository-git" = "index",
+  filename: "index" | "repository-git" | "request-sender" = "index",
 ) {
   const directory = await temporaryDirectory(t, "oce-protected-driver-");
   const entry = join(directory, "node_modules", id);
@@ -21,7 +21,7 @@ export async function protectedDriverPackage(
     join(entry, "package.json"),
     JSON.stringify({ name: id, version: "1.0.0", exports: "./" + filename + ".mjs" }),
   );
-  for (const name of filename === "repository-git" ? ["index", filename] : [filename]) {
+  for (const name of filename === "index" ? [filename] : ["index", filename]) {
     const source = await readFile(
       new URL(
         "../fixtures/driver-packages/protected-execution-driver/" + name + ".ts",

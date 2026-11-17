@@ -242,6 +242,11 @@ const reviewedImports: ReviewedModules = {
   "drivers/repo/github/access/grants.ts": { "node:crypto": ["createHash"] },
   // Hash the canonical public CA bundle for issuer trust identity.
   "drivers/repo/github/access/origin.ts": { "node:crypto": ["createHash"] },
+  // Worker only: digest of the classified request view and its exchange ID. The material
+  // value is read through the caller's authority port and only placed in the returned header.
+  "drivers/repo/github/access/protected-requests.ts": {
+    "node:crypto": ["createHash", "randomUUID"],
+  },
   "drivers/repo/github/policy.ts": {
     "@openclaw-enterprise/occ": ["ScopeViolationError"],
   },

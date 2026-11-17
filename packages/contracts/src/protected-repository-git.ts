@@ -172,9 +172,10 @@ export interface RepositoryGitBinding extends CredentialProxyBinding {
 }
 
 /**
- * One complete HTTPS request a recipient sent to GitHub, as the sender received it. The sender
- * authenticates the execution first, then removes its own credential, `host`, connection and
- * framing headers. Header names are lowercase, in received order, and appear once each.
+ * One HTTPS request a recipient sent to GitHub, before any credential is added: what an
+ * OpenShell supervisor's request hook sends today. The caller authenticates the execution
+ * first and omits credential, `host`, connection and framing headers. Header names are
+ * lowercase and in received order; a repeated name is refused.
  */
 export interface GitHubRequestView {
   readonly target: {
@@ -187,7 +188,7 @@ export interface GitHubRequestView {
     readonly query: string;
   };
   readonly headers: readonly (readonly [string, string])[];
-  /** The whole body (at most 4 MiB), never a stream. */
+  /** The whole buffered body, at most 4 MiB. Git push packs count toward it, as on OpenShell. */
   readonly body: Uint8Array;
 }
 
@@ -228,18 +229,14 @@ export type GitHubRequestRefusal =
 
 export type GitHubRequestDecision =
   | {
-      readonly kind: "send";
+      readonly kind: "allow";
       readonly operation: GitHubRequestOperation;
       /** Start sending before this instant, or refuse the request. Never retry a send. */
       readonly sendBy: string;
-      /** Exactly this request: the received target and headers plus OCE's `authorization`. */
-      readonly upstream: {
-        readonly origin: string;
-        readonly method: GitHubRequestView["target"]["method"];
-        readonly path: string;
-        readonly headers: readonly (readonly [string, string])[];
-        readonly body: Uint8Array;
-      };
+      /** The one header to add to exactly the request OCE classified, nothing else. An
+       * injector adds it to the held request; a forwarding sender sends the received request
+       * with it. Never log, store or reuse it. */
+      readonly inject: { readonly name: "authorization"; readonly value: string };
     }
   | {
       readonly kind: "refused";
@@ -253,8 +250,8 @@ export type GitHubRequestDecision =
  * Worker-supplied: OCE's own GitHub request classification and authorization, bound to the
  * same authority as `bindRepositoryGit`. Each call reads the installed material, classifies
  * the request for that grant (Git smart HTTP, GitHub REST and GraphQL, the draft pull request
- * create), records one possible use and returns the request to send. Senders keep no policy,
- * token or ref rules of their own.
+ * create), records one possible use and answers allow (with the credential header) or refuse.
+ * Senders and injectors keep no policy, token or ref rules of their own.
  */
 export interface RepositoryGitRequests {
   authorize(input: {

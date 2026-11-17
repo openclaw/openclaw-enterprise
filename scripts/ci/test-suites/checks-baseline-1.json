@@ -136,6 +136,7 @@
     "tests/integration/egress-stock-online-authority.test.ts",
     "tests/integration/managed-plugin-request-authority.test.ts",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
+    "tests/integration/github-request-authority.test.ts",
     "tests/integration/harness-egress-probe-diagnostics.test.ts",
     "tests/integration/openshell-permission-diagnostic.test.ts",
     "tests/conformance/openshell-prepared-git-provider.test.ts",
@@ -769,6 +770,15 @@
     },
     {
       "path": "tests/integration/managed-plugin-request-authority.test.ts"
+    },
+    {
+      "path": "tests/integration/github-request-authority.test.ts",
+      "expectedTests": [
+        "repository_git: the installed injector and the bundled OpenShell route decide alike",
+        "github_repository: the installed injector and the bundled OpenShell route decide alike",
+        "github_installation: the installed injector and the bundled OpenShell route decide alike",
+        "the requests port refuses a request an injector must not forward"
+      ]
     },
     {
       "path": "tests/integration/egress-stock-online-git-authority.test.mjs",

@@ -17,8 +17,11 @@ import type {
   RepositoryGitRequests,
   RepositoryGitSendDecision,
 } from "@openclaw-enterprise/contracts";
-import { hasControlCharacter } from "@openclaw-enterprise/utils";
-import { decodePushedBranchRef, normalizePushRefAllowlist } from "../../access/client-contracts.ts";
+import {
+  decodePushedBranchRef,
+  hasControlCharacter,
+  normalizePushRefAllowlist,
+} from "../../access/client-contracts.ts";
 import type { InstalledGitMaterial } from "./prepared-repository-git.ts";
 import { selectGitHubRequest } from "./routes/request-selection.ts";
 
@@ -384,8 +387,8 @@ const gitOperations: ReadonlySet<GitHubRequestOperation> = new Set([
 ]);
 
 /**
- * OCE's request authorization for an installed sender, bound to the Worker's authority.
- * The token appears only in the returned `authorization` header. Whether the material was
+ * OCE's request authorization for an installed sender or injector, bound to the Worker's
+ * authority. The token appears only in the returned header value. Whether the material was
  * prepared ahead or is minted for this request stays behind `readMaterial`.
  */
 export function createRepositoryGitRequests(
@@ -520,26 +523,15 @@ export function createRepositoryGitRequests(
       if (!(Date.now() < Date.parse(sendBy))) {
         return refuse("approval_denied", operation);
       }
-      const { target } = request;
-      const origin = "https://" + target.host + (target.port === 443 ? "" : ":" + target.port);
       return {
-        kind: "send",
+        kind: "allow",
         operation,
         sendBy,
-        upstream: {
-          origin,
-          method: target.method,
-          path: target.path + (target.query ? "?" + target.query : ""),
-          headers: [
-            ...request.headers.map(([name, value]): readonly [string, string] => [name, value]),
-            [
-              "authorization",
-              gitOperations.has(operation)
-                ? "Basic " + Buffer.from("x-access-token:" + material.value).toString("base64")
-                : "Bearer " + material.value,
-            ],
-          ],
-          body: request.body,
+        inject: {
+          name: "authorization",
+          value: gitOperations.has(operation)
+            ? "Basic " + Buffer.from("x-access-token:" + material.value).toString("base64")
+            : "Bearer " + material.value,
         },
       };
     },
