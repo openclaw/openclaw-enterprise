@@ -138,14 +138,6 @@ export function documentApiExamples<T>(document: T): T {
             if (!failure) {
               throw new Error(`Missing error example: ${name} ${status}`);
             }
-            // A route can report its own availability limit independently of the selected Driver.
-            if (status === "501" && response.description !== failure[1]) {
-              content.examples = example(
-                { error: { code: failure[0], message: response.description }, meta },
-                failure[0],
-              );
-              continue;
-            }
             sharedExamples[failure[0]] = {
               summary: failure[0],
               value: { error: { code: failure[0], message: failure[1] }, meta },

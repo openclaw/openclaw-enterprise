@@ -1516,11 +1516,11 @@ Example response
 | Operation | Summary |
 | --- | --- |
 | [`GET /connection-templates`](#get-connectiontemplates) | List all Installation-wide and Namespace-scoped connection templates |
-| [`POST /connection-templates`](#post-connectiontemplates) | Create an Installation-wide or Namespace-scoped connection template. This controller returns 501 for static_bearer templates |
+| [`POST /connection-templates`](#post-connectiontemplates) | Create an Installation-wide or Namespace-scoped connection template |
 | [`POST /connection-templates/discover`](#post-connectiontemplatesdiscover) | Read public MCP resource and authorization server metadata |
 | [`DELETE /connection-templates/{connectionTemplateId}`](#delete-connectiontemplatesconnectiontemplateid) | Delete a connection template |
 | [`GET /connection-templates/{connectionTemplateId}`](#get-connectiontemplatesconnectiontemplateid) | Get one connection template |
-| [`PATCH /connection-templates/{connectionTemplateId}`](#patch-connectiontemplatesconnectiontemplateid) | Rename a connection template, or create a version with new approved values. This controller returns 501 for static_bearer templates |
+| [`PATCH /connection-templates/{connectionTemplateId}`](#patch-connectiontemplatesconnectiontemplateid) | Rename a connection template, or create a version with new approved values |
 | [`GET /namespaces/{namespaceId}/connection-templates`](#get-namespacesnamespaceidconnectiontemplates) | List connection templates the caller may connect in this Namespace |
 | [`GET /namespaces/{namespaceId}/connections`](#get-namespacesnamespaceidconnections) | List completed connections the caller can read in this Namespace |
 | [`POST /namespaces/{namespaceId}/connections`](#post-namespacesnamespaceidconnections) | Start consent for a reusable account in this Namespace |
@@ -1623,7 +1623,7 @@ Example response
 
 <span id="post-connectiontemplates"></span>
 
-Create an Installation-wide or Namespace-scoped connection template. This controller returns 501 for static_bearer templates
+Create an Installation-wide or Namespace-scoped connection template
 
 **Operation ID:** `createConnectionTemplate`
 
@@ -1677,7 +1677,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | Named model providers are unavailable on this controller. |
 | `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
@@ -1945,7 +1944,7 @@ Example response
 
 <span id="patch-connectiontemplatesconnectiontemplateid"></span>
 
-Rename a connection template, or create a version with new approved values. This controller returns 501 for static_bearer templates
+Rename a connection template, or create a version with new approved values
 
 **Operation ID:** `updateConnectionTemplate`
 
@@ -1989,7 +1988,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | Named model providers are unavailable on this controller. |
 | `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
@@ -2680,11 +2678,11 @@ Complete a browser connection for the signed-in person who started it
 | [`POST /installation/bootstrap`](#post-installationbootstrap) | Bootstrap the singleton Installation |
 | [`GET /installation/deployment-inventory`](#get-installationdeploymentinventory) | Get the complete authorized Agent deployment inventory |
 | [`GET /installation/driver-configurations`](#get-installationdriverconfigurations) | Inspect selected Driver accepted startup values and configuration schemas |
-| [`GET /model-providers`](#get-modelproviders) | List Installation model providers. This controller returns 501 for every valid request |
-| [`POST /model-providers`](#post-modelproviders) | Create an Installation model provider. This controller returns 501 for every valid request |
-| [`GET /model-providers/{modelProviderId}`](#get-modelprovidersmodelproviderid) | Read a model provider. This controller returns 501 for every valid request |
-| [`PUT /model-providers/{modelProviderId}`](#put-modelprovidersmodelproviderid) | Replace model provider settings if the saved fingerprint matches. This controller returns 501 for every valid request |
-| [`GET /namespaces/{namespaceId}/model-providers`](#get-namespacesnamespaceidmodelproviders) | List the model providers available when creating an Agent. This controller returns 501 for every valid request |
+| [`GET /model-providers`](#get-modelproviders) | List Installation model providers |
+| [`POST /model-providers`](#post-modelproviders) | Create an Installation model provider |
+| [`GET /model-providers/{modelProviderId}`](#get-modelprovidersmodelproviderid) | Read a model provider |
+| [`PUT /model-providers/{modelProviderId}`](#put-modelprovidersmodelproviderid) | Replace model provider settings if the saved fingerprint matches |
+| [`GET /namespaces/{namespaceId}/model-providers`](#get-namespacesnamespaceidmodelproviders) | List the model providers available when creating an Agent |
 | [`GET /observability`](#get-observability) | Get the configured external observability destination |
 
 #### `GET /installation`
@@ -3063,7 +3061,7 @@ Example response
 
 <span id="get-modelproviders"></span>
 
-List Installation model providers. This controller returns 501 for every valid request
+List Installation model providers
 
 **Operation ID:** `listModelProviders`
 
@@ -3083,7 +3081,6 @@ List Installation model providers. This controller returns 501 for every valid r
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
 | `500` | The platform request could not be completed. |
-| `501` | Named model providers are unavailable on this controller. |
 | `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
@@ -3150,7 +3147,7 @@ Example response
 
 <span id="post-modelproviders"></span>
 
-Create an Installation model provider. This controller returns 501 for every valid request
+Create an Installation model provider
 
 **Operation ID:** `createModelProvider`
 
@@ -3213,7 +3210,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | Named model providers are unavailable on this controller. |
 | `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
@@ -3268,7 +3264,7 @@ Example response
 
 <span id="get-modelprovidersmodelproviderid"></span>
 
-Read a model provider. This controller returns 501 for every valid request
+Read a model provider
 
 **Operation ID:** `getModelProvider`
 
@@ -3294,7 +3290,6 @@ Read a model provider. This controller returns 501 for every valid request
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
 | `500` | The platform request could not be completed. |
-| `501` | Named model providers are unavailable on this controller. |
 | `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
@@ -3349,7 +3344,7 @@ Example response
 
 <span id="put-modelprovidersmodelproviderid"></span>
 
-Replace model provider settings if the saved fingerprint matches. This controller returns 501 for every valid request
+Replace model provider settings if the saved fingerprint matches
 
 **Operation ID:** `updateModelProvider`
 
@@ -3420,7 +3415,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | Named model providers are unavailable on this controller. |
 | `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
@@ -3475,7 +3469,7 @@ Example response
 
 <span id="get-namespacesnamespaceidmodelproviders"></span>
 
-List the model providers available when creating an Agent. This controller returns 501 for every valid request
+List the model providers available when creating an Agent
 
 **Operation ID:** `listUsableModelProviders`
 
@@ -3501,7 +3495,6 @@ List the model providers available when creating an Agent. This controller retur
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
 | `500` | The platform request could not be completed. |
-| `501` | Named model providers are unavailable on this controller. |
 | `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
@@ -4149,21 +4142,21 @@ Example response
 | Operation | Summary |
 | --- | --- |
 | [`GET /namespaces/{namespaceId}/agents`](#get-namespacesnamespaceidagents) | List authorized Agents in one exact Namespace |
-| [`POST /namespaces/{namespaceId}/agents`](#post-namespacesnamespaceidagents) | Create a Namespace-owned Agent. This controller returns 501 when the request includes modelProviderId |
+| [`POST /namespaces/{namespaceId}/agents`](#post-namespacesnamespaceidagents) | Create a Namespace-owned Agent |
 | [`POST /namespaces/{namespaceId}/agents/device-authorizations`](#post-namespacesnamespaceidagentsdeviceauthorizations) | Experimental: Start a private device login for Agent configuration |
 | [`DELETE /namespaces/{namespaceId}/agents/device-authorizations/{secretId}`](#delete-namespacesnamespaceidagentsdeviceauthorizationssecretid) | Experimental: Discard a local device login without upstream revocation |
 | [`POST /namespaces/{namespaceId}/agents/device-authorizations/{secretId}/poll`](#post-namespacesnamespaceidagentsdeviceauthorizationssecretidpoll) | Experimental: Complete device login without returning credential material |
 | [`POST /namespaces/{namespaceId}/agents/models`](#post-namespacesnamespaceidagentsmodels) | List provider models for Agent creation without storing the supplied credential |
 | [`POST /namespaces/{namespaceId}/agents/plugins`](#post-namespacesnamespaceidagentsplugins) | List or search available plugins for Agent creation using the selected Driver |
 | [`POST /namespaces/{namespaceId}/agents/plugins/details`](#post-namespacesnamespaceidagentspluginsdetails) | Read plugin details using the selected Driver |
-| [`POST /namespaces/{namespaceId}/agents/provision`](#post-namespacesnamespaceidagentsprovision) | Create a new Agent and queue first-time provisioning. This controller returns 501 when the request includes modelProviderId |
+| [`POST /namespaces/{namespaceId}/agents/provision`](#post-namespacesnamespaceidagentsprovision) | Create a new Agent and queue first-time provisioning |
 | [`GET /namespaces/{namespaceId}/agents/provision/{workId}`](#get-namespacesnamespaceidagentsprovisionworkid) | Get first-time provisioning status for one exact work item |
 | [`POST /namespaces/{namespaceId}/agents/provision/{workId}/retry`](#post-namespacesnamespaceidagentsprovisionworkidretry) | Retry failed first-time provisioning for one exact work item |
 | [`GET /namespaces/{namespaceId}/agents/repository-options`](#get-namespacesnamespaceidagentsrepositoryoptions) | List approved repository choices for Agent creation in one Namespace |
-| [`POST /namespaces/{namespaceId}/agents/validate`](#post-namespacesnamespaceidagentsvalidate) | Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything. This controller returns 501 when the request includes modelProviderId |
+| [`POST /namespaces/{namespaceId}/agents/validate`](#post-namespacesnamespaceidagentsvalidate) | Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything |
 | [`DELETE /namespaces/{namespaceId}/agents/{agentId}`](#delete-namespacesnamespaceidagentsagentid) | Begin or retry deletion of the requested Agent and its Agent revisions |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}`](#get-namespacesnamespaceidagentsagentid) | Get an exact Namespace-owned Agent |
-| [`PATCH /namespaces/{namespaceId}/agents/{agentId}`](#patch-namespacesnamespaceidagentsagentid) | Replace an exact Namespace-owned Agent's editable draft. This controller returns 501 when the request includes modelProviderId |
+| [`PATCH /namespaces/{namespaceId}/agents/{agentId}`](#patch-namespacesnamespaceidagentsagentid) | Replace an exact Namespace-owned Agent's editable draft |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/audit-events`](#get-namespacesnamespaceidagentsagentidauditevents) | List audit metadata for one Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdraw`](#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw) | Revoke one credential source from the selected Agent revision |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdrawal`](#get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal) | Get the withdrawal state of a credential source for an Agent |
@@ -4289,7 +4282,7 @@ Example response
 
 <span id="post-namespacesnamespaceidagents"></span>
 
-Create a Namespace-owned Agent. This controller returns 501 when the request includes modelProviderId
+Create a Namespace-owned Agent
 
 **Operation ID:** `createAgent`
 
@@ -4378,7 +4371,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | Named model providers are unavailable on this controller. |
 | `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
@@ -4978,7 +4970,7 @@ Example response
 
 <span id="post-namespacesnamespaceidagentsprovision"></span>
 
-Create a new Agent and queue first-time provisioning. This controller returns 501 when the request includes modelProviderId
+Create a new Agent and queue first-time provisioning
 
 **Operation ID:** `provisionAgent`
 
@@ -5139,7 +5131,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | Named model providers are unavailable on this controller. |
 | `503` | A required dependency is unavailable. |
 
 **`202` response body:** `application/json`
@@ -5435,7 +5426,7 @@ Example response
 
 <span id="post-namespacesnamespaceidagentsvalidate"></span>
 
-Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything. This controller returns 501 when the request includes modelProviderId
+Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything
 
 **Operation ID:** `validateAgentCreate`
 
@@ -5580,7 +5571,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | Named model providers are unavailable on this controller. |
 | `503` | A required dependency is unavailable. |
 
 #### `DELETE /namespaces/{namespaceId}/agents/{agentId}`
@@ -5762,7 +5752,7 @@ Example response
 
 <span id="patch-namespacesnamespaceidagentsagentid"></span>
 
-Replace an exact Namespace-owned Agent's editable draft. This controller returns 501 when the request includes modelProviderId
+Replace an exact Namespace-owned Agent's editable draft
 
 **Operation ID:** `updateAgent`
 
@@ -5842,7 +5832,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | Named model providers are unavailable on this controller. |
 | `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
@@ -10302,8 +10291,8 @@ Example response
 
 | Operation | Summary |
 | --- | --- |
-| [`GET /namespaces/{namespaceId}/credential-sources`](#get-namespacesnamespaceidcredentialsources) | List readable credential sources without revealing credential values. This controller returns 501 for the modelProviderId filter |
-| [`POST /namespaces/{namespaceId}/credential-sources`](#post-namespacesnamespaceidcredentialsources) | Register a credential source with the selected Credential Gateway. This controller returns 501 for connectionTemplateId or connectionTemplateVersion |
+| [`GET /namespaces/{namespaceId}/credential-sources`](#get-namespacesnamespaceidcredentialsources) | List readable credential sources without revealing credential values |
+| [`POST /namespaces/{namespaceId}/credential-sources`](#post-namespacesnamespaceidcredentialsources) | Register a credential source with the selected Credential Gateway |
 | [`DELETE /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#delete-namespacesnamespaceidcredentialsourcescredentialsourceid) | Remove an unreferenced credential source from the Credential Gateway |
 | [`GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#get-namespacesnamespaceidcredentialsourcescredentialsourceid) | Get one credential source and its live Credential Gateway status |
 | [`PATCH /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#patch-namespacesnamespaceidcredentialsourcescredentialsourceid) | Push current or replacement Secret values to the Credential Gateway copy |
@@ -10313,7 +10302,7 @@ Example response
 
 <span id="get-namespacesnamespaceidcredentialsources"></span>
 
-List readable credential sources without revealing credential values. This controller returns 501 for the modelProviderId filter
+List readable credential sources without revealing credential values
 
 **Operation ID:** `listCredentialSources`
 
@@ -10341,7 +10330,6 @@ List readable credential sources without revealing credential values. This contr
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
 | `500` | The platform request could not be completed. |
-| `501` | Named model providers are unavailable on this controller. |
 | `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
@@ -10429,7 +10417,7 @@ Example response
 
 <span id="post-namespacesnamespaceidcredentialsources"></span>
 
-Register a credential source with the selected Credential Gateway. This controller returns 501 for connectionTemplateId or connectionTemplateVersion
+Register a credential source with the selected Credential Gateway
 
 **Operation ID:** `createCredentialSource`
 
@@ -10490,7 +10478,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | Named model providers are unavailable on this controller. |
 | `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`

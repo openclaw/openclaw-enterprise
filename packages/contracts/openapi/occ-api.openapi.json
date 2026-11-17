@@ -11796,26 +11796,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "NOT_IMPLEMENTED",
-                    "value": {
-                      "error": {
-                        "code": "NOT_IMPLEMENTED",
-                        "message": "Named model providers are unavailable on this controller."
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "Named model providers are unavailable on this controller."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -11828,7 +11808,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Create an Installation-wide or Namespace-scoped connection template. This controller returns 501 for static_bearer templates",
+        "summary": "Create an Installation-wide or Namespace-scoped connection template",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -12667,26 +12647,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "NOT_IMPLEMENTED",
-                    "value": {
-                      "error": {
-                        "code": "NOT_IMPLEMENTED",
-                        "message": "Named model providers are unavailable on this controller."
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "Named model providers are unavailable on this controller."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -12699,7 +12659,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Rename a connection template, or create a version with new approved values. This controller returns 501 for static_bearer templates",
+        "summary": "Rename a connection template, or create a version with new approved values",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -14176,26 +14136,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "NOT_IMPLEMENTED",
-                    "value": {
-                      "error": {
-                        "code": "NOT_IMPLEMENTED",
-                        "message": "Named model providers are unavailable on this controller."
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "Named model providers are unavailable on this controller."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -14208,7 +14148,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "List Installation model providers. This controller returns 501 for every valid request",
+        "summary": "List Installation model providers",
         "tags": ["Installation"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -14488,26 +14428,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "NOT_IMPLEMENTED",
-                    "value": {
-                      "error": {
-                        "code": "NOT_IMPLEMENTED",
-                        "message": "Named model providers are unavailable on this controller."
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "Named model providers are unavailable on this controller."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -14520,7 +14440,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Create an Installation model provider. This controller returns 501 for every valid request",
+        "summary": "Create an Installation model provider",
         "tags": ["Installation"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -14707,26 +14627,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "NOT_IMPLEMENTED",
-                    "value": {
-                      "error": {
-                        "code": "NOT_IMPLEMENTED",
-                        "message": "Named model providers are unavailable on this controller."
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "Named model providers are unavailable on this controller."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -14739,7 +14639,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Read a model provider. This controller returns 501 for every valid request",
+        "summary": "Read a model provider",
         "tags": ["Installation"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -15039,26 +14939,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "NOT_IMPLEMENTED",
-                    "value": {
-                      "error": {
-                        "code": "NOT_IMPLEMENTED",
-                        "message": "Named model providers are unavailable on this controller."
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "Named model providers are unavailable on this controller."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -15071,7 +14951,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Replace model provider settings if the saved fingerprint matches. This controller returns 501 for every valid request",
+        "summary": "Replace model provider settings if the saved fingerprint matches",
         "tags": ["Installation"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -17420,26 +17300,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "NOT_IMPLEMENTED",
-                    "value": {
-                      "error": {
-                        "code": "NOT_IMPLEMENTED",
-                        "message": "Named model providers are unavailable on this controller."
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "Named model providers are unavailable on this controller."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -17452,7 +17312,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Create a Namespace-owned Agent. This controller returns 501 when the request includes modelProviderId",
+        "summary": "Create a Namespace-owned Agent",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
@@ -19693,26 +19553,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "NOT_IMPLEMENTED",
-                    "value": {
-                      "error": {
-                        "code": "NOT_IMPLEMENTED",
-                        "message": "Named model providers are unavailable on this controller."
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "Named model providers are unavailable on this controller."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -19725,7 +19565,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Create a new Agent and queue first-time provisioning. This controller returns 501 when the request includes modelProviderId",
+        "summary": "Create a new Agent and queue first-time provisioning",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
@@ -20898,26 +20738,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "NOT_IMPLEMENTED",
-                    "value": {
-                      "error": {
-                        "code": "NOT_IMPLEMENTED",
-                        "message": "Named model providers are unavailable on this controller."
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "Named model providers are unavailable on this controller."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -20930,7 +20750,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything. This controller returns 501 when the request includes modelProviderId",
+        "summary": "Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
@@ -22669,26 +22489,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "NOT_IMPLEMENTED",
-                    "value": {
-                      "error": {
-                        "code": "NOT_IMPLEMENTED",
-                        "message": "Named model providers are unavailable on this controller."
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "Named model providers are unavailable on this controller."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -22701,7 +22501,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Replace an exact Namespace-owned Agent's editable draft. This controller returns 501 when the request includes modelProviderId",
+        "summary": "Replace an exact Namespace-owned Agent's editable draft",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "update", "resourceKind": "agent", "scope": "requested" },
@@ -37944,26 +37744,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "NOT_IMPLEMENTED",
-                    "value": {
-                      "error": {
-                        "code": "NOT_IMPLEMENTED",
-                        "message": "Named model providers are unavailable on this controller."
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "Named model providers are unavailable on this controller."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -37976,7 +37756,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "List readable credential sources without revealing credential values. This controller returns 501 for the modelProviderId filter",
+        "summary": "List readable credential sources without revealing credential values",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "namespace", "scope": "requested" },
@@ -38192,26 +37972,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "NOT_IMPLEMENTED",
-                    "value": {
-                      "error": {
-                        "code": "NOT_IMPLEMENTED",
-                        "message": "Named model providers are unavailable on this controller."
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "Named model providers are unavailable on this controller."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -38224,7 +37984,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Register a credential source with the selected Credential Gateway. This controller returns 501 for connectionTemplateId or connectionTemplateVersion",
+        "summary": "Register a credential source with the selected Credential Gateway",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "credential_source", "scope": "namespace" },
@@ -41152,26 +40912,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": {
-                  "example": {
-                    "summary": "NOT_IMPLEMENTED",
-                    "value": {
-                      "error": {
-                        "code": "NOT_IMPLEMENTED",
-                        "message": "Named model providers are unavailable on this controller."
-                      },
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
-                    }
-                  }
-                },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "Named model providers are unavailable on this controller."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -41184,7 +40924,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "List the model providers available when creating an Agent. This controller returns 501 for every valid request",
+        "summary": "List the model providers available when creating an Agent",
         "tags": ["Installation"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" }
