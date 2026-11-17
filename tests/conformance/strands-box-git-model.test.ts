@@ -321,7 +321,7 @@ test("the model-sibling step posts only to the planned URLs, with the placeholde
   assert.match(gitCommand(plan, nonce, "model-sibling"), /^echo model-sibling-unplanned-/);
   assert.match(
     gitCommand(plan, nonce, "delayed-git"),
-    /^sleep 45; git ls-remote https:\/\/github\.com\/example\/review\.git 2>&1 \| tail -2; echo delayed-git-a1a1a1a1a1a1$/,
+    /^sleep 25; git ls-remote https:\/\/github\.com\/example\/review\.git 2>&1 \| tail -2; echo delayed-git-a1a1a1a1a1a1$/,
   );
   const siblings = [
     "https://model.example.test:8444/v1/responses",

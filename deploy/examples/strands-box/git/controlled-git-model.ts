@@ -69,8 +69,11 @@ const RECORDED_OUTPUT: ReadonlySet<GitStep> = new Set<GitStep>([
   "outside-write",
   "model-sibling",
 ]);
-/** How long the delayed-git step waits before its one Git request. */
-export const DELAYED_GIT_SECONDS = 45;
+/**
+ * How long the delayed-git step waits before its one Git request: inside stock Codex's exec yield
+ * (installed, Codex asked the model again 30 s into a longer command, before the Git request).
+ */
+export const DELAYED_GIT_SECONDS = 25;
 /** Bound on repeated calls for the gateway-loop step (the stock critical threshold is 20). */
 export const LOOP_CALLS = 30;
 export type GitStep = (typeof GIT_STEPS)[number];
