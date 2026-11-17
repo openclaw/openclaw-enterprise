@@ -50,8 +50,12 @@ import {
   splitStockCommand,
 } from "../../deploy/examples/strands-box/host/installed-workspace-node.ts";
 import {
+  AGENT_SEARCH_PATH,
   ensureWorkspaceCodex,
   execCoversGit,
+  LOADER_DIRECTORIES,
+  runtimeSearchPath,
+  UNJUDGEABLE_DIRECTORIES,
 } from "../../deploy/examples/strands-box/host/stock-git.ts";
 import {
   applyModelRevocation,
@@ -130,6 +134,24 @@ function gated<T extends { environment: Readonly<Record<string, string>> }>(inpu
 function temporary(): string {
   return mkdtempSync(join(realpathSync(tmpdir()), "oce-box-test-"));
 }
+
+/** What the host writes to its own stderr while `action` runs (the operator's log). */
+async function hostStderr(action: () => Promise<unknown>): Promise<string> {
+  const chunks: string[] = [];
+  const write = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    await action();
+  } finally {
+    process.stderr.write = write;
+  }
+  return chunks.join("");
+}
+const EXEC_COVERS_GIT_LINE =
+  "strands-box-diagnostic source=box stage=input reason=agent_exec_covers_git\n";
 
 type InstalledControlFixture = Omit<
   Parameters<typeof serveInstalledControl>[0],
@@ -962,6 +984,120 @@ test("the agent's exec list never covers git or gh (finding 3325)", { skip: unsu
     mkdirSync(join(writable, "bin"), { recursive: true, mode: 0o700 });
     assert.equal(execCoversGit([node], [join(writable, "bin")], [writable]), true);
     assert.equal(execCoversGit([node], [join(writable, "bin")]), false);
+    // Finding 3344: the lists themselves, so no result depends on a merged-usr machine.
+    assert.deepEqual(
+      [...AGENT_SEARCH_PATH],
+      ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"],
+    );
+    assert.deepEqual([...LOADER_DIRECTORIES], ["/lib", "/lib64", "/usr/lib", "/usr/lib64"]);
+    assert.deepEqual([...UNJUDGEABLE_DIRECTORIES], ["/proc", "/dev", "/sys"]);
+    // Every path a lookup passes counts, not only where it ends: an absent entry below a link
+    // into a writable directory, and a link whose own target is a link in one.
+    const via = join(root, "via");
+    mkdirSync(via, { mode: 0o700 });
+    symlinkSync(writable, join(via, "into-writable"));
+    assert.equal(execCoversGit([node], [join(via, "into-writable", "absent")], [writable]), true);
+    const outside = join(root, "outside");
+    mkdirSync(outside, { mode: 0o700 });
+    symlinkSync(outside, join(writable, "hop"));
+    symlinkSync(join(writable, "hop"), join(via, "through-writable"));
+    assert.equal(execCoversGit([node], [join(via, "through-writable")], [writable]), true);
+    assert.equal(execCoversGit([node], [outside], [writable]), false);
+    // A relative link is read from its own directory, not the process's working directory.
+    const relative = join(root, "relative");
+    mkdirSync(relative, { mode: 0o700 });
+    symlinkSync("../writable/not-yet", join(relative, "dangling"));
+    assert.equal(execCoversGit([node], [join(relative, "dangling")], [writable]), true);
+    // `..` leaves the directory a link reached, as the kernel resolves it.
+    symlinkSync("/usr/share", join(via, "share"));
+    assert.equal(execCoversGit([node], [`${join(via, "share")}/../lib/git-core`]), true);
+    // Finding 3339: what these mean depends on the process that looks them up (inside Box,
+    // `/proc/self/cwd` is Codex's workspace), directly or through a link.
+    symlinkSync("/proc/self/cwd", join(via, "cwd"));
+    for (const entry of [
+      "/proc/self/cwd",
+      "/proc/thread-self/cwd",
+      "/proc/self/cwd/bin",
+      "/proc/1/cwd",
+      "/proc/self/fd/0",
+      "/proc/self/root/usr/bin",
+      "/dev/fd/0",
+      "/dev/shm",
+      "/sys/fs/cgroup",
+      join(via, "cwd"),
+    ]) {
+      assert.equal(execCoversGit([node], [...fine, entry]), true, entry);
+    }
+    // A loop fails closed, whichever member the search path names; so does an unreadable step.
+    symlinkSync(join(via, "m2"), join(via, "m1"));
+    symlinkSync(join(writable, "m3"), join(via, "m2"));
+    symlinkSync(join(via, "m1"), join(writable, "m3"));
+    symlinkSync(join(via, "lb"), join(via, "la"));
+    symlinkSync(join(via, "la"), join(via, "lb"));
+    for (const entry of ["m1", "m2", "la"]) {
+      assert.equal(execCoversGit([node], [join(via, entry)], [writable]), true, entry);
+      assert.equal(execCoversGit([node], [join(via, entry)]), true, entry);
+    }
+    // Linux follows at most 40 links in one lookup; one more is a loop to the host as well.
+    const chain = join(root, "chain");
+    mkdirSync(chain, { mode: 0o700 });
+    for (let index = 0; index < 41; index += 1)
+      symlinkSync(index === 40 ? outside : join(chain, `${index + 1}`), join(chain, `${index}`));
+    assert.equal(execCoversGit([node], [join(chain, "1")]), false);
+    assert.equal(execCoversGit([node], [join(chain, "0")]), true);
+    const locked = join(root, "locked");
+    mkdirSync(locked, { mode: 0o000 });
+    try {
+      assert.equal(execCoversGit([node], [join(locked, "bin")]), true);
+    } finally {
+      chmodSync(locked, 0o700);
+    }
+    // Total: nothing throws, and what it cannot read covers git.
+    assert.equal(execCoversGit([node], ["/usr/bin\0"]), true);
+    assert.equal(execCoversGit([join(via, "la")], fine), true);
+    // The stock search paths still start, with the writable state given.
+    const stock = ["/app/node_modules/.bin", ...AGENT_SEARCH_PATH];
+    assert.equal(execCoversGit([node], stock, [writable]), false);
+    // Finding 3338: the directories the runtime adds, from the same inputs it uses.
+    const home = join(root, "home");
+    mkdirSync(home, { mode: 0o700 });
+    const added = runtimeSearchPath({ HOME: home });
+    assert.deepEqual(added, [
+      join(home, ".local/bin"),
+      join(home, ".openclaw/tools/node/npm/bin"),
+      join(home, ".codex/tmp/arg0"),
+    ]);
+    assert.deepEqual(runtimeSearchPath({ HOME: home, CODEX_HOME: join(home, "c") }), [
+      ...added.slice(0, 2),
+      join(home, "c/tmp/arg0"),
+    ]);
+    assert.deepEqual(runtimeSearchPath({}), [
+      "/home/node/.local/bin",
+      "/home/node/.openclaw/tools/node/npm/bin",
+      "/home/node/.codex/tmp/arg0",
+    ]);
+    // Absent or empty, inside the writable state: the combined layout still starts.
+    assert.equal(execCoversGit([node], fine, [home], added), false);
+    for (const directory of added) mkdirSync(directory, { recursive: true, mode: 0o700 });
+    assert.equal(execCoversGit([node], fine, [home], added), false);
+    // A git or gh of any kind there is refused: file, link, dangling link.
+    for (const [name, make] of [
+      ["git", (path: string) => writeFileSync(path, "", { mode: 0o700 })],
+      ["gh", (path: string) => symlinkSync(node, path)],
+      ["git", (path: string) => symlinkSync(join(home, "absent"), path)],
+    ] as const) {
+      for (const directory of added) {
+        make(join(directory, name));
+        assert.equal(execCoversGit([node], fine, [home], [directory]), true, directory);
+        unlinkSync(join(directory, name));
+      }
+    }
+    // So is a link in place of one of them or of a parent: it can lead anywhere, the
+    // workspace included. A relative entry is never judged.
+    symlinkSync(outside, join(home, "elsewhere"));
+    for (const directory of [join(home, "elsewhere"), join(home, "elsewhere", "absent"), "bin"]) {
+      assert.equal(execCoversGit([node], fine, [home], [directory]), true, directory);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1751,19 +1887,28 @@ test(
         mkdirSync(scratch, { mode: 0o700 });
         // Each case keeps the source socket inside its own runtime directory, so that only the
         // case's own defect can refuse it.
-        const refusedExecution = start(
-          { ...config, runtimeDir: scratch },
-          refused.credentialSource?.socket === credentialSource.socket
-            ? {
-                ...refused,
-                credentialSource: {
-                  ...refused.credentialSource,
-                  socket: join(scratch, "source", "oce.sock"),
-                },
-              }
-            : refused,
-        );
-        await assert.rejects(refusedExecution.ready, { message: "startup_refused:stage-inputs" });
+        let refusedExecution!: ReturnType<typeof start>;
+        // The host checks its inputs as start is called, so the log is read from the call on.
+        const log = await hostStderr(() => {
+          refusedExecution = start(
+            { ...config, runtimeDir: scratch },
+            refused.credentialSource?.socket === credentialSource.socket
+              ? {
+                  ...refused,
+                  credentialSource: {
+                    ...refused.credentialSource,
+                    socket: join(scratch, "source", "oce.sock"),
+                  },
+                }
+              : refused,
+          );
+          return assert.rejects(refusedExecution.ready, {
+            message: "startup_refused:stage-inputs",
+          });
+        });
+        // Another input's refusal never reads as the git check's (finding 3341).
+        assert.ok(log.includes("strands-box-host: startup refused at stage-inputs\n"), log);
+        assert.ok(!log.includes(EXEC_COVERS_GIT_LINE), log);
         await refusedExecution.done.catch(() => undefined);
         assert.equal(refusedExecution.boxProcess(), undefined);
       }
@@ -1781,35 +1926,71 @@ test(
         symlinkSync("/usr/lib/git-core", helpersLink);
         const onPath = `${tools}:/usr/bin:/bin`;
         const binaries = { codexBin: join(tools, "git"), nodeBin: join(tools, "node") };
-        for (const [changed, path, expected] of [
-          [{ exec: [tools] }, onPath, "startup_refused:stage-inputs"],
-          [{ exec: [tools] }, "/usr/bin:/bin", "startup_refused:wait-release"],
-          [{ codexBin: binaries.codexBin }, onPath, "startup_refused:stage-inputs"],
-          [{ nodeBin: binaries.nodeBin }, onPath, "startup_refused:stage-inputs"],
-          [binaries, "/usr/bin:/bin", "startup_refused:wait-release"],
-          [{}, "/usr/lib/git-core:/usr/bin:/bin", "startup_refused:stage-inputs"],
-          [{}, "/usr/bin:/usr/bin/../lib/git-core", "startup_refused:stage-inputs"],
-          [{}, `/usr/bin:${helpersLink}`, "startup_refused:stage-inputs"],
-          [{}, "/usr/libexec/git-core:/usr/bin", "startup_refused:stage-inputs"],
-          [{}, `/usr/bin:/bin:${workspace}`, "startup_refused:stage-inputs"],
-          [{}, "/usr/bin:/bin:", "startup_refused:stage-inputs"],
-        ] as [Partial<typeof config>, string, string][]) {
+        // Finding 3338: the directories the runtime adds to Codex's search path in the agent's
+        // HOME, which lies in the writable state. They may exist; a git or gh in one is refused.
+        const home = input.environment.HOME!;
+        const appended = [
+          join(home, ".local/bin"),
+          join(home, ".openclaw/tools/node/npm/bin"),
+          join(input.environment.CODEX_HOME!, "tmp/arg0"),
+        ];
+        // As a run leaves them: the two Skill directories exist (empty), Codex's arg0 parent not.
+        for (const path of [appended[0]!, appended[1]!, dirname(appended[2]!)])
+          mkdirSync(path, { recursive: true, mode: 0o700 });
+        // Each refused case plants (and then removes) exactly one entry.
+        const plant = (path: string, target?: string) => () => {
+          if (target === undefined) writeFileSync(path, "", { mode: 0o700 });
+          else symlinkSync(target, path);
+          return () => unlinkSync(path);
+        };
+        const fine = "/usr/bin:/bin";
+        for (const [changed, path, expected, planted] of [
+          [{ exec: [tools] }, onPath, "stage-inputs"],
+          [{ exec: [tools] }, fine, "wait-release"],
+          [{ codexBin: binaries.codexBin }, onPath, "stage-inputs"],
+          [{ nodeBin: binaries.nodeBin }, onPath, "stage-inputs"],
+          [binaries, fine, "wait-release"],
+          [{}, "/usr/lib/git-core:/usr/bin:/bin", "stage-inputs"],
+          [{}, "/usr/bin:/usr/bin/../lib/git-core", "stage-inputs"],
+          [{}, `/usr/bin:${helpersLink}`, "stage-inputs"],
+          [{}, "/usr/libexec/git-core:/usr/bin", "stage-inputs"],
+          [{}, `/usr/bin:/bin:${workspace}`, "stage-inputs"],
+          [{}, "/usr/bin:/bin:", "stage-inputs"],
+          // The writable state (the agent's HOME) is part of the write set the check is given.
+          [{}, `${fine}:${join(home, "bin")}`, "stage-inputs"],
+          // Finding 3339: resolved by whoever looks it up; inside Box, Codex's workspace.
+          [{}, `${fine}:/proc/self/cwd`, "stage-inputs"],
+          // Finding 3338: a git or gh of any kind already in a directory the runtime adds.
+          [{}, fine, "stage-inputs", plant(join(appended[0]!, "git"), "/usr/lib/absent/git")],
+          [{}, fine, "stage-inputs", plant(join(appended[1]!, "gh"))],
+          [{}, fine, "stage-inputs", plant(join(appended[0]!, "gh"), process.execPath)],
+          // A link in place of one of them could lead into the workspace, where git writes.
+          [{}, fine, "stage-inputs", plant(appended[2]!, workspace)],
+        ] as [Partial<typeof config>, string, string, (() => () => void)?][]) {
           const scratch = join(directory, `path-${randomBytes(4).toString("hex")}`);
           mkdirSync(scratch, { mode: 0o700 });
-          const execution = start(
-            { ...config, ...changed, runtimeDir: scratch },
-            {
-              ...input,
-              environment: { ...input.environment, PATH: path },
-              credentialSource: {
-                ...credentialSource,
-                socket: join(scratch, "source", "oce.sock"),
+          const unplant = planted?.();
+          let execution!: ReturnType<typeof start>;
+          const log = await hostStderr(() => {
+            execution = start(
+              { ...config, ...changed, runtimeDir: scratch },
+              {
+                ...input,
+                environment: { ...input.environment, PATH: path },
+                credentialSource: {
+                  ...credentialSource,
+                  socket: join(scratch, "source", "oce.sock"),
+                },
+                releaseGate,
+                reservationGeneration,
               },
-              releaseGate,
-              reservationGeneration,
-            },
-          );
-          await assert.rejects(execution.ready, { message: expected });
+            );
+            return assert.rejects(execution.ready, { message: `startup_refused:${expected}` });
+          });
+          unplant?.();
+          // The operator's log names the stable reason, not only the stage (finding 3341).
+          assert.ok(log.includes(`strands-box-host: startup refused at ${expected}\n`), log);
+          assert.equal(log.includes(EXEC_COVERS_GIT_LINE), expected === "stage-inputs", path);
           await execution.done.catch(() => undefined);
         }
       }

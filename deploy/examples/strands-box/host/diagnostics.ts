@@ -63,6 +63,9 @@ const reasons = [
   "hook-denied",
   "hook-failed",
   "hook-response",
+  // The host's own start check (`launch.ts`): the agent's boundary could run git or gh by name.
+  // Lines forwarded from inside Box never carry it: their reason pattern has no underscore.
+  "agent_exec_covers_git",
 ] as const;
 
 type Source = (typeof sources)[number];
