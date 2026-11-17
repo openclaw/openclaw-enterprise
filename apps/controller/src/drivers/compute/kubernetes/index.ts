@@ -14861,7 +14861,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return {
       providerOwned: sandbox?.provisionHarness !== undefined,
       protected: this.hasProtectedCodexAdmission(revision),
-      mountedHookDirectory: sandbox?.implementation === "strands-box",
+      ...(sandbox?.implementation === "strands-box" && { mountedHookDirectory: true }),
       ...(updated && {
         openShellProgram:
           revision.executionAdmission.mode === "unprotected" &&
@@ -16629,7 +16629,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         "SandboxDriver Harness endpoint requires an exact provider network route.",
       );
     }
-    providerHarnessUrl(endpoint, network, this.sandboxDriver?.harnessHome ?? HARNESS_HOME, harnessNamespaceName);
+    providerHarnessUrl(
+      endpoint,
+      network,
+      this.sandboxDriver?.harnessHome ?? HARNESS_HOME,
+      harnessNamespaceName,
+    );
     // The endpoint arrives after the configuration snapshot. Keep its public
     // trust separately revision-owned and immutable; drift requires a new revision.
     const ownership = this.pluginRuntimeOwnership(revision);

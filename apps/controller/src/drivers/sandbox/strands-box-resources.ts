@@ -28,6 +28,16 @@ const PRIVATE = [
 ].map((part) => `/home/node/${part}`);
 export const STRANDS_STATUS_PORT = 18791;
 const ROOT = "/etc/strands-box";
+const SHARED_IMAGE_PATHS = [
+  "usr/local/bin/node",
+  "usr/bin/env",
+  "usr/bin/tini",
+  "usr/lib/aarch64-linux-gnu",
+  "app",
+  "opt/oce",
+  "etc/ssl/certs",
+  "usr/share/zoneinfo",
+];
 function refuse(): never {
   throw new SandboxRevisionUnsupportedError(
     "SANDBOX_HARNESS_UNSUPPORTED",
@@ -167,6 +177,7 @@ export function strandsBoxResources(
         defaultMode: 0o440,
       },
     },
+    { name: "shared-runtime", emptyDir: { sizeLimit: "4Gi" } },
     { name: "private-home", emptyDir: { sizeLimit: "2Gi" } },
     { name: "box-state", emptyDir: { sizeLimit: "256Mi" } },
     { name: "temporary", emptyDir: { sizeLimit: "64Mi" } },
@@ -203,8 +214,9 @@ export function strandsBoxResources(
         "OPENCLAW_NODE_DISPLAY_NAME",
         "OPENCLAW_WORKSPACE_BOOTSTRAP",
       ].includes(entry.name)
-    )
+    ) {
       continue;
+    }
     if (entry.name === "APP_SERVER_TOKEN") {
       // Only the trusted readiness client presents the bearer. Codex accepts
       // its verifier, as it does on Compute's verifier-delivery path.
@@ -257,7 +269,9 @@ export function strandsBoxResources(
       mountPath: mount.mountPath,
       readOnly: mount.readOnly,
     });
-    if (roles && mount.mountPath === statePath) continue;
+    if (roles && mount.mountPath === statePath) {
+      continue;
+    }
     read.push(mount.mountPath);
     if (!mount.readOnly) {
       write.push(mount.mountPath);
@@ -358,6 +372,23 @@ export function strandsBoxResources(
   const initialize = `const fs=require("node:fs"); for(const path of ${JSON.stringify(roles ? [...PRIVATE, "/node-scratch/home", "/node-scratch/tmp"] : PRIVATE)}) fs.mkdirSync(path,{recursive:true,mode:0o700});\n${harnessWorkspacePreparationScript([...claims.values()].flatMap((claim) => claim.paths))}`;
   const initContainers: Record<string, unknown>[] = [
     {
+      name: "prepare-shared-runtime",
+      image: r.image,
+      imagePullPolicy: "IfNotPresent",
+      securityContext,
+      command: [
+        "/bin/bash",
+        "-euo",
+        "pipefail",
+        "-c",
+        // fsGroup sets setgid on the volume root. Keep its mode out of image directories.
+        'mkdir -p /shared-runtime/image; chmod g-s /shared-runtime/image; tar -C / -cf - -- "$@" | tar -C /shared-runtime/image --no-same-owner --delay-directory-restore -xf -',
+        "prepare",
+        ...SHARED_IMAGE_PATHS,
+      ],
+      volumeMounts: [{ name: "shared-runtime", mountPath: "/shared-runtime" }],
+    },
+    {
       name: "initialize-workspace-directories",
       image: r.image,
       command: ["/usr/bin/tini", "-s", "--", "node", "-e", ...nodeProgramArguments(initialize)],
@@ -399,7 +430,16 @@ export function strandsBoxResources(
       securityContext,
     });
   }
-  const workloadMounts = mounts.filter((mount) => !roles || mount.mountPath !== statePath);
+  // Both sides of the Box handoff must open the same executable and runtime objects.
+  const workloadMounts = [
+    ...mounts.filter((mount) => !roles || mount.mountPath !== statePath),
+    ...SHARED_IMAGE_PATHS.map((path) => ({
+      name: "shared-runtime",
+      mountPath: `/${path}`,
+      subPath: `image/${path}`,
+      readOnly: true,
+    })),
+  ];
   if (roles && enrollment && "valueFrom" in enrollment) {
     const setup = enrollment.valueFrom.secretKeyRef;
     volumes.push(
