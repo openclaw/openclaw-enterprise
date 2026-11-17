@@ -16,8 +16,8 @@ checks for that pairing on one execution.
 
 The [Worker integration test](../../../tests/integration/strands-box-deployment.test.ts)
 deploys an Agent through the API and checks the original request at the Driver.
-It stops at a held host response. The [paired Driver tests](../../../tests/conformance/strands-box-protected.test.ts)
-run stock `git` and `gh` against a controlled GitHub origin through a stand-in
+It stops at a held host response. The [paired Driver end-to-end test](../../../tests/conformance/strands-box-protected-gh.test.ts)
+runs stock `git` and `gh` against a controlled GitHub origin through a stand-in
 for Box egress. These checks do not establish an installed Box chat or a pull
 request on GitHub.
 
@@ -116,7 +116,7 @@ fails when Compute changes either program, so a Compute change needs a reviewed
 re-pin. In this checkout, generate the standalone argv:
 
 ```ts
-[...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(PROVIDER_CODEX_ONLY_PROGRAM)]
+[...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(PROVIDER_CODEX_ONLY_PROGRAM)];
 ```
 
 Put the JSON array in root-owned, read-only `harness-split-argv.json` beside the
@@ -243,7 +243,7 @@ host's `GET /v1/execution` reports `repositoryRecipient.installed`.
 1. In the original chat, ask the Agent to change one file, push one branch
    with `git push https://github.com/<owner>/<repo>.git <branch>` and open a
    draft with `gh pr create --draft --repo <owner>/<repo> --head <branch>
-   --base main --title <title> --body <body>`. Inside Box `GITHUB_TOKEN` holds
+--base main --title <title> --body <body>`. Inside Box `GITHUB_TOKEN` holds
    only a placeholder. Independently verify the file, branch, commit and draft
    on GitHub, and that GitHub records the App's bot account as the author of
    the pull request.

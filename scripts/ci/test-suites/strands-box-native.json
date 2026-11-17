@@ -1,5 +1,7 @@
 {
-  "env": { "OCC_TEST_STRANDS_BOX_NATIVE": "1" },
+  "env": {
+    "OCC_TEST_STRANDS_BOX_NATIVE": "1"
+  },
   "prepare": {},
   "files": [
     {
@@ -12,6 +14,18 @@
       "expectedTests": [
         "the pinned TLS readiness probe initializes the original native Codex through a Unix relay",
         "owned launcher reaches actual native Codex and retires it without carrying auth material"
+      ]
+    },
+    {
+      "path": "tests/conformance/strands-box-protected-gh.test.ts",
+      "expectedTests": [
+        "after activation the Worker installs OCE's token in Box once; stock git and gh push and open one draft, and withdrawal refuses fresh requests while the execution runs"
+      ]
+    },
+    {
+      "path": "tests/conformance/strands-box-turn-network-codex.test.ts",
+      "expectedTests": [
+        "Codex applies no network sandbox of its own under the Box turn policy, so Box egress is the fence"
       ]
     },
     {

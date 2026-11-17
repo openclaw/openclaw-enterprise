@@ -56,6 +56,6 @@ protection on the base branch.
   and retires the installed one, which ends the execution's GitHub access. Box
   reads its secrets once at start, so the renewed token is not installed.
 
-The [paired Driver tests](../../../../tests/conformance/strands-box-protected.test.ts)
-run these commands with stock `git` and `gh` against a controlled GitHub origin
+The [paired Driver end-to-end test](../../../../tests/conformance/strands-box-protected-gh.test.ts)
+runs these commands with stock `git` and `gh` against a controlled GitHub origin
 through a stand-in for Box egress. They do not qualify an installed Box run.

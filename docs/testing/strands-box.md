@@ -17,12 +17,14 @@ The test downloads nothing, uses no account credentials and calls no public
 provider.
 
 ```sh
-node --test tests/conformance/strands-box-protected.test.ts
+OCC_TEST_STRANDS_BOX_NATIVE=1 \
+  node --test tests/conformance/strands-box-protected-gh.test.ts
 ```
 
-Without `gh` the end-to-end case is skipped with the reason
-`stock gh is not installed on this host`; treat that skip as a missing input,
-not a pass. The suite also runs in the `checks-baseline-1` lane.
+The end-to-end case is part of the manual `strands-box-native` lane, described
+below. With the lane selected and no `gh`, it fails. The paired registration
+and release cases in `strands-box-protected.test.ts` need no `gh` and run in
+the `checks-baseline-1` lane.
 
 On a slow or emulated host, set `OCC_TEST_STRANDS_TIMEOUT_MULTIPLIER` to an
 integer from 1 to 10. It scales the Strands test and fixture deadlines without
@@ -91,6 +93,11 @@ these cases. Once selected, a missing input fails the case.
   Set `OCC_TEST_STRANDS_NATIVE_CODEX` and `STRANDS_HOST_TEST_CODEX` to the
   native Codex executable, and `STRANDS_HOST_TEST_AGENT_BUILD` to the compiled
   agent directory.
+- `tests/conformance/strands-box-protected-gh.test.ts` pushes and opens a
+  draft with stock `git` and `gh`, as described above.
+- `tests/conformance/strands-box-turn-network-codex.test.ts` checks that Codex
+  applies no network sandbox of its own under the Box turn policy. Put a Linux
+  Codex CLI on `PATH` or set `OCE_CODEX_BIN`.
 - `tests/conformance/strands-box-shell-calls.test.ts` needs ARM64 and the
   stock Box. Set `OCC_TEST_STRANDS_BOX_SHELL_BOX` and
   `OCC_TEST_STRANDS_BOX_SHELL_VERIFIER_SHA256` as described in the
