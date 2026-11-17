@@ -1,20 +1,22 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: mrunalp
 ---
 
 # Proposal: Default users sign in through identity provider mappings and own what they create
 
-- **ID:** RFC-0026 (provisional; renumber before merge)
+- **ID:** RFC-0040 (provisional; renumber before merge)
 - **Created:** 2026-10-29
-- **Last updated:** 2026-11-06
+- **Last updated:** 2026-11-16
 - **RFC PR:** [#4207](https://github.com/openclaw/openclaw-enterprise/pull/4207)
-- **Implementation plan:** [TASK-0050](../plans/0050-default-users.md)
+- **Implementation plan:** [Default users](../plans/0040-default-users.md)
 - **Related:** [Agent Author role (#4045)](https://github.com/openclaw/openclaw-enterprise/pull/4045),
   [Additional Installation administrators (#889)](https://github.com/openclaw/openclaw-enterprise/pull/889),
   [Agent OAuth connections (#3068)](https://github.com/openclaw/openclaw-enterprise/pull/3068),
-  [RFC-0006](0006-basic-rbac/index.md), [Authorization](../../docs/reference/authorization.md)
+  [RFC-0006](0006-basic-rbac/index.md), [RFC-0031](0031-oidc-agent-chat.md),
+  [RFC-0032](0032-oidc-account-enrollment.md), [RFC-0037](0037-oidc-enrollment-claims.md),
+  [Authorization](../../docs/reference/authorization.md)
 
 <a id="problem-and-decision"></a>
 
@@ -175,27 +177,28 @@ the Namespace Creator binding, which hold only Installation-level permissions.
 A mapping rule names one sign-in provider, one provider group, and one OCC
 Group:
 
-| Provider | Provider group                                                           |
-| -------- | ------------------------------------------------------------------------ |
-| GitHub   | An organization or `org/team`, read with the existing membership lookups |
-| Google   | A Workspace hosted domain (`hd`), with a verified email                  |
-| OIDC     | A configured claim (for example `groups`) that contains a given value    |
+| Provider | Provider group                                                        |
+| -------- | --------------------------------------------------------------------- |
+| Google   | A Workspace hosted domain (`hd`), with a verified email               |
+| OIDC     | A configured claim (for example `groups`) that contains a given value |
 
-Google exposes groups only through its Admin API, so Google rules match a
-hosted domain. Rules match exact, case-normalized values. A rule targets a
-configured Group, such as `default-user`, or a Group that belongs to a
-Namespace.
+GitHub teams arrive as an OIDC broker's claim. Google exposes groups only
+through its Admin API, so Google rules match a hosted domain. OIDC rules read
+the signed ID token claim as [OIDC enrollment](0037-oidc-enrollment-claims.md)
+does and add Groups beyond its fixed `groupIds`. Rules match exact,
+case-normalized values. A rule targets a configured Group, such as
+`default-user`, or a Group that belongs to a Namespace.
 
 ### Existing flows keep working
 
-Mapping rules add account creation at sign-in and change nothing else. Without
-rules and Default users members, an Installation behaves as today:
+Mapping rules add account creation at Google sign-in and change nothing else.
+Without rules and Default users members, an Installation behaves as today:
 
 - Accounts that administrators create sign in without a rule and keep their
   bindings. Without an `iam` configuration they join no Group.
-- The GitHub and Google allowlists (`OCC_AUTH_GITHUB_ALLOWED_ORGS`,
-  `OCC_AUTH_GITHUB_ALLOWED_TEAMS`, `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS`) stay and
-  run first for every sign-in. Rules apply only to identities they admit.
+- The Google hosted-domain allowlist (`OCC_AUTH_GOOGLE_ALLOWED_DOMAINS`) and
+  the OIDC admission claim stay and run first for every sign-in. Rules apply
+  only to identities they admit.
 - Password sign-in, service keys, and sessions are unchanged.
 - Administrators also get Owner bindings on what they create; these stay if
   the administrator binding is removed.
@@ -253,7 +256,7 @@ sequenceDiagram
   participant Auth as Controller sign-in
   participant OCC as OCC controller
   participant IAM as IAM Driver and State
-  User->>Auth: Sign in (GitHub, Google, or OIDC)
+  User->>Auth: Sign in (Google or OIDC)
   Auth->>Auth: Apply the allowlist, read provider groups, evaluate rules
   alt Allowlist refuses, or no rule matches a new or mapped account
     Auth-->>User: Sign-in refused
@@ -289,8 +292,8 @@ source, so a running Agent keeps its access. Guided provisioning accepts these
 grants instead of Installation `administer`.
 
 `GET /namespaces/:namespaceId/agent-capabilities` gives a member with
-`agent:create` the capabilities Agent creation uses, without provisioning and
-native admin setup.
+`agent:create` the capabilities Agent creation uses, including guided
+provisioning and [browser access](0031-oidc-agent-chat.md).
 
 Slack needs no new contract: Slack tokens are Secrets referenced from the
 Agent's Configuration. The operator still provides the channel runtime and the
@@ -322,7 +325,8 @@ Guardrails work replaces them. An empty ceiling allows no additions.
 Owner bindings, bindings without a resource for any Role, Group subjects, Group
 membership writes, parent checks for revisions and sandbox policies, and account
 creation at sign-in change the IAM Driver contract. The proposal does not depend
-on #4045. [TASK-0050](../plans/0050-default-users.md) orders the work.
+on #4045. The [implementation plan](../plans/0040-default-users.md) orders the
+work.
 
 Required outcomes, proved with PostgreSQL integration tests and the regular
 Kubernetes Agent workflow, with OIDC on the Keycloak lane and a real `groups`
@@ -376,8 +380,6 @@ claim:
 
 ## Unresolved questions
 
-- **OIDC group claims.** Some providers omit large group lists from the ID token.
-  Is the ID token or UserInfo claim enough for the first release?
 - **Administrator access to owned resources.** Should administrators keep deploy
   and native-admin access to members' Agents? Secret values stay undisclosed
   either way.
@@ -388,7 +390,8 @@ claim:
   [access bindings and Groups](../../docs/reference/authorization.md#access-bindings-and-groups),
   and the [permissions cheat sheet](../../docs/reference/cheatsheets/permissions.md)
 - [Account provisioning](../../docs/reference/authentication.md#account-provisioning)
-- [External sign-in allowlists](../../docs/reference/authentication/external-sign-in.md#organization-and-team-allowlist)
+- [OIDC enrollment](../../docs/reference/authentication/team-enrollment.md) and
+  [Google sign-in](../../docs/guides/deploy/google-sign-in.md)
 - [Namespace IAM policy flow](../../docs/flows/namespace-iam-policy.md)
 - [Agent provisioning flow](../../docs/flows/agent-provisioning.md)
 - [Security](../../docs/reference/security.md)

@@ -1,17 +1,17 @@
 ---
-rfc: ../rfcs/0026-default-users.md
+rfc: ../rfcs/0040-default-users.md
 ---
 
 # Implementation plan: Default users
 
-- **ID:** TASK-0050 (provisional; renumber before merge)
+- **ID:** RFC-0040 (provisional; renumber before merge)
 - **Delivery status:** In progress
 - **Owner:** IAM, OCC, and controller maintainers
-- **Authority:** [RFC-0026](../rfcs/0026-default-users.md)
+- **Authority:** [RFC-0040](../rfcs/0040-default-users.md)
 
 ## Outcome and ordered work
 
-Deliver the [RFC-0026](../rfcs/0026-default-users.md) design in slices. Each
+Deliver the [RFC-0040](../rfcs/0040-default-users.md) design in slices. Each
 slice has a caller in the regular Agent workflow and PostgreSQL integration
 proof through the real Fastify app. The RFC owns contracts and failure
 semantics; this plan owns order and proof.
@@ -31,8 +31,24 @@ built-in Roles, the Default users Group, `/iam/default-users`, and
 `defaultUser.namespaceCreate`. Accounts join `iam.defaultUserGroups` when they
 are created, and deploy writes grants for any Role.
 
-1. **Default users and Owner bindings.** Reworked on
-   `feat/default-users-agent-grants` (PR #4231); review pending.
+Other work changed the remaining slices by 2026-11-16, after slice 1 merged:
+
+- [#5136](https://github.com/openclaw/openclaw-enterprise/pull/5136)
+  ([RFC-0031](../rfcs/0031-oidc-agent-chat.md)) lets an Agent's owner turn on
+  browser access through create and deploy. Exact-Agent `operate` opens chat
+  only, and `administer` opens the full native admin UI. The Namespace Agent
+  capabilities report `nativeAdmin` to members, which
+  [#5695](https://github.com/openclaw/openclaw-enterprise/pull/5695) tests.
+  This plan no longer delivers native admin setup.
+- [OIDC enrollment](../rfcs/0032-oidc-account-enrollment.md) creates accounts
+  at OIDC sign-in and adds fixed `groupIds`, or `defaultUserGroups`, at each
+  admitted login. [RFC-0037](../rfcs/0037-oidc-enrollment-claims.md) reads the
+  groups claim from the signed ID token. OIDC mapping rules and sign-in sync
+  build on it.
+
+1. **Default users and Owner bindings.** Merged in
+   [#4231](https://github.com/openclaw/openclaw-enterprise/pull/4231) on
+   2026-11-06 (`5b8901213`).
    - Installation configuration `iam`: `roles`, `defaultUserGroups`,
      `ownerRole`, and `roleBindings`. OCC writes them at startup as
      `role_config_`, `group_config_`, and `binding_config_` rows, updates changed
@@ -66,24 +82,34 @@ are created, and deploy writes grants for any Role.
      `nativeAdmin`. A member's Create Agent reads it after the refused
      Installation read, registers the model Secret with a Credential Gateway, and
      opens the draft instead of asking an administrator for the grant.
-2. **Bindings without a resource.** Optional `resourceKind` and `resourceId`
+2. **Guided provisioning for members.** Moved here from slice 3. Provisioning
+   admission, its stored-record checks, and its status read require Agent and
+   Configuration `create` in the Namespace instead of Installation
+   `administer`. The worker still writes the Agent's grants only on sources the
+   requester can `operate`, and audits them. Turning off `gatewayManagedMode`
+   stays administrator-only. The Namespace Agent capabilities report
+   `agentProvisioning` to members, and a member's console offers guided
+   provisioning.
+3. **Member grant guidance.** The console Credentials tab stops telling a
+   member to ask an administrator for a grant that the member's deploy writes.
+4. **Bindings without a resource.** Optional `resourceKind` and `resourceId`
    and Group subjects in the Namespace IAM API for any Role.
-3. **Agent grant removal.** Deploy grants move to the binding ID
+5. **Agent grant removal.** Deploy grants move to the binding ID
    `binding_deploy_<agent>_<source>_operate`, so OCC can tell them from an
    administrator's grant. `releaseDeployedAgentGrants` removes them when no
    Agent setting, Configuration, or live revision references the source. OCC
    runs it after Agent and Configuration updates, and the worker runs it after
-   an activation and after a stop. Sandbox policy editing and guided
-   provisioning accept the Agent's Owner binding. Members can then provision, so
-   the Namespace Agent capabilities report `agentProvisioning` and `nativeAdmin`
-   and a member's console offers native admin UI setup. Rebases
-   `feat/default-users-grant-removal`.
-4. **Mapping rules.** Rule storage, the Installation API, the console Settings
+   an activation and after a stop. Sandbox policy editing accepts the Agent's
+   Owner binding. Rebases `feat/default-users-grant-removal`.
+6. **Mapping rules.** Rule storage, the Installation API, the console Settings
    card, the membership `source` column, and the last mapped sign-in. Rules
-   target the configured Groups.
-5. **Sign-in sync.** Account creation and membership replacement at sign-in for
-   GitHub, Google, and OIDC, refusing on a failed group lookup.
-6. **Team Namespaces and console.** Namespace-wide bindings of a configured
+   target the configured Groups. OIDC rules use the enrollment claim rules.
+7. **Sign-in sync.** Account creation at Google sign-in, and replacement of
+   mapped memberships at Google and OIDC sign-in, refusing on a failed group
+   lookup. GitHub teams arrive through an OIDC broker since direct GitHub
+   sign-in was retired in
+   [#5144](https://github.com/openclaw/openclaw-enterprise/pull/5144).
+8. **Team Namespaces and console.** Namespace-wide bindings of a configured
    member Role for mapped Groups, Create Namespace in the console, and an
    empty-state landing.
 
@@ -101,16 +127,24 @@ SCIM through `@better-auth/scim` is a later plan.
   the revision and deployment status of its deploy and its Agent's sandbox
   policy; another member is refused. On k3d, a Default user deploys in `default`
   and gets a real model turn.
-- Slice 2: a custom Role bound without a resource applies across its Namespace
+- Slice 2: in `tests/integration/postgres-agent-provisioning.test.ts`, a member
+  provisions an Agent in `default` through the real worker, owns the Agent and
+  Configuration, and the worker grants the Agent only the member's own Secret.
+  A second member cannot read the request, and a member who turns off
+  `gatewayManagedMode` is refused.
+- Slice 3: `tests/browser/console-agent-detail.test.ts` shows a member's
+  Credentials tab without the administrator step, with matching Storybook
+  states.
+- Slice 4: a custom Role bound without a resource applies across its Namespace
   and not in another one.
 - Slice 1 also: an owner's deploy writes and audits the Secret grant; a custom
   Role deploy writes a grant only once the caller can operate the Secret. A
   session revoked, a configuration change, or a delete of the Agent's Owner
   binding while a create or deploy waits leaves no Owner binding or grant.
-- Slice 3: the real worker activates a second revision. The first deploy grant
+- Slice 5: the real worker activates a second revision. The first deploy grant
   goes only after the first revision retires, and an administrator grant on the
   same Secret stays.
 - Later slices extend the same file or add one per slice at the workflow
   boundary. Sign-in sync uses the Keycloak lane with a real `groups` claim.
-- The regular Kubernetes Agent workflow proof runs once slices 1 to 3 are
-  complete.
+- The regular Kubernetes Agent workflow proof runs once slices 1, 2, 4, and 5
+  are complete.
