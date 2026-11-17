@@ -1677,7 +1677,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
@@ -1989,7 +1988,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
@@ -3083,7 +3081,6 @@ List Installation model providers
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
 | `500` | The platform request could not be completed. |
-| `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
@@ -3213,7 +3210,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
@@ -3294,7 +3290,6 @@ Read a model provider
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
 | `500` | The platform request could not be completed. |
-| `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
@@ -3420,7 +3415,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
@@ -3501,7 +3495,6 @@ List the model providers available when creating an Agent
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
 | `500` | The platform request could not be completed. |
-| `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
@@ -10341,7 +10334,6 @@ List readable credential sources without revealing credential values
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
 | `500` | The platform request could not be completed. |
-| `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`
@@ -10490,7 +10482,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
