@@ -51,6 +51,12 @@ type SupervisorState = {
   readinessProbes: { child: number; status: number }[];
   validation: { status: number | null; stdout: string; error?: Error };
   validationCalls: { command: string; args: readonly string[]; readOnly: string | undefined }[];
+  lockInspection: { status: number | null; stdout: string; error?: Error };
+  lockInspectionCalls: {
+    command: string;
+    args: readonly string[];
+    readOnly: string | undefined;
+  }[];
   children: Child[];
   exits: number[];
   intervals: { callback: () => unknown; delay: number }[];
@@ -131,6 +137,17 @@ export async function startCodexGatewaySupervisor(
     // What OpenClaw's config validator reports, and how often the wrapper ran it.
     validation: { status: 0, stdout: JSON.stringify({ valid: true }) },
     validationCalls: [],
+    // What `openclaw gateway recover-lock --json` (inspection only) reports, and its calls.
+    lockInspection: {
+      status: 0,
+      stdout: JSON.stringify({
+        present: false,
+        holders: [],
+        confirmation: "0".repeat(64),
+        command: `openclaw gateway recover-lock --confirm ${"0".repeat(64)}`,
+      }),
+    },
+    lockInspectionCalls: [],
     children: [],
     exits: [],
     intervals: [],
@@ -335,6 +352,14 @@ export async function startCodexGatewaySupervisor(
             return child;
           },
           spawnSync(command: string, args: readonly string[], options: SpawnOptions) {
+            if (args[1] === "gateway" && args[2] === "recover-lock") {
+              fixture.lockInspectionCalls.push({
+                command,
+                args: structuredClone(args),
+                readOnly: options?.env?.OPENCLAW_CONFIG_READONLY,
+              });
+              return fixture.lockInspection;
+            }
             fixture.validationCalls.push({
               command,
               args: structuredClone(args),
