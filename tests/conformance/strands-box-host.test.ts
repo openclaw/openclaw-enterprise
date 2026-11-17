@@ -1052,9 +1052,14 @@ test("the agent's exec list never covers git or gh (finding 3325)", { skip: unsu
     } finally {
       chmodSync(locked, 0o700);
     }
-    // Total: nothing throws, and what it cannot read covers git.
+    // Total: nothing throws, and what it cannot read covers git: an entry, a grant, or a `git`
+    // on the search path that loops.
     assert.equal(execCoversGit([node], ["/usr/bin\0"]), true);
     assert.equal(execCoversGit([join(via, "la")], fine), true);
+    const loopingGit = join(root, "looping-git");
+    mkdirSync(loopingGit, { mode: 0o700 });
+    symlinkSync(join(loopingGit, "git"), join(loopingGit, "git"));
+    assert.equal(execCoversGit([node], [...fine, loopingGit]), true);
     // The stock search paths still start, with the writable state given.
     const stock = ["/app/node_modules/.bin", ...AGENT_SEARCH_PATH];
     assert.equal(execCoversGit([node], stock, [writable]), false);
@@ -1095,7 +1100,13 @@ test("the agent's exec list never covers git or gh (finding 3325)", { skip: unsu
     // So is a link in place of one of them or of a parent: it can lead anywhere, the
     // workspace included. A relative entry is never judged.
     symlinkSync(outside, join(home, "elsewhere"));
-    for (const directory of [join(home, "elsewhere"), join(home, "elsewhere", "absent"), "bin"]) {
+    for (const directory of [
+      join(home, "elsewhere"),
+      join(home, "elsewhere", "absent"),
+      "bin",
+      // Never a loader directory, where Box runs anything.
+      "/usr/lib",
+    ]) {
       assert.equal(execCoversGit([node], fine, [home], [directory]), true, directory);
     }
   } finally {
