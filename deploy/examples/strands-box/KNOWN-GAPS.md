@@ -94,10 +94,20 @@ entries use the same four fields.
 - **Cause:** Box routes are per execution, not per process. The host also
   passes the token in the `box run` process environment, which processes of
   the same host user can read from `/proc`.
-- **Workaround:** run one Agent per Box execution, and run the host as a
-  dedicated operator account with no other processes.
-- **Upstream status:** by design in Box v0.2.2. The `authorizer://` source
-  keeps the token out of the `box run` environment.
+  Code that escapes Box's sandbox to the host account therefore reads the
+  installation token itself. It then has the GitHub App installation's
+  permissions on the assigned repositories (contents, pull requests, metadata)
+  from any network location, until OCE revokes the token at withdrawal or
+  retires it at renewal, at most the token's one-hour lifetime. The execution
+  bearer gives it nothing: the host keeps only its digest and Box never uses it.
+- **Workaround:** run one Agent per Box execution, run the host as a dedicated
+  operator account with no other processes, and grant the App only the
+  repositories and permissions the Agent needs.
+- **Upstream status:** Box runs its credential-holding process in the same
+  host account as the workload. A request-time credential source in the Box fork
+  keeps the token out of the `box run` environment and lets OCE refuse each
+  request; running that process apart from the workload is an ask for the Box
+  team.
 
 ## Box refuses protocol upgrades on HTTP egress
 
