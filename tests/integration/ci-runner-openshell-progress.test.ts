@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { watch } from "node:fs";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import test, { type TestContext } from "node:test";
@@ -351,6 +351,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
   const workflowModule = new URL("tests/helpers/openshell-sandbox-workflows.mjs", repositoryUrl)
     .href;
   const progressModule = new URL("scripts/ci/openshell-progress.mjs", repositoryUrl).href;
+  const reporterPath = fileURLToPath(new URL("scripts/ci/reporter.ts", repositoryUrl));
 
   await t.test("the upstream wrapper registers the helper-declared case", async (t) => {
     const home = await createRunnerFixture(t);
@@ -359,7 +360,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
       [
         "--test",
         "--test-reporter",
-        fileURLToPath(new URL("scripts/ci/reporter.ts", repositoryUrl)),
+        reporterPath,
         fileURLToPath(new URL(upstreamFile, repositoryUrl)),
       ],
       {
@@ -393,7 +394,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
     );
   });
 
-  for (const [mode, checkpoint, outcome] of [
+  for (const [mode, checkpoint, outcome, symlinkRoot] of [
     ["setup", undefined, undefined],
     ["request", "redeploy-request", "failed"],
     ["same-revision", "redeploy-request", "failed"],
@@ -411,9 +412,19 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
     ["case-deadline", "activation", "unfinished"],
     ["runner-deadline", "activation", "unfinished"],
     ["success", undefined, undefined],
+    ["activation", "activation", "failed", true],
+    ["case-deadline", "activation", "unfinished", true],
+    ["runner-deadline", "activation", "unfinished", true],
+    ["wrong-file", undefined, undefined, true],
+    ["wrong-declaration", undefined, undefined, true],
+    ["completed-wrapper-emitter", undefined, undefined, true],
   ] as const) {
-    await t.test(mode, async (t) => {
-      const root = await createRunnerFixture(t);
+    await t.test(symlinkRoot ? `${mode} through a symlinked root` : mode, async (t) => {
+      const root = await realpath(await createRunnerFixture(t));
+      const runnerRoot = symlinkRoot ? join(root, "linked-root") : root;
+      if (symlinkRoot) {
+        await symlink(root, runnerRoot, "dir");
+      }
       const results = join(root, "results/upstream.json");
       const state = join(root, "state/upstream.jsonl");
       const cleanupMarker = join(root, "state/cleanup");
@@ -432,9 +443,10 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
         mode === "wrong-declaration" ? "unrelated.mjs" : "openshell-sandbox-workflows.mjs";
       await mkdir(join(root, "tests/helpers"), { recursive: true });
       const wrapper = join(root, file);
+      const aliasedEntry = symlinkRoot && mode === "wrong-file";
       const earlierCase =
         mode === "completed-wrapper-emitter"
-          ? `test(${JSON.stringify(wrapper)}, () => {
+          ? `test(${JSON.stringify(join(runnerRoot, file))}, () => {
              for (const stage of ["installation", "exposure-auth", "initial-model"]) {
                emitOpenShellProgress(stage, "started");
                emitOpenShellProgress(stage, "passed");
@@ -447,7 +459,14 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
            import { emitOpenShellProgress, emitOpenShellReplacementCheckpoint } from ${JSON.stringify(progressModule)};
           `
           : "";
-      await writeFile(wrapper, `${earlierCase}await import("../helpers/${declaration}");\n`);
+      const wrapperSource = `${earlierCase}await import("../helpers/${declaration}");\n`;
+      if (aliasedEntry) {
+        const actualWrapper = join(root, upstreamFile);
+        await writeFile(actualWrapper, wrapperSource);
+        await symlink(actualWrapper, wrapper, "file");
+      } else {
+        await writeFile(wrapper, wrapperSource);
+      }
       await writeFile(
         join(root, "scripts/ci/prepare.mjs"),
         `import { writeFile } from "node:fs/promises";
@@ -544,7 +563,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
         },
       });
       const runner = await runRunnerAsync(
-        laneArgs(root, lane, state, results),
+        laneArgs(runnerRoot, lane, state, results),
         { CI_RUNNER_TEST_TIMEOUT_MS: runnerDeadline ? "5000" : "10000" },
         { timeout: 30_000 },
       );
@@ -627,6 +646,23 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
         mode === "completed-wrapper-emitter"
       ) {
         assert.match(result.tests[0]?.error?.message ?? "", /^controlled failure \[env:/u);
+      }
+      if (aliasedEntry) {
+        // Check the reporter as well as the runner's independent selected-path gate.
+        const native = spawnSync(
+          process.execPath,
+          ["--test", "--test-reporter", reporterPath, join(runnerRoot, file)],
+          { cwd: runnerRoot, env: {}, encoding: "utf8", timeout: 10_000 },
+        );
+        assert.equal(native.error, undefined);
+        assert.equal(native.status, 1);
+        const lines = native.stdout.split("\n");
+        assert.ok(
+          lines.includes(
+            '{"type":"test:progress","data":{"kind":"openshell-replacement-checkpoint","checkpoint":"activation"}}',
+          ),
+        );
+        assert.equal(lines.includes('{"type":"test:upstream-outage-attribution"}'), false);
       }
       for (const text of [artifact, runner.stdout, runner.stderr]) {
         assert.doesNotMatch(

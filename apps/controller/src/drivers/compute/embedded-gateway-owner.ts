@@ -53,6 +53,27 @@ export function embeddedGatewayRecoveryPreamble(namespace?: GatewayPidNamespace)
   return namespace ? "{\n" + recover(JSON.stringify(namespace)) + "\n}\n" : "";
 }
 
+// A runtime wrapper is its native Gateway's parent in the same PID namespace. A
+// native Gateway that exits without a clean stop leaves its records on retained
+// state: a kill, or a stop signal before OpenClaw installs its handler, which it
+// does only after it takes the state lock. A Gateway in another container, such
+// as a replacement Pod, cannot verify that holder and stays unready until an
+// operator recovers it (finding 3257). Here the wrapper has reaped that process.
+// Given this namespace, OpenClaw recovers only records written in it, and only
+// once it finds each holder PID dead here; any other holder, live or foreign,
+// keeps every lock. A clean exit (status 0) released them.
+export const EXITED_GATEWAY_STATE_RELEASE = String.raw`
+function releaseExitedGatewayState(code, environment) {
+  if (code === 0) return;
+  let namespace;
+  try { namespace = ${GATEWAY_NAMESPACE_PROBE}; } catch { return; }
+  const released = require("node:child_process").spawnSync(process.execPath,
+    ["/app/openclaw.mjs", "gateway", "recover-lock", "--terminated-namespace", JSON.stringify(namespace), "--json"],
+    { env: environment, stdio: ["ignore", "inherit", "inherit"], timeout: 60000 });
+  if (released.status !== 0) console.error("OpenClaw kept the Gateway state locks; see the recover-lock output above.");
+}
+`;
+
 // Run this in a short-lived process. By the time the Gateway can load a plugin
 // or accept a model turn, the private key is unlinked and its process has exited.
 const observeOrVerify = String.raw`

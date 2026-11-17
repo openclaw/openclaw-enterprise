@@ -1,4 +1,5 @@
-import { join, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import type { TestEvent } from "node:test/reporters";
 import { projectFailureDiagnostic, isRecord } from "./reporter-diagnostics.ts";
 import {
@@ -631,8 +632,27 @@ export default async function* jsonLinesReporter(
 ): AsyncGenerator<string> {
   const recordCoverage = recordsCoverage(process.env.GITHUB_WORKFLOW);
   const output = outputTail();
-  const upstreamEntry = join(process.cwd(), upstreamOutageCase.entry);
-  const upstreamDeclaration = join(process.cwd(), upstreamOutageCase.declaration);
+  const root = process.cwd();
+  let upstreamEntry = join(root, upstreamOutageCase.entry);
+  const upstreamDeclaration = join(root, upstreamOutageCase.declaration);
+  // Node stamps its lexical CLI argument on the wrapper and child events.
+  // Admit another spelling only for the checkout root; the entry is fixed.
+  const entryArgument = process.argv[1];
+  const entrySuffix = join(sep, upstreamOutageCase.entry);
+  if (
+    entryArgument !== upstreamEntry &&
+    entryArgument?.endsWith(entrySuffix) &&
+    isAbsolute(entryArgument) &&
+    normalize(entryArgument) === entryArgument
+  ) {
+    try {
+      if (realpathSync(entryArgument.slice(0, -entrySuffix.length)) === root) {
+        upstreamEntry = entryArgument;
+      }
+    } catch {
+      // An unresolved root cannot bind the lexical entry.
+    }
+  }
   // Node forwards child stdout before a dequeue can arrive. Admit progress
   // after the native file envelope only if the whole lifecycle has one case.
   let upstreamPhase:
