@@ -3151,11 +3151,11 @@ revisionTest(
     const prepared: string[] = [];
     await fixture.start({
       ...fixture.compute,
-      async prepareRevision(revision, ...rest) {
+      async prepareRevision(revision, deploymentContext) {
         if (revision.namespaceId === fixture.namespace.id) {
           prepared.push(revision.id);
         }
-        return fixture.compute.prepareRevision(revision, ...rest);
+        return fixture.compute.prepareRevision(revision, deploymentContext);
       },
     });
     await fixture.work(first, "succeeded");
