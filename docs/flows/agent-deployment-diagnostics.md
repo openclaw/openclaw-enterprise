@@ -8,11 +8,8 @@ last_updated_session: authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac
 
 ## Overview
 
-An admin requests fresh runtime checks for one saved version through a
-bodyless API call. OpenClaw Control Plane (OCC) authorizes the exact target,
-asks the selected Compute Driver for runtime checks with time and size limits, and returns that
-observation. The call ends at the API response; it does not change deployment
-work or select a live version.
+Admins request runtime checks for saved versions through a bodyless API call. OpenClaw Control Plane (OCC) authorizes that exact target, asks its Compute
+Driver for checks within time and size limits, and returns it. It changes neither deployment work nor the live version.
 
 ## Entry Points
 
@@ -20,8 +17,8 @@ work or select a live version.
 - Source: `apps/controller/src/index.ts:createFastifyApp`,
   `packages/occ/src/agent-runtime-observations.ts:AgentRuntimeObservations.diagnoseAgentDeployment`, and
   `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.diagnoseAgentDeployment`.
-- Assumptions: `deploymentId` is the Agent revision ID of a saved version. The caller needs
-  exact Agent `read` and `operate` and Agent revision `read` permissions.
+- Assumptions: `deploymentId` names a saved Agent revision. The caller needs exact
+  Agent `read` and `operate`, plus Agent revision `read` permissions.
 
 ## Flow
 
@@ -71,11 +68,9 @@ replaced Pods produce `unknown` checks. Invalid diagnostics data fails the
 request. When concurrent reads reach the shared deadline, the Driver can still
 classify a rejected Gateway diagnostics request before reporting a generic timeout.
 
-Before it generates the runtime programs, the Kubernetes renderer loads the
-shared failure vocabulary. `runtime-entrypoints.ts:isStringArray` requires a
-string at each position in the diagnostic check, code, and startup failure lists.
-An empty position or a value of another type stops the renderer from loading
-with `Invalid runtime failure vocabulary.`
+`runtime-entrypoints.ts:isStringArray` checks the diagnostic check, code and
+startup failure lists before Kubernetes generates runtime programs. A missing or
+non-string entry stops renderer loading with `Invalid runtime failure vocabulary.`
 
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:PLUGIN_RUNTIME_HELPERS`
 calls `channels.status` through OpenClaw's public Gateway SDK on demand in the
@@ -254,11 +249,17 @@ state after admission.
 
 - 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
 
+- 2026-11-18 04:54: Merge state-lock diagnostics. (authoring-run/01a1d81a-bdb0-7923-8615-bed6678f74d4 - e4521c8eb5ed60040c8ec08cfd58d485347064e4)
+
+- 2026-11-18 02:02: Preserve diagnostics and provenance. (authoring-run/01a1d81a-bdb0-7923-8615-bed6678f74d4 - 05703a745d964fdf41ff4ac6cb28b277f40b6c12)
+
 - 2026-11-18 03:40: Held `gateway-state-lock` fails as `RUNTIME_STATE_LOCK_UNVERIFIED`. (finding 3348)
 
-- 2026-11-17 23:35: Kubernetes wrappers release an unfinished Doctor's or setup's own state locks; a Harness on an unverifiable holder reports `gateway-state-lock`. (finding 3345)
+- 2026-11-17 23:35: Kubernetes wrappers release an unfinished Doctor's or setup's own state locks; a Harness on an unverifiable holder reports `gateway-state-lock`. (finding 3345 - 86c253916)
 
-- 2026-11-17 12:30: Hold a Kubernetes Gateway whose own start refused an unverifiable state lock owner as check `gateway-state-lock`, after a read-only lock inspection; the recheck retries a failed release of its own child's records. (fix-gateway-lock-check, finding 3288)
+- 2026-11-17 14:56: Add the source commit to the Gateway state-lock change record and refresh document provenance. (authoring-run/c0c84781-1b5f-4ab7-bde0-db44979aefbf - 4f137f1450d522928e67555ea5212d4e43db00ff)
+
+- 2026-11-17 12:30: Hold a Kubernetes Gateway whose own start refused an unverifiable state lock owner as check `gateway-state-lock`, after a read-only lock inspection; the recheck retries a failed release of its own child's records. (fix-gateway-lock-check, finding 3288 - a1595b7e7)
 
 - 2026-11-14 11:06: Reject missing positions in the lists embedded in generated runtime programs. (authoring-run/927cdccf-0c9c-45b7-9e7c-4e5e39a43260 - 08f8640d5503df1c98e9939ea5cce2763e9c4085)
 
