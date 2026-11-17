@@ -11,7 +11,7 @@ last_updated_session: "01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd"
 OCC persists governed network additions for one Agent, freezes them at deployment,
 and optionally applies a later version through its Sandbox Driver. Denial logs
 and provider recommendations supply independent context for a user review.
-This trace describes the implemented source; runtime proof has separate limits.
+Runtime qualification remains separate.
 
 ## Entry Points
 
@@ -63,9 +63,9 @@ returns 429 and `Retry-After` before body reads. See [API limits](../reference/a
 and [policy limits](../reference/sandbox-policies.md).
 
 The shared `SandboxNetworkGrantsSchema` bounds policies at 16,384 entries.
-`createSandboxNetworkGrantChecker` indexes executables and hostnames, merges port
-ranges, and binary-searches cached exact/wildcard interval unions. Controller admission and
-worker application use this index.
+Controller and worker use `createSandboxNetworkGrantChecker` to search merged
+executable/host coverage. Single-host lookups share storage; union-cache intervals
+cannot exceed the compiled ceiling's count.
 
 `validateAgentSandboxPolicy` authorizes the Agent/policy, checks editing, version
 and pending work, then validates shared rules, the narrowing Driver contribution
@@ -271,6 +271,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-17: Bound retained union-cache intervals. (01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd)
 
 - 2026-11-17: Condense admission traces while preserving provider recovery boundaries. (01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd)
 

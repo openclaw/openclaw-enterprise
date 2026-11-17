@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -346,4 +348,56 @@ test("HTTP policy preview and save preserve 16,384 rules and reject excess entri
   const unchanged = await fixture.request("GET", path, { timeout: 30_000 });
   assert.equal(unchanged.data.policy.version, saved.data.version);
   assert.deepEqual(unchanged.data.policy.additions, additions);
+});
+
+test("ceiling interval cache keeps shared-wildcard retention bounded across hosts", async (t) => {
+  // Isolate heap accounting from other suites and force collection, rather than checking RSS
+  // or inspecting private cache fields. The pre-fix checker retains about 196 MiB here.
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    [
+      "--expose-gc",
+      "--max-old-space-size=512",
+      "--input-type=module",
+      "-e",
+      `import assert from "node:assert/strict";
+     import { createSandboxNetworkGrantChecker, validateSandboxNetworkGrants }
+       from ${JSON.stringify(new URL("../../packages/contracts/src/sandbox-policy.ts", import.meta.url).href)};
+     const grant = (id, host, port) => ({ id, binary: "/usr/bin/curl", host, ports: [{from: port, to: port}] });
+     const ceiling = [
+       ...Array.from({length:4096}, (_,i) => grant("wild-"+i, "*.example.test", 2*i+1)),
+       ...Array.from({length:4096}, (_,i) => grant("exact-"+i, "host-"+i+".example.test", 65535)),
+     ];
+     validateSandboxNetworkGrants(ceiling);
+     const allows = createSandboxNetworkGrantChecker(ceiling);
+     globalThis.gc();
+     const before = process.memoryUsage().heapUsed;
+     for (let i=0; i<1024; i++) {
+       const host="host-"+i+".example.test";
+       assert.equal(allows(grant("query",host,1)),true);
+       assert.equal(allows(grant("query",host,65535)),true);
+       assert.equal(allows(grant("query",host,2)),false);
+     }
+     // Revisiting old hosts must retain exact/wildcard coverage and gaps after eviction.
+     for (const i of [0,512,1023]) {
+       const host="host-"+i+".example.test";
+       assert.equal(allows(grant("revisit",host,1)),true);
+       assert.equal(allows(grant("revisit",host,65535)),true);
+       assert.equal(allows(grant("revisit",host,2)),false);
+     }
+     globalThis.gc();
+     const retainedBytes = process.memoryUsage().heapUsed-before;
+     // Keep the compiled checker live through measurement.
+     assert.equal(allows(grant("live","host-0.example.test",1)),true);
+     console.log(JSON.stringify({retainedBytes}));`,
+    ],
+    { timeout: 60_000, maxBuffer: 64 * 1024 },
+  );
+  const { retainedBytes } = JSON.parse(stdout);
+  t.diagnostic(`Shared-wildcard cache retained ${(retainedBytes / 1024 / 1024).toFixed(1)} MiB`);
+  // Wide headroom for V8 bookkeeping still rejects the reported 196 MiB retained growth.
+  assert.ok(
+    retainedBytes < 32 * 1024 * 1024,
+    `${retainedBytes} retained bytes exceeds the 32 MiB budget`,
+  );
 });

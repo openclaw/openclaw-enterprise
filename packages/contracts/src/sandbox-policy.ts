@@ -210,6 +210,7 @@ export function createSandboxNetworkGrantChecker(
     }
     entry.ports.push(...grant.ports.map(({ from, to }) => ({ from, to })));
   }
+  let cacheIntervalLimit = 0;
   // Combine duplicate and adjacent ranges once, including grants with different rule IDs.
   for (const hosts of binaries.values()) {
     for (const entry of hosts.values()) {
@@ -223,9 +224,11 @@ export function createSandboxNetworkGrantChecker(
         }
       }
       entry.ports = merged;
+      cacheIntervalLimit += merged.length;
     }
   }
   const coverage = new Map<string, readonly { from: number; to: number }[]>();
+  let cachedIntervals = 0;
   return (grant) => {
     if (grant.ports.length === 0 || grant.ports.some(({ from, to }) => from > to)) {
       return false;
@@ -241,8 +244,12 @@ export function createSandboxNetworkGrantChecker(
     // Cache only ceiling-owned keys; arbitrary submitted hostnames cannot grow this index.
     const key = JSON.stringify([grant.binary, exact?.host ?? wildcard!.host]);
     let ranges = coverage.get(key);
+    if (exact === undefined || wildcard === undefined) {
+      // Share the immutable snapshot when no exact/wildcard union is needed.
+      ranges = (exact ?? wildcard)!.ports;
+    }
     if (ranges === undefined) {
-      // Merge the exact/wildcard union once per queried host, never once per grant.
+      // Compile a missing union; it contains at most all ceiling intervals.
       const merged: { from: number; to: number }[] = [];
       for (const range of [...(exact?.ports ?? []), ...(wildcard?.ports ?? [])].sort(
         (a, b) => a.from - b.from,
@@ -255,7 +262,15 @@ export function createSandboxNetworkGrantChecker(
         }
       }
       ranges = merged;
+      // Bound total retained intervals, not just keys: many exact hosts can share
+      // a large wildcard set. Evict oldest unions before retaining another copy.
+      while (cachedIntervals + ranges.length > cacheIntervalLimit) {
+        const [oldestKey, oldestRanges] = coverage.entries().next().value!;
+        coverage.delete(oldestKey);
+        cachedIntervals -= oldestRanges.length;
+      }
       coverage.set(key, ranges);
+      cachedIntervals += ranges.length;
     }
     return grant.ports.every(({ from, to }) => {
       // Find the last interval starting at or before the requested range.
