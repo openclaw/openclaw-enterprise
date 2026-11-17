@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import {
+  harnessAuthBindingFromSnapshot,
+  type ComputeAgentRevisionBinding,
+} from "../../packages/contracts/src/index.ts";
+import {
   createKubernetesComputeDriver,
   kubernetesGatewayNamespaceName,
   kubernetesNamespaceName,
@@ -136,22 +140,30 @@ export function createRuntimeLogDriverFixture({
           runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
         }),
   );
-  const agent = {
-    id: "agent-runtime-logs",
-    namespaceId: tenant.id,
-    name: "Runtime logs Agent",
-    configurationId: "cfg_runtime_logs",
-    providerId: null,
-    executionMode: "dedicated",
-    servicePrincipalId: "service-principal-runtime-logs",
-    createdAt: tenant.createdAt,
-  };
   const revision = routedRevision(driver, {
     id: "revision-runtime-logs",
-    agentId: agent.id,
-    configurationId: agent.configurationId,
-    servicePrincipalId: agent.servicePrincipalId,
+    agentId: "agent-runtime-logs",
+    configurationId: "cfg_runtime_logs",
+    servicePrincipalId: "service-principal-runtime-logs",
   });
+  const binding: ComputeAgentRevisionBinding = {
+    namespace: { ...tenant, status: "ready" },
+    agent: {
+      id: revision.agentId,
+      namespaceId: revision.namespaceId,
+      name: "Runtime logs Agent",
+      desiredRuntimeState: "running",
+      status: "active",
+      configurationId: revision.configurationId,
+      backendId: revision.backendId,
+      harnessAuth: harnessAuthBindingFromSnapshot(revision.harnessAuth),
+      executionMode: revision.harness.mode,
+      gatewayManagedMode: revision.gatewayManagedMode,
+      servicePrincipalId: revision.servicePrincipalId,
+      createdAt: revision.createdAt,
+    },
+    revision,
+  };
   const state: FixtureState = {
     restartCount: { agent: 0, gateway: 2 },
     foreignPod: false,
@@ -356,7 +368,6 @@ export function createRuntimeLogDriverFixture({
   if (twoCluster) {
     clientFields.executionApiClients = Promise.resolve(clientsFor("execution"));
   }
-  const binding = { namespace: tenant, agent, revision };
   const request = (role: Role, overrides: Partial<RuntimeLogRequest> = {}): RuntimeLogRequest => ({
     source: role,
     pod: `${role}-runtime-logs-pod`,
@@ -368,5 +379,14 @@ export function createRuntimeLogDriverFixture({
     signal: new AbortController().signal,
     ...overrides,
   });
-  return { driver, binding, calls, state, request, namespaceName, gatewayNamespaceName };
+  return {
+    describeAgentRuntime: driver.describeAgentRuntime.bind(driver, binding),
+    readAgentRuntimeLogs: driver.readAgentRuntimeLogs.bind(driver, binding),
+    binding,
+    calls,
+    state,
+    request,
+    namespaceName,
+    gatewayNamespaceName,
+  };
 }

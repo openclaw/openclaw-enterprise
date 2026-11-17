@@ -57,6 +57,9 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `harness_auth_credential_source_id`
 - `credential_sources` (every bound credential source)
 - `active_revision_id`
+- `predecessor_replacement` (nullable JSONB with the predecessor and candidate
+  revision IDs and the `pre-stop` or `stopping` phase). See the
+  [common stop boundary](../agents/planned-replacement.md#common-stop-boundary).
 - `desired_runtime_state`
 - `sandbox_policy_editing`
 - `status`
@@ -475,6 +478,8 @@ Defines native IAM rules that deny actions on a resource kind or specific resour
 ### `audit_events`
 
 Keeps an append-only record of bootstrap, changes to resources, and authorization denials.
+When Control Plane audit is enabled, it also records covered API requests,
+worker activity, and disclosures of Agent audit records. See the [audit guide](../../guides/topics/audit-log.md).
 
 - `id`
 - `occurred_at`
@@ -503,6 +508,7 @@ Queues and tracks controller work for Namespace and Agent lifecycle changes, Age
 - `available_at`
 - `attempt_count`
 - `claim_token`
+- `audit_attempt_id`
 - `lease_expires_at`
 - `completed_at`
 - `reason_code`

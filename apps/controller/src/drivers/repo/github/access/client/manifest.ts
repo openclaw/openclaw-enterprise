@@ -1,12 +1,17 @@
 import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
-import { readClientConfiguration, type ClientFiles } from "./config.ts";
+import { isClientSessionId, readClientConfiguration, type ClientFiles } from "./config.ts";
 import {
   hasControlCharacter,
   normalizePushRefAllowlist,
+  repositoryCredentialClientStringKeys,
 } from "../../../access/client-contracts.ts";
-import { assertPrivateDirectory, readPrivateFile } from "./private-files.ts";
+import {
+  assertPrivateDirectory,
+  clientSessionFileMaxBytes,
+  readPrivateFile,
+} from "./private-files.ts";
 
 export const repositoryMaterialRoot = "/run/oce/repository-credentials";
 export const repositorySelectionVariable = "OCE_REPOSITORY_SELECTION";
@@ -67,12 +72,7 @@ function readPublicClient(value: unknown): ClientFiles["client"] {
   const hasPolicy =
     value !== null && typeof value === "object" && Object.hasOwn(value, "pushRefAllowlist");
   const client = record(value, [
-    "gatewayOrigin",
-    "gitRemote",
-    "gitUsername",
-    "canonicalApiHost",
-    "apiHost",
-    "repository",
+    ...repositoryCredentialClientStringKeys,
     ...(hasPolicy ? ["pushRefAllowlist"] : []),
   ]);
   if (
@@ -90,12 +90,7 @@ function readPublicClient(value: unknown): ClientFiles["client"] {
 
 function clientsAgree(first: ClientFiles["client"], second: ClientFiles["client"]): boolean {
   return (
-    first.gatewayOrigin === second.gatewayOrigin &&
-    first.gitRemote === second.gitRemote &&
-    first.gitUsername === second.gitUsername &&
-    first.canonicalApiHost === second.canonicalApiHost &&
-    first.apiHost === second.apiHost &&
-    first.repository === second.repository &&
+    repositoryCredentialClientStringKeys.every((key) => first[key] === second[key]) &&
     JSON.stringify(first.pushRefAllowlist) === JSON.stringify(second.pushRefAllowlist)
   );
 }
@@ -103,18 +98,11 @@ function clientsAgree(first: ClientFiles["client"], second: ClientFiles["client"
 async function validateMaterialFiles(directory: string, hasPublicCa: boolean): Promise<void> {
   await assertPrivateDirectory(directory);
   await assertPrivateDirectory(join(directory, "gh"));
-  const bounds = new Map([
-    ["bearer", 256],
-    ["client.json", 16 * 1024],
-    ["gitconfig", 16 * 1024],
-    ["gh/hosts.yml", 16 * 1024],
-    ["gh/config.yml", 16 * 1024],
-  ]);
-  if (hasPublicCa) {
-    bounds.set("ca.pem", 64 * 1024);
-  }
   // Validate the complete generation without loading another binding's bearer.
-  for (const [name, maximum] of bounds) {
+  for (const [name, maximum] of Object.entries(clientSessionFileMaxBytes)) {
+    if (name === "ca.pem" && !hasPublicCa) {
+      continue;
+    }
     const stat = await lstat(join(directory, name));
     if (
       !stat.isFile() ||
@@ -130,27 +118,34 @@ async function validateMaterialFiles(directory: string, hasPublicCa: boolean): P
   }
 }
 
+function assertManifestRootPath(directory: string): void {
+  if (
+    !isAbsolute(directory) ||
+    resolve(directory) !== directory ||
+    directory.length > 4096 ||
+    hasControlCharacter(directory)
+  ) {
+    throw new Error("invalid-repository-material");
+  }
+}
+
+async function readManifestJson(root: string): Promise<unknown> {
+  return JSON.parse(
+    (await readPrivateFile(join(root, "manifest.json"), 256 * 1024)).toString("utf8"),
+  );
+}
+
 /** Read the Compute-owned, immutable Pod generation once for this invocation. */
 export async function readRuntimeRepositoryManifest(
   root = repositoryMaterialRoot,
   finalRoot = root,
 ): Promise<RuntimeRepositoryManifest> {
   for (const directory of [root, finalRoot]) {
-    if (
-      !isAbsolute(directory) ||
-      resolve(directory) !== directory ||
-      directory.length > 4096 ||
-      hasControlCharacter(directory)
-    ) {
-      throw new Error("invalid-repository-material");
-    }
+    assertManifestRootPath(directory);
   }
   await assertPrivateDirectory(root);
   await assertPrivateDirectory(join(root, "sessions"));
-  const parsed = record(
-    JSON.parse((await readPrivateFile(join(root, "manifest.json"), 256 * 1024)).toString("utf8")),
-    ["version", "generation", "bindings"],
-  );
+  const parsed = record(await readManifestJson(root), ["version", "generation", "bindings"]);
   if (
     parsed.version !== 1 ||
     typeof parsed.generation !== "string" ||
@@ -175,8 +170,7 @@ export async function readRuntimeRepositoryManifest(
     if (
       typeof binding.repositoryRef !== "string" ||
       !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(binding.repositoryRef) ||
-      typeof binding.sessionId !== "string" ||
-      !/^[A-Za-z0-9_-]{1,128}$/.test(binding.sessionId) ||
+      !isClientSessionId(binding.sessionId) ||
       typeof binding.deadlineWallMs !== "number" ||
       !Number.isSafeInteger(binding.deadlineWallMs) ||
       binding.deadlineWallMs <= 0 ||
@@ -239,17 +233,12 @@ export async function readManifestOrigins(
   root: string,
   generation: string,
 ): Promise<ReadonlySet<string>> {
-  if (
-    !isAbsolute(root) ||
-    resolve(root) !== root ||
-    root.length > 4096 ||
-    hasControlCharacter(root)
-  ) {
-    throw new Error("invalid-repository-material");
-  }
-  const parsed = JSON.parse(
-    (await readPrivateFile(join(root, "manifest.json"), 256 * 1024)).toString("utf8"),
-  ) as { version?: unknown; generation?: unknown; bindings?: unknown } | null;
+  assertManifestRootPath(root);
+  const parsed = (await readManifestJson(root)) as {
+    version?: unknown;
+    generation?: unknown;
+    bindings?: unknown;
+  } | null;
   const bindings = parsed?.bindings;
   // Only the generation the rendered configuration names, which its helper serves.
   if (
@@ -272,7 +261,9 @@ export async function readManifestOrigins(
   return origins;
 }
 
-export function requireCurrentBinding(binding: RuntimeRepositoryBinding): void {
+export function requireCurrentBinding(
+  binding: Pick<RuntimeRepositoryBinding, "deadlineWallMs">,
+): void {
   if (binding.deadlineWallMs <= Date.now()) {
     throw new Error("repository-session-expired");
   }

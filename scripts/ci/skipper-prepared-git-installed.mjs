@@ -20,6 +20,7 @@ import { imageConfigDigest } from "./image-config-digest.ts";
 import {
   readSkipperJourney,
   recordSkipperCheckpoint,
+  recordSkipperInstallerExit,
   recordSkipperTestFailure,
 } from "./skipper-failure-receipt.ts";
 import { createInterface } from "node:readline";
@@ -30,7 +31,7 @@ import {
   run,
   startLocalSetup,
   workDirectory,
-} from "./first-agent-smoke.mjs";
+} from "./first-agent-smoke.ts";
 
 const env = process.env;
 const lane = "skipper-prepared-git-installed";
@@ -169,12 +170,16 @@ let runnerReceipt;
 let imageDigests;
 let clusterCleanupVerified = false;
 let cleanupFailed = false;
+let installerFailure;
 try {
   await noCluster();
   phase = "install checkout images, prepared repository service and fresh application database";
   await recordSkipperCheckpoint("skipper_stage", "install");
   progress(phase);
-  const stack = await startLocalSetup(install, { privateInstall: true });
+  const stack = await startLocalSetup(install, { privateInstall: true }).catch(async (error) => {
+    installerFailure = await recordSkipperInstallerExit(error.result);
+    throw error;
+  });
   const { state, context, kubeconfig } = stack;
   assert.equal(state.cluster, cluster);
   assert.equal(state.databaseName, database);
@@ -278,7 +283,7 @@ try {
   const runner = await run(
     process.execPath,
     [
-      "scripts/ci/run-tests.mjs",
+      "scripts/ci/run-tests.ts",
       "run",
       lane,
       "--state",
@@ -334,39 +339,16 @@ try {
     progress(name);
   }
   if (failure) {
-    const chat = entries.find((e) => e.phase === "gateway-chat-refused");
-    if (chat) {
-      const { httpStatus, category, modelTurns, modelAnswers, expectedNonceAnswered, tlsErrors } =
-        chat;
-      if (
-        (httpStatus === 0 ||
-          (Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599)) &&
-        typeof category === "string" &&
-        /^(gateway-credential-unavailable|authentication|permission|workspace|agent-runtime|timeout|unavailable|unclassified|transport|response-body|response-json)$/.test(
-          category,
-        ) &&
-        [modelTurns, modelAnswers, tlsErrors].every(
-          (n) => n === null || (Number.isSafeInteger(n) && n >= 0),
-        ) &&
-        (expectedNonceAnswered === null || typeof expectedNonceAnswered === "boolean") &&
-        typeof chat.runtimeSignal === "string" &&
-        /^(thread-filesystem-sandbox-denied|thread-start|model-transport|no-known-signal|logs-unavailable)$/.test(
-          chat.runtimeSignal,
-        )
-      ) {
-        console.error(
-          "Gateway HTTP %d, %s, %s. During this request synthetic model turns=%s, answers=%s, expected nonce answered=%s, TLS errors=%s.",
-          httpStatus,
-          category,
-          chat.runtimeSignal,
-          modelTurns ?? "unknown",
-          modelAnswers ?? "unknown",
-          expectedNonceAnswered ?? "unknown",
-          tlsErrors ?? "unknown",
-        );
-      } else {
-        console.error("Gateway diagnostics unavailable.");
-      }
+    if (failure.gatewayChat) {
+      const { httpStatus, gatewayCategory, runtimeSignal, modelRequestObservation } =
+        failure.gatewayChat;
+      console.error(
+        "Gateway HTTP %s, %s, %s. Synthetic model request: %s.",
+        httpStatus ?? "unknown",
+        gatewayCategory ?? "unknown",
+        runtimeSignal ?? "unknown",
+        modelRequestObservation ?? "unknown",
+      );
     }
     if (records.includes("repository-binding-withdrawn-discovery-released")) {
       console.error("Repository binding withdrawn and held discovery released.");
@@ -423,19 +405,11 @@ try {
   runnerReceipt = projectSkipperRunnerReceipt(summary);
 } catch (error) {
   failed = true;
-  // File and line are useful on a failed guard. Never print values, runner or subprocess output.
-  const location = String(error.stack).match(/skipper-prepared-git-installed\.mjs:\d+:\d+/)?.[0];
-  // The installer can report a failed stage on either stream. Publish only fixed categories.
-  const { stdout = "", stderr = error.message } = error.result ?? {};
-  const detail = stdout + "\n" + stderr;
-  const category = detail.match(
-    /RTM_NEWADDR|bwrap|ImagePullBackOff|ErrImagePull|CrashLoopBackOff|timed out|deadline exceeded|connection refused|permission denied|not ready|BackoffLimitExceeded|pre-install hooks failed|pre-upgrade hooks failed|catalog objects or effective grants differ/i,
-  )?.[0];
+  // The error stack can include private subprocess stderr in its message.
   console.error(
-    "Private Git acceptance failed: %s (%s, %s)",
+    "Private Git acceptance failed: %s (%s)",
     phase,
-    location ?? "location unavailable",
-    category ?? (error.code === "ERR_ASSERTION" ? "assertion failed" : "operation failed"),
+    installerFailure ?? (error.code === "ERR_ASSERTION" ? "assertion failed" : "operation failed"),
   );
 } finally {
   for (const release of cleanup.reverse()) {

@@ -1,9 +1,17 @@
 {
   "prepare": {
     "postgres": true,
-    "requiresPreparedStateForFile": true
+    "requiresPreparedStateForFile": true,
+    "selfProvisionedFiles": ["tests/integration/ci-prepare-postgres-real.test.ts"]
   },
   "files": [
+    {
+      "path": "tests/integration/ci-prepare-postgres-real.test.ts",
+      "env": { "OCC_TEST_CI_POSTGRES_REAL": "1" },
+      "expectedTests": [
+        "PostgreSQL preparation uses distinct Docker-assigned loopback ports and cleans its projects"
+      ]
+    },
     {
       "path": "tests/integration/postgres-migration-compatibility.test.mjs",
       "optionalEnv": [

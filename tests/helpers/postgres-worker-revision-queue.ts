@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { Pool, QueryResult } from "pg";
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 
 type WorkPool = Pick<Pool, "query">;
 type WorkParameter = string | string[];

@@ -12,3 +12,8 @@ paths:
       # TODO: Remove when actionlint supports concurrency.queue (rhysd/actionlint#654).
       # The preflight workflow test checks the job allowlist, queue values and cancellation.
       - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'
+  .github/workflows/ci-image-cache.yml:
+    ignore:
+      # TODO: Remove when actionlint supports concurrency.queue (rhysd/actionlint#654).
+      # The OpenShell prerequisite test checks the singleton group and queue.
+      - '^unexpected key "queue" for "concurrency" section\. expected one of "cancel-in-progress", "group"$'

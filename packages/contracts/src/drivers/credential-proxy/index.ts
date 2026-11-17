@@ -304,7 +304,16 @@ export interface CredentialProviderDefinition {
     binding: EgressBinding,
     harnessConfiguration?: Readonly<Record<string, unknown>>,
   ): readonly EgressRoute[];
-  classify(route: EgressRoute, request: EgressRequest): EgressOperation | undefined;
+  /**
+   * On refusal, optionally report one stable provider-owned rule ID (1–255).
+   * IDs must not encode request data. Report synchronously, only for a matched
+   * destination; accepted operations and ambiguous diagnostics discard the ID.
+   */
+  classify(
+    route: EgressRoute,
+    request: EgressRequest,
+    refused?: (rule: number) => void,
+  ): EgressOperation | undefined;
   inject(value: string): readonly (readonly [string, string])[];
   /** Positive provider evidence only; status alone never identifies rejected credentials. */
   credentialRejected(response: EgressResponse): boolean;

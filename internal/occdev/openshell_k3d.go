@@ -28,7 +28,7 @@ const (
 )
 
 // developmentCodexProfile matches the localhost seccomp profile name
-// `scripts/lib/codex-seccomp-k3d.mjs` builds for the dedicated Codex sandbox.
+// `scripts/lib/codex-seccomp-k3d.ts` builds for the dedicated Codex sandbox.
 //
 // The reviewed Codex version is deliberately not pinned here. That script owns
 // the list of reviewed versions and refuses to prepare a profile for any other,
@@ -891,7 +891,10 @@ func (r *runner) helmUpgrade(ctx context.Context, state *developmentState, value
 // `k3d cluster stop` and `start` or a host reboot. The chart admits PostgreSQL
 // and the Kubernetes API only as explicit /32 hosts, and both addresses can
 // change on restart. This launcher-owned policy adds the same egress by
-// PostgreSQL Pod label and by the owned k3d network subnet.
+// PostgreSQL Pod label and by the owned k3d network subnet. The image upgrade
+// helper's startup preflight Pods (component upgrade-preflight) check the
+// candidate database and Compute as the API and worker do, so they get the
+// same egress; without it a moved PostgreSQL Pod refuses every upgrade.
 func (r *runner) applyDevelopmentRestartEgress(ctx context.Context, state *developmentState, clusterIP string, clusterPort int) error {
 	subnet, err := r.developmentNodeSubnet(ctx, state, clusterIP)
 	if err != nil {
@@ -910,7 +913,7 @@ func (r *runner) applyDevelopmentRestartEgress(ctx context.Context, state *devel
 			map[string]any{
 				"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": kubernetesMetadata("openclaw-development-postgres-egress", namespace, labels),
 				"spec": map[string]any{
-					"podSelector": components("api", "worker", "initialization"), "policyTypes": []string{"Egress"},
+					"podSelector": components("api", "worker", "initialization", "upgrade-preflight"), "policyTypes": []string{"Egress"},
 					"egress": []any{map[string]any{
 						"to":    []any{map[string]any{"podSelector": map[string]any{"matchLabels": map[string]string{"app": "postgres"}}}},
 						"ports": []any{map[string]any{"protocol": "TCP", "port": 5432}},
@@ -920,7 +923,7 @@ func (r *runner) applyDevelopmentRestartEgress(ctx context.Context, state *devel
 			map[string]any{
 				"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": kubernetesMetadata("openclaw-development-kubernetes-egress", namespace, labels),
 				"spec": map[string]any{
-					"podSelector": components("api", "worker", "initialization", "collector"), "policyTypes": []string{"Egress"},
+					"podSelector": components("api", "worker", "initialization", "upgrade-preflight", "collector"), "policyTypes": []string{"Egress"},
 					"egress": []any{map[string]any{
 						"to":    []any{map[string]any{"ipBlock": map[string]string{"cidr": subnet}}},
 						"ports": []any{map[string]any{"protocol": "TCP", "port": clusterPort}},

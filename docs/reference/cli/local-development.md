@@ -8,7 +8,7 @@ local setup for deploying an Agent; follow [Local Setup](../../guides/quickstart
 The CLI uses the nearest enclosing checkout identified by its OCE `go.mod` and
 `compose.yaml`. The Compose marker must be a regular file or a symlink to one.
 An absent marker allows the search to continue; an invalid or unresolvable marker
-stops both commands with the exact path to fix. If `go.mod` contains CRLF line
+stops these commands with the exact path to fix. If `go.mod` contains CRLF line
 endings, convert the file to LF and retry. These errors do not fall through to
 an outer checkout that could own a different stack.
 
@@ -17,8 +17,18 @@ an outer checkout that could own a different stack.
 | `occ dev up`                                    | Starts the selected profile; with no selection, the Kubernetes-only profile. `OCC_DEVELOPMENT_COMPUTE_DRIVER=docker` selects a control-plane preview that cannot deploy Agents.    |
 | `occ dev up --key-output PATH`                  | Writes the bootstrap service-key file to an absent absolute path in a private directory.                                                                                           |
 | `occ dev up --sandbox-network-policy-file FILE` | Adds binary and endpoint rules for Kubernetes Compute with OpenShell; see [startup network policy](../../guides/deploy/local-sandbox-network-policy.md).                           |
+| `occ dev check`                                 | Checks the recorded managed Kubernetes stack’s Agent Sandbox controller before deployment.                                                                                         |
 | `occ dev down`                                  | Stops the selected profile, else the recorded one (below). Docker keeps Compose volumes and copied service keys. Kubernetes removes its owned k3d cluster and any Compose volumes. |
 | `occ dev down --volumes`                        | Also removes Compose volumes. Docker Compute Namespace networks and local key files remain. Kubernetes cleanup already removes its volumes.                                        |
+
+`occ dev check` uses the current checkout's recorded state and loopback kubeconfig.
+It requires an available Agent Sandbox controller replica and prints bounded
+rollout diagnostics on failure. A serving controller remains sufficient while
+its replacement starts. It does not
+change workloads or prove Agent, model, or external-service readiness. Docker
+Compute is unsupported; a recorded stack with no Sandbox Driver reports that
+no OpenShell dependency was checked. The first-Agent helper runs this check
+before creating credentials or Agents.
 
 In the Go Kubernetes helpers, a failed exclusive write removes its newly created
 output, including a partial key file. Existing targets stay unchanged. If removal

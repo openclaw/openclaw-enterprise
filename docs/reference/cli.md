@@ -226,7 +226,7 @@ way as one you cannot read.
 
 ## Local development
 
-[Local development commands](cli/local-development.md) covers `occ dev up` and
+[Local development commands](cli/local-development.md) covers `occ dev up`, `occ dev check` and
 `occ dev down`.
 
 [Agent policy commands](../guides/topics/agent-sandbox-policy.md#cli) default to

@@ -8,6 +8,20 @@ This record preserves the dated changes to the production startup flow. See the 
 
 ## Changelog
 
+- 2026-11-04 23:07: Require the captured UID for original Job completion. (authoring-run/6c8eb7c1-4921-456d-bd96-cf1e8303b58b - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
+
+- 2026-11-04 23:05: Trace durable first-install receipts and read-only attempt reconciliation. (authoring-run/1b2cbf33-0aef-45e7-bac1-2b40f26eeb3e - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
+
+- 2026-11-04 22:57: Trace prerequisite diagnosis. (authoring-run/9ad2db0a-6b05-4873-aeda-52d96af2405e - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
+
+- 2026-11-04 07:10: Trace read-only initialization handoff and exact current chart recognition. (authoring-run/e3fc74c0-9f4f-42b6-ac25-a9757e382446 - 0c39ae057d294e7c1a244666fb6b98a1200b7f52)
+
+- 2026-11-04 00:26: Check chart-managed private Gateway identity and hostname before rollout. (authoring-run/a85b1fc7-d58e-4c10-b80c-6464a0aaaa4f - c8a9b55bd67175e0d1ae3fbb7fefe1a0de44f573)
+
+- 2026-11-03 18:03: Separate managed MCP discovery egress from model discovery. (authoring-run/0e69d668-c39a-4a60-b4ce-5556acb848b0 - c6be564e9f8b6186c53874ea26833a36f037c3db)
+
+- 2026-11-03 11:28: Reconcile PostgreSQL compatibility checks with default Helm private routing. (authoring-run/e9eeaa5b-19a6-4496-9c6e-98357b25ef83 - ccc8f0359924ed62b12e619b2ef9f3ef57a3dd7a)
+
 - 2026-11-02 15:26: Refuse incompatible PostgreSQL servers before catalog checks and migration. (authoring-run/c6926504-08f3-4eb6-ba6c-28b3e113eede - 9138a0f9617742d9c4997156e7a6cf19f6241c10)
 
 - 2026-11-02 14:57: Enable Helm private routing by default and retain prerequisite validation and explicit opt-out. (authoring-run/4fcd344c-7374-490d-979d-a6995b6a19dc - cf67413c378cce3989d28fa8178ed29a405b9ce6)

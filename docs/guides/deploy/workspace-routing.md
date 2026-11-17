@@ -369,6 +369,8 @@ not expose mTLS client-certificate options.
 
 ### Troubleshooting
 
+Diagnose [upstream 403](../operate/local-setup-troubleshooting.md#gateway-connections-return-403-after-an-envoy-pod-replacement).
+
 | Symptom                                                           | What to check                                                                                                                                                                                            |
 | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `503 DEPENDENCY_UNAVAILABLE`                                      | Confirm routing and the service key are configured, the Compute Driver supports routing, and Envoy and the native gateway are reachable. The Docker Driver does not support this routing path.           |

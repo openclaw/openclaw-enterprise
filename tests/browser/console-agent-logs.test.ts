@@ -7,7 +7,11 @@ import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page, Route } from "playwright";
 
-import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
+import type {
+  AgentRevisionWire,
+  AgentWire,
+  NamespaceWire,
+} from "../../packages/contracts/src/api/resources.ts";
 import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import type {
   AgentRuntimeEvent,
@@ -23,7 +27,7 @@ import {
   createConsoleAppFixture,
   fileConsoleApp,
 } from "../helpers/console-app.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import {
   LOG_TEXT_DENIED,
   RUNTIME_STATUS_DENIED,
@@ -1845,6 +1849,22 @@ async function openStoppedLogs(
   return { agentPath, page, shows, poll };
 }
 
+async function routeQueuedDeployment(
+  page: Page,
+  { fixture, namespace, agent }: Awaited<ReturnType<typeof logsFixture>>,
+  { id, createdAt }: Pick<AgentRevisionWire, "id" | "createdAt">,
+) {
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  await page.route(`${fixture.origin}${agentPath}/deployments/${id}`, (route) =>
+    route.fulfill(
+      deploymentStatusResponse(
+        { id, namespaceId: namespace.id, agentId: agent.id, createdAt },
+        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
+      ),
+    ),
+  );
+}
+
 // Finding 2978 (dogfood r60, D818). The Agent was stopped and redeployed from elsewhere while its
 // Logs stayed open, and the new version's deployment failed. A failed deployment selects no
 // version, so the Agent read each poll makes showed only that the Agent runs again: the page kept
@@ -1856,24 +1876,12 @@ async function openStoppedLogs(
 test("Logs of a stopped version show a redeploy from elsewhere that failed", async (t) => {
   const logs = await logsFixture(t);
   const { fixture, namespace, agent } = logs;
-  const { agentPath, page, shows, poll } = await openStoppedLogs(t, logs);
+  const { page, shows, poll } = await openStoppedLogs(t, logs);
 
   // It deploys a new version, which runs with no version selected while its deployment is queued.
   // The in-memory app has no worker records, so the record is the API's shape, fulfilled.
   const deployed = await fixture.deployAgent(namespace.id, agent.id);
-  await page.route(`${fixture.origin}${agentPath}/deployments/${deployed.id}`, (route) =>
-    route.fulfill(
-      deploymentStatusResponse(
-        {
-          id: deployed.id,
-          namespaceId: namespace.id,
-          agentId: agent.id,
-          createdAt: deployed.createdAt,
-        },
-        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
-      ),
-    ),
-  );
+  await routeQueuedDeployment(page, logs, deployed);
   const queued = await poll();
   await shows(/Latest visible deployment\s+v2\s+·\s+Queued/);
   assert.equal(await poll(), queued);
@@ -1918,14 +1926,7 @@ test("Logs show a second redeploy from elsewhere after a failed one, then its ow
     [after.desiredRuntimeState, after.activeRevisionId, after.status],
     [before.desiredRuntimeState, before.activeRevisionId, before.status],
   );
-  await page.route(`${fixture.origin}${agentPath}/deployments/${third.id}`, (route) =>
-    route.fulfill(
-      deploymentStatusResponse(
-        { id: third.id, namespaceId: namespace.id, agentId: agent.id, createdAt: third.createdAt },
-        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
-      ),
-    ),
-  );
+  await routeQueuedDeployment(page, logs, third);
   // Polls soon after the last list read do not read it again; one within the minute after does.
   for (let index = 0; index < 3; index += 1) {
     assert.equal(await poll(), listed, `poll ${index + 1} lists the versions`);
@@ -1957,19 +1958,7 @@ test("Logs show a second redeploy from elsewhere after a failed one, then its ow
   assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
   const beforeFourth = await poll();
   const fourth = await fixture.deployAgent(namespace.id, agent.id);
-  await page.route(`${fixture.origin}${agentPath}/deployments/${fourth.id}`, (route) =>
-    route.fulfill(
-      deploymentStatusResponse(
-        {
-          id: fourth.id,
-          namespaceId: namespace.id,
-          agentId: agent.id,
-          createdAt: fourth.createdAt,
-        },
-        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
-      ),
-    ),
-  );
+  await routeQueuedDeployment(page, logs, fourth);
   assert.equal(await poll(), beforeFourth + 1, "the poll after the redeploy lists the versions");
   await shows(/Latest visible deployment\s+v4\s+·\s+Queued/);
 });
@@ -1984,19 +1973,7 @@ test("a Logs reread answered after this page's Stop keeps the Stop", async (t) =
   const { agentPath, page, shows, poll } = await openStoppedLogs(t, logs);
   // Another session deploys v2, which stays queued: the Agent runs with no version selected.
   const deployed = await fixture.deployAgent(namespace.id, agent.id);
-  await page.route(`${fixture.origin}${agentPath}/deployments/${deployed.id}`, (route) =>
-    route.fulfill(
-      deploymentStatusResponse(
-        {
-          id: deployed.id,
-          namespaceId: namespace.id,
-          agentId: agent.id,
-          createdAt: deployed.createdAt,
-        },
-        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
-      ),
-    ),
-  );
+  await routeQueuedDeployment(page, logs, deployed);
   await poll();
   await shows(/Latest visible deployment\s+v2\s+·\s+Queued/);
   const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
@@ -2993,6 +2970,15 @@ test("Follow retains output and cursor after a malformed later record and recove
 test("a rate-limited Refresh logs keeps the loaded lines and says when to try again", async (t) => {
   const page = await logsBeforeRateLimit(t);
   const log = runtimeLogOutput(page);
+  const rows = log.locator(".log-row");
+  const refresh = page.getByRole("button", { name: "Refresh logs", exact: true });
+  const previousOutput = "output before the rate limit";
+  const currentOutput = "gateway connection restored";
+  async function expectOnlyRow(message: string) {
+    await rows.getByText(message, { exact: true }).waitFor();
+    assert.equal(await rows.count(), 1);
+    assert.deepEqual(await rows.locator(".log-message").allTextContents(), [message]);
+  }
   const logError = page.locator(".log-error");
   const outputStatus = page.locator(".log-output-status");
   const shownStatus = await outputStatus.textContent();
@@ -3002,14 +2988,13 @@ test("a rate-limited Refresh logs keeps the loaded lines and says when to try ag
     answer ? route.fulfill(answer) : route.fallback(),
   );
 
-  await page.getByRole("button", { name: "Refresh logs" }).click();
+  await refresh.click();
   await waitForIdleFetches(page);
   assert.equal(
     await logError.textContent(),
     `Too many requests. Try again in 7 seconds. Request ID: ${rateLimitRequestId}`,
   );
-  assert.equal(await log.locator(".log-row").count(), 1);
-  await log.getByText("output before the rate limit").waitFor();
+  await expectOnlyRow(previousOutput);
   assert.equal(await outputStatus.textContent(), shownStatus);
   await page.clock.runFor(6_999);
   assert.match((await logError.textContent()) ?? "", /Try again in 7 seconds\./u);
@@ -3020,12 +3005,15 @@ test("a rate-limited Refresh logs keeps the loaded lines and says when to try ag
   );
 
   // The next refresh replaces the kept lines with its own page.
+  computeDriver.state.lines = [line(2, currentOutput)];
   answer = null;
-  await page.getByRole("button", { name: "Refresh logs" }).click();
+  const successfulRead = page.waitForResponse(/\/runtime\/logs\?/u);
+  await refresh.click();
+  assert.equal((await successfulRead).status(), 200);
   await waitForIdleFetches(page);
   assert.equal(await logError.isHidden(), true);
-  assert.equal(await log.locator(".log-row").count(), 1);
-  await log.getByText("output before the rate limit").waitFor();
+  assert.equal(await log.getByText(previousOutput, { exact: true }).count(), 0);
+  await expectOnlyRow(currentOutput);
 
   // A second Refresh while one reads queues another. When that one is rate limited, the status
   // still names the lines shown, not "Reading output…".
@@ -3040,15 +3028,15 @@ test("a rate-limited Refresh logs keeps the loaded lines and says when to try ag
     return route.fulfill(rateLimitedResponse(2));
   };
   await page.route("**/runtime/logs?*", doubleRefresh);
-  await page.getByRole("button", { name: "Refresh logs" }).click();
+  await refresh.click();
   await waitForCondition(() => doubleReads === 1, "the first refresh is held");
-  await page.getByRole("button", { name: "Refresh logs" }).click();
+  await refresh.click();
   release();
   await waitForCondition(() => doubleReads === 2, "the queued refresh reads");
   await waitForIdleFetches(page);
   assert.match((await logError.textContent()) ?? "", /Try again in 2 seconds\./u);
   assert.equal(await outputStatus.textContent(), shownStatus);
-  assert.equal(await log.locator(".log-row").count(), 1);
+  await expectOnlyRow(currentOutput);
   await page.unroute("**/runtime/logs?*", doubleRefresh);
 
   // Following lines whose cursor was rejected cannot be read on from, so the new view clears them
@@ -3074,19 +3062,19 @@ test("a rate-limited Refresh logs keeps the loaded lines and says when to try ag
   await page.clock.runFor(2_000);
   await waitForCondition(() => followReads === 2, "the rejected cursor starts a new view");
   await waitForIdleFetches(page);
-  assert.equal(await log.locator(".log-row").count(), 0);
+  assert.equal(await rows.count(), 0);
   await page.getByRole("button", { name: "Following", exact: true }).click();
   await page.unroute("**/runtime/logs?*", rejectCursor);
 
   // A read for another selection still clears the lines first: they belong to the old one.
-  await page.getByRole("button", { name: "Refresh logs" }).click();
+  await refresh.click();
   await waitForIdleFetches(page);
-  await log.getByText("output before the rate limit").waitFor();
+  await expectOnlyRow(currentOutput);
   answer = rateLimitedResponse(3);
   await page.getByLabel("Include debug").check();
   await waitForIdleFetches(page);
   assert.match((await logError.textContent()) ?? "", /Try again in 3 seconds\./u);
-  assert.equal(await log.locator(".log-row").count(), 0);
+  assert.equal(await rows.count(), 0);
   assert.equal(await outputStatus.textContent(), "");
 });
 

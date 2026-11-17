@@ -7,6 +7,13 @@ import { isNonEmptyString } from "@openclaw-enterprise/utils";
 // without loading Better Auth (the initialization Job's already-bootstrapped path).
 export const OCC_BETTER_AUTH_ISSUER_PREFIX = "occ:installation:";
 
+/** Check the shared auth requirement before startup opens or changes persistent state. */
+export function validateAuthSecret(secret: string): void {
+  if (!isNonEmptyString(secret) || secret.length < 32) {
+    throw new Error("OCC_AUTH_SECRET must contain at least 256 bits of secret material.");
+  }
+}
+
 export function betterAuthIssuer(installationId: string): string {
   if (!isNonEmptyString(installationId)) {
     throw new Error("Better Auth issuer requires an Installation.");
