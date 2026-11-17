@@ -456,7 +456,7 @@ function startInstalledExecution(config: InstalledConfig, plan: LaunchPlan): Exe
 
 interface LiveRecord {
   view: RecordView;
-  execution?: Execution;
+  execution?: Execution | undefined;
   retiring: boolean;
   protectedStartup?: ProtectedStartup;
   /** The admitted launch, kept so the protected install can restart `box run` with material. */
@@ -467,6 +467,8 @@ interface LiveRecord {
    * begins, so a lost reply is answered from it and never installs a second time.
    */
   installing?: { readonly preparationAttemptId: string; readonly materialVersion: string };
+  /** The replaced run's stop while the install restart is under way; shutdown waits for it. */
+  restarting?: Promise<unknown> | undefined;
 }
 
 /** Canonical JSON for the operator profile and the exact Worker request. */
@@ -1311,7 +1313,7 @@ export function reservationGeneration(
 
 export function observedView(record: {
   readonly view: RecordView;
-  readonly execution?: Pick<Execution, "boxProcess" | "generation">;
+  readonly execution?: Pick<Execution, "boxProcess" | "generation"> | undefined;
 }): RecordView {
   const recipient = record.view.repositoryRecipient;
   if (recipient === undefined) return record.view;
@@ -1365,7 +1367,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       shuttingDown = true;
       server.close();
       server.closeAllConnections();
-      void Promise.resolve(current?.execution?.stop()).then(
+      void Promise.resolve(current?.execution?.stop() ?? current?.restarting).then(
         () => resolve(),
         () => {
           process.exitCode = 1;
@@ -1550,8 +1552,12 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       }
       held.installing = version;
       const previous = held.execution;
+      // Detach the released run first, so its exit is not reported as this execution failing.
+      held.execution = undefined;
       held.view.state = "starting";
-      await previous.stop().catch(() => undefined);
+      held.restarting = previous.stop().catch(() => undefined);
+      await held.restarting;
+      held.restarting = undefined;
       if (shuttingDown || held.retiring || current !== held) {
         reply(response, 503, { error: "host_stopping" });
         return;
@@ -1819,6 +1825,15 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       retiring.view.requirementsDigest !== requirementsDigest
     ) {
       reply(response, 409, { error: "execution_mismatch" });
+      return;
+    }
+    if (retiring.execution === undefined && retiring.restarting !== undefined) {
+      // Retired during the install restart: the replaced run is stopping and, seeing
+      // `retiring`, the delivery starts no other.
+      retiring.retiring = true;
+      await retiring.restarting;
+      if (current === retiring) current = undefined;
+      reply(response, 204);
       return;
     }
     if (retiring.execution === undefined) {
