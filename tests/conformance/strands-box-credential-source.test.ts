@@ -351,31 +351,13 @@ test("the Driver refuses before asking OCE for a wrong bearer, no route or a pas
   const allowed = await answerAsk(sourceAsk(), context);
   assert.equal(calls.length, 1);
   const call = calls[0]!;
-  // Git smart-HTTP to github.com is decided under repository_git so OCE binds and enforces the
-  // push ref; the GitHub API is decided under github_repository.
-  assert.equal(call.profile, "repository_git");
+  assert.equal(call.profile, "github_repository");
   assert.equal(call.route, ROUTE);
   assert.equal(call.request.target.host, "github.com");
   assert.equal(Buffer.from(call.request.body).toString(), "0000");
   assert.ok(Date.parse(call.deadlineAt!) <= Date.now() + 4_000);
   assert.equal("authorization" in call, false);
   assert.equal(allowed.record.exchangeId, "use-1");
-
-  // The GitHub API host is decided under github_repository (the repository-scoped token).
-  await answerAsk(
-    sourceAsk({
-      target: {
-        host: "api.github.com",
-        port: 443,
-        method: "POST",
-        path: "/repos/example/review/pulls",
-        query: "",
-      },
-    }),
-    context,
-  );
-  assert.equal(calls.at(-1)!.profile, "github_repository");
-  assert.equal(calls.at(-1)!.request.target.host, "api.github.com");
   assert.equal(allowed.record.outcome, "allow");
   assert.equal(JSON.stringify(allowed.record).includes("tok"), false);
   assert.equal((allowed.answer as { credential: string }).credential, "x-access-token:tok");

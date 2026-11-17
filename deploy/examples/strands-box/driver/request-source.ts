@@ -8,7 +8,6 @@
 import type {
   GitHubRequestDecision,
   GitHubRequestView,
-  RepositoryGitDeliveryProfile,
   RepositoryGitInstallationFence,
   RepositoryGitRequests,
 } from "@openclaw-enterprise/contracts";
@@ -126,18 +125,11 @@ export async function answerAsk(
   }
   // OCE answers inside the host's window or the request is refused; at most 30 s by contract.
   const deadline = Math.min(ask.deadlineUnixMs, now + 30_000);
-  // Git smart-HTTP to github.com is decided under `repository_git`, so OCE binds and enforces the
-  // push ref (the ref rule); the GitHub API at api.github.com is decided under `github_repository`,
-  // the repository-scoped installation token. Same material, different binding (see OpenShell's
-  // authorizeOnlineRequest: a no-scope Git request uses the base online authority, a
-  // github-repository request uses the scoped port).
-  const profile: RepositoryGitDeliveryProfile =
-    ask.target.host === "github.com" ? "repository_git" : "github_repository";
   let decision: GitHubRequestDecision;
   try {
     decision = await context.requests.authorize({
       route: context.route,
-      profile,
+      profile: "github_repository",
       request: view,
       deadlineAt: new Date(deadline).toISOString(),
       signal: AbortSignal.any([context.signal, AbortSignal.timeout(Math.max(deadline - now, 1))]),
