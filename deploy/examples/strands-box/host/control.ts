@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, randomUUID, verify } from "node:crypto";
 import type { KeyObject } from "node:crypto";
-import { constants, lstatSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { constants, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve, sep } from "node:path";
@@ -15,6 +15,7 @@ import {
   parseRoute,
   EXECUTION_BEARER,
   GITHUB_HOSTS,
+  MODEL_KEY_ENV,
   routeView,
   sameRouteView,
 } from "./egress.ts";
@@ -35,7 +36,7 @@ import {
 import type { Execution, HostConfig, StartInput } from "./launch.ts";
 import { listen, PORT, processIdentity } from "./transport.ts";
 import { CredentialSourceRelay, MAX_COLLECT_WAIT_MS } from "./credential-source.ts";
-import type { SourceAsk } from "./credential-source.ts";
+import type { ModelAsk, SourceAsk } from "./credential-source.ts";
 
 import {
   approve,
@@ -79,6 +80,12 @@ const RELEASE = "/v1/release";
 const MAX_REQUEST = 512_000;
 const ASKS = "/v1/credential-asks";
 const ANSWERS = "/v1/credential-answers";
+const MODEL_REVOKE = "/v1/model-revoke";
+/** The attachment ref the package's Gateway issues (driver/model-gateway.ts). */
+const MODEL_ATTACHMENT_PREFIX = "strands-box-model:";
+const MODEL_SOURCE_TYPE = "openai";
+const MODEL_PATH = "/responses";
+const SOURCE_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 /** Box's credential source socket: `<runtimeDir>/source/oce.sock`, outside every Box grant. */
 const SOURCE_DIRECTORY = "source";
 const WORKER_CONTROL = "worker-control";
@@ -120,7 +127,23 @@ interface InstalledConfig extends HostConfig {
    * `caSha256` opts the GitHub routes in to `upstreamCa`, which Box applies to every upstream.
    */
   protectedRepository?: ProtectedRepository;
+  /**
+   * A protected revision may take its Harness model key from the package's Credential Gateway:
+   * Box injects it per request on `controlledInference`. Revoke receipts are written to
+   * `revocationDir` (private, outside the runtime directory) and survive a host restart.
+   */
+  protectedModel?: { readonly revocationDir: string };
   upstreamCa?: UpstreamCa;
+}
+
+/** The host's durable record that the Gateway withdrew one revision's model attachment. */
+export interface ModelRevocation {
+  readonly version: 1;
+  readonly receiptId: string;
+  readonly revokedAt: string;
+  readonly owner: Owner;
+  readonly executionId: string;
+  readonly sourceId: string;
 }
 
 export interface RecordView {
@@ -152,18 +175,25 @@ export interface RecordView {
     startupSha256?: string;
   };
   controlledInference?: RouteView;
+  /** The admitted Harness model source and, after the Gateway withdrew it, the revoke receipt. */
+  harnessModel?: {
+    sourceId: string;
+    revoked?: { receiptId: string; revokedAt: string };
+  };
 }
 
 interface LaunchPlan extends StartInput {
   readonly separateNode?: NodeLaunch;
   /** Present only for a protected revision on a host configured with `protectedRepository`. */
   readonly protectedStartup?: ProtectedStartup;
+  /** The protected Harness model source this execution takes, injected by Box per request. */
+  readonly harnessModel?: { readonly sourceId: string };
 }
 
 export const ENROLLMENT_REVISION_ENV = "OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID";
 export const RELEASE_PUBLIC_KEY_ENV = "OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY";
 export const RELEASE_PROFILE = "oce-compute-execution-release-v1";
-export const PROTECTED_WIRING_VERSION = 3;
+export const PROTECTED_WIRING_VERSION = 4;
 
 export interface ProtectedRepository {
   readonly provider: "github";
@@ -186,7 +216,7 @@ export interface ProtectedStartup {
  * The exact nonsecret wiring the paired Driver and this host agree on for protected access:
  * Box injects for the two public GitHub hosts and asks OCE for each request's credential.
  */
-export function wiringConfiguration(provider: "github") {
+export function wiringConfiguration(provider: "github", model = false) {
   return {
     version: PROTECTED_WIRING_VERSION,
     protectedRepository: {
@@ -194,7 +224,42 @@ export function wiringConfiguration(provider: "github") {
       hosts: [...GITHUB_HOSTS] as readonly string[],
       delivery: "box-source-v1" as const,
     },
+    // A plan with a Harness model source: Box asks for each `POST <route>/responses` and places
+    // the answer as the bearer; the workload holds the placeholder in `OPENAI_API_KEY`.
+    ...(model
+      ? {
+          harnessModel: {
+            delivery: "box-source-v1" as const,
+            method: "POST" as const,
+            path: MODEL_PATH,
+            placeholder: MODEL_KEY_ENV,
+          },
+        }
+      : {}),
   };
+}
+
+/** A plan's Harness model source, as this host admits it: the package Gateway's API-key type. */
+function harnessModelSource(
+  value: unknown,
+  owner: Owner,
+  model: boolean,
+): { readonly sourceId: string } | undefined {
+  if (value === undefined) return undefined;
+  const source = object(value);
+  if (
+    !model ||
+    Object.keys(source).sort().join(",") !==
+      "credentialGatewayId,loginMode,method,sourceId,sourceType" ||
+    source.method !== "credential_source" ||
+    typeof source.sourceId !== "string" ||
+    !SOURCE_ID.test(source.sourceId) ||
+    source.credentialGatewayId !== owner.driverId ||
+    source.sourceType !== MODEL_SOURCE_TYPE ||
+    source.loginMode !== "api_key"
+  )
+    throw new Error("unadmitted_protected_wiring");
+  return { sourceId: source.sourceId };
 }
 
 /**
@@ -206,6 +271,7 @@ export function protectedWiring(
   configured: ProtectedRepository | undefined,
   value: unknown,
   owner: Owner,
+  model = false,
 ): Record<string, unknown> {
   const wiring = object(value);
   fields(wiring, ["plan", "configuration"]);
@@ -213,13 +279,14 @@ export function protectedWiring(
   const execution = object(plan.execution);
   const git = object(plan.repositoryGit);
   const bindings = git.bindings;
+  const source = harnessModelSource(plan.harnessCredentialSource, owner, model);
   if (
     configured === undefined ||
-    canonical(wiring.configuration) !== canonical(wiringConfiguration(configured.provider)) ||
+    canonical(wiring.configuration) !==
+      canonical(wiringConfiguration(configured.provider, source !== undefined)) ||
     plan.repositoryGitAuthorization !== "online-request" ||
     !Array.isArray(plan.routes) ||
     plan.routes.length !== 0 ||
-    plan.harnessCredentialSource !== undefined ||
     plan.policyReductionVersion !== undefined ||
     plan.sandboxDriverId !== owner.driverId ||
     plan.egressDriverId !== owner.driverId ||
@@ -551,6 +618,7 @@ function installedConfig(value: unknown): InstalledConfig {
     "controlledInference",
     "nativeHookRelay",
     "protectedRepository",
+    "protectedModel",
     "upstreamCa",
   ]);
   if (config.workspace !== WORKSPACE) throw new Error("unsupported_workspace_path");
@@ -678,6 +746,27 @@ function installedConfig(value: unknown): InstalledConfig {
     throw new Error(
       upstreamCa === undefined ? "upstream_ca_not_configured" : "upstream_ca_route_not_declared",
     );
+  let protectedModel: InstalledConfig["protectedModel"];
+  if (data.protectedModel !== undefined) {
+    const model = object(data.protectedModel);
+    fields(model, ["revocationDir"]);
+    const revocationDir = privateDirectory(model.revocationDir);
+    if (
+      protectedRepository === undefined ||
+      controlledInference === undefined ||
+      [
+        config.runtimeDir,
+        config.workspace,
+        config.agentBuildDir,
+        ...config.read,
+        ...config.exec,
+        ...writableState,
+        ...(approvalDir === undefined ? [] : [approvalDir]),
+      ].some((path) => contains(path, revocationDir) || contains(revocationDir, path))
+    )
+      throw new Error("invalid_protected_model");
+    protectedModel = { revocationDir };
+  }
   return {
     ...config,
     owner: ownerPin,
@@ -700,6 +789,7 @@ function installedConfig(value: unknown): InstalledConfig {
     ...(nativeHookRelay === undefined ? {} : { nativeHookRelay }),
     ...(upstreamCa === undefined ? {} : { upstreamCa }),
     ...(protectedRepository === undefined ? {} : { protectedRepository }),
+    ...(protectedModel === undefined ? {} : { protectedModel }),
   };
 }
 
@@ -906,7 +996,6 @@ function admitted(
   if (
     requirements.workloadIdentity !== undefined ||
     !Array.isArray(requirements.credentialAttachments) ||
-    requirements.credentialAttachments.length !== 0 ||
     (requirements.proxyWiring === undefined) !== (config.protectedRepository === undefined)
   ) {
     throw new Error("unavailable_identity_or_credential_material");
@@ -915,7 +1004,30 @@ function admitted(
   const protectedPlan =
     requirements.proxyWiring === undefined
       ? undefined
-      : protectedWiring(config.protectedRepository, requirements.proxyWiring, requested);
+      : protectedWiring(
+          config.protectedRepository,
+          requirements.proxyWiring,
+          requested,
+          config.protectedModel !== undefined,
+        );
+  const harnessModel =
+    protectedPlan?.harnessCredentialSource === undefined
+      ? undefined
+      : { sourceId: string(object(protectedPlan.harnessCredentialSource).sourceId, 128) };
+  // No attachment without the plan's model source; with it, exactly the Gateway's own one.
+  const attachments = requirements.credentialAttachments;
+  if (harnessModel === undefined) {
+    if (attachments.length !== 0) throw new Error("unavailable_identity_or_credential_material");
+  } else {
+    const attachment = attachments.length === 1 ? object(attachments[0]) : undefined;
+    if (
+      attachment === undefined ||
+      Object.keys(attachment).sort().join(",") !== "ref,sourceId" ||
+      attachment.sourceId !== harnessModel.sourceId ||
+      attachment.ref !== `${MODEL_ATTACHMENT_PREFIX}${harnessModel.sourceId}`
+    )
+      throw new Error("unavailable_identity_or_credential_material");
+  }
   let releasePublicKey: string | undefined;
   if (requirements.workspaceSetup !== undefined) {
     const setup = object(requirements.workspaceSetup);
@@ -1028,10 +1140,18 @@ function admitted(
     (releasePublicKey === undefined || !observed.has(ENROLLMENT_REVISION_ENV))
   )
     throw new Error("unadmitted_enrollment_environment");
+  if (
+    harnessModel !== undefined &&
+    (needsControlledInference || observed.has(MODEL_KEY_ENV) || config.controlledInference === undefined)
+  )
+    throw new Error("inference_outside_owner_route");
+  // The model route is the same operator route either way: credential-free for the controlled
+  // marker, or carrying the key Box injects for a protected revision's model source.
+  const needsModelRoute = needsControlledInference || harnessModel !== undefined;
   if (phase === "start")
     confirmControlledInference(
       config.controlledInference,
-      needsControlledInference,
+      needsModelRoute,
       request.controlledInference,
     );
   const egress: EgressRoute[] = [];
@@ -1069,7 +1189,7 @@ function admitted(
       environmentVariable: string(file.environmentVariable, 128),
     };
   });
-  if (needsControlledInference) {
+  if (needsModelRoute) {
     const manifest = files.find(({ name }) => name === "runtime.json");
     const runtime = object(JSON.parse(manifest?.content ?? "null") as unknown);
     const modelEndpoint = object(runtime.modelEndpoint);
@@ -1082,7 +1202,9 @@ function admitted(
       environment.CODEX_LOGIN_MODE !== "api_key"
     )
       throw new Error("inference_outside_owner_route");
-    environment.OPENAI_API_KEY = CONTROLLED_INFERENCE_MARKER;
+    // The controlled marker is literal and non-authorizing; a protected model key is never in
+    // the environment: Box puts its placeholder in `OPENAI_API_KEY` and injects per request.
+    if (needsControlledInference) environment.OPENAI_API_KEY = CONTROLLED_INFERENCE_MARKER;
     egress.push(config.controlledInference);
   }
   // The hook command inside Box reaches only the Gateway's native hook route, and Codex gets one
@@ -1098,7 +1220,7 @@ function admitted(
     const displayName = `agent-${createHash("sha256").update(requested.agentId).digest("hex").slice(0, 12)}-workspace`;
     if (
       !needsSetupCode ||
-      !needsControlledInference ||
+      !needsModelRoute ||
       config.workspaceNode === undefined ||
       workspaceIdentity === undefined ||
       stateIdentity === undefined ||
@@ -1187,6 +1309,7 @@ function admitted(
           releaseGate: true as const,
           protectedStartup: { releaseKey: releaseKey(releasePublicKey), plan: protectedPlan },
         }),
+    ...(harnessModel === undefined ? {} : { harnessModel }),
   };
 }
 
@@ -1266,7 +1389,7 @@ function reply(
   body?:
     | RecordView
     | { error: string }
-    | { asks: readonly SourceAsk[] }
+    | { asks: readonly (SourceAsk | ModelAsk)[] }
     | {
         state: "held" | "approved";
         owner: Owner;
@@ -1362,6 +1485,50 @@ export function reservationGeneration(
       }),
     )
     .digest("hex");
+}
+
+function revocationFile(config: InstalledConfig, owner: Owner, sourceId: string): string {
+  const name = createHash("sha256")
+    .update(`${owner.namespaceId}\0${owner.agentId}\0${owner.revisionId}\0${sourceId}`)
+    .digest("hex");
+  return join(config.protectedModel!.revocationDir, `model-revoked-${name}.json`);
+}
+
+/** The durable revoke receipt for this revision's model source, if the Gateway withdrew it. */
+export function readModelRevocation(
+  config: InstalledConfig,
+  owner: Owner,
+  sourceId: string,
+): ModelRevocation | undefined {
+  const path = revocationFile(config, owner, sourceId);
+  if (!existsSync(path)) return undefined;
+  const value = object(
+    JSON.parse(
+      readFileSync(path, {
+        encoding: "utf8",
+        flag: constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      }),
+    ) as unknown,
+  );
+  if (
+    value.version !== 1 ||
+    typeof value.receiptId !== "string" ||
+    typeof value.revokedAt !== "string" ||
+    value.sourceId !== sourceId ||
+    !sameOwner(parseOwner(value.owner), owner)
+  )
+    throw new Error("invalid_model_revocation");
+  return value as unknown as ModelRevocation;
+}
+
+/** The model route's target as Box sends it to the source: host, port and the one POST path. */
+function modelTarget(route: EgressRoute): { host: string; port: number; path: string } {
+  const url = new URL(route.url);
+  return {
+    host: url.hostname,
+    port: Number(url.port || 443),
+    path: `${url.pathname.replace(/\/$/, "")}${MODEL_PATH}`,
+  };
 }
 
 export function observedView(record: {
@@ -1491,7 +1658,15 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
     const releasing = request.url === RELEASE && request.method === "POST";
     const collecting = request.url === ASKS && request.method === "POST";
     const answering = request.url === ANSWERS && request.method === "POST";
-    if (request.url !== CONTROL && !observing && !releasing && !collecting && !answering) {
+    const revoking = request.url === MODEL_REVOKE && request.method === "POST";
+    if (
+      request.url !== CONTROL &&
+      !observing &&
+      !releasing &&
+      !collecting &&
+      !answering &&
+      !revoking
+    ) {
       reply(response, 404, { error: "unknown_path" });
       return;
     }
@@ -1509,6 +1684,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       !releasing &&
       !collecting &&
       !answering &&
+      !revoking &&
       request.method !== "PUT" &&
       request.method !== "DELETE"
     ) {
@@ -1564,6 +1740,50 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         await held.execution.release();
         if (prior === undefined) throw new Error("release_outside_held_execution");
         held.view.protectedStartup = { ...prior, ...verified };
+      }
+      reply(response, 200, observedView(held));
+      return;
+    }
+    if (revoking) {
+      // The Gateway withdrew this execution's model attachment. The receipt is written first,
+      // durably and outside the runtime directory; from then on the host refuses every model
+      // request of this revision itself, before the Worker is asked, across a host restart.
+      fields(data, ["owner", "requirementsDigest", "executionId", "sourceId"]);
+      const held = current;
+      const model = held?.view.harnessModel;
+      if (
+        held === undefined ||
+        model === undefined ||
+        config.protectedModel === undefined ||
+        !sameOwner(held.view.owner, supplied) ||
+        held.view.executionId !== data.executionId ||
+        held.view.requirementsDigest !== requirementsDigest ||
+        model.sourceId !== data.sourceId
+      ) {
+        reply(response, 409, { error: "revoke_outside_execution" });
+        return;
+      }
+      if (model.revoked === undefined) {
+        const existing = readModelRevocation(config, held.view.owner, model.sourceId);
+        const receipt: ModelRevocation = existing ?? {
+          version: 1,
+          receiptId: randomUUID(),
+          revokedAt: new Date().toISOString(),
+          owner: held.view.owner,
+          executionId: held.view.executionId,
+          sourceId: model.sourceId,
+        };
+        if (existing === undefined) {
+          durableRecord(
+            config.protectedModel.revocationDir,
+            revocationFile(config, held.view.owner, model.sourceId).slice(
+              config.protectedModel.revocationDir.length + 1,
+            ),
+            receipt,
+          );
+        }
+        model.revoked = { receiptId: receipt.receiptId, revokedAt: receipt.revokedAt };
+        process.stdout.write(`strands-box-control: model attachment revoked ${receipt.receiptId}\n`);
       }
       reply(response, 200, observedView(held));
       return;
@@ -1648,6 +1868,14 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
             commandSha256: digest(plan.command),
             ...(workspaceNode === undefined ? {} : { workspaceNode }),
             ...(inference === undefined ? {} : { controlledInference: routeView(inference) }),
+            ...(plan.harnessModel === undefined
+              ? {}
+              : {
+                  harnessModel: {
+                    sourceId: plan.harnessModel.sourceId,
+                    delivery: "box-source-v1" as const,
+                  },
+                }),
             ...(config.protectedRepository === undefined
               ? {}
               : {
@@ -1787,6 +2015,19 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
             }),
         ...(inferenceView === undefined ? {} : { controlledInference: inferenceView }),
       };
+      if (input.harnessModel?.sourceId !== pending.view.harnessModel?.sourceId) {
+        throw new Error("harness_model_admitted_source_changed");
+      }
+      if (input.harnessModel !== undefined) {
+        // A receipt from before a host restart keeps this revision's model refused.
+        const revoked = readModelRevocation(config, supplied, input.harnessModel.sourceId);
+        view.harnessModel = {
+          sourceId: input.harnessModel.sourceId,
+          ...(revoked === undefined
+            ? {}
+            : { revoked: { receiptId: revoked.receiptId, revokedAt: revoked.revokedAt } }),
+        };
+      }
       attempted = true;
       reserveExecution(config.runtimeDir, view);
       const generation =
@@ -1822,9 +2063,18 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
             running.view.state !== "failed" &&
             running.view.protectedStartup?.startupSha256 !== undefined,
         );
+        const modelSocket = join(directory, "model.sock");
+        const route = input.harnessModel === undefined ? undefined : inference;
         try {
           mkdirSync(directory, { mode: 0o700 });
           await source.listen(socket);
+          if (route !== undefined) {
+            await source.listenModel(
+              modelSocket,
+              modelTarget(route),
+              () => view.harnessModel?.revoked !== undefined,
+            );
+          }
         } catch {
           source.close();
           view.state = "failed";
@@ -1841,6 +2091,9 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
             ...(config.protectedRepository?.caSha256 === undefined
               ? {}
               : { caSha256: config.protectedRepository.caSha256 }),
+            ...(route === undefined
+              ? {}
+              : { model: { socket: modelSocket, path: modelTarget(route).path } }),
           },
         };
       }

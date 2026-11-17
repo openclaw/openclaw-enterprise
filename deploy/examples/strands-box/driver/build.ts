@@ -15,7 +15,15 @@ const compilerOptions: ts.CompilerOptions = {
   rewriteRelativeImportExtensions: true,
   verbatimModuleSyntax: true,
 };
-for (const name of ["index", "control", "relay", "native", "protected", "request-source"]) {
+for (const name of [
+  "index",
+  "control",
+  "relay",
+  "native",
+  "protected",
+  "request-source",
+  "model-gateway",
+]) {
   const fileName = fileURLToPath(new URL(`./${name}.ts`, import.meta.url));
   const source = await readFile(fileName, "utf8");
   const js = ts.transpileModule(source, { compilerOptions, fileName, reportDiagnostics: true });

@@ -396,3 +396,42 @@ export function githubCredentials(source: CredentialSourceConfig): string {
     "",
   ].join("\n");
 }
+
+/** The workload variable that holds Box's model placeholder; Codex logs in with it. */
+export const MODEL_KEY_ENV = "OPENAI_API_KEY";
+
+/** The model route's request-time source: its own socket, the same bearer, Box's 16 MiB cap. */
+export interface ModelSourceConfig extends CredentialSourceConfig {
+  /** The route's `POST` path, below its base path: `/v1/responses`. */
+  readonly path: string;
+}
+
+/**
+ * The `[gateway.credential_source.oce-model]` table and the one Box credential route that names
+ * it: the configured model route, narrowed to its `POST <base>/responses` path. Box puts a
+ * placeholder in `OPENAI_API_KEY`, asks the host for the key of each request that carries it, and
+ * sends the answer as the bearer. The table names a socket and a variable, never a key.
+ */
+export function modelCredentials(route: EgressRoute, source: ModelSourceConfig): string {
+  if (route.kind !== "controlled-inference") throw new Error("invalid_model_route");
+  const url = exactRoute(route.url, route.address, route.kind);
+  const quote = (value: string) => JSON.stringify(value);
+  const destination = `${url.hostname}${url.port === "" ? "" : `:${url.port}`}${source.path}`;
+  return [
+    "[gateway.credential_source.oce-model]",
+    `endpoint = ${quote(`unix://${source.socket}`)}`,
+    `bearer = ${quote(`env://${source.bearerEnv}`)}`,
+    `timeout_ms = ${source.timeoutMs}`,
+    `max_body_bytes = ${source.maxBodyBytes}`,
+    "",
+    "[egress.oce-model]",
+    `destinations = [${quote(destination)}]`,
+    'secret.ref = "source://oce-model"',
+    `secret.env = ${quote(MODEL_KEY_ENV)}`,
+    'secret.placement = "header"',
+    'secret.header = "Authorization"',
+    'secret.prefix = "Bearer "',
+    'secret.inject = "phantom"',
+    "",
+  ].join("\n");
+}

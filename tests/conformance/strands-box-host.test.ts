@@ -1603,7 +1603,7 @@ function protectedFixture() {
 test("the host admits only the paired one-repository plan for its own GitHub routes", () => {
   const { owner, configured, plan, wiring } = protectedFixture();
   assert.deepEqual(wiring.configuration, {
-    version: 3,
+    version: 4,
     protectedRepository: {
       provider: "github",
       hosts: ["github.com", "api.github.com"],

@@ -222,6 +222,8 @@ export async function pairedFixture(t: TestContext, options: { originPort?: numb
     executionAdmission: { version: 5, mode: "protected" },
     egressPlan: plan,
     harnessAuth: { method: "runtime" },
+    // OCC freezes the Driver's empty protected artifact acknowledgement (finding 3290).
+    sandboxPolicy: { driverId: id, implementation, version: 1, defaults: {}, additions: [] },
     servicePrincipalId: "sp_pilot",
     createdAt: namespace.createdAt,
   } as unknown as AgentRevision;

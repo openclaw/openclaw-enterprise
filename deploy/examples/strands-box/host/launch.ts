@@ -24,11 +24,14 @@ import { fileURLToPath } from "node:url";
 import {
   BOX_UPSTREAM_CA_KEY,
   CONTROLLED_INFERENCE_MARKER,
+  MODEL_KEY_ENV,
+  modelCredentials,
   policy,
   githubCredentials,
   upstreamCaPem,
 } from "./egress.ts";
 import {
+  MODEL_MAX_BODY_BYTES,
   SOURCE_BEARER_ENV,
   SOURCE_MAX_BODY_BYTES,
   SOURCE_TIMEOUT_MS,
@@ -216,6 +219,12 @@ export interface StartInput {
     readonly socket: string;
     readonly bearer: string;
     readonly caSha256?: string;
+    /**
+     * The protected Harness model: Box's second source on its own socket, for the
+     * controlled-inference route in `egress`, narrowed to `POST <path>`. Box gives the workload
+     * only a placeholder in `OPENAI_API_KEY`; the host relays each request's target to the Worker.
+     */
+    readonly model?: { readonly socket: string; readonly path: string };
   };
   /** Protected startup: Box starts, but the command waits until `release()` is called. */
   releaseGate?: true;
@@ -651,6 +660,20 @@ export function start(
       ) {
         throw new Error("github_route_unadmitted");
       }
+      const modelSource = source?.model;
+      const modelRoute = input.egress?.filter((route) => route.kind === "controlled-inference");
+      if (
+        modelSource !== undefined &&
+        // Box alone sets the model placeholder; the admitted environment carries no model value.
+        (Object.hasOwn(effectiveEnvironment, MODEL_KEY_ENV) ||
+          modelRoute?.length !== 1 ||
+          !pathWithin(run, modelSource.socket) ||
+          modelSource.socket === source?.socket ||
+          dirname(modelSource.socket) !== dirname(source!.socket) ||
+          new URL(modelRoute[0]!.url).pathname + "/responses" !== modelSource.path)
+      ) {
+        throw new Error("model_route_unadmitted");
+      }
       // Used only in the spawn below; never written to a file.
       const sourceEnvironment =
         source === undefined ? undefined : { [SOURCE_BEARER_ENV]: source.bearer };
@@ -801,6 +824,16 @@ export function start(
                 bearerEnv: SOURCE_BEARER_ENV,
                 timeoutMs: SOURCE_TIMEOUT_MS,
                 maxBodyBytes: SOURCE_MAX_BODY_BYTES,
+              })) +
+          (modelSource === undefined || modelRoute === undefined
+            ? ""
+            : "\n" +
+              modelCredentials(modelRoute[0]!, {
+                socket: modelSource.socket,
+                bearerEnv: SOURCE_BEARER_ENV,
+                timeoutMs: SOURCE_TIMEOUT_MS,
+                maxBodyBytes: MODEL_MAX_BODY_BYTES,
+                path: modelSource.path,
               })) +
           (verifier === undefined ? "" : "\n" + workspaceVerifierTool(config.workspace)) +
           (hooks === undefined ? "" : "\n" + nativeHookTool(config.workspace, hooks)),

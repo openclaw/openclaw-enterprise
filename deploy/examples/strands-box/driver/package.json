@@ -1,6 +1,6 @@
 {
   "name": "@openclaw-enterprise/example-strands-box-driver",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "module",
   "license": "MIT",
   "exports": "./dist/index.js",

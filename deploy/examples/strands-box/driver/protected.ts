@@ -11,8 +11,14 @@
  * ask with OCE's own decision (`requests.authorize`, from `bindRepositoryGit`): allow with that
  * request's credential, or a refusal. Box holds no token between requests; the workload holds
  * only Box's placeholders; stock `git` and `gh` work unchanged.
+ *
+ * With `modelGateway` the registration also supplies a Credential Gateway view
+ * (`model-gateway.ts`), and a protected revision may carry its Harness model source: Box injects
+ * the model key on each request to the configured model route through the same host relay, and
+ * this Driver answers each such ask from the package's own Secret, never with OCE's GitHub
+ * decision.
  */
-import { createPublicKey, randomBytes, randomUUID, verify } from "node:crypto";
+import { createPublicKey, randomBytes, randomUUID, timingSafeEqual, verify } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
   CredentialProxyDriver,
@@ -29,6 +35,7 @@ import type {
   ProxyRevisionContext,
   ProxyWiring,
   RepositoryGitBinding,
+  SandboxPolicySnapshot,
   RepositoryGitInstallationFence,
   RepositoryGitMaterialVersion,
   RepositoryGitRequests,
@@ -48,13 +55,23 @@ import {
   digest,
   record,
   releaseExecution,
+  revokeHarnessModel,
   sameOwner,
   sendAnswer,
   type Execution,
+  type ModelAsk,
   type Owner,
   type SourceAsk,
 } from "./control.ts";
 import type { Options, StrandsBoxDriver } from "./index.ts";
+import {
+  createModelGateway,
+  MODEL_SOURCE_TYPE,
+  modelAttachmentRef,
+  modelBaseUrl,
+  ModelKeyStore,
+  valueDigest,
+} from "./model-gateway.ts";
 import { answerAsk, type AskRecord } from "./request-source.ts";
 
 export interface ProtectedRepositoryConfiguration {
@@ -70,13 +87,21 @@ export const protectedRepositorySchema: NonNullable<DriverImplementation["config
 };
 
 /** Equal to the host's `wiringConfiguration` (host/control.ts); the host compares it exactly. */
-const WIRING_VERSION = 3;
+const WIRING_VERSION = 4;
+/** The only model request Box may carry a released key on, below the route's base path. */
+const MODEL_PATH = "/responses";
+/** A released model key is valid for sending this long after the answer. */
+const MODEL_SEND_BY_MS = 5_000;
 const GITHUB_HOSTS = ["github.com", "api.github.com"] as const;
 const BOX_SOURCE_IDENTITY = "box-source-sha256:";
 const RELEASE_PUBLIC_KEY_ENV = "OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY";
 const RELEASE_PROFILE = "oce-compute-execution-release-v1";
 
-function wiringConfiguration(configured: ProtectedRepositoryConfiguration) {
+/**
+ * The nonsecret wiring for one plan. A plan with a Harness model source adds the model route's
+ * delivery: Box asks for each `POST <route>/responses` and places the answer as the bearer.
+ */
+function wiringConfiguration(configured: ProtectedRepositoryConfiguration, model: boolean) {
   return {
     version: WIRING_VERSION,
     protectedRepository: {
@@ -84,6 +109,16 @@ function wiringConfiguration(configured: ProtectedRepositoryConfiguration) {
       hosts: [...GITHUB_HOSTS],
       delivery: "box-source-v1",
     },
+    ...(model
+      ? {
+          harnessModel: {
+            delivery: "box-source-v1",
+            method: "POST",
+            path: MODEL_PATH,
+            placeholder: "OPENAI_API_KEY",
+          },
+        }
+      : {}),
   };
 }
 
@@ -107,14 +142,41 @@ function sameVersion(
   );
 }
 
-/** Exactly one online-request, one-repository Git plan with no other route, owned by this Driver. */
-function admittedPlan(plan: ProxyPlan | undefined, id: string): plan is ProxyPlan {
+/**
+ * The Harness model source a plan may carry: owned by this registration's Gateway, the one model
+ * type, the API-key login. Absent unless the registration supplies the Gateway view.
+ */
+function admittedModelSource(plan: ProxyPlan, id: string, gateway: boolean): boolean {
+  const source = plan.harnessCredentialSource;
+  return (
+    source === undefined ||
+    (gateway &&
+      Object.keys(source).sort().join(",") ===
+        "credentialGatewayId,loginMode,method,sourceId,sourceType" &&
+      source.method === "credential_source" &&
+      typeof source.sourceId === "string" &&
+      source.sourceId.length > 0 &&
+      source.credentialGatewayId === id &&
+      source.sourceType === MODEL_SOURCE_TYPE &&
+      source.loginMode === "api_key")
+  );
+}
+
+/**
+ * Exactly one online-request, one-repository Git plan with no other route, owned by this Driver,
+ * and at most this registration's own Harness model source.
+ */
+function admittedPlan(
+  plan: ProxyPlan | undefined,
+  id: string,
+  gateway = false,
+): plan is ProxyPlan {
   const bindings = plan?.repositoryGit?.bindings;
   return (
     plan !== undefined &&
     plan.repositoryGitAuthorization === "online-request" &&
     plan.routes.length === 0 &&
-    plan.harnessCredentialSource === undefined &&
+    admittedModelSource(plan, id, gateway) &&
     plan.policyReductionVersion === undefined &&
     plan.sandboxDriverId === id &&
     plan.egressDriverId === id &&
@@ -161,10 +223,50 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 /** State shared by the paired Sandbox and Credential Proxy of one registration. */
+/** What the Driver keeps of one answered model ask: identifiers, outcome, the key's digest. */
+export interface ModelAskRecord {
+  readonly requestId: string;
+  readonly outcome: "allow" | "refused";
+  readonly refusal?: string;
+  /** SHA-256 of the released key, so evidence can name which key went out; never the key. */
+  readonly keySha256?: string;
+}
+
+/** The empty artifact snapshot `admitProtectedCodexArtifactPolicy` returns, for this Driver. */
+function emptySandboxPolicy(
+  policy: SandboxPolicySnapshot | undefined,
+  id: string,
+  implementation: string,
+): boolean {
+  return (
+    policy !== undefined &&
+    Object.keys(policy).sort().join(",") === "additions,defaults,driverId,implementation,version" &&
+    policy.driverId === id &&
+    policy.implementation === implementation &&
+    Number.isSafeInteger(policy.version) &&
+    policy.version >= 1 &&
+    isDeepStrictEqual(policy.defaults, {}) &&
+    Array.isArray(policy.additions) &&
+    policy.additions.length === 0
+  );
+}
+
+function sameDigest(left: string, right: string | undefined): boolean {
+  return (
+    right !== undefined &&
+    /^[a-f0-9]{64}$/.test(left) &&
+    /^[a-f0-9]{64}$/.test(right) &&
+    timingSafeEqual(Buffer.from(left, "hex"), Buffer.from(right, "hex"))
+  );
+}
+
 class Shared {
   readonly recipient: EgressRef;
-  readonly wiring: ReturnType<typeof wiringConfiguration>;
   readonly retained = new Map<string, HarnessWorkloadRequirements>();
+  /** The package's Secret store of model keys, when the Gateway view is configured. */
+  readonly store: ModelKeyStore | undefined;
+  /** Answered model asks, newest last: identifiers, outcomes and key digests only. */
+  readonly modelAsks: ModelAskRecord[] = [];
   authority: ProtectedRepositoryGitAuthority | undefined;
   requests: RepositoryGitRequests | undefined;
   active: Recipient | undefined;
@@ -184,7 +286,24 @@ class Shared {
     this.id = id;
     this.options = options;
     this.recipient = recipientRef(id);
-    this.wiring = wiringConfiguration(options.protectedRepository);
+    this.store =
+      options.modelGateway === undefined ? undefined : new ModelKeyStore(options.modelGateway);
+  }
+
+  get gateway(): boolean {
+    return this.store !== undefined;
+  }
+
+  /** The wiring for one plan: the GitHub routes, and the model route when the plan has one. */
+  wiringFor(plan: ProxyPlan) {
+    return wiringConfiguration(
+      this.options.protectedRepository,
+      plan.harnessCredentialSource !== undefined,
+    );
+  }
+
+  admits(plan: ProxyPlan | undefined): plan is ProxyPlan {
+    return admittedPlan(plan, this.id, this.gateway);
   }
 
   read(signal: AbortSignal): Promise<Execution | undefined> {
@@ -213,10 +332,11 @@ class Shared {
       execution.owner.agentId !== plan.execution.agentId ||
       execution.owner.namespaceId !== plan.execution.namespaceId ||
       !samePlan(startup.plan, plan) ||
-      !admittedPlan(plan, this.id)
+      !this.admits(plan)
     ) {
       return undefined;
     }
+    const wiring = this.wiringFor(plan);
     return {
       plan,
       sandboxId: execution.executionId,
@@ -224,11 +344,11 @@ class Shared {
       installedAt: startup.reservedAt,
       enforcement: {
         instanceId: execution.executionId,
-        configurationId: digest(this.wiring),
+        configurationId: digest(wiring),
         policyHash: digest({
           version: WIRING_VERSION,
           plan,
-          route: this.wiring.protectedRepository,
+          route: wiring.protectedRepository,
           generationSha256: startup.generationSha256,
         }),
         authorityScope: "execution",
@@ -362,7 +482,7 @@ class Shared {
         await pause(250, signal);
         continue;
       }
-      let asks: SourceAsk[];
+      let asks: (SourceAsk | ModelAsk)[];
       try {
         asks = await collectAsks(
           this.options.controlSocket,
@@ -384,7 +504,11 @@ class Shared {
           continue;
         }
         this.inFlight++;
-        void this.decide(active, requests, ask, signal).finally(() => {
+        const decided =
+          "kind" in ask && ask.kind === "model"
+            ? this.decideModel(active, ask, signal)
+            : this.decide(active, requests, ask as SourceAsk, signal);
+        void decided.finally(() => {
           this.inFlight--;
         });
       }
@@ -416,12 +540,79 @@ class Shared {
     await this.answer(active, ask, answer, signal);
   }
 
+  /**
+   * One Box model request: answered from the package's own Secret only when the per-execution
+   * bearer matches, the host still shows this execution with the plan's model attachment and no
+   * revoke, and the request is `POST` to the admitted route's `/responses`. The value is read
+   * for this request, sent with a 5 s send-by, and not kept. Every other case is a refusal.
+   */
+  private async decideModel(active: Recipient, ask: ModelAsk, signal: AbortSignal): Promise<void> {
+    let answer: Parameters<typeof sendAnswer>[1]["answer"] = { refusal: "route_not_ready" };
+    try {
+      answer = await this.modelAnswer(active, ask, signal);
+    } catch {
+      // A failed store or host read is a refusal, never an unhandled rejection in the Worker.
+    }
+    this.modelAsks.push({
+      requestId: ask.requestId,
+      ...("refusal" in answer
+        ? { outcome: "refused" as const, refusal: answer.refusal }
+        : { outcome: "allow" as const, keySha256: valueDigest(answer.credential) }),
+    });
+    if (this.modelAsks.length > ASK_RECORDS) this.modelAsks.shift();
+    await this.answer(active, ask, answer, signal);
+  }
+
+  private async modelAnswer(
+    active: Recipient,
+    ask: ModelAsk,
+    signal: AbortSignal,
+  ): Promise<Parameters<typeof sendAnswer>[1]["answer"]> {
+    const route = this.options.controlledInference?.modelBaseUrl;
+    const source = active.installation.plan.harnessCredentialSource;
+    if (this.store === undefined || route === undefined || source === undefined) {
+      return { refusal: "model_not_admitted" };
+    }
+    if (this.active !== active || !sameDigest(ask.bearerSha256, active.bearerSha256)) {
+      return { refusal: "execution_mismatch" };
+    }
+    const url = new URL(route);
+    if (
+      ask.target.host !== url.hostname ||
+      ask.target.port !== Number(url.port || 443) ||
+      ask.target.method !== "POST" ||
+      ask.target.path !== `${url.pathname.replace(/\/$/, "")}${MODEL_PATH}` ||
+      ask.target.query !== ""
+    ) {
+      return { refusal: "request_not_allowed" };
+    }
+    if (!(ask.deadlineUnixMs > Date.now())) return { refusal: "route_not_ready" };
+    // The live attachment as the host shows it now: this execution, this source, no revoke.
+    const execution = await this.read(signal);
+    const model = execution?.harnessModel;
+    if (
+      execution === undefined ||
+      execution.executionId !== active.executionId ||
+      execution.state === "failed" ||
+      !sameOwner(execution.owner, active.owner) ||
+      model?.sourceId !== source.sourceId
+    ) {
+      return { refusal: "execution_mismatch" };
+    }
+    if (model.revoked !== undefined) return { refusal: "access_withdrawn" };
+    // Read for this request only: a rotation reaches the next request, a removal refuses it.
+    const stored = await this.store.read(active.owner.namespaceId, source.sourceId, signal);
+    if (stored === undefined) return { refusal: "access_withdrawn" };
+    return { credential: stored.value, send_by_unix_ms: Date.now() + MODEL_SEND_BY_MS };
+  }
+
   private async answer(
     active: Recipient,
-    ask: SourceAsk,
+    ask: SourceAsk | ModelAsk,
     answer: Parameters<typeof sendAnswer>[1]["answer"],
     signal: AbortSignal,
   ): Promise<void> {
+    // The answer object holds a key at most until the host has it.
     await sendAnswer(
       this.options.controlSocket,
       {
@@ -530,6 +721,11 @@ export function createProtectedRegistration(
       };
     }
 
+    /**
+     * Exactly the paired protected plan, at most its one Harness model attachment (from this
+     * registration's Gateway, as Compute rendered it), and the empty artifact snapshot this Driver
+     * acknowledged (finding 3290). Everything else is refused.
+     */
     protected override admit(context: SandboxHarnessContext): void {
       const { revision, requirements } = context;
       const plan = revision.egressPlan;
@@ -537,18 +733,44 @@ export function createProtectedRegistration(
       if (
         revision.executionAdmission.mode !== "protected" ||
         revision.executionAdmission.version !== 5 ||
-        !admittedPlan(plan, this.id) ||
+        !shared.admits(plan) ||
         wiring === undefined ||
         !samePlan(wiring.plan, plan) ||
-        !samePlan(wiring.configuration, shared.wiring) ||
-        requirements.credentialAttachments.length !== 0 ||
+        !samePlan(wiring.configuration, shared.wiringFor(plan)) ||
+        !this.exactModelAttachment(context, plan) ||
         revision.harness.id !== "codex" ||
         revision.harness.mode !== "dedicated"
       ) {
         this.refuse(
-          "This paired Strands Box registration runs only a protected one-repository revision through Box's GitHub routes.",
+          "This paired Strands Box registration runs only a protected one-repository revision through Box's GitHub routes and its own model route.",
         );
       }
+      if (!emptySandboxPolicy(revision.sandboxPolicy, this.id, this.implementation)) {
+        this.refuse(
+          "This paired Strands Box registration needs the empty protected artifact policy it acknowledged.",
+        );
+      }
+    }
+
+    /** No attachment without a model source; with one, exactly its own (mirrors OpenShell). */
+    private exactModelAttachment(context: SandboxHarnessContext, plan: ProxyPlan): boolean {
+      const source = plan.harnessCredentialSource;
+      const attachments = context.requirements.credentialAttachments;
+      if (source === undefined) return attachments.length === 0;
+      const [attachment] = attachments;
+      return (
+        attachments.length === 1 &&
+        attachment !== undefined &&
+        Object.keys(attachment).sort().join(",") === "ref,sourceId" &&
+        attachment.sourceId === source.sourceId &&
+        attachment.ref === modelAttachmentRef(source.sourceId) &&
+        context.requirements.loginMode === "api_key" &&
+        isDeepStrictEqual(context.revision.harnessAuth, source)
+      );
+    }
+
+    protected override harnessModelAttached(requirements: HarnessWorkloadRequirements): boolean {
+      return requirements.proxyWiring?.plan.harnessCredentialSource !== undefined;
     }
 
     /**
@@ -708,17 +930,17 @@ export function createProtectedRegistration(
       },
     },
     async configureRevision({ plan }: ProxyRevisionContext): Promise<ProxyWiring> {
-      if (!admittedPlan(plan, id)) {
+      if (!shared.admits(plan)) {
         throw new DependencyUnavailableError(
-          "This Strands Box registration supports one online-request GitHub repository plan.",
+          "This Strands Box registration supports one online-request GitHub repository plan and its own model source.",
         );
       }
-      return { plan, configuration: structuredClone(shared.wiring) };
+      return { plan, configuration: structuredClone(shared.wiringFor(plan)) };
     },
     async wiringStatus(context, prepared) {
       if (
         !samePlan(prepared.plan, context.plan) ||
-        !samePlan(prepared.configuration, shared.wiring)
+        !samePlan(prepared.configuration, shared.wiringFor(context.plan))
       ) {
         return undefined;
       }
@@ -737,8 +959,64 @@ export function createProtectedRegistration(
     },
     bindRepositoryGit: async (authority, requests) => shared.bind(authority, requests),
   };
+  const store = shared.store;
+  const route = options.controlledInference?.modelBaseUrl;
+  // The Gateway view sees the live execution only through the host the Sandbox owns.
+  const modelHost = {
+    async attachment(revisionId: string, signal: AbortSignal) {
+      const execution = await shared.read(signal);
+      if (
+        execution === undefined ||
+        execution.state === "failed" ||
+        execution.owner.revisionId !== revisionId ||
+        execution.owner.driverId !== id ||
+        execution.harnessModel === undefined
+      ) {
+        return undefined;
+      }
+      return {
+        sourceId: execution.harnessModel.sourceId,
+        revoked: execution.harnessModel.revoked !== undefined,
+      };
+    },
+    async revoke(revisionId: string, sourceId: string, signal: AbortSignal) {
+      const execution = await shared.read(signal);
+      if (
+        execution === undefined ||
+        execution.owner.revisionId !== revisionId ||
+        execution.owner.driverId !== id ||
+        execution.harnessModel?.sourceId !== sourceId
+      ) {
+        return undefined;
+      }
+      const revoked = await revokeHarnessModel(
+        options.controlSocket,
+        {
+          owner: execution.owner,
+          executionId: execution.executionId,
+          requirementsDigest: execution.requirementsDigest,
+          sourceId,
+        },
+        signal,
+      );
+      const receipt = revoked.harnessModel?.revoked;
+      return revoked.executionId === execution.executionId &&
+        revoked.harnessModel?.sourceId === sourceId &&
+        receipt !== undefined
+        ? { receiptId: receipt.receiptId }
+        : undefined;
+    },
+  };
+  const gateway =
+    store === undefined || modelBaseUrl(route) === undefined
+      ? undefined
+      : createModelGateway(id, implementation, modelBaseUrl(route)!, store, modelHost);
   return {
-    capabilities: { sandbox, credential_proxy: credentialProxy },
+    capabilities: {
+      sandbox,
+      credential_proxy: credentialProxy,
+      ...(gateway === undefined ? {} : { credential_gateway: gateway }),
+    },
     close: () => shared.close(),
   };
 }

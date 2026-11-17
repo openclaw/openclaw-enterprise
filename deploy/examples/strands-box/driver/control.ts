@@ -37,6 +37,17 @@ export interface Execution {
     readonly startupSha256?: string;
   };
   readonly controlledInference?: ControlledInferenceRoute;
+  /**
+   * The protected Harness model attachment this execution took, and the host's revoke receipt
+   * once the Gateway withdrew it. Box asks the host for each model request; after the receipt
+   * the host refuses every one before the Worker is asked.
+   */
+  readonly harnessModel?: HarnessModelView;
+}
+
+export interface HarnessModelView {
+  readonly sourceId: string;
+  readonly revoked?: { readonly receiptId: string; readonly revokedAt: string };
 }
 
 export interface RepositoryRecipient {
@@ -46,7 +57,7 @@ export interface RepositoryRecipient {
   readonly source?: { readonly boxProcessInstanceId: string };
 }
 
-/** One Box credential-source ask as the host relays it (host/credential-source.ts). */
+/** One Box credential-source ask for a GitHub route, as the host relays it. */
 export interface SourceAsk {
   readonly askId: string;
   readonly requestId: string;
@@ -62,6 +73,25 @@ export interface SourceAsk {
   readonly headers: readonly (readonly [string, string])[];
   /** Standard base64, as Box sent it. */
   readonly body: string;
+}
+
+/**
+ * One Box ask for the protected model route. The host relays the request's target only: never
+ * its headers or body, which hold the prompt and nothing the answer depends on.
+ */
+export interface ModelAsk {
+  readonly kind: "model";
+  readonly askId: string;
+  readonly requestId: string;
+  readonly bearerSha256: string;
+  readonly deadlineUnixMs: number;
+  readonly target: {
+    readonly host: string;
+    readonly port: number;
+    readonly method: string;
+    readonly path: string;
+    readonly query: string;
+  };
 }
 
 /** The Driver's answer for one ask: this request's value with its send-by, or a refusal. */
@@ -112,6 +142,7 @@ const EXECUTION_PATH = "/v1/execution";
 const ADMISSION_PATH = "/v1/admission";
 const RELEASE_PATH = "/v1/release";
 const ASKS_PATH = "/v1/credential-asks";
+const MODEL_REVOKE_PATH = "/v1/model-revoke";
 const ANSWERS_PATH = "/v1/credential-answers";
 const SHA256 = /^[a-f0-9]{64}$/;
 const LIMIT = 32_768;
@@ -276,8 +307,41 @@ function parseStartup(value: unknown): Execution["protectedStartup"] {
   };
 }
 
+function parseHarnessModel(value: unknown): HarnessModelView | undefined {
+  if (value === undefined) return undefined;
+  const model = record(value);
+  const revoked = record(model?.revoked);
+  if (
+    !model ||
+    Object.keys(model).some((key) => key !== "sourceId" && key !== "revoked") ||
+    typeof model.sourceId !== "string" ||
+    model.sourceId.length === 0 ||
+    model.sourceId.length > 128 ||
+    (model.revoked !== undefined &&
+      (!revoked ||
+        Object.keys(revoked).sort().join(",") !== "receiptId,revokedAt" ||
+        typeof revoked.receiptId !== "string" ||
+        !/^[0-9a-f-]{36}$/.test(revoked.receiptId) ||
+        typeof revoked.revokedAt !== "string"))
+  ) {
+    throw new Error("Invalid Harness model evidence");
+  }
+  return {
+    sourceId: model.sourceId,
+    ...(revoked === undefined
+      ? {}
+      : {
+          revoked: {
+            receiptId: revoked.receiptId as string,
+            revokedAt: revoked.revokedAt as string,
+          },
+        }),
+  };
+}
+
 function parseExecution(value: unknown): Execution {
   const document = record(value);
+  const harnessModel = parseHarnessModel(document?.harnessModel);
   const repositoryRecipient = parseRecipient(document?.repositoryRecipient);
   const protectedStartup = parseStartup(document?.protectedStartup);
   const owner = parseOwner(document?.owner);
@@ -327,6 +391,7 @@ function parseExecution(value: unknown): Execution {
     ...(repositoryRecipient === undefined ? {} : { repositoryRecipient }),
     ...(protectedStartup === undefined ? {} : { protectedStartup }),
     ...(inference === undefined ? {} : { controlledInference: inference }),
+    ...(harnessModel === undefined ? {} : { harnessModel }),
   };
 }
 
@@ -407,8 +472,48 @@ type ExecutionKey = Pick<Execution, "owner" | "executionId" | "requirementsDiges
 const ASK_HOSTS = new Set(["github.com", "api.github.com"]);
 const ASK_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
 
-function parseAsk(value: unknown): SourceAsk {
+function parseModelAsk(ask: Record<string, unknown>): ModelAsk {
+  const target = record(ask.target);
+  if (
+    !target ||
+    Object.keys(ask).sort().join(",") !==
+      "askId,bearerSha256,deadlineUnixMs,kind,requestId,target" ||
+    typeof ask.askId !== "string" ||
+    !/^[0-9a-f-]{36}$/.test(ask.askId) ||
+    typeof ask.requestId !== "string" ||
+    !/^[0-9a-f]{32}$/.test(ask.requestId) ||
+    typeof ask.bearerSha256 !== "string" ||
+    !SHA256.test(ask.bearerSha256) ||
+    typeof ask.deadlineUnixMs !== "number" ||
+    !Number.isSafeInteger(ask.deadlineUnixMs) ||
+    typeof target.host !== "string" ||
+    typeof target.port !== "number" ||
+    !Number.isSafeInteger(target.port) ||
+    typeof target.method !== "string" ||
+    typeof target.path !== "string" ||
+    typeof target.query !== "string"
+  ) {
+    throw new Error("Invalid model ask");
+  }
+  return {
+    kind: "model",
+    askId: ask.askId,
+    requestId: ask.requestId,
+    bearerSha256: ask.bearerSha256,
+    deadlineUnixMs: ask.deadlineUnixMs,
+    target: {
+      host: target.host,
+      port: target.port,
+      method: target.method,
+      path: target.path,
+      query: target.query,
+    },
+  };
+}
+
+function parseAsk(value: unknown): SourceAsk | ModelAsk {
   const ask = record(value);
+  if (ask?.kind === "model") return parseModelAsk(ask);
   const target = record(ask?.target);
   if (
     !ask ||
@@ -465,7 +570,7 @@ export async function collectAsks(
   socketPath: string,
   body: ExecutionKey & { readonly waitMs: number },
   signal: AbortSignal,
-): Promise<SourceAsk[]> {
+): Promise<(SourceAsk | ModelAsk)[]> {
   try {
     const reply = await send(socketPath, "POST", ASKS_PATH, body, signal, false, {
       limit: ASKS_LIMIT,
@@ -493,6 +598,25 @@ export async function sendAnswer(
   } catch {
     signal.throwIfAborted();
     return false;
+  }
+}
+
+/**
+ * Record the Gateway's withdrawal of the Harness model attachment on the host. The host writes a
+ * durable receipt first, then refuses every later model request of the execution itself.
+ */
+export async function revokeHarnessModel(
+  socketPath: string,
+  body: ExecutionKey & { readonly sourceId: string },
+  signal: AbortSignal,
+): Promise<Execution> {
+  try {
+    const reply = await send(socketPath, "POST", MODEL_REVOKE_PATH, body, signal);
+    if (reply.status !== 200) throw new Error("Refused revoke");
+    return parseExecution(JSON.parse(reply.body));
+  } catch {
+    signal.throwIfAborted();
+    throw new DependencyUnavailableError("The Strands Box host did not confirm the model revoke.");
   }
 }
 

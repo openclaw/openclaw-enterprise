@@ -38,6 +38,11 @@ export interface Pending {
     readonly hosts: readonly string[];
     readonly delivery: "box-source-v1";
   };
+  /**
+   * A protected revision's Harness model source: Box injects its key on the model route below,
+   * asking the host for each request. The approval names the source, never a value.
+   */
+  harnessModel?: { readonly sourceId: string; readonly delivery: "box-source-v1" };
   /** The exact model route this approval admits: name, pinned address and route CA digest. */
   controlledInference?: {
     readonly url: string;

@@ -41,6 +41,7 @@ import {
 } from "./control.ts";
 import { nativeStatus } from "./native.ts";
 import { readObject, Relay, relayName, type RelayOptions } from "./relay.ts";
+import { modelGatewaySchema, type ModelGatewayConfiguration } from "./model-gateway.ts";
 import {
   createProtectedRegistration,
   protectedRepositorySchema,
@@ -62,6 +63,12 @@ export interface Options {
   readonly workspaceNodeMode?: WorkspaceNodeMode;
   /** Selecting this makes the package a paired protected Sandbox + Credential Proxy registration. */
   readonly protectedRepository?: ProtectedRepositoryConfiguration;
+  /**
+   * With `protectedRepository` and `controlledInference`: the registration also supplies a
+   * Credential Gateway view, and a protected revision may take its Harness model key from it.
+   * Box injects that key per request on the `controlledInference` route.
+   */
+  readonly modelGateway?: ModelGatewayConfiguration;
 }
 
 const DNS_LABEL = "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$";
@@ -90,6 +97,7 @@ export const configurationSchema: NonNullable<DriverImplementation["configuratio
     workspaceRoot: { type: "string", minLength: 1, maxLength: 1024 },
     workspaceNodeMode: { type: "string", enum: ["file-only-v1"] },
     protectedRepository: protectedRepositorySchema,
+    modelGateway: modelGatewaySchema,
     controlledInference: {
       type: "object",
       additionalProperties: false,
@@ -258,6 +266,25 @@ export function validateConfiguration(
   if (options.workspaceNodeMode !== undefined && options.controlledInference === undefined) {
     invalid("/workspaceNodeMode", "The file-only workspace node requires controlled inference.");
   }
+  if (
+    options.modelGateway !== undefined &&
+    (options.protectedRepository === undefined || options.controlledInference === undefined)
+  ) {
+    invalid(
+      "/modelGateway",
+      "The model Credential Gateway requires protectedRepository and the controlledInference model route.",
+    );
+  }
+  const kubernetes = options.modelGateway?.kubernetes;
+  if (
+    kubernetes !== undefined &&
+    (!safePath(kubernetes.caFile) ||
+      !safePath(kubernetes.tokenFile) ||
+      !URL.canParse(kubernetes.url) ||
+      new URL(kubernetes.url).protocol !== "https:")
+  ) {
+    invalid("/modelGateway/kubernetes", "Use an HTTPS Kubernetes API URL and absolute file paths.");
+  }
   return errors;
 }
 
@@ -388,16 +415,19 @@ export class StrandsBoxDriver implements SandboxDriver {
       );
     }
     const { setup, model } = this.secretReferences(requirements);
-    if (
-      this.options.workspaceNodeMode !== undefined &&
-      (setup === undefined || model === undefined)
-    ) {
+    // The model reaches Box on the configured route either credential-free (the controlled
+    // marker) or, for a protected revision, with the attached source's key that Box injects.
+    const routed = model !== undefined || this.harnessModelAttached(requirements);
+    if (this.options.workspaceNodeMode !== undefined && (setup === undefined || !routed)) {
       this.refuse(
         "The file-only workspace node requires the stock pairing and controlled inference projections.",
       );
     }
     const volume = await this.readWorkspaceVolume(context);
-    const inference = model === undefined ? undefined : this.inference();
+    const inference = routed ? this.inference() : undefined;
+    if (routed && inference === undefined) {
+      this.refuse("The Harness model needs the configured controlled inference route.");
+    }
     const requirementsDigest = digest(requirements);
     const admission = {
       owner,
@@ -584,6 +614,11 @@ export class StrandsBoxDriver implements SandboxDriver {
     };
   }
 
+  /** A protected revision's admitted Harness model attachment; the ordinary Driver takes none. */
+  protected harnessModelAttached(_requirements: HarnessWorkloadRequirements): boolean {
+    return false;
+  }
+
   /** One-shot execution inputs sent only in the host PUT; the ordinary Driver sends none. */
   protected executionInputs(): Readonly<Record<string, string>> {
     return {};
@@ -654,7 +689,7 @@ export class StrandsBoxDriver implements SandboxDriver {
         );
       }
     }
-    if (model !== undefined) {
+    if (model !== undefined || this.harnessModelAttached(requirements)) {
       const manifests = requirements.files.filter(
         ({ name, environmentVariable }) =>
           name === "runtime.json" && environmentVariable === "OPENCLAW_PLUGIN_RUNTIME_MANIFEST",
