@@ -18,7 +18,12 @@ import {
   type ModelAsk,
   parseModelRequest,
 } from "../../deploy/examples/strands-box/host/credential-source.ts";
-import { modelCredentials } from "../../deploy/examples/strands-box/host/egress.ts";
+import { inferenceRoute } from "../../deploy/examples/strands-box/driver/index.ts";
+import {
+  modelCredentials,
+  parseRoute,
+  policy,
+} from "../../deploy/examples/strands-box/host/egress.ts";
 import type { AgentRevision, CredentialSource } from "../../packages/contracts/src/index.ts";
 import {
   askSource,
@@ -1208,3 +1213,98 @@ test("the host buffers at most two of Box's largest model asks at once; more are
   relay.answer(ask.askId, { refusal: "access_withdrawn" });
   assert.equal((await pending).body?.refusal, "access_withdrawn");
 });
+
+test(
+  "a model route below a path prefix still admits one exact POST path: host, Box tables, Worker",
+  { timeout: 90_000 },
+  async (t) => {
+    // Review of the prefix change: /v1 may sit below fixed plain segments, and nothing else.
+    const route = "https://10.0.0.9:8444/openai/v1";
+    const path = "/openai/v1/responses";
+    for (const spelling of [
+      "https://10.0.0.9:8444/openai/./v1",
+      "https://10.0.0.9:8444/openai/../v1",
+      "https://10.0.0.9:8444/openai/%2e/v1",
+      "https://10.0.0.9:8444/openai/%2E%2E/v1",
+      "https://10.0.0.9:8444/open%61i/v1",
+      "https://10.0.0.9:8444/openai//v1",
+      "https://10.0.0.9:8444/openai/v1/",
+      "https://10.0.0.9:8444/openai/v1/responses",
+      "https://10.0.0.9:8444/./v1",
+    ]) {
+      // The Driver and the host refuse the same spellings (the URL parser's own normalisation
+      // of dot segments makes the spelling differ, which both refuse too).
+      assert.equal(inferenceRoute({ modelBaseUrl: spelling, address: "10.0.0.9" }), undefined, spelling);
+      assert.throws(() => parseRoute({ url: spelling, address: "10.0.0.9" }, "controlled-inference"), {
+        message: "invalid_fixed_egress",
+      });
+    }
+    assert.deepEqual(inferenceRoute({ modelBaseUrl: route }), { url: route, address: "10.0.0.9" });
+    const parsed = parseRoute({ url: route, address: "10.0.0.9" }, "controlled-inference");
+    // Box's policy: exactly one request rule for the route, POST and the exact full path.
+    const rules = policy([parsed])
+      .split("\n")
+      .filter((line) => line.includes("context.input.path"));
+    assert.equal(rules.length, 1);
+    assert.match(rules[0]!, /context\.input\.method == "POST" && context\.input\.path == "\/openai\/v1\/responses" &&/);
+    // Box's credential route names the same full path, never the bare prefix or /v1.
+    const tables = modelCredentials(parsed, {
+      socket: "/run/oce-box/revision/source/model.sock",
+      bearerEnv: "OCE_SOURCE_BEARER",
+      timeoutMs: 5_000,
+      maxBodyBytes: MODEL_MAX_BODY_BYTES,
+      path,
+    });
+    assert.match(tables, /^destinations = \["10\.0\.0\.9:8444\/openai\/v1\/responses"\]$/m);
+    const siblings = [
+      "/v1/responses",
+      "/openai/v2/responses",
+      "/openai/v1/responses/",
+      "/openai/v1/responses/compact",
+      "/openai/v1/chat/completions",
+      "/openai/v1//responses",
+      "/openai//v1/responses",
+      "/openai/v1/./responses",
+      "/openai/x/../v1/responses",
+      "/openai/v1/%72esponses",
+      "/OPENAI/v1/responses",
+      "/x/openai/v1/responses",
+    ];
+    // The host's relay: only the exact path reaches the Worker.
+    const directory = await temporaryDirectory(t, "strands-model-prefix-");
+    const socket = join(directory, "model.sock");
+    const bearer = randomBytes(32).toString("base64url");
+    const relay = new CredentialSourceRelay(sha(bearer), () => true);
+    await relay.listenModel(socket, { host: "10.0.0.9", port: 8444, path }, () => false);
+    t.after(() => relay.close());
+    for (const sibling of siblings) {
+      const reply = await askSource(socket, bearer, boxModelRequest(requestId(), { path: sibling }));
+      assert.equal(reply.body?.refusal, "route_unsupported", sibling);
+    }
+    assert.deepEqual(await relay.collect(0, AbortSignal.timeout(5_000)), []);
+
+    // The Worker's answer check, with the relay bypassed: the exact path only.
+    const kube = await fakeKubernetesSecrets(t);
+    const f = await pairedFixture(t, { model: { gateway: kube.configuration, route } });
+    const signal = AbortSignal.timeout(80_000);
+    const { binding } = await activateStageB(f, signal);
+    t.after(() => binding.close());
+    const key = await registerModelKey(f.gateway!, namespace.id, MODEL_SOURCE_ID, signal);
+    const ask = (target: string) =>
+      ({
+        kind: "model",
+        askId: randomUUID(),
+        requestId: requestId(),
+        bearerSha256: sha(f.bearer),
+        deadlineUnixMs: Date.now() + 4_000,
+        target: { host: "10.0.0.9", port: 8444, method: "POST", path: target, query: "" },
+      }) as ModelAsk;
+    for (const sibling of siblings) {
+      const reads = kube.calls.length;
+      assert.deepEqual(await f.forge(ask(sibling)), { refusal: "request_not_allowed" }, sibling);
+      assert.deepEqual(secretReads(kube, reads), []);
+    }
+    const allowed = await f.forge(ask(path));
+    assert.equal(allowed.credential === key, true);
+  },
+);
