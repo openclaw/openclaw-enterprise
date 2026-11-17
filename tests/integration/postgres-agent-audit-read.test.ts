@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
-import type { AgentAuditPage } from "@openclaw-enterprise/contracts";
 
+import {
+  loadRuntimeAuditAdmission,
+  type RuntimeAuditAdmission,
+} from "../../apps/controller/src/http/runtime-audit.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
+import { RUNTIME_AUDIT_ACTIONS, type AgentAuditPage } from "../../packages/contracts/src/index.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { privateBootstrapDirectory } from "../helpers/bootstrap-installation.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, withPool } from "../helpers/postgres-database.mjs";
 import { waitUntil } from "../helpers/wait-for.ts";
@@ -13,6 +21,64 @@ import { waitUntil } from "../helpers/wait-for.ts";
 const authSecret = "agent-audit-reader-postgres-auth-secret";
 const migrationUrl = process.env.OCC_TEST_AGENT_AUDIT_READ_MIGRATION_DATABASE_URL;
 const disclosureAction = "openclaw.audit.agent.read";
+
+// Encode the standard OTLP wire fields independently of the production decoder.
+function varint(value: number): Buffer {
+  const bytes: number[] = [];
+  while (value > 127) {
+    bytes.push((value & 127) | 128);
+    value >>>= 7;
+  }
+  return Buffer.from([...bytes, value]);
+}
+
+function wireMessage(field: number, ...parts: Buffer[]): Buffer {
+  const message = Buffer.concat(parts);
+  return Buffer.concat([varint(field * 8 + 2), varint(message.length), message]);
+}
+
+function otlpAttributes(field: number, attributes: Record<string, string | number>): Buffer[] {
+  return Object.entries(attributes).map(([key, value]) =>
+    wireMessage(
+      field,
+      wireMessage(1, Buffer.from(key)),
+      wireMessage(
+        2,
+        typeof value === "number"
+          ? Buffer.concat([varint(3 * 8), varint(value)])
+          : wireMessage(1, Buffer.from(value)),
+      ),
+    ),
+  );
+}
+
+function openShellOtlp(
+  sandboxId: string,
+  eventId: string,
+  body: Record<string, unknown>,
+  { service = "openshell-supervisor", scope = "openshell.ocsf" } = {},
+): Buffer {
+  return wireMessage(
+    1,
+    wireMessage(
+      1,
+      ...otlpAttributes(1, { "service.name": service, "openshell.sandbox.id": sandboxId }),
+    ),
+    wireMessage(
+      2,
+      wireMessage(1, wireMessage(1, Buffer.from(scope))),
+      wireMessage(
+        2,
+        wireMessage(5, wireMessage(1, Buffer.from(JSON.stringify(body)))),
+        ...otlpAttributes(6, {
+          "openshell.sandbox.id": sandboxId,
+          "ocsf.metadata.uid": eventId,
+          "ocsf.class_uid": 4001,
+        }),
+      ),
+    ),
+  );
+}
 
 test(
   "Agent audit pages require an exact current grant and a committed disclosure",
@@ -43,7 +109,8 @@ test(
     const proxy = await commitAckProxy(databaseUrl, {
       transactionStatement: "SELECT occ.hold_agent_audit_policy($1)",
     });
-    const { pool, principal, app, adminAccount, computeDriver, inject, deployAgent } =
+    const runtimeAudit: { admit?: RuntimeAuditAdmission } = {};
+    const { pool, state, principal, app, adminAccount, computeDriver, inject, deployAgent } =
       await createPostgresAgentApp(t, {
         label: "agent-audit",
         authSecret,
@@ -51,7 +118,16 @@ test(
         transportDatabaseUrl: proxy.url,
         controllerOptions: { recordOperations: true },
         stateOptions: { workQueue: { controlPlaneAuditEnabled: true } },
-        appOptions: { agentAuditCursorSecret: authSecret },
+        appOptions: {
+          agentAuditCursorSecret: authSecret,
+          runtimeAuditAdmission: Object.assign(
+            (authorization: string | undefined) => runtimeAudit.admit?.(authorization),
+            {
+              admitOpenShell: (authorization: string | undefined) =>
+                runtimeAudit.admit?.admitOpenShell?.(authorization),
+            },
+          ),
+        },
       });
     t.after(() => proxy.close());
     const { agent, namespace, revision } = await deployAgent("Agent Audit Reader");
@@ -209,12 +285,19 @@ test(
     });
     await worker.start();
     try {
-      await waitUntil("the deployed revision to finish", async () => {
-        const result = await pool.query(
-          "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
-          [workKey],
+      await waitUntil("the deployment result to enter the audit page window", async () => {
+        // The worker records microseconds, while the first page captures a millisecond end.
+        const result = await pool.query<{ ready: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM occ.controller_work AS work
+             JOIN occ.audit_events AS audit ON audit.details->>'workId' = work.idempotency_key
+               AND audit.details->>'workState' = work.state
+             WHERE work.idempotency_key = $1 AND work.state = 'failed_permanent'
+               AND audit.occurred_at <= $2::timestamptz
+           ) AS ready`,
+          [workKey, new Date().toISOString()],
         );
-        return result.rows[0]?.state === "failed_permanent";
+        return result.rows[0]?.ready === true;
       });
       const response = await inject("GET", auditPath);
       assert.equal(response.statusCode, 200, response.body);
@@ -242,5 +325,272 @@ test(
     } finally {
       await worker.stop();
     }
+
+    // Reader evidence uses persisted rows so the projection and grant are tested independently
+    // from producer admission. Include storage fields outside this action's projection.
+    const installation = await state.loadInstallation();
+    assert.ok(installation);
+    const runtimeEvent = {
+      id: `aud_${randomUUID()}`,
+      installationId: installation.id,
+      namespaceId: namespace.id,
+      occurredAt: new Date().toISOString(),
+      kind: "runtime_activity",
+      action: RUNTIME_AUDIT_ACTIONS.reviewDecision,
+      actorId: "unresolved",
+      outcome: "denied",
+      resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
+      details: {
+        agentRevisionId: revision.id,
+        runtimeSource: "openclaw",
+        sessionId: "runtime-session",
+        turnId: "runtime-turn",
+        reviewId: "runtime-review",
+        decision: "denied",
+      },
+    } as const;
+    await state.auditSink.append({
+      ...runtimeEvent,
+      source: "openclaw",
+      details: { ...runtimeEvent.details, toolInput: "runtime-tool-input-must-not-be-disclosed" },
+    });
+    const otherRuntimeId = `aud_${randomUUID()}`;
+    await state.auditSink.append({
+      ...runtimeEvent,
+      id: otherRuntimeId,
+      namespaceId: other.namespace.id,
+      resource: { kind: "agent", id: other.agent.id, namespaceId: other.namespace.id },
+      details: { ...runtimeEvent.details, agentRevisionId: other.revision.id },
+    });
+
+    const exporterToken = randomBytes(32).toString("base64url");
+    const harnessToken = randomBytes(32).toString("base64url");
+    const sandboxId = randomUUID();
+    const grantFile = join(
+      await privateBootstrapDirectory(t, "runtime-audit-grants-"),
+      "grants.json",
+    );
+    await writeFile(
+      grantFile,
+      JSON.stringify([
+        {
+          tokenDigest: createHash("sha256").update(exporterToken).digest("hex"),
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          agentRevisionId: revision.id,
+          runtimeSource: "openshell",
+          openshellSandboxId: sandboxId,
+        },
+        {
+          tokenDigest: createHash("sha256").update(harnessToken).digest("hex"),
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          agentRevisionId: revision.id,
+          runtimeSource: "openclaw",
+        },
+      ]),
+      { mode: 0o600 },
+    );
+    runtimeAudit.admit = await loadRuntimeAuditAdmission(grantFile);
+    const reviewWithRationale = {
+      action: RUNTIME_AUDIT_ACTIONS.reviewDecision,
+      eventId: randomUUID(),
+      occurredAt: new Date().toISOString(),
+      sessionId: "safe-session",
+      decision: "denied",
+      rationale: `Bearer a ${"Z".repeat(241)}`,
+    } as const;
+    const postRuntimeAudit = (payload: unknown, token?: string, source = "openclaw") =>
+      app.inject({
+        method: "POST",
+        url: "/internal/runtime-audit",
+        headers: {
+          host: "127.0.0.1",
+          "content-type": "application/json",
+          "x-openclaw-runtime-audit-source": source,
+          ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+        },
+        payload: JSON.stringify(payload),
+      });
+    assert.equal((await postRuntimeAudit(reviewWithRationale)).statusCode, 401);
+    assert.equal((await postRuntimeAudit(reviewWithRationale, exporterToken)).statusCode, 401);
+    assert.equal(
+      (await postRuntimeAudit(reviewWithRationale, harnessToken, "codex")).statusCode,
+      403,
+    );
+    assert.equal(
+      (
+        await postRuntimeAudit(
+          { ...reviewWithRationale, action: RUNTIME_AUDIT_ACTIONS.networkDecision },
+          harnessToken,
+        )
+      ).statusCode,
+      403,
+    );
+    assert.equal(
+      (
+        await postRuntimeAudit(
+          { ...reviewWithRationale, agentRevisionId: other.revision.id },
+          harnessToken,
+        )
+      ).statusCode,
+      400,
+    );
+    assert.equal(
+      (
+        await postRuntimeAudit(
+          { ...reviewWithRationale, sessionId: "poisoned\u0001identifier" },
+          harnessToken,
+        )
+      ).statusCode,
+      400,
+    );
+    for (let delivery = 0; delivery < 2; delivery += 1) {
+      const admitted = await postRuntimeAudit(reviewWithRationale, harnessToken);
+      assert.equal(admitted.statusCode, 204, admitted.body);
+    }
+
+    // Stock OTLP envelope with typed native OCSF, restricted to a distinct exporter credential.
+    const ocsfId = randomUUID();
+    const ocsf = {
+      class_uid: 4001,
+      action_id: 2,
+      disposition_id: 2,
+      time: Date.now(),
+      metadata: {
+        version: "1.8.0",
+        uid: ocsfId,
+        product: { name: "OpenShell Sandbox Supervisor" },
+      },
+      device: { container: { uid: sandboxId } },
+      dst_endpoint: { domain: "blocked.invalid", port: 8443, ip: "198.18.0.2" },
+      unmapped: { reason: "unprojected-private-provider-content" },
+    };
+    const ocsfPayload = openShellOtlp(sandboxId, ocsfId, ocsf);
+    const postOtlp = (
+      payload: Buffer,
+      token = exporterToken,
+      mediaType = "application/x-protobuf",
+    ) =>
+      app.inject({
+        method: "POST",
+        url: "/internal/runtime-audit/openshell/v1/logs",
+        headers: {
+          host: "127.0.0.1",
+          authorization: `Bearer ${token}`,
+          "content-type": mediaType,
+        },
+        payload,
+      });
+    assert.equal((await postOtlp(ocsfPayload, harnessToken)).statusCode, 401);
+    assert.equal((await postOtlp(ocsfPayload, exporterToken, "application/json")).statusCode, 415);
+    assert.equal((await postOtlp(Buffer.from([0xff]))).statusCode, 400);
+    assert.equal(
+      (
+        await postOtlp(
+          openShellOtlp(sandboxId, ocsfId, {
+            ...ocsf,
+            device: { container: { uid: randomUUID() } },
+          }),
+        )
+      ).statusCode,
+      400,
+    );
+    const skipped = [
+      openShellOtlp(randomUUID(), ocsfId, ocsf),
+      openShellOtlp(sandboxId, ocsfId, ocsf, { service: "openshell-gateway" }),
+      openShellOtlp(sandboxId, ocsfId, ocsf, { scope: "generic-workload" }),
+      openShellOtlp(sandboxId, ocsfId, { ...ocsf, action_id: 1, disposition_id: 1 }),
+    ];
+    for (const payload of skipped) {
+      const ignored = await postOtlp(payload);
+      assert.equal(ignored.statusCode, 200, ignored.body);
+    }
+    const fullBatch = Buffer.concat(Array.from({ length: 101 }, () => skipped[0]!));
+    assert.equal((await postOtlp(fullBatch)).statusCode, 200);
+    assert.equal((await postOtlp(Buffer.concat([fullBatch, skipped[0]!]))).statusCode, 400);
+    const beforeDenial = await pool.query<{ count: string }>(
+      "SELECT count(*) FROM occ.audit_events WHERE resource_id = $1 AND action = $2",
+      [agent.id, RUNTIME_AUDIT_ACTIONS.networkDecision],
+    );
+    assert.equal(beforeDenial.rows[0]?.count, "0");
+    for (let delivery = 0; delivery < 2; delivery += 1) {
+      const admitted = await postOtlp(ocsfPayload);
+      assert.equal(admitted.statusCode, 200, admitted.body);
+      assert.equal(admitted.headers["content-type"], "application/x-protobuf");
+      assert.equal(admitted.rawPayload.length, 0);
+    }
+
+    assert.equal((await inject("GET", otherAuditPath)).statusCode, 403);
+    const runtimeRead = await inject("GET", `${auditPath}?limit=100`);
+    assert.equal(runtimeRead.statusCode, 200, runtimeRead.body);
+    const runtimePage: AgentAuditPage = runtimeRead.json().data;
+    assert.equal(runtimePage.projectionVersion, 2);
+    const networkDecisions = runtimePage.events.filter(
+      (entry) =>
+        entry.event === "runtime_activity" &&
+        entry.action === RUNTIME_AUDIT_ACTIONS.networkDecision,
+    );
+    assert.equal(networkDecisions.length, 1);
+    assert.deepEqual(
+      networkDecisions.find((entry) => entry.details.host === "blocked.invalid")?.details,
+      {
+        agentRevisionId: revision.id,
+        runtimeSource: "openshell",
+        decision: "denied",
+        enforcement: "blocked",
+        host: "blocked.invalid",
+        port: 8443,
+      },
+    );
+    assert.ok(networkDecisions.every((entry) => entry.outcome === "denied"));
+    assert.ok(!runtimeRead.body.includes("unprojected-private-provider-content"));
+    const persistedReviews = runtimePage.events.filter(
+      (entry) =>
+        entry.event === "runtime_activity" &&
+        entry.action === reviewWithRationale.action &&
+        "sessionId" in entry.details &&
+        entry.details.sessionId === "safe-session",
+    );
+    assert.equal(persistedReviews.length, 1);
+    const [persistedReview] = persistedReviews;
+    assert.equal(persistedReview?.event, "runtime_activity");
+    assert.deepEqual(persistedReview.details, {
+      agentRevisionId: revision.id,
+      runtimeSource: "openclaw",
+      sessionId: "safe-session",
+      decision: "denied",
+      rationale: `[REDACTED] ${"Z".repeat(239)}`,
+    });
+    assert.deepEqual(
+      runtimePage.events.filter(
+        (entry) => entry.event === "runtime_activity" && entry.id === runtimeEvent.id,
+      ),
+      [
+        {
+          id: runtimeEvent.id,
+          occurredAt: runtimeEvent.occurredAt.replace(/Z$/, "000Z"),
+          event: "runtime_activity",
+          action: runtimeEvent.action,
+          outcome: runtimeEvent.outcome,
+          details: runtimeEvent.details,
+        },
+      ],
+    );
+    assert.ok(!runtimeRead.body.includes(otherRuntimeId));
+    assert.ok(!runtimeRead.body.includes("runtime-tool-input-must-not-be-disclosed"));
+
+    const firstRuntimeRead = await inject("GET", `${auditPath}?limit=1`);
+    assert.equal(firstRuntimeRead.statusCode, 200, firstRuntimeRead.body);
+    const firstRuntimePage: AgentAuditPage = firstRuntimeRead.json().data;
+    assert.deepEqual(firstRuntimePage.events, runtimePage.events.slice(0, 1));
+    assert.ok(firstRuntimePage.nextCursor);
+    const nextRuntimeRead = await inject(
+      "GET",
+      `${auditPath}?cursor=${firstRuntimePage.nextCursor}`,
+    );
+    assert.equal(nextRuntimeRead.statusCode, 200, nextRuntimeRead.body);
+    const nextRuntimePage: AgentAuditPage = nextRuntimeRead.json().data;
+    assert.deepEqual(nextRuntimePage.events, runtimePage.events.slice(1, 2));
   },
 );

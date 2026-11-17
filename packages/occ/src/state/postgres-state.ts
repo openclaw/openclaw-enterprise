@@ -1099,7 +1099,14 @@ function auditFromRow(row: PostgresRow, installationId: string): Readonly<AuditE
   if (
     !RESOURCE_KINDS.has(resourceKind) ||
     !["success", "denied", "failure"].includes(outcome) ||
-    !["bootstrap", "mutation", "access", "authorization_denial", "api_request"].includes(kind)
+    ![
+      "bootstrap",
+      "mutation",
+      "access",
+      "authorization_denial",
+      "api_request",
+      "runtime_activity",
+    ].includes(kind)
   ) {
     throw new PersistedStateInvalidError("Persisted audit evidence contains an invalid event.");
   }

@@ -97,6 +97,79 @@ no output is returned. Each log download records one
 read. Both use the audit event kind `access`, which marks an audited read. The
 event names the permission that admitted the reader, `read_logs` or `administer`.
 
+### Runtime activity
+
+To enable runtime audit in Helm, set `api.runtimeAudit.grantsSecretName`.
+Use a dedicated Secret in the API namespace with the key `grants.json`.
+In other deployments, set `OCC_RUNTIME_AUDIT_GRANTS_PATH` on the API to the
+absolute path of a file that only the operator can change.
+Each grant in the file contains `namespaceId`, `agentId`,
+`agentRevisionId`, `runtimeSource`, and `tokenDigest`. Generate 32 random
+bytes and encode them as Base64URL without padding. Set `tokenDigest` to
+the lowercase SHA-256 digest of that token text. Store the grants in a JSON
+array. The API reads grants at startup. Restart the API after you update them.
+
+For a dedicated Kubernetes Gateway, set the Compute Driver
+`runtime.audit.endpoint` to the HTTPS endpoint at `/internal/runtime-audit`.
+Create the revision’s Secret in the Gateway namespace. Use the name
+`runtime-audit-` followed by the first 24 hexadecimal characters of the
+SHA-256 digest of `JSON.stringify([agentId, agentRevisionId])`. Store the
+token text under the key `token`. The Gateway mounts the file read-only.
+Each Gateway waits for its revision's Secret before it starts.
+The Kubernetes configuration must let that Gateway reach the selected API.
+
+For direct Gateway testing, set `OPENCLAW_RUNTIME_AUDIT_URL` and
+`OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH` on the Gateway process. Protect the
+credential file from Agent tools and workloads. The Gateway reads it at
+startup.
+
+Enabling runtime audit also enables the authorized Agent audit reader.
+Runtime activity shows the action, the reporting component, and the Agent
+revision. A turn ID links events from one turn. A message ID points to a saved
+input in that session, when the runtime can identify it. The reader needs
+conversation access to view that input. The audit response does not contain the
+message body.
+
+The Gateway can record decisions from the OpenClaw command reviewer and the
+Codex Guardian. The decision can include the classifier reason. A tool denial
+can occur during a turn that continues. The turn record names a blocking
+policy only when the turn owner confirms that the decision ended the turn.
+
+The OpenClaw Gateway records turns and model calls that use its provider
+connection. The in-process runtime can also record tool calls and decisions
+from its read and write workspace checks. The separate OpenClaw worker's local
+tool execution has a different trust boundary. The Codex Gateway records its
+dynamic tool calls and the command, file-change, and MCP items from the native
+server. The stock Codex server does not supply a separate record for each
+provider request.
+
+#### OpenShell network denials
+
+Use the OpenShell Gateway's typed OCSF export for eligible Sandboxes. In the
+OpenShell Helm values, set the following parameters under
+`gatewayConfig."openshell.gateway.otlp.ocsf"`.
+
+| Parameter      | Value                                                                          |
+| -------------- | ------------------------------------------------------------------------------ |
+| `enabled`      | `true`                                                                         |
+| `protocol`     | `http/protobuf`                                                                |
+| `endpoint`     | The private HTTPS OCC origin with the path `/internal/runtime-audit/openshell` |
+| `headers_file` | Absolute path to the export credential file                                    |
+
+Mount the file with `server.extraVolumes` and `server.extraVolumeMounts`.
+Use the line `authorization=Bearer <token>` in the file. Give this exporter
+its own credential. In the OCC grants file, use `runtimeSource: "openshell"`,
+the exporter token digest, and the enrolled `openshellSandboxId` for each
+Agent revision. Start the supervisors with the new export settings.
+Get the Sandbox UUID from the authenticated OpenShell Gateway. Confirm that
+the Sandbox's `openclaw.dev/revision-id` annotation identifies the revision
+in the grant. Use a new grant when the Sandbox has a new UUID.
+
+OCC stores admitted denial metadata. It can include the destination host and
+port when OpenShell supplies them. Those records show an enforced network
+decision for the Sandbox. OpenShell does not supply a turn ID with this event.
+The export can lose records when the exporter or audit service is unavailable.
+
 ## Manage audit storage
 
 OCC keeps audit rows when a resource is deleted. The application role can add
@@ -104,10 +177,11 @@ rows. It cannot update, delete, or truncate them. Automatic expiry, purge,
 archive, and export are outside the current audit workflow. Use approved
 database access to inspect raw audit rows.
 
-PostgreSQL checks each new Control Plane request, work, or audit disclosure event
+PostgreSQL checks each new Control Plane request, work, runtime activity, or audit disclosure event
 against an 8 KiB limit on its JSON row. At 1 GiB of allocated space for the
 `occ.audit_events` table and its indexes, PostgreSQL refuses new Control Plane
-audit events by default. Existing event types can still grow the table.
+and runtime activity audit events by default. Other event types can still grow
+the table.
 Concurrent writes and page allocations can take the table above the threshold.
 
 Check the storage threshold before enabling Control Plane audit and while it runs.
@@ -179,10 +253,10 @@ with the `read_audit` permission directly to your Principal and the Agent.
 OCC checks the grant each time you request a page.
 
 Send `GET /namespaces/{namespaceId}/agents/{agentId}/audit-events`.
-The response lists selected API reads and worker events from the preceding
-24 hours, newest first. A work ID in the response connects events for the
-same job. OCC gives it a separate format to keep internal work keys and
-Agent revision IDs private.
+The response lists selected API reads, worker events, and runtime activity
+from the preceding 24 hours, newest first. A work ID connects events for the
+same job. A runtime record includes its action, revision, and the fields
+approved for that action.
 
 The default page contains up to 50 records. Set `limit` to a number from
 1 through 100 to change the size. If the response includes a `nextCursor`,

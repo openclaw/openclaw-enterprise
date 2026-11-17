@@ -1,3 +1,4 @@
+import type { RuntimeAuditAdmission } from "../http/runtime-audit.ts";
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
@@ -71,6 +72,7 @@ export interface PostgresDevelopmentConfig {
   readonly trustedDevelopmentForwarderCidr?: string;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly gatewayApiKeyPath?: string;
+  readonly runtimeAuditAdmission?: RuntimeAuditAdmission;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
   readonly agentRuntimeLogsEnabled?: boolean;
@@ -112,9 +114,10 @@ export async function composePostgresDevelopment(
   }
 
   const auditEnabled = config.controlPlaneAuditEnabled !== false;
+  const auditStorageEnabled = auditEnabled || config.runtimeAuditAdmission !== undefined;
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
-    ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
+    ...(auditStorageEnabled ? controlPlaneAuditDatabaseOptions : {}),
   });
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
@@ -123,7 +126,7 @@ export async function composePostgresDevelopment(
   try {
     const state = new PostgresPlatformState(pool, {
       preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
-      ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
+      ...(auditStorageEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
     });
     const persistedInstallation = await state.loadInstallation();
     if (persistedInstallation === undefined) {
@@ -186,7 +189,7 @@ export async function composePostgresDevelopment(
         ...installationControllerOptions(drivers?.installation),
         namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,
-        ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
+        ...(auditStorageEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
         ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
         ...(drivers?.pluginSourceReader === undefined
           ? {}
@@ -337,9 +340,11 @@ export async function composePostgresDevelopment(
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       resolveHarness: resolveApprovedHarness,
       auditSink: state.auditSink,
-      ...(auditEnabled
-        ? { durableRequestAuditSink: state.auditSink, agentAuditCursorSecret: config.authSecret }
-        : {}),
+      ...(config.runtimeAuditAdmission === undefined
+        ? {}
+        : { runtimeAuditAdmission: config.runtimeAuditAdmission }),
+      ...(auditEnabled ? { durableRequestAuditSink: state.auditSink } : {}),
+      ...(auditStorageEnabled ? { agentAuditCursorSecret: config.authSecret } : {}),
       ...(drivers === undefined
         ? {}
         : { backendSummaries: backendSummariesFromDefinitions(drivers.installation.backend) }),

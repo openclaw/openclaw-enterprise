@@ -65,6 +65,44 @@ import {
 
 const execute = promisify(execFile);
 
+test("runtime audit grants mount only on the API when configured", async () => {
+  for (const secret of ["", "runtime-audit-grants-v1"]) {
+    const objects = await resources(
+      (await renderProductionChart({ "api.runtimeAudit.grantsSecretName": secret })).stdout,
+    );
+    for (const component of ["api", "worker"]) {
+      const { spec } = findResource(objects, "Deployment", `openclaw-enterprise-${component}`);
+      const pod = spec.template.spec;
+      const container = pod.containers.find((item) => item.name === component);
+      const enabled = component === "api" && secret !== "";
+      assert.deepEqual(
+        pod.volumes.find((item) => item.name === "runtime-audit-grants")?.secret,
+        enabled
+          ? {
+              secretName: secret,
+              defaultMode: 288,
+              items: [{ key: "grants.json", path: "grants.json" }],
+            }
+          : undefined,
+      );
+      assert.deepEqual(
+        container.volumeMounts.find((item) => item.name === "runtime-audit-grants"),
+        enabled
+          ? {
+              name: "runtime-audit-grants",
+              mountPath: "/etc/openclaw/runtime-audit",
+              readOnly: true,
+            }
+          : undefined,
+      );
+      assert.equal(
+        container.env.find((item) => item.name === "OCC_RUNTIME_AUDIT_GRANTS_PATH")?.value,
+        enabled ? "/etc/openclaw/runtime-audit/grants.json" : undefined,
+      );
+    }
+  }
+});
+
 test("console themes mount only on the API and restart it when the checksum changes", async () => {
   const defaults = await resources((await renderProductionChart()).stdout);
   const themed = await resources(

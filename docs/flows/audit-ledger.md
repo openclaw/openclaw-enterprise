@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-12"
-last_updated_session: "authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9"
+updated: "2026-11-17"
+last_updated_session: "authoring-run/e410717c-d715-4c61-9ec7-adc9e88c1232"
 ---
 
 # Audit ledger flow
@@ -9,7 +9,7 @@ last_updated_session: "authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9"
 ## Overview
 
 OpenClaw Control Plane (OCC) records audit evidence as controller requests and
-reconciliation work run. This flow follows PostgreSQL event append, commit,
+reconciliation work run and when an enrolled runtime sends an observation. This flow follows PostgreSQL event append, commit,
 the internal State repository's list operation, and the Agent audit API. See the
 [audit guide](../guides/topics/audit-log.md) for the operator boundary.
 
@@ -18,8 +18,8 @@ the internal State repository's list operation, and the Agent audit API. See the
 - Trigger: the API admits or answers a resource request, a controller operation
   appends an event, or internal code lists events in a State unit of work.
 - Source: `apps/controller/src/index.ts:appendRequestAudit`
+- Source: `apps/controller/src/http/runtime-audit.ts:registerRuntimeAudit`
 - Source: `packages/occ/src/state/postgres-state.ts:PostgresPlatformState`
-- Source: `packages/occ/src/state/postgres-work-queue.ts:INSERT_EVIDENCE_CTE_SQL`
 - Assumptions: PostgreSQL State has a server-owned Installation; request
   admission and authorization are handled by the calling operation. Repository
   list is an internal operation, not an authorization or public serving boundary.
@@ -42,6 +42,9 @@ graph TD
   ResultEvent -->|Write failed| Diagnostic["Log audit write failure"]
   Diagnostic --> Send
   Request["Controller operation"] --> Factory["Create and sanitize event"]
+  Runtime["Runtime observation"] --> Grant{"Valid producer grant and event?"}
+  Grant -->|Yes| Factory
+  Grant -->|No| Reject
   Factory --> Append["State audit append"]
   Append --> Scope{"Installation and<br/>Namespace scopes match?"}
   Scope -->|yes| Encode["Encode metadata<br/>and insert row"]
@@ -220,11 +223,32 @@ grant again under these locks. The query selects approved event types for that
 Agent and limits the time window and page size.
 
 State builds the page from named fields. It derives a public work ID from the
-stored key and omits revision IDs. The same transaction appends
+stored key. Runtime events include the revision and the fields for the
+registered action. The same transaction appends
 `openclaw.audit.agent.read` with the actor, Agent, request ID, time window,
 projection version, and number of returned records. The API releases the
 page after it confirms commit. The next-page cursor is encrypted and bound
 to the same session, Agent, and window.
+
+### 7. OCC accepts an observation from an enrolled runtime
+
+`apps/controller/src/http/runtime-audit.ts:registerRuntimeAudit` and
+`packages/contracts/src/runtime-audit.ts:runtimeAuditObservationSchema`
+
+The producer sends the same event ID, time, and metadata if it retries the
+request. OCC checks the bearer credential, the action, and the fields. It
+looks up the Agent and revision from the credential's grant. The request
+body supplies execution context and cannot select the Agent or revision.
+OCC derives the ledger ID from the grant scope and the producer event ID.
+It returns HTTP 204 after the transaction commits. A retry with the same
+stored values returns the same result without a new row. A retry with
+different values for the same ID fails.
+
+The OpenShell OCSF path uses a separate exporter credential and the enrolled
+Sandbox UUID. OCC checks that the resource, log attributes, and decision
+identify the same Sandbox. It projects approved fields from a blocked
+network decision and uses the native event ID for retries. It commits the
+batch before it returns the OTLP response.
 
 ## Debugging and Verification
 
@@ -258,6 +282,8 @@ to the same session, Agent, and window.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-17 12:32: Add runtime event admission, persistence, and the Agent audit view. (authoring-run/e410717c-d715-4c61-9ec7-adc9e88c1232 - c8c1fb2d1e00413a4a911d1bd7980d44a4e252a1)
 
 - 2026-11-12 16:19: Explain how Native IAM counts Agent audit grants for account and key management. (authoring-run/09158870-8481-4ef1-9ff0-f1e2d5ae4df9 - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)
 - 2026-11-12 16:19: Trace how composition supplies the Agent audit reader and verifies its IAM Driver. (authoring-run/0262148b-40f3-48c2-a3e1-546feb2e265b - 9912bddae4ac3d94e9f4d22c6283d957a4cf1e9a)

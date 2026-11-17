@@ -1,9 +1,15 @@
 import { Type } from "typebox";
+import { Check } from "typebox/value";
 
+import {
+  RUNTIME_AUDIT_ACTIONS,
+  RUNTIME_AUDIT_DETAIL_SCHEMAS,
+  type RuntimeAuditAction,
+} from "../runtime-audit.ts";
 import { AuditId, Meta, RequestId, Timestamp } from "./common.ts";
 
 export const AGENT_AUDIT_PAGE_LIMIT = 100;
-export const AGENT_AUDIT_PROJECTION_VERSION = 1;
+export const AGENT_AUDIT_PROJECTION_VERSION = 2;
 
 const AgentAuditCursor = Type.String({
   minLength: 1,
@@ -24,13 +30,20 @@ export const AgentAuditQuery = Type.Object(
   { additionalProperties: false },
 );
 
-const AgentAuditEntry = Type.Object(
+const auditEntryFields = {
+  id: AuditId,
+  occurredAt: Type.String({
+    format: "date-time",
+    pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+  }),
+  outcome: Type.Union([Type.Literal("success"), Type.Literal("denied"), Type.Literal("failure")]),
+  actorId: Type.Optional(Type.String({ pattern: "^(prn|spn)_[a-f0-9-]{36}$" })),
+  requestId: Type.Optional(RequestId),
+};
+
+const ControlPlaneAgentAuditEntry = Type.Object(
   {
-    id: AuditId,
-    occurredAt: Type.String({
-      format: "date-time",
-      pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
-    }),
+    ...auditEntryFields,
     event: Type.Union([
       Type.Literal("api_request"),
       Type.Literal("work_queued"),
@@ -39,9 +52,6 @@ const AgentAuditEntry = Type.Object(
       Type.Literal("work_completed"),
       Type.Literal("work_result"),
     ]),
-    outcome: Type.Union([Type.Literal("success"), Type.Literal("denied"), Type.Literal("failure")]),
-    actorId: Type.Optional(Type.String({ pattern: "^(prn|spn)_[a-f0-9-]{36}$" })),
-    requestId: Type.Optional(RequestId),
     operationId: Type.Optional(Type.Literal("getAgent")),
     workId: Type.Optional(Type.String({ pattern: "^work_[0-9a-f]{64}$" })),
     attemptId: Type.Optional(AuditId),
@@ -57,6 +67,60 @@ const AgentAuditEntry = Type.Object(
   },
   { additionalProperties: false },
 );
+
+function runtimeAgentAuditEntry<Action extends RuntimeAuditAction>(action: Action) {
+  return Type.Object(
+    {
+      ...auditEntryFields,
+      event: Type.Literal("runtime_activity"),
+      action: Type.Literal(action),
+      details: RUNTIME_AUDIT_DETAIL_SCHEMAS[action],
+    },
+    { additionalProperties: false },
+  );
+}
+
+const RuntimeAgentAuditEntry = Type.Union(
+  Object.values(RUNTIME_AUDIT_ACTIONS).map(runtimeAgentAuditEntry),
+);
+const AgentAuditEntry = Type.Union([ControlPlaneAgentAuditEntry, RuntimeAgentAuditEntry]);
+
+type ControlPlaneAgentAuditEntry = Type.Static<typeof ControlPlaneAgentAuditEntry>;
+type RuntimeAgentAuditDetails = {
+  [Action in RuntimeAuditAction]: {
+    event: "runtime_activity";
+    action: Action;
+    details: Type.Static<(typeof RUNTIME_AUDIT_DETAIL_SCHEMAS)[Action]>;
+  };
+}[RuntimeAuditAction];
+
+export function projectRuntimeAgentAuditDetails(
+  action: unknown,
+  details: unknown,
+): RuntimeAgentAuditDetails | undefined {
+  if (
+    typeof action !== "string" ||
+    !Object.hasOwn(RUNTIME_AUDIT_DETAIL_SCHEMAS, action) ||
+    details === null ||
+    typeof details !== "object" ||
+    Array.isArray(details)
+  ) {
+    return undefined;
+  }
+  const runtimeAction = action as RuntimeAuditAction;
+  const schema = RUNTIME_AUDIT_DETAIL_SCHEMAS[runtimeAction];
+  const projected = Object.fromEntries(
+    Object.entries(details).filter(([field]) => Object.hasOwn(schema.properties, field)),
+  );
+  return Check(schema, projected)
+    ? ({
+        event: "runtime_activity",
+        action: runtimeAction,
+        details: projected,
+      } as RuntimeAgentAuditDetails)
+    : undefined;
+}
+
 const AgentAuditPage = Type.Object(
   {
     projectionVersion: Type.Literal(AGENT_AUDIT_PROJECTION_VERSION),
@@ -71,6 +135,19 @@ export const AgentAuditResponse = Type.Object(
   { additionalProperties: false },
 );
 
-export type AgentAuditEntry = Type.Static<typeof AgentAuditEntry>;
-export type AgentAuditPage = Type.Static<typeof AgentAuditPage>;
+export type AgentAuditEntry =
+  | ControlPlaneAgentAuditEntry
+  | (Omit<
+      ControlPlaneAgentAuditEntry,
+      "event" | "operationId" | "workId" | "attemptId" | "workState"
+    > &
+      RuntimeAgentAuditDetails & {
+        operationId?: never;
+        workId?: never;
+        attemptId?: never;
+        workState?: never;
+      });
+export type AgentAuditPage = Omit<Type.Static<typeof AgentAuditPage>, "events"> & {
+  events: AgentAuditEntry[];
+};
 export type AgentAuditQuery = Type.Static<typeof AgentAuditQuery>;

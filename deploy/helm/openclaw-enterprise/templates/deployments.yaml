@@ -2,6 +2,7 @@
 {{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . }}
 {{- range $component := list "api" "worker" }}
 {{- $oidcCa := and (eq $component "api") $.Values.auth.oidc $.Values.auth.oidc.enabled $.Values.auth.oidc.caSecretName }}
+{{- $runtimeAudit := and (eq $component "api") $.Values.api.runtimeAudit.grantsSecretName }}
 {{- $gatewayCa := and $.Values.gatewayRouting.enabled (or (not $.Values.gatewayRouting.issuerRef.name) $.Values.gatewayRouting.caSecretName) }}
 ---
 apiVersion: apps/v1
@@ -65,6 +66,14 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if $runtimeAudit }}
+        - name: runtime-audit-grants
+          secret:
+            secretName: {{ $runtimeAudit | quote }}
+            defaultMode: 288
+            items:
+              - {key: grants.json, path: grants.json}
+        {{- end }}
         {{- if $.Values.backend.openshell.clientSecretName }}
         - name: openshell-client
           secret:
@@ -356,6 +365,10 @@ spec:
               value: production
             - name: OCC_CONTROL_PLANE_AUDIT_ENABLED
               value: {{ ternary "true" "false" $.Values.controlPlaneAudit.enabled | quote }}
+            {{- if $runtimeAudit }}
+            - name: OCC_RUNTIME_AUDIT_GRANTS_PATH
+              value: /etc/openclaw/runtime-audit/grants.json
+            {{- end }}
             {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
             - name: OCC_CONSOLE_THEME_DIR
               value: /etc/openclaw/console-theme
@@ -517,6 +530,11 @@ spec:
             {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
             - name: console-theme
               mountPath: /etc/openclaw/console-theme
+              readOnly: true
+            {{- end }}
+            {{- if $runtimeAudit }}
+            - name: runtime-audit-grants
+              mountPath: /etc/openclaw/runtime-audit
               readOnly: true
             {{- end }}
             {{- if $.Values.executionCluster.enabled }}

@@ -250,6 +250,9 @@ database:
   port: 5432
 
 api:
+  runtimeAudit:
+    # Existing Secret in the API namespace with the key grants.json.
+    grantsSecretName: ""
   # Public branding files: theme.json and referenced images. The API and the initialization Job's
   # installation check mount them. The check refuses a bundle that API startup would refuse.
   consoleTheme:

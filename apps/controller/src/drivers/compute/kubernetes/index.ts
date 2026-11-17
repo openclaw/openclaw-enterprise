@@ -615,6 +615,7 @@ export interface KubernetesComputeDriverOptions {
     readonly nodeSelector?: Readonly<Record<string, string>>;
     readonly gatewayNodeSelector?: Readonly<Record<string, string>>;
     readonly codexSeccompProfile?: string;
+    readonly audit?: { readonly endpoint: string };
     /** Installation-owned OpenAI-compatible provider shared by supported Harnesses. */
     readonly modelProvider?: ModelProviderConfiguration;
     readonly channels?: {
@@ -1176,6 +1177,9 @@ function prepareHarnessAuth(
 const MANAGER = "openclaw-enterprise";
 const FIELD_MANAGER = "openclaw-enterprise-compute";
 const TOKEN_PATH = "/var/run/secrets/openclaw/service-principal";
+const RUNTIME_AUDIT_VOLUME = "runtime-audit";
+const RUNTIME_AUDIT_DIRECTORY = "/var/run/openclaw-runtime-audit";
+const RUNTIME_AUDIT_TOKEN_KEY = "token";
 const CONFIGURATION_DIRECTORY = "/etc/openclaw";
 const WRITABLE_CONFIGURATION_PATH = "/home/node/.openclaw/openclaw.json";
 const CONFIGURATION_DOCUMENT = "openclaw.json";
@@ -3589,6 +3593,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
             writeOnly: true,
           },
           codexSeccompProfile: { type: "string", minLength: 1 },
+          audit: {
+            type: "object",
+            required: ["endpoint"],
+            additionalProperties: false,
+            properties: { endpoint: { type: "string", minLength: 1 } },
+          },
           modelProvider: {
             type: "object",
             required: ["protocol", "baseUrl"],
@@ -3961,6 +3971,26 @@ export class KubernetesComputeDriver implements ComputeDriver {
               asRecord(selector) ?? {},
               `runtime.${setting}`,
               `/runtime/${setting}`,
+            );
+          }
+        }
+        if (options.runtime.audit !== undefined) {
+          const endpoint = options.runtime.audit.endpoint;
+          const url = URL.parse(endpoint);
+          if (
+            url === null ||
+            !/^https:\/\/\S+$/i.test(endpoint) ||
+            url.protocol !== "https:" ||
+            url.port === "0" ||
+            url.username ||
+            url.password ||
+            endpoint.includes("?") ||
+            endpoint.includes("#") ||
+            url.pathname !== "/internal/runtime-audit"
+          ) {
+            throw configurationConstraintFailure(
+              "The audit endpoint must be HTTPS and end in /internal/runtime-audit without credentials, query, or fragment.",
+              "/runtime/audit/endpoint",
             );
           }
         }
@@ -17354,6 +17384,30 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         );
       }
       if (role === "gateway") {
+        if (dedicated && configuration?.gatewayManagedMode === true && runtime.audit) {
+          const revision = JSON.stringify([agentId, configuration.revisionId]);
+          volumes.push({
+            name: RUNTIME_AUDIT_VOLUME,
+            secret: {
+              secretName: `runtime-audit-${sha256Hex(revision, 24)}`,
+              optional: false,
+              defaultMode: 0o440,
+              items: [{ key: RUNTIME_AUDIT_TOKEN_KEY, path: RUNTIME_AUDIT_TOKEN_KEY }],
+            },
+          });
+          volumeMounts.push({
+            name: RUNTIME_AUDIT_VOLUME,
+            mountPath: RUNTIME_AUDIT_DIRECTORY,
+            readOnly: true,
+          });
+          variables.push(
+            { name: "OPENCLAW_RUNTIME_AUDIT_URL", value: runtime.audit.endpoint },
+            {
+              name: "OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH",
+              value: `${RUNTIME_AUDIT_DIRECTORY}/${RUNTIME_AUDIT_TOKEN_KEY}`,
+            },
+          );
+        }
         if (embedded) {
           variables.push({
             name: "HOME",

@@ -24,7 +24,6 @@ export interface AuditEventCreationInput extends Omit<AuditEventInput, "actorId"
   readonly actor?: AuditActor;
   readonly kind?: AuditEventKind;
   readonly outcome?: AuditOutcome;
-  readonly source?: "occ";
   readonly requestId?: string;
   readonly admissionDecisionId?: string;
   readonly iamDriverId?: string;

@@ -1,3 +1,4 @@
+import type { RuntimeAuditAdmission } from "../http/runtime-audit.ts";
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
 import { validateAuthSecret } from "../auth/configuration.ts";
 import {
@@ -66,6 +67,7 @@ export interface ProductionConfig {
   readonly serviceAccountDriverFactory?: ServiceAccountDriverFactory;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly gatewayApiKeyPath?: string;
+  readonly runtimeAuditAdmission?: RuntimeAuditAdmission;
   readonly channelDirectoryProxyUrl?: string;
   readonly channelDirectoryManagedProxyHost?: string;
   /**
@@ -137,9 +139,10 @@ export async function composeProduction(
   };
 
   const auditEnabled = config.controlPlaneAuditEnabled === true;
+  const auditStorageEnabled = auditEnabled || config.runtimeAuditAdmission !== undefined;
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
-    ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
+    ...(auditStorageEnabled ? controlPlaneAuditDatabaseOptions : {}),
   });
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
@@ -147,7 +150,7 @@ export async function composeProduction(
     closeResources(exchange, protectedDriver, preparedGitHub, database);
   try {
     const state = new PostgresPlatformState(pool, {
-      ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
+      ...(auditStorageEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
       preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
     });
     const persistedInstallation = await state.loadInstallation();
@@ -226,7 +229,7 @@ export async function composeProduction(
         ...installationControllerOptions(config.drivers.installation),
         namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
-        ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
+        ...(auditStorageEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
         ...(config.drivers.pluginSourceReader === undefined
           ? {}
@@ -387,9 +390,11 @@ export async function composeProduction(
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       resolveHarness: resolveApprovedProductionHarness,
       auditSink: state.auditSink,
-      ...(auditEnabled
-        ? { durableRequestAuditSink: state.auditSink, agentAuditCursorSecret: config.authSecret }
-        : {}),
+      ...(config.runtimeAuditAdmission === undefined
+        ? {}
+        : { runtimeAuditAdmission: config.runtimeAuditAdmission }),
+      ...(auditEnabled ? { durableRequestAuditSink: state.auditSink } : {}),
+      ...(auditStorageEnabled ? { agentAuditCursorSecret: config.authSecret } : {}),
       backendSummaries: backendSummariesFromDefinitions(installation.backend),
       ...(installation.observability === undefined
         ? {}

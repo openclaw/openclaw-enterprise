@@ -4972,11 +4972,13 @@ test("dedicated OpenClaw gateway receives Agent plugin approvers without plugin 
 });
 
 test("dedicated OpenClaw renders an enrolled Harness without exposing model credentials to its gateway", async () => {
+  const auditEndpoint = "https://controller.example/internal/runtime-audit";
   const driverOptions = routedOptions({
     runtime: {
       transportSecretPrefix: "transport",
       gatewayStorageClassName: "local-path",
       nativeOpenClawSessionCapacity: 12,
+      audit: { endpoint: auditEndpoint },
     },
   });
   const sandboxDriver = {
@@ -5372,6 +5374,44 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   const worker = workerDeployment.spec.template.spec.containers[0];
   assert.ok(gateway);
   assert.ok(worker);
+  const auditVolume = "runtime-audit";
+  const auditSecret = createHash("sha256")
+    .update(JSON.stringify([revision.agentId, revision.id]))
+    .digest("hex")
+    .slice(0, 24);
+  const gatewayPod = gatewayDeployment.spec.template.spec;
+  const workerPod = workerDeployment.spec.template.spec;
+  assert.deepEqual(gatewayPod.volumes.find(({ name }) => name === auditVolume)?.secret, {
+    secretName: `runtime-audit-${auditSecret}`,
+    optional: false,
+    defaultMode: 0o440,
+    items: [{ key: "token", path: "token" }],
+  });
+  assert.deepEqual(
+    gateway.volumeMounts.find(({ name }) => name === auditVolume),
+    {
+      name: auditVolume,
+      mountPath: "/var/run/openclaw-runtime-audit",
+      readOnly: true,
+    },
+  );
+  assert.deepEqual(
+    gateway.env.filter(({ name }) => name.startsWith("OPENCLAW_RUNTIME_AUDIT_")),
+    [
+      { name: "OPENCLAW_RUNTIME_AUDIT_URL", value: auditEndpoint },
+      {
+        name: "OPENCLAW_RUNTIME_AUDIT_TOKEN_PATH",
+        value: "/var/run/openclaw-runtime-audit/token",
+      },
+    ],
+  );
+  assert.ok(
+    gatewayPod.initContainers.every(
+      ({ volumeMounts }) => !volumeMounts.some(({ name }) => name === auditVolume),
+    ),
+  );
+  assert.ok(!workerPod.volumes.some(({ name }) => name === auditVolume));
+  assert.ok(!worker.env.some(({ name }) => name.startsWith("OPENCLAW_RUNTIME_AUDIT_")));
   assert.deepEqual(gateway.readinessProbe, {
     httpGet: { path: "/readyz", port: "plugin-status" },
     periodSeconds: 2,

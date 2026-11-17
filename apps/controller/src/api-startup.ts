@@ -1,3 +1,4 @@
+import { loadRuntimeAuditAdmission } from "./http/runtime-audit.ts";
 import type { ChatGPTBackendDefinition, ComputeDriver } from "@openclaw-enterprise/contracts";
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
@@ -408,7 +409,11 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
   if (settings.gatewayApiKeyPath !== undefined) {
     await validateWorkspaceFilesApiKeyPath(settings.gatewayApiKeyPath);
   }
+  const runtimeAuditGrantsPath = env.OCC_RUNTIME_AUDIT_GRANTS_PATH;
   const compositionSettings = {
+    ...(runtimeAuditGrantsPath === undefined
+      ? {}
+      : { runtimeAuditAdmission: await loadRuntimeAuditAdmission(runtimeAuditGrantsPath) }),
     ...(consoleTheme === undefined ? {} : { consoleTheme }),
     logger,
     logging,
