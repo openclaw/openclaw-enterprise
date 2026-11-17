@@ -410,7 +410,10 @@ test("saved scratch admissions preserve legacy launch selection and reject misor
   const driver = scratchCompute([operatorBinding]);
   const revision = scratchRevision(driver);
   const prefix = "scratch:v1:";
-  const { runtime, binding } = JSON.parse(revision.compute.admission.slice(prefix.length));
+  assert.match(revision.compute.admission, /^http-chat:v1:scratch:v1:/);
+  const { runtime, binding } = JSON.parse(
+    revision.compute.admission.slice("http-chat:v1:".length + prefix.length),
+  );
   const marker = "openshell-codex-launch:v1:";
   assert.match(runtime, /^model-provider:v1:[a-f0-9]{64}:openshell-codex-launch:v1:$/);
   const provider = runtime.slice(0, -marker.length);

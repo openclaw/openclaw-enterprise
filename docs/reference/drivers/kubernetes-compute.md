@@ -36,6 +36,10 @@ SandboxDriver that provisions the Harness and declares networking, filesystem, a
 process containment. Stock OpenShell cannot provide required credential and
 workload-identity projections; Agent deployment with OpenShell remains unsupported.
 
+HTTP chat defaults on for new single-cluster runtime revisions and uses a
+private exact-POST route with trusted-proxy chat authority. Explicit opt-out
+requires a new revision. See [HTTP chat configuration](../agent-http-chat.md#kubernetes-configuration-and-audit).
+
 Operator contracts:
 
 - [Storage and credentials](kubernetes-compute/storage-and-credentials.md): separate gateway state, Harness workspaces, and runtime Secrets.
