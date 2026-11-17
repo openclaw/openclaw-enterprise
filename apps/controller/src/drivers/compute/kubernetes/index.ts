@@ -13532,7 +13532,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         ? { nativeWorkerNodeId: workspaceNodeId }
         : {}),
       ...(revision.harness.mode === "dedicated" &&
-      this.options.runtime !== undefined &&
       this.deliversHarnessTransportVerifier(revision, this.sandboxDriverForRevision(revision))
         ? { harnessTransportVerifier: true as const }
         : {}),
