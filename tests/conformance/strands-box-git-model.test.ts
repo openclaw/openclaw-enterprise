@@ -306,6 +306,10 @@ test("with key digests the dry-run model accepts only those bearers and records 
 
 test("the model-sibling step posts only to the planned URLs, with the placeholder by reference", () => {
   assert.match(gitCommand(plan, nonce, "model-sibling"), /^echo model-sibling-unplanned-/);
+  assert.match(
+    gitCommand(plan, nonce, "delayed-git"),
+    /^sleep 45; git ls-remote https:\/\/github\.com\/example\/review\.git 2>&1 \| tail -2; echo delayed-git-a1a1a1a1a1a1$/,
+  );
   const siblings = [
     "https://model.example.test:8444/v1/responses",
     "https://model.example.test:8444/route/v1/responses/x",

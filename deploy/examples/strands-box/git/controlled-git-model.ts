@@ -35,6 +35,9 @@ export const GIT_STEPS = [
   "other-ref",
   "after-withdrawal",
   "worker-down",
+  // One Git request DELAYED_GIT_SECONDS after the model's answer, so that a lifecycle change (a model
+  // withdrawal, the Worker going down) lands between the model's answer and the Git request.
+  "delayed-git",
   // Hook admission checks: one marker-file write (did the tool run?) and the same no-progress
   // call repeated until the Gateway's loop policy blocks it through PreToolUse.
   "touch",
@@ -66,6 +69,8 @@ const RECORDED_OUTPUT: ReadonlySet<GitStep> = new Set<GitStep>([
   "outside-write",
   "model-sibling",
 ]);
+/** How long the delayed-git step waits before its one Git request. */
+export const DELAYED_GIT_SECONDS = 45;
 /** Bound on repeated calls for the gateway-loop step (the stock critical threshold is 20). */
 export const LOOP_CALLS = 30;
 export type GitStep = (typeof GIT_STEPS)[number];
@@ -163,6 +168,8 @@ export function gitCommand(plan: GitPlan, nonce: string, step: GitStep): string 
     case "after-withdrawal":
     case "worker-down":
       return `git ls-remote ${url(plan.repository)} 2>&1 | tail -2`;
+    case "delayed-git":
+      return `sleep ${DELAYED_GIT_SECONDS}; git ls-remote ${url(plan.repository)} 2>&1 | tail -2; echo delayed-git-${tag}`;
     case "touch":
       return `printf '%s\\n' ${nonce} > ${WORKSPACE}/x5-touch-${tag}.txt && echo wrote`;
     case "gateway-loop":
