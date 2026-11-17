@@ -16,7 +16,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
-  AGENT_WITH_NODE_ENTRYPOINT,
+  EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
@@ -142,9 +142,9 @@ test("support file verification refuses changed bytes and a byte-identical repla
 test("image admission requires the executed standalone argv and unmodified stock PATH", () => {
   const combined = stockHarnessCommand([
     ...RUNTIME_WRAPPER_COMMAND,
-    ...nodeProgramArguments(AGENT_WITH_NODE_ENTRYPOINT),
+    ...nodeProgramArguments(EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT),
   ]);
-  const program = Buffer.from(withoutLineComments(AGENT_WITH_NODE_ENTRYPOINT));
+  const program = Buffer.from(withoutLineComments(EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT));
   const actual = splitStockCommand(program);
   const installation = {
     bootId: "00000000-0000-0000-0000-000000000000",

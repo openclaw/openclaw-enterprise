@@ -65,14 +65,14 @@ const AGENT_FILES = {
 const PROC_HELPER = "harness-proc";
 const SHA256 = /^[a-f0-9]{64}$/;
 // The combined workspace-node program and its standalone split that this checkout's
-// Compute renders (AGENT_WITH_NODE_ENTRYPOINT, PROVIDER_CODEX_ONLY_PROGRAM) under the
-// supported Node 24.22.1. The nested child travels raw-deflated, so another Node's zlib
-// renders other bytes. The harness image conformance test recomputes both; re-pin only
-// after reviewing a change.
+// Compute renders (EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT, PROVIDER_CODEX_ONLY_PROGRAM)
+// under the supported Node 24.22.1. The nested child travels raw-deflated, so another
+// Node's zlib renders other bytes. The harness image conformance test recomputes both;
+// re-pin only after reviewing a change.
 export const HARNESS_SPLIT_COMBINED_SHA256 =
-  "669f5a4b92a2cac021bddce8a9ccb1ba3598cef1ce1760ad640e352725d0ef1f";
+  "8c198da80b95507370c135d4ba0cedfe4ea07b29305429bd065789b5f966e11a";
 export const HARNESS_SPLIT_COMMAND_SHA256 =
-  "a188e0aa5f91460c29c8811b1faab0b744e93f0cd580baa17bb1a8418c08581d";
+  "3908f9eda8ea2f9ccb4acd257c5d5e13cec31f28331e97ae7378f321956c79cf";
 const BOOT_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const STOCK_PATH =
   "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
