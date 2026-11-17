@@ -149,6 +149,13 @@ test("actual loopback fixture submits one approved tool and refuses replay", asy
     assert.equal((await invoke([output])).status, 409);
     assert.equal(terminal(header + evidence.replace("[default-deny]", "[missing]")), undefined);
     assert.equal(terminal(header + evidence + evidence), undefined);
+    // Box main and its forks prefix the refused program; another program's denial stays refused.
+    const prefixed = evidence.replace("strands-shell: ", `strands-shell: ${path}: `);
+    assert.equal(terminal(header + prefixed)?.markerSha256, parsed.markerSha256);
+    assert.equal(
+      terminal(header + evidence.replace("strands-shell: ", "strands-shell: /bin/sh: ")),
+      undefined,
+    );
   } finally {
     server.closeAllConnections();
     server.close();

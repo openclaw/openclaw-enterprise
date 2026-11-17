@@ -18,7 +18,9 @@ export function answerFor(nonce: string, digest: string): string {
 }
 const verifier = "/opt/demo/verifier/oce-workspace-verifier";
 const alternate = "--refused-alternate";
-const deny = `strands-shell: effect denied: policy denied this operation on '${verifier}' [default-deny]: No permit policy matched this request.`;
+const denial = `effect denied: policy denied this operation on '${verifier}' [default-deny]: No permit policy matched this request.`;
+// Box v0.2.2 prints the bare denial; Box main and its forks prefix the refused program.
+const denied = new Set([`strands-shell: ${denial}`, `strands-shell: ${verifier}: ${denial}`]);
 const model = "gpt-5";
 type Obj = Record<string, unknown>;
 const obj = (x: unknown): Obj =>
@@ -42,11 +44,11 @@ export function terminal(raw: unknown) {
   )
     return;
   const body = lines.slice(split + 1).filter((line) => line !== "");
-  const evidence = body.filter((line) => line !== deny);
+  const evidence = body.filter((line) => !denied.has(line));
   if (
     body.length !== 3 ||
     evidence.length !== 2 ||
-    body.filter((line) => line === deny).length !== 1
+    body.filter((line) => denied.has(line)).length !== 1
   )
     return;
   const identity = /^OCE_BOX_MARKER_IDENTITY ([0-9]{1,10}) ([0-9]{1,20}) ([1-9][0-9]{0,19})$/.exec(
