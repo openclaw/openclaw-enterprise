@@ -1711,30 +1711,52 @@ test(
       ]) {
         const scratch = join(directory, `refused-${randomBytes(4).toString("hex")}`);
         mkdirSync(scratch, { mode: 0o700 });
-        const refusedExecution = start({ ...config, runtimeDir: scratch }, refused);
+        // Each case keeps the source socket inside its own runtime directory, so that only the
+        // case's own defect can refuse it.
+        const refusedExecution = start(
+          { ...config, runtimeDir: scratch },
+          refused.credentialSource?.socket === credentialSource.socket
+            ? {
+                ...refused,
+                credentialSource: {
+                  ...refused.credentialSource,
+                  socket: join(scratch, "source", "oce.sock"),
+                },
+              }
+            : refused,
+        );
         await assert.rejects(refusedExecution.ready, { message: "startup_refused:stage-inputs" });
         await refusedExecution.done.catch(() => undefined);
         assert.equal(refusedExecution.boxProcess(), undefined);
       }
       // Finding 3325: an exec grant over a directory on the agent's own search path is refused
-      // before Box starts (git placed there would run as Codex's own git).
+      // before Box starts (git placed there would run as Codex's own git); the same grant off
+      // that path starts.
       {
         const tools = join(directory, "tools");
-        const scratch = join(directory, `refused-${randomBytes(4).toString("hex")}`);
-        mkdirSync(scratch, { mode: 0o700 });
-        const refusedExecution = start(
-          { ...config, exec: [tools], runtimeDir: scratch },
-          {
-            ...input,
-            environment: { ...input.environment, PATH: `${tools}:/usr/bin:/bin` },
-            credentialSource,
-            releaseGate,
-            reservationGeneration,
-          },
-        );
-        await assert.rejects(refusedExecution.ready, { message: "startup_refused:stage-inputs" });
-        await refusedExecution.done.catch(() => undefined);
-        assert.equal(refusedExecution.boxProcess(), undefined);
+        mkdirSync(tools, { mode: 0o700 });
+        for (const [path, expected] of [
+          [`${tools}:/usr/bin:/bin`, "startup_refused:stage-inputs"],
+          ["/usr/bin:/bin", "startup_refused:wait-release"],
+        ] as const) {
+          const scratch = join(directory, `path-${randomBytes(4).toString("hex")}`);
+          mkdirSync(scratch, { mode: 0o700 });
+          const execution = start(
+            { ...config, exec: [tools], runtimeDir: scratch },
+            {
+              ...input,
+              environment: { ...input.environment, PATH: path },
+              credentialSource: {
+                ...credentialSource,
+                socket: join(scratch, "source", "oce.sock"),
+              },
+              releaseGate,
+              reservationGeneration,
+            },
+          );
+          await assert.rejects(execution.ready, { message: expected });
+          await execution.done.catch(() => undefined);
+        }
       }
       // The one protected start: held at the release gate, with the source routes from the start.
       const execution = start(config, {
