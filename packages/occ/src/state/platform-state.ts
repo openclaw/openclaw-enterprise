@@ -1464,8 +1464,8 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     workspaceSetups: new Map(
       Array.from(snapshot.workspaceSetups, ([key, setup]) => [key, storedCopy(setup)]),
     ),
-    // Revisions are copied on ingress/egress; appends replace frozen history arrays.
-    // A separate Map isolates this snapshot's future appends without copying history.
+    // Revisions are copied on ingress/egress; writes replace frozen history arrays.
+    // A separate Map isolates this snapshot's future writes without copying history.
     revisions: new Map(snapshot.revisions),
     firstDeploymentDigests: new Map(snapshot.firstDeploymentDigests),
     roles: new Map(Array.from(snapshot.roles, ([key, role]) => [key, storedCopy(role)])),
@@ -3946,6 +3946,9 @@ function repositories(
       if (previous.some((existing) => existing.id === revision.id)) {
         throw new ResourceConflictError("The server generated an existing AgentRevision identity.");
       }
+      if (!Number.isSafeInteger(revision.revision) || revision.revision <= 0) {
+        throw new ScopeViolationError("The Agent revision number must be a positive safe integer.");
+      }
       const {
         secretBindings: _providedSecretBindings,
         plugins: _providedPlugins,
@@ -3966,7 +3969,18 @@ function repositories(
         }
         snapshot.firstDeploymentDigests.set(saved.id, firstDeploymentDigest);
       }
-      snapshot.revisions.set(key, Object.freeze([...previous, saved]));
+      const history = [...previous];
+      const last = previous.at(-1);
+      if (last !== undefined && saved.revision <= last.revision) {
+        const index = previous.findIndex((existing) => existing.revision >= saved.revision);
+        if (previous[index]?.revision === saved.revision) {
+          throw new ResourceConflictError("The Agent already has a revision with this number.");
+        }
+        history.splice(index, 0, saved);
+      } else {
+        history.push(saved);
+      }
+      snapshot.revisions.set(key, Object.freeze(history));
       return saved;
     },
   };

@@ -1549,6 +1549,8 @@ export type {
 export type {
   RepositoryWorkerRestartDisposition,
   ComputeDriver,
+  AgentChatCompletionsEndpoint,
+  AgentChatCompletionsResolution,
   ComputeRevisionContext,
   WorkloadLaunchContext,
   ComputeLifecycleHooks,

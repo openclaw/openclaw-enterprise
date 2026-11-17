@@ -397,7 +397,7 @@ export async function composeProduction(
         enabled: config.agentRuntimeLogsEnabled !== false,
         cursorSecret: config.authSecret,
       },
-      ...(config.nativeAdmin?.enabled === true && config.gatewayApiKeyPath !== undefined
+      ...(config.gatewayApiKeyPath !== undefined
         ? { nativeAdminGatewayApiKey: () => readWorkspaceFilesApiKey(config.gatewayApiKeyPath!) }
         : {}),
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),

@@ -351,7 +351,7 @@ export async function composePostgresDevelopment(
         enabled: config.agentRuntimeLogsEnabled !== false,
         cursorSecret: config.authSecret,
       },
-      ...(config.nativeAdmin?.enabled === true && config.gatewayApiKeyPath !== undefined
+      ...(config.gatewayApiKeyPath !== undefined
         ? { nativeAdminGatewayApiKey: () => readWorkspaceFilesApiKey(config.gatewayApiKeyPath!) }
         : {}),
       ...(configurationDriver === undefined ? {} : { configurationDriver }),

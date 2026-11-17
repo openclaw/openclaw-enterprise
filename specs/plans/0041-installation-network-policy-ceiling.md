@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0040-installation-network-policy-ceiling.md
+rfc: ../rfcs/0041-installation-network-policy-ceiling.md
 ---
 
 # Implementation plan: Manage the Installation network policy ceiling
 
-- **ID:** RFC-0040
+- **ID:** RFC-0041
 - **Delivery status:** In progress
 - **Owner:** russellb
-- **Authority:** [RFC-0040](../rfcs/0040-installation-network-policy-ceiling.md)
+- **Authority:** [RFC-0041](../rfcs/0041-installation-network-policy-ceiling.md)
 - **Source baseline:** `6bf16386658e8b1f81a7f90a04ccd0697c23805c`
 
 ## Outcome and scope
@@ -242,6 +242,22 @@ module boundaries, OpenAPI and both CI inventory audits pass. Repeated CLI and
 Console descriptions are removed from the merged flow to retain its length limit.
 Migration 0081 and RFC decision status remain unchanged. New hosted CI and the
 previously recorded external review, runtime and media requirements remain open.
+
+## RFC numbering refresh, 2026-11-17
+
+Main at `974d701e9` assigns RFC-0040 to Agent chat completions. This proposal
+and its primary plan now use RFC-0041. The index and old-to-new lookup retain
+both owners. Decision status remains Proposed, implementation status remains
+Partially implemented, and migration 0081 is unchanged. Published history and
+the earlier records above are preserved. Live runtime qualification, native
+media attachments and final external review remain incomplete.
+
+On the merged source, the PostgreSQL startup/owner and Agent policy suites pass
+13/13 and 45/45; ceiling browser checks pass 5/5, all without skips. The broader
+API/startup run passes 175/182, with seven failures before repository certificate
+setup: its fixed executable path has no OpenSSL. The available task-local binary
+is outside that path. No fixture isolation or system executable is changed to
+hide this prerequisite gap. Hosted CI must verify the new head.
 
 ## Manual Notes
 

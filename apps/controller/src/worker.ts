@@ -6214,11 +6214,13 @@ export class ControllerWorker {
       !isStopYieldedCode(result.code) &&
       this.workAgeMs(claim) >= this.convergenceTimeoutMs;
     // Runtime entrypoints publish a runtime failure only after their own retries
-    // end, and then hold the container unready until an explicit restart that
-    // nothing performs: no liveness probe or controller restarts it. Waiting for
-    // the convergence deadline therefore cannot change the result, so every held
-    // failure ends the deployment at once with a code naming its cause. The kubelet
-    // does restart a refused workspace setup, but it refuses the same way each time.
+    // end, and then hold the container unready: no liveness probe or controller
+    // restarts it. Only a Gateway held on its state lock restarts itself once no
+    // holder remains, and a lock left by another Pod stays until an operator's
+    // recovery, which stops the Agent first. Waiting for the convergence deadline
+    // therefore does not help, so every held failure ends the deployment at once
+    // with a code naming its cause. The kubelet does restart a refused workspace
+    // setup, but it refuses the same way each time.
     const heldFailureCode =
       runtimeFailure === undefined ? undefined : heldRuntimeFailureCode(runtimeFailure.code);
     let resolved: RevisionDispatchResult;
