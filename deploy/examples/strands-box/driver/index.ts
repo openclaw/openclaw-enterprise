@@ -3,6 +3,7 @@ import { isIP } from "node:net";
 import { isAbsolute, normalize } from "node:path";
 import type {
   DriverImplementation,
+  DriverRegistration,
   ErrorDetail,
   HarnessWorkloadRequirements,
   OpenClawConfigurationDocument,
@@ -40,8 +41,13 @@ import {
 } from "./control.ts";
 import { nativeStatus } from "./native.ts";
 import { readObject, Relay, relayName, type RelayOptions } from "./relay.ts";
+import {
+  createProtectedRegistration,
+  protectedRepositorySchema,
+  type ProtectedRepositoryConfiguration,
+} from "./protected.ts";
 
-interface Options {
+export interface Options {
   readonly namespace: string;
   readonly controlSocket: string;
   readonly nativeEndpoint: string;
@@ -54,6 +60,8 @@ interface Options {
     readonly caSha256?: string;
   };
   readonly workspaceNodeMode?: WorkspaceNodeMode;
+  /** Selecting this makes the package a paired protected Sandbox + Credential Proxy registration. */
+  readonly protectedRepository?: ProtectedRepositoryConfiguration;
 }
 
 const DNS_LABEL = "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$";
@@ -81,6 +89,7 @@ export const configurationSchema: NonNullable<DriverImplementation["configuratio
     nativeCaBundle: { type: "string", minLength: 1, maxLength: 32768 },
     workspaceRoot: { type: "string", minLength: 1, maxLength: 1024 },
     workspaceNodeMode: { type: "string", enum: ["file-only-v1"] },
+    protectedRepository: protectedRepositorySchema,
     controlledInference: {
       type: "object",
       additionalProperties: false,
@@ -252,39 +261,49 @@ export function validateConfiguration(
   return errors;
 }
 
+/**
+ * Without `protectedRepository` this returns the ordinary Sandbox Driver, which the paired loader
+ * refuses. With it, this returns one registration with the protected Sandbox and its Credential
+ * Proxy sharing state, which the ordinary `drivers.sandbox` loader refuses.
+ */
 export function createDriver(input: {
   readonly id: string;
   readonly implementation: string;
   readonly configuration: Readonly<Record<string, unknown>>;
-}): SandboxDriver {
-  return new StrandsBoxDriver(
-    input.id,
-    input.implementation,
-    input.configuration as unknown as Options,
-  );
+}): SandboxDriver | DriverRegistration {
+  const options = input.configuration as unknown as Options;
+  if (options.protectedRepository !== undefined) {
+    return createProtectedRegistration(StrandsBoxDriver, input.id, input.implementation, options);
+  }
+  return new StrandsBoxDriver(input.id, input.implementation, options);
 }
 
-class StrandsBoxDriver implements SandboxDriver {
+export class StrandsBoxDriver implements SandboxDriver {
   readonly capability = "sandbox" as const;
   readonly harnessTransportCredential = "verifier" as const;
-  readonly facets = Object.freeze(["networking", "filesystem", "process"] as const);
-  readonly supportsHarnessExecutionMode = Object.freeze({
-    openclaw: Object.freeze({
-      embedded: Object.freeze({
-        supported: false,
-        reason: "Strands Box requires dedicated Codex.",
+  readonly facets: SandboxDriver["facets"] = Object.freeze([
+    "networking",
+    "filesystem",
+    "process",
+  ] as const);
+  readonly supportsHarnessExecutionMode: SandboxDriver["supportsHarnessExecutionMode"] =
+    Object.freeze({
+      openclaw: Object.freeze({
+        embedded: Object.freeze({
+          supported: false,
+          reason: "Strands Box requires dedicated Codex.",
+        }),
+        dedicated: Object.freeze({
+          supported: false,
+          reason: "Strands Box requires dedicated Codex.",
+        }),
       }),
-      dedicated: Object.freeze({
-        supported: false,
-        reason: "Strands Box requires dedicated Codex.",
-      }),
-    }),
-  });
+    });
   readonly harnessHome = "/home/node";
   readonly id: string;
   readonly implementation: string;
-  private readonly options: Options;
-  private readonly relay: Relay;
+  protected readonly options: Options;
+  protected readonly relay: Relay;
 
   constructor(id: string, implementation: string, options: Options) {
     this.id = id;
@@ -345,7 +364,7 @@ class StrandsBoxDriver implements SandboxDriver {
 
   async provisionHarness(context: SandboxHarnessContext): Promise<SandboxResourceRef> {
     const owner = this.owner(context);
-    this.requireOrdinary(context);
+    this.admit(context);
     const requirements = context.requirements;
     this.verifier(requirements);
     if (
@@ -427,6 +446,7 @@ class StrandsBoxDriver implements SandboxDriver {
               ...(setupMaterial === undefined
                 ? {}
                 : { workspaceNodeSetupCode: setupMaterial.code }),
+              ...this.executionInputs(),
               ...(inference === undefined ? {} : { controlledInference: inference }),
             },
           },
@@ -455,13 +475,13 @@ class StrandsBoxDriver implements SandboxDriver {
   }
 
   async harnessEndpoint(context: SandboxHarnessContext): Promise<SandboxHarnessEndpoint> {
-    this.requireOrdinary(context);
+    this.admit(context);
     const execution = await this.current(context);
     return this.exactEndpoint(execution);
   }
 
   async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
-    this.requireOrdinary(context);
+    this.admit(context);
     const verifier = this.verifier(context.requirements);
     if (
       !/^[A-Za-z0-9._~+/-]+=*$/.test(context.transportToken) ||
@@ -534,7 +554,7 @@ class StrandsBoxDriver implements SandboxDriver {
     }
   }
 
-  private owner({
+  protected owner({
     namespace,
     revision,
   }: Pick<SandboxHarnessContext, "namespace" | "revision">): Owner {
@@ -555,6 +575,16 @@ class StrandsBoxDriver implements SandboxDriver {
       agentId: revision.agentId,
       revisionId: revision.id,
     };
+  }
+
+  /** One-shot execution inputs sent only in the host PUT; the ordinary Driver sends none. */
+  protected executionInputs(): Readonly<Record<string, string>> {
+    return {};
+  }
+
+  /** The ordinary example admits only unprotected revisions. */
+  protected admit(context: SandboxHarnessContext): void {
+    this.requireOrdinary(context);
   }
 
   private requireOrdinary({ revision, requirements }: SandboxHarnessContext): void {
@@ -698,7 +728,10 @@ class StrandsBoxDriver implements SandboxDriver {
     }
   }
 
-  private async readExecution(signal: AbortSignal, phase?: "initial-provision") {
+  protected async readExecution(
+    signal: AbortSignal,
+    phase?: "initial-provision",
+  ): Promise<Execution | undefined> {
     const execution = await control(
       this.options.controlSocket,
       phase === undefined ? { method: "GET" } : { method: "GET", phase },
@@ -724,7 +757,7 @@ class StrandsBoxDriver implements SandboxDriver {
     return configured === undefined ? undefined : inferenceRoute(configured);
   }
 
-  private async current(context: SandboxHarnessContext): Promise<Execution> {
+  protected async current(context: SandboxHarnessContext): Promise<Execution> {
     const owner = this.owner(context);
     const result = await this.readExecution(context.signal);
     // Activation renders a smaller status projection. The host retains the original immutable
@@ -796,7 +829,7 @@ class StrandsBoxDriver implements SandboxDriver {
     return volume;
   }
 
-  private exactEndpoint(execution: Execution): SandboxHarnessEndpoint {
+  protected exactEndpoint(execution: Execution): SandboxHarnessEndpoint {
     if (
       execution.endpoint.url !== this.options.nativeEndpoint ||
       execution.endpoint.workspaceRoot !== this.options.workspaceRoot
@@ -821,7 +854,7 @@ class StrandsBoxDriver implements SandboxDriver {
     };
   }
 
-  private refuse(message: string): never {
+  protected refuse(message: string): never {
     throw new SandboxRevisionUnsupportedError("SANDBOX_HARNESS_UNSUPPORTED", message);
   }
 }

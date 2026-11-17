@@ -663,6 +663,8 @@ test(
         controlSocket: join(installed.directory, "ordinary.sock"),
       },
     });
+    // Without protectedRepository the package returns the plain Sandbox Driver, not a registration.
+    assert.ok(!("capabilities" in ordinaryDriver));
     await assert.rejects(
       ordinaryDriver.provisionHarness!({
         namespace: { ...namespace, name: kubeNamespace },

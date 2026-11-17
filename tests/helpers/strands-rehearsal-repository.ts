@@ -97,8 +97,34 @@ export interface RepositoryOriginFaults {
   losePush: boolean;
 }
 
+export interface FixturePull {
+  readonly number: number;
+  readonly id: string;
+  readonly draft: boolean;
+  readonly head: string;
+  readonly base: string;
+  readonly title: string;
+  /** The installation-token credential that created it, as GitHub records the App bot actor. */
+  readonly actor: "installation";
+}
+
+const graphQlRepository = {
+  id: "R_review",
+  databaseId: 42,
+  name: "review",
+  owner: { login: "example" },
+  sshUrl: "git@github.com:example/review.git",
+  hasIssuesEnabled: true,
+  description: "",
+  hasWikiEnabled: false,
+  viewerPermission: "WRITE",
+  defaultBranchRef: { name: "main" },
+};
+
 // Real Git behind a controlled GitHub HTTPS origin. No recipient or grant
 // authority is created here; the caller supplies those through its runtime.
+// The installation token covers only `example/review`, as a GitHub App installation token
+// scoped to one repository does; `revoke()` models GitHub after DELETE /installation/token.
 export async function strandsRepositoryOriginFixture(
   t: TestContext,
   faults: RepositoryOriginFaults = { loseDraft: false, losePush: false },
@@ -153,7 +179,10 @@ export async function strandsRepositoryOriginFixture(
     keyPem: undefined,
   });
   const caBytes = await readFile(authority.caPath);
-  const credential = randomBytes(32).toString("hex");
+  const credential = `ghs_${randomBytes(18).toString("hex")}`;
+  let revoked = false;
+  const pulls: FixturePull[] = [];
+  const refusals: { host: string; method: string; path: string; status: number }[] = [];
   const writes: { path: string; digest: string; body: Buffer }[] = [];
   const operations = new Set<Promise<void>>();
   let providerError: unknown;
@@ -163,10 +192,26 @@ export async function strandsRepositoryOriginFixture(
       const path = req.url ?? "";
       const api = req.headers.host === "api.github.com";
       assert.ok(api || req.headers.host === "github.com");
-      const auth = api
-        ? `Bearer ${credential}`
-        : `Basic ${Buffer.from(`x-access-token:${credential}`).toString("base64")}`;
-      assert.equal(req.headers.authorization, auth);
+      const accepted = api
+        ? [`Bearer ${credential}`, `token ${credential}`]
+        : [`Basic ${Buffer.from(`x-access-token:${credential}`).toString("base64")}`];
+      const refuse = (status: number, message: string) => {
+        refusals.push({ host: req.headers.host!, method: req.method!, path, status });
+        res
+          .writeHead(status, {
+            "content-type": "application/json",
+            ...(status === 401 && !api ? { "www-authenticate": 'Basic realm="GitHub"' } : {}),
+          })
+          .end(JSON.stringify({ message }));
+      };
+      if (revoked || !accepted.includes(req.headers.authorization ?? "")) {
+        refuse(401, "Bad credentials");
+        return;
+      }
+      if (!api && !path.startsWith(`/${repository.repository}.git/`)) {
+        refuse(404, "Repository not found.");
+        return;
+      }
       const headers = Object.entries(req.headers)
         .filter(([name]) => name !== "authorization")
         .sort();
@@ -180,7 +225,109 @@ export async function strandsRepositoryOriginFixture(
           ]),
         ),
       });
-      if (api) {
+      if (api && path === "/graphql") {
+        const request = JSON.parse(body.toString()) as {
+          query: string;
+          variables: Record<string, unknown>;
+        };
+        const operation = /(?:query|mutation) ([A-Za-z]+)/.exec(request.query)?.[1];
+        const variables = request.variables;
+        const input = (variables.input ?? {}) as Record<string, unknown>;
+        const named = `${String(variables.owner)}/${String(variables.name ?? variables.repo)}`;
+        const reply = (value: unknown) =>
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(value));
+        if (
+          (operation === "RepositoryInfo" || operation === "PullRequestForBranch") &&
+          named !== repository.repository
+        ) {
+          refusals.push({ host: "api.github.com", method: "POST", path, status: 200 });
+          reply({
+            data: { repository: null },
+            errors: [
+              {
+                type: "NOT_FOUND",
+                path: ["repository"],
+                message: `Could not resolve to a Repository with the name '${named}'.`,
+              },
+            ],
+          });
+        } else if (operation === "RepositoryInfo") {
+          reply({
+            data: {
+              repository: {
+                ...graphQlRepository,
+                parent: null,
+                mergeCommitAllowed: true,
+                rebaseMergeAllowed: true,
+                squashMergeAllowed: true,
+              },
+            },
+          });
+        } else if (operation === "PullRequestForBranch") {
+          reply({
+            data: {
+              repository: {
+                pullRequests: {
+                  nodes: pulls
+                    .filter(({ head }) => head === variables.headRefName)
+                    .map((pull) => ({
+                      url: `https://github.com/${repository.repository}/pull/${pull.number}`,
+                      id: pull.id,
+                      number: pull.number,
+                      state: "OPEN",
+                      baseRefName: pull.base,
+                      headRefName: pull.head,
+                      isCrossRepository: false,
+                      headRepositoryOwner: { id: "O_example", login: "example" },
+                    })),
+                },
+                defaultBranchRef: { name: "main" },
+              },
+            },
+          });
+        } else if (operation === "PullRequestCreate" && input.repositoryId === "R_review") {
+          const head = String(input.headRefName);
+          const exists = (
+            await execute(
+              "/usr/bin/git",
+              ["--git-dir", repoPath, "rev-parse", "--verify", "-q", `refs/heads/${head}`],
+              {
+                env,
+              },
+            ).catch(() => ({ stdout: "" }))
+          ).stdout.trim();
+          if (exists === "") {
+            refusals.push({ host: "api.github.com", method: "POST", path, status: 200 });
+            reply({
+              data: { createPullRequest: null },
+              errors: [{ type: "UNPROCESSABLE", message: `Head sha can't be blank` }],
+            });
+            return;
+          }
+          const pull: FixturePull = {
+            number: 7 + pulls.length,
+            id: `PR_${7 + pulls.length}`,
+            draft: input.draft === true,
+            head,
+            base: String(input.baseRefName),
+            title: String(input.title),
+            actor: "installation",
+          };
+          pulls.push(pull);
+          reply({
+            data: {
+              createPullRequest: {
+                pullRequest: {
+                  id: pull.id,
+                  url: `https://github.com/${repository.repository}/pull/${pull.number}`,
+                },
+              },
+            },
+          });
+        } else {
+          refuse(400, `unsupported fixture operation ${String(operation)}`);
+        }
+      } else if (api) {
         assert.equal(req.method, "POST");
         assert.equal(path, "/repos/example/review/pulls");
         if (faults.loseDraft) {
@@ -260,6 +407,12 @@ export async function strandsRepositoryOriginFixture(
     upstreamAgent: agent,
     faults,
     writes,
+    pulls,
+    refusals,
+    /** GitHub after OCE's retirement revoked the installation token. */
+    revoke() {
+      revoked = true;
+    },
     connections: () => connections,
     error: () => providerError,
     async publishCommit(text: string) {

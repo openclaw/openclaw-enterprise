@@ -10,6 +10,7 @@ const stages = [
   "terminal",
   "input",
   "projection",
+  "release",
   "owner",
   "listener",
   "inner-socket",

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
   chmodSync,
@@ -34,6 +34,7 @@ import {
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { inflateRawSync } from "node:zlib";
 import {
   assertPinnedDirectory,
@@ -45,7 +46,11 @@ import {
   canonical,
   confirmControlledInference,
   digest,
+  observedView,
   profileDigest,
+  protectedWiring,
+  verifyRelease,
+  wiringConfiguration,
   parseOwner,
   reserveExecution,
   stockHarnessCommand,
@@ -65,6 +70,9 @@ import {
   BOX_UPSTREAM_CA_KEY,
   loadUpstreamCa,
   parseRoute,
+  githubCredentialEnvironment,
+  githubCredentials,
+  githubPolicy,
   policy,
   routeView,
   sameRouteView,
@@ -858,6 +866,240 @@ test(
   },
 );
 
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
+}
+
+test("Box's GitHub routes carry one OCE token as two env:// secrets on GitHub's hosts only", () => {
+  const rules = policy([], true);
+  for (const host of ["github.com", "api.github.com"]) {
+    assert.match(
+      rules,
+      new RegExp(
+        `action == Box::Action::"net:connect", resource\\)\\nwhen \\{ context.input.host == "${host.replaceAll(".", "\\.")}" && context.input.port == 443 \\};`,
+      ),
+    );
+  }
+  assert.match(
+    rules,
+    /context.input.host == "github.com" && context.input.port == 443 && \(context.input.method == "GET" \|\| context.input.method == "POST"\) && context.input.intercepted == true/,
+  );
+  assert.equal(rules.match(/net:connect/g)?.length, 2);
+  assert.equal(rules.match(/intercepted == true/g)?.length, 2);
+  assert.doesNotMatch(policy([]), /github/);
+  assert.equal(
+    githubCredentials(),
+    [
+      "[egress.github-git]",
+      'destinations = ["github.com"]',
+      'secret.ref = "env://OCE_GITHUB_GIT_CREDENTIAL"',
+      'secret.placement = "basic_auth"',
+      'secret.inject = "always"',
+      "",
+      "[egress.github-api]",
+      'destinations = ["api.github.com"]',
+      'secret.ref = "env://GITHUB_TOKEN"',
+      'secret.placement = "header"',
+      'secret.header = "Authorization"',
+      'secret.prefix = "token "',
+      'secret.inject = "phantom"',
+      "",
+    ].join("\n"),
+  );
+  const token = `ghs_${randomBytes(18).toString("hex")}`;
+  assert.deepEqual(githubCredentialEnvironment(token), {
+    GITHUB_TOKEN: token,
+    OCE_GITHUB_GIT_CREDENTIAL: `x-access-token:${token}`,
+  });
+  for (const refused of ["", "short", "ghs_ has space", `ghs_${"a".repeat(600)}`, "a\nb:c"]) {
+    assert.throws(() => githubCredentialEnvironment(refused), {
+      message: "invalid_github_material",
+    });
+  }
+});
+
+test("the host reports an installed material version only for the live box run holding it", () => {
+  const bearer = randomBytes(32).toString("base64url");
+  const recipient = {
+    bearerSha256: createHash("sha256").update(bearer).digest("hex"),
+    processInstanceId: "boot:7:11",
+  };
+  const view = {
+    owner: parseOwner({
+      driverId: "box",
+      implementation: "@openclaw-enterprise/example-strands-box-driver@0.1.0",
+      namespaceId: "ns",
+      namespaceName: "ns",
+      agentId: "agent",
+      revisionId: "revision",
+    }),
+    requirementsDigest: "0".repeat(64),
+    executionId: "execution",
+    endpoint: { url: "wss://box.example.invalid/", workspaceRoot: "/home/node/workspace" },
+  };
+  const box = { bootId: "boot", pid: 42, startTicks: "99" };
+  const installed = {
+    preparationAttemptId: randomUUID(),
+    materialVersion: randomUUID(),
+    boxProcessInstanceId: "boot:42:99",
+  };
+  const live = (state: "starting" | "running" | "failed", current: typeof box | undefined) =>
+    observedView({
+      view: { ...view, state, repositoryRecipient: { ...recipient, installed } },
+      execution: { boxProcess: () => current, generation: () => "c".repeat(64) },
+    });
+  assert.deepEqual(live("running", box).repositoryRecipient, { ...recipient, installed });
+  // A replaced, exited or failed `box run` no longer holds it; the recipient itself remains.
+  for (const [state, current] of [
+    ["running", { ...box, pid: 43 }],
+    ["running", undefined],
+    ["failed", box],
+  ] as const) {
+    assert.deepEqual(live(state, current).repositoryRecipient, recipient);
+  }
+  assert.deepEqual(
+    observedView({ view: { ...view, state: "starting", repositoryRecipient: recipient } }),
+    { ...view, state: "starting", repositoryRecipient: recipient },
+  );
+  assert.equal(
+    observedView({ view: { ...view, state: "running" } }).repositoryRecipient,
+    undefined,
+  );
+  assert.ok(!JSON.stringify(live("running", box)).includes(bearer));
+});
+
+test(
+  "the GitHub material reaches only the box run environment and never the disk",
+  { skip: unsupported },
+  async () => {
+    const directory = temporary();
+    const runtimeDir = join(directory, "run");
+    const workspace = join(directory, "workspace");
+    const agentBuildDir = join(directory, "build");
+    for (const path of [runtimeDir, workspace, agentBuildDir]) {
+      mkdirSync(path, { mode: 0o700 });
+    }
+    for (const file of ["box-agent.js", "transport.js", "diagnostics.js"]) {
+      writeFileSync(join(agentBuildDir, file), "", { mode: 0o600 });
+    }
+    const boxBin = join(directory, "fixture-box");
+    // The fixture records the config, its policy and only digests of the values it received.
+    writeFileSync(
+      boxBin,
+      '#!/bin/sh\ncp -- "$3" ../generated-box.toml || exit 3\n' +
+        'policy=$(sed -n \'s/^policy = "\\(.*\\)"$/\\1/p\' "$3")\n' +
+        'cp -- "$policy" ../generated-policy.dw || exit 4\n' +
+        "printf '%s' \"$GITHUB_TOKEN\" | sha256sum > ../token.sha256\n" +
+        "printf '%s' \"$OCE_GITHUB_GIT_CREDENTIAL\" | sha256sum > ../git.sha256\n" +
+        "env | cut -d= -f1 | sort > ../box-env\n" +
+        "sleep 2\nexit 2\n",
+      { mode: 0o700 },
+    );
+    const node = realpathSync(process.execPath);
+    const config = hostConfig({
+      boxBin,
+      nodeBin: node,
+      codexBin: node,
+      agentBuildDir,
+      runtimeDir,
+      workspace,
+      read: [],
+      exec: [],
+      linuxPreview: true,
+    });
+    const token = `ghs_${randomBytes(18).toString("hex")}`;
+    const reservationGeneration = "a".repeat(64);
+    const github = { token };
+    const { input } = smokeInput(config);
+    try {
+      for (const refused of [
+        { ...input, github },
+        { ...input, reservationGeneration },
+        { ...input, github, reservationGeneration, releaseGate: true as const },
+        { ...input, github, reservationGeneration: "short" },
+        { ...input, github: { token: "short" }, reservationGeneration },
+        {
+          ...input,
+          environment: { ...input.environment, GITHUB_TOKEN: "x" },
+          github,
+          reservationGeneration,
+        },
+        {
+          ...input,
+          environment: { ...input.environment, GH_HOST: "x" },
+          releaseGate: true as const,
+          reservationGeneration,
+        },
+      ]) {
+        const scratch = join(directory, `refused-${randomBytes(4).toString("hex")}`);
+        mkdirSync(scratch, { mode: 0o700 });
+        const refusedExecution = start({ ...config, runtimeDir: scratch }, refused);
+        await assert.rejects(refusedExecution.ready, { message: "startup_refused:stage-inputs" });
+        await refusedExecution.done.catch(() => undefined);
+        assert.equal(refusedExecution.boxProcess(), undefined);
+      }
+      // The restarted, already released run: no release gate, its inputs under `installed/`.
+      const execution = start(config, { ...input, github, reservationGeneration });
+      await execution.spawned;
+      assert.ok(execution.boxProcess());
+      assert.equal(execution.generation(), reservationGeneration);
+      await assert.rejects(execution.ready, { message: "startup_refused:wait-original-native" });
+      assert.equal(await execution.done, 2);
+      const generated = readFileSync(join(directory, "generated-box.toml"), "utf8");
+      assert.ok(generated.includes(`\n${githubCredentials()}`));
+      assert.match(generated, new RegExp(`box_dir = "${runtimeDir}/installed/box-state"`));
+      assert.doesNotMatch(
+        generated,
+        /\[agent\.env\][^[]*(?:GITHUB_TOKEN|OCE_GITHUB_GIT_CREDENTIAL)/,
+      );
+      assert.ok(
+        readFileSync(join(directory, "generated-policy.dw"), "utf8").includes(githubPolicy()),
+      );
+      assert.equal(
+        readFileSync(join(directory, "token.sha256"), "utf8").split(" ")[0],
+        createHash("sha256").update(token).digest("hex"),
+      );
+      assert.equal(
+        readFileSync(join(directory, "git.sha256"), "utf8").split(" ")[0],
+        createHash("sha256").update(`x-access-token:${token}`).digest("hex"),
+      );
+      assert.deepEqual(
+        readFileSync(join(directory, "box-env"), "utf8")
+          .trim()
+          .split("\n")
+          .filter((name) => !["PWD", "SHLVL", "_", "OLDPWD"].includes(name)),
+        [
+          "EXPERIMENTAL_LINUX_SUPPORT",
+          "GITHUB_TOKEN",
+          "HOME",
+          "LANG",
+          "OCE_GITHUB_GIT_CREDENTIAL",
+          "PATH",
+        ],
+      );
+      // Nothing the host wrote (runtime records, box.toml, policy, staged inputs) holds it.
+      const files: string[] = [];
+      const walk = (path: string) => {
+        for (const entry of readdirSync(path, { withFileTypes: true })) {
+          const child = join(path, entry.name);
+          if (entry.isDirectory()) {
+            walk(child);
+          } else if (entry.isFile()) {
+            files.push(child);
+          }
+        }
+      };
+      walk(directory);
+      assert.ok(files.length > 3);
+      for (const file of files) {
+        assert.ok(!readFileSync(file).includes(token), file);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
+
 function certificate(directory: string, name: string, ca: boolean): string {
   const out = join(directory, `${name}.pem`);
   execFileSync(
@@ -1121,6 +1363,309 @@ test(
         assert(!(path === grant || path.startsWith(grant + sep)), `${grant} covers the route CA`);
       }
     } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+function protectedFixture() {
+  const owner = parseOwner({
+    driverId: "box",
+    implementation: "@openclaw-enterprise/example-strands-box-driver@0.1.0",
+    namespaceId: "ns",
+    namespaceName: "ns",
+    agentId: "agent",
+    revisionId: "revision",
+  });
+  const configured = { provider: "github" as const };
+  const execution = {
+    installationId: "installation",
+    namespaceId: owner.namespaceId,
+    agentId: owner.agentId,
+    servicePrincipalId: "principal",
+    revisionId: owner.revisionId,
+    executionId: "occ-execution",
+  };
+  const plan = {
+    id: "plan",
+    generation: 1,
+    execution,
+    sandboxDriverId: owner.driverId,
+    egressDriverId: owner.driverId,
+    driver: { id: owner.driverId, implementation: owner.implementation, configurationId: "c" },
+    repositoryGitAuthorization: "online-request" as const,
+    repositoryGit: {
+      driver: { id: "repo", implementation: "fixture/repo" },
+      deadlineWallMs: Date.now() + 60_000,
+      bindings: [
+        {
+          repositoryRef: "selected",
+          profile: "github-repository" as const,
+          backendId: "repo",
+          grant: { providerInstanceId: "p", repositoryId: "r", grantId: "g" },
+        },
+      ],
+    },
+    routes: [],
+  };
+  const wiring = { plan, configuration: wiringConfiguration("github") };
+  return { owner, configured, plan, wiring };
+}
+
+test("the host admits only the paired one-repository plan for its own GitHub routes", () => {
+  const { owner, configured, plan, wiring } = protectedFixture();
+  assert.deepEqual(wiring.configuration, {
+    version: 2,
+    protectedRepository: {
+      provider: "github",
+      hosts: ["github.com", "api.github.com"],
+      delivery: "box-env-v1",
+    },
+  });
+  assert.deepEqual(protectedWiring(configured, wiring, owner), plan);
+  for (const refused of [
+    { ...wiring, configuration: { ...wiring.configuration, version: 1 } },
+    {
+      ...wiring,
+      configuration: {
+        version: 2,
+        protectedRepository: { ...wiring.configuration.protectedRepository, hosts: ["github.com"] },
+      },
+    },
+    {
+      ...wiring,
+      configuration: {
+        version: 1,
+        repositorySender: { url: "https://sender.example.test:9443/", address: "10.4.5.6" },
+      },
+    },
+    { ...wiring, plan: { ...plan, repositoryGitAuthorization: "request-hook-observed" } },
+    { ...wiring, plan: { ...plan, routes: [{}] } },
+    { ...wiring, plan: { ...plan, egressDriverId: "other" } },
+    { ...wiring, plan: { ...plan, execution: { ...plan.execution, revisionId: "other" } } },
+    { ...wiring, plan: { ...plan, policyReductionVersion: 2 } },
+    {
+      ...wiring,
+      plan: {
+        ...plan,
+        repositoryGit: {
+          ...plan.repositoryGit,
+          bindings: [{ ...plan.repositoryGit.bindings[0], profile: "github-installation" }],
+        },
+      },
+    },
+    { ...wiring, extra: true },
+  ]) {
+    assert.throws(() => protectedWiring(configured, refused, owner), {
+      message: /^(?:unadmitted_protected_wiring|unknown_field)$/,
+    });
+  }
+  assert.throws(() => protectedWiring(undefined, wiring, owner), {
+    message: "unadmitted_protected_wiring",
+  });
+});
+
+test("only Compute's signed release for this held box run opens the startup gate", () => {
+  const { plan } = protectedFixture();
+  const keys = generateKeyPairSync("ed25519");
+  const other = generateKeyPairSync("ed25519");
+  const bearerSha256 = "b".repeat(64);
+  const expected = {
+    executionId: "host-execution",
+    processInstanceId: "boot:42:99",
+    bearerSha256,
+  };
+  const installation = (recipient: Record<string, string> = {}) => ({
+    plan,
+    sandboxId: expected.executionId,
+    sender: { id: "box-sender", generation: 1 },
+    installedAt: new Date(0).toISOString(),
+    enforcement: {
+      instanceId: expected.executionId,
+      configurationId: "configuration",
+      policyHash: "a".repeat(64),
+      authorityScope: "execution" as const,
+      repositoryGitRecipient: {
+        providerId: "box-sender",
+        attachmentEpoch: expected.executionId,
+        processInstanceId: expected.processInstanceId,
+        networkInstanceId: `box-phantom-sha256:${bearerSha256}`,
+        authorization: "online-request" as const,
+        deliveryProfile: "github_repository" as const,
+        ...recipient,
+      },
+    },
+  });
+  const startup = { releaseKey: keys.publicKey, plan };
+  const startupId = randomUUID();
+  const signed = signComputeExecutionRelease(keys.privateKey, startupId, installation());
+  const accepted = verifyRelease(startup, structuredClone(signed), expected);
+  assert.equal(accepted.startupId, startupId);
+  assert.match(accepted.startupSha256, /^[a-f0-9]{64}$/);
+  const refusals: [unknown, typeof expected, number?][] = [
+    [signComputeExecutionRelease(other.privateKey, startupId, installation()), expected],
+    [{ ...signed, expiresAt: signed.expiresAt + 1 }, expected],
+    [signed, expected, signed.expiresAt],
+    [signed, { ...expected, processInstanceId: "boot:43:99" }],
+    [signed, { ...expected, bearerSha256: "c".repeat(64) }],
+    [signed, { ...expected, executionId: "replacement" }],
+    [
+      signComputeExecutionRelease(
+        keys.privateKey,
+        startupId,
+        installation({ processInstanceId: "boot:43:99" }),
+      ),
+      expected,
+    ],
+    [
+      signComputeExecutionRelease(keys.privateKey, startupId, {
+        ...installation(),
+        plan: { ...plan, generation: 2 },
+      }),
+      expected,
+    ],
+    [{ ...signed, extra: true }, expected],
+  ];
+  for (const [release, identity, now] of refusals) {
+    assert.throws(() => verifyRelease(startup, release, identity, now), {
+      message: /^(?:release_signature_refused|release_outside_held_execution|unknown_field)$/,
+    });
+  }
+});
+
+test(
+  "a protected box run waits at the host gate until the verified release",
+  { skip: unsupported },
+  async () => {
+    const directory = temporary();
+    const runtimeDir = join(directory, "run");
+    const workspace = join(directory, "workspace");
+    const agentBuildDir = join(directory, "build");
+    for (const path of [runtimeDir, workspace, agentBuildDir]) {
+      mkdirSync(path, { mode: 0o700 });
+    }
+    for (const file of ["box-agent.js", "transport.js", "diagnostics.js"]) {
+      writeFileSync(join(agentBuildDir, file), "", { mode: 0o600 });
+    }
+    const node = realpathSync(process.execPath);
+    // Stands in for box-agent: read the staged input, wait for the gate, record its answer.
+    const waiter = join(directory, "waiter.mjs");
+    writeFileSync(
+      waiter,
+      `import { readFileSync, writeFileSync, existsSync } from "node:fs";
+       import { createConnection } from "node:net";
+       const config = readFileSync(process.argv[2], "utf8");
+       const input = JSON.parse(readFileSync(JSON.parse(config.match(/^command = (.*)$/m)[1])[3], "utf8"));
+       while (!existsSync(input.releaseSocket)) await new Promise((r) => setTimeout(r, 20));
+       const socket = createConnection({ path: input.releaseSocket });
+       let text = "";
+       for await (const chunk of socket) text += chunk;
+       writeFileSync(process.argv[3], text);`,
+      { mode: 0o600 },
+    );
+    const boxBin = join(directory, "fixture-box");
+    writeFileSync(
+      boxBin,
+      `#!/bin/sh\n${shellQuote(node)} ${shellQuote(waiter)} "$3" ../released || exit 3\nexit 2\n`,
+      { mode: 0o700 },
+    );
+    const config = hostConfig({
+      boxBin,
+      nodeBin: node,
+      codexBin: node,
+      agentBuildDir,
+      runtimeDir,
+      workspace,
+      read: [],
+      exec: [],
+      linuxPreview: true,
+    });
+    const { input } = smokeInput(config);
+    const reservationGeneration = randomBytes(32).toString("hex");
+    try {
+      const execution = start(config, { ...input, releaseGate: true, reservationGeneration });
+      await execution.spawned;
+      const generation = execution.generation();
+      assert.equal(generation, reservationGeneration);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.throws(() => lstatSync(join(directory, "released")), { code: "ENOENT" });
+      assert.equal(execution.generation(), generation);
+      await execution.release();
+      await assert.rejects(execution.release(), { message: "release_gate_unavailable" });
+      await assert.rejects(execution.ready, { message: "startup_refused:wait-original-native" });
+      assert.equal(await execution.done, 2);
+      assert.equal(readFileSync(join(directory, "released"), "utf8"), "released\n");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "box-agent starts the command only after the release socket answers the fixed line",
+  { skip: unsupported, timeout: 20_000 },
+  async () => {
+    const directory = temporary();
+    const marker = join(directory, "started");
+    const releaseSocket = join(directory, "release.sock");
+    const inputFile = join(directory, "agent.json");
+    const node = realpathSync(process.execPath);
+    writeFileSync(
+      inputFile,
+      JSON.stringify({
+        command: [node, "-e", "require('node:fs').writeFileSync(process.argv[1], 'x')", marker],
+        workspace: directory,
+        codexBin: join(directory, "absent-codex"),
+        socketPath: join(directory, "inner.sock"),
+        releaseSocket,
+      }),
+      { mode: 0o600 },
+    );
+    const agent = spawn(
+      node,
+      [
+        fileURLToPath(
+          new URL("../../deploy/examples/strands-box/host/box-agent.ts", import.meta.url),
+        ),
+        inputFile,
+      ],
+      { stdio: ["ignore", "ignore", "ignore"] },
+    );
+    const servers: Server[] = [];
+    const answer = async (line: string) => {
+      const server = createServer((socket) => socket.end(line));
+      servers.push(server);
+      server.listen(releaseSocket);
+      await once(server, "listening");
+      return server;
+    };
+    const absent = () => {
+      try {
+        lstatSync(marker);
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    try {
+      // No socket, then a socket with the wrong answer: the command never starts.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      assert.ok(absent());
+      const wrong = await answer("release\n");
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      assert.ok(absent());
+      await new Promise<void>((resolve) => wrong.close(() => resolve()));
+      await answer("released\n");
+      const deadline = Date.now() + 10_000;
+      while (absent() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      assert.equal(absent(), false);
+    } finally {
+      agent.kill("SIGKILL");
+      for (const server of servers) {
+        server.close();
+      }
       rmSync(directory, { recursive: true, force: true });
     }
   },

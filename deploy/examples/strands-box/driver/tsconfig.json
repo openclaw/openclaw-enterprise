@@ -2,7 +2,7 @@
   "extends": "../../../../tsconfig.base.json",
   "compilerOptions": {
     "composite": false,
-    "rootDir": ".",
+    "rootDir": "..",
     "outDir": "dist",
     "paths": {
       "@openclaw-enterprise/contracts": ["../../../../packages/contracts/src/index.ts"],
@@ -21,6 +21,6 @@
       "path": "../../../../packages/utils"
     }
   ],
-  "include": ["*.ts"],
+  "include": ["*.ts", "../git/*.ts"],
   "exclude": ["build.ts", "dist"]
 }

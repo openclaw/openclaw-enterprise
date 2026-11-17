@@ -24,6 +24,8 @@ import {
   BOX_UPSTREAM_CA_KEY,
   CONTROLLED_INFERENCE_MARKER,
   policy,
+  githubCredentialEnvironment,
+  githubCredentials,
   upstreamCaPem,
 } from "./egress.ts";
 import {
@@ -46,6 +48,7 @@ import {
   listen,
   PORT,
   processIdentity,
+  RELEASE_LINE,
   sameProcess,
   sameSocket,
   socketIdentity,
@@ -83,6 +86,7 @@ const startupMessages = new Set([
   "owner_cleanup_failed",
   "startup_refused:stage-inputs",
   "startup_refused:start-box",
+  "startup_refused:wait-release",
   "startup_refused:wait-original-native",
   "startup_refused:verify-native-auth",
   "startup_refused:publish-owner-socket",
@@ -180,8 +184,30 @@ export interface StartInput {
   workspaceNodeSetupCode?: string;
   workspaceNodeSetupExpiresAt?: number;
   egress?: readonly EgressRoute[];
+  /**
+   * STAGE_A_PROTOTYPE: the OCE-minted GitHub installation token for this execution, held only in
+   * memory and in the `box run` environment, where Box's two GitHub routes read it once.
+   */
+  github?: { readonly token: string; readonly caSha256?: string };
+  /**
+   * Protected startup: Box starts, but the command waits until `release()` is called. The
+   * restarted run that carries `github` is already released and never takes the gate.
+   */
+  releaseGate?: true;
+  /**
+   * Protected startup: the reservation generation the host fixed before any material existed,
+   * repeated in ready.json and presented by host ingress.
+   */
+  reservationGeneration?: string;
   /** The execution's one extra upstream CA bundle; every route in `egress` must opt in to it. */
   upstreamCa?: UpstreamCa;
+}
+
+/** The trusted `box run` process of this execution, read from /proc after spawn. */
+export interface BoxProcess {
+  readonly bootId: string;
+  readonly pid: number;
+  readonly startTicks: string;
 }
 
 export interface OwnerReady {
@@ -192,11 +218,24 @@ export interface OwnerReady {
   startTicks: string;
   socketDev: string;
   socketIno: string;
+  /** Protected startup only: the reservation generation reported before the release. */
+  generationSha256?: string;
 }
 
 export interface Execution {
   readonly ready: Promise<OwnerReady>;
   readonly done: Promise<number>;
+  /** Present once `box run` was spawned; `undefined` before that or after it exited. */
+  boxProcess(): BoxProcess | undefined;
+  /** Settles once `box run` was spawned (or refused before that). */
+  readonly spawned: Promise<void>;
+  /**
+   * Protected startup only: SHA-256 of the reservation (this host process, the execution and the
+   * execution bearer digest), fixed before the release and repeated in ready.json.
+   */
+  generation(): string | undefined;
+  /** Open the protected startup gate once; only the caller that verified the release calls it. */
+  release(): Promise<void>;
   stop(): Promise<number>;
 }
 
@@ -457,7 +496,7 @@ export function start(
   input: StartInput,
   standaloneCapability?: string,
   beforeBoxExec?: () => string | void,
-): Execution & { readonly spawned: Promise<void> } {
+): Execution {
   const abort = new AbortController();
   let readyResolve!: (value: OwnerReady) => void;
   let readyReject!: (reason: Error) => void;
@@ -467,6 +506,16 @@ export function start(
   });
   // A control request receives 'starting' without waiting on this promise.
   void ready.catch(() => {});
+  let boxRun: BoxProcess | undefined;
+  let boxOwner: ProcessIdentity | undefined;
+  let gate: ReturnType<typeof createServer> | undefined;
+  let gatePath: string | undefined;
+  let gateStopped = false;
+  let reservation: string | undefined;
+  let gateOpened!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    gateOpened = resolve;
+  });
   let spawnedResolve!: () => void;
   let spawnedReject!: (reason: Error) => void;
   const spawned = new Promise<void>((resolve, reject) => {
@@ -479,6 +528,30 @@ export function start(
     ready,
     spawned,
     done,
+    async release() {
+      const owner = boxOwner;
+      const path = gatePath;
+      if (
+        gate !== undefined ||
+        gateStopped ||
+        path === undefined ||
+        owner === undefined ||
+        !sameProcess(owner) ||
+        abort.signal.aborted
+      ) {
+        throw new Error("release_gate_unavailable");
+      }
+      gate = createServer((socket) => {
+        socket.on("error", () => socket.destroy());
+        if (!sameProcess(owner) || abort.signal.aborted) socket.destroy();
+        else socket.end(RELEASE_LINE);
+      });
+      await listen(gate, path);
+      gateOpened();
+    },
+    generation: () => reservation,
+    boxProcess: () =>
+      boxRun !== undefined && boxOwner !== undefined && sameProcess(boxOwner) ? boxRun : undefined,
     stop: () => {
       abort.abort();
       return done;
@@ -488,9 +561,12 @@ export function start(
   async function run(): Promise<number> {
     let verifiedBootId: string | void;
     const run = config.runtimeDir;
-    const authority = join(run, "authority");
-    const bridgeDir = join(run, "bridge");
-    const projectionDir = join(run, "projection");
+    // The runtime directory is single-use per run. The one restart that installs GitHub material
+    // keeps its run inputs and Box state in a fresh subdirectory; owner sockets stay at the root.
+    const work = input.github === undefined ? run : join(run, "installed");
+    const authority = join(work, "authority");
+    const bridgeDir = join(work, "bridge");
+    const projectionDir = join(work, "projection");
     const boxHome = join(authority, "home");
     const app = join(run, APP_SOCKET);
     const inner = join(bridgeDir, "native.sock");
@@ -514,7 +590,8 @@ export function start(
     let receiptOwned = false;
     let stage = "stage-inputs";
     try {
-      const staging = join(run, "input");
+      if (work !== run) mkdirSync(work, { mode: 0o700 });
+      const staging = join(work, "input");
       mkdirSync(staging, { mode: 0o700 });
       const effectiveEnvironment = { ...input.environment };
       const stagedPaths: string[] = [];
@@ -531,6 +608,24 @@ export function start(
         stagedPaths.push(staged);
         effectiveEnvironment[file.environmentVariable] = staged;
       }
+      const github = input.github;
+      if (
+        // A protected run is reserved: held at the gate first, then restarted once with the
+        // GitHub routes after its release. An ordinary run takes neither.
+        (input.reservationGeneration === undefined) !==
+          (input.releaseGate !== true && github === undefined) ||
+        (input.releaseGate === true && github !== undefined) ||
+        (input.reservationGeneration !== undefined &&
+          !/^[a-f0-9]{64}$/.test(input.reservationGeneration)) ||
+        Object.keys(effectiveEnvironment).some((name) =>
+          /^(?:GITHUB_|GH_|GIT_|OCE_GITHUB_)/.test(name),
+        )
+      ) {
+        throw new Error("github_route_unadmitted");
+      }
+      // Validates the value before any file exists; the result is used only in the spawn below.
+      const githubEnvironment =
+        github === undefined ? undefined : githubCredentialEnvironment(github.token);
       const environment = safeEnvironment(
         effectiveEnvironment,
         input.egress?.some((route) => route.kind === "controlled-inference") === true,
@@ -563,6 +658,9 @@ export function start(
           codexBin: config.codexBin,
           socketPath: inner,
           ...(input.workspaceNodeSetupCode === undefined ? {} : { projectionSocket: projection }),
+          ...(input.releaseGate === true
+            ? { releaseSocket: join(projectionDir, "release.sock") }
+            : {}),
         }),
         ownerOnly,
       );
@@ -583,13 +681,16 @@ export function start(
       }
       writeFileSync(
         policyFile,
-        policy(input.egress ?? []) +
+        policy(input.egress ?? [], github !== undefined) +
           (verifier === undefined ? "" : workspaceVerifierPolicy(config.workspace)),
         ownerOnly,
       );
       // Only the CA bundle verified at host config load is written, into the authority directory
       // that no grant covers, and only when every route Box dials opts in to it again here.
       // Stock Box refuses the key, so it fails closed before any egress.
+      // Box trusts the bundle for every upstream, GitHub included: the GitHub routes opt in too.
+      if (github !== undefined && github.caSha256 !== input.upstreamCa?.sha256)
+        throw new Error("upstream_ca_route_not_declared");
       const caPem = upstreamCaPem(input.upstreamCa, input.egress ?? []);
       if (caPem !== undefined) writeFileSync(caFile, caPem, ownerOnly);
       // Box excludes its own box.toml and policy directory from every native grant.
@@ -607,13 +708,15 @@ export function start(
         diagnostics,
         visibleAgentInput,
         ...stagedPaths,
-        ...(input.workspaceNodeSetupCode === undefined ? [] : [projectionDir]),
+        ...(input.workspaceNodeSetupCode === undefined && input.releaseGate !== true
+          ? []
+          : [projectionDir]),
       ]);
       const write = outermost([...writable, config.workspace, bridgeDir]);
       const exec = outermost([...config.exec, config.codexBin, config.nodeBin]);
       const configText = [
         'name = "oce-strands"',
-        `box_dir = ${quoted(join(run, "box-state"))}`,
+        `box_dir = ${quoted(join(work, "box-state"))}`,
         `policy = ${quoted(policyFile)}`,
         ...(caPem === undefined ? [] : [`${BOX_UPSTREAM_CA_KEY} = ${quoted(caFile)}`]),
         "",
@@ -630,9 +733,12 @@ export function start(
         ),
         "",
       ].join("\n");
+      // The credential tables name only variables; the token never enters box.toml.
       writeFileSync(
         boxFile,
-        configText + (verifier === undefined ? "" : "\n" + workspaceVerifierTool(config.workspace)),
+        configText +
+          (github === undefined ? "" : "\n" + githubCredentials()) +
+          (verifier === undefined ? "" : "\n" + workspaceVerifierTool(config.workspace)),
         ownerOnly,
       );
       if (input.workspaceNodeSetupCode !== undefined) {
@@ -659,7 +765,13 @@ export function start(
       child = spawn(config.boxBin, ["run", "--config", boxFile], {
         cwd: config.workspace,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { HOME: boxHome, PATH, LANG: "C.UTF-8", EXPERIMENTAL_LINUX_SUPPORT: "TRUE" },
+        env: {
+          HOME: boxHome,
+          PATH,
+          LANG: "C.UTF-8",
+          EXPERIMENTAL_LINUX_SUPPORT: "TRUE",
+          ...githubEnvironment,
+        },
       });
       child.stdout?.resume();
       if (child.stderr !== null) diagnosticDone = collectDiagnostics(child.stderr, "box");
@@ -677,7 +789,26 @@ export function start(
       });
       if (child.pid === undefined) throw new Error("box_start_failed");
       owner = processIdentity(child.pid);
+      if (input.releaseGate === true) gatePath = join(projectionDir, "release.sock");
+      boxOwner = owner;
+      boxRun = {
+        bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
+        pid: owner.pid,
+        startTicks: owner.startTicks,
+      };
+      reservation = input.reservationGeneration;
       spawnedResolve();
+      if (input.releaseGate === true) {
+        stage = "wait-release";
+        // No deadline: the held execution waits for Compute's release or for retirement.
+        await new Promise<void>((resolve, reject) => {
+          if (abort.signal.aborted) reject(new Error("stopped"));
+          abort.signal.addEventListener("abort", () => reject(new Error("stopped")), {
+            once: true,
+          });
+          void opened.then(resolve);
+        });
+      }
       stage = "wait-original-native";
       report("box", "listener", "entered");
       pinnedIdentity = await waitFor(() => {
@@ -727,6 +858,7 @@ export function start(
         startTicks: processIdentity(process.pid).startTicks,
         socketDev: publicIdentity.dev,
         socketIno: publicIdentity.ino,
+        ...(reservation === undefined ? {} : { generationSha256: reservation }),
       };
       if (!original() || abort.signal.aborted) throw new Error("native_stopped_during_startup");
       writeFileSync(stagedReceipt, `${JSON.stringify(receipt)}\n`, ownerOnly);
@@ -746,6 +878,8 @@ export function start(
       spawnedReject(refusal);
       readyReject(refusal);
     } finally {
+      gateStopped = true;
+      gate?.close();
       relay?.close();
       handoff?.close();
       if (watch !== undefined) clearInterval(watch);

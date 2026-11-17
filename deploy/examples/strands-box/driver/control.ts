@@ -23,7 +23,40 @@ export interface Execution {
   readonly workspaceNodeMode?: WorkspaceNodeMode;
   readonly workspaceVolume?: WorkspaceVolume;
   readonly generationSha256?: string;
+  /**
+   * Host-observed repository recipient: the execution bearer digest, the host control process
+   * that holds the delivered material, and the version installed in the live `box run`.
+   */
+  readonly repositoryRecipient?: RepositoryRecipient;
+  /** Protected startup as the host observes it; `plan` is the exact admitted proxy plan. */
+  readonly protectedStartup?: {
+    readonly plan: Readonly<Record<string, unknown>>;
+    readonly reservedAt: string;
+    readonly generationSha256?: string;
+    readonly startupId?: string;
+    readonly startupSha256?: string;
+  };
   readonly controlledInference?: ControlledInferenceRoute;
+}
+
+export interface RepositoryRecipient {
+  readonly bearerSha256: string;
+  readonly processInstanceId: string;
+  readonly installed?: {
+    readonly preparationAttemptId: string;
+    readonly materialVersion: string;
+    readonly boxProcessInstanceId: string;
+  };
+}
+
+/** STAGE_A_PROTOTYPE: the material the Worker hands the host for Box's GitHub routes. */
+export interface DeliveredMaterial {
+  readonly preparationAttemptId: string;
+  readonly materialVersion: string;
+  readonly expiresAt: string;
+  readonly installationId: string;
+  readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
+  readonly value: string;
 }
 
 /** The nonsecret controlled inference route: HTTPS origin, pinned private IPv4, route CA digest. */
@@ -68,6 +101,9 @@ export interface WorkspaceVolume {
 
 const EXECUTION_PATH = "/v1/execution";
 const ADMISSION_PATH = "/v1/admission";
+const RELEASE_PATH = "/v1/release";
+const MATERIAL_PATH = "/v1/repository-material";
+const SHA256 = /^[a-f0-9]{64}$/;
 const LIMIT = 32_768;
 const TIMEOUT = 5_000;
 
@@ -159,8 +195,90 @@ function parseOwner(value: unknown): Owner | undefined {
   };
 }
 
+const PROCESS_INSTANCE = /^[a-f0-9-]{36}:[1-9][0-9]{0,9}:[1-9][0-9]{0,19}$/;
+const MATERIAL_ID = /^[\x21-\x7e]{1,256}$/;
+
+function parseRecipient(value: unknown): Execution["repositoryRecipient"] {
+  if (value === undefined) return undefined;
+  const recipient = record(value);
+  const installed = record(recipient?.installed);
+  if (
+    !recipient ||
+    Object.keys(recipient).some(
+      (key) => key !== "bearerSha256" && key !== "processInstanceId" && key !== "installed",
+    ) ||
+    typeof recipient.bearerSha256 !== "string" ||
+    !SHA256.test(recipient.bearerSha256) ||
+    typeof recipient.processInstanceId !== "string" ||
+    !PROCESS_INSTANCE.test(recipient.processInstanceId) ||
+    (recipient.installed !== undefined &&
+      (!installed ||
+        Object.keys(installed).length !== 3 ||
+        typeof installed.preparationAttemptId !== "string" ||
+        !MATERIAL_ID.test(installed.preparationAttemptId) ||
+        typeof installed.materialVersion !== "string" ||
+        !MATERIAL_ID.test(installed.materialVersion) ||
+        typeof installed.boxProcessInstanceId !== "string" ||
+        !PROCESS_INSTANCE.test(installed.boxProcessInstanceId)))
+  ) {
+    throw new Error("Invalid repository recipient evidence");
+  }
+  return {
+    bearerSha256: recipient.bearerSha256,
+    processInstanceId: recipient.processInstanceId,
+    ...(installed === undefined
+      ? {}
+      : {
+          installed: {
+            preparationAttemptId: installed.preparationAttemptId as string,
+            materialVersion: installed.materialVersion as string,
+            boxProcessInstanceId: installed.boxProcessInstanceId as string,
+          },
+        }),
+  };
+}
+
+function parseStartup(value: unknown): Execution["protectedStartup"] {
+  if (value === undefined) return undefined;
+  const startup = record(value);
+  const plan = record(startup?.plan);
+  const allowed = ["plan", "reservedAt", "generationSha256", "startupId", "startupSha256"];
+  if (
+    !startup ||
+    !plan ||
+    Object.keys(startup).some((key) => !allowed.includes(key)) ||
+    typeof startup.reservedAt !== "string" ||
+    new Date(startup.reservedAt).toISOString() !== startup.reservedAt ||
+    (startup.generationSha256 !== undefined &&
+      (typeof startup.generationSha256 !== "string" || !SHA256.test(startup.generationSha256))) ||
+    (startup.startupSha256 !== undefined &&
+      (typeof startup.startupSha256 !== "string" ||
+        !SHA256.test(startup.startupSha256) ||
+        typeof startup.startupId !== "string" ||
+        startup.generationSha256 === undefined)) ||
+    (startup.startupId !== undefined && startup.startupSha256 === undefined)
+  ) {
+    throw new Error("Invalid protected startup evidence");
+  }
+  return {
+    plan,
+    reservedAt: startup.reservedAt,
+    ...(startup.generationSha256 === undefined
+      ? {}
+      : { generationSha256: startup.generationSha256 as string }),
+    ...(startup.startupSha256 === undefined
+      ? {}
+      : {
+          startupId: startup.startupId as string,
+          startupSha256: startup.startupSha256 as string,
+        }),
+  };
+}
+
 function parseExecution(value: unknown): Execution {
   const document = record(value);
+  const repositoryRecipient = parseRecipient(document?.repositoryRecipient);
+  const protectedStartup = parseStartup(document?.protectedStartup);
   const owner = parseOwner(document?.owner);
   const endpoint = record(document?.endpoint);
   const volume = workspaceVolume(document?.workspaceVolume);
@@ -187,7 +305,8 @@ function parseExecution(value: unknown): Execution {
         !/^[a-f0-9]{64}$/.test(document.generationSha256))) ||
     (document.workspaceNodeMode !== undefined &&
       document.state === "running" &&
-      document.generationSha256 === undefined)
+      document.generationSha256 === undefined) ||
+    (repositoryRecipient === undefined) !== (protectedStartup === undefined)
   ) {
     throw new DependencyUnavailableError("Strands Box returned invalid execution evidence.");
   }
@@ -204,6 +323,8 @@ function parseExecution(value: unknown): Execution {
     ...(document.generationSha256 === undefined
       ? {}
       : { generationSha256: document.generationSha256 }),
+    ...(repositoryRecipient === undefined ? {} : { repositoryRecipient }),
+    ...(protectedStartup === undefined ? {} : { protectedStartup }),
     ...(inference === undefined ? {} : { controlledInference: inference }),
   };
 }
@@ -221,6 +342,7 @@ type ControlRequest =
       readonly method: "PUT";
       readonly body: AdmissionRequest & {
         readonly workspaceNodeSetupCode?: string;
+        readonly executionBearer?: string;
         readonly controlledInference?: ControlledInferenceRoute;
       };
     }
@@ -255,6 +377,47 @@ export async function control(
     // A failed response conveys no evidence that a mutation did or did not happen.
     throw new DependencyUnavailableError(
       "The Strands Box host did not confirm the execution operation.",
+    );
+  }
+}
+
+/** Relay Compute's signed release; the host verifies it before opening the startup gate. */
+export async function releaseExecution(
+  socketPath: string,
+  body: Pick<Execution, "owner" | "executionId" | "requirementsDigest"> & {
+    readonly release: Readonly<Record<string, unknown>>;
+  },
+  signal: AbortSignal,
+): Promise<Execution> {
+  try {
+    const reply = await send(socketPath, "POST", RELEASE_PATH, body, signal);
+    if (reply.status !== 200) throw new Error("Refused release");
+    return parseExecution(JSON.parse(reply.body));
+  } catch {
+    signal.throwIfAborted();
+    throw new DependencyUnavailableError("The Strands Box host did not confirm the release.");
+  }
+}
+
+/**
+ * STAGE_A_PROTOTYPE: hand the host the material OCE delivered to this execution's committed
+ * recipient. The host starts `box run` with it, still held at the release gate.
+ */
+export async function deliverMaterial(
+  socketPath: string,
+  body: Pick<Execution, "owner" | "executionId" | "requirementsDigest"> & {
+    readonly material: DeliveredMaterial;
+  },
+  signal: AbortSignal,
+): Promise<Execution> {
+  try {
+    const reply = await send(socketPath, "POST", MATERIAL_PATH, body, signal);
+    if (reply.status !== 200) throw new Error("Refused material");
+    return parseExecution(JSON.parse(reply.body));
+  } catch {
+    signal.throwIfAborted();
+    throw new DependencyUnavailableError(
+      "The Strands Box host did not confirm the repository material.",
     );
   }
 }
