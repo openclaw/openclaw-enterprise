@@ -3566,7 +3566,9 @@ Report the Installation capabilities that Agent creation in this Namespace needs
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.capabilities` | `object` | Yes | The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It includes browser-access availability and omits agentProvisioning, which needs Installation administration. |
+| `data.capabilities` | `object` | Yes | The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them, including browser-access availability and guided provisioning. |
+| `data.capabilities.agentProvisioning` | `object` | No | — |
+| `data.capabilities.agentProvisioning.executionModes` | `array<"embedded" or "dedicated">` | Yes | min items: 1; max items: 2 |
 | `data.capabilities.credentialSources` | `object` | No | — |
 | `data.capabilities.credentialSources.types` | `array<object>` | Yes | — |
 | `data.capabilities.credentialSources.types[].config` | `array<object>` | Yes | — |
@@ -4619,13 +4621,13 @@ Create a new Agent and queue first-time provisioning
 
 **Operation ID:** `provisionAgent`
 
-**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires create permission for Configuration resources in the requested Namespace. Requires administer permission on the requested Installation. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each existing Secret reference supplied in provisioning inputs.
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires create permission for Configuration resources in the requested Namespace. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each existing Secret reference supplied in provisioning inputs.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
+| `administer` | `installation` | `installation` (when `gatewayManagedMode` is `false`) |
 | `create` | `configuration` | `namespace` |
-| `administer` | `installation` | `requested` |
 | `read` | `service_account` | `requested` (when associated) |
 | `operate` | `secret` | `requested` (when bound) |
 
@@ -4836,7 +4838,7 @@ Get first-time provisioning status for one exact work item
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
 | `create` | `configuration` | `namespace` |
-| `administer` | `installation` | `requested` |
+| `administer` | `installation` | `installation` (when `gatewayManagedMode` is `false`) |
 | `read` | `agent` | `requested` (once created) |
 | `operate` | `agent` | `requested` (once created) |
 | `deploy` | `agent` | `requested` (once created) |
@@ -4921,7 +4923,7 @@ Retry failed first-time provisioning for one exact work item
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
 | `create` | `configuration` | `namespace` |
-| `administer` | `installation` | `requested` |
+| `administer` | `installation` | `installation` (when `gatewayManagedMode` is `false`) |
 | `read` | `agent` | `requested` (once created) |
 | `operate` | `agent` | `requested` (once created) |
 | `deploy` | `agent` | `requested` (once created) |

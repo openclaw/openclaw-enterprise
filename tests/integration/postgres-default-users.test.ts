@@ -194,9 +194,8 @@ test(
     assert.deepEqual(accountAudit.rows, [{ group_ids: [DEFAULT_USER_GROUP] }]);
 
     // A Default user cannot read the Installation, so the console's Create Agent reads the
-    // capabilities it needs from the Namespace where the member may create Agents. Browser
-    // access remains available to ordinary creators; only guided provisioning requires
-    // Installation administration.
+    // capabilities it needs, browser access and guided provisioning included, from the
+    // Namespace where the member may create Agents.
     assert.equal((await alice.request("GET", "/installation")).status, 403);
     const memberCapabilities = await alice.request("GET", `${base}/agent-capabilities`);
     assert.equal(memberCapabilities.status, 200);
@@ -205,9 +204,7 @@ test(
     const installationCapabilities = administratorView.json().data.capabilities;
     assert.equal(installationCapabilities?.nativeAdmin, true);
     assert.equal(memberCapabilities.data.capabilities.nativeAdmin, true);
-    const { agentProvisioning: _administratorOnly, ...expectedCapabilities } =
-      installationCapabilities ?? {};
-    assert.deepEqual(memberCapabilities.data, { capabilities: expectedCapabilities });
+    assert.deepEqual(memberCapabilities.data, { capabilities: installationCapabilities });
 
     // Alice completes the Agent workflow in default with no administrator action. Each create
     // binds her to the configured Owner Role on exactly that resource, and her deploy gives the

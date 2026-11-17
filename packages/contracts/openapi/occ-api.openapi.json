@@ -14401,8 +14401,26 @@
                       "properties": {
                         "capabilities": {
                           "additionalProperties": false,
-                          "description": "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It includes browser-access availability and omits agentProvisioning, which needs Installation administration.",
+                          "description": "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them, including browser-access availability and guided provisioning.",
                           "properties": {
+                            "agentProvisioning": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "executionModes": {
+                                  "items": {
+                                    "anyOf": [
+                                      { "const": "embedded", "type": "string" },
+                                      { "const": "dedicated", "type": "string" }
+                                    ]
+                                  },
+                                  "maxItems": 2,
+                                  "minItems": 1,
+                                  "type": "array"
+                                }
+                              },
+                              "required": ["executionModes"],
+                              "type": "object"
+                            },
                             "credentialSources": {
                               "additionalProperties": false,
                               "properties": {
@@ -17619,7 +17637,7 @@
     },
     "/namespaces/{namespaceId}/agents/provision": {
       "post": {
-        "description": "Requires create permission for Agent resources in the requested Namespace. Requires create permission for Configuration resources in the requested Namespace. Requires administer permission on the requested Installation. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each existing Secret reference supplied in provisioning inputs.",
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires create permission for Configuration resources in the requested Namespace. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each existing Secret reference supplied in provisioning inputs.",
         "operationId": "provisionAgent",
         "parameters": [
           {
@@ -18240,8 +18258,13 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
+          {
+            "action": "administer",
+            "condition": "gateway_managed_mode_disabled",
+            "resourceKind": "installation",
+            "scope": "installation"
+          },
           { "action": "create", "resourceKind": "configuration", "scope": "namespace" },
-          { "action": "administer", "resourceKind": "installation", "scope": "requested" },
           {
             "action": "read",
             "condition": "associated_service_account",
@@ -18499,7 +18522,12 @@
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
           { "action": "create", "resourceKind": "configuration", "scope": "namespace" },
-          { "action": "administer", "resourceKind": "installation", "scope": "requested" },
+          {
+            "action": "administer",
+            "condition": "gateway_managed_mode_disabled",
+            "resourceKind": "installation",
+            "scope": "installation"
+          },
           {
             "action": "read",
             "condition": "provisioning_work",
@@ -18787,7 +18815,12 @@
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" },
           { "action": "create", "resourceKind": "configuration", "scope": "namespace" },
-          { "action": "administer", "resourceKind": "installation", "scope": "requested" },
+          {
+            "action": "administer",
+            "condition": "gateway_managed_mode_disabled",
+            "resourceKind": "installation",
+            "scope": "installation"
+          },
           {
             "action": "read",
             "condition": "provisioning_work",

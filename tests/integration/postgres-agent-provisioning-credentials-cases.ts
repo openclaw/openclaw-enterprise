@@ -784,15 +784,15 @@ export function registerCredentialCases() {
   );
 
   test(
-    "provisioning requires Installation administer on top of every Namespace grant",
+    "provisioning needs only Namespace grants unless it turns off gatewayManagedMode",
     { ...requiresPostgres, timeout: 60_000 },
     async (context) => {
       const fixture = await createFixture(context);
       const namespace = await fixture.bootstrapNamespace();
       const secrets = await createProvisioningSecrets(fixture, namespace.id);
-      const provision = () =>
+      const provision = (overrides: { gatewayManagedMode?: boolean } = {}) =>
         fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-          body: provisioningBody(namespace.id, secrets),
+          body: { ...provisioningBody(namespace.id, secrets), ...overrides },
         });
 
       // The caller keeps every action on every Namespace resource kind, inside this Namespace
@@ -813,7 +813,6 @@ export function registerCredentialCases() {
             ],
             namespace.id,
           ],
-          [null, [{ action: "administer", resourceKind: "installation" }], null],
         ] as const
       ).map(([roleNamespace, permissions, bindingNamespace]) => ({
         roleId: `role-provisioning-${randomUUID()}`,
@@ -842,19 +841,28 @@ export function registerCredentialCases() {
       };
       try {
         await grant(required(policy[0]));
-        const denied = await provision();
+        // Turning off gatewayManagedMode stays Installation administration, as on Agent create:
+        // the refusal names that field and stores no plan.
+        const denied = await provision({ gatewayManagedMode: false });
         assert.equal(denied.status, 403, JSON.stringify(denied.body));
         assert.equal(provisioningError(denied).code, "FORBIDDEN");
+        assert.match(
+          provisioningError(denied).message,
+          /changing gatewayManagedMode needs Installation administer/,
+        );
         const plans = await fixture.pool.query<{ plans: number }>(
           "SELECT count(*)::integer AS plans FROM occ.agent_provisioning_work WHERE namespace_id = $1",
           [namespace.id],
         );
         assert.equal(required(plans.rows[0]).plans, 0);
 
-        // Installation administer is the only grant the refused caller lacked.
-        await grant(required(policy[1]));
+        // Otherwise the Namespace grants alone admit the request (RFC-0026).
         const admitted = await provision();
         assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+        fixture.cancelQueuedWorkAtTeardown(
+          fixture.readResponse(AgentProvisioningResponse, admitted).data.provisioning.workId,
+          "Namespace-grant admission case ended.",
+        );
       } finally {
         for (const { roleId, bindingId } of policy) {
           await fixture.pool.query<Record<string, unknown>>(

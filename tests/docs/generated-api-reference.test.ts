@@ -232,6 +232,10 @@ test("Agent and CredentialSource operations document the permissions they check"
   for (const [operationId, condition] of [
     ["createAgent", "gateway_managed_mode_disabled"],
     ["validateAgentCreate", "gateway_managed_mode_disabled"],
+    // Guided provisioning needs Installation administration only to turn the mode off.
+    ["provisionAgent", "gateway_managed_mode_disabled"],
+    ["getAgentProvisioning", "gateway_managed_mode_disabled"],
+    ["retryAgentProvisioning", "gateway_managed_mode_disabled"],
     ["updateAgent", "gateway_managed_mode_changed"],
   ] as const) {
     assert.deepEqual(

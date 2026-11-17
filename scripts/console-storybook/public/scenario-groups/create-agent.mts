@@ -349,10 +349,10 @@ export const createAgentFormScenarios = {
     actions: [...readyForm, { selector: "#native-admin", click: true }],
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "A Namespace creator without Installation access enables browser chat through ordinary Agent creation. This is simulated UI proof.",
+      "A Namespace creator without Installation access enables browser chat during guided provisioning. This is simulated UI proof.",
     steps: [
       "Confirm Enable browser chat is available after the Namespace capability response.",
-      "Create the Agent. The request log shows ordinary POST agents with nativeAdmin true and expectedConfigurationGeneration 1, not guided provisioning.",
+      "Create the Agent. The request log shows POST agents/provision with nativeAdmin true.",
     ],
   },
   createNativeAdminSelected: {
@@ -2308,15 +2308,32 @@ export const createAgentProvisioningScenarios = {
     ],
     gap: "The member creation browser test uses a member account and the real Installation permission check.",
   },
+  createMemberProvisioning: {
+    group: "Pages/Create Agent",
+    name: "Member provisions a Dedicated Agent",
+    path: create,
+    observabilityDenied: true,
+    provisionedDeploymentStatus: "running",
+    actions: readyForm,
+    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    description:
+      "A member cannot read the Installation, but the Namespace's Agent capabilities include guided provisioning (RFC-0026). Create Agent provisions and deploys the Dedicated Agent as it does for an administrator; the worker grants the Agent the member's own Secrets.",
+    steps: [
+      'The status line under the form reads "Dedicated Agents are provisioned and deployed when created."',
+      "Click Create Agent. The request log shows POST agents/provision and no /iam/ request, and the new Agent opens on its Deployment tab.",
+    ],
+    gap: "The fixture simulates provisioning. The Agent provisioning PostgreSQL test runs a member's request through the real API and worker.",
+  },
   createMemberGrantRefused: {
     group: "Pages/Create Agent",
     name: "Member Agent created, opens its draft",
     path: create,
     observabilityDenied: true,
+    unsupportedProvisioning: true,
     actions: [...readyForm, click("Create Agent")],
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "The session already knows this member does not administer the Installation. The member's deploy gives the Agent access to its Secrets (RFC-0026), so after the Agent saves the form sends no IAM request and opens the Agent's draft, where the member deploys it.",
+      "On an Installation without guided provisioning, the session already knows this member does not administer the Installation. The member's deploy gives the Agent access to its Secrets (RFC-0026), so after the Agent saves the form sends no IAM request and opens the Agent's draft, where the member deploys it.",
     steps: [
       "After Create Agent, the Agent page opens on its draft.",
       "The request log shows no /iam/ request.",
@@ -2335,7 +2352,7 @@ export const createAgentProvisioningScenarios = {
       "A member cannot read the Installation, but the Namespace's Agent capabilities list the Credential Gateway's model source types. Create Agent registers the selected model Secret as a credential source before it saves the Agent, so the deploy is not refused for Secret-backed Harness authentication.",
     steps: [
       "The request log shows GET /installation refused and GET /namespaces/…/agent-capabilities answered with the model credential source types.",
-      "Enable Native admin UI is unavailable, and its hint says native admin setup needs guided provisioning, which only an Installation administrator can use.",
+      "The status line says Agents are saved as drafts, because this Installation offers no guided provisioning.",
       "Create the Agent and inspect the requests: POST …/credential-sources precedes POST …/agents, whose harnessAuth names the new source. The Agent page opens on its draft.",
     ],
     gap: "The fixture simulates the Credential Gateway. The Default users PostgreSQL test reads the route from the real API.",

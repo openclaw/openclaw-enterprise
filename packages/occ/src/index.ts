@@ -2603,18 +2603,16 @@ export class OpenClawController {
 
   /**
    * The capabilities Agent creation in a Namespace needs, for a caller who may create Agents
-   * there but cannot read the Installation, such as a Default user (RFC-0026). Browser access
-   * is available to resource owners; guided provisioning still requires Installation administration.
+   * there but cannot read the Installation, such as a Default user (RFC-0026).
    */
   async getNamespaceAgentCapabilities(
     principalId: string,
     namespaceId: string,
-  ): Promise<Readonly<Omit<InstallationCapabilities, "agentProvisioning">>> {
+  ): Promise<Readonly<InstallationCapabilities>> {
     this.namespaceIdentity(namespaceId);
     await this.authorize(principalId, "create", { kind: "agent", namespaceId, id: namespaceId });
     await this.read((state) => this.exactNamespace(state, namespaceId));
-    const { agentProvisioning: _administratorOnly, ...capabilities } = await this.capabilities();
-    return immutableCopy(capabilities);
+    return immutableCopy(await this.capabilities());
   }
 
   private async capabilities(): Promise<InstallationCapabilities> {
@@ -3690,6 +3688,7 @@ export class OpenClawController {
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
     }
     const gatewayManagedMode = normalizeGatewayManagedMode(input.gatewayManagedMode, true);
+    await this.authorizeGatewayManagedModeChange(principalId, !gatewayManagedMode);
     const backendId = this.backendId(input.backendId);
     const plugins = normalizeAgentPlugins(input.plugins);
     const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
@@ -15037,7 +15036,14 @@ export class OpenClawController {
     const checks: [AuthorizationRequest["action"], ResourceRef][] = [
       ["create", { kind: "agent", namespaceId, id: namespaceId }],
       ["create", { kind: "configuration", namespaceId, id: namespaceId }],
-      ["administer", { kind: "installation", id: this.installation.id }],
+      ...(plan.gatewayManagedMode
+        ? []
+        : [
+            ["administer", { kind: "installation", id: this.installation.id }] as [
+              AuthorizationRequest["action"],
+              ResourceRef,
+            ],
+          ]),
       ...(record.agentId === undefined
         ? []
         : (["read", "operate", "deploy"] as const).map(
@@ -15560,7 +15566,8 @@ export class OpenClawController {
   /**
    * The provisioning grants that need only the requested Namespace. Status and retry check them
    * before any lookup, so a caller without them gets the same audited denial whether or not the
-   * Namespace or work item exists.
+   * Namespace or work item exists. Like Agent create, provisioning needs no Installation grant
+   * (RFC-0026): the requester operates each source it binds and owns what the worker creates.
    */
   private async authorizeProvisioningRequest(
     principalId: string,
@@ -15572,10 +15579,6 @@ export class OpenClawController {
       kind: "configuration",
       namespaceId,
       id: namespaceId,
-    });
-    await this.authorize(principalId, "administer", {
-      kind: "installation",
-      id: this.installation.id,
     });
   }
 
@@ -15609,6 +15612,7 @@ export class OpenClawController {
       }
     }
     const plan = this.provisioningPlan(record);
+    await this.authorizeGatewayManagedModeChange(principalId, !plan.gatewayManagedMode);
     if (this.selectedDriver("iam").namespacePolicyTransaction !== "platform-unit-of-work") {
       throw new DependencyUnavailableError(
         "Agent provisioning requires transactional Namespace policy management.",
@@ -16025,6 +16029,11 @@ export class OpenClawController {
     // Take it before the Namespace lock: applying the configuration holds it exclusively and
     // then locks each Namespace it writes a configured binding into.
     await state.installations.holdIAMConfiguration("shared");
+    // Hold the requester's account through COMMIT, as its session holds it for a create: a
+    // disable commits before this step, which then fails permanently, or after its writes.
+    if (!(await state.installations.holdPrincipalAccount(record.actorId))) {
+      throw new CallerStateDeniedError("The account that requested provisioning is disabled.");
+    }
     const namespace = await this.lockNamespace(state, record.namespaceId);
     if (namespace.status !== "ready") {
       throw new NamespaceNotReadyError();
@@ -16629,7 +16638,14 @@ export class OpenClawController {
           : { secretBindings: plan.configuration.secretBindings }),
         harnessAuth: plan.harnessAuth,
       });
-      await this.ensureAgentOperateGrants(state, namespace.id, agent, grantSources);
+      for (const binding of await this.ensureAgentOperateGrants(
+        state,
+        namespace.id,
+        agent,
+        grantSources,
+      )) {
+        await this.auditAgentOperateGrant(state, record.actorId, agent, binding);
+      }
       return this.commitProvisioningCheckpoint(state, claim, {
         completedPhase: "configuration",
         status: "running",
@@ -16907,31 +16923,41 @@ export class OpenClawController {
       agent,
       missing,
     )) {
-      await state.audit.append({
-        id: `aud_${crypto.randomUUID()}`,
-        installationId: this.installation.id,
-        namespaceId: agent.namespaceId,
-        occurredAt: this.timestamp(),
-        kind: "mutation",
-        actorId: principalId,
-        source: "occ",
-        action: "openclaw.iam.access_bindings.create",
-        resource: {
-          kind: binding.resourceKind as "secret" | "credential_source",
-          id: binding.resourceId as string,
-          namespaceId: agent.namespaceId,
-        },
-        outcome: "success",
-        details: {
-          bindingId: binding.id,
-          subjectKind: binding.subjectKind,
-          subjectId: binding.subjectId,
-          roleId: binding.roleId,
-          reason: "agent_deploy",
-          agentId: agent.id,
-        },
-      });
+      await this.auditAgentOperateGrant(state, principalId, agent, binding);
     }
+  }
+
+  /** Audits an Agent's `operate` grant that a deploy or guided provisioning wrote for its caller. */
+  private async auditAgentOperateGrant(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    agent: Readonly<Agent>,
+    binding: Readonly<AccessBinding>,
+  ): Promise<void> {
+    await state.audit.append({
+      id: `aud_${crypto.randomUUID()}`,
+      installationId: this.installation.id,
+      namespaceId: agent.namespaceId,
+      occurredAt: this.timestamp(),
+      kind: "mutation",
+      actorId: principalId,
+      source: "occ",
+      action: "openclaw.iam.access_bindings.create",
+      resource: {
+        kind: binding.resourceKind as "secret" | "credential_source",
+        id: binding.resourceId as string,
+        namespaceId: agent.namespaceId,
+      },
+      outcome: "success",
+      details: {
+        bindingId: binding.id,
+        subjectKind: binding.subjectKind,
+        subjectId: binding.subjectId,
+        roleId: binding.roleId,
+        reason: "agent_deploy",
+        agentId: agent.id,
+      },
+    });
   }
 
   private async authorizeProvisioningSources(
