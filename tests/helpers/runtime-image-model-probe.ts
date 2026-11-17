@@ -16,7 +16,7 @@ import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
 import { runDockerCommand } from "./runtime-image-docker.ts";
 import { gatewayMemoryArguments } from "./runtime-image-memory.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
-import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
+import { createModelProbeCertificates } from "./runtime-model-probe-certificates.ts";
 import { modelProbeDiagnostic } from "./runtime-model-probe-observation.ts";
 import { jsonLines } from "./json-lines.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";

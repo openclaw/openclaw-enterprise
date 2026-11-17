@@ -12,7 +12,7 @@ import type {
   RepositoryCredentialRuntimeBinding,
 } from "../../packages/contracts/src/index.ts";
 import { repositoryClientData } from "../fixtures/repository-credentials/builders.ts";
-import { writeSafeKubeconfig } from "../helpers/unsafe-kubeconfigs.mjs";
+import { writeSafeKubeconfig } from "../helpers/unsafe-kubeconfigs.ts";
 
 type Core = ConstructorParameters<typeof RepositoryMaterialStore>[1];
 type SecretOperations = Pick<
@@ -95,9 +95,7 @@ function binding(repositoryRef: string, sessionId: string, deadlineWallMs: numbe
   };
 }
 async function fakeCore(t: TestContext) {
-  const { kubeconfigPath, context }: { kubeconfigPath: string; context: unknown } =
-    await writeSafeKubeconfig(t);
-  assert.ok(typeof context === "string");
+  const { kubeconfigPath, context } = await writeSafeKubeconfig(t);
   const { sdk, clientConfiguration } = await createKubernetesClientConfiguration(
     { mode: "kubeconfig", kubeconfigPath, context },
     (message) => new Error(message),

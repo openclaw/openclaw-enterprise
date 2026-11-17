@@ -15,7 +15,7 @@ import {
 } from "../helpers/ci-runner-fixture.ts";
 
 const reporter = new URL("../helpers/openshell-plugin-install-reporter.ts", import.meta.url).href;
-const stages = new URL("../helpers/openshell-stage.mjs", import.meta.url).href;
+const stages = new URL("../helpers/openshell-stage.ts", import.meta.url).href;
 const progress = new URL("../../scripts/ci/openshell-progress.mjs", import.meta.url).href;
 const caseName = "OpenShell installs selected Codex plugins before WebSocket startup";
 const sentinel = "invented-plugin-diagnostic-sentinel";

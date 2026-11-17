@@ -12,7 +12,7 @@ import type {
 } from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.ts";
 import type { AlternateDriverObservation } from "../fixtures/repository-credentials/alternate/driver.ts";
 import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";

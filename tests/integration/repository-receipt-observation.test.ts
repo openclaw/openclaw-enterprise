@@ -22,7 +22,7 @@ import { serviceConfigurationData } from "../fixtures/repository-credentials/bui
 import {
   createTlsMaterial,
   listen as listenOrigin,
-} from "../fixtures/repository-credentials/process.mjs";
+} from "../fixtures/repository-credentials/process.ts";
 import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.ts";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
 import { socketDirectory } from "../helpers/socket-directory.ts";

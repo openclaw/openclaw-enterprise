@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:https";
-import { createControlledClock } from "./clock.mjs";
-import { createTlsMaterial, listen } from "./process.mjs";
+import { createControlledClock } from "./clock.ts";
+import { createTlsMaterial, listen } from "./process.ts";
 import { createGitHubProtocol, type GitHubProtocolOptions } from "./github/protocol.ts";
 import type { FixtureOwner } from "./resources.ts";
 

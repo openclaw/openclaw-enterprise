@@ -26,8 +26,9 @@ import {
   type GitHubFixtureOptions,
 } from "../fixtures/repository-credentials/github.ts";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
-import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.mjs";
+import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import { hasResourceId } from "../helpers/egress-observation-values.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import {
   record,
@@ -215,14 +216,9 @@ export async function preparedLifecycleFixture(
       };
       const created = await app.request("POST", path, { body: registration });
       assert.equal(created.status, 201);
-      sourceId = resourceId(created.data);
-      const bound = await callFixture(bindRuntimeSource, undefined, [
-        app,
-        namespace,
-        agent,
-        created.data,
-      ]);
-      return bound;
+      assert.ok(hasResourceId(created.data));
+      sourceId = created.data.id;
+      return bindRuntimeSource(app, namespace, agent, created.data);
     },
   };
   const raw = await callFixture(staticEgressFixture, undefined, [t, options]);

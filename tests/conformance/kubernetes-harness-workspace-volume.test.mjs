@@ -28,7 +28,7 @@ function render(loginMode, node, initialSetup, environment = {}, scratch) {
     "test-agent",
     owner,
     { name: "test", plane: "control" },
-    "agent:local",
+    { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
     "agent",
     "agent",
     environment,

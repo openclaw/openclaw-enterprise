@@ -28,7 +28,7 @@ import { cookieHeaderFromSetCookie, createTestAuthPrincipal } from "../helpers/a
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
   createInstallationDriverConfiguration,
-} from "../helpers/installation-driver-configuration.mjs";
+} from "../helpers/installation-driver-configuration.ts";
 import { injectJson as injectUntypedJson } from "../helpers/inject-json.mjs";
 import {
   AUTHORIZATION_HEADER_REFUSED,

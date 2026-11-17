@@ -26,11 +26,11 @@ import { servePrivateRepositoryRequest } from "../../apps/controller/src/backend
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
-import { seedSessionRevision } from "../conformance/repository-sessions.contract.mjs";
+import { seedSessionRevision } from "../conformance/repository-sessions.contract.ts";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.ts";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.ts";
-import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
-import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.mjs";
+import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.ts";
+import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import { registerBrokerReceiptFencingCase } from "./postgres-repository-broker-receipt-fencing-cases.ts";

@@ -15,7 +15,7 @@ to at most 1 MiB, then redeploy.
 
 If a dedicated Codex Agent on OpenShell reports `Codex did not grant the requested :danger-full-access profile`, inspect the error's `comparison` category:
 
-- `sandbox-readOnly` or `sandbox-workspaceWrite`: Codex returned a restricted sandbox. Ask the account administrator to check its managed permission requirements against the [OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
+- `sandbox-readOnly` or `sandbox-workspaceWrite`: Codex returned a restricted sandbox. Ask the account administrator to check its managed permission requirements against [OpenShell's requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
 - `sandbox-externalSandbox`: Codex returned a different sandbox mode. Ask the operator to check the selected native profile and runtime compatibility.
 - `nonobject-result`, `field-absent`, `field-null`, `field-not-object`, `type-not-string`, or `type-unrecognized`: the response did not provide a recognized sandbox. Check the packaged runtime version and response contract before attributing the failure to account policy.
 
@@ -25,19 +25,19 @@ Login, source readiness, and a model reply under another profile cannot prove co
 
 ## Deploy requires a Sandbox Driver that supports protected Codex artifact admission
 
-OCE stops before creating an Agent version when the selected Sandbox Driver cannot validate artifact access for protected Codex repository execution. Ask your Installation administrator to check the `drivers.sandbox` selection and whether the installed Driver version provides [protected Codex artifact admission](../../reference/drivers/sandbox.md#methods). For OpenShell, see [how to configure the artifact rules](../../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
+OCE stops before creating an Agent version when the selected Sandbox Driver cannot validate artifact access for protected Codex repositories. Ask your Installation administrator to check the `drivers.sandbox` selection and whether the installed Driver version provides [protected Codex artifact admission](../../reference/drivers/sandbox.md#methods). For OpenShell, see [how to configure the artifact rules](../../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 
 ## The configured model is unavailable
 
 Open the failed version in the Agent’s **Deployment** tab. If the startup model check reports an unavailable model, [choose a model ID for the same credential](../operate/model-verification.md#choose-a-model-for-dedicated-codex).
 
-For the dedicated Codex quickstart, open **Configuration** → **Edit current Configuration**. In the draft, replace the old model ID in these three places:
+For the dedicated Codex quickstart, open **Configuration** → **Edit current Configuration**. Replace the model ID in three places:
 
 - Set `agents.defaults.model` to `codex/<new-id>`.
 - Rename its entry in `agents.defaults.models` to the same prefixed ID. Keep the entry’s Codex runtime settings.
 - Set the corresponding `models.providers.codex.models` entry’s `id` and `name` to the new ID without the prefix.
 
-Save the Configuration and select **Deploy new version** on the same Agent. When deployment succeeds, open **Open Agent UI** and send a prompt to confirm the model replies.
+Save the Configuration and select **Deploy new version** on the same Agent. Then send a prompt in **Open Agent UI** to confirm the model replies.
 
 ## The Agent or Namespace is missing
 
@@ -46,7 +46,7 @@ console and HTTP API only list resources your identity can read. If the
 Namespace is absent, ask your administrator to check your access. If it is
 `provisioning` or `failed`, an operator must check its
 [provisioning status](../../reference/namespaces.md#lifecycle) before deployment.
-Once access is fixed, refresh and confirm the Namespace is `ready`.
+Then refresh and confirm the Namespace is `ready`.
 
 <span id="deployment-is-blocked-or-has-no-selected-revision" class="anchor-alias"></span>
 
@@ -60,8 +60,7 @@ inspect the latest deployment you can read:
 occ --namespace NAMESPACE_ID agent deployment-status AGENT_ID --output json
 ```
 
-Without a deployment ID, this command returns the status of the latest readable
-Agent revision. Inspect the deployment error before changing credentials. If it
+Inspect the deployment error before changing credentials. If it
 failed, follow the next step in `error.message`. See the
 [deployment status reference](../../reference/agents.md#deployment-status).
 
@@ -94,22 +93,22 @@ retries, the worker log's `worker.compute-prepare-failed` events for that
 version name the code, preparation step and reason. The log Collector exports
 the code but not the step or reason. `KUBERNETES_OWNERSHIP_CONFLICT` means the
 driver refused an object it does not own, such as a Deployment with the Agent's
-workload name but no OCE ownership labels. The driver never adopts such an
-object. Delete it, then deploy again.
+workload name but no OCE ownership labels. The driver never adopts it; delete
+it, then deploy again.
 
 For a dedicated Agent, a connected workspace node alone does not establish
-enrollment: OCC must record its device through the setup handoff. If deployment
+enrollment: OCC must record its device through setup handoff. If deployment
 stays pending, give the operator the version ID and worker's reason code. Keep
 the node's retained identity and workspace intact; repeated restarts do not prove
 that handoff completed. Unconfirmed credential possession after setup expiry requires the
 [scoped node-Secret recovery](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage);
-do not delete the node identity or workspace. See [workspace-node enrollment](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage).
+do not delete the node identity or workspace.
 
 A second node runner using the same local profile fails immediately. Keep one
 runner per profile. Its lock remains held until clients, runtime shutdown and
 pending endpoint writes finish. Recovery requires a definitely dead owner or a
 process-start identity mismatch; age alone never permits reclaiming a live or
-ambiguous owner. Different profiles remain independent. This local runner lock
+ambiguous owner. This local runner lock
 does not coordinate other hosts or arbitrary credential writers; workload
 exclusion remains the execution provider's responsibility.
 
@@ -144,16 +143,19 @@ not measure effective capacity.
 
 ## An embedded Gateway reports an unverifiable state owner
 
-A hard stop can leave the old Gateway's locks on the Agent's volume. With
-Gateway managed mode on or off, OCE can recover a verified Docker predecessor
+A hard stop can leave the old Gateway's locks on the Agent's volume. In either
+Gateway managed mode, OCE can recover a verified Docker predecessor
 or the first eligible Kubernetes container in the same Pod. A new Pod cannot
-verify the previous Pod's owner. An older image may also lack a record of the
+verify a killed Pod's owner. An older image may also lack a record of the
 original PID 1 start time. If the replacement reports an unverifiable owner,
-use the following procedure.
+follow this procedure.
 
-A dedicated Gateway does not recover its locks. After an unclean exit it stays
-unready with the failed check `gateway-state-lock`, and its log quotes the
-holder. Use the same procedure.
+A dedicated Gateway does not recover a killed container's locks. Its container
+exits and restarts: `occ agent runtime AGENT_ID` shows `Error exit 1`, the
+deployment status stays `running` (`REVISION_INCOMPLETE`), and only `occ agent
+logs AGENT_ID --source gateway` quotes the holder. If the configuration check
+meets the lock first, the check `gateway-state-lock` fails instead. Use the same
+procedure.
 
 A dedicated Harness Pod that stops without a clean shutdown during native setup,
 for example on a node failure, can leave the lock in its workspace node state. Each
@@ -193,7 +195,7 @@ Deployment. Use the same procedure, with these changes:
   `chmod -R go-rwx,g-s /home/node/.openclaw-node`, then deploy again.
 
 1. Record the Agent, state volume and original container ID. On Kubernetes,
-   also record the Pod UID and node. Stop the Agent in OCC and verify with the
+   also record the Pod UID and node, and save the Gateway Deployment's manifest. Stop the Agent in OCC and verify with the
    compute provider that the exact container exited. A missing Pod or expired
    heartbeat alone cannot establish this. If its node is unreachable, keep the
    Agent stopped until the infrastructure operator verifies shutdown.
@@ -201,6 +203,9 @@ Deployment. Use the same procedure, with these changes:
 2. Keep other writers off the volume. Start a maintenance container from the
    Gateway's pinned image as its runtime user. Mount the retained volume and
    configuration at the Gateway's paths and use its state directory and profile.
+   On Kubernetes, also copy the Gateway Pod's `securityContext`, its
+   `prepare-private-state` init container and that container's volumes; without
+   them the command fails with `No safe OpenClaw temp root is available`.
    Inspect the holders without starting a Gateway.
 
    ```sh
@@ -270,8 +275,8 @@ failed `agent` `sandbox` check carrying the same code. Deploy the Agent again
 is removed. `unknown (UNAVAILABLE)` means OCC could not read the Sandbox record.
 
 An older development Sandbox can also fail exact-content adoption after a
-controller upgrade changes its immutable command. Deploy a new Agent revision
-with `occ agent deploy AGENT_ID`; OCE does not rewrite the existing Sandbox command.
+controller upgrade changes its immutable command. Deploy the Agent again;
+OCE does not rewrite the existing Sandbox command.
 
 ## Read OpenShell sandbox and supervisor logs
 
@@ -294,7 +299,6 @@ kubectl -n "$NS" logs --all-containers --tail=200 \
   -l "openshell.ai/sandbox-id=${SANDBOX_ID:?no Sandbox ID on the Harness Pod},openshell.ai/boundary-role=supervisor"
 ```
 
-The first command finds the Agent's Kubernetes namespace from its Harness Pod.
 `no Harness Pod for this revision` means the version never started a Sandbox or
 its Pods are gone; read the
 [deployment status](../../reference/agents.md#deployment-status) instead.

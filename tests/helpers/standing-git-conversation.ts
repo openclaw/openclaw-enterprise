@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { text } from "node:stream/consumers";
 import type { TestContext } from "node:test";
 import { reservePort, reservedPortArgs } from "./available-port.ts";
-import { harnessTlsFixture } from "./harness-tls.mjs";
+import { harnessTlsFixture } from "./harness-tls.ts";
 import { listen } from "./listen.ts";
 import { waitFor } from "./wait-for.ts";
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";

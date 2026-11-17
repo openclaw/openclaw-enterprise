@@ -5,12 +5,9 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import type { TimeoutMarkerPaths } from "../fixtures/repository-credentials-isolation/runner-timeout-child.ts";
-import type { ClientCommand } from "../fixtures/repository-credentials/clients.ts";
-import { run as runCommand } from "../fixtures/repository-credentials/process.mjs";
+import { run } from "../fixtures/repository-credentials/process.ts";
 import { ownedNetwork } from "../fixtures/repository-credentials-isolation/ownership.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
-
-const run = runCommand as ClientCommand;
 
 // These checks qualify fixture ownership only; they do not run the service,
 // Docker daemon, delivered images, or provider integration.

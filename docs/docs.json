@@ -130,6 +130,10 @@
                     "label": "Deployment"
                   },
                   {
+                    "page": "reference/agents/planned-replacement",
+                    "label": "Planned replacement"
+                  },
+                  {
                     "page": "reference/agents/gateway-managed-mode",
                     "label": "Gateway managed mode"
                   },

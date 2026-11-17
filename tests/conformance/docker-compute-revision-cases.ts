@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createDockerDevelopmentComputeDriverFromEnv } from "../../apps/controller/src/drivers/compute/docker/index.ts";
-import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
+import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.ts";
 import {
   dockerDriver,
   dockerAgentRevision,

@@ -10,7 +10,7 @@ import {
   renderInstallationProfile,
 } from "../../scripts/render-installation-profile.ts";
 import { syntheticCredentialUrl as credentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { helmTemplate as templateChart } from "../helpers/production-chart.mjs";
+import { helmTemplate as templateChart } from "../helpers/production-chart.ts";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.ts";
 
 export const repository = fileURLToPath(new URL("../../", import.meta.url));

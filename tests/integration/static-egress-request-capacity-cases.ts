@@ -26,7 +26,7 @@ import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import capturedOperation from "../fixtures/static-egress/openshell-operation.json" with { type: "json" };
-import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 import { requestId } from "../helpers/static-egress-request-id.ts";
 import { staticEgressWireFixture, wireTime } from "../helpers/static-egress.mjs";

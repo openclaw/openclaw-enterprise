@@ -50,7 +50,7 @@ import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.
 import { within } from "../helpers/wait-for.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { deleteRefused, VERSION_READ_DENIED_HEADING } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
