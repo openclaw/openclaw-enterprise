@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
+  EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
@@ -304,7 +305,8 @@ test(
 );
 
 test("the file-only mode refuses modified stock commands and replacement mounts", () => {
-  const stockArgs = nodeProgramArguments(AGENT_WITH_NODE_ENTRYPOINT);
+  // Compute renders the explicit-proxy program for a provider-owned Sandbox other than OpenShell.
+  const stockArgs = nodeProgramArguments(EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT);
   const stock = inflateRawSync(Buffer.from(stockArgs.slice(1).join(""), "base64"));
   assert.throws(
     () => splitStockCommand(Buffer.concat([stock, Buffer.from("\nvoid 0;")])),
@@ -316,6 +318,8 @@ test("the file-only mode refuses modified stock commands and replacement mounts"
   ).toString();
   assert.doesNotMatch(harness, /pair-or-reconnect|OPENCLAW_NODE_SETUP_CODE/);
   assert.match(harness, /ws-token-sha256/);
+  // Box names its egress proxy in the Harness environment; the probe keeps it.
+  assert.match(harness, /"HTTPS_PROXY", "https_proxy"/);
   const directory = temporary();
   const original = join(directory, "workspace");
   const moved = join(directory, "moved");

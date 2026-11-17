@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {
+  AGENT_RUNTIME_ENTRYPOINT,
+  AGENT_WITH_NODE_ENTRYPOINT,
+  codexLaunchEntrypoint,
+  EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT,
+  PROVIDER_CODEX_ONLY_PROGRAM,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { pluginRuntimeEnvironment } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import {
   checkCodexStartup,
@@ -762,6 +769,111 @@ test("Codex app-server gives sandboxed commands the Pod's CA path, never the hoo
     assert.equal(env.NODE_EXTRA_CA_CERTS, hookCa, name);
     assert.equal(Object.hasOwn(env, "OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS"), false, name);
   }
+});
+
+// A Sandbox whose egress is an explicit proxy (loopback only, HTTPS_PROXY in the Harness
+// environment) can reach the model only through it, so the program Compute renders for a
+// provider-owned Sandbox other than OpenShell carries the standard proxy settings into the
+// authentication probe when they are set. OpenShell's egress is transparent and its admitted
+// commands keep their bytes, so its programs never carry them.
+test("Codex authentication probe carries proxy settings only for an explicit-proxy launch", (t) => {
+  const readyTurn = probe([
+    { type: "turn.started" },
+    { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+    { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+  ]);
+  const proxy = {
+    HTTPS_PROXY: "http://127.0.0.1:3128",
+    https_proxy: "http://127.0.0.1:3129",
+    HTTP_PROXY: "http://127.0.0.1:3130",
+    http_proxy: "http://127.0.0.1:3131",
+    ALL_PROXY: "socks5://127.0.0.1:1080",
+    all_proxy: "socks5://127.0.0.1:1081",
+    NO_PROXY: "127.0.0.1,.fixture-no-proxy.test",
+    no_proxy: ".fixture-lower-no-proxy.test",
+  };
+  const fixed = ["CODEX_HOME", "HOME", "PATH", "RUST_LOG"];
+  const unrelated = { FTP_PROXY: "http://127.0.0.1:2121", OPENCLAW_UNRELATED: "1" };
+  const openShellCa = { SSL_CERT_FILE: "/run/openshell/ca-bundle.crt" };
+  const explicitProxy = codexLaunchEntrypoint({
+    providerOwned: true,
+    protected: false,
+    explicitProxy: true,
+  });
+  for (const [name, entrypoint, environment, expected] of [
+    [
+      "an OpenShell launch keeps its probe environment",
+      undefined,
+      { ...openShellCa, ...proxy, ...unrelated },
+      openShellCa,
+    ],
+    [
+      "an explicit-proxy launch without proxy settings keeps the same environment",
+      explicitProxy,
+      { ...openShellCa, ...unrelated },
+      openShellCa,
+    ],
+    ["an explicit proxy reaches the probe", explicitProxy, { ...proxy, ...unrelated }, proxy],
+    [
+      "empty proxy settings stay out",
+      explicitProxy,
+      Object.fromEntries(Object.keys(proxy).map((key) => [key, ""])),
+      {},
+    ],
+  ]) {
+    const runtime = createCodexStartup(t, { native: [login(), readyTurn], environment });
+    runtime.start(entrypoint);
+    runtime.assertNativeScriptConsumed();
+    assert.equal(runtime.probeSpawns.length, 1, name);
+    const [{ env }] = runtime.probeSpawns;
+    assert.deepEqual(Object.keys(env).sort(), [...fixed, ...Object.keys(expected)].sort(), name);
+    for (const [key, value] of Object.entries(expected)) {
+      assert.equal(env[key], value, name);
+    }
+    // The serving app-server inherits the Harness environment as before.
+    assert.equal(runtime.appServerSpawns.length, 1, name);
+    for (const [key, value] of Object.entries(environment)) {
+      assert.equal(runtime.appServerSpawns[0].env[key], value, name);
+    }
+    // No proxy value reaches a diagnostic line.
+    for (const value of Object.values(proxy)) {
+      assert.ok(!runtime.diagnostics.some((line) => line.includes(value)), name);
+    }
+  }
+});
+
+test("Compute selects the explicit-proxy Codex program only outside OpenShell", () => {
+  const launch = { providerOwned: true, protected: false, explicitProxy: true };
+  assert.equal(
+    codexLaunchEntrypoint({ ...launch, withNode: true }),
+    EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT,
+  );
+  assert.ok(PROVIDER_CODEX_ONLY_PROGRAM.includes('"HTTPS_PROXY", "https_proxy"'));
+  for (const programLaunch of [
+    { withNode: false },
+    { withNode: false, protected: true },
+    { withNode: true, protected: true },
+  ]) {
+    assert.notEqual(
+      codexLaunchEntrypoint({ ...launch, ...programLaunch }),
+      codexLaunchEntrypoint({ ...launch, ...programLaunch, explicitProxy: false }),
+    );
+  }
+  // An admitted OpenShell program and every Compute-owned program keep their bytes.
+  for (const programLaunch of [
+    { openShellProgram: "ordinary" },
+    { openShellProgram: "ordinary", withNode: true, workspaceSetup: true },
+    { openShellProgram: "pat" },
+    { providerOwned: false },
+    { providerOwned: false, withNode: true, protected: true },
+  ]) {
+    assert.equal(
+      codexLaunchEntrypoint({ ...launch, ...programLaunch }),
+      codexLaunchEntrypoint({ ...launch, ...programLaunch, explicitProxy: false }),
+    );
+  }
+  assert.equal(AGENT_RUNTIME_ENTRYPOINT.includes('"HTTPS_PROXY"'), false);
+  assert.notEqual(AGENT_WITH_NODE_ENTRYPOINT, EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT);
 });
 
 test("Codex runtime retries a transient startup model probe failure once", async (t) => {

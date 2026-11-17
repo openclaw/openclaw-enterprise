@@ -15127,9 +15127,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       throw new ConfigurationFailure("AgentRevision Compute admission is invalid.");
     }
     const auth = revision.harnessAuth;
+    const providerOwned = sandbox?.provisionHarness !== undefined;
     return {
-      providerOwned: sandbox?.provisionHarness !== undefined,
+      providerOwned,
       protected: this.hasProtectedCodexAdmission(revision),
+      // Another provider's Sandbox may route egress through an explicit proxy it names in
+      // the Harness environment. OpenShell's egress is transparent and its commands keep
+      // their admitted bytes, so its launches never select this.
+      ...(providerOwned && sandbox?.implementation !== "openshell" && { explicitProxy: true }),
       ...(updated && {
         openShellProgram:
           revision.executionAdmission.mode === "unprotected" &&

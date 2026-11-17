@@ -14,8 +14,8 @@ import {
 import { isIP } from "node:net";
 import { basename, dirname, join, sep } from "node:path";
 import {
-  AGENT_WITH_NODE_ENTRYPOINT,
   CODEX_WORKSPACE_NODE_COMMANDS,
+  EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT,
   PROVIDER_CODEX_ONLY_PROGRAM,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -126,7 +126,8 @@ export function nodeInstallation(value: unknown): NodeInstallation {
 }
 
 export function assertStockCombinedCommand(program: Buffer): void {
-  if (!program.equals(Buffer.from(withoutLineComments(AGENT_WITH_NODE_ENTRYPOINT)))) {
+  const stock = withoutLineComments(EXPLICIT_PROXY_AGENT_WITH_NODE_ENTRYPOINT);
+  if (!program.equals(Buffer.from(stock))) {
     throw new Error("unrecognized_combined_workspace_node_command");
   }
 }
