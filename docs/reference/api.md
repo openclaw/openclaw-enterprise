@@ -4621,7 +4621,7 @@ Create a new Agent and queue first-time provisioning
 
 **Operation ID:** `provisionAgent`
 
-**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires create permission for Configuration resources in the requested Namespace. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each existing Secret reference supplied in provisioning inputs.
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires create permission for Configuration resources in the requested Namespace. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each existing Secret reference supplied in provisioning inputs. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -4630,6 +4630,7 @@ Create a new Agent and queue first-time provisioning
 | `create` | `configuration` | `namespace` |
 | `read` | `service_account` | `requested` (when associated) |
 | `operate` | `secret` | `requested` (when bound) |
+| `operate` | `credential_source` | `request_body` (when bound) |
 
 ##### Parameters
 
@@ -4846,6 +4847,7 @@ Get first-time provisioning status for one exact work item
 | `update` | `configuration` | `requested` (once created) |
 | `read` | `service_account` | `requested` (when associated) |
 | `operate` | `secret` | `requested` (when bound) |
+| `operate` | `credential_source` | `requested` (when bound) |
 
 ##### Parameters
 
@@ -4931,6 +4933,7 @@ Retry failed first-time provisioning for one exact work item
 | `update` | `configuration` | `requested` (once created) |
 | `read` | `service_account` | `requested` (when associated) |
 | `operate` | `secret` | `requested` (when bound) |
+| `operate` | `credential_source` | `requested` (when bound) |
 
 ##### Parameters
 

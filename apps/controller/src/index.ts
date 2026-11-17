@@ -907,20 +907,16 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         condition: "bound_secret",
       },
       // Mirrors OCC authorizeHarnessAuthSource and authorizeAgentCredentialSources. Agent
-      // provisioning refuses credential sources, so it needs no such grant.
-      ...(operation.operationId === "provisionAgent"
-        ? []
-        : [
-            {
-              action: "operate" as const,
-              resourceKind: "credential_source" as const,
-              scope:
-                operation.operationId === "createAgent"
-                  ? ("request_body" as const)
-                  : ("requested" as const),
-              condition: "bound_credential_source" as const,
-            },
-          ]),
+      // provisioning checks the harness credential source that its request names.
+      {
+        action: "operate" as const,
+        resourceKind: "credential_source" as const,
+        scope:
+          operation.operationId === "createAgent" || operation.operationId === "provisionAgent"
+            ? ("request_body" as const)
+            : ("requested" as const),
+        condition: "bound_credential_source" as const,
+      },
       // Mirrors OCC createRevision and refuseRepositoryNetworkOverlap: refusals that name saved
       // network policy additions come after SandboxPolicy read (findings 2151, 2881).
       ...(operation.operationId === "deployAgent" || operation.operationId === "updateAgent"
@@ -973,6 +969,12 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         resourceKind: "secret",
         scope: "requested",
         condition: "bound_secret",
+      },
+      {
+        action: "operate",
+        resourceKind: "credential_source",
+        scope: "requested",
+        condition: "bound_credential_source",
       },
     ];
   }

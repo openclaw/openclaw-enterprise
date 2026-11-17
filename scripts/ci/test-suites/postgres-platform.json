@@ -271,7 +271,8 @@
       "path": "tests/integration/postgres-agent-provisioning-member.test.ts",
       "expectedTests": [
         "a Default user provisions an Agent and owns what the worker creates",
-        "provisioning stops when its requester's account is disabled before the worker runs"
+        "provisioning stops when its requester's account is disabled before the worker runs",
+        "provisioning that turns off gatewayManagedMode stops when its requester loses Installation administer"
       ]
     },
     {

@@ -244,7 +244,8 @@ records `openclaw.iam.access_bindings.create` with the source as resource and
 `reason: "agent_deploy"` and `agentId` in details. The grants commit with the
 deployment; a refused deployment writes none. Guided provisioning writes the
 same grants, with the same audit records, when it creates the Agent. Its
-requester must `operate` each Secret the request binds.
+requester must `operate` each Secret the request binds and its harness
+credential source.
 
 A source that the caller cannot operate gets no grant. The Agent principal check
 then refuses the deploy until someone who can operate the source deploys, or an
@@ -275,7 +276,15 @@ above. When the Installation enables browser access, the response includes
 Guided provisioning needs Agent `create` and Configuration `create` in the
 Namespace, and no Installation grant. A request that turns off
 `gatewayManagedMode` also needs Installation `administer`, as Agent create does,
-and is refused with `403` otherwise.
+and is refused with `403` otherwise. The worker, the status read, and a retry
+check that grant again, so the work fails with `PROVISIONING_REJECTED` if the
+requester loses it while the request waits.
+
+After it creates the Agent and Configuration, each provisioning step needs Agent
+`read`, `operate`, and `deploy` and Configuration `read` and `update`, which a
+member gets only from the Owner binding. If the Owner Role lacks them, the work
+fails with `PROVISIONING_REJECTED` after it creates the Agent and
+Configuration, and only an administrator can see or delete them.
 
 ## Current limits
 

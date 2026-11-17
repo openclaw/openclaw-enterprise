@@ -9,6 +9,7 @@ import {
   AgentProvisioningStatusResponse,
   InstallationResponse,
   NamespaceAgentCapabilitiesResponse,
+  SecretDetailResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.mjs";
@@ -55,9 +56,9 @@ async function memberFixture(context: TestContext) {
   return { fixture, namespace };
 }
 
-// A password account with no grant, created by the administrator. It joins the configured
-// default-user Group as it is created.
-async function member(fixture: Fixture, name: string) {
+// A password account created by the administrator, with no grant unless `roleId` seeds one. It
+// joins the configured default-user Group as it is created.
+async function member(fixture: Fixture, name: string, { roleId }: { roleId?: string } = {}) {
   const credentials = {
     email: `provisioning-${name}-${randomUUID()}@example.test`,
     password: `generated-password-${randomUUID()}`,
@@ -67,7 +68,7 @@ async function member(fixture: Fixture, name: string) {
     "POST",
     "/api/auth/accounts",
     {
-      body: credentials,
+      body: { ...credentials, ...(roleId === undefined ? {} : { roleId }) },
     },
   );
   assert.equal(created.status, 201, JSON.stringify(created.body));
@@ -287,5 +288,101 @@ test(
       [namespace.id],
     );
     assert.equal(agentBindings.rowCount, 0);
+  },
+);
+
+test(
+  "provisioning that turns off gatewayManagedMode stops when its requester loses Installation administer",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const { fixture, namespace } = await memberFixture(context);
+    // Carol administers the Installation: her account is created with the bootstrap
+    // administrator's Role, which the account API binds to the Installation. She also joins the
+    // default-user Group, so her Agent create comes from the configured Group binding.
+    const administrators = await fixture.pool.query<{ role_id: string }>(
+      `SELECT role_id FROM occ.iam_access_bindings
+       WHERE identity_subject_id = $1 AND namespace_id IS NULL AND resource_kind IS NULL`,
+      [await fixture.administratorPrincipalId()],
+    );
+    assert.equal(administrators.rows.length, 1, JSON.stringify(administrators.rows));
+    const administratorRoleId = administrators.rows[0]?.role_id;
+    assert.ok(administratorRoleId);
+    const carol = await member(fixture, "carol", { roleId: administratorRoleId });
+    const secrets = await createProvisioningSecrets(as(fixture, carol.session), namespace.id);
+    const body = { ...provisioningBody(namespace.id, secrets), gatewayManagedMode: false };
+
+    // While she administers the Installation, turning off gatewayManagedMode is admitted.
+    const admitted = await fixture.requestChecked(
+      AgentProvisioningResponse,
+      "POST",
+      `/namespaces/${namespace.id}/agents/provision`,
+      { body, session: carol.session },
+    );
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const { workId } = admitted.data.provisioning;
+    const secretPath = `/namespaces/${namespace.id}/secrets/${secrets.modelKey.id}`;
+    const consumers = async () => {
+      const read = await fixture.requestChecked(SecretDetailResponse, "GET", secretPath, {
+        session: carol.session,
+      });
+      assert.equal(read.status, 200, JSON.stringify(read.body));
+      return read.data.consumers;
+    };
+    // Her Secret names the queued request as a consumer while she may read its status.
+    assert.deepEqual((await consumers()).provisioningRequests, [workId]);
+
+    // Her Installation administration ends while the work waits in the queue. This deletes the
+    // binding that the account API seeded for her. Her Group binding and Secret Owner bindings
+    // stay, so only the stored plan's gatewayManagedMode check can stop the work.
+    const revoked = await fixture.pool.query(
+      `DELETE FROM occ.iam_access_bindings WHERE identity_subject_id = $1 AND role_id = $2`,
+      [carol.principalId, administratorRoleId],
+    );
+    assert.equal(revoked.rowCount, 1);
+    // The Secret now counts the request without naming it: she may no longer read it.
+    const hidden = await consumers();
+    assert.deepEqual(hidden.provisioningRequests, []);
+    assert.equal(hidden.unreadable, 1);
+
+    // The worker checks the stored plan again before it writes anything: the work fails
+    // permanently, and no Agent or Configuration exists.
+    await fixture.startWorker();
+    const row = await waitFor("the revoked administrator's provisioning to fail", async () => {
+      const observed = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+      return observed.status === "failed" ? observed : undefined;
+    });
+    assert.equal(row.agent_id, null);
+    assert.equal(row.configuration_id, null);
+    const work = await fixture.pool.query<{ state: string; reason_code: string | null }>(
+      `SELECT state, reason_code FROM occ.controller_work
+       WHERE work_kind = 'provisioning' AND namespace_id = $1 AND idempotency_key = $2`,
+      [namespace.id, admitted.data.provisioning.workId],
+    );
+    assert.deepEqual(work.rows, [
+      { state: "failed_permanent", reason_code: "PROVISIONING_REJECTED" },
+    ]);
+    assert.deepEqual(await storedProvisioningCounts(fixture.pool, namespace.id), {
+      jobs: 1,
+      agents: 0,
+    });
+    const configurations = await fixture.pool.query(
+      "SELECT id FROM occ.configurations WHERE namespace_id = $1",
+      [namespace.id],
+    );
+    assert.equal(configurations.rowCount, 0);
+
+    // The status read and the retry check the stored plan too, so both refuse her and name the
+    // field.
+    for (const [method, path] of [
+      ["GET", admitted.data.provisioning.url],
+      ["POST", `${admitted.data.provisioning.url}/retry`],
+    ] as const) {
+      const refused = await fixture.request(method, path, { session: carol.session });
+      assertApiError(refused, 403, "FORBIDDEN");
+      assert.match(
+        provisioningError(refused).message,
+        /changing gatewayManagedMode needs Installation administer/,
+      );
+    }
   },
 );
