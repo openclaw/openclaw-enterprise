@@ -917,7 +917,7 @@ test("shared OpenAI provider leaves a roster-selected Anthropic provider unchang
   const providers = JSON.parse(document.data["openclaw.json"]).models.providers;
   assert.equal(providers.anthropic.baseUrl, "https://api.anthropic.com");
   assert.equal(providers.openai.baseUrl, "https://unselected.example.test/v1");
-  assert.equal(fixture.revision.compute.admission, undefined);
+  assert.doesNotMatch(fixture.revision.compute.admission ?? "", /model-provider:/);
 });
 
 test("invalid runtime snapshots cannot fall back to current images", async () => {
@@ -3483,6 +3483,44 @@ test(
   checkTrustedProxyIdentities,
 );
 
+test("HTTP completion resolution preserves scope, opt-out and revision-specific routing", () => {
+  const configured = routedOptions({
+    runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+  });
+  const driver = createKubernetesComputeDriver(configured);
+  const revision = routedRevision(driver);
+  // Auth and HTTP defaults are derived from the saved admission, not required in authored settings.
+  delete revision.configuration.gateway.auth.mode;
+  assert.equal(driver.getChatCompletionsEndpoint(revision).status, "available");
+  const old = structuredClone(revision);
+  delete old.compute.admission;
+  assert.deepEqual(driver.getChatCompletionsEndpoint(old), { status: "unavailable" });
+  revision.configuration.gateway.http = { endpoints: { chatCompletions: { enabled: false } } };
+  revision.configuration.gateway.auth.mode = "token";
+  // Opt-out cannot qualify an incompatible authentication mode.
+  assert.deepEqual(driver.getChatCompletionsEndpoint(revision), { status: "unsupported" });
+  revision.configuration.gateway.auth.mode = "trusted-proxy";
+  assert.deepEqual(driver.getChatCompletionsEndpoint(revision), { status: "disabled" });
+  revision.configuration.gateway.http.endpoints.chatCompletions.enabled = true;
+  const endpoint = driver.getChatCompletionsEndpoint(revision);
+  assert.equal(endpoint.status, "available");
+  assert.equal(endpoint.model, "openclaw:main");
+  assert.equal(
+    new URL(endpoint.url).pathname,
+    `/http-chat/namespaces/${tenant.id}/agents/${revision.agentId}/revisions/${revision.id}/v1/chat/completions`,
+  );
+  assert.notEqual(
+    driver.getChatCompletionsEndpoint({ ...revision, id: "replacement-revision" }).url,
+    endpoint.url,
+  );
+  assert.deepEqual(
+    createKubernetesComputeDriver(
+      options({ runtime: configured.runtime }),
+    ).getChatCompletionsEndpoint(revision),
+    { status: "unavailable" },
+  );
+});
+
 test("gateway chat routes enforce a distinct exact-Agent scope ceiling", () => {
   const driver = createKubernetesComputeDriver(routedOptions());
   const revision = routedRevision(driver);
@@ -4390,52 +4428,17 @@ test("gateway routing startup validation and namespace membership fail closed", 
       SharedConfigurationValidationError,
     );
   }
-  for (const gatewayRouting of [
-    {
-      hostname: "agents.example.internal:443",
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: "https://agents.example.internal",
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: " ",
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: 42,
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: "agents.example.internal",
-      gatewayName: "OCE",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: "agents.example.internal",
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw/system",
-      envoyNamespace: "envoy-gateway-system",
-    },
-    {
-      hostname: "agents.example.internal",
-      gatewayName: "oce-agent-gateways",
-      gatewayNamespace: "openclaw-system",
-      envoyNamespace: "envoy/system",
-    },
+  for (const invalidGatewayRouting of [
+    { ...gatewayRouting, hostname: "agents.example.internal:443" },
+    { ...gatewayRouting, hostname: "https://agents.example.internal" },
+    { ...gatewayRouting, hostname: " " },
+    { ...gatewayRouting, hostname: 42 },
+    { ...gatewayRouting, gatewayName: "OCE" },
+    { ...gatewayRouting, gatewayNamespace: "openclaw/system" },
+    { ...gatewayRouting, envoyNamespace: "envoy/system" },
   ]) {
     assert.throws(
-      () => createKubernetesComputeDriver(routedOptions({ gatewayRouting })),
+      () => createKubernetesComputeDriver(routedOptions({ gatewayRouting: invalidGatewayRouting })),
       SharedConfigurationValidationError,
     );
   }

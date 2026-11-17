@@ -1,6 +1,6 @@
 ---
 created: 2026-10-15
-updated: "2026-11-16"
+updated: "2026-11-17"
 last_updated_session: "01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd"
 ---
 
@@ -40,8 +40,6 @@ graph TD
   V --> R["Record applied<br/>or unconfirmed failure"]
 ```
 
-Arrows trace source paths; provider verification remains separate.
-
 ## Execution Trace
 
 ### 1. Admit and persist desired additions
@@ -50,12 +48,11 @@ Arrows trace source paths; provider verification remains separate.
 `validateOptions` selects JSON by default and rejects unsupported formats before
 requests; `printStructured` prints acknowledged results.
 
-`OpenClawController.discoverConfigurations` filters registry contributions by the
-server-selected Driver, scope, and resource-owner read authority. Installation
-inspection exposes [Driver-projected startup values](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
-Agent discovery and policy GET
-use the same descriptor with owner-generated facet action URLs and current
-availability. The registry never selects a Driver from submitted additions.
+`OpenClawController.discoverConfigurations` filters contributions by the selected
+Driver, scope and owner read authority. Installation inspection exposes
+[Driver-projected startup values](driver-plugin-loading.md#4-load-current-policy-and-hand-off-lifecycle-ownership).
+Agent discovery and policy GET use owner-generated facet URLs and availability;
+submitted additions cannot select a Driver.
 
 The policy write hook in `apps/controller/src/index.ts` budgets verified identities
 before IAM lookup, shared with Preset/Configuration writes. Policy writes resolve
@@ -70,18 +67,14 @@ The shared `SandboxNetworkGrantsSchema` bounds policies at 16,384 entries.
 ranges, and binary-searches cached exact/wildcard interval unions. Controller admission and
 worker application use this index.
 
-`validateAgentSandboxPolicy` authorizes the exact Agent and policy, checks the
-current editing flag, expected version, and pending application, then runs shared
-schema/semantic validation, the Driver contribution (which can only narrow it), and
-current ceiling/provider admission. An empty or reversed port range is never inside
-the ceiling. It returns a configuration result without entering a mutation
-transaction. Schema and semantic refusals carry safe `error.details`; stale or
-unauthorized requests retain their resource errors. Every later mutation repeats
-these checks. Ceiling refusal keeps its Installation-delegation cause; unsupported
-wildcard/range refusal names the Driver capability limit. Both retain field details.
-`internal/occclient/transport.go:APIError.Error` prints up to 32 public detail
-records as escaped JSON and omits records with Unicode control characters, so
-CLI callers retain the same field and cause without terminal controls.
+`validateAgentSandboxPolicy` authorizes the Agent/policy, checks editing, version
+and pending work, then validates shared rules, the narrowing Driver contribution
+and ceiling/provider admission. Empty or reversed port ranges never prove coverage.
+Preview does not mutate; writes repeat these checks. Safe `error.details` retain
+field paths and distinguish ceiling delegation from Driver capability refusals;
+stale or unauthorized requests retain resource errors.
+`internal/occclient/transport.go:APIError.Error` prints up to 32 public details as
+escaped JSON, omitting records containing Unicode controls.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
@@ -101,13 +94,11 @@ identity, version and empty additions before runtime credential provisioning.
 That immutable snapshot remains ineligible for live apply. The policy view reports
 `protectedExecution`.
 
-Protected Codex repository preparation compiles the revision's qualified artifact
-snapshot through `openshell-codex-artifacts.ts`; it never merges ambient defaults.
-Both paired compilers validate the complete map. The Sandbox separately compares
-the final workspace enrollment rule with its validated Agent-owned setup binding,
-then returns the full immutable policy in `SandboxResourceRef.proxyWiring`.
-The proxy checks the complete artifact map and bounded auxiliary rule before
-comparing the complete loaded policy.
+Protected Codex preparation compiles only the revision's qualified artifact
+snapshot through `openshell-codex-artifacts.ts`. Both compilers validate its complete
+map. The Sandbox checks workspace enrollment against the Agent-owned setup
+binding and returns immutable `SandboxResourceRef.proxyWiring`. The proxy validates
+the artifact map and auxiliary rule before comparing loaded policy.
 For an Agent with repository bindings (or a Git-bound active revision), Driver
 admission gets `repositoryCredentials`: the OpenShell Driver with its Git route
 refuses a grant or default reaching `github.com` or a name under it, or naming an
@@ -123,8 +114,7 @@ fail before network policy access. The temporary
 Installation and Agent administration; Guardrails will replace this switch.
 
 Both state adapters return `sandboxPolicyEditing: false` at Agent creation,
-matching the PostgreSQL column default and subsequent reads. The separately
-authorized editing operation changes this flag.
+matching the PostgreSQL column default and subsequent reads.
 
 `packages/occ/src/state/postgres-state.ts` performs versioned updates. Agent
 creation creates its one policy through a database trigger. Constraints enforce
@@ -160,8 +150,14 @@ are bounded by the claim lease. Database and audit failures roll back the pass.
 `apps/controller/src/drivers/sandbox/openshell.ts` verifies exact provider
 ownership, preserves the Sandbox's static policy and generated access, and uses
 native status/UpdateConfig RPCs. A full candidate match plus loaded active version
-is required for `applied`. Transient or unknown outcomes retry within limits;
-terminal stale work becomes an unconfirmed failure. The worker calls
+is required for `applied`. If the current resource version already differs from the
+pinned version and the policy does not match, the worker fails before it sends a write.
+After a refused write, the worker reads the provider again and confirms its lease.
+A matching policy still loading is deferred within the deadline, `applied` is recorded
+only for a loaded active match, and a changed resource version with a nonmatch fails as
+`SANDBOX_POLICY_PROVIDER_FAILED` (the pinned version cannot succeed). Worker shutdown during
+that read rolls back so the next worker recovers the claim; other outcomes retry within limits;
+exhausted abandoned claims become unconfirmed failures. The worker calls
 `failAbandonedSandboxPolicies` inside the same `transactWithQueue` that recovers
 exhausted work, so queue failure, application failure, and audit either all commit
 or remain recoverable after interruption. A failed live request does
@@ -275,6 +271,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-17: Condense admission traces while preserving provider recovery boundaries. (01a1cb2b-f8fd-79b0-9789-7d0ca67c4ddd)
 
 - 2026-11-16 22:21: Reject policy saves that remove a pending application. (authoring-run/9f288473-f3c0-4816-b8a7-d2bc81b82c2c - cf0370780b4e885e35ee463033b6926e5d3109ef)
 

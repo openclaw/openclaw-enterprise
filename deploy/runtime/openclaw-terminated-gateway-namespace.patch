@@ -55,7 +55,7 @@ index 5ff6dbe40893bad2c969677308fbc3fcf75c858c..2513bfce56d8a91612b398b002634e23
    parentStartTime: z.number().optional(),
    // Null and absent identities cannot establish the owner's process namespace.
 diff --git a/src/infra/gateway-lock-recovery.test.ts b/src/infra/gateway-lock-recovery.test.ts
-index 37a61eeaae5ab87085f84ef21ddae099b5a92959..73ef4b5d83a55be81079fd4adb696e4b16420e9f 100644
+index 37a61eeaae5ab87085f84ef21ddae099b5a92959..f6b685a6e21ef2b1317d6b25c79b855b29a383e0 100644
 --- a/src/infra/gateway-lock-recovery.test.ts
 +++ b/src/infra/gateway-lock-recovery.test.ts
 @@ -7,7 +7,11 @@ import {
@@ -100,7 +100,7 @@ index 37a61eeaae5ab87085f84ef21ddae099b5a92959..73ef4b5d83a55be81079fd4adb696e4b
  describe("explicit Gateway lock recovery", () => {
    it("inspects without changing files and removes only the confirmed foreign owner", async () => {
      const { env, lockPaths } = fixture();
-@@ -167,8 +177,95 @@ describe("explicit Gateway lock recovery", () => {
+@@ -167,8 +177,137 @@ describe("explicit Gateway lock recovery", () => {
      expect(lockPaths.every((pathname) => fs.existsSync(pathname))).toBe(true);
    });
  
@@ -152,6 +152,48 @@ index 37a61eeaae5ab87085f84ef21ddae099b5a92959..73ef4b5d83a55be81079fd4adb696e4b
 +    },
 +  );
 +
++  it.skipIf(process.platform !== "linux").each(["agent-embedded", "sqlite-maintenance"])(
++    "recovers a %s record without an incarnation witness in the caller's own namespace once its PID is dead",
++    async (role) => {
++      const { payload, lockPaths } = fixture();
++      const local = readGatewayLockProcessNamespace();
++      if (local?.platform !== "linux") throw Error("Linux namespace fixture required");
++      const namespace = { ...local, host: "stopped-starting-container" };
++      const write = (pid: number) => {
++        for (const pathname of lockPaths) {
++          fs.writeFileSync(
++            pathname,
++            JSON.stringify({
++              ...payload,
++              pid,
++              role,
++              pidNsInitStartTicks: undefined,
++              processNamespace: namespace,
++            }),
++          );
++        }
++      };
++      const initStart = processIdentity.getProcessStartTime(1);
++      if (initStart === null) throw Error("Linux PID 1 start time required");
++      const proofOfStop = { ...namespace, pidNsInitStartTicks: initStart };
++      write(2147483647);
++      // Another incarnation of this namespace number is not the caller's own.
++      await expect(
++        recoverTerminatedGatewayNamespace({ ...namespace, pidNsInitStartTicks: initStart + 1 }),
++      ).rejects.toThrow("not attributable");
++      write(process.pid);
++      await expect(recoverTerminatedGatewayNamespace(proofOfStop)).rejects.toThrow(
++        "Cannot prove Gateway PID",
++      );
++      expect(lockPaths.every((pathname) => fs.existsSync(pathname))).toBe(true);
++      write(2147483647);
++      await expect(recoverTerminatedGatewayNamespace(proofOfStop)).resolves.toEqual({
++        recovered: true,
++        removed: 3,
++      });
++    },
++  );
++
 +  it
 +    .skipIf(process.platform !== "linux")
 +    .each([
@@ -198,7 +240,7 @@ index 37a61eeaae5ab87085f84ef21ddae099b5a92959..73ef4b5d83a55be81079fd4adb696e4b
      fs.mkdirSync(path.dirname(databasePath), { recursive: true });
      const db = openNodeSqliteDatabase(databasePath);
      db.exec(
-@@ -186,25 +283,45 @@ describe("explicit Gateway lock recovery", () => {
+@@ -186,25 +325,45 @@ describe("explicit Gateway lock recovery", () => {
            pid: payload.pid,
            host: "stopped-foreign-container",
            startedAt: payload.startTime ?? null,
@@ -251,16 +293,17 @@ index 37a61eeaae5ab87085f84ef21ddae099b5a92959..73ef4b5d83a55be81079fd4adb696e4b
    });
  });
 diff --git a/src/infra/gateway-lock-recovery.ts b/src/infra/gateway-lock-recovery.ts
-index 8ec9c1f51668cad84524aa06c723244d1aeb0940..8283737500b7899e431e5e2b42c9eac3e3d9e31a 100644
+index 8ec9c1f51668cad84524aa06c723244d1aeb0940..9c9bfbf1e6733ec950e7b4cd6eb2d7f33fa01640 100644
 --- a/src/infra/gateway-lock-recovery.ts
 +++ b/src/infra/gateway-lock-recovery.ts
-@@ -1,12 +1,16 @@
+@@ -1,12 +1,17 @@
  import { createHash } from "node:crypto";
  import fs from "node:fs";
  import { extractErrorCode } from "@openclaw/normalization-core/error-coercion";
 +import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
 +import { isRecord } from "@openclaw/normalization-core/record-coerce";
  import { isStatePostgres } from "../state/openclaw-state-db-engine.js";
++import { getProcessStartTime } from "../shared/pid-alive.js";
  import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
  import { acquireFileLockSync } from "./file-lock-manager.js";
  import {
@@ -271,7 +314,7 @@ index 8ec9c1f51668cad84524aa06c723244d1aeb0940..8283737500b7899e431e5e2b42c9eac3
    type LockPayload,
  } from "./gateway-lock-payload.js";
  import {
-@@ -24,6 +28,7 @@ import { decodeGatewayOwnerLease } from "./gateway-owner-lease.read.js";
+@@ -24,6 +29,7 @@ import { decodeGatewayOwnerLease } from "./gateway-owner-lease.read.js";
  import { defaultPayload } from "./gateway-state-owner-record.js";
  import { acquireGatewayStateOwner, type StateDatabaseSchemaLease } from "./gateway-state-owner.js";
  import { throwSqliteLifecycleErrors } from "./sqlite-lifecycle-errors.js";
@@ -279,7 +322,7 @@ index 8ec9c1f51668cad84524aa06c723244d1aeb0940..8283737500b7899e431e5e2b42c9eac3
  
  type ObservedFile = { path: string; raw: string; identity: string; holder: LockPayload | null };
  
-@@ -99,6 +104,78 @@ export async function inspectGatewayLockRecovery(options: { env?: NodeJS.Process
+@@ -99,6 +105,84 @@ export async function inspectGatewayLockRecovery(options: { env?: NodeJS.Process
    };
  }
  
@@ -309,6 +352,7 @@ index 8ec9c1f51668cad84524aa06c723244d1aeb0940..8283737500b7899e431e5e2b42c9eac3
 +  // boot can also mean we really share a namespace, even if UTS hostnames differ.
 +  const samePidSpace =
 +    expected.identity === local.identity && expected.pidNsInode === local.pidNsInode;
++  const ownNamespace = samePidSpace && getProcessStartTime(1) === pidNsInitStartTicks;
 +  function assertStoppedPid(pid: number, startedAt: number | null | undefined) {
 +    if (!samePidSpace) return;
 +    const start =
@@ -328,10 +372,15 @@ index 8ec9c1f51668cad84524aa06c723244d1aeb0940..8283737500b7899e431e5e2b42c9eac3
 +  const inspection = await inspectGatewayLockRecovery();
 +  for (const { path, observed } of inspection.files) {
 +    if (!observed) continue;
++    // Only a Gateway record's incarnation witness ties it to another namespace. A
++    // supervisor naming its own live namespace (same PID 1 start) instead proves
++    // a holder of any role dead below, such as one stopped in startup admission.
 +    if (
-+      observed.holder?.role !== "gateway" ||
-+      observed.holder.pidNsInitStartTicks !== pidNsInitStartTicks ||
-+      !matches(observed.holder.processNamespace)
++      !observed.holder ||
++      !matches(observed.holder.processNamespace) ||
++      (!ownNamespace &&
++        (observed.holder.role !== "gateway" ||
++          observed.holder.pidNsInitStartTicks !== pidNsInitStartTicks))
 +    ) {
 +      throw new Error(`Gateway lock at ${path} is not attributable to the terminated namespace.`);
 +    }
