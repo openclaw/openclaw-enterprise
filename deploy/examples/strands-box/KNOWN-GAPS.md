@@ -53,8 +53,9 @@ entries use the same four fields.
 - **Workaround:** use only on a dogfood host with a test repository. Keep
   branch protection on the base branch. Grant the App only Contents, Pull
   requests and Metadata on the selected repository.
-- **Upstream status:** a Box fork adds an `authorizer://` credential source
-  that asks an operator endpoint for each request and fails closed. Drafts for
+- **Upstream status:** a Box fork adds a request-time credential source: after
+  Box's policy permits a request, Box asks an operator endpoint for that
+  request's credential, and a refusal or timeout fails closed. Drafts for
   strands-agents/box go to the owner first; nothing is filed yet.
 
 ## Box reads env:// credentials once at start
@@ -70,7 +71,7 @@ entries use the same four fields.
 - **Workaround:** redeploy the Agent after access ends. The restart happens
   before the revision serves traffic, and the Compute install check waits for
   the node to reconnect after it.
-- **Upstream status:** the same fork's `authorizer://` source returns a fresh
+- **Upstream status:** the same fork's request-time source returns a fresh
   credential per request. Not yet reported to strands-agents/box.
 
 ## A phantom credential cannot carry Git's first request
