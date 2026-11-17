@@ -9,15 +9,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
+
+import { AdmissionFailure } from "../../apps/controller/src/admission/admission-verifier.ts";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { createNativeAdminAccess } from "../../apps/controller/src/http/native-admin.ts";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { asRecord } from "../../packages/utils/src/index.ts";
+import { selfSigned } from "../helpers/certificates.ts";
 import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.mjs";
-import { waitUntil } from "../helpers/wait-for.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
+import {
+  registerUpgradeAdmissionRecoveryCases,
+  registerUpgradeLeaseAndResetRecoveryCases,
+} from "./native-admin-upgrade-recovery-cases.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const Fastify = require("fastify");
+// Socket receipts and cleanup must retain real deadlines when shutdown time is mocked.
+const realSetTimeout = globalThis.setTimeout;
+const realClearTimeout = globalThis.clearTimeout;
 
 // The active revision these cases authorize: an Agent Gateway with the native admin opt-in,
 // its Control UI allowed only from `origin`.
@@ -39,14 +49,14 @@ function within(promise, description, milliseconds = 1_500) {
   return Promise.race([
     promise,
     new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(description)), milliseconds);
+      timer = realSetTimeout(() => reject(new Error(description)), milliseconds);
     }),
-  ]).finally(() => clearTimeout(timer));
+  ]).finally(() => realClearTimeout(timer));
 }
 
 // Only authorization and audit persistence are controlled. Admission, TLS, the
 // upgrade relay, its lease timer and both ends of each connection are real.
-async function transportOwner(t, { authorize, append }) {
+async function transportOwner(t, { authorize, append, appendSocket = async () => {} }) {
   const directory = await mkdtemp(join(tmpdir(), "native-admin-audit-transport-"));
   const previousCertificates = getCACertificates("default");
   const sockets = new Set();
@@ -57,10 +67,14 @@ async function transportOwner(t, { authorize, append }) {
       socket.destroy();
     }
     try {
-      const results = await Promise.allSettled([
-        app?.close(),
-        gateway && new Promise((resolve) => gateway.close(resolve)),
-      ]);
+      const results = await within(
+        Promise.allSettled([
+          app?.close(),
+          gateway && new Promise((resolve) => gateway.close(resolve)),
+        ]),
+        "transport cleanup must finish after the shutdown drain",
+        6_500,
+      );
       for (const result of results) {
         assert.equal(result.status, "fulfilled", result.reason?.message);
       }
@@ -91,7 +105,7 @@ async function transportOwner(t, { authorize, append }) {
     socket.write("peer-ready");
   });
   gateway.listen(0, "127.0.0.1");
-  await once(gateway, "listening");
+  await within(once(gateway, "listening"), "the fixture gateway must listen");
 
   const installationId = "inst_native_admin_transport";
   const agent = { id: "agent_a", namespaceId: "ns_a", desiredRuntimeState: "running" };
@@ -109,7 +123,11 @@ async function transportOwner(t, { authorize, append }) {
   const auditEntered = pendingValue();
   const serverClosed = pendingValue();
   const audits = [];
+  const warnings = [];
+  const appClosed = pendingValue();
   app = Fastify({ logger: false });
+  t.mock.method(app.log, "warn", (fields) => warnings.push(fields));
+  app.addHook("onClose", async () => appClosed.resolve());
   app.server.on("connection", (socket) => {
     sockets.add(socket);
     socket.once("close", serverClosed.resolve);
@@ -174,14 +192,17 @@ async function transportOwner(t, { authorize, append }) {
           auditEntered.resolve();
           return append(event);
         }
-        return Promise.resolve();
+        return appendSocket(event);
       },
     },
   });
-  await app.listen({ host: "127.0.0.1", port: 0 });
+  await within(app.listen({ host: "127.0.0.1", port: 0 }), "the fixture controller must listen");
   return {
     denied,
     host,
+    audits,
+    warnings,
+    appClosed: appClosed.promise,
     entered: entered.promise,
     auditEntered: auditEntered.promise,
     serverClosed: serverClosed.promise,
@@ -203,7 +224,7 @@ async function transportOwner(t, { authorize, append }) {
           ready.resolve(received);
         }
       });
-      await once(socket, "connect");
+      await within(once(socket, "connect"), "the fixture client must connect");
       socket.write(
         `GET / HTTP/1.1\r\nHost: ${host}\r\nOrigin: ${origin}\r\nConnection: Upgrade\r\n` +
           "Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n" +
@@ -212,6 +233,130 @@ async function transportOwner(t, { authorize, append }) {
       return { closed, ready: ready.promise };
     },
   };
+}
+
+for (const failedAudit of ["connect", "close"]) {
+  test(`native-admin shutdown releases a rejected ${failedAudit} audit`, async (t) => {
+    const rejected = new Error("Audit fixture unavailable");
+    const owner = await transportOwner(t, {
+      authorize: ({ agent, revision, mode }) => ({ agent, revision, mode }),
+      appendSocket: async (event) => {
+        if (event.details.nativeAdmin.event === failedAudit) {
+          throw rejected;
+        }
+      },
+    });
+    const client = await owner.open();
+    if (failedAudit === "connect") {
+      await within(client.closed, "failed connect audit must close the client");
+    } else {
+      await within(client.ready, "successful connect audit must allow forwarding");
+    }
+    await within(owner.shutdown(), "rejected audit must not wait out the shutdown deadline");
+    assert.deepEqual(
+      owner.audits.map((event) => event.details.nativeAdmin.event),
+      failedAudit === "connect" ? ["connect"] : ["connect", "close"],
+    );
+    assert.deepEqual(
+      owner.warnings.map((warning) => warning.event),
+      failedAudit === "connect" ? [] : ["native_admin.websocket_audit_failed"],
+    );
+  });
+}
+
+for (const deadline of [false, true]) {
+  test(`native-admin shutdown drains connect and follow-on close audits${deadline ? " under one deadline" : " before onClose"}`, async (t) => {
+    const connect = pendingValue();
+    const close = pendingValue();
+    const connectEntered = pendingValue();
+    const closeEntered = pendingValue();
+    const settled = [];
+    const owner = await transportOwner(t, {
+      authorize: ({ agent, revision, mode }) => ({ agent, revision, mode }),
+      appendSocket: async (event) => {
+        const name = event.details.nativeAdmin.event;
+        if (name === "connect") {
+          connectEntered.resolve();
+          await connect.promise;
+        } else {
+          closeEntered.resolve();
+          await close.promise;
+        }
+        settled.push(name);
+      },
+    });
+    let storageMayClose = false;
+    void owner.appClosed.then(() => {
+      storageMayClose = true;
+      settled.push("onClose");
+    });
+    // In the deadline case, create and clear the handshake and drain timers on
+    // the same clock. The TCP/TLS peers and the test's I/O deadlines stay real.
+    if (deadline) {
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+    }
+    const client = await owner.open();
+    let closing;
+    try {
+      await within(connectEntered.promise, "authorized upstream 101 must reach connect audit");
+      closing = owner.shutdown();
+      await within(
+        Promise.all([client.closed, owner.serverClosed, owner.peerClosed]),
+        "shutdown must close both relay ends without waiting for audit acknowledgment",
+      );
+      await settleCallbacks();
+      if (deadline) {
+        t.mock.timers.tick(3_000);
+        await settleCallbacks();
+      }
+      assert.equal(storageMayClose, false, "onClose must wait for the connect audit");
+      assert.deepEqual(settled, []);
+      assert.equal(owner.audits.length, 1);
+      connect.resolve();
+      await within(closeEntered.promise, "connect settlement must emit its close audit");
+      await settleCallbacks();
+      assert.equal(storageMayClose, false, "onClose must also wait for the follow-on close audit");
+      assert.deepEqual(settled, ["connect"]);
+      if (deadline) {
+        t.mock.timers.tick(1_999);
+        await settleCallbacks();
+        assert.equal(storageMayClose, false, "shutdown must still wait at 4,999ms");
+        assert.deepEqual(owner.warnings, []);
+        t.mock.timers.tick(1);
+        await within(closing, "close work must not get a fresh five-second budget");
+        assert.deepEqual(owner.warnings, [
+          { event: "native_admin.pending_work_unresolved", pending: 1 },
+        ]);
+        assert.deepEqual(settled, ["connect", "onClose"]);
+      }
+      close.resolve();
+      await within(closing, "shutdown must finish after both audit acknowledgments");
+      await settleCallbacks();
+      assert.deepEqual(
+        settled,
+        deadline ? ["connect", "onClose", "close"] : ["connect", "close", "onClose"],
+      );
+      if (!deadline) {
+        assert.deepEqual(owner.warnings, []);
+      }
+      assert.equal(owner.gatewayConnections(), 1);
+      assert.equal(owner.audits.length, 2, "each socket audit is attempted exactly once");
+      const [connected, closed] = owner.audits.map((event) => event.details.nativeAdmin);
+      assert.equal(connected.event, "connect");
+      assert.equal(closed.event, "close");
+      assert.match(connected.connectionId, /^naws_/);
+      assert.equal(closed.connectionId, connected.connectionId);
+      assert.equal(closed.closeReason, "shutdown");
+    } finally {
+      connect.resolve();
+      close.resolve();
+      try {
+        await within(closing ?? owner.shutdown(), "shutdown cleanup must finish");
+      } finally {
+        t.mock.reset();
+      }
+    }
+  });
 }
 
 function assertTransportDenial(owner, revisionId) {
@@ -419,11 +564,19 @@ async function settleCallbacks() {
   }
 }
 
+/**
+ * @extends {EventEmitter<{
+ *   close: [];
+ *   error: [Error];
+ *   upgrade: [{ statusCode: number, headers: import("node:http").IncomingHttpHeaders }, import("./native-admin-upgrade-recovery-cases.ts").UpgradeSocket, Buffer];
+ * }>}
+ */
 class AdmissionSocket extends EventEmitter {
   destroyed = false;
   readableEnded = false;
   writableEnded = false;
   writableLength = 0;
+  /** @type {Array<string | Buffer>} */
   writes = [];
 
   destroy() {
@@ -439,35 +592,49 @@ class AdmissionSocket extends EventEmitter {
     return this;
   }
 
+  /** @param {string | Buffer} value */
   write(value) {
     this.writes.push(value);
     return true;
   }
 
+  /** @template Destination @param {Destination} destination */
   pipe(destination) {
     return destination;
   }
 }
 
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {import("./native-admin-upgrade-recovery-cases.ts").DenialOverrides} [overrides]
+ */
 async function denialOwner(t, overrides = {}) {
   const installationId = "inst_native_admin_audit";
+  /** @satisfies {Pick<import("../../packages/contracts/src/index.ts").Agent, "id" | "namespaceId" | "desiredRuntimeState">} */
   const agent = { id: "agent_a", namespaceId: "ns_a", desiredRuntimeState: "running" };
   const domain = "agents.example.com";
   const host = deriveNativeAdminHost(installationId, agent, domain);
   const origin = `https://${host}`;
   const revision = nativeAdminRevision(origin);
-  const denied = new Error("The exact platform operation was not authorized.");
-  denied.name = "AuthorizationDeniedError";
-  denied.authorization = {
-    action: "administer",
-    resource: { kind: "agent", id: agent.id, namespaceId: agent.namespaceId },
-  };
+  const denied = Object.assign(new Error("The exact platform operation was not authorized."), {
+    name: "AuthorizationDeniedError",
+    authorization: {
+      action: "administer",
+      resource: { kind: "agent", id: agent.id, namespaceId: agent.namespaceId },
+    },
+  });
+  /** @type {import("../../packages/audit/src/index.ts").AuditEventCreationInput[]} */
   const audits = [];
+  /** @type {unknown[]} */
   const warnings = [];
+  /** @type {AdmissionSocket[]} */
   const upstreams = [];
+  /** @type {import("../../apps/controller/node_modules/fastify/fastify.js").FastifyInstance} */
   const app = Fastify({ logger: false });
   t.after(() => app.close());
-  t.mock.method(app.log, "warn", (event) => warnings.push(event));
+  /** @param {unknown} event */
+  const captureWarning = (event) => warnings.push(event);
+  t.mock.method(app.log, "warn", captureWarning);
   // A missing interception fails before any external network request can occur.
   t.mock.method(https, "request", () => {
     const upstream = new AdmissionSocket();
@@ -512,6 +679,9 @@ async function denialOwner(t, overrides = {}) {
       sharedCookieDomain: "example.com",
       admissionVerifier: {
         async verify() {
+          if (overrides.admissionError) {
+            throw overrides.admissionError;
+          }
           return {
             method: "session",
             decisionId: "dec_1",
@@ -530,6 +700,7 @@ async function denialOwner(t, overrides = {}) {
     nativeAdminGatewayApiKey: overrides.transport ?? (async () => "synthetic"),
     webSocketLeaseIntervalMs: undefined,
     auditSink: {
+      /** @param {import("../../packages/audit/src/index.ts").AuditEventCreationInput} event */
       append(event) {
         audits.push(event);
         return overrides.append?.(event) ?? Promise.resolve();
@@ -538,6 +709,10 @@ async function denialOwner(t, overrides = {}) {
   });
   await app.ready();
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  /**
+   * @returns {{ method: string, url: string, headers: import("node:http").IncomingHttpHeaders,
+   *   socket: { remoteAddress: string }, destroyed: boolean }}
+   */
   const request = () => ({
     method: "GET",
     url: "/",
@@ -574,7 +749,7 @@ test("native-admin denial ownership closes before a delayed or rejected append",
     assert.equal(owner.denials()[0].authorization.action, "administer");
     append.reject(new Error("synthetic sink failure"));
     await settleCallbacks();
-    assert.equal(owner.warnings[0].event, "native_admin.websocket_denial_audit_failed");
+    assert.equal(asRecord(owner.warnings[0])?.event, "native_admin.websocket_denial_audit_failed");
     assert.equal(owner.denials().length, 1);
     assert.equal(owner.upstreams.length, 0);
   } finally {
@@ -585,162 +760,8 @@ test("native-admin denial ownership closes before a delayed or rejected append",
   }
 });
 
-for (const boundary of ["timeout", "disconnect", "shutdown-wait-expiry"]) {
-  test(`native-admin denial ownership consumes a denial after ${boundary}`, async (t) => {
-    const admission = pendingValue();
-    const owner = await denialOwner(t, { authorize: () => admission.promise });
-    const socket = owner.upgrade();
-    let closing;
-    try {
-      await settleCallbacks();
-      if (boundary === "disconnect") {
-        socket.destroy();
-      } else {
-        if (boundary === "shutdown-wait-expiry") {
-          closing = owner.shutdown();
-          await settleCallbacks();
-        }
-        t.mock.timers.tick(5_000);
-        await settleCallbacks();
-        if (closing) {
-          await closing;
-          assert.equal(owner.warnings[0].event, "native_admin.pending_work_unresolved");
-          assert.equal(owner.warnings[0].pending, 1);
-        }
-      }
-      assert.equal(socket.destroyed, true);
-      admission.reject(owner.denied);
-      await settleCallbacks();
-      assert.equal(owner.denials().length, 1);
-      assert.equal(owner.denials()[0].resource.id, "agent_a");
-      assert.equal(owner.upstreams.length, 0);
-    } finally {
-      admission.reject(owner.denied);
-      socket.destroy();
-      await settleCallbacks();
-      await (closing ?? owner.shutdown());
-    }
-  });
-}
-
-test("native-admin denial ownership drains admission through append under one deadline", async (t) => {
-  const admission = pendingValue();
-  const append = pendingValue();
-  const owner = await denialOwner(t, {
-    authorize: () => admission.promise,
-    append: () => append.promise,
-  });
-  const socket = owner.upgrade();
-  let finished = false;
-  await settleCallbacks();
-  const closing = owner.shutdown().then(() => {
-    finished = true;
-  });
-  try {
-    await settleCallbacks();
-    assert.equal(finished, false);
-    t.mock.timers.tick(4_000);
-    admission.reject(owner.denied);
-    await settleCallbacks();
-    assert.equal(owner.denials().length, 1);
-    assert.equal(finished, false);
-    // The transition to append must not get a second five-second shutdown budget.
-    t.mock.timers.tick(1_000);
-    await settleCallbacks();
-    assert.equal(finished, true);
-    assert.equal(owner.warnings[0].pending, 1);
-    append.resolve();
-    await settleCallbacks();
-    await owner.shutdown();
-    assert.equal(owner.warnings.length, 1);
-    assert.equal(owner.denials().length, 1);
-  } finally {
-    admission.reject(owner.denied);
-    append.resolve();
-    socket.destroy();
-    await settleCallbacks();
-    await closing;
-  }
-});
-
-for (const boundary of ["timeout", "disconnect", "shutdown"]) {
-  test(`native-admin denial ownership never opens a gateway after ${boundary}`, async (t) => {
-    const admission = pendingValue();
-    let selection;
-    const owner = await denialOwner(t, {
-      authorize(input) {
-        selection = input;
-        return admission.promise;
-      },
-    });
-    const socket = owner.upgrade();
-    let closing;
-    try {
-      await settleCallbacks();
-      if (boundary === "timeout") {
-        t.mock.timers.tick(5_000);
-        await settleCallbacks();
-      } else if (boundary === "disconnect") {
-        socket.destroy();
-      } else {
-        closing = owner.shutdown();
-        await settleCallbacks();
-      }
-      admission.resolve(selection);
-      await settleCallbacks();
-      assert.equal(socket.destroyed, true);
-      assert.equal(owner.upstreams.length, 0);
-      assert.equal(owner.denials().length, 0);
-    } finally {
-      admission.resolve(selection);
-      socket.destroy();
-      await settleCallbacks();
-      await (closing ?? owner.shutdown());
-    }
-  });
-}
-
-test("native-admin denial ownership closes a denied lease before append settles", async (t) => {
-  const append = pendingValue();
-  let reads = 0;
-  const owner = await denialOwner(t, {
-    authorize(input) {
-      reads += 1;
-      return reads === 1 ? Promise.resolve(input) : Promise.reject(input.denied);
-    },
-    append(event) {
-      return event.kind === "authorization_denial" ? append.promise : Promise.resolve();
-    },
-  });
-  const socket = owner.upgrade();
-  const upstreamSocket = new AdmissionSocket();
-  try {
-    await settleCallbacks();
-    assert.equal(owner.upstreams.length, 1);
-    owner.upstreams[0].emit(
-      "upgrade",
-      { statusCode: 101, headers: {} },
-      upstreamSocket,
-      Buffer.alloc(0),
-    );
-    await settleCallbacks();
-    assert.ok(socket.writes.join("").startsWith("HTTP/1.1 101"));
-    t.mock.timers.tick(25_000);
-    await settleCallbacks();
-    assert.equal(socket.destroyed, true);
-    assert.equal(upstreamSocket.destroyed, true);
-    assert.equal(owner.denials().length, 1);
-    append.resolve();
-    await settleCallbacks();
-    assert.equal(owner.denials().length, 1);
-  } finally {
-    append.resolve();
-    socket.destroy();
-    upstreamSocket.destroy();
-    await settleCallbacks();
-    await owner.shutdown();
-  }
-});
+const recoveryFixture = { denialOwner, settleCallbacks, AdmissionSocket };
+registerUpgradeAdmissionRecoveryCases(recoveryFixture);
 
 test("native-admin denial ownership retains HTTP audit failure and timeout responses", async (t) => {
   const admission = pendingValue();
@@ -768,17 +789,22 @@ test("native-admin denial ownership retains HTTP audit failure and timeout respo
   try {
     const timely = reply();
     const raw = owner.request();
-    await owner.access.interceptHttp({ headers: raw.headers, url: "/", raw }, timely);
+    const request = { headers: raw.headers, url: "/", raw };
+    await owner.access.interceptHttp(request, timely);
+    assert.equal(owner.access.httpAdmissionReason(request), "denial_audit_failed");
     assert.equal(timely.statusCode, 503);
     assert.equal(timely.body.error.code, "DEPENDENCY_UNAVAILABLE");
     const late = reply();
-    const pending = owner.access.interceptHttp({ headers: raw.headers, url: "/", raw }, late);
+    const lateRequest = { headers: raw.headers, url: "/", raw };
+    const pending = owner.access.interceptHttp(lateRequest, late);
     await settleCallbacks();
     t.mock.timers.tick(5_000);
     await pending;
     assert.equal(late.statusCode, 503);
+    assert.equal(owner.access.httpAdmissionReason(lateRequest), "admission_unavailable");
     admission.reject(owner.denied);
     await settleCallbacks();
+    assert.equal(owner.access.httpAdmissionReason(lateRequest), "admission_unavailable");
     assert.equal(owner.denials().length, 2);
     assert.equal(owner.upstreams.length, 0);
   } finally {
@@ -788,127 +814,40 @@ test("native-admin denial ownership retains HTTP audit failure and timeout respo
   }
 });
 
-for (const order of ["denial-first", "deadline-first"]) {
-  test(`native-admin denial ownership attempts one audit at the deadline (${order})`, async (t) => {
-    const admission = pendingValue();
-    const owner = await denialOwner(t, { authorize: () => admission.promise });
-    if (order === "denial-first") {
-      setTimeout(() => admission.reject(owner.denied), 5_000);
-    }
-    const socket = owner.upgrade();
-    try {
-      await settleCallbacks();
-      if (order === "deadline-first") {
-        setTimeout(() => admission.reject(owner.denied), 5_000);
-      }
-      t.mock.timers.tick(5_000);
-      await settleCallbacks();
-      assert.equal(socket.destroyed, true);
-      assert.equal(owner.denials().length, 1);
+registerUpgradeLeaseAndResetRecoveryCases(recoveryFixture);
+
+test("native-admin HTTP admission preserves typed refusals and dependency failures", async (t) => {
+  for (const [error, status, reason] of [
+    [new AdmissionFailure(401, "UNAUTHENTICATED", "missing session"), 403, "session_invalid"],
+    [new AdmissionFailure(403, "FORBIDDEN", "scope refused"), 403, "admission_forbidden"],
+    [new Error("session store unavailable"), 503, "dependency_failure"],
+  ]) {
+    await t.test(reason, async (t) => {
+      // The verifier's public failure contract drives the real HTTP admission owner.
+      const owner = await denialOwner(t, { admissionError: error });
+      const raw = owner.request();
+      const request = { headers: raw.headers, url: "/", raw };
+      const reply = {
+        request: { id: "request_test" },
+        header() {
+          return this;
+        },
+        status(code) {
+          this.statusCode = code;
+          return this;
+        },
+        send(body) {
+          this.body = body;
+        },
+      };
+      await owner.access.interceptHttp(request, reply);
+      assert.equal(reply.statusCode, status);
+      assert.equal(owner.access.httpAdmissionReason(request), reason);
+      assert.equal(owner.denials().length, 0, "no attributed IAM operation was attempted");
       assert.equal(owner.upstreams.length, 0);
-      t.mock.timers.tick(5_000);
-      await settleCallbacks();
-      assert.equal(owner.denials().length, 1);
-    } finally {
-      admission.reject(owner.denied);
-      socket.destroy();
-      await settleCallbacks();
       await owner.shutdown();
-    }
-  });
-}
-
-test("native-admin denial ownership audits a lease denial after its timeout closes the connection", async (t) => {
-  const renewal = pendingValue();
-  let reads = 0;
-  const owner = await denialOwner(t, {
-    authorize(input) {
-      reads += 1;
-      return reads === 1 ? Promise.resolve(input) : renewal.promise;
-    },
-  });
-  const socket = owner.upgrade();
-  const upstreamSocket = new AdmissionSocket();
-  try {
-    await settleCallbacks();
-    owner.upstreams[0].emit(
-      "upgrade",
-      { statusCode: 101, headers: {} },
-      upstreamSocket,
-      Buffer.alloc(0),
-    );
-    await settleCallbacks();
-    t.mock.timers.tick(25_000);
-    await settleCallbacks();
-    assert.equal(reads, 2);
-    t.mock.timers.tick(5_000);
-    await settleCallbacks();
-    assert.equal(socket.destroyed, true);
-    renewal.reject(owner.denied);
-    await settleCallbacks();
-    assert.equal(owner.denials().length, 1);
-    assert.equal(owner.denials()[0].details.nativeAdmin.revisionId, "rev_a");
-  } finally {
-    renewal.reject(owner.denied);
-    socket.destroy();
-    upstreamSocket.destroy();
-    await settleCallbacks();
-    await owner.shutdown();
+    });
   }
-});
-
-test("native-admin denial ownership preserves reset handling while transport is pending", async (t) => {
-  const transport = pendingValue();
-  const owner = await denialOwner(t, {
-    authorize: (selection) => Promise.resolve(selection),
-    transport: () => transport.promise,
-  });
-  const socket = owner.upgrade();
-  try {
-    await settleCallbacks();
-    socket.emit("error", new Error("synthetic reset"));
-    transport.resolve("synthetic");
-    await settleCallbacks();
-    assert.equal(socket.destroyed, true);
-    assert.equal(owner.upstreams.length, 0);
-  } finally {
-    transport.resolve("synthetic");
-    socket.destroy();
-    await settleCallbacks();
-    await owner.shutdown();
-  }
-});
-
-test("native-admin denial ownership preserves reset handling during admission", async (t) => {
-  const admission = pendingValue();
-  const owner = await denialOwner(t, { authorize: () => admission.promise });
-  const socket = owner.upgrade();
-  try {
-    await settleCallbacks();
-    socket.emit("error", new Error("synthetic reset"));
-    admission.reject(owner.denied);
-    await settleCallbacks();
-    assert.equal(socket.destroyed, true);
-    assert.equal(owner.denials().length, 1);
-    assert.equal(owner.upstreams.length, 0);
-  } finally {
-    admission.reject(owner.denied);
-    socket.destroy();
-    await settleCallbacks();
-    await owner.shutdown();
-  }
-});
-
-test("native-admin denial ownership keeps dependency failures distinct from denials", async (t) => {
-  const unavailable = new Error("synthetic unavailable dependency");
-  unavailable.name = "DependencyUnavailableError";
-  const owner = await denialOwner(t, { authorize: () => Promise.reject(unavailable) });
-  const socket = owner.upgrade();
-  await settleCallbacks();
-  assert.equal(socket.destroyed, true);
-  assert.equal(owner.denials().length, 0);
-  assert.equal(owner.upstreams.length, 0);
-  await owner.shutdown();
 });
 
 test("native-admin denial ownership preserves a timely HTTP denial response", async (t) => {

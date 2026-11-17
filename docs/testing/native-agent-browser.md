@@ -2,9 +2,10 @@
 
 Use the `gateway-routing` lane to check browser chat through OCC, Kubernetes
 routing, and the real OpenClaw runtime. The `oidc-agent-chat` QA scenario adds
-Keycloak sign-in and signed admission claims to that path. It uses manually
-created Default users with explicitly attached identities; automatic account
-creation is covered separately by the PostgreSQL enrollment integration.
+Keycloak sign-in and signed admission claims to that path. It creates Default users through first-login enrollment and verifies that
+returning login reuses the account. The real Keycloak tests own the admission and
+email-policy matrix. PostgreSQL enrollment tests cover policy changes, returning
+identities, initial grants, concurrency, and transaction rollback.
 
 ## Run the combined OIDC journey
 
@@ -20,17 +21,28 @@ From the repository root:
 ```sh
 state="$PWD/.ci-state/oidc-agent-chat.json"
 file="tests/integration/oidc-agent-chat-k3d-real.test.ts"
-node scripts/ci/run-tests.mjs check-selection gateway-routing --file "$file"
+node scripts/ci/run-tests.ts check-selection gateway-routing --file "$file"
 node scripts/ci/prepare.mjs --lane gateway-routing --selected-file "$file" --state "$state"
-node scripts/ci/run-tests.mjs run gateway-routing --file "$file" --state "$state" \
+node scripts/ci/run-tests.ts run gateway-routing --file "$file" --state "$state" \
   --results "$PWD/.ci-state/oidc-agent-chat-results.json"
-node scripts/ci/cleanup.mjs --state "$state"
+node scripts/ci/cleanup.ts --state "$state"
 ```
 
 Run cleanup after a preparation or test failure too. Preserve the private state
 file until cleanup completes. Do not run another Keycloak lane on the same host.
 
 The focused wrapper runs the same `oidc-agent-chat` scenario as the QA matrix.
+Lane preparation attaches PostgreSQL to the disposable cluster before it
+discovers and publishes the host port. Test files preserve that attachment;
+lane cleanup removes PostgreSQL before the cluster network. Set
+`OCC_TEST_BROWSER_EXECUTABLE` to use an installed Chromium browser; the lane passes
+this optional selection to its browser tests. CI also installs Playwright's
+FFmpeg binary for video recording when using an installed browser.
+Its preparation omits the dedicated Codex sandbox probe because this journey
+deploys only embedded OpenClaw Agents with `RuntimeDefault` seccomp. Preparing
+the full `gateway-routing` lane still requires the Codex probe for its dedicated
+execution cases. The hosted OIDC job retains a browser recording and screenshot
+of the real model exchange; recording starts after sign-in.
 To reuse an already prepared local environment through the QA entrypoint, keep its
 Kubernetes, database, routing, and Keycloak variables, then run:
 
@@ -49,7 +61,7 @@ Keycloak state variable.
 ## What the test exercises
 
 The browser signs in at the real Keycloak server, returns through the OCC
-callback, verifies the original account ID, and opens an Agent with the resulting
+callback, creates the account, verifies that a returning login reuses its ID, and opens an Agent with the resulting
 shared session. A disposable IdP Group supplies the signed admission claim. The journey
 checks chat with `agent:operate`, administration denial, and a real model
 response. Related native browser cases cover administrator access, Agent
@@ -63,8 +75,7 @@ Keycloak/Gateway CA bundle, and provider egress rule. The provider secret is not
 mounted in workers or Agents; model credentials remain Agent-owned.
 
 This is real in-cluster API, provider, browser, and runtime proof. It is not a
-Helm-installed production deployment or a proof of automatic enrollment, Git,
-or OpenShell. A selected case that skips, lacks prerequisites, or cannot finish
+Helm-installed production deployment or a proof of Git or OpenShell. A selected case that skips, lacks prerequisites, or cannot finish
 a model turn is not a pass. Inspect the test result and captured browser/runtime
 evidence before reporting success.
 

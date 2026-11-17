@@ -108,7 +108,7 @@ Start your receiver. For a receiver reachable through Docker's host alias:
 
 ```bash
 export OTEL_EXPORTER_OTLP_LOGS_ENDPOINT='http://host.docker.internal:4318/v1/logs'
-./scripts/dev-up -- -f compose.yaml -f compose.logging.yaml
+OCC_DEVELOPMENT_COMPUTE_DRIVER=docker ./scripts/dev-up -- -f compose.yaml -f compose.logging.yaml
 ```
 
 Use a same-network DNS name if the receiver is another container. If you prepared

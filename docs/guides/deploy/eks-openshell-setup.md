@@ -23,7 +23,7 @@ Use an authorized AWS account and role. The Kubernetes operator needs permission
 
 Choose a cluster whose workloads can trust the OpenShell Gateway with its
 [cluster-wide Kubernetes authority](../../reference/drivers/openshell-sandbox.md#gateway-kubernetes-authority).
-For stock OpenShell v0.1.6 operator mode, namespace selectors do not restrict
+For stock OpenShell v0.1.8 operator mode, namespace selectors do not restrict
 that authority. Use a dedicated evaluation cluster when other tenants must
 remain outside this trust boundary.
 
@@ -44,6 +44,19 @@ Enable Amazon VPC CNI NetworkPolicy support with `NETWORK_POLICY_ENFORCING_MODE=
 Install the [EBS CSI driver](https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html). Allow its controller to reach Kubernetes, DNS and regional EC2, STS and credential endpoints. The node plugin needs Kubernetes and DNS when instance metadata is unavailable. Keep workload access to instance metadata disabled. Require ready CSI Pods and topology labels on every eligible node before creating claims.
 
 Create encrypted `encrypted-gp3` RWO filesystem storage with `WaitForFirstConsumer` for Gateway and bootstrap claims. Configure a default StorageClass that supports dedicated Agents’ `40Gi` RWO claims and UID/GID 1000; review other workloads before changing the default. Keep eligible capacity in the claim’s availability zone. Replacement stops the predecessor before disk reattachment, so allow downtime. Validate storage failover and node fencing separately. See the [storage contract](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
+
+Before binding a PersistentVolume to an existing EBS volume, check the
+[tag conditions of the CSI controller's selected IAM policy](https://docs.aws.amazon.com/eks/latest/best-practices/identity-and-access-management.html#iam-permissions-recommendations-when-using-the-amazon-ebs-csi-driver)
+for both the volume and the target node. For
+`AmazonEBSCSIDriverEKSClusterScopedPolicy`, the volume's
+`ebs.csi.aws.com/cluster-name` tag must match the principal's `eks-cluster-name`
+tag. For `AmazonEBSCSIDriverPolicyV2`, a new manually created volume needs
+`ebs.csi.aws.com/cluster=true`.
+
+A `Bound` claim confirms PV binding. For attachment timeouts, match the
+`VolumeAttachment` to the PV and node. If the attachment status or Pod events
+only show a timeout, check the leader EBS CSI controller's `ebs-plugin` logs
+for the volume and time of the failed attach.
 
 ### Enable Console workspace files
 
@@ -94,6 +107,16 @@ kubectl get nodes -L oce-role
 kubectl get storageclass encrypted-gp3
 ```
 
+If either node group lacks Ready workers, ask the infrastructure owner to inspect
+that group's health issues and provisioning events using
+[AWS's node troubleshooting guide](https://docs.aws.amazon.com/eks/latest/userguide/troubleshooting.html).
+An offered instance type does not guarantee launch capacity:
+[`InsufficientInstanceCapacity`](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/troubleshooting-launch.html#troubleshooting-launch-capacity)
+means AWS cannot currently fulfill the launch. Keep retries and rollback in the
+owning infrastructure workflow. After a failed replacement, verify the previous
+group's health, template and scaling, and cleanup of attempted resources before
+retrying. Preserve the volume-zone constraints above.
+
 Confirm the account and role, then test Kubernetes TLS from the operator host. Successive connections through shared NAT can use different public IP addresses. For a public API allowlist change, authorize only the exact stable egress addresses or CIDRs listed for that host in the authoritative NAT inventory. A single observed IP address cannot establish or justify a broader prefix. Preserve existing allowlist entries, public and private endpoint settings, and AWS and Kubernetes authentication.
 
 ### Refresh API network policies after the node groups join
@@ -141,7 +164,7 @@ aws ecr get-login-password --region "$AWS_REGION" | \
 
 Retain these values for image publication. Builder login does not authorize node pulls.
 
-[Build the controller and runtime](production-installation.md#build-and-publish-production-images) from one release or [copy verified images](private-registry-images.md) into a registry the nodes can pull from. Set `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` to the resulting immutable references. The templates target AMD64 nodes, OpenShell 0.1.6 and Codex 0.164.0. Mirror the stock Gateway, supervisor and Sandbox runtime AMD64 manifests into the repository selected below, retaining their digests. Set `OPENSHELL_CHART` and `OCE_CHART` to the matching absolute chart archives or directories, `ENVOY_IMAGE` to the qualified proxy image, and `SANDBOX_REGISTRY`/`SANDBOX_REPOSITORY` to the stock-image mirror. Set `ADMIN_EMAIL`, `DATABASE_CIDRS` and `API_CIDRS` from the owner and network inventory. Create the system namespace before its policies and chart jobs. Use the source commit and image digests in the publication receipt.
+[Build the controller and runtime](production-installation.md#build-and-publish-production-images) from one release or [copy verified images](private-registry-images.md) into a registry the nodes can pull from. Set `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` to the resulting immutable references. The templates target AMD64 nodes, OpenShell 0.1.8 and Codex 0.164.0. Mirror the stock Gateway, supervisor and Sandbox runtime AMD64 manifests into the repository selected below, retaining their digests. Set `OPENSHELL_CHART` and `OCE_CHART` to the matching absolute chart archives or directories, `ENVOY_IMAGE` to the qualified proxy image, and `SANDBOX_REGISTRY`/`SANDBOX_REPOSITORY` to the stock-image mirror. Set `ADMIN_EMAIL`, `DATABASE_CIDRS` and `API_CIDRS` from the owner and network inventory. Create the system namespace before its policies and chart jobs. Use the source commit and image digests in the publication receipt.
 
 Register the GatewayClass before installing OCC. Installing the Envoy Gateway controller does not create a class named `eg`. On a fresh cluster, create the class only when absent. Stop if an existing class belongs to another controller.
 
@@ -171,7 +194,7 @@ reviewed API/webhook CIDRs above. Set `peakAdditional` from the candidate chart
 and put the intended cluster ARN in `eks.clusterArn`.
 
 ```bash
-node scripts/diagnose-kubernetes-prerequisites.mjs --config "$RUN_DIR/prerequisites.json"
+node scripts/diagnose-kubernetes-prerequisites.ts --config "$RUN_DIR/prerequisites.json"
 ```
 
 Resolve failed and unknown checks before installing. Matching address inventory

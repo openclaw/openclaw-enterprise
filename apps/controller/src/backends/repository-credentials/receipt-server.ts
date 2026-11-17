@@ -1,29 +1,28 @@
 import { createStatusWirePrimitives } from "./status-wire.ts";
 import { servePrivateRepositoryRequest } from "./private-request-server.ts";
 import type { PlatformStateStore } from "@openclaw-enterprise/occ";
+import { admissionIdTimestamp } from "../../drivers/repo/access/admission-id.ts";
 import { isBoundInput, snapshotSessionInput } from "../../drivers/repo/access/sessions.ts";
 import type { SessionStatus } from "../../drivers/repo/access/service-contracts.ts";
 import { RepositoryReceiptStore } from "./receipt-store.ts";
 
-const admissionPattern =
-  /^[0-9]{13}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const generationPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const sessionPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
-const { object, identity, counter, parseCleanup } = createStatusWirePrimitives(() => {
+const {
+  object,
+  counter,
+  parseCleanup,
+  sessionStatusObject,
+  grantIdentityObject,
+  projectGrantIdentity,
+} = createStatusWirePrimitives(() => {
   throw new Error("INVALID_RECEIPT_REQUEST");
 });
 
 function status(value: unknown): SessionStatus {
-  const input = object(value, [
-    "sessionId",
-    "state",
-    "deadlineWallMs",
-    "binding",
-    "activeUses",
-    "cleanup",
-  ]);
-  const binding = object(input.binding, ["providerInstanceId", "repositoryId", "grantId"]);
+  const input = sessionStatusObject(value);
+  const binding = grantIdentityObject(input.binding);
   const cleanup = parseCleanup(input.cleanup);
   if (
     typeof input.sessionId !== "string" ||
@@ -36,11 +35,7 @@ function status(value: unknown): SessionStatus {
     sessionId: input.sessionId,
     state: input.state as SessionStatus["state"],
     deadlineWallMs: counter(input.deadlineWallMs),
-    binding: {
-      providerInstanceId: identity(binding.providerInstanceId),
-      repositoryId: identity(binding.repositoryId),
-      grantId: identity(binding.grantId),
-    },
+    binding: projectGrantIdentity(binding),
     activeUses: counter(input.activeUses),
     cleanup,
   };
@@ -72,7 +67,7 @@ export async function startRepositoryReceiptServer(options: {
     if (
       !["reserve", "recover", "bind", "dispose", "fence"].includes(String(command.kind)) ||
       typeof command.admissionId !== "string" ||
-      !admissionPattern.test(command.admissionId) ||
+      admissionIdTimestamp(command.admissionId) === undefined ||
       typeof command.generation !== "string" ||
       !generationPattern.test(command.generation)
     ) {

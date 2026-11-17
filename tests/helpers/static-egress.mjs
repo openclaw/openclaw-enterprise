@@ -1,3 +1,6 @@
+import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
+import { createCredentialProxyInstallationConfiguration } from "./installation-driver-configuration.ts";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import {
@@ -6,14 +9,10 @@ import {
   preparedGitHubSourceFromRoute,
 } from "../../packages/contracts/src/index.ts";
 import { InstalledDriver } from "../../packages/occ/src/index.ts";
-import {
-  assertExecutionAdmission,
-  egressAssociationInstallation,
-} from "../../packages/contracts/src/index.ts";
+import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
-import { isDeepStrictEqual } from "node:util";
-import { createHash, generateKeyPairSync, randomUUID, randomBytes, sign } from "node:crypto";
-import { createServer as createHttpsServer, request as httpsRequest } from "node:https";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createServer as createHttpsServer } from "node:https";
 import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -32,9 +31,20 @@ import {
   createOpenShellEgressAuthority,
   bindOpenShellEgressAuthority,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-authority.ts";
-import { selfSigned } from "./certificates.mjs";
-import { listen } from "./listen.mjs";
+import { selfSigned } from "./certificates.ts";
+import { listen } from "./listen.ts";
+import {
+  createExchangeClients,
+  createExchangeOrigin,
+  createStaticEgressExchange,
+} from "./static-egress-exchange.ts";
+import { Check } from "typebox/value";
+import { NamespaceSchema } from "../../packages/contracts/src/api/resources.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
+
+export { requestId } from "./static-egress-request-id.ts";
+export { supervisorBearer, wireTime } from "./static-egress-exchange.ts";
+export { syntheticDispatchFixture } from "./static-egress-dispatch.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const grpc = require("@grpc/grpc-js");
@@ -50,18 +60,6 @@ export const loadGatewayDefinition = (options) =>
     { keepCase: true, enums: String, longs: String, ...options },
   );
 
-export const wireTime = (millis) => ({
-  seconds: Math.floor(millis / 1000),
-  nanos: (millis % 1000) * 1e6,
-});
-export function requestId(createdAt = Date.now()) {
-  const bytes = randomBytes(16);
-  bytes.writeUIntBE(createdAt, 0, 6);
-  bytes[6] = (bytes[6] & 0x0f) | 0x70;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = bytes.toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
 export const unary = (client, method, request, metadata, timeoutMs = 5000) =>
   new Promise((resolve, reject) =>
     client[method](
@@ -71,25 +69,22 @@ export const unary = (client, method, request, metadata, timeoutMs = 5000) =>
       (error, result) => (error ? reject(error) : resolve(result)),
     ),
   );
-export function supervisorBearer(claims, privateKey) {
-  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  const header = encode({ alg: "EdDSA", typ: "openshell-ext+jwt", kid: "fixture-key" });
-  const signed = header + "." + encode(claims);
-  return `Bearer ${signed}.${sign(null, Buffer.from(signed), privateKey).toString("base64url")}`;
-}
-
 /** Real app/auth/IAM/controller/Drivers. Storage and installed runtime observations are wire fixtures,
  * not a Kubernetes API server or an OpenShell supervisor. No authorization/provider logic is mocked.
  * @template {import("node:net").Server} [Provider=never]
  */
-export async function staticEgressFixture(
+async function buildStaticEgressFixture(
   t,
   {
-    appFactory = /** @type {(t: import("node:test").TestContext, options?: Parameters<typeof createConsoleAppFixture>[1]) => Promise<Awaited<ReturnType<typeof createConsoleAppFixture>> | Awaited<ReturnType<typeof import("./postgres-egress-app.mjs").postgresApp>>>} */ (
+    appFactory = /** @type {(t: import("node:test").TestContext, options?: Parameters<typeof createConsoleAppFixture>[1], transportDatabaseUrl?: string) => Promise<Awaited<ReturnType<typeof createConsoleAppFixture>> | Awaited<ReturnType<typeof import("./postgres-egress-app.mjs").postgresApp>>>} */ (
       createConsoleAppFixture
     ),
+    transportDatabaseUrl = /** @type {string | undefined} */ (undefined),
     driverConfigurations = /** @type {readonly import("../../packages/occ/src/index.ts").DriverConfigurationRegistration[]} */ ([]),
     includeLegacy = false,
+    // Admission uses production composition; execution retains an already admitted owner.
+    admissionOnly = false,
+    gatewayOnly = false,
     protectedSourceOnly = false,
     proxyDriverId = "openshell-egress",
     now = () => new Date(),
@@ -107,7 +102,9 @@ export async function staticEgressFixture(
     providerServer = /** @type {((tls: import("node:tls").TlsOptions, handle: import("node:http").RequestListener) => Provider) | undefined} */ (
       undefined
     ),
-    credentialProxyCapacity,
+    credentialProxyCapacity = /** @type {import("../../packages/occ/src/credential-proxy.ts").CredentialProxyCapacity | undefined} */ (
+      undefined
+    ),
   } = {},
 ) {
   const directory = await temporaryDirectory(t, "oce-egress-wire-");
@@ -130,6 +127,7 @@ export async function staticEgressFixture(
       ports: [{ port: 443, targetPort: 9443, protocol: "TCP" }],
     },
   };
+  /** @type {import("../../packages/contracts/src/index.ts").Namespace} */
   let namespace;
   const namespaceResource = () => ({
     apiVersion: "v1",
@@ -254,6 +252,18 @@ export async function staticEgressFixture(
     authentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
   });
 
+  const materialReads = { ordinary: 0, versioned: 0 };
+  for (const [method, counter] of [
+    ["withValue", "ordinary"],
+    ["readCredentialInput", "versioned"],
+  ]) {
+    const original = secretDriver[method].bind(secretDriver);
+    secretDriver[method] = (...args) => {
+      materialReads[counter] += 1;
+      return original(...args);
+    };
+  }
+
   const Gateway = grpc.loadPackageDefinition(loadGatewayDefinition()).openshell.v1.OpenShell;
   const gateway = new grpc.Server();
   const observed = {
@@ -263,13 +273,18 @@ export async function staticEgressFixture(
     deleted: [],
     workspaceVisible: true,
     policyStatusRequests: 0,
+    gatewayInfoRequests: 0,
     policyStatusUnavailable: false,
   };
   // OpenShell reports negotiated capabilities in lexical order, including the base contract.
   const gatewayCapabilities = ["openshell.supervisor-middleware.contract", ...capabilities].sort();
   const profiles = new Map();
   const providers = new Map();
+  const gatewayRequests = [];
   gateway.addService(Gateway.service, {
+    Health(_call, callback) {
+      callback(null, { status: "SERVICE_STATUS_HEALTHY" });
+    },
     GetProviderProfile(call, callback) {
       const profile = profiles.get(call.request.id);
       callback(profile ? null : { code: grpc.status.NOT_FOUND }, profile ? { profile } : undefined);
@@ -290,12 +305,54 @@ export async function staticEgressFixture(
     },
     GetProvider(call, callback) {
       const provider = providers.get(call.request.name);
+      gatewayRequests.push({ method: "GetProvider", request: call.request, found: !!provider });
       callback(
         provider ? null : { code: grpc.status.NOT_FOUND },
         provider ? { provider } : undefined,
       );
     },
+    UpdateProvider(call, callback) {
+      gatewayRequests.push({ method: "UpdateProvider", request: call.request });
+      const previous = providers.get(call.request.provider.metadata.name);
+      if (!previous) {
+        callback({ code: grpc.status.NOT_FOUND });
+        return;
+      }
+      const provider = {
+        ...previous,
+        metadata: {
+          ...previous.metadata,
+          resource_version: String(Number(previous.metadata.resource_version) + 1),
+        },
+        credentials: { ...previous.credentials, ...call.request.provider.credentials },
+      };
+      providers.set(provider.metadata.name, provider);
+      callback(null, { provider });
+    },
+    DeleteProvider(call, callback) {
+      gatewayRequests.push({ method: "DeleteProvider", request: call.request });
+      const deleted = providers.delete(call.request.name);
+      if (!deleted && !call.request.allow_missing) {
+        callback({ code: grpc.status.NOT_FOUND });
+        return;
+      }
+      callback(null, {
+        outcome: deleted ? "DELETION_OUTCOME_COMPLETED" : "DELETION_OUTCOME_ALREADY_ABSENT",
+      });
+    },
+    DeleteProviderProfile(call, callback) {
+      gatewayRequests.push({ method: "DeleteProviderProfile", request: call.request });
+      const deleted = profiles.delete(call.request.id);
+      if (!deleted && !call.request.allow_missing) {
+        callback({ code: grpc.status.NOT_FOUND });
+        return;
+      }
+      callback(null, {
+        outcome: deleted ? "DELETION_OUTCOME_COMPLETED" : "DELETION_OUTCOME_ALREADY_ABSENT",
+      });
+    },
     GetGatewayInfo(_call, callback) {
+      observed.gatewayInfoRequests += 1;
       callback(null, {
         status: 1,
         extensions: observed.available
@@ -319,7 +376,13 @@ export async function staticEgressFixture(
       }
       callback(null, {
         workspace: {
-          metadata: { name: call.request.name },
+          metadata: {
+            name: call.request.name,
+            labels: {
+              "app.kubernetes.io/managed-by": "openclaw-enterprise",
+              "openclaw.dev/namespace-id": namespace.id,
+            },
+          },
           status: { phase: "WORKSPACE_PHASE_ACTIVE" },
         },
       });
@@ -425,32 +488,70 @@ export async function staticEgressFixture(
   );
   t.after(() => backend.client.close());
   const egressOptions = { middlewareName: "oce-authority", authorityScope: "execution" };
-  const sandbox = new OpenShellSandboxDriver(
-    {
-      egress: egressOptions,
-      gateway: { workspaceMode: "operator" },
-      kubernetes: {
-        runtimeClassName: "openshell-sandbox",
-        serviceAccount: { mode: "gatewayConfigured" },
-        sandboxDataMount: {
-          subPath: "workspace",
-          mountPath: "/sandbox/enterprise",
-          readOnly: false,
+  let admissionDrivers;
+  if (admissionOnly) {
+    // Exercise startup's retirement selection, not a policy recreated by the fixture.
+    const base = createCredentialProxyInstallationConfiguration();
+    const configuration = {
+      ...base,
+      backend: [
+        {
+          ...base.backend[0],
+          id: backend.id,
+          configuration: {
+            ...base.backend[0].configuration,
+            endpoint: `https://127.0.0.1:${gatewayPort}`,
+            rootCertificatePath: certPath,
+          },
+        },
+      ],
+    };
+    const path = join(directory, "installation.json");
+    await writeFile(path, JSON.stringify(configuration));
+    const loaded = await loadInstallationConfiguration({
+      mode: "development",
+      environment: { OCC_CONFIG_PATH: path },
+      createOpenShellBackend: () => backend,
+    });
+    assert.ok(loaded?.protectedDriver);
+    assert.ok(loaded.sandboxDriver instanceof OpenShellSandboxDriver);
+    assert.ok(loaded.proxyDriver instanceof OpenShellCredentialProxyDriver);
+    assert.ok(loaded.credentialGatewayDriver instanceof OpenShellCredentialGatewayDriver);
+    admissionDrivers = {
+      owner: loaded.protectedDriver,
+      sandbox: loaded.sandboxDriver,
+      proxy: loaded.proxyDriver,
+      catalog: loaded.credentialGatewayDriver,
+    };
+  }
+  const sandbox =
+    admissionDrivers?.sandbox ??
+    new OpenShellSandboxDriver(
+      {
+        egress: egressOptions,
+        gateway: { workspaceMode: "operator" },
+        kubernetes: {
+          runtimeClassName: "openshell-sandbox",
+          serviceAccount: { mode: "gatewayConfigured" },
+          sandboxDataMount: {
+            subPath: "workspace",
+            mountPath: "/sandbox/enterprise",
+            readOnly: false,
+          },
+        },
+        policy: {
+          process: { runAsUser: "1000", runAsGroup: "1000" },
+          networkPolicies: [
+            {
+              name: "inference",
+              endpoints: [{ host: "provider.example.test", ports: [443] }],
+              binaries: [{ path: "/usr/bin/model-client" }],
+            },
+          ],
         },
       },
-      policy: {
-        process: { runAsUser: "1000", runAsGroup: "1000" },
-        networkPolicies: [
-          {
-            name: "inference",
-            endpoints: [{ host: "provider.example.test", ports: [443] }],
-            binaries: [{ path: "/usr/bin/model-client" }],
-          },
-        ],
-      },
-    },
-    { id: "openshell-sandbox", backend },
-  );
+      { id: "openshell-sandbox", backend },
+    );
   const preparedTokens = new TokenService();
   const owner = createPreparedGitHub
     ? await createPreparedGitHub({ secretDriver, tokenService: preparedTokens })
@@ -472,94 +573,116 @@ export async function staticEgressFixture(
       withdraw: (...args) => owner.withdraw(...args),
     });
   }
-  const providerRequests = [];
-  let providerResponse = { status: 200, body: { output: "fixture answer" } };
-  const createProvider = providerServer === undefined ? createHttpsServer : providerServer;
-  const provider = createProvider({ key, cert }, async (request, response) => {
-    const bytes = await buffer(request);
-    providerRequests.push({
-      method: request.method,
-      path: request.url,
-      authorization: request.headers.authorization,
-      body: bytes.length ? JSON.parse(bytes) : undefined,
-      headers: request.headers,
-    });
-    response.writeHead(providerResponse.status, {
-      "content-type": providerResponse.contentType ?? "application/json",
-    });
-    response.write(providerResponse.rawBody ?? JSON.stringify(providerResponse.body));
-    if (providerResponse.trailers) {
-      response.addTrailers(providerResponse.trailers);
-    }
-    response.end();
-  });
-  const providerPort = await listen(t, provider);
+  const origin = await createExchangeOrigin(t, { key, cert }, providerServer);
+  const { providerPort, providerRequests, setResponse } = origin;
   const modelProvider = {
     protocol: "openai-responses",
     baseUrl: `https://provider.example.test:${providerPort}/v1`,
   };
-  const egress = new OpenShellCredentialProxyDriver(egressOptions, {
-    id: proxyDriverId,
-    preparedProviders: preparedProvider
-      ? [preparedProvider]
-      : owner
-        ? [githubMetadataProvider]
-        : [],
-    backend,
-    sandbox,
-  });
-  const catalog = new OpenShellCredentialGatewayDriver(
-    { binaries: ["/usr/bin/model-client"] },
-    { id: "openshell-credentials", backend },
-  );
+  const egress =
+    admissionDrivers?.proxy ??
+    new OpenShellCredentialProxyDriver(egressOptions, {
+      id: proxyDriverId,
+      preparedProviders: preparedProvider
+        ? [preparedProvider]
+        : owner
+          ? [githubMetadataProvider]
+          : [],
+      backend,
+      sandbox,
+    });
+  const catalog =
+    admissionDrivers?.catalog ??
+    new OpenShellCredentialGatewayDriver(
+      { binaries: ["/usr/bin/model-client"] },
+      { id: "openshell-credentials", backend },
+    );
+  const gatewayMethods = /** @type {const} */ (["registerSource", "updateSource", "removeSource"]);
+  /** @type {(typeof gatewayMethods)[number][]} */
+  const gatewayEffects = [];
+  for (const method of gatewayMethods) {
+    const original = catalog[method].bind(catalog);
+    catalog[method] = (...args) => {
+      gatewayEffects.push(method);
+      return original(...args);
+    };
+  }
   const placement = createTestKubernetesComputeDriver("placement", {
     gatewayRuntime: true,
     modelProvider,
     authentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
   });
-  const app = await appFactory(t, {
-    now,
-    provisionedPeople: [],
-    preparedTokens,
-    ...(credentialProxyCapacity === undefined ? {} : { credentialProxyCapacity }),
-    driverConfigurations: [
-      {
-        capability: "sandbox",
-        driverId: sandbox.id,
-        implementation: sandbox.implementation,
-        definition: OpenShellSandboxDriver,
-      },
-      ...driverConfigurations,
-    ],
-    preparedTokenProof: preparedGitHub && { current: (...args) => owner.current(...args) },
-    secretDriver,
-    computeDriver: {
-      ...createDevelopmentComputeDriver(),
-      normalizeHarnessOverrides: placement.normalizeHarnessOverrides.bind(placement),
-      resolveModelProvider: placement.resolveModelProvider,
-      resolveInferencePrivatePeer: placement.resolveInferencePrivatePeer.bind(placement),
-      resolveHarnessConfiguration: placement.resolveHarnessConfiguration.bind(placement),
-      validateHarnessCredentialSources: placement.validateHarnessCredentialSources.bind(placement),
-      // Schema/protocol fixture only: no workload is released by this Compute.
-      validateExecutionAdmission: assertExecutionAdmission,
-      async resolveSandboxNamespace(value) {
-        return physicalPlacement ? placement.resolveSandboxNamespace(value) : value;
-      },
+  const computeDriver = {
+    ...createDevelopmentComputeDriver(),
+    resolveModelProvider: placement.resolveModelProvider,
+    resolveInferencePrivatePeer: placement.resolveInferencePrivatePeer.bind(placement),
+    normalizeHarnessOverrides: placement.normalizeHarnessOverrides.bind(placement),
+    resolveHarnessConfiguration: placement.resolveHarnessConfiguration.bind(placement),
+    validateHarnessCredentialSources: placement.validateHarnessCredentialSources.bind(placement),
+    // Schema/protocol fixture only: no workload is released by this Compute.
+    validateExecutionAdmission: assertExecutionAdmission,
+    async resolveSandboxNamespace(value) {
+      return physicalPlacement ? placement.resolveSandboxNamespace(value) : value;
     },
+  };
+  computeDriver.resolveSandboxNamespaceContext = async (value, signal) => ({
+    namespace: await computeDriver.resolveSandboxNamespace(value),
+    kubernetes: {},
+    signal,
   });
+  const installedDriver =
+    admissionDrivers?.owner ??
+    new InstalledDriver(
+      { id: sandbox.id, implementation: sandbox.implementation, configuration: egressOptions },
+      { capabilities: { sandbox, credential_proxy: egress } },
+      { sandbox: sandbox.id, credential_proxy: egress.id },
+    );
+  const app = await appFactory(
+    t,
+    {
+      now,
+      provisionedPeople: [],
+      preparedTokens,
+      ...(credentialProxyCapacity === undefined ? {} : { credentialProxyCapacity }),
+      driverConfigurations: [
+        {
+          capability: "sandbox",
+          driverId: sandbox.id,
+          implementation: sandbox.implementation,
+          definition: OpenShellSandboxDriver,
+        },
+        ...driverConfigurations,
+      ],
+      preparedTokenProof: preparedGitHub && { current: (...args) => owner.current(...args) },
+      secretDriver,
+      computeDriver,
+      namespaceLifecycleBindings: [
+        sandboxNamespaceLifecycleBinding(computeDriver, sandbox, installedDriver),
+      ],
+    },
+    transportDatabaseUrl,
+  );
   await app.bootstrap();
   if (!protectedSourceOnly) {
     app.controller.registerDriver(catalog);
     app.controller.selectDriver(catalog.capability, catalog.id);
   }
-  const installedDriver = new InstalledDriver(
-    { id: sandbox.id, implementation: sandbox.implementation, configuration: egressOptions },
-    { capabilities: { sandbox, credential_proxy: egress } },
-    { sandbox: sandbox.id, credential_proxy: egress.id },
-  );
   app.controller.registerDriver(installedDriver);
   app.controller.selectDriver("sandbox", sandbox.id);
-  namespace = await app.createNamespace(`egress-${randomUUID().slice(0, 8)}`, { ready: true });
+  const createdNamespace = await app.createNamespace(`egress-${randomUUID().slice(0, 8)}`);
+  assert.ok(Check(NamespaceSchema, createdNamespace), "Expected a valid provisioned Namespace");
+  namespace = createdNamespace;
+  runtimeNamespace = physicalPlacement
+    ? await placement.resolveSandboxNamespace(namespace)
+    : namespace;
+  // The protocol's owned Workspace is now addressable before Namespace reconciliation.
+  const ready = await app.controller.handleNamespaceLifecycle(
+    app.principal.id,
+    namespace.id,
+    "ready",
+  );
+  assert.equal(ready.status, "ready");
+  namespace = ready;
   runtimeNamespace = physicalPlacement
     ? await placement.resolveSandboxNamespace(namespace)
     : namespace;
@@ -579,7 +702,32 @@ export async function staticEgressFixture(
       secrets: { api_key: secret.ref },
     });
   }
-  app.controller.selectDriver("credential_proxy", egress.id);
+  if (!gatewayOnly) {
+    app.controller.selectDriver("credential_proxy", egress.id);
+  }
+  const admissionControls = {
+    modelProvider,
+    namespace,
+    secret,
+    path,
+    providers,
+    profiles,
+    gatewayRequests,
+    providerRequests,
+    gatewayEffects,
+    materialReads,
+    legacySource,
+    egress,
+    observed,
+  };
+  if (admissionOnly) {
+    return {
+      ...app,
+      ...admissionControls,
+      fixtureKind: /** @type {const} */ ("admission"),
+      countSecretReads: () => secretReads,
+    };
+  }
   let source = protectedSourceOnly
     ? undefined
     : await post("credential-sources", {
@@ -638,13 +786,24 @@ export async function staticEgressFixture(
     resourceId: source.id,
   });
   if (!admitRevision) {
-    return { ...app, namespace, agent, source, grant, modelProvider, modelService };
+    return {
+      ...app,
+      namespace,
+      modelProvider,
+      modelService,
+      ...admissionControls,
+      fixtureKind: /** @type {const} */ ("undeployed"),
+      agent,
+      source,
+      grant,
+      countSecretReads: () => secretReads,
+    };
   }
   const revisionMetadata = await app.deployAgent(namespace.id, agent.id);
   const revision = await app.controller.transact((unit) =>
     unit.revisions.findRevision(namespace.id, agent.id, revisionMetadata.id),
   );
-  assert.ok(revision.egressPlan, "deployment must admit the consumed protected plan");
+  assert.ok(revision?.egressPlan, "deployment must admit the consumed protected plan");
   const context = {
     namespace: runtimeNamespace,
     revision,
@@ -749,274 +908,31 @@ export async function staticEgressFixture(
   let authority = createOpenShellEgressAuthority(identity, authorityController);
   const authorityPort = await bindOpenShellEgressAuthority(authority, "127.0.0.1:0", cert, key);
   t.after(() => authority.forceShutdown());
-  const definition = loader.loadSync(
-    new URL(
-      "../../apps/controller/src/drivers/egress-proxy/proto/supervisor_middleware.proto",
-      import.meta.url,
-    ).pathname,
-    { keepCase: true, longs: String, enums: Number, defaults: false, oneofs: true },
-  );
-  const refusalCode = (name) => {
-    const entry = definition["openshell.middleware.v1.HttpCredentialRefusalCode"].type.value.find(
-      (value) => value.name === `HTTP_CREDENTIAL_REFUSAL_CODE_${name}`,
-    );
-    assert.ok(entry, `Unknown HTTP credential refusal code: ${name}`);
-    return entry.number;
-  };
-  const services = grpc.loadPackageDefinition(definition).openshell.middleware.v1;
-  function createAuthorityClient(name) {
-    return new services[name](`127.0.0.1:${authorityPort}`, grpc.credentials.createSsl(cert));
-  }
-  const clients = Object.fromEntries(
-    [
-      "HttpCredentialAccess",
-      "HttpResponsePreReturn",
-      "SupervisorMiddleware",
-      "HttpInstallationExchange",
-    ].map((name) => [name, createAuthorityClient(name)]),
-  );
-  t.after(() => {
-    for (const client of Object.values(clients)) {
-      client.close();
-    }
+  const {
+    clients,
+    reconnect,
+    transport: exchangeTransport,
+  } = createExchangeClients(t, authorityPort, cert);
+  const exchange = createStaticEgressExchange({
+    cert,
+    controller: app.controller,
+    exchangeKeys,
+    getSecretReads: () => secretReads,
+    installation,
+    namespace,
+    now,
+    origin,
+    sandboxId,
+    supervisorKey: keys.privateKey,
+    transport: exchangeTransport,
   });
-  const metadata = (overrides = {}) => {
-    const now = Math.floor(Date.now() / 1000);
-    const token = supervisorBearer(
-      {
-        iss: "https://gateway.example.test",
-        aud: "oce-egress",
-        sub: `spiffe://openshell/sandbox/${sandboxId}`,
-        iat: now,
-        exp: now + 60,
-        jti: randomUUID(),
-        caller_kind: "supervisor",
-        sandbox_id: sandboxId,
-        instance_id: installation.enforcement.instanceId,
-        exchange_key: {
-          profile: "openshell-exchange-v1",
-          ...exchangeKeys.publicKey.export({ format: "jwk" }),
-        },
-        ...overrides,
-      },
-      keys.privateKey,
-    );
-    const result = new grpc.Metadata();
-    result.set("authorization", token);
-    return result;
-  };
-  const capture = (body = { model: "fixture-model", input: "hello", store: false }) => ({
-    audience: "oce-egress",
-    deadline: wireTime(now().getTime() + 20_000),
-    response_custody: randomBytes(32),
-    verified_execution_policy_hash: installation.enforcement.policyHash,
-    request: {
-      context: {
-        request_id: requestId(now().getTime()),
-        sandbox_id: sandboxId,
-      },
-      target: {
-        scheme: "https",
-        host: "provider.example.test",
-        port: providerPort,
-        method: "POST",
-        path: "/v1/responses",
-      },
-      headers: [{ name: "content-type", value: "application/json" }],
-      body: Buffer.from(JSON.stringify(body)),
-    },
-  });
-  function permitRequest(captured, ready, { noMaterial = false } = {}) {
-    const hash = createHash("sha256");
-    for (const header of noMaterial ? [] : ready.credential_headers) {
-      for (const value of [header.name, header.value]) {
-        const bytes = Buffer.from(value);
-        const length = Buffer.alloc(8);
-        length.writeBigUInt64BE(BigInt(bytes.length));
-        hash.update(length).update(bytes);
-      }
-    }
-    return {
-      context: captured.request.context,
-      operation_handle: ready.operation_handle,
-      audience: "oce-egress",
-      deadline: captured.deadline,
-      ...(noMaterial ? { no_material_required: true } : { evidence: ready.evidence }),
-      credential_headers_sha256: hash.digest(),
-    };
-  }
-  async function send(captured, ready) {
-    return new Promise((resolve, reject) => {
-      const outgoing = httpsRequest(
-        {
-          hostname: "127.0.0.1",
-          servername: "provider.example.test",
-          ca: cert,
-          port: providerPort,
-          method: captured.request.target.method,
-          path: captured.request.target.path,
-          headers: Object.fromEntries(
-            [...captured.request.headers, ...ready.credential_headers].map(({ name, value }) => [
-              name,
-              value,
-            ]),
-          ),
-        },
-        async (response) => {
-          resolve({
-            status: response.statusCode,
-            headers: [{ name: "content-type", value: response.headers["content-type"] }],
-            body: await buffer(response),
-            trailers: response.rawTrailers.flatMap((name, index, values) =>
-              index % 2 ? [] : [{ name, value: values[index + 1] }],
-            ),
-            response_complete: response.complete,
-          });
-        },
-      );
-      outgoing.on("error", reject);
-      outgoing.end(captured.request.body);
-    });
-  }
-  async function beginExchange(peer = metadata()) {
-    const stream = clients.HttpInstallationExchange.Exchange(peer, {
-      deadline: Date.now() + 5000,
-    });
-    const queued = [];
-    const received = [];
-    const waiting = [];
-    let failure;
-    stream.on("data", (message) => {
-      received.push(message);
-      const waiter = waiting.shift();
-      if (waiter) {
-        waiter.resolve(message);
-      } else {
-        queued.push(message);
-      }
-    });
-    stream.on("error", (error) => {
-      failure = error;
-      for (const waiter of waiting.splice(0)) {
-        waiter.reject(error);
-      }
-    });
-    const next = () => {
-      if (queued.length) {
-        return Promise.resolve(queued.shift());
-      }
-      if (failure) {
-        return Promise.reject(failure);
-      }
-      return new Promise((resolve, reject) => waiting.push({ resolve, reject }));
-    };
-    stream.on("end", () => {
-      failure ??= new Error("Installation exchange ended without another message");
-      for (const waiter of waiting.splice(0)) {
-        waiter.reject(failure);
-      }
-    });
-    const { challenge } = await next();
-    return {
-      stream,
-      next,
-      challenge,
-      received,
-      opening(captured, privateKey = exchangeKeys.privateKey, boundChallenge = challenge) {
-        const encoded =
-          definition["openshell.middleware.v1.HttpCredentialResolveRequest"].serialize(captured);
-        return {
-          open: {
-            resolve_request: encoded,
-            signature: sign(
-              null,
-              Buffer.concat([Buffer.from("openshell-exchange-v1\0"), boundChallenge, encoded]),
-              privateKey,
-            ),
-          },
-        };
-      },
-    };
-  }
-  // These are real bidirectional exchanges. In this fixture only, the test caller
-  // owns the simulated downstream and gates synthetic provider access on the echoed custody.
-  const exchangeByHandle = new Map();
-  const exchangeByRequest = new WeakMap();
-  async function resolve(captured, peer) {
-    const exchange = await beginExchange(peer);
-    exchange.stream.write(exchange.opening(captured));
-    const { resolved } = await exchange.next();
-    if (resolved.ready || resolved.ready_without_material) {
-      const handle = (resolved.ready || resolved.ready_without_material).operation_handle.toString(
-        "base64",
-      );
-      const entry = { captured, exchange };
-      exchangeByHandle.set(handle, entry);
-      exchange.stream.once("status", () => exchangeByHandle.delete(handle));
-      exchangeByRequest.set(captured, exchange);
-    }
-    return resolved;
-  }
-  async function authorize(permit, { cancelAfterMs } = {}) {
-    const handle = permit.operation_handle.toString("base64");
-    const { captured, exchange } = exchangeByHandle.get(handle);
-    const timer = cancelAfterMs && setTimeout(() => exchange.stream.cancel(), cancelAfterMs);
-    try {
-      exchange.stream.write({ authorize: permit });
-      const { authorized } = await exchange.next();
-      if (authorized.allowed) {
-        assert.equal(authorized.allowed.no_material_required, permit.no_material_required === true);
-        assert.deepEqual(authorized.allowed.response_custody, captured.response_custody);
-        assert.deepEqual(
-          authorized.allowed.credential_headers_sha256,
-          permit.credential_headers_sha256,
-        );
-      }
-      return authorized;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  // The supervisor's stream-progress frame; the reply is a lease or a refused stream.
-  async function progress(captured, frame) {
-    const exchange = exchangeByRequest.get(captured);
-    exchange.stream.write({ progress: frame });
-    try {
-      const { lease } = await exchange.next();
-      assert.ok(lease, "a progress frame is answered with a lease or a refusal");
-      return lease;
-    } catch (error) {
-      if (error.code !== grpc.status.PERMISSION_DENIED) {
-        throw error;
-      }
-      return { refused: true };
-    }
-  }
-  async function protect(captured, response) {
-    const exchange = exchangeByRequest.get(captured);
-    exchange.stream.write({ response });
-    try {
-      const { response: result } = await exchange.next();
-      assert.equal(result.response_complete, true);
-      return result;
-    } catch (error) {
-      if (error.code !== grpc.status.PERMISSION_DENIED) {
-        throw error;
-      }
-      assert.equal(
-        exchange.received.filter((message) => message.response).length,
-        0,
-        "a refused complete response must release no response message, even a head",
-      );
-      return { blocked: true };
-    }
-  }
   return {
     ...app,
+    fixtureKind: /** @type {const} */ ("deployed"),
+    gatewayEffects,
     namespace,
     runtimeNamespace,
     modelProvider,
-    refusalCode,
     secret,
     source,
     legacySource,
@@ -1036,37 +952,15 @@ export async function staticEgressFixture(
     get authority() {
       return authority;
     },
-    metadata,
-    beginExchange,
-    resolve,
-    authorize,
-    capture,
-    permitRequest,
-    send,
-    progress,
-    protect,
+    ...exchange,
+    exchange,
     async restartAuthority() {
       authority.forceShutdown();
       authority = createOpenShellEgressAuthority(identity, authorityController);
       await bindOpenShellEgressAuthority(authority, "127.0.0.1:" + authorityPort, cert, key);
-      for (const [name, client] of Object.entries(clients)) {
-        client.close();
-        clients[name] = createAuthorityClient(name);
-      }
+      reconnect();
     },
-    providerRequests,
-    provider,
-    async exchangeResponse(response, request) {
-      const captured = capture(request);
-      const { ready } = await resolve(captured);
-      assert.ok(ready, "authority resolved this operation");
-      assert.ok((await authorize(permitRequest(captured, ready))).allowed);
-      const before = providerRequests.length;
-      providerResponse = response;
-      const result = await protect(captured, await send(captured, ready));
-      assert.equal(providerRequests.length, before + 1, "provider received the authorized request");
-      return result;
-    },
+    setResponse,
     async rotateSecret(value) {
       const result = await app.request(
         "PATCH",
@@ -1076,9 +970,6 @@ export async function staticEgressFixture(
         },
       );
       assert.equal(result.status, 200, JSON.stringify(result.body));
-    },
-    setResponse(value) {
-      providerResponse = value;
     },
     get secretReads() {
       return secretReads;
@@ -1116,306 +1007,68 @@ export async function staticEgressFixture(
   };
 }
 
-/** Explicit trusted acceptance profile for dispatch tests only. The captured owner
- * holds the actual sender and reply recipient; no bearer or header establishes custody. */
-export async function syntheticDispatchFixture(t, receipts) {
-  const { createServer, connect } = await import("node:net");
-  const { once } = await import("node:events");
-  const { CredentialProxy } = await import("../../packages/occ/src/credential-proxy.ts");
-  const { createOpenAiStaticProvider } =
-    await import("../../apps/controller/src/drivers/egress-proxy/openai-provider.ts");
-  const openAiStaticProvider = createOpenAiStaticProvider();
-  const ref = () => ({ id: randomUUID(), generation: 1 });
-  const now = Date.now();
-  const deadlineAt = new Date(now + 25_000).toISOString();
-  const execution = Object.fromEntries(
-    [
-      "installationId",
-      "namespaceId",
-      "agentId",
-      "servicePrincipalId",
-      "revisionId",
-      "executionId",
-    ].map((key) => [key, randomUUID()]),
-  );
-  const sender = ref();
-  const peer = { sender, sandboxId: randomUUID(), instanceId: randomUUID(), expiresAt: deadlineAt };
-  const source = {
-    key: {
-      installationId: execution.installationId,
-      namespaceId: execution.namespaceId,
-      source: ref(),
-      backend: ref(),
-      provider: ref(),
-    },
-    adoption: "live",
-    materialRefId: randomUUID(),
-    secret: { kind: "secret", namespaceId: execution.namespaceId, id: randomUUID() },
-    secretDriver: ref(),
-  };
-  const route = {
-    route: ref(),
-    binding: {
-      binding: ref(),
-      execution,
-      source: source.key,
-      grant: { kind: "inference", models: ["fixture-model"], providerTools: "none" },
-      grantHash: "synthetic",
-      isolationId: randomUUID(),
-    },
-    origin: "https://provider.example.test",
-    path: "/v1/responses",
-    method: "POST",
-    operationPolicy: ref(),
-    responsePolicy: ref(),
-    deadlineMs: 30_000,
-  };
-  const policyHash = "fb".repeat(32);
-  const installation = {
-    sender,
-    sandboxId: peer.sandboxId,
-    installedAt: new Date(now).toISOString(),
-    enforcement: {
-      instanceId: peer.instanceId,
-      configurationId: randomUUID(),
-      policyHash,
-      authorityScope: "execution",
-    },
-    plan: {
-      ...ref(),
-      execution,
-      sandboxDriverId: "synthetic",
-      egressDriverId: sender.id,
-      routes: [route],
-    },
-  };
-  const request = {
-    id: requestId(now),
-    method: "POST",
-    url: route.origin + route.path,
-    verifiedExecutionPolicyHash: policyHash,
-    headers: [["content-type", "application/json"]],
-    body: Buffer.from(JSON.stringify({ model: "fixture-model", input: "hello", store: false })),
-    deadlineAt,
-  };
-  const custody = { id: randomUUID(), reply: { id: randomUUID(), chunks: [] } };
-  const association = {
-    execution,
-    installation: {
-      sandboxId: peer.sandboxId,
-      ...installation.enforcement,
-      plan: { id: installation.plan.id, generation: installation.plan.generation },
-    },
-    exchangeId: randomUUID(),
-    responseId: custody.reply.id,
-    custodyId: custody.id,
-  };
-  let reads = 0;
-  let arrivals = 0;
-  let permits = 0;
-  let current = true;
-  let clock = now;
-  let ready;
-  // Count the first bytes on each connection before parsing any application data.
-  const origin = createServer((socket) =>
-    socket.once("data", () => {
-      arrivals++;
-      socket.end("synthetic response");
-    }),
-  );
-  await listen(t, origin);
-  const exchangeOwner = {
-    verify: async () => peer,
-    capture(use) {
-      return current && use.request.id === request.id ? association : undefined;
-    },
-    owns(value, use) {
-      return (
-        current &&
-        JSON.stringify(value) === JSON.stringify(association) &&
-        use.request.id === request.id &&
-        Buffer.from(use.request.body).equals(request.body)
-      );
-    },
-  };
-  const ports = {
-    exchangeOwner,
-    receipts,
-    now: () => clock,
-    installation: async () => installation,
-    provider: () => openAiStaticProvider,
-    // Synthetic policy is immutable; real OCC uses its policy-and-receipt transaction.
-    async authorizeSend(use, selected, attempt, mintAuthorization) {
-      const decision = await this.check(use, attempt.material);
-      if (!("key" in decision)) {
-        return decision;
-      }
-      if (!isDeepStrictEqual(decision, selected)) {
-        return { kind: "denied", code: "stale_configuration" };
-      }
-      const authorization = mintAuthorization();
-      if ("kind" in authorization) {
-        return authorization;
-      }
-      return this.receipts.authorize(use.peer.sender, attempt, authorization);
-    },
-    // Policy and Secret dependencies are synthetic; dispatch, persistence and sockets are real.
-    check: async () => source,
-    read: async () => {
-      reads++;
-      return {
-        value: "synthetic-material",
-        version: "N",
-        materialId: "synthetic-material-id",
-        authoritativeObservedAt: new Date(now).toISOString(),
-      };
-    },
-  };
-  let forwarder = new CredentialProxy(ports);
-  const authorizeSend = (signal = new AbortController().signal) => {
-    assert.equal(ready.kind, "ready");
-    return forwarder.authorizeSend(
-      "synthetic-peer",
-      peer.sandboxId,
-      request.id,
-      ready.handle,
-      ready.evidence,
-      ready.injectionDigest,
-      request.deadlineAt,
-      signal,
-    );
-  };
-  return {
-    startedAt: new Date(now).toISOString(),
-    get reads() {
-      return reads;
-    },
-    request,
-    association,
-    sender,
-    ports,
-    get arrivals() {
-      return arrivals;
-    },
-    get permits() {
-      return permits;
-    },
-    advance(ms) {
-      clock += ms;
-    },
-    replaceCustody() {
-      current = false;
-    },
-    restart() {
-      forwarder = new CredentialProxy(ports);
-    },
-    /**
-     * One proxy shared by several Sandboxes of this sender, each with its own enrolled
-     * installation and a long-lived peer. `wrap` may replace any of its ports, and `capacity`
-     * sets the proxy's request-time bounds (defaults otherwise). `resolve(name, fields)` authenticates as the
-     * named Sandbox with a fresh UUIDv7 request ID and deadline unless `fields` sets them.
-     */
-    sandboxes(wrap = (sandboxPorts) => sandboxPorts, capacity = undefined) {
-      const enrolled = new Map();
-      const accepted = new Set();
-      const enroll = (name) => {
-        if (!enrolled.has(name)) {
-          const sandboxPeer = {
-            sender,
-            sandboxId: randomUUID(),
-            instanceId: randomUUID(),
-            expiresAt: new Date(now + 3_600_000).toISOString(),
-          };
-          enrolled.set(name, {
-            peer: sandboxPeer,
-            installation: {
-              ...installation,
-              sandboxId: sandboxPeer.sandboxId,
-              enforcement: { ...installation.enforcement, instanceId: sandboxPeer.instanceId },
-            },
-          });
-        }
-        return enrolled.get(name);
-      };
-      const proxy = new CredentialProxy(
-        wrap({
-          ...ports,
-          exchangeOwner: {
-            verify: async (name) => enroll(name).peer,
-            capture(use) {
-              accepted.add(use.id);
-              return {
-                ...association,
-                installation: egressAssociationInstallation(use.installation),
-                responseId: use.id,
-              };
-            },
-            owns: (value, use) => accepted.has(use.id) && value.responseId === use.id,
-          },
-          installation: async (sandboxPeer) =>
-            [...enrolled.values()].find((entry) => entry.peer.sandboxId === sandboxPeer.sandboxId)
-              ?.installation,
-        }),
-        capacity,
-      );
-      const build = (fields = {}) => ({
-        ...request,
-        id: requestId(clock),
-        deadlineAt: new Date(clock + 20_000).toISOString(),
-        ...fields,
-      });
-      return {
-        proxy,
-        request: build,
-        resolve: (name, fields, signal = new AbortController().signal) =>
-          proxy.resolve(name, enroll(name).peer.sandboxId, build(fields), signal),
-      };
-    },
-    async resolve() {
-      ready = await forwarder.resolve(
-        "synthetic-peer",
-        peer.sandboxId,
-        request,
-        new AbortController().signal,
-      );
-      return ready;
-    },
-    authorizeSend,
-    async dispatch(signal) {
-      const decision = await authorizeSend(signal);
-      if (decision.kind !== "allow") {
-        return decision;
-      }
-      permits++;
-      // The real sender retains this accepted operation and destination. A permit for
-      // any other operation/custody or an expired permit cannot reach the socket.
-      assert.deepEqual(decision.authorization.association, association);
-      assert.equal(decision.injectionDigest, ready.injectionDigest);
-      assert.equal(
-        decision.authorization.requestDigest,
-        createHash("sha256")
-          .update(JSON.stringify({ ...request, body: request.body.toString("base64") }))
-          .digest("hex"),
-      );
-      assert.ok(current && clock < Date.parse(decision.sendStartBy));
-      const socket = connect(origin.address().port, "127.0.0.1");
-      socket.on("data", (bytes) => custody.reply.chunks.push(bytes));
-      await once(socket, "connect");
-      assert.ok(current && clock < Date.parse(decision.sendStartBy));
-      socket.end(request.body);
-      await once(socket, "close");
-      assert.equal(Buffer.concat(custody.reply.chunks).toString(), "synthetic response");
-      return decision;
-    },
-    attempt() {
-      return {
-        sender,
-        instanceId: peer.instanceId,
-        useId: request.id,
-        attemptId: request.id,
-        material: ready.evidence,
-        deadlineAt,
-      };
-    },
-  };
+/** @template {import("node:net").Server} [Provider=never]
+ * @typedef {Awaited<ReturnType<typeof buildStaticEgressFixture<Provider>>>} StaticFixtureResult */
+/** @template {import("node:net").Server} [Provider=never]
+ * @typedef {NonNullable<Parameters<typeof buildStaticEgressFixture<Provider>>[1]>} StaticFixtureOptions */
+/** @template {import("node:net").Server} [Provider=never]
+ * @typedef {Omit<StaticFixtureOptions<Provider>, "admissionOnly" | "gatewayOnly" | "admitRevision">} ExecutionFixtureOptions */
+
+/**
+ * @template {import("node:net").Server} [Provider=never]
+ * @overload
+ * @param {import("node:test").TestContext} t
+ * @param {ExecutionFixtureOptions<Provider> & {admitRevision: false}} options
+ * @returns {Promise<Extract<StaticFixtureResult<Provider>, {fixtureKind: "undeployed"}>>}
+ */
+/**
+ * @template {import("node:net").Server} [Provider=never]
+ * @overload
+ * @param {import("node:test").TestContext} t
+ * @param {ExecutionFixtureOptions<Provider> & {admitRevision?: true}} [options]
+ * @returns {Promise<Extract<StaticFixtureResult<Provider>, {fixtureKind: "deployed"}>>}
+ */
+/**
+ * @template {import("node:net").Server} [Provider=never]
+ * @overload
+ * @param {import("node:test").TestContext} t
+ * @param {ExecutionFixtureOptions<Provider> & {admitRevision?: boolean}} [options]
+ * @returns {Promise<Exclude<StaticFixtureResult<Provider>, {fixtureKind: "admission"}>>}
+ */
+/**
+ * @template {import("node:net").Server} [Provider=never]
+ * @param {import("node:test").TestContext} t
+ * @param {ExecutionFixtureOptions<Provider> & {admitRevision?: boolean}} [options]
+ */
+export async function staticEgressFixture(t, options) {
+  const fixture = await buildStaticEgressFixture(t, options);
+  if (fixture.fixtureKind === "admission") {
+    throw new Error("Expected a static egress fixture.");
+  }
+  return fixture;
+}
+
+/**
+ * @template {import("node:net").Server} [Provider=never]
+ * @param {import("node:test").TestContext} t
+ * @param {{now?: () => Date, providerServer?: (tls: import("node:tls").TlsOptions, handle: import("node:http").RequestListener) => Provider, credentialProxyCapacity?: import("../../packages/occ/src/credential-proxy.ts").CredentialProxyCapacity}} [options]
+ */
+export async function staticEgressWireFixture(t, options) {
+  const fixture = await buildStaticEgressFixture(t, options);
+  if (fixture.fixtureKind !== "deployed") {
+    throw new Error("Expected a deployed installation exchange fixture.");
+  }
+  return fixture.exchange;
+}
+
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {Pick<StaticFixtureOptions, "gatewayOnly" | "includeLegacy" | "now">} [options]
+ */
+export async function staticEgressAdmissionFixture(t, options) {
+  const fixture = await buildStaticEgressFixture(t, { ...options, admissionOnly: true });
+  if (fixture.fixtureKind !== "admission") {
+    throw new Error("Expected an admission fixture.");
+  }
+  return fixture;
 }

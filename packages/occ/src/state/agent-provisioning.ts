@@ -92,7 +92,10 @@ export interface AgentProvisioningReadRepository {
 }
 
 export interface AgentProvisioningRepository extends AgentProvisioningReadRepository {
-  create(record: CreateAgentProvisioningRecord): Promise<Readonly<AgentProvisioningReplay>>;
+  create(
+    record: CreateAgentProvisioningRecord,
+    requestId?: string,
+  ): Promise<Readonly<AgentProvisioningReplay>>;
   beginEffect(
     claim: WorkClaim,
     effect: ProvisioningEffectTarget,
@@ -122,7 +125,7 @@ export interface AgentProvisioningRepository extends AgentProvisioningReadReposi
     namespaceId: string,
     agentId: string,
     error: { readonly code: string; readonly message: string },
-  ): Promise<Readonly<AgentProvisioningRecord> | undefined>;
+  ): Promise<{ readonly workId: string; readonly attemptId?: string } | undefined>;
   /**
    * Records the receipt for a cancelled job's unsettled transport write once the claim that
    * began it has lapsed, on the database clock. Returns undefined when nothing was settled.

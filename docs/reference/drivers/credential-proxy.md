@@ -17,8 +17,10 @@ custody and retirement. Provider adapters own provider-specific scope, injection
 and response rules. The proxy enforces requests and obtains eligible material;
 it does not run a credential renewal loop.
 
-Credential Proxy does not replace every Credential Gateway. Existing static
-Gateway-owned attachments retain their own delivery path.
+Selecting Credential Proxy does not adopt ordinary sources into protected delivery.
+New and existing ordinary sources use Credential Gateway. Protected sources and
+repository bindings require Proxy admission; an Agent with neither needs no Proxy
+plan. An unavailable Proxy never permits Gateway fallback for a protected source.
 
 ## Interface
 
@@ -141,6 +143,15 @@ live transport custody, not just stored IDs.
 version and request and returns a deadline-bound decision. Match request and
 injection digests and enforce `sendStartBy` at the last controlled send boundary.
 Do not treat resolution as send permission.
+
+A provider's `classify` may synchronously report one stable rule ID (1–255) through
+its optional refusal callback. IDs must not encode request data or be reassigned.
+OCC records `classificationRule` only when no operation matches and exactly one
+refused route reports a valid ID. Accepted operations, missing or repeated reports,
+and ambiguous diagnostics provide no rule. The audit binds the authenticated
+execution, source and exact request ID without inventing an operation or accessing
+credentials. Interpretation belongs to the selected provider; the wire refusal
+remains generic. See the [diagnostic flow](../../flows/credential-source-egress.md#debugging-and-verification).
 
 Response acceptance and lease renewal remain bound to that exchange.
 `protectResponse` processes the complete response, including trailers; an

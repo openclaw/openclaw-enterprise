@@ -35,6 +35,12 @@ export async function repositoryRestartInventory(
           { ...input.sandbox, configuration: input.proxy!.configuration },
           {
             capabilities: { sandbox: capabilities.sandbox, credential_proxy: capabilities.proxy! },
+            namespaceLifecycleHooks: {
+              // Inventory reads a provisioned Namespace; setup would be an unintended mutation.
+              async ensureNamespace() {
+                assert.fail("Restart inventory must not initialize Namespace infrastructure.");
+              },
+            },
           },
         )
       : undefined;

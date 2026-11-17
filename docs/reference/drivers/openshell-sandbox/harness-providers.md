@@ -94,7 +94,8 @@ replayable Create receipt must be removed, not mutated by `ExposeService`.
 Compute replaces the fail-closed Gateway target and omits its direct Agent
 Service and Harness route. Drivers without provider transport retain Kubernetes transport.
 
-A native worker's node opens its Gateway connection. Its exposure serves
+Compute reports native OpenClaw ready only after its Gateway carries the enrolled
+node identity and completes rollout. A native worker's node opens its Gateway connection. Its exposure serves
 only Compute's held-failure read before enrollment; OpenShell routes it
 unauthenticated, so once the node enrolls the Driver deletes it
 (`DeleteService`, fail closed); adoption or recreation has none. A missing

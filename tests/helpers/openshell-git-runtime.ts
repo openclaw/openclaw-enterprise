@@ -12,7 +12,7 @@ import {
   type OpenShellProviderProfile,
   type OpenShellProviderResponse,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import type { routeStore } from "../fixtures/openshell-git-route-store.mjs";
+import type { routeStore } from "../fixtures/openshell-git-route-store.ts";
 import { unloggedFields } from "./occ-log-line.ts";
 
 // The worker logs the runtime's events through the production logger (worker.mjs), which keeps
@@ -436,7 +436,7 @@ export function openShellGitRuntimeFixture({
     logRuntimeEvent(event);
     onEvent?.(event);
   };
-  runtime["routes"] = store as unknown as OpenShellGitRuntime["routes"];
+  runtime["routes"] = store;
   if (store !== undefined && !store.rows.has(revision.id)) {
     // The row this worker's own bootstrap left: fence 1, the bootstrap generation written.
     store.rows.set(revision.id, {

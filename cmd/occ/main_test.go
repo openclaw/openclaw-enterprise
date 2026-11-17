@@ -1,7 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,6 +66,81 @@ func TestDevUpDockerExitsWithTheStartupScriptStatus(t *testing.T) {
 			}
 			if stderr.String() != "" {
 				t.Fatalf("occ dev up added to the script's diagnostics: %q", stderr.String())
+			}
+		})
+	}
+}
+
+// Exercise main and the real HTTP client: whitespace in a valid API response
+// must not break consumers that parse one JSON value per output line.
+func TestAgentLogsJSONLines(t *testing.T) {
+	const namespace = "ns_00000000-0000-4000-8000-000000000001"
+	const agent = "agt_00000000-0000-4000-8000-000000000001"
+	const revision = "rev_00000000-0000-4000-8000-000000000001"
+	const record = `{"type":"line","time":"2026-09-30T12:00:01.000Z","stream":{"source":"gateway"},"contentClass":"operational","kind":"openclaw","level":"info","message":"startup complete","fields":{"count":9007199254740993,"fraction":1.2300}}`
+	for _, mode := range []string{"compact", "indented", "refused"} {
+		t.Run(mode, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/namespaces/"+namespace+"/agents/"+agent+"/deployments/"+revision+"/runtime/logs" || r.URL.RawQuery != "source=gateway&tailLines=200" {
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if mode == "refused" {
+					w.WriteHeader(http.StatusForbidden)
+					fmt.Fprint(w, `{"error":{"code":"FORBIDDEN","message":"synthetic refusal"}}`)
+					return
+				}
+				payload := fmt.Sprintf(`{"data":{"revisionId":%q,"source":"gateway","stream":{"source":"gateway"},"observedAt":"2026-09-30T12:00:02.000Z","records":[%s,%s],"withheld":0,"truncated":false,"cursor":null},"meta":{"requestId":"synthetic-request"}}`, revision, record, record)
+				if mode == "indented" {
+					var formatted bytes.Buffer
+					if err := json.Indent(&formatted, []byte(payload), "", "  "); err != nil {
+						t.Error(err)
+						return
+					}
+					payload = formatted.String()
+				}
+				fmt.Fprint(w, payload)
+			}))
+			defer server.Close()
+			key := filepath.Join(t.TempDir(), "key.json")
+			if err := os.WriteFile(key, []byte(`{"data":{"key":"synthetic-loopback-only"}}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			process := exec.Command(executable)
+			args := "--url " + server.URL + " --service-key-file " + key + " --ca-bundle= --timeout-seconds 5 --namespace " + namespace + " agent logs " + agent + " --revision " + revision + " --source gateway -o json"
+			process.Env = append(os.Environ(), "OCC_TEST_RUN_MAIN="+args)
+			var out, stderr bytes.Buffer
+			process.Stdout, process.Stderr = &out, &stderr
+			err = process.Run()
+			if mode == "refused" {
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) || exit.ExitCode() != 1 || out.Len() != 0 || !strings.Contains(stderr.String(), "FORBIDDEN") {
+					t.Fatalf("refusal: %v stdout=%q stderr=%q", err, out.String(), stderr.String())
+				}
+				return
+			}
+			if err != nil || stderr.Len() != 0 {
+				t.Fatalf("logs: %v stderr=%q", err, stderr.String())
+			}
+			lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+			if len(lines) != 2 {
+				t.Fatalf("got %d output lines for two API records", len(lines))
+			}
+			for _, line := range lines {
+				if !json.Valid([]byte(line)) {
+					t.Fatalf("invalid JSON line: %q", line)
+				}
+				// Compare the full record, including API metadata and numeric spelling:
+				// decoding through float64 or the display struct would lose API data.
+				if line != record {
+					t.Fatalf("record changed: %s", line)
+				}
 			}
 		})
 	}

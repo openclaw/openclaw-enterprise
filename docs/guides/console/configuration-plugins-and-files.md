@@ -65,8 +65,8 @@ again.
 If a draft contains `security.preset`, remove that field in **Edit Configuration**.
 If you used `corporate`, set the restrictions you relied on explicitly before
 saving. For example, set `tools.fs.workspaceOnly` to
-`true` to confine file tools to the workspace, or set `session.dmScope` to
-`"per-account-channel-peer"` to separate direct-message sessions. Strict mode
+`true` to confine file tools to the workspace. When a channel is enabled, OCE
+already separates direct-message sessions by default (`session.dmScope`). Strict mode
 leaves those settings alone. Also review any restrictions you relied on for
 command approvals, elevated execution, session visibility, and messaging between
 Agents or conversations. OCE isolates each Agent and requires OpenClaw's own

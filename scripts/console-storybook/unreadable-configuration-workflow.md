@@ -47,6 +47,24 @@ appear as server traffic in the Network panel. For automated proof, observe the
 fixture's fetch responses without replacing their behavior and record each
 Configuration response status. This is simulated UI proof, not an IAM grant test.
 
+## Configuration read failures on tab return
+
+Open **Pages / Agent detail / Recover a Configuration read on tab return** in its
+own tab. Choose **Edit Configuration**, make an unsaved edit, and select some
+text in the editor. Scroll until the page header is out of view, then switch to
+another browser tab and return. The fixture holds the automatic retry after a
+simulated 503. After about one second, confirm **Still checking…** appears at the
+bottom of the viewport while the draft is hidden. When the retry completes,
+verify that the unsaved draft, editor focus, text selection, and scroll position
+return and the message disappears. Repeat at a 390 px viewport width.
+
+Repeat with **Pages / Agent detail / Retry an unavailable Configuration on tab
+return**. Both reads return 503. The Agent header and the warning remain
+available, and the draft is hidden. Select **Retry** and verify the unsaved edit
+returns. Confirm **Save Configuration** is available after the simulated grant
+answer. The loopback Controller test covers the separate case where a version
+becomes unreadable and the replacement view cannot confirm permission to save.
+
 ## Binding preflight refusal and Save recovery
 
 Open **Components / Credentials / Channel binding read denied**. This separate

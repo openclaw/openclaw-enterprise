@@ -50,12 +50,18 @@ export function isGitHubRepositoryPermissions(
 }
 
 const numericIdPattern = /^[1-9][0-9]{0,15}$/;
-const repositorySlugPattern = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const repositorySlugPattern = createRepositorySlugPattern();
 
-function isNumericId(value: unknown): boolean {
-  return (
-    typeof value === "string" && numericIdPattern.test(value) && Number.isSafeInteger(Number(value))
-  );
+export function createRepositorySlugPattern(): RegExp {
+  return /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+}
+
+export function parseGitHubNumericId(value: unknown): number | undefined {
+  if (typeof value !== "string" || !numericIdPattern.test(value)) {
+    return undefined;
+  }
+  const number = Number(value);
+  return Number.isSafeInteger(number) ? number : undefined;
 }
 
 function hasValidGrantIdentity(grant: GitHubRepositoryGrant): boolean {
@@ -63,14 +69,14 @@ function hasValidGrantIdentity(grant: GitHubRepositoryGrant): boolean {
     grant.profile === "github-repository" &&
     !!grant.id &&
     !!grant.isolationId &&
-    isNumericId(grant.appId) &&
-    isNumericId(grant.installationId)
+    parseGitHubNumericId(grant.appId) !== undefined &&
+    parseGitHubNumericId(grant.installationId) !== undefined
   );
 }
 
 function isValidRepository(repository: GitHubRepositoryGrant["repositories"][number]): boolean {
   return (
-    isNumericId(repository.repositoryId) &&
+    parseGitHubNumericId(repository.repositoryId) !== undefined &&
     typeof repository.repository === "string" &&
     repositorySlugPattern.test(repository.repository)
   );

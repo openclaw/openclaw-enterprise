@@ -124,28 +124,34 @@ workspace intact. See [writable runtime state](../../reference/drivers/openshell
 
 ## Verify runtime health after deployment
 
-The console's **Deployment** tab shows persisted status; it has no live
-gateway-health or chat view. **Current version** means the control plane selected
-that version. It can be a version whose deployment failed, for example when an
-embedded replacement's model check rejected its key after it replaced the
-previous version; see
-[the selected version after a failed deployment](../../reference/agents/deployment.md#the-active-revision-after-a-failed-deployment).
-That selection cannot tell you whether the model still accepts
-the credential or can answer. [Verify the Agent’s model response](../operate/model-verification.md)
-or ask an operator to [verify the workload](../deploy/production-agents.md#verify-production-workloads).
-Check for an actual answer from the configured model, not just a selected
-version or successful file read.
+The console's **Deployment** tab shows persisted status, with no live gateway-health
+or chat view. **Current version** identifies the control plane's selection, even
+[after a failed deployment](../../reference/agents/deployment.md#the-active-revision-after-a-failed-deployment):
+an embedded replacement can reject its key during the model check after replacing
+its predecessor. Selection does not establish credential validity or model responses.
+[Verify the Agent's model response](../operate/model-verification.md) or ask an
+operator to [verify the workload](../deploy/production-agents.md#verify-production-workloads).
+Require an answer from the configured model; a successful file read is insufficient.
+
+## Check workload capacity
+
+For Kubernetes, compare configured requests/limits, admitted Agent Pod limits
+and enclosing cgroup constraints with the infrastructure owner. Sandbox-visible host totals
+do not establish usable CPU/memory; an unlimited visible cgroup does not rule
+out hidden limits. Unreadable outer limits remain unknown until verified through
+authorized infrastructure tooling. OCE runtime descriptions and diagnostics do
+not measure effective capacity.
 
 ## An embedded Gateway reports an unverifiable state owner
 
 A hard stop can leave the old Gateway's locks on the Agent's volume. With
 Gateway managed mode on or off, OCE can recover a verified Docker predecessor
 or the first eligible Kubernetes container in the same Pod. A new Pod cannot
-verify the previous Pod's owner. An older image may also lack a record of the
+verify a killed Pod's owner. An older image may also lack a record of the
 original PID 1 start time. If the replacement reports an unverifiable owner,
 use the following procedure.
 
-A dedicated Gateway does not recover its locks. After an unclean exit it stays
+A dedicated Gateway does not recover a killed container's locks. After that it stays
 unready with the failed check `gateway-state-lock`, and its log quotes the
 holder. Use the same procedure.
 
@@ -210,18 +216,17 @@ Deployment. Use the same procedure, with these changes:
 
 ## A save or deployment lost its response
 
-The operation may have succeeded. Before retrying:
+In the original Namespace, check before retrying.
 
-- For model and channel credentials, reload the Agent's Credentials tab and check
-  its saved bindings. An operator can inspect generated transport storage through
-  the exact Agent runtime-credentials API.
-- For deployment, inspect the Agent's **Viewing version** picker and the status for the
-  saved version; a second deployment creates another version.
-- For a workspace file, reload that file and compare its content with your
-  intended edit before saving again.
+- **Draft edit.** Compare the edited fields in `occ agent get AGENT_ID --output json`.
+  For concurrent edits, check the [audit evidence](audit-log.md#investigate-an-uncertain-agent-edit).
+- **Credentials.** Reload **Credentials** and check the saved bindings. Operators
+  can inspect generated transport storage through the Agent's runtime-credentials API.
+- **Deployment.** Check **Viewing version** and its status. Deploying again creates
+  another version. For `deploy-first`, use the printed [read-only recovery command](agent-revisions.md#guarded-first-deployment-and-receipt-recovery).
+- **[Workspace file](workspace-files.md).** Reload and compare its contents with your edit.
 
-See [console recovery](../../reference/console/create-and-deploy.md) for partial
-Agent creation and [workspace files](workspace-files.md) for editing limits.
+For partial Agent creation, see [Console recovery](../../reference/console/create-and-deploy.md).
 
 ## A plugin does not work after deployment
 

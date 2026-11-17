@@ -2,6 +2,8 @@ import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
+export { clientSessionFileMaxBytes } from "../../../access/client-contracts.ts";
+
 export async function assertPrivateDirectory(path: string): Promise<void> {
   const absolute = resolve(path);
   let cursor = absolute;

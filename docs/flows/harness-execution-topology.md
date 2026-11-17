@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-06
-last_updated_session: authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0
+updated: 2026-11-11
+last_updated_session: authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792
 ---
 
 # Harness Execution Topology Flow
@@ -270,11 +270,14 @@ the previous owner stopped before retained state can be reused.
 [Embedded recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner)
 describes when an operator must confirm termination.
 
-Both Gateway modes persist SQLite, client credentials, media, linked worktrees and common Git metadata
-on their private claim, preserving session paths across replacement. Embedded Gateways
-retain their default workspace; dedicated Harness claims retain node identity. Claims
-precede Pods for `WaitForFirstConsumer`; [Gateway storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
-defines initialization and mounts.
+Gateway state survives replacements.
+`apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.gatewayPrivateStateClaim`
+uses `runtime.gatewayStorageSizeGiB`, default 10. `verifyPersistentVolumeClaim`
+compares storage quantities exactly, accepting equivalent units while rejecting
+different capacities during reuse and deletion without resizing. Claims
+precede Pods for `WaitForFirstConsumer`; the
+[storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
+owns sizing, recovery and mounts.
 
 The enrolled Harness node serves workspace files after pairing. Gateway and
 Harness share no workspace, session, skill or image mounts. Codex receives its
@@ -298,8 +301,7 @@ version, then calls
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deleteAgentRuntimeCredentials`
 to delete exact-owned private and shared claims by UID across all selected targets,
 regardless of the Agent draft's mode. Cleanup retries precede database identity
-removal. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
-owns claim sizes, mounts, StorageClass requirements and final teardown.
+removal.
 
 ## Debugging and Verification
 
@@ -319,7 +321,7 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
   values or payloads; stderr suppression and deadlines remain.
 
 - Check placement, immutable policy, and conflicts:
-  `node --test tests/conformance/configuration-occ.test.mjs`.
+  `node --test tests/conformance/configuration-occ.test.ts`.
 - Check guarded activation and recovery:
   `node --test tests/integration/postgres-worker-agent-revision.test.mjs` with an explicitly
   provisioned application-role PostgreSQL database.
@@ -353,6 +355,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-11 06:50: Trace configured Gateway claim capacity and mismatch refusal. (authoring-run/3a3ab457-f2d5-42b7-80c0-30fa67852792 - 036845b2f70f4c5d13b7f180e3642865ca891a8a)
 
 - 2026-11-06 01:25: Persist Harness settings. (authoring-run/7315b76f-e581-43e4-a73a-06f924640ea0 - 37144f62101a9e99b066f1abbbf75ede787d26dd)
 

@@ -18,10 +18,10 @@ provider requests or listener startup.
 
 ## Entry Points
 
-- Trigger: `node scripts/render-repository-credentials-origin.mjs --release NAME --namespace NAME --values FILE`
+- Trigger: `node scripts/render-repository-credentials-origin.ts --release NAME --namespace NAME --values FILE`
   before issuing the Kubernetes broker certificate.
 - Trigger: `pnpm credentials:check-config /absolute/path/service.json`.
-- Source: `scripts/render-repository-credentials-origin.mjs`,
+- Source: `scripts/render-repository-credentials-origin.ts`,
   `apps/controller/src/composition/repository-credentials/projected-inputs.ts:prepareProjectedInputs`,
   `apps/controller/src/composition/repository-credentials/check-config.ts:checkConfiguration`,
   and `apps/controller/src/composition/repository-credentials/config.ts:loadConfiguration`.
@@ -59,7 +59,7 @@ graph TD
 
 ### 1. Render the Kubernetes broker origin before preparing TLS
 
-`scripts/render-repository-credentials-origin.mjs:renderedBroker`
+`scripts/render-repository-credentials-origin.ts:renderedBroker`
 
 The operator renders the Helm chart after selecting `repositoryCredentials`
 values and before issuing the broker certificate. The helper reads the rendered
