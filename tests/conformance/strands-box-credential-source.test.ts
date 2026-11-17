@@ -280,6 +280,20 @@ test("the Driver maps OCE's decision to Box's reply: only an allow for the route
   assert.deepEqual(sourceAnswer("github.com", allow(basic, "not a date"), now), {
     refusal: "route_not_ready",
   });
+  // Today's header shape (no typed credential), or an empty token, never yields a value.
+  for (const decision of [
+    {
+      kind: "allow",
+      operation: "receive-pack",
+      sendBy,
+      inject: { name: "authorization", value: "Basic eA==" },
+    },
+    { kind: "allow", operation: "receive-pack", sendBy, credential: { ...basic, token: "" } },
+  ]) {
+    assert.deepEqual(sourceAnswer("github.com", decision as never, now), {
+      refusal: "credential_mismatch",
+    });
+  }
   // A refusal never yields a value, whatever else the decision carries.
   for (const reasonCode of [
     "request_not_allowed",

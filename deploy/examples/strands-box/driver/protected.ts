@@ -398,14 +398,20 @@ class Shared {
   ): Promise<void> {
     // Decided against the recipient that is live now: a retired or replaced one gets nothing.
     const live = this.active === active ? active : undefined;
-    const { answer, record } = await answerAsk(ask, {
-      route: live?.confirmed,
-      bearerSha256: live?.bearerSha256,
-      requests,
-      signal,
-    });
-    this.asks.push(record);
-    if (this.asks.length > ASK_RECORDS) this.asks.shift();
+    let answer: Parameters<typeof sendAnswer>[1]["answer"] = { refusal: "route_not_ready" };
+    try {
+      const decided = await answerAsk(ask, {
+        route: live?.confirmed,
+        bearerSha256: live?.bearerSha256,
+        requests,
+        signal,
+      });
+      answer = decided.answer;
+      this.asks.push(decided.record);
+      if (this.asks.length > ASK_RECORDS) this.asks.shift();
+    } catch {
+      // Never an unhandled rejection in the Worker: an unexpected failure is a refusal.
+    }
     await this.answer(active, ask, answer, signal);
   }
 

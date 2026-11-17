@@ -44,7 +44,16 @@ export function sourceAnswer(
   }
   const sendBy = Date.parse(decision.sendBy);
   if (!Number.isSafeInteger(sendBy) || !(sendBy > now)) return { refusal: "route_not_ready" };
-  const credential = decision.credential;
+  // A decision without the typed credential (another result shape) never yields a value.
+  const credential = decision.credential as typeof decision.credential | undefined;
+  if (
+    typeof credential !== "object" ||
+    credential === null ||
+    typeof credential.token !== "string" ||
+    credential.token.length === 0
+  ) {
+    return { refusal: "credential_mismatch" };
+  }
   if (host === "github.com") {
     if (credential.scheme !== "basic" || credential.username !== "x-access-token") {
       return { refusal: "credential_mismatch" };
