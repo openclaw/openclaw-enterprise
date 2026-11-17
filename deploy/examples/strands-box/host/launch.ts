@@ -995,8 +995,9 @@ export function start(
       ]);
       const write = outermost([...writable, config.workspace, bridgeDir]);
       const exec = outermost([...config.exec, config.codexBin, config.nodeBin]);
-      // Also no git or gh on the search path the agent's environment names (finding 3325).
-      if (execCoversGit(exec, (environment.PATH ?? "").split(":").filter(isAbsolute)))
+      // Also no git or gh on the search path the agent's environment names (finding 3325), and
+      // no entry there that could lead to the copy of git in Box's loader directories (3333).
+      if (execCoversGit(exec, environment.PATH?.split(":") ?? [], write))
         throw new Error("agent_exec_covers_git");
       const configText = [
         'name = "oce-strands"',

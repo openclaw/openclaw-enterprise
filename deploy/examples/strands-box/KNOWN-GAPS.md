@@ -1,7 +1,6 @@
 # Strands Box known gaps
 
-What an operator deploying this example today must know. Each entry names
-what you see, why, what to do now, and where the fix stands upstream.
+What an operator deploying this example today must know.
 
 ## Upstream TLS trusts only Box's built-in public roots
 
@@ -18,7 +17,7 @@ upstream_ca_file` (the fork's `dogfood/main`). Box trusts that bundle for
 - **Upstream status:** reported as
   [strands-agents/box#54](https://github.com/strands-agents/box/issues/54);
   [strands-agents/box#147](https://github.com/strands-agents/box/pull/147) (open)
-  adds the gateway-wide key. Per-route CA scoping would remove the opt-ins.
+  adds the gateway-wide key.
 
 ## Box presents no client certificate
 
@@ -35,10 +34,9 @@ upstream_ca_file` (the fork's `dogfood/main`). Box trusts that bundle for
 - **Symptom:** a released Box v0.2.2 refuses the host's `box.toml` for a
   protected execution: `[gateway.credential_source.oce]`, `source://` route
   secrets and `[gateway] upstream_ca_file` are unknown keys.
-- **Cause:** the paired registration lets Box inject GitHub credentials itself
-  and ask OCE for each request: after Box's policy permits a request, Box sends
-  it to the host's credential source, the host relays it to the paired Driver
-  in the Worker, and OCE's `requests.authorize` decides it and records the use.
+- **Cause:** the paired registration has Box inject GitHub credentials itself
+  and ask OCE, through the host and the Worker's paired Driver, about each
+  request its policy permits; `requests.authorize` decides and records it.
   Released Box has no such hook.
 - **Workaround:** build `strands-box`, `strands-box-sock-alias` and
   `strands-box-contain-trampoline` from the fork's `dogfood/main` and install
@@ -54,10 +52,10 @@ upstream_ca_file` (the fork's `dogfood/main`). Box trusts that bundle for
   request, a second draft, or a push to any branch the installation token
   permits succeeds.
 - **Cause:** stock `gh pr create` uses GraphQL, so the Driver asks OCE with the
-  `github_repository` profile, which, as on OpenShell, checks the method, route
-  and repository of Git and REST requests but has no draft, ref or one-draft
-  rule and does not read a GraphQL request's repository. Those rules exist only
-  in the `repository_git` profile, which refuses REST and GraphQL.
+  `github_repository` profile, which, as on OpenShell, checks method, route and
+  repository for Git and REST but not a GraphQL request's repository, and has
+  no draft, ref or one-draft rule; `repository_git` has those but refuses REST
+  and GraphQL.
 - **Workaround:** keep branch protection on the base branch. Grant the App only
   Contents, Pull requests and Metadata on the selected repository.
 - **Upstream status:** an OCE gap. A draft rule for GraphQL `createPullRequest`
@@ -107,22 +105,26 @@ by its source: route_not_ready`. The chat keeps running.
   directory, bridge, model source, `/bin/sh`, an interpreter, or Git or `gh`
   configuration outside the workspace. The workspace's `.codex` and the
   verifier's marker are denied. Every route reaches them: Box cannot attribute
-  a request to a process. The shell's own
-  commands, Python and Lua included, reach only the workspace and `/dev/null`.
-  Codex itself, with `apply_patch`, keeps the agent's whole boundary, and its
-  own git is not a tool: at every turn start it runs `git status` in the
-  workspace, so with `git` on the agent's exec list a `.gitattributes` `clean`
-  filter naming Node ran workload-written JavaScript with that boundary. The
-  host refuses an exec grant covering `git`, `gh` or git's helpers, and
-  Codex then works without git information. A root `AGENTS.md` and skills under
-  `.codex/skills` and `.agents/skills` reach the prompt (the latter writable by
-  git and the shell); `.codex/config.toml` is ignored.
+  a request to a process. The shell's own commands, Python and Lua included,
+  reach only the workspace and `/dev/null`. Codex itself, with `apply_patch`,
+  keeps the agent's whole boundary. Its own turn-start `git status` once ran a
+  workload `clean` filter (Node) there, so the host refuses an exec grant
+  covering `git`, `gh` or git's helpers, and Codex works without git
+  information. The Gateway shares the boundary and lacks git too: new
+  workspaces get no repository, the Control UI diff panel finds no checkout,
+  and project clones and worktree sessions fail. Box's loader directories stay
+  executable in every boundary, so Debian's `/usr/lib/git-core/git` runs there
+  by full path; nothing names it, and the host refuses an agent `PATH` leading
+  to it. A root `AGENTS.md` and skills under `.codex/skills` and
+  `.agents/skills` reach the prompt; git and the shell can write all but
+  `.codex/skills`. This Codex version ignores `.codex/config.toml`, which
+  `apply_patch` can write: Codex behavior, not a host control.
 - **Workaround:** run one Agent per execution; grant the App only what it
   needs; set a Git identity in the repository; treat the workspace and that
   prompt content as written by any code the Agent runs. **Never run `git` in an
   Agent's workspace from the Box host:** its hooks, `core.fsmonitor` and filters
-  run as the host user. Codex's `-c core.fsmonitor=false -c
-core.hooksPath=/dev/null` stop the first two, not filters; copy files out instead.
+  run as the host user. Codex's `-c` overrides stop only the first two; copy
+  files out instead.
 - **Upstream status:** Box behavior in v0.2.2; not reported.
 
 ## Codex can read the native hook credential and forge its own callbacks
@@ -137,9 +139,11 @@ core.hooksPath=/dev/null` stop the first two, not filters; copy files out instea
 - **What the token allows** (confirmed live): a holder also needs the current
   Codex thread and turn ids, readable in `~/.codex/sessions`. With them, forged
   `pre_tool_use`, `post_tool_use` and `before_agent_finalize` return 200,
-  identical bodies replay, the Gateway logs nothing, and a forged decision
-  returns only to the forger; a forged `permission_request` got 500 and no
-  prompt. Other relays, sessions, generations and turns are
+  identical bodies replay, the Gateway logs nothing, and a forged `pre_tool_use`
+  decision returns only to the forger. A forged `post_tool_use` reaches the
+  Gateway's subagent-submission bookkeeping; that and `before_agent_finalize`'s
+  Gateway-side effects are not verified. A forged `permission_request` got 500
+  and no prompt. Other relays, sessions, generations and turns are
   refused (403 or 410), Box refuses every other path, method and Agent, and the
   token stops working about 17 s after the turn. The hook refuses a link at the
   credential's name, but that name stays the same for a chat session, and a link
@@ -147,8 +151,8 @@ core.hooksPath=/dev/null` stop the first two, not filters; copy files out instea
   for example into a workspace file the tools can read.
 - **Impact:** the hook fails closed on a refused, corrupt or missing
   credential; a hook that times out (10 s) is non-blocking in stock Codex and
-  the call runs. Tampering cannot approve a call the Gateway would refuse or
-  reach another Agent.
+  the call runs. Approving a call the Gateway would refuse is not shown (no
+  refusal source was configured); no forgery reached another Agent.
 - **Workaround:** run one Agent per Box execution. Closing it needs the
   credential-handling process apart from the workload (the shared-kernel gap).
 - **Upstream status:** by design in Box v0.2.2. The ask is a per-process or
@@ -186,11 +190,10 @@ core.hooksPath=/dev/null` stop the first two, not filters; copy files out instea
   the host dedicated and patched. Give each Agent a revocable, rate-limited key
   from a model proxy, not a provider account key.
 - **Upstream status:** open upstream as
-  [strands-agents/box#24](https://github.com/strands-agents/box/issues/24)
-  (gateway and credential vault outside the workload's kernel) and
-  [strands-agents/box#25](https://github.com/strands-agents/box/issues/25)
-  (host-assigned sandbox identity). The fork's request-time credential source
-  keeps the token out of `box run` and lets OCE refuse each request.
+  [strands-agents/box#24](https://github.com/strands-agents/box/issues/24) and
+  [strands-agents/box#25](https://github.com/strands-agents/box/issues/25).
+  The fork's request-time credential source keeps the token out of `box run`
+  and lets OCE refuse each request.
 
 ## The package keeps the protected model key at rest
 
@@ -226,7 +229,7 @@ core.hooksPath=/dev/null` stop the first two, not filters; copy files out instea
 - **Workaround:** withdraw before you stop the Agent. On a stopped Agent,
   `DELETE` the source, which also deletes the package's Secret.
 - **Upstream status:** an OCE change: accept it for the last revision that held
-  the source and let the view write the receipt with no execution.
+  the source.
 
 ## Protected model requests are limited to 16 MiB
 
@@ -243,7 +246,8 @@ core.hooksPath=/dev/null` stop the first two, not filters; copy files out instea
   before a redeploy, fails within a second with `Codex session policy handoff
 failed: The provider Box refused a Codex request before dispatch
 (rpc-thread-inject-items)`. New sessions work.
-- **Cause:** when the Gateway resumes a session's Codex thread instead of
+- **Cause** (shown after a redeploy; the same failure within one revision is
+  unexplained): when the Gateway resumes a session's Codex thread instead of
   reusing a live one, it re-sends its instructions with `thread/inject_items`,
   which the runtime image's provider-Box fence refuses before dispatch.
 - **Workaround:** start a new chat session.
@@ -256,10 +260,10 @@ failed: The provider Box refused a Codex request before dispatch
 code-mode host ... Permission denied (os error 13)`; the model then uses its
   shell tool, which runs under the hook as usual.
 - **Cause:** Codex starts its Code Mode host, a separate binary beside `codex`,
-  as its own child, and the agent's exec list names only `codex` and Node.
+  as its own child, and the agent's exec list names only `tini`, Node and `codex`.
 - **Workaround:** none needed: the call fails before any code runs. Do not add
-  the host to the exec list, where it would run model-written JavaScript in the
-  agent's boundary with no admission of its own.
+  the host to the exec list: it would run model-written JavaScript in the
+  agent's boundary unadmitted.
 - **Upstream status:** turning Code Mode off needs an OCE change to the Codex
   configuration it renders.
 
