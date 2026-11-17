@@ -317,7 +317,7 @@ test("with key digests the dry-run model accepts only those bearers and records 
   assert.ok(!recorded.includes(key) && !recorded.includes(rotated), "only digests are recorded");
 });
 
-test("the model-sibling step posts only to the planned URLs, with the placeholder by reference", () => {
+test("the model-sibling step asks only the planned URLs, with stock git and the placeholder by reference", () => {
   assert.match(gitCommand(plan, nonce, "model-sibling"), /^echo model-sibling-unplanned-/);
   assert.match(
     gitCommand(plan, nonce, "delayed-git"),
@@ -329,11 +329,15 @@ test("the model-sibling step posts only to the planned URLs, with the placeholde
   ];
   const command = gitCommand(gitPlan({ ...plan, modelSiblings: siblings }), nonce, "model-sibling");
   for (const url of siblings) {
-    assert.equal(command.split(` ${url}`).length, 3, "printed and posted once");
+    assert.equal(command.split(` ${url}`).length, 3, "printed and asked once");
   }
-  assert.deepEqual([...new Set(command.match(/https:\/\/[^\s"]+/g))].sort(), [...siblings].sort());
-  assert.match(command, /-H "Authorization: Bearer \$k"/);
-  assert.match(command, /-o \/dev\/null/);
+  assert.deepEqual([...new Set(command.match(/https:\/\/[^\s";]+/g))].sort(), [...siblings].sort());
+  // Stock git only (the protected shell spawns nothing else), never the auth.json file.
+  assert.doesNotMatch(command, /curl|jq|auth\.json/);
+  assert.equal(
+    command.match(/git -c http\.extraHeader="Authorization: Bearer \$k" ls-remote /g)?.length,
+    siblings.length,
+  );
   // The placeholder appears only in the case test and the Authorization headers.
   assert.equal(command.match(/\$k\b/g)?.length, 1 + siblings.length);
   assert.equal(command.split('"$k"').length, 2);

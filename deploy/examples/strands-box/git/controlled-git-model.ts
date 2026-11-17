@@ -212,16 +212,19 @@ export function gitCommand(plan: GitPlan, nonce: string, step: GitStep): string 
       // `apply_patch` invocation and applies the patch itself.
       return `apply_patch <<'EOF'\n${outsideWritePatch(nonce)}EOF`;
     case "model-sibling":
-      // Box's placeholder (from the environment, or Codex's auth.json when the tool shell drops
-      // *KEY* variables) travels only through a variable; the reply body is discarded.
+      // Requests from the workload's shell to paths next to the model route. A protected run's
+      // shell may spawn only stock git and gh (finding 3314), so git makes them (a GET of
+      // <url>/info/refs), with Box's placeholder by reference when the tool shell has it (Codex's
+      // shell drops *KEY* variables; the workload may not read auth.json). Only the last line of
+      // git's answer is printed.
       return plan.modelSiblings === undefined
         ? `echo model-sibling-unplanned-${tag}`
         : [
-            `k=\${OPENAI_API_KEY:-$(jq -r '.OPENAI_API_KEY // empty' /home/node/.codex/auth.json 2>/dev/null)}`,
+            `k=\${OPENAI_API_KEY:-}`,
             `case "$k" in strands_box_*) echo placeholder=1 len=\${#k};; *) echo placeholder=0 len=\${#k};; esac`,
             ...plan.modelSiblings.map(
               (url) =>
-                `printf '%s %s\\n' ${url} "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 -X POST -H "Authorization: Bearer $k" -H 'Content-Type: application/json' --data '{}' ${url} 2>&1 | tr -d '\\n' | cut -c1-160)"`,
+                `printf '%s ' ${url}; git -c http.extraHeader="Authorization: Bearer $k" ls-remote ${url} 2>&1 | tail -1 | cut -c1-200`,
             ),
             `echo model-sibling-${tag}`,
           ].join("; ");
