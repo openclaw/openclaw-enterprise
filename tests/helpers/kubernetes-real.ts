@@ -14,9 +14,9 @@ import type { KubernetesAuthentication } from "../../apps/controller/src/drivers
 import type { HarnessAuthSnapshot } from "../../packages/contracts/src/index.ts";
 import { asRecord, sha256Hex } from "../../packages/utils/src/index.ts";
 import { followContainerLog } from "./container-log-capture.ts";
-import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
+import { createInstallationDriverConfiguration } from "./installation-driver-configuration.ts";
 import { kubectlGetJson } from "./kubernetes-api-read.ts";
-import { waitForResult } from "./wait-for.mjs";
+import { waitForResult } from "./wait-for.ts";
 
 const execute = promisify(execFile);
 
@@ -1093,10 +1093,28 @@ export function createRealKubernetesFixture({
         }
         reject(error);
       };
+      let pendingLine: string | null = "";
       const onStdout = (chunk: Buffer) => {
-        const match = chunk.toString().match(/Forwarding from 127\.0\.0\.1:(\d+)/);
-        if (match !== null && settle()) {
-          resolve(`http://127.0.0.1:${match[1]}`);
+        const lines = chunk.toString().split("\n");
+        const tail = lines.pop()!;
+        for (const line of lines) {
+          const match =
+            pendingLine === null
+              ? null
+              : /^Forwarding from 127\.0\.0\.1:(\d{1,5}) -> \d{1,5}\r?$/.exec(pendingLine + line);
+          pendingLine = "";
+          if (match !== null && settle()) {
+            resolve(`http://127.0.0.1:${match[1]}`);
+            return;
+          }
+        }
+        if (pendingLine !== null) {
+          pendingLine += tail;
+          // A kubectl readiness line fits in 64 characters. Skip a longer
+          // incomplete line through its next newline.
+          if (pendingLine.length > 64) {
+            pendingLine = null;
+          }
         }
       };
       const onError = (error: Error) => void rejectAfterCleanup(error);

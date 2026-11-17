@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
-import { createCredentialProxyInstallationConfiguration } from "./installation-driver-configuration.mjs";
+import { createCredentialProxyInstallationConfiguration } from "./installation-driver-configuration.ts";
 import { loadInstallationFile } from "./installation-file.ts";
 import { temporaryDirectory } from "./temporary-directory.ts";
 

@@ -30,7 +30,7 @@ import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import type { createTestSecretDriver as runtimeSecretFixture } from "../helpers/secret-driver.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import type { createRuntimeComputeDriver as runtimeComputeFixture } from "./postgres-agent-provisioning-transport-fixture.ts";
 
 interface FixtureDrivers {

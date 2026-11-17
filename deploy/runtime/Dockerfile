@@ -156,7 +156,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
     tar -xzf /tmp/openclaw-source.tar.gz --strip-components=1; \
     rm /tmp/openclaw-source.tar.gz
 # Record every patch applied here in appliedPatches in scripts/build-runtime-assets.ts,
-# which writes provenance; runtime-assets.test.mjs compares the two.
+# which writes provenance; runtime-assets.test.ts compares the two.
 # TODO: Remove this bridge patch when OpenClaw supports networkProxy.readOnlyPaths.
 COPY deploy/runtime/openclaw-codex-read-only-paths.patch /tmp/openclaw-codex-read-only-paths.patch
 RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp/openclaw-codex-read-only-paths.patch' | sha256sum --check --strict \
@@ -210,11 +210,11 @@ FROM openclaw-dependency-inputs AS openclaw-patched-source
 RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     --mount=type=bind,from=matrix-sdk-crypto,source=/out,target=/tmp/matrix-sdk-crypto \
-    --mount=type=bind,source=deploy/runtime/with-pinned-matrix-sdk-crypto.mjs,target=/tmp/with-pinned-matrix-sdk-crypto.mjs \
+    --mount=type=bind,source=deploy/runtime/with-pinned-matrix-sdk-crypto.mts,target=/tmp/with-pinned-matrix-sdk-crypto.mts \
     --mount=type=bind,source=deploy/runtime/install-attempts.sh,target=/tmp/install-attempts.sh \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
-    COREPACK_ENABLE_NETWORK=0 sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
+    COREPACK_ENABLE_NETWORK=0 sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mts /tmp/matrix-sdk-crypto \
     pnpm install --frozen-lockfile --store-dir=/tmp/pnpm-store \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
@@ -246,6 +246,27 @@ COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-r
 RUN echo 'b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
+# Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
+COPY deploy/runtime/openclaw-planned-completion.patch /tmp/openclaw-planned-completion.patch
+RUN echo 'c4d00ea11a5c65495225f5164397a7251b7acd43bf73d8df888578bc7a7548e4  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-planned-completion.patch
+
+# Remove this backport when the pinned core includes upstream openclaw/openclaw#185180.
+COPY deploy/runtime/openclaw-native-turn-settlement.patch /tmp/openclaw-native-turn-settlement.patch
+RUN echo '5f2127b46a4a92d24469e43d67301ee0b99d99eb2582c4e690b81b12fd8b7da6  /tmp/openclaw-native-turn-settlement.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-native-turn-settlement.patch
+
+# Remove this bridge when the pinned OpenClaw includes openclaw#197151: a
+# session-scoped member may open and start its Agent's unused main conversation.
+COPY deploy/runtime/openclaw-chat-main-session-start.patch /tmp/openclaw-chat-main-session-start.patch
+RUN echo '483c9c4ec832d0a5b0e016106c817a01d1fbd5b53693b08be7b9c18873e782e4  /tmp/openclaw-chat-main-session-start.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-chat-main-session-start.patch
+# Remove this bridge when the pinned OpenClaw includes openclaw#200358: the
+# empty-history proof above holds only for the Agent whose history was read.
+COPY deploy/runtime/openclaw-chat-absent-selected-agent.patch /tmp/openclaw-chat-absent-selected-agent.patch
+RUN echo '2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899  /tmp/openclaw-chat-absent-selected-agent.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-chat-absent-selected-agent.patch
+
 # Broad source verification is an explicit target, separate from image assembly.
 # Native container CI requires this target before exporting and smoking the image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
@@ -258,6 +279,11 @@ FROM openclaw-patched-source AS openclaw-bridge-tests
 RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
+    packages/gateway-protocol/src/gateway-suspend.test.ts src/infra/gateway-suspend-coordinator.test.ts \
+    src/gateway/server-methods/suspend.integration.test.ts src/cli/gateway-cli/host-lifecycle.test.ts \
+    src/cli/update-cli/update-command-service-drain.native.test.ts \
+    src/gateway/server-methods.suspension-admission.test.ts \
+    src/sessions/session-controller.watchdog.test.ts src/agents/embedded-agent-runner/runs.liveness.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     src/infra/private-store-file.test.ts \
     src/node-host/runner.test.ts \
@@ -297,6 +323,11 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     test/node-host-launcher.test.ts \
     src/plugins/computer-use-contract.test.ts \
     src/daemon/program-args.test.ts \
+    src/gateway/server-methods.session-main-start.test.ts \
+    src/gateway/server.chat-main-session-narrow.test.ts \
+    && OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
+    node --import ./scripts/tsx.mjs scripts/test-projects.mts src/cli/gateway-cli/run-loop.test.ts \
+    -t "keeps the fenced process alive until the supervisor sends SIGTERM" \
     && rm -rf .artifacts
 # These CUA lifecycle cases use the supported SDK adapter boundary. The two
 # native SDK import cases need desktop libraries absent from this build image.
@@ -322,7 +353,8 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
 RUN --network=none cd ui && node ../scripts/run-node-package-bin.mts vitest run --config vitest.config.ts \
     --project unit --project unit-node \
     src/api/gateway-reachability.node.test.ts src/app/gateway-store.observers.test.ts src/app/app-shell-view.test.ts \
-    src/app/gateway-page-activation.test.ts
+    src/app/gateway-page-activation.test.ts src/lib/session-method-access.test.ts \
+    src/pages/chat/chat-main-session-absent.test.ts src/pages/chat/chat-history-subscription-errors.test.ts
 
 FROM openclaw-patched-source AS openclaw-build
 # Follow the pinned upstream Docker assembly; plugin-local dependencies remain
@@ -338,7 +370,7 @@ FROM openclaw-dependency-inputs AS openclaw-production-deps
 RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
     --mount=type=bind,from=matrix-sdk-crypto,source=/out,target=/tmp/matrix-sdk-crypto \
-    --mount=type=bind,source=deploy/runtime/with-pinned-matrix-sdk-crypto.mjs,target=/tmp/with-pinned-matrix-sdk-crypto.mjs \
+    --mount=type=bind,source=deploy/runtime/with-pinned-matrix-sdk-crypto.mts,target=/tmp/with-pinned-matrix-sdk-crypto.mts \
     --mount=type=bind,source=deploy/runtime/install-attempts.sh,target=/tmp/install-attempts.sh \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
@@ -346,7 +378,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
     while IFS= read -r plugin; do \
       set -- "$@" --filter "./extensions/$plugin"; \
     done < openclaw-workspace-plugin-dirs; \
-    COREPACK_ENABLE_NETWORK=0 sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
+    COREPACK_ENABLE_NETWORK=0 sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mts /tmp/matrix-sdk-crypto \
     pnpm install --frozen-lockfile --prod "$@" --store-dir=/tmp/pnpm-store \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
@@ -459,7 +491,7 @@ RUN --network=none \
     ldd /usr/local/bin/node > /tmp/node-linkage \
     && ! grep 'not found' /tmp/node-linkage \
     && rm /tmp/node-linkage \
-    && node /verification/repair/verify.mjs \
+    && node /verification/repair/verify.mts \
     && sh /verification/repair/test.sh /usr/local/bin/node /verification/node
 # Version checks use throwaway state directories: gh writes a random device ID
 # and Codex a randomly named arg0 directory, which would otherwise ship.

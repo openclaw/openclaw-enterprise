@@ -10,10 +10,10 @@ import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { startFakePostgres, type FakePostgresQuery } from "../helpers/fake-postgres-server.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor } from "../helpers/wait-for.ts";
 import { cleanupPath, fixture, repositoryRoot, writeState } from "./ci-cleanup-fixture.ts";
 
-const resetK3dModelPath = join(repositoryRoot, "scripts/ci/reset-k3d-model.mjs");
+const resetK3dModelPath = join(repositoryRoot, "scripts/ci/reset-k3d-model.ts");
 
 // Run the CLI asynchronously so the PostgreSQL protocol fixture in this process can respond.
 function runAsync(
@@ -107,58 +107,59 @@ export function registerRoutingResetCase(): void {
     const postgres = await laneFakePostgres(t);
     const prefix = "openclaw-ci-local-reset1234567890";
     const statePath = join(root, "state.json");
-    await writeState(statePath, {
+    const server = {
+      id: "postgres-1",
+      kind: "compose-postgres",
+      owner: prefix,
+      name: "openclaw_ci_pg_reset_case",
+      composeFile: join(repositoryRoot, "compose.postgres.yaml"),
+      port: postgres.port,
+    };
+    const database = {
+      id: "database-1",
+      kind: "postgres-database",
+      owner: prefix,
+      name: "openclaw_k8s_reset_case",
+      composeProject: server.name,
+      port: postgres.port,
+    };
+    const cluster = {
+      id: "cluster-1",
+      kind: "k3d-cluster",
+      owner: prefix,
+      name: "openclaw-k8s-reset-case",
+    };
+    const state = {
       version: 1,
       repositoryRoot,
       lane: "gateway-routing",
       prefix,
-      resources: [
-        {
-          id: "postgres-1",
-          kind: "compose-postgres",
-          owner: prefix,
-          name: "openclaw_ci_pg_reset_case",
-          composeFile: join(repositoryRoot, "compose.postgres.yaml"),
-          port: postgres.port,
-        },
-        {
-          id: "database-1",
-          kind: "postgres-database",
-          owner: prefix,
-          name: "openclaw_k8s_reset_case",
-          composeProject: "openclaw_ci_pg_reset_case",
-          port: postgres.port,
-        },
-        {
-          id: "cluster-1",
-          kind: "k3d-cluster",
-          owner: prefix,
-          name: "openclaw-k8s-reset-case",
-        },
-      ],
+      resources: [server, database, cluster],
+    };
+    const env = { OCC_DOCKER_BIN: join(root, "bin/podman") };
+    const argv = [resetK3dModelPath, "--state", statePath];
+
+    // A database that shares the server's ID must not trigger a drop or erase server custody.
+    await writeState(statePath, {
+      ...state,
+      resources: [server, { ...database, id: server.id }, cluster],
     });
+    const before = await readFile(statePath, "utf8");
+    const refused = await runAsync(statePath, env, argv);
+    assert.equal(refused.status, 1, refused.stderr);
+    assert.match(refused.stderr, /Cleanup state resource IDs must be unique/);
+    assert.deepEqual(postgres.queries(), []);
+    assert.equal(await readFile(statePath, "utf8"), before);
 
-    const result = await runAsync(statePath, { OCC_DOCKER_BIN: join(root, "bin/podman") }, [
-      resetK3dModelPath,
-      "--state",
-      statePath,
-    ]);
-
+    await writeState(statePath, state);
+    const result = await runAsync(statePath, env, argv);
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(postgres.queries(), [
       'postgres\tDROP DATABASE IF EXISTS "openclaw_k8s_reset_case" WITH (FORCE)',
     ]);
-    // The drop needs no container engine command.
+    // Reset preserves the server and cluster records without invoking a container engine.
     await assert.rejects(() => readFile(containerLog, "utf8"), { code: "ENOENT" });
-    const retained = await readState(statePath);
-    assert.ok(retained && typeof retained === "object" && "resources" in retained);
-    assert.ok(Array.isArray(retained.resources));
-    const resources: unknown[] = retained.resources;
-    const retainedIds = resources.map((resource) => {
-      assert.ok(resource && typeof resource === "object" && "id" in resource);
-      return resource.id;
-    });
-    assert.deepEqual(retainedIds, ["postgres-1", "cluster-1"]);
+    assert.deepEqual(await readState(statePath), { ...state, resources: [server, cluster] });
   });
 }
 
@@ -555,6 +556,13 @@ export function registerChildJournalCases(): void {
       OPENCLAW_ENTERPRISE_CI_STATE: parentPath,
     };
     delete env.NODE_TEST_CONTEXT;
+    // Only the preparation case consumes these managed journal inputs.
+    const args = [
+      "--test",
+      "--test-name-pattern",
+      "/^PostgreSQL preparation uses distinct Docker-assigned loopback ports and cleans its projects$/",
+      "tests/integration/ci-prepare-postgres-real.test.ts",
+    ];
     // The actual test refuses preexisting registered children before adopting them,
     // and rejects foreign/duplicate environment paths before attempting preparation.
     const [firstState] = states;
@@ -564,16 +572,12 @@ export function registerChildJournalCases(): void {
       [firstState, firstState],
       [...states, { path: join(root, "extra.json"), owner: "other" }],
     ]) {
-      const result = spawnSync(
-        process.execPath,
-        ["--test", "tests/integration/ci-prepare-postgres-real.test.ts"],
-        {
-          cwd: repositoryRoot,
-          env: { ...env, OCC_TEST_CI_POSTGRES_STATES: JSON.stringify(selected) },
-          encoding: "utf8",
-          timeout: 30_000,
-        },
-      );
+      const result = spawnSync(process.execPath, args, {
+        cwd: repositoryRoot,
+        env: { ...env, OCC_TEST_CI_POSTGRES_STATES: JSON.stringify(selected) },
+        encoding: "utf8",
+        timeout: 30_000,
+      });
       assert.equal(result.status, 1, result.stdout + result.stderr);
       assert.match(
         result.stdout + result.stderr,
@@ -588,11 +592,12 @@ export function registerChildJournalCases(): void {
       OCC_TEST_CI_POSTGRES_STATES: JSON.stringify(states),
     };
     delete missingParent.OPENCLAW_ENTERPRISE_CI_STATE;
-    const refused = spawnSync(
-      process.execPath,
-      ["--test", "tests/integration/ci-prepare-postgres-real.test.ts"],
-      { cwd: repositoryRoot, env: missingParent, encoding: "utf8", timeout: 30_000 },
-    );
+    const refused = spawnSync(process.execPath, args, {
+      cwd: repositoryRoot,
+      env: missingParent,
+      encoding: "utf8",
+      timeout: 30_000,
+    });
     assert.equal(refused.status, 1, refused.stdout + refused.stderr);
     assert.match(refused.stdout + refused.stderr, /require their parent journal/);
     for (const state of states) {

@@ -11,10 +11,10 @@ import {
   proxyNativeAdminWebSocket,
   type NativeAdminWebSocketCloseCause,
 } from "../../apps/controller/src/gateway/native-admin-proxy.ts";
-import { selfSigned } from "../helpers/certificates.mjs";
+import { selfSigned } from "../helpers/certificates.ts";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
-import { within } from "../helpers/wait-for.mjs";
+import { within } from "../helpers/wait-for.ts";
 
 // Drives proxyNativeAdminWebSocket in this process against a loopback HTTPS gateway, with a
 // browser socket whose writes complete only when the test says so, as writes do behind a full

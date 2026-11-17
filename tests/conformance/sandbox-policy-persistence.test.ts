@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import type { SandboxPolicy, SandboxPolicyApplication } from "@openclaw-enterprise/contracts";
 import { InMemoryPlatformState, ScopeViolationError } from "../../packages/occ/src/index.ts";
-import { seedSessionRevision } from "./repository-sessions.contract.mjs";
+import { seedSessionRevision } from "./repository-sessions.contract.ts";
 
 test("memory SandboxPolicy keeps pending custody until explicit settlement", async () => {
   const state = new InMemoryPlatformState();

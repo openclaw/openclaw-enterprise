@@ -76,6 +76,7 @@ export default defineConfig(
     files: [
       "{apps,packages,scripts,tests}/**/*.{js,mjs,cjs,ts,mts}",
       "deploy/helm/src/*.ts",
+      "docs/snippets/openshell-quickstart/**/*.mts",
       "*.{js,mjs,cjs,ts}",
     ],
     extends: [js.configs.recommended],
@@ -148,6 +149,7 @@ export default defineConfig(
       "scripts/console-storybook/story.ts",
       "scripts/console-storybook/public/*.mjs",
       "scripts/docs-site/compute-matrix-browser.mts",
+      "scripts/docs-site/preview-client.mts",
     ],
     languageOptions: {
       globals: {

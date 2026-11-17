@@ -12,8 +12,10 @@ simulated data.
    right. Focus starts inside the dialog (Cancel for Stop and Delete, Name for
    Create Secret).
    In Delete, read what stays in the Namespace, then open **View separate cleanup
-   commands**. Each command includes the Namespace ID. Copying it keeps the
-   confirmation open and runs nothing.
+   commands**. Each command includes the Namespace ID. Press Enter on **Copy
+   Configuration command**, then on **Copy Secret command** if it appears. Only
+   the latest row shows feedback. If copying fails, its full command is selected.
+   Copying keeps the confirmation open and runs nothing. Choose **Cancel**.
    In **Backdrop at the desktop scrollbar**, choose **Open preview in its own tab**
    to check the window’s scrollbar gutter, rather than the surrounding frame.
    An empty gutter blends into the backdrop; a classic scrollbar remains visible.

@@ -98,7 +98,7 @@ test("image lanes use separate cache scopes without exposing credentials or comp
     const result = run(prepare, ["--lane", lane, "--state", statePath], {
       GITHUB_ACTIONS: "true",
       // A main push: lanes only restore there too; main's warm job alone writes
-      // (ci-prepare.test.mjs covers each event).
+      // (ci-prepare-image-cache.test.ts covers each event).
       GITHUB_EVENT_NAME: "push",
       GITHUB_RUN_ID: "12345",
       GITHUB_RUN_ATTEMPT: "2",

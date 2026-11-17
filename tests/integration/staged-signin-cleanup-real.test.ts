@@ -15,7 +15,7 @@ import {
   runFixtureCommand,
   type FixtureRun,
 } from "../helpers/production-rehearsal-custody.ts";
-import { availablePort } from "../helpers/available-port.mjs";
+import { availablePort } from "../helpers/available-port.ts";
 
 const execute = promisify(execFile);
 type Owned = {

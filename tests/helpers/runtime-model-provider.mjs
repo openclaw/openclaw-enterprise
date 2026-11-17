@@ -4,7 +4,7 @@ import { chmod, copyFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { asRecord } from "../../packages/utils/src/objects.ts";
-import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
+import { createModelProbeCertificates } from "./runtime-model-probe-certificates.ts";
 
 // Shared by the launcher case and FirstAgentSmoke; callers own resources,
 // subprocess policy, image selection, and cleanup.

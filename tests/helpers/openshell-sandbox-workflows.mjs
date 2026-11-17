@@ -1,6 +1,6 @@
 import { createReplacementNodeObservation } from "./openshell-workspace-node-observation.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
-import { runOpenShellStage } from "./openshell-stage.mjs";
+import { runOpenShellStage } from "./openshell-stage.ts";
 import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagnostic.ts";
 import { openShellTurnoverQualification } from "../../scripts/ci/reporter.ts";
 import {
@@ -39,12 +39,10 @@ import { promisify } from "node:util";
 import { inflateRawSync } from "node:zlib";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { selectPolicyProbeCommand } from "./openshell-policy-probe.mjs";
+import { selectPolicyProbeCommand } from "./openshell-policy-probe.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import {
-  assertNativeCronRunSucceeded,
-  createNativePluginAssertions,
-} from "../helpers/plugin-driver-real.mjs";
+import { assertNativeCronRunSucceeded } from "./native-cron-evidence.ts";
+import { createNativePluginAssertions } from "./native-plugin-assertions.ts";
 import {
   assertCodexPolicyChild,
   findCodexPolicyChild,
@@ -93,15 +91,15 @@ import {
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
-  startWorkspaceGatewayHostRelay,
 } from "../helpers/envoy-workspace-gateway.mjs";
+import { startWorkspaceGatewayHostRelay } from "./workspace-gateway-host-relay.ts";
 import {
-  defaultKeycloakImage,
   issueServingCertificate,
   keycloakServiceClient,
   keycloakUserClient,
-  startKeycloak,
-} from "../helpers/keycloak-real.mjs";
+} from "./keycloak-issuer-material.ts";
+import { defaultKeycloakImage, startKeycloak } from "./keycloak-real.mjs";
+import { pollReplacementActivation } from "./openshell-replacement-activation.ts";
 
 /** @param {unknown} turn */
 function turnMessages(turn) {
@@ -465,22 +463,22 @@ export async function createScopedController(context, identifier, platformNamesp
   return { ...identity, tokenMintedAt, tenantRole, apiSecretRole, apiIdentity };
 }
 
+function nativeGatewayConfiguration(gateway, gatewayAuth) {
+  return {
+    ...gateway,
+    auth: {
+      ...gatewayAuth.auth,
+      password: gateway.auth.password,
+    },
+    allowRealIpFallback: gatewayAuth.allowRealIpFallback,
+    trustedProxies: gatewayAuth.trustedProxies,
+  };
+}
+
 function nativeCodexConfiguration(gatewayAuth) {
   const configuration = createHarnessConfiguration("codex", providerModel);
   if (gatewayAuth !== undefined) {
-    configuration.gateway = {
-      ...configuration.gateway,
-      auth: {
-        ...gatewayAuth.auth,
-        password: {
-          source: "env",
-          provider: "default",
-          id: "OPENCLAW_GATEWAY_PASSWORD",
-        },
-      },
-      allowRealIpFallback: gatewayAuth.allowRealIpFallback,
-      trustedProxies: gatewayAuth.trustedProxies,
-    };
+    configuration.gateway = nativeGatewayConfiguration(configuration.gateway, gatewayAuth);
   }
   // Native Codex tools are one capability; a narrow allowlist disables that surface.
   // OpenShell supplies the filesystem and network boundaries verified below.
@@ -506,22 +504,10 @@ function nativeOpenClawConfiguration(gatewayAuth, controlUiOrigins = []) {
     id: "OPENAI_API_KEY",
   };
   if (gatewayAuth !== undefined) {
-    configuration.gateway = {
-      ...configuration.gateway,
-      auth: {
-        ...gatewayAuth.auth,
-        password: {
-          source: "env",
-          provider: "default",
-          id: "OPENCLAW_GATEWAY_PASSWORD",
-        },
-      },
-      allowRealIpFallback: gatewayAuth.allowRealIpFallback,
-      trustedProxies: gatewayAuth.trustedProxies,
-      ...(controlUiOrigins.length === 0
-        ? {}
-        : { controlUi: { enabled: true, allowedOrigins: controlUiOrigins } }),
-    };
+    configuration.gateway = nativeGatewayConfiguration(configuration.gateway, gatewayAuth);
+    if (controlUiOrigins.length !== 0) {
+      configuration.gateway.controlUi = { enabled: true, allowedOrigins: controlUiOrigins };
+    }
   }
   return configuration;
 }
@@ -8338,6 +8324,16 @@ async function assertOpenShellGatewayOutage(topology) {
   }
 }
 
+/**
+ * @param {Parameters<typeof pollReplacementActivation>[0] & {
+ *   replacementNode?: Pick<ReturnType<typeof createReplacementNodeObservation>, "begin" | "finish">,
+ *   diagnoseRevision: (revisionId: string) => Promise<unknown>
+ * }} topology
+ * @param {{ data: { id: string } }} redeployed
+ * @param {import("node:test").TestContext} testContext
+ * @param {typeof waitFor} [poll]
+ * @param {typeof replacementActivationDiagnostic} [diagnose]
+ */
 export async function waitForReplacementActivation(
   topology,
   redeployed,
@@ -8345,34 +8341,9 @@ export async function waitForReplacementActivation(
   poll = waitFor,
   diagnose = replacementActivationDiagnostic,
 ) {
-  const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
-  const deploymentPath = `${agentPath}/deployments/${redeployed.data.id}`;
   topology.replacementNode?.begin(redeployed.data.id);
   try {
-    await poll(`replacement OpenShell revision ${redeployed.data.id} activation`, async () => {
-      const observed = await topology.request("GET", agentPath);
-      assert.equal(observed.status, 200, JSON.stringify(observed.error));
-      if (observed.data.activeRevisionId === redeployed.data.id) {
-        return observed.data;
-      }
-      // Finding 1532: a Harness holding a failed startup model probe fails the deployment for
-      // good on its first attempt. Stop then: the error names the probe's classified cause, and
-      // the diagnostic is captured near the failure, not after 240 s of Gateway reconnect noise.
-      const deployment = await topology.request("GET", deploymentPath);
-      // A temporary failure to read that diagnostic is not a failed replacement. Keep the
-      // original activation deadline; only the Agent naming this revision can satisfy the wait.
-      const { status } = deployment;
-      if (status === 408 || status === 429 || (status >= 500 && status < 600)) {
-        return undefined;
-      }
-      assert.equal(status, 200, JSON.stringify(deployment.error));
-      assert.notEqual(
-        deployment.data.status,
-        "failed",
-        `Replacement OpenShell revision ${redeployed.data.id} failed: ${JSON.stringify(deployment.data)}`,
-      );
-      return undefined;
-    });
+    await pollReplacementActivation(topology, redeployed.data.id, poll);
   } catch (error) {
     const observation = topology.replacementNode?.finish();
     if (observation !== undefined) {
