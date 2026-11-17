@@ -325,6 +325,7 @@
     "fixtures/repository-credentials/installation-module-guard.ts",
     "fixtures/repository-credentials/planning.ts",
     "helpers/openshell-installation-github-requests.ts",
+    "helpers/openshell-worker-diagnostics.ts",
     "helpers/protected-static-secret-read.ts",
     "../scripts/observe-worker-terminations.ts",
     "conformance/native-admin-upgrade-recovery-cases.ts",
