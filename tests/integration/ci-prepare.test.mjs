@@ -3274,7 +3274,6 @@ if (args[0] === "pull") {
           OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: mutableImage,
           OCC_TEST_OPENSHELL_HELM: "helm",
           OCC_TEST_OPENSHELL_HELM_CHART: "openshell-chart",
-          OCC_TEST_OPENSHELL_RUNTIME_CLASS: "runc",
         },
       },
       {
@@ -3288,7 +3287,6 @@ if (args[0] === "pull") {
           OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: immutableImage,
           OCC_TEST_OPENSHELL_HELM: "helm",
           OCC_TEST_OPENSHELL_HELM_CHART: "openshell-chart",
-          OCC_TEST_OPENSHELL_RUNTIME_CLASS: "runc",
         },
       },
       {
@@ -3303,7 +3301,6 @@ if (args[0] === "pull") {
           OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: immutableImage,
           OCC_TEST_OPENSHELL_HELM: "helm",
           OCC_TEST_OPENSHELL_HELM_CHART: "openshell-chart",
-          OCC_TEST_OPENSHELL_RUNTIME_CLASS: "runc",
         },
       },
       {
@@ -3317,7 +3314,6 @@ if (args[0] === "pull") {
           OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE: immutableImage,
           OCC_TEST_OPENSHELL_HELM: "helm",
           OCC_TEST_OPENSHELL_HELM_CHART: "openshell-chart",
-          OCC_TEST_OPENSHELL_RUNTIME_CLASS: "runc",
           OCC_TEST_KEYCLOAK_IMAGE: mutableImage,
         },
       },

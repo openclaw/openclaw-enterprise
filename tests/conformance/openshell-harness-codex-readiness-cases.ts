@@ -189,7 +189,6 @@ export function registerOpenShellCodexReadinessCases(token: string, serviceUrl: 
       {
         gateway: { workspaceMode: "operator" },
         kubernetes: {
-          runtimeClassName: "openshell-sandbox",
           serviceAccount: { mode: "gatewayConfigured" },
           sandboxDataMount: {
             subPath: "workspace",

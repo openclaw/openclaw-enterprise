@@ -259,14 +259,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		return err
 	}
 	fmt.Fprintf(r.opts.Out, "Creating Kubernetes-only k3d cluster %s...\n", state.Cluster)
-	admissionPath := ""
-	if sandboxDriver == "openshell" {
-		admissionPath, err = prepareOpenShellAdmission(directory)
-		if err != nil {
-			return err
-		}
-	}
-	clusterArgs := kubernetesOnlyClusterArgs(state, timeoutSeconds, kubernetesPort, threshold, admissionPath)
+	clusterArgs := kubernetesOnlyClusterArgs(state, timeoutSeconds, kubernetesPort, threshold)
 	resolverArgs, err := r.prepareDevelopmentResolver(state)
 	if err != nil {
 		return err
@@ -502,9 +495,8 @@ func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developm
 }
 
 // kubernetesOnlyClusterArgs pins the k3d node and keeps verified local images
-// for the Kubernetes-only profile. A nonempty admission path mounts the
-// OpenShell Pod Security admission configuration.
-func kubernetesOnlyClusterArgs(state *developmentState, timeoutSeconds, kubernetesPort, threshold int, admissionPath string) []string {
+// for the Kubernetes-only profile.
+func kubernetesOnlyClusterArgs(state *developmentState, timeoutSeconds, kubernetesPort, threshold int) []string {
 	args := []string{
 		"cluster", "create", state.Cluster,
 		"--timeout", (time.Duration(timeoutSeconds) * time.Second).String(),
@@ -524,9 +516,6 @@ func kubernetesOnlyClusterArgs(state *developmentState, timeoutSeconds, kubernet
 	}
 	if state.BrowserPort != 0 {
 		args = append(args, "--port", fmt.Sprintf("127.0.0.1:%d:30081@loadbalancer", state.BrowserPort))
-	}
-	if admissionPath != "" {
-		args = append(args, "--volume", admissionPath+":"+openShellAdmissionContainerPath+":ro@server:0", "--k3s-arg", "--kube-apiserver-arg=admission-control-config-file="+openShellAdmissionContainerPath+"@server:0")
 	}
 	return args
 }
