@@ -16,7 +16,11 @@ import {
   createControllerWorker,
   type ControllerWorkerOptions,
 } from "../../apps/controller/src/worker.ts";
-import { JsonValue, PluginApproversSchema } from "../../packages/contracts/src/api/common.ts";
+import {
+  InferencePrivatePeerSchema,
+  JsonValue,
+  PluginApproversSchema,
+} from "../../packages/contracts/src/api/common.ts";
 import {
   PluginDesiredSelectionSchema,
   PluginDesiredStateSchema,
@@ -36,11 +40,14 @@ import { databaseUrl } from "./kubernetes-compute-real.mjs";
 import {
   ConnectionTemplateSchema,
   OAuthConnectionTemplateVersionSchema,
+  StaticKeyConnectionTemplateVersionSchema,
 } from "../../packages/contracts/src/api/connection-templates.ts";
 
 const responseSchemas = {
   ConnectionTemplate: ConnectionTemplateSchema,
   OAuthConnectionTemplateVersion: OAuthConnectionTemplateVersionSchema,
+  StaticKeyConnectionTemplateVersion: StaticKeyConnectionTemplateVersionSchema,
+  InferencePrivatePeer: InferencePrivatePeerSchema,
   PluginApprovers: PluginApproversSchema,
   PluginDesiredSelection: PluginDesiredSelectionSchema,
   PluginDesiredState: PluginDesiredStateSchema,
