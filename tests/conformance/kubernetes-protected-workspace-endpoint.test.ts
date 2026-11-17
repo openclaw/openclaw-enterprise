@@ -170,9 +170,13 @@ test("Compute binds the reserved original before enrollment and activates only a
   });
   // Exercise the normal admitted revision store and read boundary. The marker is
   // produced by Compute above, rather than copied from user configuration or the provider.
-  // The fixture provider is an OpenShell implementation, so the OpenShell Codex launch
-  // selection is saved inside the outermost protected workspace selection.
-  assert.equal(admitted.compute.admission, "protected-workspace:v1:openshell-codex-launch:v1:");
+  // The fixture provider is an OpenShell implementation and the Compute serves the
+  // Agent HTTP chat, so the HTTP chat and OpenShell Codex launch selections are saved
+  // inside the outermost protected workspace selection.
+  assert.equal(
+    admitted.compute.admission,
+    "protected-workspace:v1:http-chat:v1:openshell-codex-launch:v1:",
+  );
   const store = new InMemoryPlatformState();
   await store.transact(async (unit) => {
     await unit.installations.createInstallation({
