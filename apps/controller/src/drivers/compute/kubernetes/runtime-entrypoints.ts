@@ -7,6 +7,7 @@ import {
 import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
+import { exitedGatewayStateRelease } from "../embedded-gateway-owner.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { compactNodeChildArguments, nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
@@ -2665,6 +2666,7 @@ ${OPENCLAW_AUTH_PROBE_HELPERS}
 ${startupPhaseHelper("gateway")}
 ${openClawStateMigrationHelper("Gateway", "restart the Pod")}
 ${OPENCLAW_CONFIG_ISSUE_HELPER}
+${exitedGatewayStateRelease("gatewayEnvironment()")}
 
 function nativeGatewayAnswers(path) {
   return new Promise((resolve) => {
@@ -3393,7 +3395,11 @@ function startGatewayProcess() {
   gatewayGeneration++;
   childExited = new Promise((resolve) => {
     spawned.on("exit", (code, signal) => {
-      if (spawned === child) childRunning = false;
+      if (spawned === child) {
+        childRunning = false;
+        // Before the wrapper exits or starts another Gateway (finding 3257).
+        releaseExitedGatewayState(code);
+      }
       resolve();
       if (stoppingContainer) {
         process.exit(DELIBERATE_RESTART_EXIT_STATUS);

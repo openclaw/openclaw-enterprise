@@ -151,7 +151,13 @@ verify the previous Pod's owner. An older image may also lack a record of the
 original PID 1 start time. If the replacement reports an unverifiable owner,
 use the following procedure.
 
-A dedicated Gateway does not recover its locks. After an unclean exit it stays
+On Kubernetes, when OpenClaw exits without releasing its locks but its
+container keeps running, as after a stop during Gateway startup, the
+container releases them before it exits. This applies to embedded and
+dedicated Gateways. A container that is itself killed, for example by a node
+failure, keeps them.
+
+A dedicated Gateway does not otherwise recover its locks. After an unclean exit it stays
 unready with the failed check `gateway-state-lock`, and its log quotes the
 holder. Use the same procedure.
 

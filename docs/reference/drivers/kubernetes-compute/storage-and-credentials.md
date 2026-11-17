@@ -60,6 +60,9 @@ Harness, which finishes active work meanwhile; a refused candidate's stop delete
 both at once. The Gateway supervisor and Pod allow up to 330 seconds for the
 pinned runtime's drain and cleanup. Idle Gateways exit promptly. Forced
 termination can leave native Gateway locks and an owner lease on retained state.
+If OpenClaw exits without releasing them, for example on a stop before it
+handles signals, the Gateway container releases them before it exits.
+OpenClaw first verifies that each holder process ended in that container.
 
 If the kubelet restarts an embedded Gateway container in the same Pod, OpenClaw
 can recover locks held by the **first container instance**. Before configurable
