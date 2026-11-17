@@ -63,7 +63,9 @@ test("core and its tests name no external Sandbox provider", async () => {
   const self = relative(root, fileURLToPath(import.meta.url));
   const offenders: string[] = [];
   for (const path of (await Promise.all(CORE.map(files))).flat()) {
-    if (path === self || providerTest(path)) continue;
+    if (path === self || providerTest(path)) {
+      continue;
+    }
     const lines = (await readFile(join(root, path), "utf8")).split("\n");
     for (const [index, line] of lines.entries()) {
       // Ordinary English ("unstrands", "strands it") is not a provider name.
