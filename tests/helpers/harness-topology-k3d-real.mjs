@@ -3387,8 +3387,8 @@ function assertNativeToolSucceeded(history, marker, expectedText) {
   }
 }
 
-async function assertConversation(topology, sessionKey, nonce, { assistantNonce = nonce } = {}) {
-  return waitFor(`provider transcript ${nonce}`, async () => {
+async function waitForGatewayHistory(topology, sessionKey, description, select) {
+  return waitFor(description, async () => {
     let history;
     try {
       history = await gatewayCall(topology, "chat.history", { sessionKey, limit: 30 });
@@ -3412,13 +3412,16 @@ async function assertConversation(topology, sessionKey, nonce, { assistantNonce 
       false,
       "the actual provider turn must succeed",
     );
+    return select(history);
+  });
+}
+
+async function assertConversation(topology, sessionKey, nonce) {
+  return waitForGatewayHistory(topology, sessionKey, `provider transcript ${nonce}`, (history) => {
     const user = history.messages.find(
       (message) => message.role === "user" && messageText(message).includes(nonce),
     );
-    const assistant = history.messages.find(
-      (message) => message.role === "assistant" && messageText(message).includes(assistantNonce),
-    );
-    return user && assistant ? history : undefined;
+    return user && assistantMessageContaining(history, nonce) ? history : undefined;
   });
 }
 
@@ -4028,44 +4031,74 @@ async function assertActualPublicGithubRead(topology) {
   );
 }
 
+const nativeChildCommand = 'node -p "crypto.randomUUID()"';
+
 async function assertDedicatedNativeChildRelay(topology) {
   const marker = `OCE-NATIVE-CHILD-${randomUUID()}`;
   const sessionKey = `agent:main:native-child-${randomUUID()}`;
   const childTask =
-    `Reply with exactly ${JSON.stringify(marker)} as plain text. ` +
-    "Do not include quotes, Markdown, an explanation, or any other text.";
-  await requestDedicatedAgentTurn(
-    topology,
-    sessionKey,
+    `Correlation: ${marker}. Run this command once with your native shell:\n` +
+    `${nativeChildCommand}\n` +
+    "Return only the UUID printed by the command as plain text.";
+  const prompt =
     `Call native Codex spawn_agent exactly once with message=${JSON.stringify(childTask)}. ` +
-      "Wait for that child to finish, then return only its answer verbatim. " +
-      "Do not answer for the child or use OpenClaw sessions_spawn.",
-  );
-  // Inspect the child even when the parent's truthful answer omits the nonce.
-  // The nonce-containing Gateway reply remains required after the native proof.
-  const history = await assertConversation(topology, sessionKey, marker, { assistantNonce: "" });
-  const assistant = assistantMessageContaining(history, "");
-  const parentThreadId = assistant.idempotencyKey?.match(/^codex-app-server:([^:]+):/)?.[1];
-  assert.ok(parentThreadId, "the Gateway transcript must identify the native parent thread");
+    "Wait for that child to finish, then return only its final answer verbatim. " +
+    "Do not answer for the child or use OpenClaw sessions_spawn.";
+  const reply = await requestDedicatedAgentTurn(topology, sessionKey, prompt);
+  // Gateway history can lag the HTTP response. Locate the native thread and its
+  // persisted answer only among assistant messages after this submission.
+  function waitForParentReplies(description, select) {
+    return waitForGatewayHistory(topology, sessionKey, description, ({ messages }) => {
+      const users = messages.filter(
+        (message) => message.role === "user" && messageText(message).includes(prompt),
+      );
+      assert.ok(users.length <= 1, "the fresh Gateway session must contain the prompt only once");
+      if (!users.length) {
+        return undefined;
+      }
+      const parentId = (message) =>
+        message.idempotencyKey?.match(/^codex-app-server:([^:]+):/)?.[1];
+      const replies = messages
+        .slice(messages.indexOf(users[0]) + 1)
+        .filter((message) => message.role === "assistant" && parentId(message));
+      const parentIds = new Set(replies.map(parentId));
+      assert.ok(parentIds.size <= 1, "the Gateway transcript must identify one native parent");
+      const [threadId] = parentIds;
+      return threadId ? select(threadId, replies) : undefined;
+    });
+  }
 
-  // A parent can repeat the marker without spawning. Read the native child, not just its summary.
+  const parentThreadId = await waitForParentReplies("the native Gateway parent", (id) => id);
   const evidence = await readDedicatedNativeChildEvidence(
     topology.gatewayPlacement,
     topology.gatewayPod.metadata.name,
     parentThreadId,
     marker,
     childTask,
+    prompt,
   );
-  assert.equal(evidence.parentThreadId, parentThreadId);
-  assert.notEqual(evidence.childThreadId, parentThreadId);
-  process.stderr.write(`k3d native child observation: ${JSON.stringify(evidence.observation)}\n`);
-  const completedHistory = await assertConversation(topology, sessionKey, marker);
   assert.equal(
-    assistantMessageContaining(completedHistory, marker).idempotencyKey?.match(
-      /^codex-app-server:([^:]+):/,
-    )?.[1],
-    parentThreadId,
-    "the exact child answer must return through the same Gateway parent thread",
+    evidence.parentThreadId === parentThreadId,
+    true,
+    "receipt must identify the selected parent",
+  );
+  assert.equal(
+    evidence.childThreadId !== parentThreadId,
+    true,
+    "receipt must identify a distinct child",
+  );
+  process.stderr.write(`k3d native child observation: ${JSON.stringify(evidence.observation)}\n`);
+  const matchesChild = (text) =>
+    typeof text === "string" &&
+    createHash("sha256").update(text.trim()).digest("hex") === evidence.answerDigest;
+  assert.ok(
+    matchesChild(reply),
+    "the current Gateway reply must equal the linked child's final answer",
+  );
+  await waitForParentReplies(
+    "the persisted child answer on the selected Gateway parent",
+    (id, replies) =>
+      id === parentThreadId && replies.some((message) => matchesChild(messageText(message))),
   );
 }
 
@@ -4084,6 +4117,7 @@ export async function readDedicatedNativeChildEvidence(
   parentThreadId,
   marker,
   childTask,
+  prompt,
   run = execNode,
 ) {
   // Derive the stdout receipt in both processes so its value stays out of the exec command.
@@ -4093,6 +4127,7 @@ export async function readDedicatedNativeChildEvidence(
     pod,
     `
       const assert = require("node:assert/strict");
+      const { createHash } = require("node:crypto");
       const WebSocket = require("ws");
       const socket = new WebSocket(process.env.APP_SERVER_URL, {
         headers: { Authorization: "Bearer " + process.env.APP_SERVER_TOKEN },
@@ -4127,6 +4162,16 @@ export async function readDedicatedNativeChildEvidence(
       const expiresAt = Date.now() + 20_000;
       const deadline = setTimeout(() => socket.terminate(), 20_000);
       const marker = ${JSON.stringify(marker)};
+      const childTask = ${JSON.stringify(childTask)};
+      const prompt = ${JSON.stringify(prompt)};
+      const userTexts = (turn) => turn.items.filter((item) => item.type === "userMessage")
+        .flatMap((item) => item.content.filter((block) => block.type === "text").map((block) => block.text));
+      // App Server projects argv with POSIX shell quoting. Accept only these complete
+      // argv presentations for the ordinary Linux shell wrapper.
+      const command = ${JSON.stringify(nativeChildCommand)};
+      const commandForms = new Set(["/bin/bash", "/bin/sh"].flatMap((shell) =>
+        ["-c", "-lc"].map((flag) => shell + " " + flag + " '" + command + "'")));
+      const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
       (async () => {
         try {
           await new Promise((resolve, reject) => {
@@ -4149,74 +4194,79 @@ export async function readDedicatedNativeChildEvidence(
             const parent = (await request("thread/read", {
               threadId: ${JSON.stringify(parentThreadId)}, includeTurns: true,
             })).thread;
-            const children = new Set(parent.turns.flatMap((turn) => turn.items.flatMap((item) => {
-              if (item.type === "subAgentActivity" && item.kind === "started") return [item.agentThreadId];
-              if (item.type === "collabAgentToolCall" && item.tool === "spawnAgent" && item.status === "completed") return item.receiverThreadIds;
-              return [];
-            })));
-            observation.parentTurnCount = parent.turns.length;
+            assert.equal(parent.id, ${JSON.stringify(parentThreadId)}, "read must return the selected native parent");
+            const parentTurns = parent.turns.filter((turn) => userTexts(turn).some((text) => text.includes(prompt)));
+            observation.parentTurnCount = parentTurns.length;
+            assert.ok(parentTurns.length <= 1, "expected one native turn for this Gateway prompt");
+            const parentTurn = parentTurns[0];
+            observation.parentTurnCompleted = parentTurn?.status === "completed" && parentTurn.error == null;
+            assert.ok(parentTurn?.status !== "failed" && parentTurn?.status !== "interrupted",
+              "the linked native parent turn must succeed");
+            const parentItems = parentTurn?.items ?? [];
+            const starts = parentItems.filter((item) => item.type === "subAgentActivity" && item.kind === "started");
+            const spawns = parentItems.filter((item) => item.type === "collabAgentToolCall" && item.tool === "spawnAgent");
+            observation.startCount = starts.length;
+            observation.spawnCount = spawns.length;
+            assert.ok(starts.length <= 1 && spawns.length <= 1, "expected one native spawn per history projection");
+            const spawn = spawns[0];
+            const spawnCompleted = spawn?.status === "completed";
+            assert.ok(!spawn || spawnCompleted || spawn.status === "inProgress", "the native spawn must succeed");
+            const receivers = spawnCompleted ? spawn.receiverThreadIds : [];
+            if (spawnCompleted) {
+              assert.ok(Array.isArray(receivers) && receivers.length === 1, "the native spawn must identify one receiver");
+            }
+            const children = new Set([...starts.map((item) => item.agentThreadId), ...receivers]);
             observation.childCount = children.size;
             assert.ok(children.size <= 1, "expected one actual native child");
-            if (children.size === 1) {
-              const candidate = [...children][0];
+            if (observation.parentTurnCompleted && (!spawn || spawnCompleted) && children.size === 1) {
+              const [candidate] = children;
+              assert.ok(typeof candidate === "string" && candidate !== "" && candidate !== parent.id);
               if (childId !== undefined) assert.equal(candidate, childId, "native child identity must stay fixed");
               childId = candidate;
               observation.stage = "child-read";
               const child = (await request("thread/read", { threadId: childId, includeTurns: true })).thread;
               assert.equal(child.id, childId, "read must return the selected native child");
               observation.parentMatches = child.parentThreadId === parent.id;
-              assert.equal(child.parentThreadId, parent.id, "child must belong to this Gateway turn");
-              observation.turnCount = child.turns.length;
-              observation.errorTurnCount = child.turns.filter((turn) => turn.error !== undefined && turn.error !== null).length;
-              observation.turnStatuses = child.turns.slice(-10).map((turn) =>
-                ["completed", "inProgress", "failed", "interrupted"].includes(turn.status) ? turn.status : "unknown");
-              // Inspect the actual forwarded task and child-owned output without
-              // exporting either text or treating parent narration as an answer.
-              const spawnPrompts = parent.turns.flatMap((turn) => turn.items).filter((item) =>
-                item.type === "collabAgentToolCall" && item.tool === "spawnAgent" &&
-                item.receiverThreadIds.includes(childId) && typeof item.prompt === "string");
-              observation.spawnPromptCount = spawnPrompts.length;
-              observation.spawnPromptNonceSeen = spawnPrompts.some((item) => item.prompt.includes(marker));
-              observation.spawnPromptMatchesTask = spawnPrompts.some((item) => item.prompt === ${JSON.stringify(childTask)});
-              const userTexts = child.turns.flatMap((turn) => turn.items).filter((item) => item.type === "userMessage")
-                .flatMap((item) => item.content.filter((block) => block.type === "text").map((block) => block.text));
-              observation.childUserTextCount = userTexts.length;
-              observation.childUserNonceSeen = userTexts.some((text) => text.includes(marker));
-              observation.childUserTaskSeen = userTexts.some((text) => text === ${JSON.stringify(childTask)});
-              const messages = child.turns.flatMap((turn) => turn.items).filter((item) => item.type === "agentMessage");
-              observation.agentMessageCount = messages.length;
-              observation.exactNonceMessages = messages.filter((item) => item.text.trim() === marker).length;
-              observation.messageShapes = messages.slice(-10).map((item) => {
-                const text = item.text.trim();
-                const lines = text.split(/\\r?\\n/);
-                let phase = "unknown";
-                if (item.phase === undefined || item.phase === null) {
-                  phase = "absent";
-                } else if (["commentary", "final_answer"].includes(item.phase)) {
-                  phase = item.phase;
+              assert.ok(observation.parentMatches, "child must belong to this Gateway turn");
+              const taskTurns = child.turns.filter((turn) => userTexts(turn).includes(childTask));
+              observation.childTaskTurnCount = taskTurns.length;
+              assert.ok(taskTurns.length <= 1, "expected one child turn for the forwarded task");
+              const turn = taskTurns[0];
+              observation.childTaskCompleted = turn?.status === "completed" && turn.error == null;
+              if (observation.childTaskCompleted) {
+                const messages = turn.items.filter((item) => item.type === "agentMessage");
+                const finals = messages.filter((item) => item.phase === "final_answer");
+                observation.explicitFinalCount = finals.length;
+                // An explicitly phased turn must identify its final. Older turns only have text.
+                let finalMessage = finals.length === 1 ? finals[0] : undefined;
+                if (messages.every((item) => item.phase == null)) {
+                  finalMessage = messages.findLast((item) => typeof item.text === "string" && item.text.trim() !== "");
                 }
-                return {
-                  phase,
-                  textBytes: Buffer.byteLength(item.text),
-                  lineCount: lines.length,
-                  containsNonce: text.includes(marker),
-                  jsonQuotedNonce: text === JSON.stringify(marker),
-                  backtickQuotedNonce: text === "\u0060" + marker + "\u0060",
-                  fencedNonce: lines.length === 3 && /^\u0060\u0060\u0060(?:text|plaintext)?$/.test(lines[0]) &&
-                    lines[1] === marker && lines[2] === "\u0060\u0060\u0060",
-                };
-              });
-              const completed = child.turns.find((turn) => turn.status === "completed" && turn.items.some(
-                (item) => item.type === "agentMessage" && item.text.trim() === marker,
-              ));
-              observation.completedNonceTurn = Boolean(completed);
-              if (completed) {
-                observation.stage = "complete";
-                evidence = { parentThreadId: parent.id, childThreadId: child.id, observation };
-                break;
+                const final = finalMessage?.text?.trim();
+                observation.finalUuid = typeof final === "string" && uuid.test(final) && !prompt.includes(final);
+                const commands = turn.items.filter((item) => item.type === "commandExecution" &&
+                  commandForms.has(item.command));
+                observation.commandCount = commands.length;
+                const commandItem = commands[0];
+                observation.commandOutputPresent = typeof commandItem?.aggregatedOutput === "string";
+                observation.commandMatched = observation.finalUuid && commands.length === 1 &&
+                  turn.items.indexOf(commandItem) < turn.items.indexOf(finalMessage) &&
+                  (commandItem.source == null || commandItem.source === "agent" || commandItem.source === "unifiedExecStartup") &&
+                  commandItem.status === "completed" && commandItem.exitCode === 0 &&
+                  commandItem.aggregatedOutput?.trim() === final;
+                if (observation.commandMatched) {
+                  observation.stage = "complete";
+                  evidence = {
+                    parentThreadId: parent.id,
+                    childThreadId: child.id,
+                    answerDigest: createHash("sha256").update(final).digest("hex"),
+                    observation,
+                  };
+                  break;
+                }
               }
+              observation.stage = "child-completion";
             }
-            observation.stage = "child-completion";
             await new Promise((resolve) => setTimeout(resolve, 250));
           }
           assert.equal(observation.childCount, 1, "expected one actual native child");
@@ -4229,7 +4279,7 @@ export async function readDedicatedNativeChildEvidence(
       })().catch((error) => {
         const failure = error.code === "ERR_ASSERTION" ? "assertion" : "transport-or-protocol";
         console.error("Native child evidence " + failure + "; observation: " + JSON.stringify(observation));
-        const receipt = require("node:crypto").createHash("sha256").update(marker).digest("hex");
+        const receipt = createHash("sha256").update(marker).digest("hex");
         process.stdout.write(JSON.stringify({ receipt, stage: observation.stage }));
         process.exitCode = 1;
       });

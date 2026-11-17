@@ -125,6 +125,9 @@ importers:
       tldts:
         specifier: 7.4.19
         version: 7.4.19
+      ts-pattern:
+        specifier: 5.9.2
+        version: 5.9.2
       typebox:
         specifier: 1.4.6
         version: 1.4.6
@@ -2279,6 +2282,9 @@ packages:
     peerDependencies:
       typescript: '>=4.8.4'
 
+  ts-pattern@5.9.2:
+    resolution: {integrity: sha512-qAf+7M7Jjk7uebZeIo9uEzyintfuRtgHdzM9dqxRKcMi2dt76Ec+FH2wW3bnU9TuGLkZIJLoLs7cCQnU7Tu8ig==}
+
   tslib@2.9.1:
     resolution: {integrity: sha512-a4Ux9VKuIMHsOS7ENbEq6hK2ZGYIT27Rtl0E4eD9KqwxhKiQeMZE/9xb3IdYwWaSOyIBQLExhQgXDTYoiCxnWA==}
 
@@ -4237,6 +4243,8 @@ snapshots:
   ts-api-utils@2.5.0(@typescript/typescript6@6.0.2):
     dependencies:
       typescript: '@typescript/typescript6@6.0.2'
+
+  ts-pattern@5.9.2: {}
 
   tslib@2.9.1: {}
 
