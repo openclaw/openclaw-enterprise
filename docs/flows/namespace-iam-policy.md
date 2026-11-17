@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: 2026-11-13
-last_updated_session: "authoring-run/91737212-2ec5-4aca-981d-501670320fd5"
+updated: 2026-11-17
+last_updated_session: "authoring-run/01a1bfc4-452e-7521-a7b2-2e1c44f855df"
 ---
 
 # Namespace IAM Policy Flow
@@ -220,7 +220,14 @@ behavior.
   instead authorizes `create` on the Namespace collection at the Installation
   before it creates the Namespace.
   `fenceAgentProvisioning` also takes the IAM configuration lock before
-  `lockNamespace`.
+  `lockNamespace`. The final `completeNamespaceConnection` transaction first
+  holds the supplied browser session, then takes this shared lock before it
+  authorizes and grants exact-source access. `updateAgent` takes it at transaction
+  entry when the request includes `repositoryStandingApproval`; ordinary edits
+  keep their existing path. Startup's `initializeDefaultPresets` takes the same
+  lock before Installation authorization and Namespace locks. A configured
+  permission withdrawal therefore commits before these decisions or after their
+  durable authority and success audit commit.
 - **Agent Backend selection.** `createAgent` resolves a supplied Backend ID and
   checks its type only after the second `agent:create` authorization. A caller
   without that grant receives `403` for both configured and unknown valid IDs.
@@ -298,6 +305,7 @@ behavior.
 
 ## Changelog
 
+- 2026-11-17 19:20: Order Connection ownership, standing repository approval, and startup Preset ownership against configured-policy changes. (authoring-run/01a1bfc4-452e-7521-a7b2-2e1c44f855df - ecf6a80b605ec64c9d68a150cb07dbda5055d2a8)
 - 2026-11-13 06:59: Condense the Namespace IAM policy flow while retaining authorization and transaction boundaries. (authoring-run/91737212-2ec5-4aca-981d-501670320fd5 - 6192588c3a8fce971689a174fc34ae9deb1c8c80)
 - 2026-11-13 05:56: Authorize Agent creation before configured Backend lookup; preserve creator and catalog permissions, distinguish Namespace creation admission, and cover denial audit and unchanged State. (authoring-run/3e297b79-1580-4c10-ade8-4fa8031618a7 - 4ecf71da20e0606cb4f78fc90551462af11b4981)
 - 2026-11-12 13:00: Fence Namespace Role and AccessBinding writes against configured read withdrawal. (authoring-run/51e5643c-98f0-4498-9876-768fbfd19f63 - ea43cfdb21e17e6025b53e3d3585977b7df6dcde)
