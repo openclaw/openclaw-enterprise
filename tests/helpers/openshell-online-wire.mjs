@@ -1,8 +1,8 @@
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { createOpenShellOnlineAuthority } from "../../apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts";
-import { harnessTlsFixture } from "./harness-tls.mjs";
+import { createOpenShellOnlineHttpAuthority } from "../../apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts";
+import { harnessTlsFixture } from "./harness-tls.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 export const grpc = require("@grpc/grpc-js");
@@ -46,7 +46,7 @@ export async function openShellOnlineWire(
   t,
   registrationName,
   options,
-  createAuthority = createOpenShellOnlineAuthority,
+  createAuthority = createOpenShellOnlineHttpAuthority,
 ) {
   const { key, cert, caBundle, rootCertificatePath } = await harnessTlsFixture(t);
   const keys = generateKeyPairSync("ed25519");

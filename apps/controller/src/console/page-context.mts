@@ -6,6 +6,11 @@ import type { createShell } from "./shell.mjs";
 
 export type LeaveGuard = Parameters<ReturnType<typeof createShell>["setLeaveGuard"]>[0];
 export type TabNavigation = (url: URL) => boolean | "blocked";
+/** The Agent a refocus recheck read, and when that read started (`performance.now()`). */
+export interface AgentRecheck {
+  agent: unknown;
+  readStartedAt: number;
+}
 
 type DraftStore = ReturnType<typeof createDraftStore>;
 type Navigation = ReturnType<typeof createNavigation>;
@@ -40,7 +45,7 @@ export interface ConsolePageContext extends Pick<Navigation, "navigate" | "pageU
   /** Run when Installation administration settles as ended while this page is mounted. */
   onAdministrationEnded?(handler: () => void): void;
   /** Run when a refocus recheck of a mounted Agent page finds it still readable. */
-  onRechecked?(handler: () => void): void;
+  onRechecked?(handler: (recheck: AgentRecheck) => void): void;
   /** Asks again, without an audited read, whether a caller settled as no administrator is one. */
   recheckAdministration?(): Promise<void>;
   onExpired(): void;
@@ -51,6 +56,8 @@ export interface ConsolePageContext extends Pick<Navigation, "navigate" | "pageU
   setWriteInFlight(check: () => boolean): void;
   /** The Namespace permission answer's secrets.create; undefined when it is unknown. */
   secretsCreateAllowed?(): Promise<boolean | undefined>;
+  /** The Namespace permission answer's agents.create; undefined when it is unknown. */
+  agentsCreateAllowed?(): Promise<boolean | undefined>;
   /** Run after an Agent detail page that loaded behind a stand-in is visible. */
   revealed?(then?: () => void): void;
 }

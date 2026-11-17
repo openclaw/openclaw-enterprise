@@ -1,13 +1,15 @@
 # Render installation profiles
 
-Installation profiles generate the two trusted files used by a production
-OpenClaw Enterprise install: a Helm values overlay and the Installation startup
-YAML mounted into the controller. Use a profile when you want the standard
-OpenClaw or Codex defaults without editing the production examples by hand.
+For a [custom production installation](production-installation.md), choose a
+profile and [render Helm values and Installation YAML](#render-files) from JSON.
+For OpenShell, use [Kubernetes setup](kubernetes-setup.md) or
+[EKS setup](eks-openshell-setup.md) and its first-Agent session.
 
-Profiles only render configuration for an already prepared environment. They do
-not create clusters, Secrets, databases, DNS, certificates, hosted plugin
+Profiles render configuration; they do not create clusters, Secrets, databases,
+DNS, certificates, hosted plugin
 credentials, ChatGPT service accounts, repository registries, or Slack consumers.
+Prepare [routing prerequisites](workspace-routing.md#requirements) before installation;
+rendering does not verify cluster readiness.
 
 ## Choose a profile
 
@@ -30,17 +32,15 @@ Both profiles enable:
   private metrics, digest-pinned images, DNS policy, trusted proxy CIDRs, and
   plugin-status proxy CIDRs.
 
-Both profiles give Gateway Pods (embedded or dedicated), Harness Pods, and the
-tenant namespace container default a `100m` CPU request and a four-core (`"4"`)
-CPU limit. The CPU limit only permits bursts: an embedded OpenClaw Gateway's
-startup model probe is a full agent turn of about 16 CPU-seconds on about one
-core (ready in 24 to 30 seconds at one core, 51 to 72 at `500m`). The CPU request sets the scheduling reservation,
-so the higher limit reserves no node capacity. The trade-off is overcommit:
-several busy runtimes on one node can each take up to four cores from their
-neighbors, and a `limits.cpu` namespace quota counts the whole limit.
+Both profiles set a `100m` CPU request and four-core (`"4"`) burst limit for
+Gateway Pods (embedded or dedicated), Harness Pods, and the tenant namespace
+container default. An embedded OpenClaw Gateway's startup model probe runs a
+full agent turn (~16 CPU-seconds on about one core). Readiness takes 24–30
+seconds at one core or 51–72 seconds at `500m`. Only the request reserves node
+capacity. Busy runtimes sharing a node can each consume four cores, and a
+`limits.cpu` namespace quota counts the full limit.
 
-Memory requests cover the use measured between turns, so the scheduler reserves
-what each Agent actually holds; limits cover measured peaks:
+Memory requests reserve measured usage between turns. Limits cover measured peaks:
 
 | Pod                             | Request  | Limit | Measured                                                                                                                                                                                                                                                                    |
 | ------------------------------- | -------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -51,10 +51,12 @@ what each Agent actually holds; limits cover measured peaks:
 Plan node memory per Agent: an embedded OpenClaw Agent reserves `2560Mi`, and a
 dedicated Codex Agent reserves `3328Mi`: `2560Mi` for its Gateway on the
 `runtime.gatewayNodeSelector` pool and `768Mi` for its Harness on the
-`runtime.nodeSelector` pool. A Harness runs
-the Agent's shell commands, so builds and test suites in large repositories can
-need more than `6Gi`; raise `resources.agent.limits.memory` in the Installation
-for such workloads. Limits reserve no node memory, so Harnesses building at the
+`runtime.nodeSelector` pool. With initial workspace files, the Harness Pod also
+runs a setup init container that requests `2560Mi`. Kubernetes reserves the
+larger init or app request, so the Agent reserves `5120Mi`. A Harness runs the
+Agent's shell commands, so builds and test suites in large repositories can need
+more than `6Gi`; raise `resources.agent.limits.memory` in the Installation for
+such workloads. Limits reserve no node memory, so Harnesses building at the
 same time on one node can together exhaust it, and the kubelet then evicts Pods
 using more than their requests first; size agents nodes for the turns
 you expect to run concurrently.
@@ -87,12 +89,11 @@ then rerender with `repository.enabled: true`.
 ## Prepare inputs
 
 Create a JSON file outside the repository or under an ignored local output
-directory. The renderer rejects any field it does not consume: unsupported
-fields fail preflight. `controlPlane.releaseName` must satisfy Helm's lowercase
+directory. The renderer rejects any field it does not consume.
+`controlPlane.releaseName` must satisfy Helm's lowercase
 release-name syntax and be at most 53 characters. Image references in
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`
-must use literal `sha256` and 64 lowercase hexadecimal characters. Invalid digest
-casing fails preflight without emitting deployable files. All three must also be
+must use literal `sha256` and 64 lowercase hexadecimal characters. All three must also be
 references Kubernetes can pull, as the chart and Compute check: only the registry
 host and tag may use uppercase, and an IPv6 registry host is allowed. `controlPlane.adminEmail`
 must be an administrator email the bootstrap Job accepts after trim and lowercase:
@@ -115,7 +116,6 @@ one `@` and a dotted domain.
     "gatewayClassName": "eg",
     "gatewayApiKeySecretName": "occ-private-gateway-key",
     "agentNativeAdminDomain": "agents.example.internal",
-    "sharedCookieDomain": "example.internal",
     "gatewayTrustedProxyCidrs": ["10.46.0.0/24"],
     "pluginStatusProxySourceCidrs": ["10.47.0.10/32"],
     "nodeSelector": { "oce-role": "control" }
@@ -143,13 +143,13 @@ For the `codex` profile, add the reviewed Codex seccomp profile to the base inpu
 ```json
 {
   "runtime": {
-    "codexSeccompProfile": "openclaw/codex-0.163.0-alpha.2-<profile-sha256>.json"
+    "codexSeccompProfile": "openclaw/codex-0.164.0-<profile-sha256>.json"
   }
 }
 ```
 
-The `codex` profile also accepts `runtime.codexModelBaseUrl` for `api_key` Agents;
-preflight applies [Compute's endpoint rule](../../reference/drivers/kubernetes-compute.md#configuration).
+Both profiles accept [`runtime.modelProvider`](../../reference/drivers/kubernetes-compute/model-provider.md)
+for API-key inference. Preflight validates its endpoint.
 
 To have OCE issue managed ChatGPT service-account runtime credentials, add the
 optional managed ServiceAccount binding. Do this only after you qualify the
@@ -207,41 +207,31 @@ refresh itself.
 
 ### External sign-in and trusted proxies
 
-Activation of GitHub, Google or OIDC sign-in is one-way, so keep these inputs in every
-later rerender. Adding `controlPlane.github` or `controlPlane.google` (`{}` uses
-the chart's Secret defaults), or `controlPlane.oidc` with its `issuer`,
-`authorizationUrl`, `tokenUrl` and `jwksUrl` ([OIDC sign-in](oidc-sign-in.md)), renders
-`auth.github`, `auth.google` or `auth.oidc` with
-`enabled: true` and `agentNativeAdmin.enabled: false`; remove
-`agentNativeAdminDomain` and `sharedCookieDomain`. `recoveryUserId` and an HTTPS
-`authBaseUrl` are required. Optional `passwordSignIn: "recovery-only"` renders
-[`auth.passwordSignIn`](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in);
-preflight lists attaching every ordinary account's identity first. Follow
-[Enable GitHub browser sign-in](production-installation.md#enable-github-browser-sign-in).
-Behind a proxy that adds forwarded headers, such as ingress-nginx, set
-`trustedProxy` ([presets](../../reference/settings/production.md#github-sign-in-and-trusted-proxies));
-it works with or without external sign-in. Without it, preflight warns (it does
-not fail), because an Installation whose API sees each client's own address, such
-as behind a source-preserving NLB, needs none.
+Activation of Google or OIDC sign-in is one-way, so keep the selected provider in
+later renders. `controlPlane.google: {}` uses the chart's Secret defaults.
+`controlPlane.oidc` requires `issuer`, `authorizationUrl`, `tokenUrl` and `jwksUrl`;
+see [OIDC setup](oidc-sign-in.md). Both require an HTTPS Console origin and the
+existing `recoveryUserId`. Google disables native access; OIDC supports it. To use host-only exchange,
+set `controlPlane.agentNativeAdminSessionMode: "host-only-exchange"` and use
+same-site HTTPS Console and Agent domains.
 
-```json
-{
-  "controlPlane": {
-    "recoveryUserId": "<administrator user ID>",
-    "github": {
-      "secretName": "occ-github-login",
-      "egressCidrs": ["140.82.112.0/20"]
-    },
-    "google": { "allowedDomains": ["example.com"] },
-    "trustedProxy": { "preset": "ingress-nginx", "cidrs": ["10.42.0.0/16"] }
-  }
-}
-```
+Use `controlPlane.oidc.enrollment` for the
+[enrollment policy](../../reference/authentication/team-enrollment.md), including
+admission, initial Role and Group selection. `controlPlane.github` is rejected;
+existing installations must follow the [upgrade instructions](oidc-upgrade.md).
+Follow [external sign-in activation](production-installation.md#enable-external-browser-sign-in)
+before enabling the provider. Confirm existing users' attachments before selecting
+`passwordSignIn: "recovery-only"`.
+
+Behind an HTTP proxy, set `trustedProxy` using the
+[supported presets](../../reference/settings/production.md#external-sign-in-and-trusted-proxies).
+Without it, preflight warns because the API cannot identify individual clients
+through a shared proxy address. A source-preserving load balancer needs no preset.
 
 Client-ID and client-secret Secret keys must differ; an omitted key counts as
 the chart default (`client-id` or `client-secret`).
 As the chart requires, each credential Secret is dedicated: a sign-in
-`secretName` (default `occ-github-login`, `occ-google-login` or `occ-oidc-login`),
+`secretName` (default `occ-google-login` or `occ-oidc-login`),
 `gatewayApiKeySecretName`, `databaseCa.secretName` (which may equal
 `repository.publicCaSecretName`), the ChatGPT admin Secret (with
 `codex.managedServiceAccounts`) and each repository Secret must differ from
@@ -251,18 +241,15 @@ short release names) and root CA (`occ-gateway-<hash>-root`) Secrets the chart
 generates, and, with `controlPlane.loggingCollector.enabled`, from
 `occ-otel-collector-config` and `occ-otel-collector-exporter`.
 
-`github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`
-and `egressCidrs`; `github` also accepts `allowedOrgs` and `allowedTeams`
-([allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist));
-`oidc` also accepts `tokenAuth` and `displayName`;
+`google` and `oidc` accept `secretName`, `clientIdKey`, `clientSecretKey` and
+`egressCidrs`. OIDC also accepts `tokenAuth`, `displayName` and `enrollment`.
 `trustedProxy` accepts `clientAddressHeader`, required for the `generic` preset.
 Preflight refuses `x-occ-client-ip`, `cookie`, `forwarded`, `authorization`, `host`,
 `origin`, and `x-api-key`; use a header that carries plain client addresses, such as
 `x-forwarded-for` or `x-real-ip`.
 Each `google.allowedDomains` entry must be a lowercase DNS name of at most 253
 characters, such as `example.com`, and its last label must start with a letter.
-Preflight refuses `example.123` and any longer name, which the chart and the API
-also refuse.
+The chart and the API also refuse `example.123` and any longer name.
 
 If you opt in to repositories, add the broker inputs:
 
@@ -284,8 +271,7 @@ If you opt in to repositories, add the broker inputs:
 ```
 
 The repository registry ConfigMap and all four repository Secret names must be
-Kubernetes DNS-subdomain resource names of at most 253 characters. Invalid names
-fail preflight before deployable files are written.
+Kubernetes DNS-subdomain resource names of at most 253 characters.
 
 `serviceName` is optional. When omitted, the renderer leaves it out of
 `values.yaml`: a new installation gets the chart's `git` Service, and a Helm
@@ -294,16 +280,15 @@ Service has another name, set `serviceName` to that current name so TLS and
 active repository sessions keep working, then switch it deliberately after
 sessions drain. A set name must be a DNS-1035 label of at most 63 characters:
 a lowercase letter, then lowercase letters, digits, or hyphens, ending in a
-letter or digit. Preflight refuses any other spelling, which the chart also
-refuses.
+letter or digit. The chart refuses any other spelling too.
 
 ## Render files
 
-Run the renderer from the repository root with Node.js 24.22.1 or newer. With native
+Run the renderer from the repository root with Node.js satisfying `engines.node` in the release checkout's `package.json`. With native
 admin, run `pnpm install` first: the public suffix check uses the API's list.
 
 ```sh
-node scripts/render-installation-profile.mjs \
+node scripts/render-installation-profile.ts \
   --profile codex \
   --input .build/profile-inputs/codex.json \
   --out-dir .build/profile-renders/codex
@@ -404,7 +389,7 @@ the install as ready:
 ## Related
 
 - [Production installation](production-installation.md)
-- [Amazon EKS](eks.md)
+- [Amazon EKS](eks-openshell-setup.md)
 - [Codex sandbox setup](codex-sandbox.md)
 - [ChatGPT Backend](../integrations/chatgpt.md)
 - [Repository credential installation](../repository-credentials/installation.md)

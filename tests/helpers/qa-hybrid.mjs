@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { gatewayRoutingPins } from "../../scripts/ci/routing.mjs";
-import { loadYaml, dumpYaml, waitFor, yamlDocuments } from "./qa-utils.mjs";
-import { registerQaSecret } from "./qa-secrets.mjs";
+import { gatewayRoutingPins } from "../../scripts/ci/routing.ts";
+import { asRecord } from "../../packages/utils/src/objects.ts";
+import { dumpYaml, loadYaml, yamlDocuments, yamlMapping } from "./kubernetes-yaml.ts";
+import { waitFor } from "./qa-wait.ts";
+import { registerQaSecret } from "./qa-secrets.ts";
 
 export async function verifyNetworkPolicy(f) {
   const namespace = `qa-policy-${f.suffix}`;
@@ -165,10 +167,14 @@ export async function prepareHybridInstallation(f) {
   await resolveComposeControllerImage(f);
   const composePath = join(f.stateDirectory, "compose.yaml");
   const compose = loadYaml(await readFile(composePath, "utf8"));
-  f.consoleUrl = f.apiUrl;
+  const services = yamlMapping(compose, "services");
+  const controllerEnv = yamlMapping(services, "controller", "environment");
+  const bootstrapEnv = yamlMapping(services, "bootstrap", "environment");
+  f.consoleUrl = controllerEnv.OCC_AUTH_BASE_URL;
+  f.browserCA = join(f.stateDirectory, "browser-ca.crt");
   f.credentials = {
-    email: compose.services.bootstrap.environment.OPENCLAW_DEV_EMAIL,
-    password: compose.services.bootstrap.environment.OPENCLAW_DEV_PASSWORD,
+    email: bootstrapEnv.OPENCLAW_DEV_EMAIL,
+    password: bootstrapEnv.OPENCLAW_DEV_PASSWORD,
   };
   // Use the same pinned controllers as the shipped Kubernetes-only launcher.
   for (const pin of Object.values(gatewayRoutingPins)) {
@@ -179,13 +185,12 @@ export async function prepareHybridInstallation(f) {
     const retained = yamlDocuments(text)
       .filter((document) => {
         const object = loadYaml(document);
-        return (
-          object &&
-          !(
-            object.kind === "CustomResourceDefinition" &&
-            object.metadata.name.endsWith(".gateway.networking.k8s.io")
-          )
-        );
+        if (asRecord(object)?.kind !== "CustomResourceDefinition") {
+          return Boolean(object);
+        }
+        const name = yamlMapping(object, "metadata").name;
+        assert.ok(typeof name === "string", "expected a CRD name");
+        return !name.endsWith(".gateway.networking.k8s.io");
       })
       .join("\n---\n");
     const path = await f.write(pin.path, retained);
@@ -227,7 +232,7 @@ export async function prepareHybridInstallation(f) {
   const compute = f.configuration.drivers.compute.configuration;
   const values = {
     images: { controller: f.controllerChartImage },
-    auth: { baseUrl: f.apiUrl },
+    auth: { baseUrl: f.consoleUrl },
     bootstrap: { adminEmail: f.credentials.email, password: { claimName: "bootstrap-password" } },
     api: {
       clients: [
@@ -236,7 +241,10 @@ export async function prepareHybridInstallation(f) {
     },
     database: { cidrs: [`${await serviceIp("postgres")}/32`] },
     cluster: { cidrs: [`${nodeIp}/32`], port: 6443 },
-    agentNativeAdmin: { enabled: false },
+    agentNativeAdmin: {
+      enabled: false,
+      domain: controllerEnv.OCC_AGENT_NATIVE_ADMIN_DOMAIN,
+    },
     gatewayRouting: {
       enabled: true,
       gatewayClassName: "eg",
@@ -266,7 +274,7 @@ export async function prepareHybridInstallation(f) {
       "templates/gateway-routing.yaml",
     ]);
     assert.ok(
-      !yamlDocuments(manifests).some((doc) => loadYaml(doc)?.kind === "Deployment"),
+      !yamlDocuments(manifests).some((doc) => asRecord(loadYaml(doc))?.kind === "Deployment"),
       "routing-only render must not install another OCC",
     );
     await f.kubectl("apply", "-f", await f.write("routing.yaml", manifests));
@@ -304,17 +312,20 @@ export async function prepareHybridInstallation(f) {
   delete compute.network.gatewayClients;
   compute.network.gatewayTrustedProxyCidrs = [(await f.resource("node", nodeName)).spec.podCIDR];
   for (const name of ["controller", "worker-kubernetes"]) {
-    const selected = compose.services[name];
+    const selected = yamlMapping(services, name);
+    const volumes = selected.volumes;
+    assert.ok(Array.isArray(volumes), `expected volumes for ${name}`);
+    const environment = yamlMapping(selected, "environment");
     for (const file of ["gateway-api-key", "gateway-ca.crt"]) {
-      selected.volumes.push({
+      volumes.push({
         type: "bind",
         source: join(f.stateDirectory, file),
         target: `/run/openclaw-development/${file}`,
         read_only: true,
       });
     }
-    selected.environment.OCC_GATEWAY_API_KEY_PATH = "/run/openclaw-development/gateway-api-key";
-    selected.environment.NODE_EXTRA_CA_CERTS = "/run/openclaw-development/gateway-ca.crt";
+    environment.OCC_GATEWAY_API_KEY_PATH = "/run/openclaw-development/gateway-api-key";
+    environment.NODE_EXTRA_CA_CERTS = "/run/openclaw-development/gateway-ca.crt";
   }
   // Hosted runners can use a different UID from the image's non-root user.
   // Keep these control-plane routing files private while making their owner

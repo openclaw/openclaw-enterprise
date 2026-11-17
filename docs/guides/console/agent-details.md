@@ -53,7 +53,8 @@ Milestones show the saved record:
 
 Work ended by a newer version (`REVISION_SUPERSEDED` or
 `REPOSITORY_REVISION_SUPERSEDED`) or a Stop (`REVISION_STOPPED`) shows as a
-neutral `superseded` or `stopped` result, not a failure; after a Stop, deploy a
+neutral **Superseded** or **Stopped** result, not a failure, also in the version
+picker and that version's notice; after a Stop, deploy a
 new version to run the Agent again. A `failed` result shows the stored error. **Open vN Logs** opens the
 failed version’s [Logs tab](../topics/agent-logs.md), showing output or the
 applicable access or availability message, even from the draft or another version.
@@ -196,9 +197,10 @@ The console has no chat panel. To give an Agent a task:
 - Message it in a channel its Configuration sets up, such as Slack. The
   [channel settings](channels-and-credentials.md#slack-editor), not OCE grants,
   decide who may mention it.
-- With Agent `administer`, use the [native admin panel](#conditional-native-admin-panel)
-  when the Installation enables it. It is unavailable under GitHub, Google, or
-  OIDC sign-in.
+- When [native browser access](#conditional-native-admin-panel) is enabled for
+  the Installation and available for the Agent, sign in with a password or OIDC.
+  In Agent details, choose **Open chat** with Agent `operate` or **Open Agent UI**
+  with Agent `administer`. If you have both grants, **Open Agent UI** takes precedence.
 - Otherwise ask someone who can edit the Agent's Configuration to let you into
   its channel. An operator with cluster access can check a real response with
   [model verification](../operate/model-verification.md).
@@ -207,11 +209,12 @@ The console has no chat panel. To give an Agent a task:
 
 ## Open the Agent UI
 
-When enabled by the Installation and permitted for your account, **Open Agent UI**
-in the header opens the Agent interface directly in a new tab. Its description
-names the version selected for service, even while you view a draft or historical
-version. **Refresh access** checks availability again. Unavailable access leaves
-the launch disabled and explains the next step; denied access hides it.
+When browser access is available, choose **Open chat** or **Open Agent UI** in
+the header to open the Agent interface in a new tab. The link description refers
+to the version selected for service, even while you view a draft or historical
+version. **Refresh access** checks availability again. If the button is disabled,
+read the availability message for the next step. The controls are hidden when
+the Installation disables browser access or your account lacks access.
 
 Gateway managed mode restricts administrative changes by default. OCE deployments
 can overwrite changes made while managed mode is off. Use OCE for durable configuration. See [native admin access](../../reference/agent-native-admin.md)
@@ -220,7 +223,7 @@ administrators [share Agents](agent-sharing.md) from the **Access** tab.
 
 ## Stop and resume
 
-**Stop Agent**, in the **Danger zone** card at the end of the page, opens a confirmation explaining that shutdown interrupts running
+**Stop Agent**, in the **Danger zone** card at the end of the **Configuration** tab, opens a confirmation explaining that shutdown interrupts running
 work but preserves version history, credentials, gateway state, and workspace
 files. A chat that was mid-reply can keep showing the reply as in progress;
 reload it after the Agent is deployed again. **Cancel** closes it without a
@@ -231,10 +234,11 @@ An accepted stop shows **Runtime: Stop requested** in the overview; it does not
 prove the runtime finished. **Refresh stop status** reads desired state and
 selected version. If another operator has started deletion, the page shows deletion recovery.
 An uncertain result blocks another stop until a refresh.
-With no selected version, there is no Stop row before a first deploy or after a
-failed first deployment. While a first deployment is queued or in progress,
-**Stop Agent** cancels it. If you cannot read the deploying version, Stop stays
-and its confirmation says it cancels the deployment or stops a started version. To resume,
+With no selected version, there is no Stop row before a first deploy. While a
+first deployment is queued or in progress, **Stop Agent** cancels it. After a
+failed first deployment, or if you cannot read the deploying version, Stop stays:
+a newer deployment that you cannot read can be queued. Its confirmation says it
+cancels the deployment or stops a started version. To resume,
 open **Open draft** and select **Deploy new version**, which creates a new
 version. See [Stop and resume](../../reference/agents/deployment.md#stop-and-resume).
 
@@ -247,8 +251,8 @@ gives the commands that delete the Agent's Configuration and, if it has one, its
 model credential Secret: both are kept even when Create Agent made them.
 Secrets can also be inspected and deleted from the [Secrets page](secrets.md)
 once their references are cleared; Configuration cleanup uses the CLI. Exact Agent
-`delete` permission is required. Accepted deletion starts asynchronous cleanup;
-the page checks it every few seconds and returns to Agents once the Agent is gone.
+`delete` permission is required. After deletion starts, cleanup status replaces the tabs.
+The page checks it every few seconds and returns to Agents once the Agent is gone.
 **Refresh deletion status** checks it immediately. **Request deletion again**
 opens a new confirmation for an already deleting Agent. Use it after fixing a
 cleanup failure that exhausted its retries; cleanup still queued or running

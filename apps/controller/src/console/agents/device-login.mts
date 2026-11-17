@@ -1,10 +1,11 @@
 import type {
   CredentialSourceDeviceAuthorization,
   CredentialSourceReference,
+  InstallationCapabilities,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
-import { button, element } from "../dom.mjs";
+import { button, element, setUnavailable } from "../dom.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
 import { askAdministratorTo, notIncluded } from "./access-reasons.mjs";
 import { message, namespacePath } from "./list.mjs";
@@ -66,6 +67,20 @@ function readLogin(
   };
 }
 
+// A start needs a selected Credential Gateway that lists one refresh source type with a Codex
+// device login, and a selected Credential Refresh Driver (packages/occ/src/index.ts). The
+// Installation's capabilities list the Gateway's source types only while one is selected, so a
+// list without that type means every start is refused with 501 (finding 2991). They do not say
+// whether a Refresh Driver is selected: true can still be refused, and that 501 names why.
+export function deviceLoginOffered(capabilities: InstallationCapabilities | undefined) {
+  return (capabilities?.credentialSources?.types ?? []).some(
+    (type) => type.rotation === "refresh" && type.deviceAuthorization?.harnessId === "codex",
+  );
+}
+
+const NOT_OFFERED =
+  "ChatGPT sign-in needs a Credential Gateway that offers ChatGPT device login and a Credential Refresh Driver, and this Installation's Drivers do not offer it. Choose another authentication method.";
+
 // What each device-authorization request checks (packages/occ/src/index.ts), so a 403 names it
 // (finding 2577). Every start creates a Secret and a credential source, and Namespace Roles cannot
 // grant create, so only an Installation administrator can start one. Create Agent's requests also
@@ -114,6 +129,9 @@ export function createDeviceLogin({
   let busy = false;
   let timer: number | undefined;
   let error = "";
+  // Why this Installation cannot start a device login: its capabilities say so, or a start was
+  // refused with 501. Sign in then stays unavailable, described by this reason (finding 2991).
+  let refusal: string | null = null;
   const status = element("p", { role: "status", className: "hint" });
   const code = element("code", { className: "device-login-code" });
   const signIn = element(
@@ -148,6 +166,9 @@ export function createDeviceLogin({
     clearTimeout(timer);
     const challenge = login && "session" in login ? login : null;
     const unconfirmed = login?.status === "start_unconfirmed";
+    // Sign in and Cancel login replace each other in place. Pressing one hides it, so focus moves
+    // to the one shown instead of falling to the page (finding 2992, as 1905).
+    const focused = document.activeElement;
     section.hidden = !active;
     instructions.hidden = challenge?.status !== "pending";
     code.textContent = challenge?.userCode ?? "";
@@ -160,9 +181,6 @@ export function createDeviceLogin({
     start.hidden = Boolean(challenge);
     cancel.hidden = !challenge;
     cancel.textContent = challenge?.status === "ready" ? "Clear selection" : "Cancel login";
-    for (const control of [start, cancel]) {
-      control.disabled = disabled || busy || unconfirmed;
-    }
     status.textContent =
       error ||
       (busy
@@ -173,7 +191,23 @@ export function createDeviceLogin({
             ? "ChatGPT login ready. Clearing this selection leaves the saved credential source available."
             : challenge
               ? "Waiting for you to complete sign-in in the other tab…"
-              : "Sign in to connect your ChatGPT account.");
+              : (refusal ?? "Sign in to connect your ChatGPT account."));
+    const left = [start, cancel].find((control) => control === focused && control.hidden);
+    if (active && left) {
+      const shown = left === start ? cancel : start;
+      shown.disabled = false;
+      shown.focus();
+    }
+    // A focused control stays focused while a request runs (setUnavailable); an unconfirmed start
+    // or a refusal keeps Sign in in the Tab order, described by the status that says why.
+    const refused = !challenge && !busy && (unconfirmed || refusal !== null);
+    for (const control of [start, cancel]) {
+      setUnavailable(
+        control,
+        disabled || busy || unconfirmed || (control === start && refusal !== null),
+        control === start && refused ? status : null,
+      );
+    }
     if (active && !disabled && !busy && !error && login?.status === "pending") {
       timer = window.setTimeout(() => void poll(), login.intervalSeconds * 1_000);
     }
@@ -197,7 +231,8 @@ export function createDeviceLogin({
           : failure.status === 410
             ? "This login expired. Cancel it and start a new login."
             : failure.status === 501
-              ? "ChatGPT sign-in is unavailable for this Installation. Choose another authentication method."
+              ? // The API names which Driver the Installation lacks (finding 2991).
+                `ChatGPT sign-in is unavailable for this Installation. ${failure.serverMessage ? `${failure.serverMessage} ` : ""}Choose another authentication method.`
               : !login && failure.status === 503 && failure.code === "DEPENDENCY_UNAVAILABLE"
                 ? // Starting reaches the sign-in service from the API; its reply names the cause.
                   `Codex sign-in failed. ${failure.serverMessage ?? "A required service is unavailable. Try again."}`
@@ -206,7 +241,7 @@ export function createDeviceLogin({
   }
 
   async function begin() {
-    if (busy || disabled || login || !active) {
+    if (busy || disabled || login || refusal !== null || !active) {
       return;
     }
     // Navigation captures the draft before aborting the view's requests. Retain the
@@ -238,6 +273,11 @@ export function createDeviceLogin({
         } else {
           login = null;
           fail(failure, "start");
+          // Every later start is refused the same way until the Installation's Drivers change.
+          if (status === 501) {
+            refusal = error;
+            error = "";
+          }
         }
       }
     } finally {
@@ -328,6 +368,16 @@ export function createDeviceLogin({
     },
     setDisabled(value: boolean) {
       disabled = value;
+      update();
+    },
+    // Whether the Installation's Drivers offer a device login (deviceLoginOffered); undefined
+    // when unknown. A start's 501 reason is kept over the generic one.
+    setOffered(value: boolean | undefined) {
+      if (value === false) {
+        refusal ??= NOT_OFFERED;
+      } else if (refusal === NOT_OFFERED) {
+        refusal = null;
+      }
       update();
     },
   };

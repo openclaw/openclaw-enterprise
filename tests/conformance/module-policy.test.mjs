@@ -4,11 +4,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, test } from "node:test";
 import { captureChild } from "../helpers/child-processes.mjs";
-import { verifyModuleBoundaries } from "../../scripts/verify-module-boundaries.mjs";
+import { verifyModuleBoundaries } from "../../scripts/verify-module-boundaries.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
-const checker = join(repositoryRoot, "scripts/verify-module-boundaries.mjs");
+const checker = join(repositoryRoot, "scripts/verify-module-boundaries.ts");
 const policyPath = join(repositoryRoot, "scripts/module-boundaries/policy.json");
 const exceptionsPath = join(repositoryRoot, "scripts/module-boundaries/exceptions.json");
 

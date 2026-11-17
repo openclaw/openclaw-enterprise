@@ -21,7 +21,10 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import type { readPreparedGitHubMetadata } from "../../packages/occ/src/index.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
-import { createTokenPreparation } from "../../apps/controller/src/backends/token-service/preparation.ts";
+import {
+  createTokenPreparation,
+  type TokenPreparationObservation,
+} from "../../apps/controller/src/backends/token-service/preparation.ts";
 import type {
   TokenAdmission,
   TokenAttempt,
@@ -32,14 +35,14 @@ import { retireToken } from "../../apps/controller/src/backends/token-service/re
 import { createWarmTokenReader } from "../../apps/controller/src/backends/token-service/warm-reader.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
-import type { GitHubPreparationAdmission } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-contracts.ts";
-import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts";
-import { PreparedGitHubPostgres } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts";
+import type { GitHubPreparationAdmission } from "../../apps/controller/src/drivers/repo/github/access/prepared-contracts.ts";
+import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts";
+import { PreparedGitHubPostgres } from "../../apps/controller/src/drivers/repo/github/access/prepared-postgres.ts";
 import {
   EgressSendReceipts,
   type SendAttempt,
 } from "../../packages/occ/src/egress-send-receipts.ts";
-import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.mjs";
+import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.ts";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import {
@@ -49,14 +52,14 @@ import {
 } from "../helpers/github-metadata-exchange.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
-import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
+import { temporaryDirectory } from "../fixtures/repository-credentials/process.ts";
 import {
   startGitHubFixture,
   fixtureAppId,
   fixtureInstallationId,
   fixtureRepositoryId,
   fixtureRepository,
-} from "../fixtures/repository-credentials/github.mjs";
+} from "../fixtures/repository-credentials/github.ts";
 
 const ref = { id: "fixture-artifact-lease", generation: 1 };
 const origin = "https://artifact.example.test";
@@ -168,6 +171,7 @@ test(
     let proofTx: string | undefined;
     const issuerAuthority = "fixture-artifact-issuer";
     const issuer: PreparedTokenIssuer = {
+      tokenKind: "prepared_source",
       provider: ref,
       issuerInput: "lease_key",
       issuerAuthority,
@@ -224,8 +228,8 @@ test(
           [familyId, source, issuerAuthority, serialize(initial)],
         );
       },
-      async readWarm(source) {
-        assert.deepEqual(source, admitted);
+      async resolve(reference) {
+        assert.deepEqual(reference, admitted?.key);
         const warm = await createWarmTokenReader(store, Date.now).readWarm(family);
         if (warm.kind !== "warm") {
           return;
@@ -233,14 +237,14 @@ test(
         const m = warm.material;
         try {
           return {
-            value: Buffer.from(m.bytes).toString(),
-            family: source.key.source,
+            accessToken: Buffer.from(m.bytes).toString(),
+            family: reference.source,
             materialId: family.familyId,
             inputVersion: family.inputVersion,
             ownerEpoch: family.ownerEpoch,
             preparationAttemptId: m.attemptId,
             materialVersion: m.materialVersion,
-            providerExpiresAt: new Date(m.providerExpiresAt).toISOString(),
+            expiresAt: new Date(m.providerExpiresAt).toISOString(),
             usableUntil: new Date(m.usableUntil).toISOString(),
           };
         } finally {
@@ -262,7 +266,7 @@ test(
       protectedSourceOnly: true,
       configurePreparedTokens(tokens: TokenService) {
         service = tokens;
-        tokens.register(issuer, (tx) => ({
+        tokens.registerIssuer(issuer, (tx) => ({
           async current(s, ev, authority, { signal, deadlineAt }) {
             assert(!signal.aborted && Date.parse(deadlineAt) > Date.now());
             assert.equal(ev.kind, "prepared_token");
@@ -333,22 +337,26 @@ test(
         captured,
         ready,
         refused,
-        authorize: () => f.authorize(f.permitRequest(captured, ready)),
+        authorize() {
+          assert.ok(ready, "A prepared send requires material");
+          return f.authorize(f.permitRequest(captured, ready));
+        },
       };
     };
     const revision = f.revision!;
     assert.equal(revision.credentialSources[0].credentialProxyId, f.egress!.id);
     assert.equal(
-      (await select({ target: { path: "/channels/private" } })).refused.code,
+      (await select({ target: { path: "/channels/private" } })).refused?.code,
       f.refusalCode!("DENIED"),
     );
     assert.equal(
-      (await select()).refused.code,
+      (await select()).refused?.code,
       f.refusalCode!("NOT_READY"),
       "cold use cannot prepare material",
     );
 
     let issues = 0;
+    const observations: TokenPreparationObservation[] = [];
     const familyId = family.familyId;
     const retirements: string[] = [];
     const retirementReplyLost = new Error("fixture issuer retirement reply lost");
@@ -402,10 +410,15 @@ test(
             clock: { wallNow: Date.now, monotonicNow: () => performance.now() },
             renewBeforeMs: 90_000,
             minimumValidityMs: 1_000,
+            observe(observation) {
+              observations.push(observation);
+              // Even a failing reporter cannot change real PostgreSQL publication or retirement.
+              throw new Error("sentinel-private-reporting-secret");
+            },
             async issue({ assertIssuing, capture }) {
               await assertIssuing();
               if (++issues === 3) {
-                throw new Error("fixture issuer reply lost");
+                throw new Error("sentinel-private-provider-secret");
               }
               capture(Buffer.from("fixture-only-" + issues));
               const until = Date.now() + 60_000;
@@ -455,6 +468,16 @@ test(
     assert.equal(await worker.maintain(), "quarantined");
     assert.equal(await worker.maintain(), "blocked");
     assert.equal(issues, 3, "an ambiguous issuance must not be replayed");
+    assert(observations.some((entry) => entry.error === "issuer-error"));
+    assert.equal(observations.filter((entry) => entry.publication === "committed").length, 2);
+    assert.equal(observations.filter((entry) => entry.publication === "quarantined").length, 1);
+    for (const secret of [
+      "sentinel-private-reporting-secret",
+      "sentinel-private-provider-secret",
+      "fixture-only-",
+    ]) {
+      assert.equal(JSON.stringify(observations).includes(secret), false);
+    }
 
     const held = await select();
     assert(held.ready);
@@ -499,12 +522,7 @@ test(
     const key = join(directory, "custody.key");
     const custodyKey = randomBytes(32);
     await writeFile(key, custodyKey, { mode: 0o600 });
-    // The JavaScript fixture forwards these issuer options to its protocol implementation.
-    const startIssuer: (
-      context: TestContext,
-      options: object,
-    ) => ReturnType<typeof startGitHubFixture> = startGitHubFixture;
-    const gh = await startIssuer(t, {
+    const gh = await startGitHubFixture(t, {
       tokenLifetimeMs: 45 * 60_000,
     });
     let lifecycle!: PostgresPreparedGitHubLifecycle;
@@ -655,7 +673,7 @@ test(
     );
     Object.defineProperty(checkReady, "bind", { value: undefined });
     Object.defineProperty(decorated, "ready", { value: checkReady });
-    tokens.register(decorated);
+    tokens.registerIssuer(decorated);
     const decoratedHandle = retained.issuer(decorated.provider);
     assert.ok(decoratedHandle && (await decoratedHandle.ready(source, t.signal)));
     assert.equal(Reflect.has(decoratedHandle.ready, "owner"), false);
@@ -665,7 +683,10 @@ test(
     assert.equal(await handle.ready(source, AbortSignal.abort()), false);
     assert.equal(f.secretReads, readsBeforeReadiness);
     assert.equal(gh.issuesOfTokens.length, 1, "readiness cannot issue inline");
-    const old = await lifecycle.readWarm(source, window());
+    const old = await tokens.resolve(
+      { kind: "github_app_installation", key: source.key },
+      { ...window(), minimumValidityMs: 0 },
+    );
     assert(old && Date.parse(old.usableUntil) > Date.now() + 40 * 60_000);
     const dispatched = async (revoke = false) => {
       const captured = captureMetadata(f);
@@ -709,9 +730,7 @@ test(
     trustedRejection = true;
     const first = await dispatched();
     assert.equal(await lifecycle.ready(source, t.signal), false);
-    assert.equal(await lifecycle.readWarm(source, window()), undefined);
-    assert.equal((await f.resolve(captureMetadata(f))).ready, undefined);
-    assert.equal(gh.issuesOfTokens.length, 1, "feedback and reads cannot mint inline");
+    assert.equal(gh.issuesOfTokens.length, 1, "rejection alone does not mint a replacement");
 
     const restarted = createOwner();
     const competitor = createOwner();
@@ -723,7 +742,9 @@ test(
     // against the same durable family even though the rejected token is still fresh.
     await due();
     // Revocations of the rejected token: the test's own revocation of `late`, then retirement.
-    const [{ index: rejected }] = gh.issuesOfTokens;
+    const [issued] = gh.issuesOfTokens;
+    assert.ok(issued);
+    const { index: rejected } = issued;
     const revocations = (index = rejected) =>
       gh.trace.filter(
         ({ method, target, tokenIndex }) =>
@@ -735,7 +756,7 @@ test(
     const [loser] = await raceMaintenance([restarted, competitor], t.signal);
     assert(loser === "idle" || loser === "retired", `unexpected losing pass: ${loser}`);
     assert.equal(revocations(), loser === "retired" ? 2 : 1);
-    const replacement = await restarted.readWarm(source, window());
+    const replacement = await restarted.resolve(source.key, { ...window(), minimumValidityMs: 0 });
     assert(replacement);
     assert.notEqual(replacement.materialVersion, old.materialVersion);
     assert.equal(gh.issuesOfTokens.length, 2);
@@ -746,7 +767,7 @@ test(
     assert.equal(await restarted.maintain(t.signal), "ready");
     assert.equal(revocations(), 2, "exactly one pass retires the rejected token");
     assert.equal(
-      (await restarted.readWarm(source, window()))?.materialVersion,
+      (await restarted.resolve(source.key, { ...window(), minimumValidityMs: 0 }))?.materialVersion,
       replacement.materialVersion,
     );
     assert.equal(
@@ -771,7 +792,7 @@ test(
     await due();
     assert.equal(await competitor.maintain(t.signal), "blocked");
     assert.equal(gh.issuesOfTokens.length, 3, "rejection cannot replay uncertain issuance");
-    assert.equal(await competitor.readWarm(source, window()), undefined);
+    assert.equal(await competitor.ready(source, t.signal), false);
     assert.equal(revocations(), 2, "later passes never replay the rejected token's retirement");
     assert.deepEqual(gh.errors, []);
   },

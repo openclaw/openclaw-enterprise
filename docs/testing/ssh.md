@@ -1,3 +1,9 @@
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
 # SSH host tests
 
 ## Overview
@@ -10,8 +16,8 @@ OpenClaw and systemd. The default real-host run checks readiness only; the model
 Run these checks without a disposable host:
 
 ```sh
-node --test tests/conformance/ssh-compute.test.mjs
-node --test tests/integration/ssh-compute-startup.test.mjs
+node --test tests/conformance/ssh-compute.test.ts
+node --test tests/integration/ssh-compute-startup.test.ts
 ```
 
 They execute the actual helper with transport, account-management, and systemd

@@ -6,8 +6,11 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
  * @param {Pick<NonNullable<ConstructorParameters<typeof KubernetesComputeDriver>[1]>,
  *   "sandboxDriver" | "credentialGatewayDriver" | "protectedDriver"> & {
  *   authentication?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["authentication"],
+ *   scratchVolumes?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["runtime"]["scratchVolumes"],
  *   repositoryCredentials?: boolean, gatewayRuntime?: boolean, channelRuntime?: boolean,
- *   routed?: boolean, gatewayTrustedProxyCidrs?: string[],
+ *   routed?: boolean, privateStatus?: boolean, gatewayTrustedProxyCidrs?: string[],
+ *   modelProvider?: import("../../apps/controller/src/drivers/compute/model-provider.ts").ModelProviderConfiguration,
+ *   servicePrincipalCredentials?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["servicePrincipalCredentials"],
  * }} [options]
  */
 export function createTestKubernetesComputeDriver(
@@ -20,9 +23,16 @@ export function createTestKubernetesComputeDriver(
     // false: runtime storage without gateway routing or node enrollment, which dedicated Agents
     // cannot use (provisioning and deployment admission refuse them).
     routed = true,
+    // With runtime and routing: network.pluginStatusProxySourceCidrs, as `occ dev up` sets it, so
+    // the controller reads Gateway private status and a Dedicated Codex Gateway applies its
+    // workspace node at runtime.
+    privateStatus = false,
     authentication = { mode: "inCluster" },
     gatewayTrustedProxyCidrs = ["127.0.0.1/32"],
+    modelProvider,
+    servicePrincipalCredentials = { mode: "disabled" },
     sandboxDriver,
+    scratchVolumes,
     credentialGatewayDriver,
     protectedDriver,
   } = {},
@@ -34,7 +44,8 @@ export function createTestKubernetesComputeDriver(
 
   // Runtime storage that dedicated Agents can use needs gateway routing, node enrollment and a
   // Gateway node selector; deployment admission refuses dedicated Agents otherwise.
-  const runtime = repositoryCredentials || channelRuntime || gatewayRuntime;
+  const runtime =
+    repositoryCredentials || channelRuntime || gatewayRuntime || modelProvider !== undefined;
   const placed = runtime && routed;
   return new KubernetesComputeDriver(
     {
@@ -62,6 +73,7 @@ export function createTestKubernetesComputeDriver(
         ...(placed
           ? {}
           : { gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }] }),
+        ...(placed && privateStatus ? { pluginStatusProxySourceCidrs: ["10.42.0.1/32"] } : {}),
         ...(repositoryCredentials
           ? {
               repositoryCredentials: {
@@ -72,11 +84,13 @@ export function createTestKubernetesComputeDriver(
             }
           : {}),
       },
-      servicePrincipalCredentials: { mode: "disabled" },
+      servicePrincipalCredentials,
       ...(runtime
         ? {
             runtime: {
               transportSecretPrefix: "transport",
+              ...(scratchVolumes === undefined ? {} : { scratchVolumes }),
+              ...(modelProvider === undefined ? {} : { modelProvider }),
               gatewayStorageClassName: "local-path",
               ...(placed ? { gatewayNodeSelector: { "oce-role": "control" } } : {}),
               ...(channelRuntime ? { channels: { proxyUrl: "http://10.42.0.15:3128" } } : {}),
@@ -106,13 +120,18 @@ export const conformanceKubeconfig = Object.freeze({
  * Production-shaped Kubernetes Compute Driver options shared by the conformance suites:
  * fixture images, bounded resources and quota, kube-dns, one controller client and disabled
  * service principal credentials. Each suite states its trusted proxy range and runtime.
+ * @param {{
+ *   gatewayTrustedProxyCidrs: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["network"]["gatewayTrustedProxyCidrs"],
+ *   runtime?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["runtime"],
+ * }} options
  */
 export function conformanceKubernetesOptions({ gatewayTrustedProxyCidrs, runtime }) {
   const resources = {
     requests: { cpu: "100m", memory: "64Mi" },
     limits: { cpu: "250m", memory: "128Mi" },
   };
-  return {
+  /** @satisfies {import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions} */
+  const options = {
     authentication: { mode: "kubeconfig", ...conformanceKubeconfig },
     images: {
       gateway: "openclaw-enterprise/gateway-fixture:local",
@@ -138,4 +157,5 @@ export function conformanceKubernetesOptions({ gatewayTrustedProxyCidrs, runtime
     servicePrincipalCredentials: { mode: "disabled" },
     ...(runtime === undefined ? {} : { runtime }),
   };
+  return options;
 }

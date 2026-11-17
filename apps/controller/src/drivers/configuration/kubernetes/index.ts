@@ -19,7 +19,11 @@ import type {
   JSONSchema,
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
-import { ConfigurationValidationError, validateModelCredentialReferences } from "../model-auth.ts";
+import {
+  ConfigurationOwnershipError,
+  ConfigurationValidationError,
+} from "../../../configuration-errors.ts";
+import { validateModelCredentialReferences } from "../model-auth.ts";
 import {
   type PreprovisionedKubernetesNamespace,
   resolveKubernetesControlNamespace,
@@ -47,8 +51,7 @@ interface KubernetesConfigurationDriverSelection {
   readonly implementation?: string;
 }
 
-export { ConfigurationValidationError } from "../model-auth.ts";
-export class ConfigurationOwnershipError extends Error {}
+export { ConfigurationOwnershipError, ConfigurationValidationError };
 export class ConfigurationConflictError extends ResourceConflictError {}
 export class ConfigurationBackendUnavailableError extends DependencyUnavailableError {}
 
@@ -511,6 +514,10 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
         timedOut: () =>
           new ConfigurationBackendUnavailableError(
             `The Kubernetes ConfigMap ${action} outcome is unknown after timeout.`,
+          ),
+        deadlineElapsed: () =>
+          new ConfigurationBackendUnavailableError(
+            `The Kubernetes ConfigMap ${action} was not sent: the request ran out of time.`,
           ),
         failed: (error) => error,
       },

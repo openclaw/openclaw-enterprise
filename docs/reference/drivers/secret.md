@@ -52,6 +52,8 @@ optional `expiresAt`. Read each value from the authoritative store without
 caching it. Kubernetes verifies the stored UID and returns the object's
 `resourceVersion` as the version.
 
+The optional `installationSecrets` store supports confidential [OAuth client registrations](../connection-templates.md). OCC supplies the Installation ID and registration ID before the first write. The Driver creates, replaces, reads and deletes the private value at that identity. Deleting an absent value succeeds so the worker can finish an interrupted operation. Namespace Secret APIs and workload projections cannot resolve this private material.
+
 ## IAM
 
 OCC authorizes creation on the Namespace's Secret collection.

@@ -4,7 +4,7 @@ An Agent is an AI workload that you create and deploy inside a
 [Namespace](../../reference/namespaces.md). It has its own identity and, once
 deployed, its own gateway. Its [Harness](../../reference/harness-execution.md)
 calls the model and runs tools. If you are new to OpenClaw Enterprise,
-[deploy your first Agent](../first-agent.md) and verify that it can answer.
+[set up an OpenShell Codex Agent](../deploy/local-setup.md) and verify that it can answer.
 
 ## How an Agent runs
 

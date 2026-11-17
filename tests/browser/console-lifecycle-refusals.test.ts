@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright";
 
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { NamespaceCallerPermissionsResponse } from "../../packages/contracts/src/api/resources.ts";
+
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_READ,
   accessibleDescription,
@@ -19,11 +21,12 @@ import {
   newPage,
   nextFrames,
   pathRequests,
-  revokeMemberGrant,
   settlePageRequests,
   settledView,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { fulfillPatchedJson } from "./console-patched-response.ts";
+import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {
   fulfillMethod,
   refocus,
@@ -31,13 +34,15 @@ import {
   tagView,
   taggedView,
   waitForFocusedLabel,
-} from "./console-refocus-helpers.mjs";
-import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
+} from "./console-refocus-helpers.ts";
+import { withholdPermissionSummary } from "./console-agents-test-support.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   AGENT_STOP_AND_DELETE_DENIED,
   GENERIC_DENIAL,
   SECRET_CREATE_DENIED,
+  callerDenied,
   deleteRefused,
   stopRefused,
 } from "../helpers/refusal-text.mjs";
@@ -71,33 +76,25 @@ for (const action of ["Stop", "Delete"] as const) {
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
       member.credentials,
     );
     const row = page.getByRole("region", { name: `${action} Agent`, exact: true });
     const control = row.getByRole("button", { name: `${action} Agent`, exact: true });
     await waitForEnabled(control);
     await control.click();
-    const refused = page.waitForResponse(
-      (response) =>
-        response.url() === `${fixture.origin}${agentPath}${stopping ? "/stop" : ""}` &&
-        response.request().method() === (stopping ? "POST" : "DELETE"),
+    const refused = responseTo(
+      page,
+      stopping ? "POST" : "DELETE",
+      `${fixture.origin}${agentPath}${stopping ? "/stop" : ""}`,
     );
-    await page
-      .getByRole("dialog", { name: stopping ? "Stop this Agent?" : `Delete ${name}?` })
-      .getByRole("button", {
-        name: stopping ? "Stop Agent" : "Permanently delete Agent",
-        exact: true,
-      })
-      .click();
+    await confirmAgentAction(page, stopping ? "Stop this Agent?" : `Delete ${name}?`, action);
     // The real API refuses the member and names the grant by the Agent's ID.
     const response = await refused;
     assert.equal(response.status(), 403);
     const { error, meta } = await response.json();
     const grant = stopping ? "operate" : "delete";
-    assert.ok(
-      error.message.startsWith(`Not authorized: this needs Agent ${grant} on Agent ${agent.id}`),
-    );
+    assert.equal(error.message, callerDenied(`Agent ${grant}`, `Agent ${agent.id}`));
     const alert = row.getByRole("alert");
     const text = stopping ? stopRefused(name) : deleteRefused(name);
     await alert.getByText(text, { exact: true }).waitFor();
@@ -114,12 +111,10 @@ for (const action of ["Stop", "Delete"] as const) {
     await page.getByRole("tab", { name: "Logs", exact: true }).click();
     await page.getByText(/Runtime status requires Agent operate/).waitFor();
     await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
-    const failed = page.waitForResponse(
-      (reply) => reply.url() === permissionsUrl && reply.status() === 503,
-    );
+    const failed = responseTo(page, "GET", permissionsUrl);
     await page.getByRole("tab", { name: "Logs", exact: true }).click();
-    await failed;
-    await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
+    assert.equal((await failed).status(), 503);
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await nextFrames(page);
     assert.equal(await control.getAttribute("aria-disabled"), "true");
     assert.equal(await accessibleDescription(control), refusal);
@@ -127,14 +122,10 @@ for (const action of ["Stop", "Delete"] as const) {
     // A grant, seen by a later permission read, makes the control available without the refusal.
     await page.unroute(permissionsUrl);
     grantMember(fixture, MEMBER, [[grant, "agent"]]);
-    const answered = page.waitForResponse(
-      (reply) =>
-        reply.url() === permissionsUrl &&
-        reply.request().method() === "GET" &&
-        reply.status() === 200,
-    );
+    const answered = responseTo(page, "GET", permissionsUrl);
     await page.getByRole("tab", { name: "Logs", exact: true }).click();
-    await answered;
+    assert.equal((await answered).status(), 200);
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await alert.waitFor({ state: "detached" });
     await waitForEnabled(control);
     assert.deepEqual(
@@ -167,99 +158,101 @@ for (const action of ["Stop", "Delete"] as const) {
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
       member.credentials,
     );
     const row = page.getByRole("region", { name: `${action} Agent`, exact: true });
     const control = row.getByRole("button", { name: `${action} Agent`, exact: true });
     await waitForEnabled(control);
     await control.click();
-    await page
-      .getByRole("dialog", { name: stopping ? "Stop this Agent?" : `Delete ${name}?` })
-      .getByRole("button", {
-        name: stopping ? "Stop Agent" : "Permanently delete Agent",
-        exact: true,
-      })
-      .click();
+    await confirmAgentAction(page, stopping ? "Stop this Agent?" : `Delete ${name}?`, action);
     const alert = row.getByRole("alert");
     await alert.getByText(stopping ? stopRefused(name) : deleteRefused(name)).waitFor();
     assert.equal(await control.getAttribute("aria-disabled"), "true");
     await page.unroute(permissionsUrl);
     grantMember(fixture, MEMBER, [[stopping ? "operate" : "delete", "agent"]]);
-    const answered = page.waitForResponse(
-      (reply) =>
-        reply.url() === permissionsUrl &&
-        reply.request().method() === "GET" &&
-        reply.status() === 200,
-    );
+    const answered = responseTo(page, "GET", permissionsUrl);
     await refocus(page);
-    await answered;
+    assert.equal((await answered).status(), 200);
     await alert.waitFor({ state: "detached" });
     await waitForEnabled(control);
     assert.equal(await hasFocus(control), true);
   });
 }
 
-// A refocus reread that started before an Agent page Stop or Delete refusal lifted it when its
-// older "allowed" answer landed (finding 2966): the grant was revoked after that read and the API
-// refused the action. As on the Agents list, only a read started after the refusal lifts it.
+// An ordinary permission reread can start before an Agent page Stop or Delete refusal and
+// deliver an older "allowed" answer afterward (finding 2966). Only a read started after
+// the refusal can lift it. Refresh sharing exercises this race without holding the page.
 for (const action of ["Stop", "Delete"] as const) {
-  test(`a refocus reread started before an Agent page ${action} refusal keeps it`, async (t) => {
+  test(`an older sharing permission reread keeps an Agent page ${action} refusal`, async (t) => {
     const stopping = action === "Stop";
     const name = `Reread race ${action.toLowerCase()}`;
-    const label = `reread-race-${action.toLowerCase()}`;
     const grant = stopping ? "operate" : "delete";
     const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
-    const agent = await fixture.createAgent(namespace.id, name, nativeValues(label));
+    const agent = await fixture.createAgent(namespace.id, name, nativeValues("reread-race"));
     const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-    const member = await fixture.createNamespaceMember(label, namespace.id, AGENT_READ);
-    grantMember(fixture, label, [[grant, "agent"]]);
     const { page } = await newPage(t, fixture, { browser });
-    const permissionsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+    const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+    const permissionsUrl = `${agentUrl}/permissions`;
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
-      member.credentials,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
     );
     const row = page.getByRole("region", { name: `${action} Agent`, exact: true });
     const control = row.getByRole("button", { name: `${action} Agent`, exact: true });
     await waitForEnabled(control);
-    // The refocus reread reaches the real API while the grant holds; its answer is held.
+    await page.getByRole("tab", { name: "Access", exact: true }).click();
+    const sharing = page.getByRole("region", { name: "Share Agent", exact: true });
+    await sharing.getByText("Current policy loaded.", { exact: true }).waitFor();
+    await settlePageRequests(page);
     const reread = await holdRequests(t, page, permissionsUrl, {
       once: true,
       method: "GET",
       afterServer: true,
     });
-    await refocus(page);
+    await sharing.getByRole("button", { name: "Refresh sharing", exact: true }).click();
     const allowed = await reread.requested;
     assert.ok(allowed, "the real API answered the reread");
+    assert.equal(allowed.status(), 200);
     assert.equal((await allowed.json()).data[grant], true);
-    // The grant is revoked, so the real API refuses the action for grants.
-    revokeMemberGrant(fixture, label, [grant, "agent"]);
-    await page.locator(settledView).waitFor();
-    await control.click();
-    await page
-      .getByRole("dialog", { name: stopping ? "Stop this Agent?" : `Delete ${name}?` })
-      .getByRole("button", {
-        name: stopping ? "Stop Agent" : "Permanently delete Agent",
-        exact: true,
-      })
-      .click();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await waitForEnabled(control);
+
+    const restriction = restrict(fixture.policy, grant, "agent", {
+      namespaceId: namespace.id,
+      resourceId: agent.id,
+    });
     const alert = row.getByRole("alert");
-    await alert
-      .getByText(stopping ? stopRefused(name) : deleteRefused(name), { exact: true })
-      .waitFor();
-    const refusal = (await alert.textContent())?.trim() ?? "";
-    // The older "allowed" answer lands and keeps the refusal.
-    reread.release();
+    const text = stopping ? stopRefused(name) : deleteRefused(name);
+    let refusal: string;
+    try {
+      await control.click();
+      const refused = responseTo(
+        page,
+        stopping ? "POST" : "DELETE",
+        stopping ? `${agentUrl}/stop` : agentUrl,
+      );
+      await confirmAgentAction(page, stopping ? "Stop this Agent?" : `Delete ${name}?`, action);
+      assert.equal((await refused).status(), 403);
+      await alert.getByText(text, { exact: true }).waitFor();
+      refusal = (await alert.textContent())?.trim() ?? "";
+    } finally {
+      reread.release();
+    }
+    // The older allowed answer lands after the refusal and leaves it in place.
     await settlePageRequests(page);
     await nextFrames(page);
+    await alert.getByText(text, { exact: true }).waitFor();
     assert.equal(await control.getAttribute("aria-disabled"), "true");
     assert.equal(await accessibleDescription(control), refusal);
-    // A refocus after a re-grant reads the answer again, and that read lifts the refusal.
-    grantMember(fixture, label, [[grant, "agent"]]);
+
+    liftRestriction(fixture.policy, restriction);
+    const current = responseTo(page, "GET", permissionsUrl);
     await refocus(page);
+    const answer = await current;
+    assert.equal(answer.status(), 200);
+    assert.equal((await answer.json()).data[grant], true);
     await alert.waitFor({ state: "detached" });
     await waitForEnabled(control);
   });
@@ -278,15 +271,12 @@ test("a refocus reads no permission answer for an Agent page being deleted", asy
   await login(
     page,
     fixture,
-    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
   );
   const control = page.getByRole("button", { name: "Delete Agent", exact: true });
   await waitForEnabled(control);
   await control.click();
-  await page
-    .getByRole("dialog", { name: `Delete ${name}?` })
-    .getByRole("button", { name: "Permanently delete Agent", exact: true })
-    .click();
+  await confirmAgentAction(page, `Delete ${name}?`, "Delete");
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
   const reads = () => pathRequests(requests, "GET", permissionsPath).length;
   const before = reads();
@@ -295,6 +285,38 @@ test("a refocus reads no permission answer for an Agent page being deleted", asy
   await settlePageRequests(page);
   assert.equal(reads(), before);
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
+});
+
+// A Stop confirmed after another session requested deletion is answered with the deleting Agent.
+// The page then shows only its deletion row, and focus moves from the removed Stop row to that
+// row's Refresh, not to the page.
+test("a Stop that finds its Agent being deleted moves focus to the deletion row", async (t) => {
+  const name = "Stop meets deletion";
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
+  const agent = await fixture.createAgent(namespace.id, name, nativeValues("stop-deleting"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
+  );
+  const stop = page
+    .getByRole("region", { name: "Stop Agent", exact: true })
+    .getByRole("button", { name: "Stop Agent", exact: true });
+  await waitForEnabled(stop);
+  await stop.click();
+  assert.equal((await fixture.request("DELETE", agentPath)).status, 202);
+  const answered = responseTo(page, "POST", `${fixture.origin}${agentPath}/stop`);
+  await confirmAgentAction(page, "Stop this Agent?", "Stop");
+  const response = await answered;
+  assert.equal(response.status(), 202);
+  assert.equal((await response.json()).data.status, "deleting");
+  const refresh = page.getByRole("button", { name: "Refresh deletion status", exact: true });
+  await refresh.waitFor();
+  assert.equal(await stop.count(), 0);
+  assert.equal(await hasFocus(refresh), true);
 });
 
 // The page's first permission answer was requested before any Stop or Delete, so it never lifts a
@@ -318,20 +340,14 @@ for (const action of ["Stop", "Delete"] as const) {
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
       member.credentials,
     );
     const row = page.getByRole("region", { name: `${action} Agent`, exact: true });
     const control = row.getByRole("button", { name: `${action} Agent`, exact: true });
     await waitForEnabled(control);
     await control.click();
-    await page
-      .getByRole("dialog", { name: stopping ? "Stop this Agent?" : `Delete ${name}?` })
-      .getByRole("button", {
-        name: stopping ? "Stop Agent" : "Permanently delete Agent",
-        exact: true,
-      })
-      .click();
+    await confirmAgentAction(page, stopping ? "Stop this Agent?" : `Delete ${name}?`, action);
     const alert = row.getByRole("alert");
     await alert
       .getByText(stopping ? stopRefused(name) : deleteRefused(name), { exact: true })
@@ -340,11 +356,11 @@ for (const action of ["Stop", "Delete"] as const) {
     // The grant reaches the API before the held first read, so that read allows the action.
     const grant = stopping ? "operate" : "delete";
     grantMember(fixture, MEMBER, [[grant, "agent"]]);
-    const answered = page.waitForResponse(
-      (reply) => reply.url() === permissionsUrl && reply.status() === 200,
-    );
+    const answered = responseTo(page, "GET", permissionsUrl);
     firstAnswer.release();
-    assert.equal((await (await answered).json()).data[grant], true);
+    const reply = await answered;
+    assert.equal(reply.status(), 200);
+    assert.equal((await reply.json()).data[grant], true);
     await nextFrames(page);
     assert.equal(await control.getAttribute("aria-disabled"), "true");
     assert.equal(await accessibleDescription(control), refusal);
@@ -374,10 +390,7 @@ test("a refused Request Stop again names the Agent and stays unavailable", async
   const repeat = row.getByRole("button", { name: "Request Stop again", exact: true });
   await waitForEnabled(repeat);
   await repeat.click();
-  await page
-    .getByRole("dialog", { name: "Stop this Agent?" })
-    .getByRole("button", { name: "Stop Agent", exact: true })
-    .click();
+  await confirmAgentAction(page, "Stop this Agent?", "Stop");
   const alert = row.getByRole("alert");
   await alert.getByText(stopRefused(name), { exact: true }).waitFor();
   await expectReachableReason(page, repeat, (await alert.textContent())?.trim() ?? "");
@@ -405,30 +418,18 @@ test("a first Stop or Delete refused for another reason shows the API's text and
     const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
     const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
     const { page } = await newPage(t, fixture, { browser });
-    await page.route(`${fixture.origin}${agentPath}${stopping ? "/stop" : ""}`, (route) =>
-      route.request().method() === (stopping ? "POST" : "DELETE")
-        ? route.fulfill({
-            status: 403,
-            contentType: "application/json",
-            body: JSON.stringify({
-              error: { code: "FORBIDDEN", message },
-              meta: { requestId },
-            }),
-          })
-        : route.continue(),
+    await fulfillMethod(
+      page,
+      `${fixture.origin}${agentPath}${stopping ? "/stop" : ""}`,
+      stopping ? "POST" : "DELETE",
+      apiErrorResponse(403, "FORBIDDEN", message, { requestId }),
     );
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, active.revision.id).href);
     const row = page.getByRole("region", { name: `${action} Agent`, exact: true });
     const control = row.getByRole("button", { name: `${action} Agent`, exact: true });
     await waitForEnabled(control);
     await control.click();
-    await page
-      .getByRole("dialog", { name: stopping ? "Stop this Agent?" : `Delete ${name}?` })
-      .getByRole("button", {
-        name: stopping ? "Stop Agent" : "Permanently delete Agent",
-        exact: true,
-      })
-      .click();
+    await confirmAgentAction(page, stopping ? "Stop this Agent?" : `Delete ${name}?`, action);
     const alert = row.getByRole("alert");
     await alert.getByText(message, { exact: true }).waitFor();
     await alert.getByText(`Request ID: ${requestId}`, { exact: true }).waitFor();
@@ -472,22 +473,19 @@ test("an Agents list row refusal describes the row's icon, and an unavailable ic
   const row = page.getByRole("row").filter({ hasText: "Refused Row" });
   const stop = row.getByRole("button", { name: "Stop Refused Row", exact: true });
   const remove = row.getByRole("button", { name: "Delete Refused Row", exact: true });
-  for (const [icon, title, confirm, text, grant] of [
-    [stop, "Stop Refused Row?", "Stop Agent", stopRefused("Refused Row"), "Needs Agent operate"],
+  for (const [icon, title, action, text, grant] of [
+    [stop, "Stop Refused Row?", "Stop", stopRefused("Refused Row"), "Needs Agent operate"],
     [
       remove,
       "Delete Refused Row?",
-      "Permanently delete Agent",
+      "Delete",
       deleteRefused("Refused Row"),
       "Needs operate and delete",
     ],
   ] as const) {
     await waitForEnabled(icon);
     await icon.click();
-    await page
-      .getByRole("dialog", { name: title })
-      .getByRole("button", { name: confirm, exact: true })
-      .click();
+    await confirmAgentAction(page, title, action);
     const alert = page.getByRole("alert").filter({ hasText: text });
     await alert.waitFor();
     // Focus returns to the row's icon, which is described by the refusal above the table.
@@ -516,10 +514,7 @@ test("an Agents list row refusal describes the row's icon, and an unavailable ic
   await row.getByText("Needs Agent operate", { exact: true }).waitFor();
   assert.equal(await stop.getAttribute("aria-disabled"), "true");
   await remove.click();
-  await page
-    .getByRole("dialog", { name: "Delete Refused Row?" })
-    .getByRole("button", { name: "Permanently delete Agent", exact: true })
-    .click();
+  await confirmAgentAction(page, "Delete Refused Row?", "Delete");
   await page.getByText("Deletion requested for Refused Row.", { exact: false }).waitFor();
   assert.equal(await page.locator("[aria-describedby~='agent-row-refusal']").count(), 0);
 });
@@ -551,10 +546,7 @@ test("an Agents list row refusal lifts only for a permission answer read after i
     const remove = deletes[index]!;
     await waitForEnabled(remove);
     await remove.click();
-    await page
-      .getByRole("dialog", { name: `Delete ${name}?` })
-      .getByRole("button", { name: "Permanently delete Agent", exact: true })
-      .click();
+    await confirmAgentAction(page, `Delete ${name}?`, "Delete");
     await page
       .getByRole("alert")
       .filter({ hasText: deleteRefused(name) })
@@ -568,11 +560,13 @@ test("an Agents list row refusal lifts only for a permission answer read after i
   ]);
   // The early row's held read reaches the API after the grant and allows delete, but it was
   // requested before the refusal.
-  const earlyAnswered = page.waitForResponse(
-    (reply) => reply.url() === urls[0] && reply.status() === 200,
-  );
+  const [earlyUrl] = urls;
+  assert.ok(earlyUrl, "the early row must have a permission URL");
+  const earlyAnswered = responseTo(page, "GET", earlyUrl);
   early!.release();
-  assert.equal((await (await earlyAnswered).json()).data.delete, true);
+  const reply = await earlyAnswered;
+  assert.equal(reply.status(), 200);
+  assert.equal((await reply.json()).data.delete, true);
   // A search that hides the fresh row retires its held read; showing it again reads anew, and
   // that answer, which restricts nothing, makes its Delete available.
   const search = page.getByRole("searchbox", { name: "Search Agents" });
@@ -612,16 +606,12 @@ test("an Agents list row refused for another reason shows the API's text and nam
   const refresh = page.getByRole("button", { name: "Refresh", exact: true });
 
   async function refuse(name: string, action: "Stop" | "Delete", message: string, id: string) {
-    const stopping = action === "Stop";
     const row = page.getByRole("row").filter({ hasText: name });
     const icon = row.getByRole("button", { name: `${action} ${name}`, exact: true });
     await waitForEnabled(icon);
     answer = apiErrorResponse(403, "FORBIDDEN", message, { requestId: id });
     await icon.click();
-    await page
-      .getByRole("dialog", { name: `${action} ${name}?` })
-      .getByRole("button", { name: stopping ? "Stop Agent" : "Permanently delete Agent" })
-      .click();
+    await confirmAgentAction(page, `${action} ${name}?`, action);
     const alert = page.getByRole("alert").filter({ hasText: `Request ID: ${id}` });
     await alert.waitFor();
     return { row, icon, alert: (await alert.locator(".status-body").textContent())?.trim() };
@@ -661,6 +651,9 @@ test("an Agents list row refused for another reason shows the API's text and nam
         await expectReachableReason(page, each, kind === action ? refusal : alert);
       }
     };
+    // The confirmation's close event returns focus to the refused icon, a task after the alert
+    // and note render (finding 3112).
+    await waitForFocusedLabel(page, `${action} Other Row`);
     await checkRow({ inView: true });
     // A refocus rebuilds the list (a row write makes it one it does not reuse). The alert and
     // the row's note stay until Refresh, and focus stays on the refused icon.
@@ -723,7 +716,9 @@ test("a refocus that rebuilds a taller refused row keeps its icon and note in vi
     await fixture.seedActiveAgentRevision(namespace.id, agent.id);
     agents.push(agent);
   }
-  const agentPath = `/namespaces/${namespace.id}/agents/${agents[2].id}`;
+  const thirdAgent = agents[2];
+  assert.ok(thirdAgent);
+  const agentPath = `/namespaces/${namespace.id}/agents/${thirdAgent.id}`;
   const { page } = await newPage(t, fixture, { browser });
   // The owner holds delete; this Delete is refused for another reason, as a stale row's was.
   await fulfillMethod(
@@ -740,13 +735,11 @@ test("a refocus that rebuilds a taller refused row keeps its icon and note in vi
   const icon = row.getByRole("button", { name: "Delete Row C", exact: true });
   await waitForEnabled(icon);
   await icon.click();
-  await page
-    .getByRole("dialog", { name: "Delete Row C?" })
-    .getByRole("button", { name: "Permanently delete Agent" })
-    .click();
+  await confirmAgentAction(page, "Delete Row C?", "Delete");
   const note = row.getByText("Not deleted: see above", { exact: true });
   await note.waitFor();
-  assert.equal(await hasFocus(icon), true);
+  // Focus returns to the icon in the confirmation's close event, a task after the note renders.
+  await waitForFocusedLabel(page, "Delete Row C");
   const scrollY = () => page.evaluate(() => globalThis.scrollY);
   // Scrolls the page so the note's bottom sits `gap` pixels above the viewport's bottom (below
   // it when negative).
@@ -813,18 +806,17 @@ test("a refused Request deletion again names the Agent, not the API's denial", a
   const repeat = row.getByRole("button", { name: "Request deletion again", exact: true });
   await waitForEnabled(repeat);
   await repeat.click();
-  const refused = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}${agentPath}` &&
-      response.request().method() === "DELETE",
-  );
+  const refused = responseTo(page, "DELETE", `${fixture.origin}${agentPath}`);
   await page
     .getByRole("dialog", { name: `Request deletion again for ${name}?` })
     .getByRole("button", { name: "Request deletion again", exact: true })
     .click();
   const response = await refused;
   assert.equal(response.status(), 403);
-  assert.ok((await response.json()).error.message.startsWith("Not authorized: "));
+  assert.equal(
+    (await response.json()).error.message,
+    callerDenied("Agent delete", `Agent ${agent.id}`),
+  );
   const alert = row.getByRole("alert");
   await alert.getByText(deleteRefused(name), { exact: true }).waitFor();
   assert.equal(await row.getByText("Not authorized:").count(), 0);
@@ -853,10 +845,7 @@ test("Refresh drops a kept Agents list row refusal for later refocus rebuilds", 
   const stop = row.getByRole("button", { name: "Stop Kept Row", exact: true });
   await waitForEnabled(stop);
   await stop.click();
-  await page
-    .getByRole("dialog", { name: "Stop Kept Row?" })
-    .getByRole("button", { name: "Stop Agent" })
-    .click();
+  await confirmAgentAction(page, "Stop Kept Row?", "Stop");
   const alert = page.getByRole("alert").filter({ hasText: `Request ID: ${id}` });
   await alert.waitFor();
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
@@ -885,14 +874,12 @@ test("a refused Create Secret explains Show value and the page's Create Secret",
   ]);
   const { page } = await newPage(t, fixture, { browser });
   // A permission answer that predates a revocation still offers creation; the API refuses it.
-  await page.route(`**/namespaces/${namespace.id}/permissions`, async (route) => {
-    const response = await route.fetch();
-    const body = await response.json();
-    await route.fulfill({
-      response,
-      json: { ...body, data: { ...body.data, secrets: { create: true } } },
-    });
-  });
+  await page.route(`**/namespaces/${namespace.id}/permissions`, (route) =>
+    fulfillPatchedJson(route, NamespaceCallerPermissionsResponse, (body) => ({
+      ...body,
+      data: { ...body.data, secrets: { create: true } },
+    })),
+  );
   await login(page, fixture, `/console/secrets?namespace=${namespace.id}`, member.credentials);
   const create = page.getByRole("button", { name: "Create Secret", exact: true });
   await waitForEnabled(create);
@@ -900,11 +887,7 @@ test("a refused Create Secret explains Show value and the page's Create Secret",
   const dialog = page.getByRole("dialog", { name: "Create Secret" });
   await dialog.getByLabel("Secret name").fill("Refused credential");
   await dialog.getByLabel("Value", { exact: true }).fill("synthetic-refused-value");
-  const refused = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/secrets` &&
-      response.request().method() === "POST",
-  );
+  const refused = responseTo(page, "POST", `${fixture.origin}/namespaces/${namespace.id}/secrets`);
   await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
   assert.equal((await refused).status(), 403);
   const alert = dialog.getByRole("alert");

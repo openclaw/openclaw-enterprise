@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { AGENT_WITH_NODE_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
-import { image, imageTestOptions, runDocker } from "../helpers/runtime-image-startup.mjs";
+import { runDocker } from "../helpers/runtime-image-docker.ts";
+import { image, imageTestOptions } from "../helpers/runtime-image-startup.ts";
 
 test(
   "runtime image initializes and restarts private node state below a setgid parent",
@@ -22,7 +23,7 @@ const { entrypoint, startupMs } = JSON.parse(fs.readFileSync(0, "utf8"));
 const children = [
   'const cp = require("node:child_process");',
   'const realSpawn = cp.spawn;',
-  'cp.spawn = (command, args, options) => args[1] === "doctor"',
+  'cp.spawn = (command, args, options) => ["doctor", "setup"].includes(args[1])',
   '  ? realSpawn(command, args, options)',
   '  : new (require("node:events").EventEmitter)();',
 ].join("\n");

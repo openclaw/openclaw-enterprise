@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestK3dStartupRejectsConflictingHostPortsBeforeSetup(t *testing.T) {
@@ -109,13 +110,13 @@ func composeAPIPortCollision(t *testing.T, shellAPI, renderedAPI, kubernetes str
 
 // composeAPIPortCollisionFixture fakes the tools Compose-plane startup runs up
 // to its rendered configuration, which publishes the controller API on renderedAPI.
-func composeAPIPortCollisionFixture(t *testing.T, shellAPI, renderedAPI, kubernetes string) func() []string {
+func composeAPIPortCollisionFixture(t *testing.T, shellAPI, renderedAPI, kubernetes string, extraCases ...map[string]string) func() []string {
 	t.Helper()
 	rendered := `{"networks":{"development":{"ipam":{"config":[{"subnet":"172.30.0.0/24"}]}}},"services":{` +
 		`"postgres":{"ports":["127.0.0.1:55432:5432"]},` +
 		`"controller":{"ports":["127.0.0.1:` + renderedAPI + `:3000"]},` +
 		`"worker-kubernetes":{}}}`
-	commands := fakeProfileCommands(t, map[string]string{
+	scripts := map[string]string{
 		"docker": `
 "version --format {{json .Server}}") echo '{"Platform":{"Name":"Docker Engine - Community"}}' ;;
 "info"|"compose version"|"info --format "*) ;;
@@ -126,7 +127,13 @@ func composeAPIPortCollisionFixture(t *testing.T, shellAPI, renderedAPI, kuberne
 		"k3d":     `"cluster list -o json") echo '[]' ;;`,
 		"kubectl": "",
 		"node":    "",
-	})
+	}
+	for _, extra := range extraCases {
+		for name, cases := range extra {
+			scripts[name] += cases
+		}
+	}
+	commands := fakeProfileCommands(t, scripts)
 	for _, key := range []string{"OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE", "OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY", "OCC_DEVELOPMENT_REPOSITORY_IMAGE", developmentImageRegistrySetting, "DOCKER_CONTEXT"} {
 		t.Setenv(key, "")
 	}
@@ -143,4 +150,55 @@ func composeAPIPortCollisionFixture(t *testing.T, shellAPI, renderedAPI, kuberne
 	t.Setenv("OCC_TEST_REPOSITORY", parent)
 	t.Setenv("OCC_DEVELOPMENT_STATE_DIRECTORY", filepath.Join(parent, "state"))
 	return commands
+}
+
+// Exercise the actual launcher and subprocess cancellation, with external tool
+// responses stopped at startup. Hosted cases prove the real database/cluster.
+func TestComposeSelectedRuntimeStartupDrainsBeforeRollback(t *testing.T) {
+	for _, failing := range []string{"database", "cluster"} {
+		t.Run(failing, func(t *testing.T) {
+			root := t.TempDir()
+			network := shellQuote(filepath.Join(root, "network"))
+			pidFile := filepath.Join(root, "sibling.pid")
+			pid := shellQuote(pidFile)
+			cleaned := filepath.Join(root, "cleaned")
+			wait := "echo $$ > " + pid + "; exec sleep 30"
+			fail := "while [ ! -s " + pid + " ]; do sleep 0.01; done; exit 41"
+			database, cluster := wait, fail
+			if failing == "database" {
+				database, cluster = fail, wait
+			}
+			commands := composeAPIPortCollisionFixture(t, "", "4000", "3000", map[string]string{
+				"docker": `
+"compose "*" up --no-start postgres") touch ` + network + ` ;;
+"compose "*" up --build -d postgres migrate bootstrap") touch ` + network + `; ` + database + ` ;;
+"compose "*" stop controller worker-kubernetes")
+  if kill -0 "$(cat ` + pid + `)" 2>/dev/null; then exit 43; fi
+  touch ` + shellQuote(cleaned) + ` ;;
+"compose "*" down --volumes") ;;
+`,
+				"k3d": `
+"cluster create "*) [ -f ` + network + ` ] || exit 44; ` + cluster + ` ;;
+`,
+			})
+			t.Setenv("OCC_KUBERNETES_RUNTIME_IMAGE", "runtime@"+profileTestDigest)
+			t.Setenv("OCC_DEVELOPMENT_K3D_DNS_RESOLVER", "k3d")
+			t.Setenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE", "")
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err := Up(ctx, Options{Repository: os.Getenv("OCC_TEST_REPOSITORY")})
+			if err == nil || !strings.Contains(err.Error(), "exit status 41") || ctx.Err() != nil {
+				t.Fatalf("expected the independent startup failure, got %v; commands: %v", err, commands())
+			}
+			assertExited(t, pidFile)
+			if _, err := os.Stat(cleaned); err != nil {
+				t.Fatalf("rollback did not follow the stopped sibling: %v", err)
+			}
+			for _, command := range commands() {
+				if strings.Contains(command, " -d controller") {
+					t.Fatalf("controller started after a preparation failure: %s", command)
+				}
+			}
+		})
+	}
 }

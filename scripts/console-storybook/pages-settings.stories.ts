@@ -27,10 +27,25 @@ export const DriverConfigurationFailure = {
 };
 export const DriverConfigurationDenied = {
   ...story("settingsDriverConfigurationsDenied"),
-  name: "Driver configuration denied",
+  name: "No Installation admin access: no Driver query",
+};
+export const DriverConfigurationEndpointRefused = {
+  ...story("settingsDriverConfigurationsEndpointRefused"),
+  name: "Driver configuration endpoint refused",
 };
 
 export const NestedDriverValues = {
   ...story("settingsDriverNestedValues"),
   name: "Nested Driver values",
+};
+
+export const SharedModelProvider = {
+  ...story("settingsModelProvider"),
+  name: "Shared model provider",
+};
+
+export const DebugEnabled = { ...story("settingsDebugEnabled"), name: "Debug mode enabled" };
+export const StorageUnavailable = {
+  ...story("settingsStorageUnavailable"),
+  name: "Browser storage unavailable",
 };

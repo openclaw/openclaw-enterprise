@@ -28,6 +28,32 @@ and [repository layout](../layout.md#source-ownership) to find its owner. Bundle
 infrastructure implementations live under `apps/controller/src/drivers/`; native
 IAM lives in `packages/iam/`. Composition lives in `apps/controller/src/composition/`.
 
+### Use the contracts in a separate Driver project
+
+From the OpenClaw Enterprise repository root, with dependencies installed via
+`pnpm install --frozen-lockfile`, pack both packages from the same revision.
+Set `archives` to the absolute path of the `vendor` directory in your Driver
+project.
+
+```sh
+archives=/absolute/path/to/driver-project/vendor
+mkdir -p "$archives"
+pnpm --dir packages/utils pack --out "$archives/utils.tgz"
+pnpm --dir packages/contracts pack --out "$archives/contracts.tgz"
+```
+
+In the Driver project's root `pnpm-workspace.yaml`, add this entry to the
+top-level `overrides` mapping. The path is relative to the workspace root.
+
+```yaml
+overrides:
+  "@openclaw-enterprise/utils": "file:./vendor/utils.tgz"
+```
+
+From that same root, run `pnpm add ./vendor/contracts.tgz`. The override resolves
+the contracts package's dependency on `@openclaw-enterprise/utils` to the local
+archive. Your TypeScript code can then import from `@openclaw-enterprise/contracts`.
+
 ## 2. Implement and register it
 
 For an installed implementation, export a closed `configurationSchema`,
@@ -63,7 +89,7 @@ Run the following from the repository root with dependencies installed:
 
 ```sh
 pnpm typecheck
-pnpm test:files -- tests/integration/driver-plugin-installation.test.mjs
+pnpm test:files -- tests/integration/driver-plugin-installation.test.ts
 ```
 
 The second command exercises package installation and controller admission for
@@ -76,3 +102,15 @@ backend, access outside the admitted scope, or cancellation where supported.
 Update the capability reference or implementation guide and the owning
 [runtime flow](runtime-flows.md) when behavior changes. Use the contributor
 [documentation guide](documentation.md) for placement and writing conventions.
+
+### Check protected static Secret reads
+
+Copy the [test-only helper](../../tests/helpers/protected-static-secret-read.ts) into your Node.js 24 test project with packed contracts types. Call
+`await assertProtectedStaticSecretRead(t, driver, identity, isIdentityRefusal, 1_000)`
+inside `test("protected read", { timeout: 5_000 }, async (t) => { /* call here */ })`;
+run it with `node --test your-adapter.test.ts`. Supply a disposable Driver, valid
+`SecretIdentity`, and exact adapter error matcher. All reads share the supplied
+millisecond budget; Node's finite enclosing timeout fails hung reads and runs cleanup.
+The helper creates, rotates, and deletes one synthetic Secret. A create without a
+returned reference cannot be cleaned up. Cancellation does not prove I/O drained.
+This local check does not certify a backend or enable external Secret installation.

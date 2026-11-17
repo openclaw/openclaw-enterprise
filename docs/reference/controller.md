@@ -20,7 +20,7 @@ process startup procedures.
 ## Requirements
 
 - Node.js 24 or newer and the repository's existing workspace dependencies.
-- For default Compose development, Docker Engine and `docker compose`. To deploy
+- For the Docker Compute development preview, Docker Engine and `docker compose`. To deploy
   Agents locally, follow [Local Setup](../guides/quickstart.md).
 - A migrated local PostgreSQL database and an API using the same application
   connection; the full Compose stack starts both. See the
@@ -141,6 +141,8 @@ The worker emits fixed operational event classes through the same logger:
   `PREDECESSOR_STOP_YIELDED`. Such a deployment that then fails (with the full wait), is
   superseded or ends stopped first finishes that stop. A failed or superseded one adds
   `predecessorStop`, the stop's `cause`, if it still fails; a stopped one retries it.
+  A superseded, inactive dedicated version whose own stop's drain yielded stays pending
+  with `SUPERSEDED_STOP_YIELDED` until a later pass finishes that stop.
   Only the work's first yield, then at most one a minute, is logged; these lines and the
   work's next other line add `stopYields`, the yields this worker counted for it. A provisioning plan that the Compute Driver refuses for a reason the caller
   cannot fix adds that `reason`. A failed Namespace pass adds the Compute Driver's
@@ -226,16 +228,12 @@ A prepared repository App key that cannot sign stops the worker with
 - **`KUBERNETES_API_UNAVAILABLE` at startup:** The Compute preflight got no
   answer from the Kubernetes API server in the event's `host` and `port`.
   Confirm the API and worker egress policy still allows that address (Helm
-  `cluster.cidrs`) and that the server is running.
+  `cluster.cidrs` and `cluster.port`) and that the server is running.
 - **`AUTH_SECRET_INVALID` or `AUTH_BASE_URL_INVALID` at startup:** The API
-  and the initialization Job refuse a missing `OCC_AUTH_SECRET` or one under 32
-  characters (`AUTH_SECRET_INVALID`), and an `OCC_AUTH_BASE_URL` that is not an
-  absolute HTTP(S) origin (`AUTH_BASE_URL_INVALID`). In production the Job also
-  requires HTTPS unless the host is loopback; in development the base URL host
-  must be loopback. With native admin enabled, the API also reports
-  `AUTH_BASE_URL_INVALID` for an `OCC_AUTH_COOKIE_DOMAIN` that is malformed, a
-  public suffix, does not contain the base URL host, or is used without HTTPS
-  session cookies.
+  and initialization Job require an auth secret of at least 32 characters,
+  an HTTPS Console origin, and an Agent DNS domain. The two hosts must share
+  a non-public DNS suffix. IP-based origins and the removed cookie-domain
+  settings are rejected. See [shared browser sessions](authentication.md#native-admin-shared-sessions).
 - **`GATEWAY_API_KEY_UNAVAILABLE` at startup:** The API refuses an
   `OCC_GATEWAY_API_KEY_PATH` that is blank or not absolute, and a key file that
   is missing, not a regular file, over 4 KiB, or not printable ASCII without
@@ -245,10 +243,9 @@ A prepared repository App key that cannot sign stops the worker with
 - **`WORKER_READINESS_PATH_INVALID` or `WORKER_LIVENESS_PATH_INVALID` at startup:**
   The worker refuses an `OCC_WORKER_READINESS_PATH` or `OCC_WORKER_LIVENESS_PATH`
   that is relative, names a directory, or cannot be written.
-- **`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED` at startup:** GitHub, Google
-  and OIDC sign-in support host-only cookies only, so the API refuses any of
-  them with native admin enabled, before it connects to the database. Turn off
-  native admin; the chart refuses it with these providers.
+- **`EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED` at startup:** Google does not support
+  native access. OIDC supports shared cookies or the
+  [host-only exchange](agent-native-admin.md#host-only-session-exchange).
 - **Configuration operations fail:** Verify exact Namespace or Configuration
   authorization, tenant-local ConfigMap CRUD, and a native JSON configuration
   document;

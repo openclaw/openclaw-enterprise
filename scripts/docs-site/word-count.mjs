@@ -135,21 +135,26 @@ export function checkMarkdownWordCounts({
   const md = createDocsMarkdown();
   const markdownFiles = collectMarkdownFiles({ root, files });
   const absoluteRoot = fs.realpathSync.native(path.resolve(root));
-  const apiReference = path.join(absoluteRoot, "docs/reference/api.md");
-  const ciGuide = path.join(absoluteRoot, "docs/testing/ci.md");
   const rows = markdownFiles.map((file) => {
     const markdown = fs.readFileSync(file.absolutePath, "utf8");
+    const { tags } = parseFrontmatter(markdown).data;
+    if (
+      tags !== undefined &&
+      (!Array.isArray(tags) || tags.some((tag) => typeof tag !== "string" || !tag.trim()))
+    ) {
+      throw new Error(`${file.path}: tags frontmatter must be a list of nonempty strings`);
+    }
     const counts = countMarkdownWords(markdown, {
       markdown: md,
       sourceFile: file.absolutePath,
-      root: path.dirname(file.absolutePath),
+      root: file.path.startsWith("docs/")
+        ? path.join(absoluteRoot, "docs")
+        : path.dirname(file.absolutePath),
     });
     // Exceptions belong to the resolved file, not aliases pointing elsewhere.
     let lengthException;
-    if (file.realPath === apiReference) {
-      lengthException = "User-approved single-page API reference";
-    } else if (file.realPath === ciGuide) {
-      lengthException = "User-approved consolidated CI guide";
+    if (tags?.includes("nolimit")) {
+      lengthException = "nolimit tag";
     } else if (path.basename(file.realPath) === "AGENTS.md") {
       lengthException = "Agent instruction document";
     }

@@ -1,7 +1,12 @@
 import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
 import { NAMESPACE_UNAVAILABLE } from "./agents/access-reasons.mjs";
 import { button, element, requestIdLine, setUnavailable } from "./dom.mjs";
-import type { createNavigation, pages } from "./navigation.mjs";
+import {
+  connectionTemplatesPage,
+  oauthClientsPage,
+  type createNavigation,
+  type pages,
+} from "./navigation.mjs";
 
 interface Account {
   name: string;
@@ -9,10 +14,12 @@ interface Account {
 }
 
 export interface ShellState {
+  debug: boolean;
   session: { user: Account } | null;
   namespaces: readonly Namespace[];
   namespaceId: string | null;
   observabilityUrl: string | null;
+  installationAdmin: boolean;
   namespaceAdmissionPending?: boolean;
   recovery?: boolean;
   page?: { agentId: string; creating?: never } | { creating: true; agentId?: never } | null;
@@ -126,8 +133,8 @@ export function sorted<T extends { id: string; name?: string }>(items: readonly 
 }
 
 const backendTypes = {
-  chatgpt: "ChatGPT",
   github: "GitHub",
+  chatgpt: "ChatGPT",
   openshell: "OpenShell",
 } satisfies Record<BackendSummary["type"], string>;
 
@@ -449,28 +456,37 @@ export function createShell({
   // where the clipboard is unavailable (an http origin, say), so it can be copied by hand.
   function agentIdentity(agentId: string) {
     const id = element("span", { className: "resource-id", title: "Agent ID" }, agentId);
-    const copied = element("span", { className: "page-meta-copied", role: "status" });
-    let clearCopied: number | undefined;
+    const feedback = element("span", { className: "page-meta-copied" });
+    const status = element("span", { role: "status" }, feedback);
+    let clearFeedback: number | undefined;
+    let latestCopy = 0;
     const copy = button(
       "",
-      () => {
-        const done = () => {
-          copied.textContent = "Copied";
-          clearTimeout(clearCopied);
-          clearCopied = setTimeout(() => {
-            copied.textContent = "";
+      async () => {
+        const attempt = ++latestCopy;
+        clearTimeout(clearFeedback);
+        feedback.textContent = "";
+
+        let copied = false;
+        try {
+          if (typeof navigator.clipboard?.writeText === "function") {
+            await navigator.clipboard.writeText(agentId);
+            copied = true;
+          }
+        } catch {
+          // Fall back to manual copying when the browser rejects the write.
+        }
+        if (attempt !== latestCopy || !id.isConnected) {
+          return;
+        }
+        if (copied) {
+          feedback.textContent = "Copied";
+          clearFeedback = window.setTimeout(() => {
+            feedback.textContent = "";
           }, 2000);
-        };
-        const select = () => {
-          const range = document.createRange();
-          range.selectNodeContents(id);
-          document.getSelection()?.removeAllRanges();
-          document.getSelection()?.addRange(range);
-        };
-        if (typeof navigator.clipboard?.writeText === "function") {
-          navigator.clipboard.writeText(agentId).then(done, select);
         } else {
-          select();
+          document.getSelection()?.selectAllChildren(id);
+          feedback.textContent = "Copy selection";
         }
       },
       {
@@ -481,8 +497,9 @@ export function createShell({
         title: "Copy Agent ID",
       },
     );
+    copy.style.flexShrink = "0";
     copy.append(copyIcon());
-    return element("span", { className: "page-meta-id" }, id, copy, copied);
+    return element("span", { className: "page-meta-id" }, id, copy, status);
   }
 
   // ← Agents on an Agent's page and on Create Agent. A page that cannot be left yet (an open
@@ -544,9 +561,14 @@ export function createShell({
     const subpage = feature === "agents" && state.page ? state.page : null;
     // A page held during a navigation shows Namespace recovery only if it already did.
     const recovery = state.recovery ?? true;
+    const focused = document.activeElement;
+    // After admission the reader can Tab to the header's selector while the page read runs.
+    const focusedNamespace =
+      focused === namespaceSelect && namespaceSelect?.closest(".page-header")
+        ? namespaceSelect.value
+        : null;
     namespaceSelect = null;
     // Moving the retained menu into the new sidebar detaches it; give focus back afterwards.
-    const focused = document.activeElement;
     const menuFocus =
       focused instanceof HTMLElement && menuControls?.contains(focused) ? focused : null;
     // Like the menu, a mobile drawer opened between a page load's two renders stays open.
@@ -566,18 +588,7 @@ export function createShell({
     // usable. Navigation, publicPanel() and a render without a session start with closed menus.
     menuControls = session ? (menuControls ?? createAccountMenus(session.user)) : null;
     const nav = element("nav", { className: "nav", "aria-label": "Main navigation" });
-    const icons = { agents: "◇", secrets: "⚿", namespaces: "▤" };
-    for (const name of ["agents", "secrets", "namespaces"] as const) {
-      const link = element(
-        "a",
-        {
-          href: pageUrl(name),
-          "data-nav": name,
-          ...(feature === name ? { "aria-current": "page" } : {}),
-        },
-        element("span", { className: "nav-icon", "aria-hidden": "true" }, icons[name]),
-        pages[name],
-      );
+    function followPage(link: HTMLAnchorElement, name: keyof typeof pages) {
       link.addEventListener("click", (event) => {
         if (
           event.button !== 0 ||
@@ -599,6 +610,24 @@ export function createShell({
         }
         navigate(name);
       });
+    }
+    const credentialAdministration =
+      feature === connectionTemplatesPage || feature === oauthClientsPage;
+    const icons = { agents: "◇", secrets: "⚿", namespaces: "▤" };
+    for (const name of ["agents", "secrets", "namespaces"] as const) {
+      const link = element(
+        "a",
+        {
+          href: pageUrl(name),
+          "data-nav": name,
+          ...(feature === name || (credentialAdministration && name === "secrets")
+            ? { "aria-current": "page" }
+            : {}),
+        },
+        element("span", { className: "nav-icon", "aria-hidden": "true" }, icons[name]),
+        pages[name],
+      );
+      followPage(link, name);
       nav.append(link);
     }
     observabilityLink = null;
@@ -619,7 +648,7 @@ export function createShell({
     const revision =
       document.querySelector<HTMLMetaElement>('meta[name="occ-build-revision"]')?.content ?? "";
     const knownRevision = /^[a-f0-9]{40}$/.test(revision);
-    const debug = route().url.searchParams.get("debug") === "true";
+    const debug = state.debug;
     const diagnostics =
       debug && session
         ? element(
@@ -659,13 +688,14 @@ export function createShell({
     );
     const main = element("main", { className: "content", id: "main" });
     const selected = namespaces.find((item) => item.id === namespaceId);
-    const scope = ["agents", "secrets"].includes(feature)
-      ? `Namespace · ${selected?.name ?? (session && !namespaceAdmissionPending ? "No available selection" : "Checking access")}`
-      : feature === "settings"
-        ? "Your account"
-        : feature === "backends"
-          ? "Installation-wide · Experimental"
-          : "Installation-wide";
+    const scope =
+      credentialAdministration || ["agents", "secrets"].includes(feature)
+        ? `Namespace · ${selected?.name ?? (session && !namespaceAdmissionPending ? "No available selection" : "Checking access")}`
+        : feature === "settings"
+          ? "Your account"
+          : feature === "backends"
+            ? "Installation-wide · Experimental"
+            : "Installation-wide";
     // Settings is about the account, and Namespaces lists them: neither has a Namespace scope.
     const scopeSelector =
       feature === "namespaces" || feature === "settings"
@@ -681,7 +711,11 @@ export function createShell({
       },
     );
     refresh.disabled = true;
-    const heading = element("h1", { tabindex: "-1" }, pages[feature]);
+    const heading = element(
+      "h1",
+      { tabindex: "-1" },
+      subpage?.agentId ? "Agent details" : pages[feature],
+    );
     const actions = element(
       "div",
       { className: "page-actions" },
@@ -717,6 +751,33 @@ export function createShell({
         );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });
     main.append(header);
+    if (feature === "secrets" || credentialAdministration) {
+      const sections = element("nav", {
+        className: "credential-tabs",
+        "aria-label": "Credential sections",
+      });
+      for (const [name, label] of [
+        ["secrets", "Secrets"],
+        [connectionTemplatesPage, "Connection templates"],
+        [oauthClientsPage, "OAuth clients"],
+      ] as const) {
+        if (name !== "secrets" && !state.installationAdmin) {
+          continue;
+        }
+        const link = element(
+          "a",
+          {
+            href: pageUrl(name),
+            "data-nav": name,
+            ...(feature === name ? { "aria-current": "page" } : {}),
+          },
+          label,
+        );
+        followPage(link, name);
+        sections.append(link);
+      }
+      main.append(sections);
+    }
     if (
       recovery &&
       session &&
@@ -814,6 +875,12 @@ export function createShell({
       // If focus can't return (the menu is hidden), don't leave it open out of sight.
       if (document.activeElement !== menuFocus) {
         menuControls?.close();
+      }
+    }
+    if (focusedNamespace && document.activeElement === document.body) {
+      const replacement = scopeSelector?.querySelector("select");
+      if (replacement?.value === focusedNamespace && !replacement.disabled) {
+        replacement.focus({ preventScroll: true });
       }
     }
     return { view, refresh, diagnostics, scopeSelector, actions };
@@ -994,7 +1061,10 @@ export function createShell({
     },
     // The shown page learned that the caller does not administer the Installation, whose
     // administrators alone get the link (finding D760).
-    dropObservabilityLink() {
+    dropAdministrationLinks() {
+      for (const page of [connectionTemplatesPage, oauthClientsPage]) {
+        app.querySelector(`.credential-tabs [data-nav="${page}"]`)?.remove();
+      }
       observabilityUrl = null;
       observabilityLink?.remove();
       observabilityLink = null;

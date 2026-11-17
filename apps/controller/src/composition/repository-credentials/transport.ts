@@ -3,21 +3,8 @@ import type {
   ProtectedRepositoryGitAuthority,
 } from "@openclaw-enterprise/contracts";
 import type { PostgresPool } from "@openclaw-enterprise/occ";
-import type { OpenShellGitRuntimeEmit } from "../../drivers/egress-proxy/openshell-git-runtime.ts";
+import type { RepositoryTransportEmit } from "./contracts.ts";
 import type { InstallationRuntimeDrivers } from "../installation-config.ts";
-
-/** Worker-selected authority. The sender never chooses its issuer or the host's recipient evidence. */
-export function repositoryGitAuthority(drivers: InstallationRuntimeDrivers) {
-  const { tokenService, repositoryGitDriver: driver, repositoryTransport } = drivers;
-  if (!tokenService) {
-    throw new Error("Prepared repository Git requires the installed Token Service.");
-  }
-  return {
-    tokenService,
-    ...(driver && { protectedGitDriver: driver.ref }),
-    ...(driver && repositoryTransport && { protectedGitEvidence: repositoryTransport.evidence }),
-  };
-}
 
 /**
  * A delivery that keeps failing writes `worker.repository-delivery-pending` at most this often:
@@ -77,7 +64,7 @@ export async function bindRepositoryGitTransport(
   drivers: InstallationRuntimeDrivers,
   authority: ProtectedRepositoryGitAuthority | undefined,
   pool: PostgresPool,
-  emit?: OpenShellGitRuntimeEmit,
+  emit?: RepositoryTransportEmit,
   {
     pendingLog = new RepositoryDeliveryPendingLog(),
     reconcileIntervalMs = REPOSITORY_RECONCILE_INTERVAL_MS,

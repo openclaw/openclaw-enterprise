@@ -1,30 +1,55 @@
-# Use the latest published images
+# Use published controller and runtime images
 
-Select the controller and runtime with their `latest` tags, then use the source
+Select the controller and runtime with matching `stable` or `latest` tags, then use the source
 checkout and chart that match those images. This procedure works for
 [local setup](../quickstart.md#optional-use-matching-published-images) and
 [production installation](production-installation.md#use-published-images).
 Run it before generating Installation configuration.
 
-You need Bash, Docker, Git, and an existing repository checkout. The published
+You need Bash, Docker, Git, jq, and an existing repository checkout. The published
 GHCR packages are public. The deployment tools use immutable image references
 internally; the commands below resolve the selected tags so you do not need to
 find or copy a SHA manually.
 
-## Pull the latest pair
+## Rehearse a fresh installation
 
-From a Bash shell in the repository root, select and pull both images
-anonymously. Run the
-whole block; it clears earlier selections and exports them only after both pulls
-and source commit checks succeed:
+For an independent release check, have an operator who did not build the images follow
+the [custom Helm guide](production-installation.md). Keep a short record of the run:
+
+1. Before pulling, record the guide revision, installation profile and prerequisites.
+   Use a fresh workstation image store and fresh nodes for the controller and Agent.
+   Record whether either release image was present before its first pull.
+2. Keep the GHCR pull results and compare both image references with the
+   [publication record](#check-publication-and-source). For each multi-platform image,
+   record the node OS and architecture. Match the manifest digest from the node’s
+   pull record to that platform in the published index. If the runtime exposes
+   only an image ID with no manifest mapping, record the platform check as unverified.
+3. Record the Installation ID from [API authentication](production-installation.md#authenticate-to-the-production-api)
+   and the [Namespace ID](production-agents.md#use-a-driver-managed-kubernetes-namespace).
+   Verify that the Agent returns the fresh nonce from the [model-response check](../operate/model-verification.md).
+4. Record any help the operator needed and the step where they needed it. If the
+   run stops early, record the first blocked step, who can resolve it and which
+   checks remain.
+
+<a id="pull-the-latest-pair"></a>
+
+## Pull a matching pair
+
+Run the following block in Bash from the repository root. It pulls the `stable`
+controller and runtime by default. To pull the `latest` pair, set
+`export OCE_IMAGE_CHANNEL=latest` first. The block exports the image references
+only after both pulls succeed and the source commits match.
 
 ```bash
 unset CONTROLLER_IMAGE RUNTIME_IMAGE OCE_IMAGE_REVISION
-CONTROLLER_TAG='ghcr.io/openclaw/openclaw-enterprise-controller:latest'
-RUNTIME_TAG='ghcr.io/openclaw/openclaw-enterprise-runtime:latest'
+CHANNEL="${OCE_IMAGE_CHANNEL:-stable}"
+CONTROLLER_TAG="ghcr.io/openclaw/openclaw-enterprise-controller:$CHANNEL"
+RUNTIME_TAG="ghcr.io/openclaw/openclaw-enterprise-runtime:$CHANNEL"
 if docker pull "$CONTROLLER_TAG" && docker pull "$RUNTIME_TAG" &&
-   controller_image="$(docker image inspect "$CONTROLLER_TAG" --format '{{index .RepoDigests 0}}')" &&
-   runtime_image="$(docker image inspect "$RUNTIME_TAG" --format '{{index .RepoDigests 0}}')" &&
+   controller_image="$(docker image inspect "$CONTROLLER_TAG" --format '{{json .RepoDigests}}' |
+     jq -er --arg repo "${CONTROLLER_TAG%:*}@" 'map(select(startswith($repo))) | unique | select(length == 1) | first')" &&
+   runtime_image="$(docker image inspect "$RUNTIME_TAG" --format '{{json .RepoDigests}}' |
+     jq -er --arg repo "${RUNTIME_TAG%:*}@" 'map(select(startswith($repo))) | unique | select(length == 1) | first')" &&
    controller_revision="$(docker image inspect "$controller_image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" &&
    runtime_revision="$(docker image inspect "$runtime_image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" &&
    [[ "$controller_image" =~ @sha256:[a-f0-9]{64}$ ]] &&
@@ -42,15 +67,18 @@ else
 fi
 ```
 
-Stop if selection fails. If an anonymous pull fails with `unauthorized` or
-`denied`, the packages have not been published publicly yet:
+Stop if selection fails. If an anonymous pull returns `unauthorized` or
+`denied`, ask the publisher for the publication record for the requested channel
+and both image names and tags, and ask them to confirm package visibility and
+pull access. The error alone does not establish publication status. After image
+selection succeeds, [compare both resolved references with the publication record](#check-publication-and-source).
+If no approved pair is available,
 [build images from your checkout](production-installation.md#build-and-publish-production-images)
 instead, or [start the local stack](../quickstart.md#start-the-local-stack)
 without image selections, which builds this checkout. The two aliases are not
 updated atomically; retry both pulls after publication completes if they refer
 to different source commits.
-`latest` identifies the last publication to that alias, not necessarily the
-newest source commit: custom-tag publications leave it unchanged.
+Each alias identifies the last publication to that channel. The two channels can point to different commits.
 
 ## Check publication and source
 
@@ -65,11 +93,29 @@ Compare the source commit with your checkout:
 
 ```bash
 git rev-parse HEAD
-printf '%s\n' "${OCE_IMAGE_REVISION:?Select the latest images first}"
+printf '%s\n' "${OCE_IMAGE_REVISION:?Select the published images first}"
 ```
 
-If they differ, keep the existing checkout and create a separate release
-worktree. Choose a new path; do not reuse a worktree containing other work:
+If they differ, you can reuse an existing checkout that is clean and available
+for this installation. Before switching, keep the guide open on GitHub at the
+exact PR commit so its relative links continue to open the same version of the
+documentation. From the checkout you intend to reuse, run:
+
+```bash
+changes=$(git status --porcelain=v1 --untracked-files=all) &&
+  test -z "$changes" &&
+  { git cat-file -e "${OCE_IMAGE_REVISION:?}^{commit}" || git fetch origin "$OCE_IMAGE_REVISION"; } &&
+  git switch --detach --no-overwrite-ignore "$OCE_IMAGE_REVISION"
+```
+
+If the status includes changes, leave that checkout in place. To use a
+separate checkout in the Codex app, use the managed worktree action to create
+or select a release checkout at the exact commit in
+`OCE_IMAGE_REVISION`. If the app requests worktree permission, wait for the
+operator to approve that request before continuing. In the shell that holds the
+image selections, change to the path supplied by the app.
+
+For a shell-managed worktree, choose a new path and run:
 
 ```bash
 OCE_RELEASE_CHECKOUT="../oce-release-${OCE_IMAGE_REVISION:?}"
@@ -78,21 +124,95 @@ git fetch origin "$OCE_IMAGE_REVISION" &&
   cd "$OCE_RELEASE_CHECKOUT"
 ```
 
+For each route, confirm the checkout matches before installing:
+
+```bash
+test "$(git rev-parse HEAD)" = "${OCE_IMAGE_REVISION:?}"
+```
+
 Continue in this shell so the image selections remain exported. Use the chart,
 CLI, configuration renderer, and installation instructions from this matching
 checkout. If you need a feature introduced after the published commit,
 [build images from that newer checkout](production-installation.md#build-and-publish-production-images)
-instead of combining its configuration with older `latest` images.
+instead of combining its configuration with images from a different revision.
 
 For production, public GHCR pulls need no pull Secret. See
 [private-registry delivery](private-registry-images.md) only when copying images
 to a private mirror. For local setup, export the resolved pair as
 [development image selections](../quickstart.md#optional-use-matching-published-images).
 
+## Read runtime download client identities
+
+Use Node.js 24.22.1 or newer, Python 3, and Docker with the containerd image
+store and `--platform` support for `docker image inspect` and `docker image save`.
+Download the `container-publication-<run-id>-<attempt>` artifact from the
+successful protected [Enterprise Containers run](#check-publication-and-source).
+It contains `publication.json`. From the matching release checkout, pull the
+receipt's runtime index by digest for the target platform with
+`docker pull --platform`.
+
+Export `SOURCE_SHA` (the full OCE source commit), `PUBLICATION_RUN_ID`,
+`PUBLICATION_ATTEMPT`, `NODE_BASE_IMAGE` (the approved build base with digest),
+and `GHCR_RUNTIME_IMAGE` (the runtime repository without a tag or digest) from
+that publication. Run this for the architecture where the Agent will run.
+
+```bash
+node scripts/ci/runtime-download-client-projection.ts publication.json linux/amd64
+```
+
+Use `linux/arm64` for ARM64. The command checks the local runtime index,
+platform manifest, config digest, and source against the receipt. It reads
+`/opt/oce/runtime/provenance.json` from a stopped container and prints JSON
+with `sourceImage`, `platformImage`, `platform`, and `downloadClients`. Each
+client entry contains its absolute `resolvedBinary` path and `binarySha256`.
+The stock inventory contains curl, both APT transport methods, and Node.js.
+Both APT methods resolve to the same executable.
+
+The command checks additional clients against the list at `SOURCE_SHA`. For a
+custom image that adds a native download client, record the executable that
+opens network connections in the same source change that installs it. Use its
+actual path on both architectures. See the
+[optional native tool paths](../../../deploy/runtime/README.md#select-optional-native-tools).
+
+### Select a native archive for a gateway build
+
+For a gateway build that verifies a packaged native runtime index, use an
+authenticated receipt from a successful direct publication run. The entire run
+must have succeeded, including the chart job when one was requested. Set
+`GH_TOKEN` with Actions read access to the Enterprise repository. The native
+archive is retained for one day.
+
+```bash
+node scripts/ci/runtime-download-client-projection.ts publication.json linux/amd64 --native-selection
+```
+
+The command checks the original publication attempt and its successful AMD64
+native smoke job against GitHub Actions metadata. It prints JSON with the parent
+and child image references, config digest, producer identity, and the retained
+artifact's `artifactId`, `artifactName`, and `archiveSha256`.
+[Download the original ZIP by artifact ID](https://docs.github.com/en/rest/actions/artifacts#download-an-artifact),
+save it as `platform.zip`, and [verify the native export](../../release/containers.md#retain-native-export-evidence).
+Keep both JSON outputs. The gateway build uses the ordinary client projection,
+the separate native selection, and the verified ZIP. The checksum in the selection covers
+the Actions ZIP. The checksum in the publication receipt covers the assembled
+image archive.
+
+Keep using the command without the option for the download client projection.
+Normal registry pulls use the published digest references. This option requires
+the original per-platform ZIP and a direct publication receipt with platform
+seals. A recovery receipt records the assembled archives and supplies no
+independent admission for the original native ZIP.
+
 ## Verify after installation
 
 The publication's startup checks do not establish a working Agent on your
-cluster. Finish [local first-Agent verification](../first-agent.md) or
-[production Agent verification](production-agents.md#verify-production-workloads).
+cluster. Complete [Agent model verification](../operate/model-verification.md).
 Keep the resolved image references with your deployment record so a later move
-of `latest` does not change which images were selected for this installation.
+of the selected alias does not change which images were selected for this installation.
+
+For an OpenShell deployment that uses optional native tools, the sandbox
+filesystem policy must let the Agent read and execute files under
+`/opt/devtools`. Verify each required tool through the deployed Agent with
+the exact image digest and policy. Exercise a real allowed download and a
+connection the policy must deny. Follow the
+[OpenShell verification procedures](../../testing/openshell.md#openshell-sandbox).

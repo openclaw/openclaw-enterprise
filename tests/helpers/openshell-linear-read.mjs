@@ -4,10 +4,10 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { createQaInstallation } from "./qa-installation.mjs";
-import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
-import { protectedText, redactQaError } from "./qa-secrets.mjs";
-import { waitFor } from "./qa-utils.mjs";
-import { nativeProvisioningPath } from "./local-first-agent-native.mjs";
+import { createNativePluginAssertions } from "./native-plugin-assertions.ts";
+import { protectedText, redactQaError } from "./qa-secrets.ts";
+import { waitFor } from "./qa-wait.ts";
+import { nativeProvisioningPath } from "./local-first-agent-native-diagnostics.ts";
 
 const nativeReadScript = String.raw`
 (async () => {
@@ -169,8 +169,8 @@ export async function verifyOpenShellLinearRead(context, artifacts) {
         {
           name: "codex-plugin-artifacts",
           binaries: [
-            "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
-            "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+            "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+            "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
           ].map((path) => ({ path })),
           endpoints: [
             "sdmntprsouthcentralus.oaiusercontent.com",
@@ -206,7 +206,7 @@ export async function verifyOpenShellLinearRead(context, artifacts) {
   let deployedAgent;
   let sessionKey;
   try {
-    assert.equal(f.configuration.drivers.plugin.id, "codex-plugin");
+    assert.ok(f.configuration.drivers.plugin.some(({ id }) => id === "codex-plugin"));
     const base = `/namespaces/${f.namespace.id}`;
     const preset = JSON.parse(
       await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),

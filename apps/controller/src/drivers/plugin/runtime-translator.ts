@@ -340,8 +340,11 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
           throw new Error("Codex destructiveEnabled must be a boolean.");
         }
         if (toolDefaults.enabled !== undefined && policy.destructiveEnabled !== undefined) {
-          throw new Error(
-            "Omit toolDefaults.enabled when using Codex destructiveEnabled; native default enablement bypasses category filtering.",
+          throw Object.assign(
+            new Error(
+              "Omit toolDefaults.enabled when using Codex destructiveEnabled; native default enablement bypasses category filtering.",
+            ),
+            { policyField: "conflictingEnablementDefaults" },
           );
         }
         for (const id of Object.keys(tools)) {
@@ -1145,6 +1148,11 @@ export function openClawRuntimeArtifact(
     defaultApprovers,
     gatewayPublicOrigin,
   ) as PluginRuntimeResolvedArtifacts;
+}
+
+// The plugins.entries keys Kubernetes Compute renders for OpenClaw catalog selections.
+export function openClawManagedPluginIds(): readonly string[] {
+  return OPENCLAW_PLUGIN_CATALOG.map(({ nativeId }) => nativeId);
 }
 
 export function openClawCatalogEntries(): readonly PluginCatalogEntry[] {

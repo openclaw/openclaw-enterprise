@@ -253,6 +253,16 @@ export function focusSaveOutcome(
 // column where the text stops being JSON, so a long Configuration can be fixed in place
 // (findings 1903, 1939).
 export function jsonObjectProblem(text: string): string | undefined {
+  const diagnostic = jsonObjectDiagnostic(text);
+  return diagnostic.kind === "valid" ? undefined : diagnostic.message;
+}
+
+type JsonObjectDiagnostic =
+  | { kind: "valid"; value: Record<string, unknown> }
+  | { kind: "invalid-json" | "number-range"; message: string };
+
+// Model controls distinguish a number-range refusal from existing syntax/shape failures.
+export function jsonObjectDiagnostic(text: string): JsonObjectDiagnostic {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -260,11 +270,11 @@ export function jsonObjectProblem(text: string): string | undefined {
     // Only JSON whitespace is blank: trim() also strips a byte order mark or a space-like
     // character, which the message below names (finding 1959).
     if (!/[^ \t\n\r]/.test(text)) {
-      return "Enter a valid JSON object.";
+      return { kind: "invalid-json", message: "Enter a valid JSON object." };
     }
     const offset = jsonErrorOffset(text);
     if (offset === undefined) {
-      return "Invalid JSON. Enter a valid JSON object.";
+      return { kind: "invalid-json", message: "Invalid JSON. Enter a valid JSON object." };
     }
     // A character pasted from a file or a document can be invisible, look like a space, or be a
     // curly quote a word processor put in, so a bare position would point at nothing visibly
@@ -278,17 +288,45 @@ export function jsonObjectProblem(text: string): string | undefined {
             `replace the curly quote ${character} ${place} with a straight quote (")`
         : undefined;
     if (offset === 0 && fix) {
-      return `Invalid JSON: ${fix("at the start")}. Enter a valid JSON object.`;
+      return {
+        kind: "invalid-json",
+        message: `Invalid JSON: ${fix("at the start")}. Enter a valid JSON object.`,
+      };
     }
     const lines = text.slice(0, offset).split(/\r\n?|\n/);
     const where = `line ${lines.length}, column ${visibleLength(lines.at(-1) ?? "") + 1}`;
-    return fix
-      ? `Invalid JSON at ${where}: ${fix("there")}. Enter a valid JSON object.`
-      : `Invalid JSON at ${where}. Enter a valid JSON object.`;
+    return {
+      kind: "invalid-json",
+      message: fix
+        ? `Invalid JSON at ${where}: ${fix("there")}. Enter a valid JSON object.`
+        : `Invalid JSON at ${where}. Enter a valid JSON object.`,
+    };
   }
-  return parsed === null || Array.isArray(parsed) || typeof parsed !== "object"
-    ? "Enter a valid JSON object, not an array or a single value."
-    : undefined;
+  if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
+    return {
+      kind: "invalid-json",
+      message: "Enter a valid JSON object, not an array or a single value.",
+    };
+  }
+  // JSON.parse accepts numbers outside the supported range; JSON.stringify would silently
+  // replace them with null. Walk iteratively so deep drafts do not exhaust the call stack.
+  const pending: unknown[] = [parsed];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value === "number" && !Number.isFinite(value)) {
+      return {
+        kind: "number-range",
+        message: "A number is too large or too small to save. Use a number closer to zero.",
+      };
+    }
+    if (value !== null && typeof value === "object") {
+      const children: unknown[] = Object.values(value);
+      for (const child of children) {
+        pending.push(child);
+      }
+    }
+  }
+  return { kind: "valid", value: parsed as Record<string, unknown> };
 }
 
 // The offset of the first character that breaks the JSON grammar (RFC 8259), `text.length` when

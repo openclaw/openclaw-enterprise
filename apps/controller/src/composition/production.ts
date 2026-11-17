@@ -1,28 +1,28 @@
+import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
+import { validateAuthSecret } from "../auth/configuration.ts";
+import {
+  CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
+  controlPlaneAuditDatabaseOptions,
+  postgresAgentAuditState,
+} from "./control-plane-audit.ts";
+import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
-import type { AuditEvent } from "@openclaw-enterprise/contracts";
-import {
-  validateAuthAccountPrincipalSeed,
-  validatePersistedNativeIAMState,
-  type AuthPrincipalSeed,
-} from "@openclaw-enterprise/iam";
+import { validatePersistedNativeIAMState } from "@openclaw-enterprise/iam";
 import {
   createPostgresPool,
   OpenClawController,
-  PostgresHumanAuthentication,
   PostgresPlatformState,
 } from "@openclaw-enterprise/occ";
 import {
-  betterAuthIssuer,
+  createPostgresAuthAccountProvisioner,
   createPostgresControllerAuth,
   type ClientAddressConfiguration,
-  type GitHubLoginConfiguration,
   type GoogleSignInConfiguration,
   type OidcSignInConfiguration,
   type PasswordHasher,
   type PasswordSlowLaneFloors,
-  type PreparedAuthAccount,
 } from "../auth/index.ts";
 import { createFastifyApp } from "../index.ts";
 import type { ConsoleTheme } from "../console-theme.ts";
@@ -53,7 +53,6 @@ export interface ProductionConfig {
   readonly databaseUrl: string;
   readonly authSecret: string;
   readonly authBaseURL: string;
-  readonly github?: GitHubLoginConfiguration;
   readonly google?: GoogleSignInConfiguration;
   readonly oidc?: OidcSignInConfiguration;
   /** OCC_AUTH_PASSWORD_SIGN_IN=recovery-only; requires GitHub, Google or OIDC sign-in. */
@@ -77,6 +76,7 @@ export interface ProductionConfig {
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
   readonly agentRuntimeLogsEnabled?: boolean;
+  readonly controlPlaneAuditEnabled?: boolean;
   /** Receives each composition phase's wall-clock duration, in order, for the startup log. */
   readonly onStartupPhase?: (phase: ProductionStartupPhase, durationMs: number) => void;
 }
@@ -86,7 +86,7 @@ export type ProductionStartupPhase =
 
 /**
  * Code-only dependencies, kept out of `ProductionConfig` so that no setting can supply them:
- * api-startup.mjs passes none. Tests pass a cheap `passwordHasher`; without one the
+ * api-startup.ts passes none. Tests pass a cheap `passwordHasher`; without one the
  * controller hashes with `scryptPasswordHasher`.
  */
 export interface CompositionDependencies {
@@ -100,6 +100,7 @@ export async function composeProduction(
   if (config.mode !== "production") {
     throw new Error("Production OCC composition requires explicit production mode.");
   }
+  validateAuthSecret(config.authSecret);
   const {
     installation,
     computeDriver,
@@ -110,7 +111,7 @@ export async function composeProduction(
     credentialRefreshDriver,
     protectedDriver,
     preparedGitHub,
-    pluginDriver,
+    pluginDrivers,
     repositoryPolicy,
     createIAMDriver,
   } = config.drivers;
@@ -124,14 +125,8 @@ export async function composeProduction(
   }
 
   const driverId = installation.drivers.iam.id;
-  if (config.github !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("GitHub sign-in does not support native administration.");
-  }
   if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
     throw new Error("Google sign-in does not support native administration.");
-  }
-  if (config.oidc !== undefined && config.nativeAdmin?.enabled === true) {
-    throw new Error("OIDC sign-in does not support native administration.");
   }
 
   let phaseStartedAt = performance.now();
@@ -141,8 +136,10 @@ export async function composeProduction(
     phaseStartedAt = now;
   };
 
+  const auditEnabled = config.controlPlaneAuditEnabled === true;
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
+    ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
   });
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
@@ -150,6 +147,7 @@ export async function composeProduction(
     closeResources(exchange, protectedDriver, preparedGitHub, database);
   try {
     const state = new PostgresPlatformState(pool, {
+      ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
       preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
     });
     const persistedInstallation = await state.loadInstallation();
@@ -161,83 +159,10 @@ export async function composeProduction(
     validatePersistedNativeIAMState(iamState);
     phaseCompleted("database");
     const iamDriver = createIAMDriver(state);
-    const auth = await createPostgresControllerAuth({
-      mode: config.mode,
+    const provisionAuthAccount = createPostgresAuthAccountProvisioner({
+      state,
       installationId: persistedInstallation.id,
-      secret: config.authSecret,
-      baseURL: config.authBaseURL,
-      ...(config.nativeAdmin?.enabled === true
-        ? { sharedCookieDomain: config.nativeAdmin.sharedCookieDomain }
-        : {}),
-      pool,
-      state,
-      iamDriver,
-      ...(config.github === undefined ? {} : { github: config.github }),
-      ...(config.google === undefined ? {} : { google: config.google }),
-      ...(config.oidc === undefined ? {} : { oidc: config.oidc }),
-      ...(config.passwordSignIn === undefined ? {} : { passwordSignIn: config.passwordSignIn }),
-      ...(config.logger === undefined
-        ? {}
-        : { onWarning: (warning) => emitOccLogEvent(config.logger!, warning) }),
-      ...(config.clientAddress === undefined ? {} : { clientAddress: config.clientAddress }),
-      ...(config.passwordSlowLaneFloors === undefined
-        ? {}
-        : { passwordSlowLaneFloors: config.passwordSlowLaneFloors }),
-      ...(dependencies.passwordHasher === undefined
-        ? {}
-        : { passwordHasher: dependencies.passwordHasher }),
-      ...(config.logger === undefined
-        ? {}
-        : { onOperationalEvent: (event) => emitOccLogEvent(config.logger!, event) }),
-      ...(config.metrics === undefined
-        ? {}
-        : {
-            onUnmatchedCallback: (provider) =>
-              config.metrics!.observeUnmatchedSignInCallback(provider),
-          }),
     });
-    if (config.clientAddress === undefined && config.logger !== undefined) {
-      // No trusted proxy: every browser behind the ingress shares its address, so failed
-      // password sign-ins are limited per email only, and with external sign-in the start
-      // step has no per-client limit (callback and result key on browser cookies).
-      emitOccLogEvent(config.logger, {
-        event: "authentication.sign-in-limit-warning",
-        code: "TRUSTED_PROXY_NOT_CONFIGURED",
-      });
-    }
-    if (auth.activationSkipped !== undefined && config.logger !== undefined) {
-      emitOccLogEvent(config.logger, {
-        event: "authentication.activation-warning",
-        reason: "Accounts without a Principal or exactly one password were not enrolled.",
-        ...skippedUserLogFields(auth.activationSkipped),
-      });
-    }
-    if (auth.withoutExternalIdentity !== undefined && config.logger !== undefined) {
-      // Recovery-only password sign-in: these accounts cannot sign in until an
-      // administrator attaches a GitHub, Google or OIDC identity.
-      emitOccLogEvent(config.logger, {
-        event: "authentication.password-sign-in-warning",
-        code: "EXTERNAL_IDENTITY_MISSING",
-        ...skippedUserLogFields(auth.withoutExternalIdentity),
-      });
-    }
-    phaseCompleted("authentication");
-    const humanAuthentication = new PostgresHumanAuthentication(
-      state,
-      persistedInstallation.id,
-      betterAuthIssuer(persistedInstallation.id),
-    );
-    const provisionAuthAccount = async (
-      seed: AuthPrincipalSeed,
-      auditEvent: AuditEvent,
-      prepared: PreparedAuthAccount,
-      external?: { readonly providerId: string; readonly subject: string },
-    ) => {
-      const current = await state.loadNativeIAMState(persistedInstallation.id);
-      validateAuthAccountPrincipalSeed(seed, current, persistedInstallation.id);
-      // The account, its Principal and bindings, and its enrolment commit together.
-      await humanAuthentication.provisionPasswordAccount(prepared, seed, auditEvent, external);
-    };
 
     const principal = iamState.identities.find((identity) => identity.kind === "principal");
     if (
@@ -282,40 +207,47 @@ export async function composeProduction(
     }
 
     phaseCompleted("computePreflight");
-    const controller = new OpenClawController(persistedInstallation, {
-      ...installationControllerOptions(config.drivers.installation),
-      state,
-      ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
-      recordOperations: true,
-      backends: installation.backend,
-      defaultPresets: config.drivers.defaultPresets ?? [],
-      bundledPresetVersions: config.drivers.bundledPresetVersions ?? [],
-      refreshBundledDefaultPresets: config.drivers.installation.presets?.includeDefaults === true,
-      loggingLevel: config.drivers.installation.logging.level,
-    });
+    const channelDriver = new SlackChannelDriver(
+      globalThis.fetch,
+      config.channelDirectoryProxyUrl,
+      {
+        managedProxyHosts:
+          config.channelDirectoryManagedProxyHost === undefined
+            ? []
+            : [config.channelDirectoryManagedProxyHost],
+        // A closed egress reaches Slack only through a proxy; an open one may reach it
+        // directly, so a timeout there stays a retryable outage (finding 2533).
+        expectProxy: config.apiHttpsEgressOpen !== true,
+      },
+    );
+    const controller = OpenClawController.forInstallation(
+      persistedInstallation,
+      {
+        ...installationControllerOptions(config.drivers.installation),
+        namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
+        state,
+        ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
+        ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
+        ...(config.drivers.pluginSourceReader === undefined
+          ? {}
+          : { pluginSourceReader: config.drivers.pluginSourceReader }),
+        recordOperations: true,
+        backends: installation.backend,
+        defaultPresets: config.drivers.defaultPresets ?? [],
+        bundledPresetVersions: config.drivers.bundledPresetVersions ?? [],
+        refreshBundledDefaultPresets: config.drivers.installation.presets?.includeDefaults === true,
+        loggingLevel: config.drivers.installation.logging.level,
+      },
+      config.drivers.repositoryAdmission,
+    );
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);
     controller.registerDriver(computeDriver);
     controller.selectDriver("compute", computeDriver.id);
     controller.registerDriver(secretDriver);
     controller.selectDriver("secret", secretDriver.id);
-    {
-      const channelDriver = new SlackChannelDriver(
-        globalThis.fetch,
-        config.channelDirectoryProxyUrl,
-        {
-          managedProxyHosts:
-            config.channelDirectoryManagedProxyHost === undefined
-              ? []
-              : [config.channelDirectoryManagedProxyHost],
-          // A closed egress reaches Slack only through a proxy; an open one may reach it
-          // directly, so a timeout there stays a retryable outage (finding 2533).
-          expectProxy: config.apiHttpsEgressOpen !== true,
-        },
-      );
-      controller.registerDriver(channelDriver);
-      controller.selectDriver("channel", channelDriver.id);
-    }
+    controller.registerDriver(channelDriver);
+    controller.selectDriver("channel", channelDriver.id);
     if (protectedDriver !== undefined) {
       controller.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
     } else if (sandboxDriver !== undefined) {
@@ -332,16 +264,83 @@ export async function composeProduction(
     }
     controller.registerDriver(configurationDriver);
     controller.selectDriver("configuration", configurationDriver.id);
+    // TODO: Select an OpenShell OAuth issuer in the API and worker when its RPC can
+    // take custody of the grant and own refresh. Other installations use the built-in issuer.
+    config.drivers.tokenService?.registerIssuer(
+      new OAuthAccountTokens(
+        state,
+        secretDriver,
+        controller.resolveConnectionClient.bind(controller),
+      ),
+    );
     config.serviceAccountDriverFactory?.(controller, state);
-    if (pluginDriver !== undefined) {
-      controller.registerDriver(pluginDriver);
-      controller.selectDriver("plugin", pluginDriver.id);
-    }
+    controller.installPluginDrivers(pluginDrivers ?? []);
     if (repositoryPolicy !== undefined) {
       controller.registerDriver(repositoryPolicy);
       controller.selectDriver("repo", repositoryPolicy.id);
     }
     await controller.validateBackendConfiguration();
+    await controller.applyIAMConfiguration();
+    const auth = await createPostgresControllerAuth({
+      mode: config.mode,
+      installationId: persistedInstallation.id,
+      secret: config.authSecret,
+      baseURL: config.authBaseURL,
+      agentDomain: config.nativeAdmin?.domain ?? "",
+      sessionMode: config.nativeAdmin?.sessionMode ?? "shared-cookie",
+      pool,
+      state,
+      iamDriver,
+      defaultUserGroupIds: controller.defaultUserGroupIds,
+      ...(config.google === undefined ? {} : { google: config.google }),
+      ...(config.oidc === undefined ? {} : { oidc: config.oidc }),
+      ...(config.passwordSignIn === undefined ? {} : { passwordSignIn: config.passwordSignIn }),
+      ...(config.logger === undefined
+        ? {}
+        : { onWarning: (warning) => emitOccLogEvent(config.logger!, warning) }),
+      ...(config.clientAddress === undefined ? {} : { clientAddress: config.clientAddress }),
+      ...(config.passwordSlowLaneFloors === undefined
+        ? {}
+        : { passwordSlowLaneFloors: config.passwordSlowLaneFloors }),
+      ...(dependencies.passwordHasher === undefined
+        ? {}
+        : { passwordHasher: dependencies.passwordHasher }),
+      ...(config.logger === undefined
+        ? {}
+        : { onOperationalEvent: (event) => emitOccLogEvent(config.logger!, event) }),
+      ...(config.metrics === undefined
+        ? {}
+        : {
+            onUnmatchedCallback: (provider) =>
+              config.metrics!.observeUnmatchedSignInCallback(provider),
+          }),
+    });
+    if (config.clientAddress === undefined && config.logger !== undefined) {
+      // No trusted proxy: every browser behind the ingress shares its address, so failed
+      // password sign-ins are limited per email only, and with external sign-in the start
+      // step has no per-client limit (callback and result key on browser cookies).
+      emitOccLogEvent(config.logger, {
+        event: "authentication.sign-in-limit-warning",
+        code: "TRUSTED_PROXY_NOT_CONFIGURED",
+      });
+    }
+    if (auth.activationSkipped !== undefined && config.logger !== undefined) {
+      emitOccLogEvent(config.logger, {
+        event: "authentication.activation-warning",
+        reason: "Accounts without a Principal or exactly one password were not enrolled.",
+        ...skippedUserLogFields(auth.activationSkipped),
+      });
+    }
+    if (auth.withoutExternalIdentity !== undefined && config.logger !== undefined) {
+      // Recovery-only password sign-in: these accounts cannot sign in until an
+      // administrator attaches a Google or OIDC identity.
+      emitOccLogEvent(config.logger, {
+        event: "authentication.password-sign-in-warning",
+        code: "EXTERNAL_IDENTITY_MISSING",
+        ...skippedUserLogFields(auth.withoutExternalIdentity),
+      });
+    }
+    phaseCompleted("authentication");
     if (config.logger !== undefined) {
       for (const shadowed of config.drivers.shadowedDefaultPresets ?? []) {
         emitOccLogEvent(config.logger, { event: "presets.bundled-default-shadowed", ...shadowed });
@@ -388,6 +387,9 @@ export async function composeProduction(
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
       resolveHarness: resolveApprovedProductionHarness,
       auditSink: state.auditSink,
+      ...(auditEnabled
+        ? { durableRequestAuditSink: state.auditSink, agentAuditCursorSecret: config.authSecret }
+        : {}),
       backendSummaries: backendSummariesFromDefinitions(installation.backend),
       ...(installation.observability === undefined
         ? {}
@@ -402,11 +404,13 @@ export async function composeProduction(
       ...(config.clientAddress === undefined ? {} : { trustedProxies: config.clientAddress }),
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
+    config.drivers.repositoryTransport?.connectRestartObservation?.(pool);
     await preparedGitHub?.connect(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
+    const checkDatabaseReadiness = createPostgresReadinessCheck(pool);
     app.get("/readyz", async () => {
-      await pool.query("SELECT 1");
+      await checkDatabaseReadiness();
       return { status: "ready" };
     });
     app.addHook("onClose", () => close(state));

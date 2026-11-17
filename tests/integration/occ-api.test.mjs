@@ -1,69 +1,103 @@
+import { runBackendAssociations, runBackendIdCharacterRule } from "./occ-api-backend-cases.ts";
+import {
+  registerAuthorizationDecisionCases,
+  registerBootstrapAuthorizationEvidenceCase,
+  registerDeploymentAuthorizationEvidenceCase,
+} from "./occ-api-authorization-evidence-cases.ts";
+import {
+  registerGatewayAdmissionCases,
+  registerSshAdmissionCases,
+} from "./occ-api-compute-admission-cases.ts";
+import {
+  registerCodexPluginPolicyCases,
+  registerOpenClawPluginPolicyCases,
+} from "./occ-api-plugin-policy-cases.ts";
+import {
+  checkMalformedResourcePaths,
+  checkPayloadLimitAndAllowedMethods,
+  checkResourceCreationSchemas,
+  runBodylessRoutes,
+  runNamespaceIsolation,
+  runResourceRoutes,
+  withValidationBeforeIam,
+} from "./occ-api-resource-route-cases.ts";
+import {
+  bindHarnessKey,
+  bootstrapInstallation as bootstrap,
+  createAgent,
+  createConfiguration,
+  createInjectedControllerFixture,
+  createNamespace,
+  createProvisioningCapableComputeDriver,
+  createReadyNamespace,
+  identifier,
+  injectedRequest,
+  readyNamespaceFixture as bootstrapReadyNamespace,
+} from "./occ-api-injected-fixture.ts";
+import { fetchLoopback } from "../helpers/console-fixture-transport.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { assertApiError } from "../helpers/api-error.mjs";
-import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.mjs";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { validateModelCredentialReferences } from "../../apps/controller/src/drivers/configuration/model-auth.ts";
-import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { realpathSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { AuthAccountRoleNotFoundError } from "../../apps/controller/src/auth/index.ts";
 import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { listManagedMcpToolNames } from "../../apps/controller/src/connections/mcp-tool-discovery.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { createControllerApp, createFastifyApp } from "../../apps/controller/src/index.ts";
-import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { NativeIAMDriver, validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
+import { createFastifyApp } from "../../apps/controller/src/index.ts";
+import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import {
   AgentDeletingError,
+  AuthorizationDeniedError,
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
-  ConfigurationHarnessError,
   DependencyUnavailableError,
-  InMemoryPlatformState,
-  OpenClawController,
+  ResourceStateConflictError,
+  ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
-import {
-  authenticatedHeaders,
-  createTestAuthPrincipal,
-  signInWithEmailPassword,
-  signInToControllerApp,
-} from "../helpers/auth-session.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  AGENT_DELETING,
   AGENT_NAME_CONFLICT,
-  BINDING_SUBJECT_EMAIL,
-  BINDING_SUBJECT_INELIGIBLE,
-  callerDenied,
+  DEDICATED_STORAGE_ROUTING_REQUIRED,
   DEPLOYMENT_FAILED,
+  MODEL_CREDENTIAL_REJECTED_RECORDED,
   referenceFormRefusal,
+  SECRET_NAME_CONFLICT,
   SERVICE_ACCOUNT_CROSS_NAMESPACE,
   SLACK_ROUTE_NOT_CONFIGURED,
   unboundReferenceRefusal,
   unsubstitutedReferenceRefusal,
+  unsupportedChannelRefusal,
 } from "../helpers/refusal-text.mjs";
-import { assertSameAnswer } from "../helpers/refusal-answers.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
-import { availablePort } from "../helpers/available-port.mjs";
+import { availablePort } from "../helpers/available-port.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { servedAs } from "../helpers/agent-identity.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const entrypoint = fileURLToPath(new URL("../../apps/controller/src/server.mjs", import.meta.url));
-const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
 const missingRevisionId = "rev_3dd29693-ce8b-4b4c-97c4-14b4c68c6e9c";
 const missingAgentId = "agt_6f1c9b2d-8e34-4a1f-9c57-2d0b8e4a71c3";
 
@@ -73,7 +107,8 @@ function childEnvironment(port, overrides = {}) {
     NODE_ENV: "development",
     OCC_HOST: "127.0.0.1",
     OCC_PORT: String(port),
-    OCC_AUTH_BASE_URL: `http://127.0.0.1:${port}`,
+    OCC_AUTH_BASE_URL: "https://console.oce.localhost",
+    OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
     OCC_AUTH_SECRET: "openclaw-development-auth-secret-minimum-32-bytes",
     ...overrides,
   };
@@ -110,14 +145,35 @@ function startChild(port, overrides = {}) {
 // firing would still exit nonzero once startup tried the database (PERSISTENCE_UNAVAILABLE).
 // The startup-error code proves startup refused it before that. STARTUP_FAILED is the
 // catch-all code, so the bind and production cases prove only that much.
-async function assertUnsafeStartupRejected() {
+async function assertUnsafeStartupRejected(t) {
   const configuredDatabase = { OCC_DATABASE_URL: "postgresql://127.0.0.1:1/openclaw" };
+  const installationPath = join(
+    await temporaryDirectory(t, "openclaw-enterprise-startup-refusal-"),
+    "installation.json",
+  );
+  await writeFile(installationPath, JSON.stringify(createInstallationDriverConfiguration()));
+  const productionEnvironment = {
+    ...configuredDatabase,
+    NODE_ENV: "production",
+    OCC_HOST: "192.0.2.10",
+    OCC_CONFIG_PATH: installationPath,
+  };
   for (const [description, overrides, code] of [
     ["missing development database", {}, "DATABASE_CONFIGURATION_INVALID"],
     [
       "production mode",
       { ...configuredDatabase, NODE_ENV: "production", OCC_HOST: "192.0.2.10" },
       "STARTUP_FAILED",
+    ],
+    [
+      "complete production configuration reaches the database",
+      productionEnvironment,
+      "PERSISTENCE_UNAVAILABLE",
+    ],
+    [
+      "short production auth secret",
+      { ...productionEnvironment, OCC_AUTH_SECRET: "insecure" },
+      "AUTH_SECRET_INVALID",
     ],
     ["nonloopback bind", { ...configuredDatabase, OCC_HOST: "192.0.2.10" }, "STARTUP_FAILED"],
     ["unsafe container bind", { ...configuredDatabase, OCC_HOST: "0.0.0.0" }, "STARTUP_FAILED"],
@@ -163,6 +219,7 @@ async function assertUnsafeStartupRejected() {
 
 async function request(url, method, path, options = {}) {
   const headers = {
+    host: "console.oce.localhost",
     ...(options.identity === false ? {} : authenticatedHeaders(options.session)),
     ...options.headers,
   };
@@ -175,7 +232,7 @@ async function request(url, method, path, options = {}) {
     body = options.rawBody;
   }
 
-  const response = await fetch(`${url}${path}`, {
+  const response = await fetchLoopback(`${url}${path}`, {
     method,
     headers,
     ...(body === undefined ? {} : { body }),
@@ -207,17 +264,6 @@ async function request(url, method, path, options = {}) {
   };
 }
 
-async function bootstrap(controller, name = "Enterprise development") {
-  const result = await controller.request("POST", "/installation/bootstrap", {
-    body: { name },
-  });
-  assert.equal(result.status, 201);
-  assert.equal(result.data.name, name);
-  assert.match(result.data.id, identifier("ins"));
-  assert.equal(Number.isNaN(Date.parse(result.data.createdAt)), false);
-  return result.data;
-}
-
 async function defaultNamespace(controller) {
   const result = await controller.request("GET", "/namespaces");
   assert.equal(result.status, 200);
@@ -235,59 +281,6 @@ function assertOnlyDefaultNamespace(response) {
     response.data.map((namespace) => namespace.name),
     [BOOTSTRAP_DEFAULT_NAMESPACE_NAME],
   );
-}
-
-async function createNamespace(controller, name) {
-  const result = await controller.request("POST", "/namespaces", {
-    body: { name },
-  });
-  assert.equal(result.status, 201);
-  assert.equal(result.data.name, name);
-  assert.match(result.data.id, identifier("ns"));
-  assert.equal(result.data.status, "provisioning");
-  assert.equal(Object.hasOwn(result.data, "installationId"), false);
-  return result.data;
-}
-
-async function createConfiguration(controller, namespaceId, values = {}) {
-  const result = await controller.request("POST", `/namespaces/${namespaceId}/configurations`, {
-    body: { kind: "agent", values },
-  });
-  assert.equal(result.status, 201);
-  assert.match(result.data.id, identifier("cfg"));
-  assert.equal(result.data.namespaceId, namespaceId);
-  assert.deepEqual(result.data.values, values);
-  return result.data;
-}
-
-async function createServiceAccount(controller, namespaceId, name) {
-  const result = await controller.request("POST", `/namespaces/${namespaceId}/service-accounts`, {
-    body: { name },
-  });
-  assert.equal(result.status, 201);
-  assert.match(result.data.id, identifier("sa"));
-  assert.deepEqual(result.data, {
-    id: result.data.id,
-    namespaceId,
-    name,
-  });
-  return result.data;
-}
-
-async function createAgent(controller, namespaceId, name, values = {}) {
-  const configuration = await createConfiguration(controller, namespaceId, values);
-  const result = await controller.request("POST", `/namespaces/${namespaceId}/agents`, {
-    body: { name, configurationId: configuration.id },
-  });
-  assert.equal(result.status, 201);
-  assert.equal(result.data.name, name);
-  assert.equal(result.data.namespaceId, namespaceId);
-  assert.match(result.data.id, identifier("agt"));
-  assert.equal(result.data.configurationId, configuration.id);
-  assert.equal(Object.hasOwn(result.data, "installationId"), false);
-  assert.equal(typeof result.data.servicePrincipalId, "string");
-  assert.ok(result.data.servicePrincipalId.length > 0);
-  return result.data;
 }
 
 function exactSecretRef(namespaceId, id) {
@@ -321,68 +314,6 @@ function createProvisioningCapableConfigurationDriver() {
   return createTestConfigurationDriver({ id: "configuration-provisioning-api", exact: true });
 }
 
-function createProvisioningCapableComputeDriver() {
-  const runtimeStatus = new Map();
-  const keyOf = ({ namespace, agent }) => `${namespace.id}:${agent.id}`;
-  return createReadyComputeDriver("compute-provisioning-api", {
-    agentProvisioning: { executionModes: ["dedicated"] },
-    requiresAgentRuntimeCredentials: true,
-    validateHarnessAuth() {},
-    validateAgentProvisioning() {},
-    async provisionAgentRuntimeCredentials(binding) {
-      runtimeStatus.set(keyOf(binding), { transportConfigured: true });
-      return { transportConfigured: true };
-    },
-    async getAgentRuntimeCredentialStatus(binding) {
-      return runtimeStatus.get(keyOf(binding)) ?? { transportConfigured: false };
-    },
-    async stopRevision() {},
-  });
-}
-
-async function bindHarnessKey(fixture, namespaceId, agent) {
-  const created = await injectedRequest(fixture.app, "POST", `/namespaces/${namespaceId}/secrets`, {
-    body: { name: `key-${agent.id}`, value: "synthetic-api-contract-key" },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const internalAgent = await fixture.controller.getAgent(
-    fixture.principal.id,
-    namespaceId,
-    agent.id,
-  );
-  const roleId = `harness-key-${agent.id}`;
-  fixture.state.identities.push({
-    kind: "service_principal",
-    id: internalAgent.servicePrincipalId,
-    namespaceId,
-  });
-  fixture.state.roles.push({
-    id: roleId,
-    namespaceId,
-    permissions: [{ action: "operate", resourceKind: "secret" }],
-  });
-  fixture.state.bindings.push({
-    id: roleId,
-    namespaceId,
-    subjectKind: "identity",
-    subjectId: internalAgent.servicePrincipalId,
-    roleId,
-    resourceKind: "secret",
-    resourceId: created.data.id,
-  });
-  const binding = { method: "api_key", source: created.data.ref };
-  const updated = await injectedRequest(
-    fixture.app,
-    "PATCH",
-    `/namespaces/${namespaceId}/agents/${agent.id}`,
-    {
-      body: { configurationId: agent.configurationId, harnessAuth: binding },
-    },
-  );
-  assert.equal(updated.status, 200, JSON.stringify(updated.body));
-  return binding;
-}
-
 const diffsPluginId = "occ-plugin:diffs";
 const linearPluginId = "codex-plugin:linear@openai-curated-remote";
 
@@ -400,212 +331,17 @@ function assertPolicyOnlyPlugin(selection) {
   }
 }
 
-async function createInjectedFixture(options = {}) {
-  const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
-  const authFixture = await createTestAuthPrincipal({
-    installationId,
-    email: `admin-${randomUUID()}@example.com`,
-    password: `generated-password-${randomUUID()}`,
-    name: "OCC API Administrator",
+function createInjectedFixture(options = {}) {
+  return createInjectedControllerFixture(options, {
+    wrapPlatformState(baseState) {
+      return options.deploymentWorks === undefined
+        ? baseState
+        : stateWithDeploymentWork(baseState, options.deploymentWorks);
+    },
+    invokeApplication(factory, appOptions) {
+      return factory(appOptions);
+    },
   });
-  const principal = authFixture.seed.principal;
-  const state = {
-    identities: [principal],
-    groups: [],
-    memberships: [],
-    roles: authFixture.seed.roles.map((role) => ({
-      ...role,
-      permissions: [...role.permissions],
-    })),
-    bindings: [
-      {
-        id: "binding-admin",
-        subjectKind: "identity",
-        subjectId: principal.id,
-        roleId: authFixture.seed.roles[0].id,
-      },
-    ],
-    restrictions: [],
-  };
-  const iamDriver =
-    options.iamDriver ??
-    new NativeIAMDriver({ loadNativeIAMState: async () => state }, { id: "iam-integration" });
-  const computeCalls = { ensureNamespace: [], deleteNamespace: [] };
-  const computeDriver =
-    options.computeDriver ??
-    createReadyComputeDriver("compute-integration", {
-      async ensureNamespace(namespace) {
-        computeCalls.ensureNamespace.push(namespace.id);
-        return {
-          namespaceId: namespace.id,
-          namespaceReady: true,
-        };
-      },
-      async deleteNamespace(namespace) {
-        computeCalls.deleteNamespace.push(namespace.id);
-        return {
-          namespaceId: namespace.id,
-          namespaceDeleted: true,
-        };
-      },
-      // OCC API coverage exercises admission; runtime compatibility belongs to Compute suites.
-      validateHarnessAuth() {},
-      async stopRevision() {},
-    });
-  const auditSink = options.auditSink ?? new InMemoryAuditSink();
-  const configurationDriver =
-    options.configurationDriver ??
-    createTestConfigurationDriver({ id: "configuration-integration" });
-  const secretDriver =
-    options.secretDriver ?? createTestSecretDriver({ id: "secret-api-integration" });
-  const sessionsByPrincipalId = new Map();
-  let controller;
-  let platformState;
-  let app;
-
-  async function installAuthSeed(seed, { auditEvent } = {}) {
-    const roleIds = new Set(state.roles.map((role) => role.id));
-    for (const binding of seed.bindings) {
-      if (!roleIds.has(binding.roleId)) {
-        throw new AuthAccountRoleNotFoundError(binding.roleId);
-      }
-    }
-    state.identities.push(seed.principal);
-    state.roles.push(...seed.roles);
-    state.bindings.push(...seed.bindings);
-    if (auditEvent !== undefined) {
-      await auditSink.append(auditEvent);
-    }
-  }
-
-  function createApp(identity = principal, createApplication = createControllerApp) {
-    const created = createApplication({
-      ...(controller
-        ? { controller }
-        : {
-            createController(installation) {
-              const baseState = new InMemoryPlatformState({
-                auditSink,
-                resolveIAMIdentity: (identityId) =>
-                  state.identities.find((identity) => identity.id === identityId),
-              });
-              platformState =
-                options.deploymentWorks === undefined
-                  ? baseState
-                  : stateWithDeploymentWork(baseState, options.deploymentWorks);
-              controller = new OpenClawController(installation, {
-                state: platformState,
-                recordOperations: options.recordOperations ?? false,
-                ...(options.backends === undefined ? {} : { backends: options.backends }),
-              });
-              if (options.backends?.length) {
-                // Association alone must never provision an upstream account or credential.
-                const unexpectedBackendCall = async () => assert.fail("Unexpected Backend call");
-                controller.registerDriver({
-                  id: options.backends[0].drivers.service_account,
-                  implementation: "chatgpt",
-                  capability: "service_account",
-                  backendId: options.backends[0].id,
-                  create: unexpectedBackendCall,
-                  createCredential: unexpectedBackendCall,
-                  delete: unexpectedBackendCall,
-                });
-                controller.selectDriver(
-                  "service_account",
-                  options.backends[0].drivers.service_account,
-                );
-              }
-              return controller;
-            },
-          }),
-      iamDriver,
-      computeDriver,
-      configurationDriver,
-      secretDriver,
-      resolveHarness: resolveApprovedDevelopmentHarness,
-      auditSink,
-      ...(Object.hasOwn(options, "backendSummaries")
-        ? { backendSummaries: options.backendSummaries }
-        : {}),
-      development: {
-        enabled: true,
-        installationId,
-      },
-      auth: authFixture.auth,
-      ...(options.logger === undefined ? {} : { logger: options.logger }),
-      ...(options.provisionAuthAccount === undefined
-        ? {}
-        : {
-            // The memory composition has no State transaction; write the prepared
-            // account first and remove it when the fixture's provisioning fails.
-            provisionAuthAccount: async (seed, auditEvent, prepared) => {
-              await authFixture.auth.writePreparedAccount(prepared);
-              try {
-                await options.provisionAuthAccount(seed, {
-                  installAuthSeed,
-                  state,
-                  auditEvent,
-                });
-              } catch (error) {
-                await authFixture.auth.deleteAccount(prepared);
-                throw error;
-              }
-            },
-          }),
-    });
-    created.defaultSession = sessionsByPrincipalId.get(identity.id);
-    return created;
-  }
-
-  app = createApp();
-  sessionsByPrincipalId.set(principal.id, await signInToControllerApp(app, authFixture));
-  app.defaultSession = sessionsByPrincipalId.get(principal.id);
-
-  return {
-    app,
-    session: app.defaultSession,
-    authFixture,
-    auditSink,
-    computeCalls,
-    createApp,
-    async createAuthPrincipal(name) {
-      const email = `${name}-${randomUUID()}@example.com`;
-      const password = `generated-password-${randomUUID()}`;
-      const account = await authFixture.auth.createAccount({
-        email,
-        password,
-        name,
-      });
-      const seed = authFixture.auth.principalSeed(account, { grant: "none" });
-      sessionsByPrincipalId.set(
-        seed.principal.id,
-        await signInToControllerApp(app, { email, password }),
-      );
-      return {
-        principal: seed.principal,
-        session: sessionsByPrincipalId.get(seed.principal.id),
-      };
-    },
-    get iamDriver() {
-      return iamDriver;
-    },
-    get computeDriver() {
-      return computeDriver;
-    },
-    get configurationDriver() {
-      return configurationDriver;
-    },
-    installationId,
-    principal,
-    state,
-    get platformState() {
-      return platformState;
-    },
-    installAuthSeed,
-    get controller() {
-      return controller;
-    },
-  };
 }
 
 async function configuredController(options = {}) {
@@ -616,15 +352,59 @@ async function configuredController(options = {}) {
   };
 }
 
+async function readyNamespaceFixture(namespaceName, controllerOptions, bootstrapName) {
+  const controller = await configuredController(controllerOptions);
+  return bootstrapReadyNamespace(controller, namespaceName, bootstrapName);
+}
+
+async function admittedDeploymentFixture(namespaceName, agentName, { recordOperations } = {}) {
+  const deploymentWorks = new Map();
+  const controller = await configuredController({ deploymentWorks, recordOperations });
+  const { fixture } = controller;
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, namespaceName);
+  const agent = await createAgent(controller, namespace.id, agentName);
+  await fixture.markNamespaceReady(namespace.id);
+  await bindHarnessKey(fixture, namespace.id, agent);
+  const admitted = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+  );
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const work = {
+    key: `agent_revision:${admitted.data.id}:reconcile`,
+    record(state, completedAt, outcome = {}) {
+      return {
+        idempotencyKey: work.key,
+        namespaceId: namespace.id,
+        agentId: agent.id,
+        revisionId: admitted.data.id,
+        actorId: fixture.principal.id,
+        state,
+        availableAt: new Date(0),
+        attemptCount: 1,
+        completedAt: new Date(completedAt),
+        ...outcome,
+        createdAt: new Date(0),
+        updatedAt: new Date(completedAt),
+      };
+    },
+  };
+  return { controller, fixture, namespace, agent, admitted, deploymentWorks, work };
+}
+
 function stateWithDeploymentWork(state, deploymentWorks) {
   const withWork = (view) => ({
     ...view,
     operations: {
       ...view.operations,
-      findWork: async (requestedKey) =>
-        deploymentWorks.has(requestedKey)
-          ? Object.freeze({ ...deploymentWorks.get(requestedKey) })
-          : view.operations.findWork(requestedKey),
+      findWork: async (requestedKey) => {
+        if (!deploymentWorks.has(requestedKey)) {
+          return view.operations.findWork(requestedKey);
+        }
+        const work = deploymentWorks.get(requestedKey);
+        return work === undefined ? undefined : Object.freeze({ ...work });
+      },
     },
   });
   return {
@@ -636,417 +416,1830 @@ function stateWithDeploymentWork(state, deploymentWorks) {
   };
 }
 
-async function injectedRequest(app, method, pathname, options = {}) {
-  const headers = {
-    ...(options.identity === false
-      ? {}
-      : authenticatedHeaders(options.session ?? app.defaultSession)),
-    ...options.headers,
+async function firstDeploymentFixture({ ready = true, slackFetch } = {}) {
+  let providerCalls = 0;
+  const channelDriver = new SlackChannelDriver(async (...args) => {
+    providerCalls++;
+    if (slackFetch) {
+      return slackFetch(...args);
+    }
+    assert.fail("Guarded admission must never contact Slack");
+  });
+  const secretDriver = createTestSecretDriver();
+  const controller = await configuredController({
+    recordOperations: true,
+    channelDriver,
+    secretDriver,
+  });
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "first-deployment");
+  if (ready) {
+    await controller.fixture.controller.handleNamespaceLifecycle(
+      controller.fixture.principal.id,
+      namespace.id,
+      "ready",
+    );
+  }
+  const agent = await createAgent(controller, namespace.id, "first-deployment");
+  if (ready) {
+    await bindHarnessKey(controller.fixture, namespace.id, agent);
+  }
+  secretDriver.calls.length = 0;
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const intent = {
+    key: "review-1",
+    expectedConfigurationId: agent.configurationId,
+    expectedGeneration: 1,
   };
-  const hasBody = Object.hasOwn(options, "body");
-  const hasRawBody = Object.hasOwn(options, "rawBody");
-  if (hasBody || hasRawBody) {
-    headers["content-type"] ??= "application/json";
-  }
-  let payload;
-  if (hasRawBody) {
-    payload = options.rawBody;
-  } else if (hasBody) {
-    payload = JSON.stringify(options.body);
-  }
-  const response = await app.fetch(
-    new Request(`http://127.0.0.1${pathname}`, {
-      method,
-      headers,
-      ...(payload === undefined ? {} : { body: payload }),
-    }),
-  );
-  if (response.status === 204) {
-    return { status: response.status, headers: response.headers };
-  }
-  const body = await response.json();
-  assert.match(body.meta?.requestId ?? "", identifier("req"));
-  return { status: response.status, headers: response.headers, body, data: body.data };
+  const recover = (body = intent, options = {}) =>
+    controller.request(
+      "GET",
+      `${path}/deploy-first/${body.key}/${body.expectedConfigurationId}/${body.expectedGeneration}`,
+      options,
+    );
+  const listRevisions = () =>
+    controller.fixture.platformState.read((state) =>
+      state.revisions.listRevisions(namespace.id, agent.id),
+    );
+  const listRevisionMetadata = () =>
+    controller.fixture.platformState.read((state) =>
+      state.revisions.listRevisionMetadata(namespace.id, agent.id),
+    );
+  const work = () =>
+    controller.fixture.platformState
+      .pendingOperations()
+      .filter((entry) => entry.kind === "agent_revision");
+  return {
+    controller,
+    namespace,
+    agent,
+    path,
+    intent,
+    recover,
+    listRevisions,
+    listRevisionMetadata,
+    work,
+    secretDriver,
+    channelDriver,
+    providerCalls: () => providerCalls,
+  };
 }
 
-async function createInjectedConfiguration(fixture, namespaceId, values = {}) {
-  const result = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespaceId}/configurations`,
-    { body: { kind: "agent", values } },
-  );
-  assert.equal(result.status, 201);
-  return result.data;
-}
-
-test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource routes", async () => {
-  const controller = await configuredController();
-  // Before bootstrap a Preset write, whose grant check runs before its body is read, answers
-  // the same not-found as the handler would.
-  for (const [method, path] of [
-    ["POST", `/namespaces/ns_${randomUUID()}/presets`],
-    ["PATCH", `/namespaces/ns_${randomUUID()}/presets/pre_${randomUUID()}`],
-  ]) {
-    const early = await controller.request(method, path, { body: { name: "early", template: {} } });
-    assertApiError(early, 404, "NOT_FOUND", method);
-  }
-  const installation = await bootstrap(controller);
-
-  const singleton = await controller.request("GET", "/installation");
-  assert.equal(singleton.status, 200);
-  // No Sandbox Driver is selected: Embedded OpenClaw is the one mode admission accepts (#2670).
-  assert.deepEqual(singleton.data, {
-    ...installation,
-    capabilities: { openclaw: { executionModes: ["embedded"] } },
-  });
-  const bootstrappedDefault = await defaultNamespace(controller);
-
-  const namespace = await createNamespace(controller, "research");
-  assert.equal(Object.hasOwn(namespace, "installationId"), false);
-
-  const namespaces = await controller.request("GET", "/namespaces");
-  assert.equal(namespaces.status, 200);
-  assert.deepEqual(namespaces.data, [bootstrappedDefault, namespace]);
-
-  const namespaceDetail = await controller.request("GET", `/namespaces/${namespace.id}`);
-  assert.equal(namespaceDetail.status, 200);
-  assert.deepEqual(namespaceDetail.data, namespace);
-
-  const agent = await createAgent(controller, namespace.id, "research-agent");
-  assert.equal(Object.hasOwn(agent, "installationId"), false);
-
-  const account = await createServiceAccount(controller, namespace.id, "research-account");
-  const serviceAccounts = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/service-accounts`,
-  );
-  assert.equal(serviceAccounts.status, 200);
-  assert.deepEqual(serviceAccounts.data, [account]);
-
-  const agents = await controller.request("GET", `/namespaces/${namespace.id}/agents`);
-  assert.equal(agents.status, 200);
-  assert.deepEqual(agents.data, [agent]);
-
-  const agentDetail = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-  );
-  assert.equal(agentDetail.status, 200);
-  assert.deepEqual(agentDetail.data, agent);
-
-  const stopped = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/stop`,
-  );
-  assert.equal(stopped.status, 202);
-  assert.equal(stopped.data.desiredRuntimeState, "stopped");
-  assert.equal(stopped.data.id, agent.id);
-  const stopAudit = controller.fixture.auditSink.events.findLast(
-    (event) => event.action === "openclaw.agents.stop",
-  );
+test("guarded first deployment returns 409 and audits an unready Namespace without credential or work effects", async () => {
+  const { controller, agent, path, intent, work, secretDriver, providerCalls } =
+    await firstDeploymentFixture({ ready: false });
+  const before = controller.fixture.auditSink.events.length;
+  const result = await controller.request("POST", `${path}/deploy-first`, { body: intent });
+  assertApiError(result, 409, "NAMESPACE_NOT_READY");
+  const events = controller.fixture.auditSink.events.slice(before);
+  assert.equal(events.length, 1);
   assert.deepEqual(
-    [stopAudit?.kind, stopAudit?.outcome, stopAudit?.resource.id],
-    ["mutation", "success", agent.id],
+    events.map(({ action, kind, outcome, reasonCode, resource }) => [
+      action,
+      kind,
+      outcome,
+      reasonCode,
+      resource.id,
+    ]),
+    [["openclaw.agents.deploy", "mutation", "failure", "NAMESPACE_NOT_READY", agent.id]],
   );
-
-  const deployment = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
-  assertApiError(deployment, 409, "NAMESPACE_NOT_READY");
-
-  const secondDeployment = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
-  assertApiError(secondDeployment, 409, "NAMESPACE_NOT_READY");
-
-  const revisions = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
-  );
-  assert.equal(revisions.status, 200);
-  assert.deepEqual(revisions.data, []);
-
-  const revisionDetail = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.id}/revisions/${missingRevisionId}`,
-  );
-  assertApiError(revisionDetail, 404, "NOT_FOUND");
-
-  // Deletion is asynchronous: the route admits the request, moves the Agent to
-  // deleting and queues teardown. It answers 202 rather than 204 because the
-  // Agent and its revisions still exist until the worker finishes.
-  assert.equal(agent.status, "active");
-  const missingDeletion = await controller.request(
-    "DELETE",
-    `/namespaces/${namespace.id}/agents/${missingAgentId}`,
-  );
-  assertApiError(missingDeletion, 404, "NOT_FOUND");
-
-  const deletion = await controller.request(
-    "DELETE",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-  );
-  assert.equal(deletion.status, 202);
-  assert.deepEqual(deletion.data, { ...agent, status: "deleting" });
-
-  // Reads keep returning a deleting Agent, so an operator can observe teardown
-  // in progress instead of seeing it vanish before its resources are gone.
-  const deletingDetail = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-  );
-  assert.equal(deletingDetail.status, 200);
-  assert.equal(deletingDetail.data.status, "deleting");
-
-  // A repeated request converges on the in-flight teardown rather than
-  // conflicting, so a client retry after a lost response is safe.
-  const repeatedDeletion = await controller.request(
-    "DELETE",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-  );
-  assert.equal(repeatedDeletion.status, 202);
-  assert.deepEqual(repeatedDeletion.data, deletion.data);
-
-  // The Agent row survives until teardown completes, so its Namespace is still
-  // occupied. Offboarding becomes possible only once the row is removed.
-  const stillOccupied = await controller.request("DELETE", `/namespaces/${namespace.id}`);
-  assertApiError(stillOccupied, 409, "NAMESPACE_NOT_EMPTY");
-
-  const secondBootstrap = await controller.request("POST", "/installation/bootstrap", {
-    body: { name: "another installation" },
-  });
-  assertApiError(secondBootstrap, 409, "INSTALLATION_EXISTS");
-
-  const installationCollection = await controller.request("POST", "/installations", {
-    body: { name: "forbidden collection" },
-  });
-  assert.equal(installationCollection.status, 404);
-
-  const auditEndpoint = await controller.request("GET", "/audit");
-  assert.equal(auditEndpoint.status, 404);
-
-  const unchanged = await controller.request("GET", "/installation");
-  assert.deepEqual(unchanged.data, { ...installation, capabilities: singleton.data.capabilities });
+  assert.equal(work().length, 0);
+  assert.equal(secretDriver.calls.length, 0);
+  assert.equal(providerCalls(), 0);
 });
 
-test("Namespace IAM routes manage exact Role and AccessBinding policy through the selected Driver", async () => {
-  const fixture = await createInjectedFixture();
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-
-  const namespace = await createNamespace(controller, "iam-policy");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
-    body: { name: "Model API key", value: "iam-policy-secret" },
+test("guarded first deployment with the bundled Slack selection recovers without writes", async () => {
+  const deployment = await firstDeploymentFixture();
+  const { controller, namespace, agent, path, intent, recover, work, secretDriver, providerCalls } =
+    deployment;
+  const schemaApp = controller.fixture.createApp(undefined, createFastifyApp);
+  let operations;
+  try {
+    await schemaApp.ready();
+    operations = Object.values(schemaApp.swagger().paths).flatMap((path) => Object.values(path));
+  } finally {
+    await schemaApp.close();
+  }
+  const permissions = (id) =>
+    operations.find((operation) => operation.operationId === id)["x-openclaw-permissions"];
+  assert.deepEqual(permissions("recoverAgentFirstDeployment"), [
+    { action: "deploy", resourceKind: "agent", scope: "requested" },
+    { action: "read", resourceKind: "configuration", scope: "requested" },
+  ]);
+  const guardedPermissions = permissions("deployAgentFirst");
+  assert.deepEqual(
+    guardedPermissions.map(({ phase, ...permission }) => permission),
+    permissions("deployAgent"),
+  );
+  assert.deepEqual(
+    guardedPermissions.filter((permission) => permission.phase === undefined),
+    permissions("recoverAgentFirstDeployment"),
+  );
+  assert.ok(
+    guardedPermissions.some(
+      (permission) =>
+        permission.phase === "fresh_admission" &&
+        permission.condition === "missing_runtime_credentials",
+    ),
+  );
+  const before = controller.fixture.auditSink.events.length;
+  const miss = await recover();
+  assert.equal(miss.status, 200, JSON.stringify(miss.body));
+  assert.equal(miss.data, null);
+  assert.equal(miss.headers.get("cache-control"), "no-store");
+  assert.equal(work().length, 0);
+  assert.equal(secretDriver.calls.length, 0);
+  assert.equal(controller.fixture.auditSink.events.length, before);
+  // Discard the reply; the observer reads the owning state, just as in the stock control.
+  await controller.request("POST", `${path}/deploy-first`, { body: intent });
+  const [stored] = await deployment.listRevisions();
+  assert.ok(stored);
+  const calls = secretDriver.calls.length;
+  const events = controller.fixture.auditSink.events.length;
+  const found = await recover();
+  assert.equal(found.status, 200, JSON.stringify(found.body));
+  assert.equal(found.headers.get("cache-control"), "no-store");
+  assert.deepEqual(found.data, {
+    revisionId: stored.id,
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    configurationId: agent.configurationId,
+    configurationGeneration: 1,
+    createdAt: stored.createdAt,
   });
-  assert.equal(secret.status, 201, JSON.stringify(secret.body));
-  const agent = await createAgent(controller, namespace.id, "iam-policy-agent");
+  const replay = await controller.request("POST", `${path}/deploy-first`, { body: intent });
+  assert.equal(replay.status, 202, JSON.stringify(replay.body));
+  assert.deepEqual(replay.data, found.data);
+  assert.equal(secretDriver.calls.length, calls);
+  assert.equal(controller.fixture.auditSink.events.length, events);
+  assert.equal(work().length, 1);
+  assert.equal(providerCalls(), 0);
+  for (const altered of [
+    { ...intent, key: "other" },
+    { ...intent, expectedGeneration: 2 },
+  ]) {
+    assert.equal((await recover(altered)).data, null);
+    const conflict = await controller.request("POST", `${path}/deploy-first`, { body: altered });
+    assert.equal(conflict.status, 409, JSON.stringify(conflict.body));
+    assert.match(conflict.body.error.message, /already has revision history/);
+    assert.match(conflict.body.error.message, /Recover the original first-deployment receipt/);
+    assert.match(
+      conflict.body.error.message,
+      /ordinary deploy only for an intentional later revision/,
+    );
+  }
+  const ordinary = await controller.request("POST", `${path}/deploy`);
+  assert.equal(ordinary.status, 202, JSON.stringify(ordinary.body));
+  assert.equal(ordinary.data.revision, 2);
+  const replacement = await createConfiguration(controller, namespace.id);
+  assert.equal(
+    (await controller.request("PATCH", path, { body: { configurationId: replacement.id } })).status,
+    200,
+  );
+  assert.deepEqual((await recover()).data, found.data);
+  assert.equal((await recover({ ...intent, expectedConfigurationId: replacement.id })).data, null);
+  assert.equal(work().length, 2);
+  assert.equal((await controller.request("POST", `${path}/stop`)).status, 202);
+  assert.equal(
+    (
+      await controller.request("POST", `${path}/deploy-first`, {
+        body: { ...intent, key: "new-intent", expectedConfigurationId: replacement.id },
+      })
+    ).status,
+    409,
+  );
 
-  const role = await controller.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
-    body: {
-      name: "Secret operator",
-      permissions: [{ action: "operate", resourceKind: "secret" }],
+  for (const revision of await deployment.listRevisions()) {
+    for (const field of ["key", "actorId", "firstDeploymentDigest", "first_deployment_digest"]) {
+      assert.equal(Object.hasOwn(revision, field), false);
+      assert.equal(Object.hasOwn(ordinary.data, field), false);
+    }
+  }
+});
+
+test("guarded first deployment isolates actors and requires current exact authority", async () => {
+  const { controller, namespace, agent, path, intent, recover, work } =
+    await firstDeploymentFixture();
+  const { fixture } = controller;
+  const admitted = await controller.request("POST", `${path}/deploy-first`, { body: intent });
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const actor = await fixture.createAuthPrincipal("another-deployer");
+  fixture.state.identities.push(actor.principal);
+  const role = {
+    id: "exact-deployer",
+    namespaceId: namespace.id,
+    permissions: [
+      { action: "deploy", resourceKind: "agent" },
+      { action: "read", resourceKind: "configuration" },
+    ],
+  };
+  fixture.state.roles.push(role);
+  for (const [kind, id] of [
+    ["agent", agent.id],
+    ["configuration", agent.configurationId],
+  ]) {
+    fixture.state.bindings.push({
+      id: `exact-${kind}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: actor.principal.id,
+      roleId: role.id,
+      resourceKind: kind,
+      resourceId: id,
+    });
+  }
+  const otherActor = await recover(intent, { session: actor.session });
+  assert.equal(otherActor.status, 200, JSON.stringify(otherActor.body));
+  assert.equal(otherActor.data, null);
+  assert.equal(otherActor.headers.get("cache-control"), "no-store");
+  const collision = await controller.request("POST", `${path}/deploy-first`, {
+    body: intent,
+    session: actor.session,
+  });
+  assert.equal(collision.status, 409);
+  // Exact revision-read authority admits status polling, but not intent recovery or admission.
+  role.permissions = [{ action: "read", resourceKind: "agent_revision" }];
+  fixture.state.bindings.push({
+    id: "exact-status-revision",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: actor.principal.id,
+    roleId: role.id,
+    resourceKind: "agent_revision",
+    resourceId: admitted.data.revisionId,
+  });
+  const revisionsBeforeStatusRead = await fixture.platformState.read((state) =>
+    state.revisions.listRevisions(namespace.id, agent.id),
+  );
+  const workBeforeStatusRead = structuredClone(work());
+  const status = await controller.request(
+    "GET",
+    `${path}/deployments/${admitted.data.revisionId}`,
+    { session: actor.session },
+  );
+  assert.equal(status.status, 200, JSON.stringify(status.body));
+  assert.equal(status.data.deploymentId, admitted.data.revisionId);
+  assert.equal((await recover(intent, { session: actor.session })).status, 403);
+  assert.equal(
+    (
+      await controller.request("POST", `${path}/deploy-first`, {
+        body: intent,
+        session: actor.session,
+      })
+    ).status,
+    403,
+  );
+  assert.deepEqual(
+    await fixture.platformState.read((state) =>
+      state.revisions.listRevisions(namespace.id, agent.id),
+    ),
+    revisionsBeforeStatusRead,
+  );
+  assert.deepEqual(work(), workBeforeStatusRead);
+  // Revocation applies to the original actor as well, even though its digest matches.
+  const administrator = fixture.state.roles[0];
+  const previous = administrator.permissions;
+  administrator.permissions = [{ action: "read", resourceKind: "agent" }];
+  const revoked = await recover();
+  assert.equal(revoked.status, 403);
+  assert.equal(revoked.headers.get("cache-control"), "no-store");
+  administrator.permissions = [{ action: "deploy", resourceKind: "agent" }];
+  assert.equal((await recover()).status, 403);
+  administrator.permissions = [
+    { action: "deploy", resourceKind: "agent" },
+    { action: "read", resourceKind: "configuration" },
+  ];
+  const minimalRecovery = await recover();
+  assert.equal(minimalRecovery.status, 200, JSON.stringify(minimalRecovery.body));
+  assert.deepEqual(minimalRecovery.data, admitted.data);
+  const minimalReplay = await controller.request("POST", `${path}/deploy-first`, { body: intent });
+  assert.equal(minimalReplay.status, 202, JSON.stringify(minimalReplay.body));
+  assert.deepEqual(minimalReplay.data, admitted.data);
+  administrator.permissions = previous;
+  const otherAgent = await createAgent(controller, namespace.id, "another-agent");
+  const otherPath = `/namespaces/${namespace.id}/agents/${otherAgent.id}/deploy-first`;
+  assert.equal(
+    (
+      await controller.request(
+        "GET",
+        `${otherPath}/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}`,
+      )
+    ).data,
+    null,
+  );
+  const foreign = await createNamespace(controller, "foreign-intent");
+  const cross = await controller.request(
+    "GET",
+    `/namespaces/${foreign.id}/agents/${agent.id}/deploy-first/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}`,
+  );
+  assert.equal(cross.status, 404);
+  assert.equal(work().length, 1);
+});
+
+test("guarded first deployment rejects stale binding and generation before credential work", async () => {
+  for (const change of ["binding", "generation"]) {
+    const { controller, namespace, path, intent, work, secretDriver } =
+      await firstDeploymentFixture();
+    if (change === "binding") {
+      const replacement = await createConfiguration(controller, namespace.id);
+      assert.equal(replacement.generation, intent.expectedGeneration);
+      assert.equal(
+        (await controller.request("PATCH", path, { body: { configurationId: replacement.id } }))
+          .status,
+        200,
+      );
+    } else {
+      assert.equal(
+        (
+          await controller.request(
+            "PATCH",
+            `/namespaces/${namespace.id}/configurations/${intent.expectedConfigurationId}`,
+            { body: { values: {} } },
+          )
+        ).status,
+        200,
+      );
+    }
+    secretDriver.calls.length = 0;
+    const iam = controller.fixture.iamDriver;
+    const authorize = iam.authorize.bind(iam);
+    iam.authorize = async (request) => {
+      if (request.resource.kind === "configuration") {
+        assert.equal(
+          request.resource.id,
+          intent.expectedConfigurationId,
+          "must not expose a different draft",
+        );
+      }
+      return authorize(request);
+    };
+    const state = controller.fixture.platformState;
+    const transact = state.transact.bind(state);
+    let mutations = 0;
+    state.transact = (...args) => {
+      mutations++;
+      return transact(...args);
+    };
+    const result = await controller.request("POST", `${path}/deploy-first`, { body: intent });
+    assert.equal(result.status, 409, JSON.stringify(result.body));
+    assert.match(
+      result.body.error.message,
+      change === "binding" ? /different Configuration/ : /expected Configuration generation/,
+    );
+    assert.match(result.body.error.message, /Recover the original first-deployment receipt/);
+    assert.doesNotMatch(result.body.error.message, /ordinary deploy/);
+    assert.equal(secretDriver.calls.length, 0);
+    assert.equal(work().length, 0);
+    assert.equal(mutations, 0, "a stale snapshot must not enter admission");
+  }
+});
+
+test("direct first-deployment intent boundary rejects malformed values before I/O", async (t) => {
+  const { controller, namespace, agent, intent, listRevisions, work, secretDriver, providerCalls } =
+    await firstDeploymentFixture();
+  const { fixture } = controller;
+  const input = { namespaceId: namespace.id, agentId: agent.id };
+  const state = fixture.platformState;
+  const beforeAudit = fixture.auditSink.events.length;
+  const { key: _key, ...missingKey } = intent;
+  const nonPrimitiveIdentity = {
+    toJSON() {
+      assert.fail("A non-string identity reached digest serialization");
+    },
+  };
+  const invalid = [
+    ["absent intent", undefined],
+    ["null intent", null],
+    ["absent key", missingKey],
+    ["null key", { ...intent, key: null }],
+    ["numeric key", { ...intent, key: 123 }],
+    [
+      "non-string Agent",
+      intent,
+      { ...input, agentId: nonPrimitiveIdentity },
+      "The exact Agent identity is missing.",
+    ],
+    [
+      "non-string Namespace",
+      intent,
+      { ...input, namespaceId: nonPrimitiveIdentity },
+      "The exact Namespace identity is missing.",
+    ],
+    [
+      "non-string Configuration",
+      { ...intent, expectedConfigurationId: nonPrimitiveIdentity },
+      input,
+      "The exact Configuration identity is missing.",
+    ],
+  ];
+
+  // Independent public calls must reject before even opening a state boundary.
+  // Keep the real authorized controller; spies guard only downstream I/O.
+  for (const method of ["deployAgentFirst", "recoverAgentFirstDeployment"]) {
+    for (const [
+      label,
+      malformed,
+      target = input,
+      message = "Invalid first-deployment intent.",
+    ] of invalid) {
+      await t.test(`${method}: ${label}`, async (caseContext) => {
+        const boundaries = ["read", "transact"].map((name) =>
+          caseContext.mock.method(state, name, () => {
+            assert.fail(`Invalid intent reached state.${name}`);
+          }),
+        );
+        const audit = caseContext.mock.fn(() => assert.fail("Invalid intent reached audit"));
+        await assert.rejects(
+          fixture.controller[method](
+            fixture.principal.id,
+            target,
+            malformed,
+            resolveApprovedDevelopmentHarness,
+            audit,
+          ),
+          (error) => {
+            assert.ok(error instanceof ScopeViolationError);
+            assert.equal(error.message, message);
+            return true;
+          },
+        );
+        for (const boundary of boundaries) {
+          assert.equal(boundary.mock.callCount(), 0);
+        }
+        assert.equal(audit.mock.callCount(), 0);
+        assert.equal(secretDriver.calls.length, 0);
+        assert.equal(providerCalls(), 0);
+        assert.equal(fixture.auditSink.events.length, beforeAudit);
+        assert.equal(work().length, 0);
+      });
+    }
+  }
+  // No revision or queued work can be written without crossing the guarded state
+  // boundaries. Inspect the real store too, after the per-call spies are restored.
+  assert.deepEqual(await listRevisions(), []);
+  assert.equal(work().length, 0);
+
+  await t.test("valid string admits revision one and recovers with real grants", async () => {
+    const admitted = await fixture.controller.deployAgentFirst(
+      fixture.principal.id,
+      input,
+      intent,
+      resolveApprovedDevelopmentHarness,
+    );
+    const revisions = await listRevisions();
+    assert.equal(revisions.length, 1);
+    assert.equal(revisions[0].id, admitted.revisionId);
+    assert.equal(work().length, 1);
+    assert.deepEqual(
+      await fixture.controller.recoverAgentFirstDeployment(fixture.principal.id, input, intent),
+      admitted,
+    );
+    assert.equal(work().length, 1);
+  });
+});
+
+test("direct first-deployment captures intent for exact current receipt authority", async (t) => {
+  const { controller, namespace, agent, path, intent, work, secretDriver } =
+    await firstDeploymentFixture();
+  const { fixture } = controller;
+  const actorId = fixture.principal.id;
+  const input = { namespaceId: namespace.id, agentId: agent.id };
+  const configurationB = await createConfiguration(controller, namespace.id);
+  const admitted = await controller.request("POST", `${path}/deploy-first`, { body: intent });
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+
+  // This actor owns the known A receipt. Replace its broad grant with exact
+  // Agent deploy and Configuration A/B read grants, then revoke only A read.
+  fixture.state.roles[0].permissions = [];
+  const role = {
+    id: "receipt-exact-reader",
+    namespaceId: namespace.id,
+    permissions: [
+      { action: "deploy", resourceKind: "agent" },
+      { action: "read", resourceKind: "configuration" },
+    ],
+  };
+  fixture.state.roles.push(role);
+  for (const [kind, id] of [
+    ["agent", agent.id],
+    ["configuration", agent.configurationId],
+    ["configuration", configurationB.id],
+  ]) {
+    fixture.state.bindings.push({
+      id: `receipt-${id}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: actorId,
+      roleId: role.id,
+      resourceKind: kind,
+      resourceId: id,
+    });
+  }
+  const checks = [];
+  const iam = fixture.iamDriver;
+  const authorize = iam.authorize.bind(iam);
+  t.mock.method(iam, "authorize", async (request) => {
+    const decision = await authorize(request);
+    checks.push({
+      action: request.action,
+      resource: { ...request.resource },
+      allowed: decision.allowed,
+    });
+    return decision;
+  });
+  const invoke = (method, body) =>
+    fixture.controller[method](actorId, input, body, resolveApprovedDevelopmentHarness);
+  const expectedChecks = (configurationId, allowed) => [
+    {
+      action: "deploy",
+      resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
+      allowed: true,
+    },
+    {
+      action: "read",
+      resource: { kind: "configuration", id: configurationId, namespaceId: namespace.id },
+      allowed,
+    },
+  ];
+  const methods = ["deployAgentFirst", "recoverAgentFirstDeployment"];
+  for (const method of methods) {
+    checks.length = 0;
+    assert.deepEqual(await invoke(method, { ...intent }), admitted.data);
+    assert.deepEqual(checks, expectedChecks(agent.configurationId, true));
+  }
+  const bindingA = fixture.state.bindings.find(
+    (binding) => binding.id === `receipt-${agent.configurationId}`,
+  );
+  assert.ok(bindingA);
+  fixture.state.bindings.splice(fixture.state.bindings.indexOf(bindingA), 1);
+  const beforeAudit = fixture.auditSink.events.length;
+  const beforeWork = structuredClone(work());
+  const beforeSecrets = secretDriver.calls.length;
+  const beforeRevisions = await fixture.platformState.read((view) =>
+    view.revisions.listRevisions(namespace.id, agent.id),
+  );
+  for (const method of methods) {
+    for (const mutate of [false, true]) {
+      const label = mutate ? "immediate A-to-B mutation" : "stable A";
+      await t.test(`${method}: ${label} denies the known receipt`, async () => {
+        checks.length = 0;
+        const body = { ...intent };
+        const pending = invoke(method, body);
+        if (mutate) {
+          body.expectedConfigurationId = configurationB.id;
+        }
+        // Check the outcome as well as effects: a leaked receipt creates no work.
+        const outcome = await pending.then(
+          (value) => ({ value }),
+          (error) => ({ error }),
+        );
+        assert.deepEqual(
+          {
+            authorizationTrace: checks,
+            denied: outcome.error instanceof AuthorizationDeniedError,
+            returnedKnownReceipt: isDeepStrictEqual(outcome.value, admitted.data),
+            returnedConfigurationId: outcome.value?.configurationId,
+          },
+          {
+            authorizationTrace: expectedChecks(agent.configurationId, false),
+            denied: true,
+            returnedKnownReceipt: false,
+            returnedConfigurationId: undefined,
+          },
+        );
+      });
+    }
+    await t.test(`${method}: allowed B has no matching receipt`, async () => {
+      checks.length = 0;
+      const pending = invoke(method, { ...intent, expectedConfigurationId: configurationB.id });
+      if (method === "recoverAgentFirstDeployment") {
+        assert.equal(await pending, null);
+      } else {
+        await assert.rejects(pending, ResourceStateConflictError);
+      }
+      assert.deepEqual(checks, expectedChecks(configurationB.id, true));
+    });
+  }
+  assert.deepEqual(
+    await fixture.platformState.read((view) =>
+      view.revisions.listRevisions(namespace.id, agent.id),
+    ),
+    beforeRevisions,
+  );
+  assert.deepEqual(work(), beforeWork);
+  assert.equal(secretDriver.calls.length, beforeSecrets);
+  assert.equal(fixture.auditSink.events.length, beforeAudit);
+});
+
+test("direct first-deployment captures scalars once for fresh admission and recovery", async (t) => {
+  for (const change of ["stateful key", "immediate target and generation mutation"]) {
+    await t.test(change, async (caseContext) => {
+      const { controller, namespace, agent, path, intent, listRevisions, work } =
+        await firstDeploymentFixture();
+      const { fixture } = controller;
+      const actorId = fixture.principal.id;
+      const deploy = fixture.controller.deployAgentFirst.bind(fixture.controller);
+      let keyReads = 0;
+      // The authenticated handler supplies its normal audit factory. Forward it
+      // unchanged while exercising the genuine controller's mutable JS boundary.
+      caseContext.mock.method(
+        fixture.controller,
+        "deployAgentFirst",
+        (actor, input, body, ...rest) => {
+          if (change === "stateful key") {
+            Object.defineProperty(body, "key", {
+              get: () => (++keyReads === 1 ? intent.key : 123),
+            });
+          }
+          const pending = deploy(actor, input, body, ...rest);
+          if (change !== "stateful key") {
+            input.agentId = missingAgentId;
+            input.harnessOverrides = { unsupported: true };
+            body.expectedGeneration = 2;
+          }
+          return pending;
+        },
+      );
+      const beforeAudit = fixture.auditSink.events.length;
+      const admitted = await controller.request("POST", `${path}/deploy-first`, { body: intent });
+      assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+      if (change === "stateful key") {
+        assert.equal(keyReads, 1);
+      }
+      const revisions = await listRevisions();
+      assert.equal(revisions.length, 1);
+      const [revision] = revisions;
+      assert.equal(revision.revision, 1);
+      assert.deepEqual(admitted.data, {
+        revisionId: revision.id,
+        namespaceId: namespace.id,
+        agentId: agent.id,
+        configurationId: intent.expectedConfigurationId,
+        configurationGeneration: intent.expectedGeneration,
+        createdAt: revision.createdAt,
+      });
+      assert.equal(work().length, 1);
+      assert.equal(work()[0].resourceId, revision.id);
+      assert.equal(work()[0].namespaceId, namespace.id);
+      assert.equal(work()[0].actorId, actorId);
+      assert.equal(work()[0].action, "reconcile");
+      const events = fixture.auditSink.events.slice(beforeAudit);
+      assert.equal(events.length, 1);
+      assert.equal(events[0].actorId, actorId);
+      assert.equal(events[0].actor.principalId, actorId);
+      assert.equal(events[0].outcome, "success");
+      assert.deepEqual(events[0].resource, {
+        kind: "agent_revision",
+        id: revision.id,
+        namespaceId: namespace.id,
+      });
+      assert.deepEqual(events[0].authorization, {
+        principalId: actorId,
+        action: "deploy",
+        resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
+      });
+      const input = { namespaceId: namespace.id, agentId: agent.id };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        assert.deepEqual(
+          await fixture.controller.recoverAgentFirstDeployment(actorId, input, intent),
+          admitted.data,
+        );
+      }
+      if (change === "stateful key") {
+        let recoveryKeyReads = 0;
+        const lookup = {
+          ...intent,
+          get key() {
+            return ++recoveryKeyReads === 1 ? intent.key : 123;
+          },
+        };
+        assert.deepEqual(
+          await fixture.controller.recoverAgentFirstDeployment(actorId, input, lookup),
+          admitted.data,
+        );
+        assert.equal(recoveryKeyReads, 1);
+      }
+      assert.deepEqual(await listRevisions(), revisions);
+      assert.equal(work().length, 1);
+      assert.deepEqual(fixture.auditSink.events.slice(beforeAudit), events);
+    });
+  }
+});
+
+test("guarded first deployment propagates snapshot read failures without entering admission", async () => {
+  const { controller, namespace, agent, intent, work, secretDriver } =
+    await firstDeploymentFixture();
+  const state = controller.fixture.platformState;
+  const read = state.read.bind(state);
+  state.read = (operation) =>
+    read((unit) =>
+      operation({
+        ...unit,
+        configurations: {
+          ...unit.configurations,
+          findConfiguration: async () => {
+            throw new Error("synthetic snapshot read failure");
+          },
+        },
+      }),
+    );
+  state.transact = async () => assert.fail("a failed read must not enter admission");
+  await assert.rejects(
+    controller.fixture.controller.deployAgentFirst(
+      controller.fixture.principal.id,
+      { namespaceId: namespace.id, agentId: agent.id },
+      intent,
+      resolveApprovedDevelopmentHarness,
+    ),
+    { message: "synthetic snapshot read failure" },
+  );
+  assert.equal(secretDriver.calls.length, 0);
+  assert.equal(work().length, 0);
+});
+
+test(
+  "guarded first deployment serializes fresh Slack contenders after concurrent preparation",
+  { timeout: 10000 },
+  async (t) => {
+    for (const matching of [false, true]) {
+      let arrivals = 0;
+      const both = Promise.withResolvers();
+      const { controller, path, intent, work, recover, secretDriver, providerCalls } =
+        await slackFirstDeploymentFixture(true, async () => {
+          if (++arrivals === 2) {
+            both.resolve();
+          }
+          await both.promise;
+        });
+      const before = controller.fixture.auditSink.events.length;
+      const intents = [intent, matching ? intent : { ...intent, key: "competing" }];
+      const results = await Promise.all(
+        intents.map((body) => controller.request("POST", `${path}/deploy-first`, { body })),
+      );
+      assert.deepEqual(
+        results.map((result) => result.status).sort(),
+        matching ? [202, 202] : [202, 409],
+      );
+      assert.equal(work().length, 1);
+      assert.equal(controller.fixture.auditSink.events.length - before, 1);
+      const winner = results.findIndex((result) => result.status === 202);
+      const receipt = await recover(intents[winner]);
+      assert.deepEqual(receipt.data, results[winner].data);
+      if (matching) {
+        assert.deepEqual(results[0].data, results[1].data);
+      }
+      assert.equal(providerCalls(), 2);
+      assert.equal(secretDriver.calls.filter((call) => call.operation === "withValue").length, 2);
+      assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 2);
+      t.diagnostic(
+        JSON.stringify({ matching, sender: 2, withValue: 2, resolve: 2, work: 1, audit: 1 }),
+      );
+    }
+  },
+);
+
+async function slackFirstDeploymentFixture(enabled = true, beforeResponse = async () => {}) {
+  const fixture = await firstDeploymentFixture({
+    slackFetch: async (url, options) => {
+      assert.equal(new URL(url).href, "https://slack.com/api/auth.test");
+      assert.equal(options.method, "POST");
+      assert.equal(options.headers.authorization, "Bearer xoxb-synthetic-bot");
+      await beforeResponse();
+      return Response.json({ ok: true, bot_id: "B123", team_id: "T123" });
     },
   });
-  assert.equal(role.status, 201, JSON.stringify(role.body));
-  assert.match(role.data.id, identifier("role"));
-  assert.deepEqual(role.data, {
-    id: role.data.id,
-    namespaceId: namespace.id,
-    name: "Secret operator",
-    permissions: [{ action: "operate", resourceKind: "secret" }],
+  const { controller, namespace, agent } = fixture;
+  const bot = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "slack-bot", value: "xoxb-synthetic-bot" },
   });
-
-  const roles = await controller.request("GET", `/namespaces/${namespace.id}/iam/roles`);
-  assert.equal(roles.status, 200);
-  assert.deepEqual(roles.data, [role.data]);
-
-  const roleDetail = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/iam/roles/${role.data.id}`,
+  assert.equal(bot.status, 201, JSON.stringify(bot.body));
+  const harnessGrant = controller.fixture.state.bindings.find(
+    (binding) => binding.id === `harness-key-${agent.id}`,
   );
-  assert.equal(roleDetail.status, 200);
-  assert.deepEqual(roleDetail.data, role.data);
-
-  const binding = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/iam/access-bindings`,
+  controller.fixture.state.bindings.push({
+    ...harnessGrant,
+    id: `slack-bot-${agent.id}`,
+    resourceId: bot.data.id,
+  });
+  const updated = await controller.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
     {
       body: {
-        subjectKind: "identity",
-        subjectId: agent.servicePrincipalId,
-        roleId: role.data.id,
-        resourceKind: "secret",
-        resourceId: secret.data.id,
+        values: { channels: { slack: { enabled, mode: "http", botToken: "${SLACK_BOT_TOKEN}" } } },
+        secretBindings: { SLACK_BOT_TOKEN: { source: bot.data.ref } },
       },
     },
   );
-  assert.equal(binding.status, 201, JSON.stringify(binding.body));
-  assert.match(binding.data.id, identifier("binding"));
-  assert.deepEqual(binding.data, {
-    id: binding.data.id,
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: agent.servicePrincipalId,
-    roleId: role.data.id,
-    resourceKind: "secret",
-    resourceId: secret.data.id,
-  });
-
-  const bindings = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/iam/access-bindings`,
-  );
-  assert.equal(bindings.status, 200);
-  assert.deepEqual(bindings.data, [binding.data]);
-
-  const bindingDetail = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/iam/access-bindings/${binding.data.id}`,
-  );
-  assert.equal(bindingDetail.status, 200);
-  assert.deepEqual(bindingDetail.data, binding.data);
-
-  const referencedDelete = await controller.request(
-    "DELETE",
-    `/namespaces/${namespace.id}/iam/roles/${role.data.id}`,
-  );
-  assertApiError(referencedDelete, 409, "RESOURCE_CONFLICT");
-
-  const deletedBinding = await controller.request(
-    "DELETE",
-    `/namespaces/${namespace.id}/iam/access-bindings/${binding.data.id}`,
-  );
-  assert.equal(deletedBinding.status, 204);
-
-  const deletedRole = await controller.request(
-    "DELETE",
-    `/namespaces/${namespace.id}/iam/roles/${role.data.id}`,
-  );
-  assert.equal(deletedRole.status, 204);
-
-  const missingRole = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/iam/roles/${role.data.id}`,
-  );
-  assertApiError(missingRole, 404, "NOT_FOUND");
-
-  // Each policy mutation records what changed, and its authorization names the
-  // Installation administer check the controller actually makes.
-  const policyEvents = new Map(
-    fixture.auditSink.events
-      .filter((event) => event.kind === "mutation" && event.action.startsWith("openclaw.iam."))
-      .map((event) => [event.action, event]),
-  );
-  const installationAuthorization = {
-    principalId: fixture.principal.id,
-    action: "administer",
-    resource: { kind: "installation", id: fixture.installationId },
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  fixture.secretDriver.calls.length = 0;
+  return {
+    ...fixture,
+    bot: bot.data,
+    intent: { ...fixture.intent, expectedGeneration: updated.data.generation },
   };
-  const namespaceResource = { kind: "namespace", id: namespace.id, namespaceId: namespace.id };
-  const secretResource = { kind: "secret", id: secret.data.id, namespaceId: namespace.id };
-  const roleDetails = {
-    roleId: role.data.id,
-    permissions: [{ action: "operate", resourceKind: "secret" }],
-  };
-  const bindingDetails = {
-    bindingId: binding.data.id,
-    subjectKind: "identity",
-    subjectId: agent.servicePrincipalId,
-    roleId: role.data.id,
-  };
-  for (const [action, resource, details] of [
-    ["openclaw.iam.roles.create", namespaceResource, roleDetails],
-    ["openclaw.iam.access_bindings.create", secretResource, bindingDetails],
-    ["openclaw.iam.access_bindings.delete", secretResource, bindingDetails],
-    ["openclaw.iam.roles.delete", namespaceResource, roleDetails],
+}
+
+test("guarded first deployment admits enabled Slack over real HTTP and recovers without I/O", async (t) => {
+  for (const [enabled, route] of [
+    [true, "deploy-first"],
+    [false, "deploy-first"],
+    [true, "deploy"],
   ]) {
-    const recorded = policyEvents.get(action);
-    assert.ok(recorded, action);
-    assert.equal(recorded.outcome, "success", action);
-    assert.deepEqual(recorded.resource, resource, action);
-    assert.deepEqual(recorded.authorization, installationAuthorization, action);
-    assert.deepEqual(recorded.details, details, action);
+    const deployment = await slackFirstDeploymentFixture(enabled);
+    const { controller, namespace, path, intent, secretDriver, work, providerCalls } = deployment;
+    const app = controller.fixture.createApp(undefined, createFastifyApp);
+    try {
+      const url = await app.listen({ host: "127.0.0.1", port: 0 });
+      const send = (method, suffix, options = {}) =>
+        request(url, method, `${path}/${suffix}`, {
+          session: app.defaultSession,
+          ...options,
+        });
+      const before = controller.fixture.auditSink.events.length;
+      const result = await send("POST", route, route === "deploy-first" ? { body: intent } : {});
+      assert.equal(result.status, 202, JSON.stringify(result.body));
+      assert.equal(work().length, 1);
+      const revisions = await deployment.listRevisionMetadata();
+      assert.equal(revisions.length, 1);
+      assert.equal(controller.fixture.auditSink.events.length - before, 1);
+      assert.equal(providerCalls(), enabled ? 1 : 0);
+      assert.equal(
+        secretDriver.calls.filter((call) => call.operation === "withValue").length,
+        enabled ? 1 : 0,
+      );
+      assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 2);
+      const calls = structuredClone(secretDriver.calls);
+      if (route === "deploy-first") {
+        assert.deepEqual(Object.keys(result.data).sort(), [
+          "agentId",
+          "configurationGeneration",
+          "configurationId",
+          "createdAt",
+          "namespaceId",
+          "revisionId",
+        ]);
+        // Poison the fresh-only dependency after commit. Recovery must not consult it.
+        controller.fixture.configurationDriver.read = async () =>
+          assert.fail("Recovery read Configuration storage");
+        const recovered = await send(
+          "GET",
+          `deploy-first/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}`,
+        );
+        const replay = await send("POST", "deploy-first", { body: intent });
+        assert.equal(recovered.status, 200, JSON.stringify(recovered.body));
+        assert.equal(recovered.headers.get("cache-control"), "no-store");
+        assert.equal(replay.status, 202, JSON.stringify(replay.body));
+        assert.deepEqual(recovered.data, result.data);
+        assert.deepEqual(replay.data, result.data);
+        assert.deepEqual(secretDriver.calls, calls);
+        assert.equal(providerCalls(), enabled ? 1 : 0);
+        assert.equal(work().length, 1);
+        assert.equal(controller.fixture.auditSink.events.length - before, 1);
+
+        // A receipt is private even to its original actor once current draft-read authority
+        // is revoked. Use the real IAM policy for both HTTP recovery and POST replay.
+        const restrictions = controller.fixture.state.restrictions;
+        const beforeRevocation = controller.fixture.auditSink.events.length;
+        restrictions.push({
+          id: "revoke-first-deployment-configuration-read",
+          namespaceId: namespace.id,
+          effect: "deny",
+          action: "read",
+          resourceKind: "configuration",
+          resourceId: intent.expectedConfigurationId,
+        });
+        const deniedRecovery = await send(
+          "GET",
+          `deploy-first/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}`,
+        );
+        const deniedReplay = await send("POST", "deploy-first", { body: intent });
+        for (const denied of [deniedRecovery, deniedReplay]) {
+          assert.equal(denied.status, 403, JSON.stringify(denied.body));
+          assert.equal(denied.data, undefined);
+          assert.equal(JSON.stringify(denied.body).includes(result.data.revisionId), false);
+        }
+        const denials = controller.fixture.auditSink.events.slice(beforeRevocation);
+        assert.equal(denials.length, 2);
+        for (const denial of denials) {
+          assert.equal(denial.kind, "authorization_denial");
+          assert.equal(denial.actor.principalId, controller.fixture.principal.id);
+          assert.deepEqual(denial.authorization, {
+            principalId: controller.fixture.principal.id,
+            action: "read",
+            resource: {
+              kind: "configuration",
+              id: intent.expectedConfigurationId,
+              namespaceId: namespace.id,
+            },
+          });
+        }
+        assert.deepEqual(secretDriver.calls, calls);
+        assert.equal(providerCalls(), enabled ? 1 : 0);
+        assert.equal(work().length, 1);
+        assert.deepEqual(await deployment.listRevisionMetadata(), revisions);
+        restrictions.pop();
+        const restored = await send(
+          "GET",
+          `deploy-first/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}`,
+        );
+        assert.equal(restored.status, 200, JSON.stringify(restored.body));
+        assert.deepEqual(restored.data, result.data);
+
+        // Accepting deletion fences fresh admission, but the original committed receipt
+        // remains readable until teardown removes the Agent and its revisions.
+        const deletion = await request(url, "DELETE", path, { session: app.defaultSession });
+        assert.equal(deletion.status, 202, JSON.stringify(deletion.body));
+        assert.equal(deletion.data.status, "deleting");
+        const deletionWork = controller.fixture.platformState.pendingOperations();
+        const deletionAuditCount = controller.fixture.auditSink.events.length;
+        const afterDeletion = await send(
+          "GET",
+          `deploy-first/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}`,
+        );
+        const afterDeletionReplay = await send("POST", "deploy-first", { body: intent });
+        assert.equal(afterDeletion.status, 200, JSON.stringify(afterDeletion.body));
+        assert.equal(afterDeletionReplay.status, 202, JSON.stringify(afterDeletionReplay.body));
+        assert.deepEqual(afterDeletion.data, result.data);
+        assert.deepEqual(afterDeletionReplay.data, result.data);
+        assert.deepEqual(controller.fixture.platformState.pendingOperations(), deletionWork);
+        assert.equal(controller.fixture.auditSink.events.length, deletionAuditCount);
+        assert.deepEqual(secretDriver.calls, calls);
+        assert.equal(providerCalls(), enabled ? 1 : 0);
+      } else {
+        assert.equal(result.data.revision, 1);
+      }
+      t.diagnostic(
+        JSON.stringify({
+          enabled,
+          route,
+          revisions: revisions.length,
+          work: work().length,
+          audit: controller.fixture.auditSink.events.length - before,
+          sender: providerCalls(),
+          withValue: calls.filter((call) => call.operation === "withValue").length,
+          resolve: calls.filter((call) => call.operation === "resolve").length,
+        }),
+      );
+    } finally {
+      await app.close();
+    }
   }
 });
 
-test("Namespace IAM routes bind existing humans to the exact Namespace and Agent", async () => {
-  const fixture = await createInjectedFixture();
-  const member = await fixture.createAuthPrincipal("assigned-member");
-  fixture.state.identities.push(member.principal);
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "human-iam");
-  const foreign = await createNamespace(controller, "foreign-human-iam");
-  const agent = await createAgent(controller, namespace.id, "assigned-agent");
-  const foreignAgent = await createAgent(controller, foreign.id, "foreign-agent");
-  const role = await controller.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
-    body: {
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "agent" },
-      ],
-    },
-  });
-  assert.equal(role.status, 201, JSON.stringify(role.body));
-
-  const bind = (subjectId, resourceKind, resourceId) =>
-    controller.request("POST", `/namespaces/${namespace.id}/iam/access-bindings`, {
-      body: { subjectKind: "identity", subjectId, roleId: role.data.id, resourceKind, resourceId },
+test("first-deployment CLI recovers a lost committed response with the original caller and intent", async (t) => {
+  const directory = await temporaryDirectory(t, "oce-first-deployment-cli-");
+  const cli = join(directory, "occ");
+  const execute = promisify(execFile);
+  await execute("go", ["build", "-trimpath", "-o", cli, "./cmd/occ"]);
+  for (const reply of ["dropped", "malformed"]) {
+    await t.test(`${reply} committed reply`, async (t) => {
+      const deployment = await firstDeploymentFixture();
+      const { controller, namespace, agent, path, intent, work, secretDriver, providerCalls } =
+        deployment;
+      const fixture = controller.fixture;
+      // Provision an automation identity in the actual native IAM fixture. The HTTP auth
+      // service issues its key; the CLI never impersonates the administrator's session.
+      const automation = {
+        kind: "service_principal",
+        id: `sp_${randomUUID()}`,
+        namespaceId: namespace.id,
+      };
+      fixture.state.identities.push(automation);
+      fixture.state.bindings.push({
+        id: "first-deployment-cli-automation",
+        namespaceId: namespace.id,
+        subjectKind: "identity",
+        subjectId: automation.id,
+        roleId: fixture.state.roles[0].id,
+      });
+      const app = fixture.createApp(undefined, createFastifyApp);
+      let relay;
+      try {
+        const origin = await app.listen({ host: "127.0.0.1", port: 0 });
+        const issued = await request(origin, "POST", "/api/auth/service-keys", {
+          session: app.defaultSession,
+          body: {
+            servicePrincipalId: automation.id,
+            namespaceId: namespace.id,
+            name: "first-deployment-cli",
+          },
+        });
+        assert.equal(issued.status, 201, JSON.stringify(issued.body));
+        const keyFile = join(directory, "caller service-key.json");
+        await writeFile(keyFile, JSON.stringify({ data: issued.data }), { mode: 0o600 });
+        const forwarded = [];
+        const relayErrors = [];
+        let committed;
+        let recovered;
+        relay = createServer(async (incoming, outgoing) => {
+          try {
+            const chunks = [];
+            for await (const chunk of incoming) {
+              chunks.push(chunk);
+            }
+            forwarded.push({ method: incoming.method, path: incoming.url });
+            const response = await fetchLoopback(`${origin}${incoming.url}`, {
+              method: incoming.method,
+              headers: {
+                host: "console.oce.localhost",
+                "x-api-key": incoming.headers["x-api-key"],
+                ...(incoming.headers["content-type"] === undefined
+                  ? {}
+                  : { "content-type": incoming.headers["content-type"] }),
+              },
+              ...(chunks.length === 0 ? {} : { body: Buffer.concat(chunks) }),
+            });
+            const body = await response.text();
+            if (incoming.method === "POST" && response.status === 202) {
+              // OCC really committed. The relay loses or corrupts only its response; the
+              // next GET must recover the true receipt from the unchanged application.
+              const envelope = JSON.parse(body);
+              committed = envelope.data;
+              if (reply === "dropped") {
+                outgoing.destroy();
+              } else {
+                outgoing.writeHead(response.status, { "content-type": "application/json" });
+                outgoing.end(JSON.stringify({ ...envelope, data: {} }));
+              }
+              return;
+            }
+            if (incoming.method === "GET" && response.status === 200) {
+              recovered = JSON.parse(body).data;
+            }
+            outgoing.writeHead(response.status, { "content-type": "application/json" });
+            outgoing.end(body);
+          } catch (error) {
+            relayErrors.push(error);
+            outgoing.destroy();
+          }
+        });
+        relay.listen(0, "127.0.0.1");
+        await once(relay, "listening");
+        const relayOrigin = `http://127.0.0.1:${relay.address().port}`;
+        const args = [
+          "--url",
+          relayOrigin,
+          "--service-key-file",
+          keyFile,
+          "--ca-bundle",
+          "",
+          "--timeout-seconds",
+          "5",
+          "--namespace",
+          namespace.id,
+          "agent",
+          "deploy-first",
+          agent.id,
+          "--key",
+          intent.key,
+          "--configuration",
+          intent.expectedConfigurationId,
+          "--generation",
+          String(intent.expectedGeneration),
+        ];
+        let failure;
+        try {
+          failure = { code: 0, ...(await execute(cli, args)) };
+        } catch (error) {
+          failure = error;
+        }
+        assert.deepEqual(relayErrors, []);
+        assert.ok(committed, "the uncertain response must follow a real committed admission");
+        assert.deepEqual(
+          forwarded,
+          [{ method: "POST", path: `${path}/deploy-first` }],
+          "the CLI must not automatically replay an uncertain mutation",
+        );
+        const revisions = await deployment.listRevisionMetadata();
+        assert.equal(revisions.length, 1);
+        assert.equal(revisions[0].id, committed.revisionId);
+        assert.equal(work().length, 1);
+        const calls = structuredClone(secretDriver.calls);
+        const audit = structuredClone(fixture.auditSink.events);
+        const deployments = audit.filter(
+          (event) => event.action === "openclaw.agents.deploy" && event.outcome === "success",
+        );
+        assert.equal(deployments.length, 1);
+        assert.equal(deployments[0].actor.principalId, automation.id);
+        t.diagnostic(
+          JSON.stringify({
+            reply,
+            cliExit: failure.code,
+            posts: forwarded.length,
+            revisions: revisions.length,
+            work: work().length,
+            sender: providerCalls(),
+          }),
+        );
+        assert.equal(failure.code, 1, "an unusable receipt must leave the CLI outcome uncertain");
+        assert.equal(failure.stdout, "");
+        assert.match(failure.stderr, reply === "dropped" ? /EOF/ : /invalid.*receipt/i);
+        assert.match(failure.stderr, /same caller/);
+        const recoveryCommand = failure.stderr
+          .split("\n")
+          .map((line) => line.trim())
+          .find((line) => line.startsWith("occ "));
+        assert.ok(
+          recoveryCommand,
+          "the uncertain result must print an executable recovery command",
+        );
+        for (const expected of [
+          relayOrigin,
+          keyFile,
+          `--namespace ${namespace.id}`,
+          `agent recover-first-deployment ${agent.id}`,
+          `--key ${intent.key}`,
+          `--configuration ${intent.expectedConfigurationId}`,
+          `--generation ${intent.expectedGeneration}`,
+        ]) {
+          assert.ok(recoveryCommand.includes(expected), `recovery command must retain ${expected}`);
+        }
+        // Execute exactly the printed command, including its quoted path with spaces.
+        const recovery = await execute("/bin/sh", ["-c", recoveryCommand], {
+          env: { ...process.env, PATH: `${directory}:${process.env.PATH}` },
+        });
+        assert.deepEqual(relayErrors, []);
+        assert.deepEqual(recovered, committed);
+        assert.ok(recovery.stdout.includes(committed.revisionId));
+        assert.deepEqual(forwarded, [
+          { method: "POST", path: `${path}/deploy-first` },
+          {
+            method: "GET",
+            path: `${path}/deploy-first/${intent.key}/${intent.expectedConfigurationId}/${intent.expectedGeneration}`,
+          },
+        ]);
+        assert.equal(work().length, 1);
+        assert.deepEqual(await deployment.listRevisionMetadata(), revisions);
+        assert.deepEqual(secretDriver.calls, calls);
+        assert.equal(providerCalls(), 0);
+        assert.deepEqual(fixture.auditSink.events, audit);
+        t.diagnostic(
+          JSON.stringify({
+            reply,
+            recovered: true,
+            posts: 1,
+            gets: 1,
+            revisions: revisions.length,
+            work: work().length,
+            deploymentAudits: deployments.length,
+          }),
+        );
+      } finally {
+        if (relay?.listening) {
+          await new Promise((resolve, reject) =>
+            relay.close((error) => (error ? reject(error) : resolve())),
+          );
+        }
+        await app.close();
+      }
     });
-  // A provisioned human has no Namespace ServicePrincipal entry.
-  for (const [resourceKind, resourceId] of [
-    ["namespace", namespace.id],
-    ["agent", agent.id],
-  ]) {
-    const binding = await bind(member.principal.id, resourceKind, resourceId);
-    assert.equal(binding.status, 201, JSON.stringify(binding.body));
-    assert.equal(binding.data.subjectId, member.principal.id);
-    assert.equal(binding.data.resourceKind, resourceKind);
-    assert.equal(binding.data.resourceId, resourceId);
   }
-
-  for (const [subjectId, resourceKind, resourceId] of [
-    ["missing-human", "namespace", namespace.id],
-    [foreignAgent.servicePrincipalId, "namespace", namespace.id],
-    [member.principal.id, "namespace", foreign.id],
-    [member.principal.id, "namespace", `ns_${randomUUID()}`],
-    [member.principal.id, "agent", foreignAgent.id],
-    [member.principal.id, "agent", namespace.id],
-  ]) {
-    const denied = await bind(subjectId, resourceKind, resourceId);
-    assertApiError(denied, 400, "INVALID_REQUEST");
-  }
-
-  const memberApp = fixture.createApp(member.principal);
-  const forbidden = await injectedRequest(
-    memberApp,
-    "POST",
-    `/namespaces/${namespace.id}/iam/roles`,
-    {
-      body: { permissions: [{ action: "read", resourceKind: "namespace" }] },
-    },
-  );
-  assert.equal(forbidden.status, 403, "human grants must not confer policy administration");
-  const bindings = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/iam/access-bindings`,
-  );
-  assert.equal(bindings.data.length, 2, "rejected grants must leave policy unchanged");
 });
+
+test("guarded first deployment supports trusted registered validators and hides unknown failures", async () => {
+  for (const fails of [false, true]) {
+    const { controller, path, intent, secretDriver, work } = await firstDeploymentFixture();
+    let calls = 0;
+    const custom = {
+      id: "custom-channel",
+      implementation: "test",
+      capability: "channel",
+      async lookupDirectory() {
+        assert.fail("Unexpected directory lookup");
+      },
+      async validateCredentials() {
+        calls++;
+        if (fails) {
+          throw new Error("synthetic-private-validator-detail");
+        }
+      },
+    };
+    controller.fixture.controller.registerDriver(custom);
+    controller.fixture.controller.selectDriver("channel", custom.id);
+    const result = await controller.request("POST", `${path}/deploy-first`, { body: intent });
+    assert.equal(result.status, fails ? 500 : 202, JSON.stringify(result.body));
+    assert.equal(calls, 1);
+    assert.equal(work().length, fails ? 0 : 1);
+    if (fails) {
+      assert.equal(secretDriver.calls.length, 0);
+      assert.equal(
+        JSON.stringify(result.body).includes("synthetic-private-validator-detail"),
+        false,
+      );
+      assert.equal(
+        JSON.stringify(controller.fixture.auditSink.events).includes(
+          "synthetic-private-validator-detail",
+        ),
+        false,
+      );
+    }
+  }
+});
+
+test("guarded first deployment rechecks configuration after outside-transaction validation", async () => {
+  for (const change of [
+    "binding",
+    "generation",
+    "configuration",
+    "configuration-driver",
+    "channel",
+    "late-channel",
+    "late-configuration",
+  ]) {
+    const { controller, namespace, agent, path, intent, secretDriver, work } =
+      await firstDeploymentFixture();
+    const replacement = await createConfiguration(controller, namespace.id);
+    const state = controller.fixture.platformState;
+    const transact = state.transact.bind(state);
+    const { promise: validated, resolve: reached } = Promise.withResolvers();
+    const { promise: released, resolve: release } = Promise.withResolvers();
+    let pause = true;
+    state.transact = async (operation) => {
+      // The real Configuration and Slack validators have returned; admission has not locked.
+      if (pause) {
+        pause = false;
+        reached();
+        await released;
+      }
+      return transact(operation);
+    };
+    const admission = controller.request("POST", `${path}/deploy-first`, { body: intent });
+    await validated;
+    if (change === "binding" || change === "generation") {
+      const updated =
+        change === "binding"
+          ? await controller.request("PATCH", path, { body: { configurationId: replacement.id } })
+          : await controller.request(
+              "PATCH",
+              `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+              { body: { values: { temperature: "1" } } },
+            );
+      assert.equal(updated.status, 200, JSON.stringify(updated.body));
+    } else if (change === "late-channel" || change === "late-configuration") {
+      const driver =
+        change === "late-channel"
+          ? new SlackChannelDriver(async () => assert.fail("Unexpected provider"))
+          : createTestConfigurationDriver({ id: "late-configuration" });
+      if (change === "late-channel") {
+        driver.id = "late-channel";
+      }
+      controller.fixture.controller.registerDriver(driver);
+      // The second Configuration validation runs inside admission, after its
+      // initial Driver checks. A database lock cannot prevent this selection change.
+      controller.fixture.configurationDriver.validate = async () => {
+        controller.fixture.controller.selectDriver(driver.capability, driver.id);
+      };
+    } else if (change === "configuration") {
+      const driver = controller.fixture.configurationDriver;
+      const saved = driver.stored({ namespaceId: namespace.id, id: agent.configurationId });
+      await driver.update({ ...saved, values: { temperature: "1" } });
+    } else if (change === "configuration-driver") {
+      const driver = createTestConfigurationDriver({ id: "replacement-configuration" });
+      controller.fixture.controller.registerDriver(driver);
+      controller.fixture.controller.selectDriver("configuration", driver.id);
+    } else if (change === "channel") {
+      const driver = new SlackChannelDriver(async () => assert.fail("Unexpected provider"));
+      driver.id = "replacement-channel";
+      controller.fixture.controller.registerDriver(driver);
+      controller.fixture.controller.selectDriver("channel", driver.id);
+    }
+    release();
+    const result = await admission;
+    assert.equal(result.status, 409, JSON.stringify(result.body));
+    if (["binding", "generation", "configuration"].includes(change)) {
+      assert.match(result.body.error.message, /Recover the original first-deployment receipt/);
+      assert.doesNotMatch(result.body.error.message, /ordinary deploy/);
+    }
+    assert.equal(secretDriver.calls.length, change.startsWith("late-") ? 1 : 0);
+    if (change.startsWith("late-")) {
+      assert.equal(secretDriver.calls[0].operation, "resolve");
+    }
+    assert.equal(work().length, 0);
+  }
+});
+
+test("guarded first deployment enforces exact Secret operate before backend, provider, and admission", async (t) => {
+  for (const stage of [
+    "before",
+    "before-backend",
+    "after-backend",
+    "before-admission",
+    "cross-namespace",
+  ]) {
+    const { controller, namespace, agent, bot, path, intent, work, secretDriver, providerCalls } =
+      await slackFirstDeploymentFixture();
+    const fixture = controller.fixture;
+    const deny = () =>
+      fixture.state.restrictions.push({
+        id: `deny-secret-${stage}`,
+        namespaceId: namespace.id,
+        resourceKind: "secret",
+        resourceId: bot.id,
+        action: "operate",
+        effect: "deny",
+      });
+    if (stage === "before") {
+      deny();
+    }
+    if (stage === "before-backend") {
+      const read = fixture.platformState.read.bind(fixture.platformState);
+      fixture.platformState.read = async (operation) => {
+        const result = await read(operation);
+        if (result?.id === bot.id) {
+          deny();
+        }
+        return result;
+      };
+    }
+    if (stage === "after-backend") {
+      const withValue = secretDriver.withValue.bind(secretDriver);
+      secretDriver.withValue = (secret, use) =>
+        withValue(secret, (value) => {
+          deny();
+          return use(value);
+        });
+    }
+    if (stage === "before-admission") {
+      const transact = fixture.platformState.transact.bind(fixture.platformState);
+      fixture.platformState.transact = (operation) => {
+        deny();
+        return transact(operation);
+      };
+    }
+    if (stage === "cross-namespace") {
+      const read = fixture.platformState.read.bind(fixture.platformState);
+      fixture.platformState.read = (operation) =>
+        read((unit) =>
+          operation({
+            ...unit,
+            configurations: {
+              ...unit.configurations,
+              findConfiguration: async (...args) => {
+                const saved = await unit.configurations.findConfiguration(...args);
+                return {
+                  ...saved,
+                  secretBindings: {
+                    SLACK_BOT_TOKEN: {
+                      source: { ...bot.ref, namespaceId: `ns_${randomUUID()}` },
+                    },
+                  },
+                };
+              },
+            },
+          }),
+        );
+    }
+    const app = fixture.createApp(undefined, createFastifyApp);
+    let result;
+    try {
+      const url = await app.listen({ host: "127.0.0.1", port: 0 });
+      result = await request(url, "POST", `${path}/deploy-first`, {
+        session: app.defaultSession,
+        body: intent,
+      });
+    } finally {
+      await app.close();
+    }
+    assert.equal(
+      result.status,
+      stage === "cross-namespace" ? 404 : 403,
+      JSON.stringify(result.body),
+    );
+    assert.equal(work().length, 0);
+    assert.deepEqual(
+      await fixture.platformState.read((unit) =>
+        unit.revisions.listRevisionMetadata(namespace.id, agent.id),
+      ),
+      [],
+    );
+    assert.equal(providerCalls(), stage === "before-admission" ? 1 : 0);
+    const reads = secretDriver.calls.filter((call) => call.operation === "withValue").length;
+    assert.equal(reads, ["after-backend", "before-admission"].includes(stage) ? 1 : 0);
+    t.diagnostic(
+      JSON.stringify({ stage, sender: providerCalls(), withValue: reads, work: work().length }),
+    );
+  }
+});
+
+test("guarded first deployment rechecks Agent and Configuration authority before credential effects", async (t) => {
+  for (const authority of ["deploy", "read"]) {
+    for (const stage of ["before-backend", "after-backend"]) {
+      await t.test(`${authority} revoked ${stage}`, async (t) => {
+        const {
+          controller,
+          namespace,
+          agent,
+          bot,
+          path,
+          intent,
+          work,
+          secretDriver,
+          providerCalls,
+        } = await slackFirstDeploymentFixture();
+        const fixture = controller.fixture;
+        const revoke = () =>
+          fixture.state.restrictions.push({
+            id: `revoke-${authority}-${stage}`,
+            namespaceId: namespace.id,
+            resourceKind: authority === "deploy" ? "agent" : "configuration",
+            resourceId: authority === "deploy" ? agent.id : intent.expectedConfigurationId,
+            action: authority,
+            effect: "deny",
+          });
+        if (stage === "before-backend") {
+          // The Secret metadata lookup yields to a concurrent policy change. Native IAM
+          // still makes every decision; the wrapper only schedules the restriction.
+          const read = fixture.platformState.read.bind(fixture.platformState);
+          fixture.platformState.read = async (operation) => {
+            const result = await read(operation);
+            if (result?.id === bot.id) {
+              revoke();
+            }
+            return result;
+          };
+        } else {
+          // Model revocation while the backend was reading, before OCC receives its value.
+          const withValue = secretDriver.withValue.bind(secretDriver);
+          secretDriver.withValue = (secret, use) =>
+            withValue(secret, (value) => {
+              revoke();
+              return use(value);
+            });
+        }
+        const app = fixture.createApp(undefined, createFastifyApp);
+        try {
+          const url = await app.listen({ host: "127.0.0.1", port: 0 });
+          const result = await request(url, "POST", `${path}/deploy-first`, {
+            session: app.defaultSession,
+            body: intent,
+          });
+          const revisions = await fixture.platformState.read((unit) =>
+            unit.revisions.listRevisionMetadata(namespace.id, agent.id),
+          );
+          const reads = secretDriver.calls.filter((call) => call.operation === "withValue").length;
+          t.diagnostic(
+            JSON.stringify({
+              authority,
+              stage,
+              status: result.status,
+              sender: providerCalls(),
+              withValue: reads,
+              revisions: revisions.length,
+              work: work().length,
+            }),
+          );
+          assert.equal(result.status, 403, JSON.stringify(result.body));
+          assert.equal(revisions.length, 0);
+          assert.equal(work().length, 0);
+          assert.equal(
+            providerCalls(),
+            0,
+            "revoked deployment authority must prevent credential dispatch",
+          );
+          assert.equal(
+            reads,
+            stage === "after-backend" ? 1 : 0,
+            "revocation before backend access must prevent the Secret read",
+          );
+          assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 0);
+        } finally {
+          await app.close();
+        }
+      });
+    }
+  }
+});
+
+test("guarded first deployment refuses deleting Agents before validation", async (t) => {
+  for (const stage of ["before-valid-token", "before-wrong-role-token", "after-validation-error"]) {
+    await t.test(stage, async (t) => {
+      const deployment = await slackFirstDeploymentFixture();
+      const { controller, namespace, bot, path, intent, work, secretDriver, providerCalls } =
+        deployment;
+      const fixture = controller.fixture;
+      const app = fixture.createApp(undefined, createFastifyApp);
+      try {
+        const url = await app.listen({ host: "127.0.0.1", port: 0 });
+        if (stage !== "before-valid-token") {
+          // Store a real wrong-role value through the supported Secret mutation route.
+          const changed = await request(
+            url,
+            "PATCH",
+            `/namespaces/${namespace.id}/secrets/${bot.id}`,
+            {
+              session: app.defaultSession,
+              body: { value: "xoxp-synthetic-user" },
+            },
+          );
+          assert.equal(changed.status, 200, JSON.stringify(changed.body));
+        }
+        secretDriver.calls.length = 0;
+        let deletionWork;
+        const remove = async () => {
+          const deleted = await request(url, "DELETE", path, { session: app.defaultSession });
+          assert.equal(deleted.status, 202, JSON.stringify(deleted.body));
+          assert.equal(deleted.data.status, "deleting");
+          assert.equal(deleted.data.desiredRuntimeState, "stopped");
+          deletionWork = fixture.platformState.pendingOperations();
+        };
+        if (stage === "after-validation-error") {
+          const withValue = secretDriver.withValue.bind(secretDriver);
+          secretDriver.withValue = async (secret, use) => {
+            // Let the actual Slack validator reject the stored token, then accept deletion
+            // before OCC carries the saved validation error into locked admission.
+            const outcome = await withValue(secret, use);
+            await remove();
+            return outcome;
+          };
+        } else {
+          await remove();
+        }
+        const result = await request(url, "POST", `${path}/deploy-first`, {
+          session: app.defaultSession,
+          body: intent,
+        });
+        const revisions = await deployment.listRevisionMetadata();
+        const reads = secretDriver.calls.filter((call) => call.operation === "withValue").length;
+        t.diagnostic(
+          JSON.stringify({
+            stage,
+            status: result.status,
+            code: result.body.error?.code,
+            sender: providerCalls(),
+            withValue: reads,
+            revisions: revisions.length,
+            work: work().length,
+          }),
+        );
+        assertApiError(result, 409, "AGENT_DELETING");
+        assert.equal(revisions.length, 0);
+        assert.equal(work().length, 0);
+        assert.deepEqual(fixture.platformState.pendingOperations(), deletionWork);
+        assert.equal(providerCalls(), 0);
+        assert.equal(reads, stage === "after-validation-error" ? 1 : 0);
+        assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 0);
+      } finally {
+        await app.close();
+      }
+    });
+  }
+});
+
+test("matching first deployments recover between the initial snapshot and lock despite fresh failures", async () => {
+  for (const failure of ["validator", "compute", "deploy", "read", "actor"]) {
+    const { controller, namespace, agent, path, intent, work, secretDriver } =
+      await firstDeploymentFixture();
+    const fixture = controller.fixture;
+    const state = fixture.platformState;
+    const read = state.read.bind(state);
+    const { promise: missed, resolve: sawMiss } = Promise.withResolvers();
+    const { promise: resume, resolve: release } = Promise.withResolvers();
+    let pause = true;
+    let lookups = 0;
+    // Count receipt lookups at the storage boundary, including the locked contender.
+    const observe = (unit) => ({
+      ...unit,
+      revisions: {
+        ...unit.revisions,
+        findFirstDeploymentReceipt: async (...args) => {
+          lookups++;
+          return unit.revisions.findFirstDeploymentReceipt(...args);
+        },
+        findRevision: async () => assert.fail("Receipt recovery decoded a full revision"),
+      },
+    });
+    state.read = async (operation) => {
+      const result = await read((unit) => operation(observe(unit)));
+      if (result?.metadata && pause) {
+        pause = false;
+        sawMiss();
+        await resume;
+      }
+      return result;
+    };
+    const transact = state.transact.bind(state);
+    state.transact = (operation) => transact((unit) => operation(observe(unit)));
+    let session = fixture.session;
+    if (failure === "actor") {
+      const other = await fixture.createAuthPrincipal("other-first-deployer");
+      fixture.state.identities.push(other.principal);
+      fixture.state.bindings.push({
+        ...fixture.state.bindings[0],
+        id: "other-deployer",
+        subjectId: other.principal.id,
+      });
+      session = other.session;
+    }
+    const late = controller.request("POST", `${path}/deploy-first`, { body: intent, session });
+    await missed;
+    const winner = await controller.request("POST", `${path}/deploy-first`, { body: intent });
+    assert.equal(winner.status, 202, JSON.stringify(winner.body));
+    assert.equal(lookups, 3); // contender miss; winner miss and locked lookup
+    if (failure === "validator") {
+      fixture.configurationDriver.validate = async () => {
+        throw new Error("synthetic-private-error");
+      };
+    }
+    if (failure === "compute") {
+      fixture.computeDriver.implementation = "changed-after-commit";
+    }
+    if (["validator", "compute"].includes(failure)) {
+      fixture.state.roles[0].permissions = [
+        { action: "deploy", resourceKind: "agent" },
+        { action: "read", resourceKind: "configuration" },
+      ];
+    }
+    if (failure === "deploy" || failure === "read") {
+      fixture.state.restrictions.push({
+        id: `revoke-${failure}`,
+        namespaceId: namespace.id,
+        effect: "deny",
+        action: failure,
+        resourceKind: failure === "deploy" ? "agent" : "configuration",
+        resourceId: failure === "deploy" ? agent.id : intent.expectedConfigurationId,
+      });
+    }
+    release();
+    const recovered = await late;
+    const denied = failure === "deploy" || failure === "read";
+    assert.equal(
+      recovered.status,
+      denied ? 403 : failure === "actor" ? 409 : 202,
+      JSON.stringify(recovered.body),
+    );
+    if (!denied && failure !== "actor") {
+      assert.deepEqual(recovered.data, winner.data);
+    }
+    assert.equal(lookups, denied ? 3 : 4);
+    assert.equal(work().length, 1);
+    assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 1);
+  }
+});
+
+test("first deployment recovery generation has an exact decimal wire bound over real HTTP", async () => {
+  const { controller, path, intent, secretDriver, work } = await firstDeploymentFixture();
+  const app = controller.fixture.createApp(undefined, createFastifyApp);
+  try {
+    const url = await app.listen({ host: "127.0.0.1", port: 0 });
+    const operation =
+      app.swagger().paths[
+        "/namespaces/{namespaceId}/agents/{agentId}/deploy-first/{key}/{expectedConfigurationId}/{expectedGeneration}"
+      ].get;
+    assert.deepEqual(operation.responses["200"].headers["Cache-Control"].schema, {
+      type: "string",
+      const: "no-store",
+    });
+    const schema = operation.parameters.find(
+      (parameter) => parameter.name === "expectedGeneration",
+    ).schema;
+    const pattern = new RegExp(schema.pattern);
+    for (const generation of ["1", "9007199254740991", "9007199254740992", "0", "01", "1\n"]) {
+      const valid = generation === "1" || generation === "9007199254740991";
+      assert.equal(pattern.test(generation), valid, generation);
+      const result = await request(
+        url,
+        "GET",
+        `${path}/deploy-first/${intent.key}/${intent.expectedConfigurationId}/${encodeURIComponent(generation)}`,
+        { session: app.defaultSession },
+      );
+      assert.equal(result.status, valid ? 200 : 400, generation);
+      if (valid) {
+        assert.equal(result.data, null);
+      }
+      assert.equal(result.headers.get("cache-control"), "no-store");
+    }
+    // Independent integer comparison checks every decimal prefix boundary of the maximum.
+    const maximum = "9007199254740991";
+    for (let index = 0; index < maximum.length; index++) {
+      for (let digit = 0; digit <= 9; digit++) {
+        const candidate = maximum.slice(0, index) + digit + "9".repeat(maximum.length - index - 1);
+        assert.equal(
+          pattern.test(candidate),
+          candidate[0] !== "0" && BigInt(candidate) <= 9007199254740991n,
+          candidate,
+        );
+      }
+    }
+    assert.equal(secretDriver.calls.length, 0);
+    assert.equal(work().length, 0);
+  } finally {
+    await app.close();
+  }
+});
+
+test("guarded deployment rejects dot keys and unrecognized intent fields without writes", async () => {
+  const { controller, path, intent, work, secretDriver } = await firstDeploymentFixture();
+  for (const body of [
+    { ...intent, key: "." },
+    { ...intent, key: ".." },
+    { ...intent, actorId: "other" },
+  ]) {
+    const result = await controller.request("POST", `${path}/deploy-first`, { body });
+    assertApiError(result, 400, "INVALID_REQUEST");
+  }
+  assert.equal(work().length, 0);
+  assert.equal(secretDriver.calls.length, 0);
+});
+
+test("stock deploy baseline: a lost reply and re-POST admit independent revisions", async () => {
+  const { controller, fixture, namespace } = await readyNamespaceFixture("deploy-retry-baseline", {
+    recordOperations: true,
+  });
+  const agent = await createAgent(controller, namespace.id, "retry-baseline");
+  await bindHarnessKey(fixture, namespace.id, agent);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const revisions = () =>
+    fixture.platformState.read((state) => state.revisions.listRevisions(namespace.id, agent.id));
+  const work = () =>
+    fixture.platformState
+      .pendingOperations()
+      .filter(
+        (operation) => operation.kind === "agent_revision" && operation.action === "reconcile",
+      );
+
+  assert.equal((await revisions()).length, 0);
+  // Discard the response. Inspect the owning store as the test observer, not as the client.
+  await controller.request("POST", `${agentPath}/deploy`);
+  const [first] = await revisions();
+  assert.ok(first, "the first request must commit before its reply is discarded");
+  assert.equal(first.revision, 1);
+  assert.equal(work().length, 1);
+  assert.equal(work()[0].resourceId, first.id);
+
+  const retry = await controller.request("POST", `${agentPath}/deploy`);
+  assert.equal(retry.status, 202, JSON.stringify(retry.body));
+  assert.equal(retry.data.revision, 2);
+  assert.notEqual(retry.data.id, first.id);
+  assert.deepEqual((await revisions())[0], first);
+  assert.deepEqual(
+    new Set(work().map((operation) => operation.resourceId)),
+    new Set([first.id, retry.data.id]),
+  );
+  assert.equal(work().length, 2);
+});
+
+test("ordinary deploy rejects request bodies and admits the current saved generation", async () => {
+  const { controller, fixture, namespace } = await readyNamespaceFixture(
+    "deploy-generation-baseline",
+    { recordOperations: true },
+  );
+  const agent = await createAgent(controller, namespace.id, "generation-baseline");
+  await bindHarnessKey(fixture, namespace.id, agent);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const reviewed = await controller.request("GET", configurationPath);
+  assert.equal(reviewed.status, 200);
+  const updated = await controller.request("PATCH", configurationPath, {
+    body: { values: { temperature: "1" }, expectedGeneration: reviewed.data.generation },
+  });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.equal(updated.data.generation, reviewed.data.generation + 1);
+
+  const rejected = await controller.request("POST", `${agentPath}/deploy`, {
+    body: {
+      expectedConfigurationId: reviewed.data.id,
+      expectedGeneration: reviewed.data.generation,
+    },
+  });
+  assertApiError(rejected, 400, "INVALID_REQUEST");
+  assert.equal(
+    (
+      await fixture.platformState.read((state) =>
+        state.revisions.listRevisions(namespace.id, agent.id),
+      )
+    ).length,
+    0,
+  );
+  assert.equal(
+    fixture.platformState
+      .pendingOperations()
+      .filter((operation) => operation.kind === "agent_revision").length,
+    0,
+  );
+
+  const deployed = await controller.request("POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
+  assert.equal(deployed.data.configurationId, reviewed.data.id);
+  assert.equal(deployed.data.configurationGeneration, updated.data.generation);
+  assert.equal(deployed.data.revision, 1);
+  assert.equal(deployed.data.configuration.temperature, "1");
+});
+
+test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource routes", () =>
+  runResourceRoutes({
+    configuredController,
+    bootstrap,
+    defaultNamespace,
+    createNamespace,
+    createAgent,
+    missingRevisionId,
+    missingAgentId,
+  }));
 
 test("credential withdrawal routes authorize the Agent, not the credential source", async () => {
-  const fixture = await createInjectedFixture();
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
+  const controller = await configuredController();
+  const { fixture } = controller;
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "withdrawal-iam");
   const agent = await createAgent(controller, namespace.id, "withdrawal-agent");
@@ -1110,121 +2303,8 @@ test("credential withdrawal routes authorize the Agent, not the credential sourc
   );
 });
 
-test("Namespace IAM refuses bindings whose Role cannot apply to the target", async () => {
-  const fixture = await createInjectedFixture();
-  const member = await fixture.createAuthPrincipal("inapplicable-role-member");
-  fixture.state.identities.push(member.principal);
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "inapplicable-role");
-  const agent = await createAgent(controller, namespace.id, "inapplicable-role-agent");
-  const createRole = async (permissions) => {
-    const role = await controller.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
-      body: { permissions },
-    });
-    assert.equal(role.status, 201, JSON.stringify(role.body));
-    return role.data.id;
-  };
-  const bind = (roleId, resourceKind, resourceId) =>
-    controller.request("POST", `/namespaces/${namespace.id}/iam/access-bindings`, {
-      body: {
-        subjectKind: "identity",
-        subjectId: member.principal.id,
-        roleId,
-        resourceKind,
-        resourceId,
-      },
-    });
-
-  // Role creation now refuses create Permissions, but Roles stored before that refusal can
-  // still hold them; write one straight to the policy State, as the earlier API did.
-  // Binding it is the dogfood "share the Namespace" attempt: create is authorized against
-  // the Namespace, never an exact resource, so these Permissions would be silently dropped
-  // at evaluation.
-  const storedRole = async (id, permissions) => {
-    await fixture.platformState.transact((unit) =>
-      unit.iamPolicy.createRole({ id, namespaceId: namespace.id, permissions }),
-    );
-    return id;
-  };
-  const creator = await storedRole(`role_${randomUUID()}`, [
-    { action: "read", resourceKind: "namespace" },
-    { action: "create", resourceKind: "agent" },
-    { action: "create", resourceKind: "configuration" },
-    { action: "create", resourceKind: "secret" },
-  ]);
-  for (const [resourceKind, resourceId] of [
-    ["namespace", namespace.id],
-    ["agent", agent.id],
-  ]) {
-    const rejected = await bind(creator, resourceKind, resourceId);
-    assertApiError(rejected, 400, "INVALID_REQUEST");
-    assert.deepEqual(rejected.body.error.details, [{ path: "/roleId", code: "INVALID_VALUE" }]);
-    assert.match(
-      rejected.body.error.message,
-      /^Role role_\S+ has Permissions this API cannot bind: agent:create, configuration:create, secret:create\. Create is checked on the Namespace, and this API binds only exact resources; bind a Role without them\.$/,
-    );
-  }
-
-  // A long list of create Permissions is shortened so the guidance still fits the cap.
-  const manyCreates = await storedRole(
-    `role_${randomUUID()}`,
-    ["agent", "configuration", "credential_source", "preset", "secret", "service_account"].map(
-      (resourceKind) => ({ action: "create", resourceKind }),
-    ),
-  );
-  const long = await bind(manyCreates, "namespace", namespace.id);
-  assert.equal(long.status, 400, JSON.stringify(long.body));
-  assert.ok(Array.from(long.body.error.message).length <= 256, long.body.error.message);
-  assert.match(long.body.error.message, / and \d+ more\. .*bind a Role without them\.$/);
-
-  // A stored create Role stays readable and deletable, so an administrator can replace it.
-  const policyPath = `/namespaces/${namespace.id}/iam/roles`;
-  const listed = await controller.request("GET", policyPath);
-  assert.ok(
-    listed.data.some((role) => role.id === creator),
-    "stored create Roles must still be listed",
-  );
-  const read = await controller.request("GET", `${policyPath}/${creator}`);
-  assert.equal(read.status, 200, JSON.stringify(read.body));
-  assert.deepEqual(
-    read.data.permissions.filter((permission) => permission.action === "create"),
-    [
-      { action: "create", resourceKind: "agent" },
-      { action: "create", resourceKind: "configuration" },
-      { action: "create", resourceKind: "secret" },
-    ],
-  );
-  const removed = await controller.request("DELETE", `${policyPath}/${creator}`);
-  assert.equal(removed.status, 204, JSON.stringify(removed.body));
-
-  // A Role with no Permission for the target's kind would grant nothing there.
-  const agentReader = await createRole([{ action: "read", resourceKind: "agent" }]);
-  const nothing = await bind(agentReader, "namespace", namespace.id);
-  assert.equal(nothing.status, 400, JSON.stringify(nothing.body));
-  assert.match(nothing.body.error.message, /grants nothing on the namespace target.*agent:read/);
-
-  // The same Role still binds to a target its Permissions name.
-  const granted = await bind(agentReader, "agent", agent.id);
-  assert.equal(granted.status, 201, JSON.stringify(granted.body));
-  const bindings = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/iam/access-bindings`,
-  );
-  assert.deepEqual(
-    bindings.data.map((binding) => binding.id),
-    [granted.data.id],
-    "refused bindings must leave policy unchanged",
-  );
-});
-
 test("credential source registration names the missing Credential Gateway", async () => {
-  const fixture = await createInjectedFixture();
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
+  const controller = await configuredController();
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "no-credential-gateway");
   // This Installation selects no Credential Gateway, like the Kubernetes production profile;
@@ -1241,8 +2321,8 @@ test("credential source registration names the missing Credential Gateway", asyn
   );
 });
 
-test("Agent reads return the bound credentialSources; revision reads return only source IDs", async () => {
-  const fixture = await createInjectedFixture({
+test("Agent drafts and revisions support up to 64 distinct credential sources and expose only their IDs", async () => {
+  const controller = await configuredController({
     computeDriver: createReadyComputeDriver("compute-credential-sources", {
       validateHarnessAuth() {},
       async stopRevision() {},
@@ -1252,12 +2332,9 @@ test("Agent reads return the bound credentialSources; revision reads return only
       },
     }),
   });
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
+  const { fixture } = controller;
   await bootstrap(controller);
-  const namespace = await createNamespace(controller, "credential-source-binding");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const namespace = await createReadyNamespace(controller, "credential-source-binding");
   const gateway = {
     id: "credential-gateway-api",
     capability: "credential_gateway",
@@ -1308,14 +2385,23 @@ test("Agent reads return the bound credentialSources; revision reads return only
     fixture.controller.registerDriver(driver);
     fixture.controller.selectDriver(driver.capability, driver.id);
   }
-  const source = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/credential-sources`,
-    {
-      body: { name: "registry", type: "registry", config: { host: "registry.example.com" } },
-    },
-  );
-  assert.equal(source.status, 201, JSON.stringify(source.body));
+  const sources = [];
+  for (let i = 0; i < 65; i++) {
+    const registered = await controller.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        body: {
+          name: `registry-${i}`,
+          type: "registry",
+          config: { host: `registry-${i}.example.com` },
+        },
+      },
+    );
+    assert.equal(registered.status, 201, JSON.stringify(registered.body));
+    sources.push({ sourceId: registered.data.id });
+  }
+  const credentialSources = sources.slice(0, 64);
   const configuration = await createConfiguration(controller, namespace.id, {
     agents: {
       defaults: {
@@ -1330,11 +2416,11 @@ test("Agent reads return the bound credentialSources; revision reads return only
       configurationId: configuration.id,
       executionMode: "dedicated",
       harnessAuth: { method: "runtime" },
-      credentialSources: [{ sourceId: source.data.id }],
+      credentialSources,
     },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  assert.deepEqual(created.data.credentialSources, [{ sourceId: source.data.id }]);
+  assert.deepEqual(created.data.credentialSources, credentialSources);
   // An object array declared uniqueItems: listing one source twice names the rule.
   const repeated = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
@@ -1342,7 +2428,7 @@ test("Agent reads return the bound credentialSources; revision reads return only
       configurationId: configuration.id,
       executionMode: "dedicated",
       harnessAuth: { method: "runtime" },
-      credentialSources: [{ sourceId: source.data.id }, { sourceId: source.data.id }],
+      credentialSources: [sources[0], sources[0]],
     },
   });
   assert.equal(repeated.status, 400, JSON.stringify(repeated.body));
@@ -1354,9 +2440,15 @@ test("Agent reads return the bound credentialSources; revision reads return only
     { path: "/credentialSources", code: "INVALID_VALUE" },
   ]);
   const agentPath = `/namespaces/${namespace.id}/agents/${created.data.id}`;
-  assert.deepEqual((await controller.request("GET", agentPath)).data.credentialSources, [
-    { sourceId: source.data.id },
-  ]);
+  const overflow = await controller.request("PATCH", agentPath, {
+    body: { configurationId: configuration.id, credentialSources: sources },
+  });
+  assertApiError(overflow, 400, "INVALID_REQUEST");
+  assert.match(overflow.body.error.message, /credentialSources.*at most 64 items/);
+  assert.deepEqual(
+    (await controller.request("GET", agentPath)).data.credentialSources,
+    credentialSources,
+  );
 
   const roleId = `credential-source-operate-${created.data.id}`;
   fixture.state.roles.push({
@@ -1364,15 +2456,17 @@ test("Agent reads return the bound credentialSources; revision reads return only
     namespaceId: namespace.id,
     permissions: [{ action: "operate", resourceKind: "credential_source" }],
   });
-  fixture.state.bindings.push({
-    id: roleId,
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: created.data.servicePrincipalId,
-    roleId,
-    resourceKind: "credential_source",
-    resourceId: source.data.id,
-  });
+  for (const { sourceId } of credentialSources) {
+    fixture.state.bindings.push({
+      id: `${roleId}-${sourceId}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: created.data.servicePrincipalId,
+      roleId,
+      resourceKind: "credential_source",
+      resourceId: sourceId,
+    });
+  }
   fixture.state.identities.push({
     kind: "service_principal",
     id: created.data.servicePrincipalId,
@@ -1382,26 +2476,23 @@ test("Agent reads return the bound credentialSources; revision reads return only
   const deployed = await controller.request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   // The gateway and type frozen at admission are private admission metadata.
-  assert.deepEqual(deployed.data.credentialSources, [{ sourceId: source.data.id }]);
+  assert.deepEqual(deployed.data.credentialSources, credentialSources);
   const revision = await controller.request("GET", `${agentPath}/revisions/${deployed.data.id}`);
   assert.equal(revision.status, 200, JSON.stringify(revision.body));
-  assert.deepEqual(revision.data.credentialSources, [{ sourceId: source.data.id }]);
+  assert.deepEqual(revision.data.credentialSources, credentialSources);
 });
 
 test("refresh source PATCH and rotate refuse a stale refresh token and audit a failed gateway effect", async () => {
-  const fixture = await createInjectedFixture({
+  const controller = await configuredController({
     computeDriver: createReadyComputeDriver("compute-credential-refresh", {
       async resolveSandboxNamespace(namespace) {
         return { ...namespace, name: `placed-${namespace.id.slice(-12)}` };
       },
     }),
   });
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
+  const { fixture } = controller;
   await bootstrap(controller);
-  const namespace = await createNamespace(controller, "credential-source-refresh-audit");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const namespace = await createReadyNamespace(controller, "credential-source-refresh-audit");
   const gateway = {
     id: "credential-gateway-refresh-api",
     capability: "credential_gateway",
@@ -1519,13 +2610,7 @@ test("refresh source PATCH and rotate refuse a stale refresh token and audit a f
 });
 
 test("a duplicate Secret name answers 409 naming the taken Secret name", async () => {
-  const fixture = await createInjectedFixture();
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "secret-duplicate-name");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const { controller, namespace } = await readyNamespaceFixture("secret-duplicate-name");
   const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
     body: { name: "Model API key", value: "first-value" },
   });
@@ -1536,20 +2621,11 @@ test("a duplicate Secret name answers 409 naming the taken Secret name", async (
     body: { name: "Model API key", value: "second-value" },
   });
   assertApiError(duplicate, 409, "RESOURCE_CONFLICT");
-  assert.equal(
-    duplicate.body.error.message,
-    "A Secret with this name already exists in this Namespace. Choose a different name.",
-  );
+  assert.equal(duplicate.body.error.message, SECRET_NAME_CONFLICT);
 });
 
 test("Secret values with an unpaired surrogate are refused as an invalid value", async () => {
-  const fixture = await createInjectedFixture();
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "secret-value-validation");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const { controller, namespace } = await readyNamespaceFixture("secret-value-validation");
   const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
     body: { name: "Valid value", value: "valid-secret-\u{1F511}" },
   });
@@ -1573,219 +2649,13 @@ test("Secret values with an unpaired surrogate are refused as an invalid value",
   }
 });
 
-test("Namespace IAM routes bind humans enrolled after bootstrap through the live resolver", async () => {
-  const fixture = await createInjectedFixture();
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "late-enrolled-iam");
-  const foreign = await createNamespace(controller, "late-enrolled-foreign");
-  const agent = await createAgent(controller, namespace.id, "late-enrolled-agent");
-  const foreignAgent = await createAgent(controller, foreign.id, "late-enrolled-foreign-agent");
-  const role = await controller.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
-    body: {
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "agent" },
-      ],
-    },
-  });
-  assert.equal(role.status, 201, JSON.stringify(role.body));
-  const bind = (subjectId, resourceKind, resourceId) =>
-    controller.request("POST", `/namespaces/${namespace.id}/iam/access-bindings`, {
-      body: { subjectKind: "identity", subjectId, roleId: role.data.id, resourceKind, resourceId },
-    });
-
-  // Enrolled after the controller and its State were built.
-  const member = await fixture.createAuthPrincipal("late-enrolled-member");
-  fixture.state.identities.push(member.principal);
-  const localService = `sp_${randomUUID()}`;
-  const foreignService = `sp_${randomUUID()}`;
-  const installationService = `sp_${randomUUID()}`;
-  fixture.state.identities.push(
-    { kind: "service_principal", id: localService, namespaceId: namespace.id },
-    { kind: "service_principal", id: foreignService, namespaceId: foreign.id },
-    { kind: "service_principal", id: installationService },
-  );
-
-  for (const [subjectId, resourceKind, resourceId] of [
-    [member.principal.id, "namespace", namespace.id],
-    [member.principal.id, "agent", agent.id],
-    [localService, "namespace", namespace.id],
-    [agent.servicePrincipalId, "namespace", namespace.id],
-  ]) {
-    const binding = await bind(subjectId, resourceKind, resourceId);
-    assert.equal(binding.status, 201, JSON.stringify(binding.body));
-    assert.equal(binding.data.subjectId, subjectId);
-  }
-
-  for (const [subjectId, resourceKind, resourceId] of [
-    [`prn_${randomUUID()}`, "namespace", namespace.id],
-    [foreignService, "namespace", namespace.id],
-    [installationService, "namespace", namespace.id],
-    [foreignAgent.servicePrincipalId, "namespace", namespace.id],
-    [member.principal.id, "namespace", foreign.id],
-    [member.principal.id, "namespace", `ns_${randomUUID()}`],
-    [member.principal.id, "agent", foreignAgent.id],
-  ]) {
-    const denied = await bind(subjectId, resourceKind, resourceId);
-    assertApiError(denied, 400, "INVALID_REQUEST", subjectId);
-  }
-  const bindings = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/iam/access-bindings`,
-  );
-  assert.equal(bindings.data.length, 4, "rejected subjects must leave policy unchanged");
-});
-
-test("access removed by deleting its target or Namespace is audited and leaves no policy behind", async () => {
-  const fixture = await createInjectedFixture();
-  const member = await fixture.createAuthPrincipal("side-effect-member");
-  fixture.state.identities.push(member.principal);
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "side-effect-access");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
-    body: { name: "Side effect key", value: "side-effect-secret" },
-  });
-  assert.equal(secret.status, 201, JSON.stringify(secret.body));
-  const configuration = await createConfiguration(controller, namespace.id);
-  const agent = await createAgent(controller, namespace.id, "side-effect-agent");
-  const policyPath = `/namespaces/${namespace.id}/iam`;
-  const role = await controller.request("POST", `${policyPath}/roles`, {
-    body: {
-      permissions: [
-        { action: "read", resourceKind: "secret" },
-        { action: "read", resourceKind: "configuration" },
-        { action: "delete", resourceKind: "agent" },
-      ],
-    },
-  });
-  assert.equal(role.status, 201, JSON.stringify(role.body));
-  const bind = async (resourceKind, resourceId) => {
-    const binding = await controller.request("POST", `${policyPath}/access-bindings`, {
-      body: {
-        subjectKind: "identity",
-        subjectId: member.principal.id,
-        roleId: role.data.id,
-        resourceKind,
-        resourceId,
-      },
-    });
-    assert.equal(binding.status, 201, JSON.stringify(binding.body));
-    return binding.data;
-  };
-  const secretBinding = await bind("secret", secret.data.id);
-  const configurationBinding = await bind("configuration", configuration.id);
-  const agentBinding = await bind("agent", agent.id);
-  const removedEntry = (binding) => ({
-    id: binding.id,
-    subjectKind: "identity",
-    subjectId: member.principal.id,
-    roleId: role.data.id,
-    resourceKind: binding.resourceKind,
-    resourceId: binding.resourceId,
-  });
-  const lastEvent = (action) =>
-    fixture.auditSink.events.findLast((event) => event.action === action);
-
-  assert.equal(
-    (await controller.request("DELETE", `/namespaces/${namespace.id}/secrets/${secret.data.id}`))
-      .status,
-    204,
-  );
-  assert.deepEqual(lastEvent("openclaw.secrets.delete").details.removedAccessBindings, [
-    removedEntry(secretBinding),
-  ]);
-  assert.equal(
-    (
-      await controller.request(
-        "DELETE",
-        `/namespaces/${namespace.id}/configurations/${configuration.id}`,
-      )
-    ).status,
-    204,
-  );
-  assert.deepEqual(lastEvent("openclaw.configurations.delete").details.removedAccessBindings, [
-    removedEntry(configurationBinding),
-  ]);
-  const deleting = await controller.request(
-    "DELETE",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-  );
-  assert.equal(deleting.status, 202, JSON.stringify(deleting.body));
-  assert.deepEqual(lastEvent("openclaw.agents.delete").details.accessBindingsRemovedOnCompletion, [
-    removedEntry(agentBinding),
-  ]);
-
-  // A Namespace tombstone keeps none of its own Roles or AccessBindings.
-  const empty = await createNamespace(controller, "side-effect-empty");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, empty.id, "ready");
-  const reader = await controller.request("POST", `/namespaces/${empty.id}/iam/roles`, {
-    body: { permissions: [{ action: "read", resourceKind: "namespace" }] },
-  });
-  assert.equal(reader.status, 201, JSON.stringify(reader.body));
-  const unused = await controller.request("POST", `/namespaces/${empty.id}/iam/roles`, {
-    body: { permissions: [{ action: "read", resourceKind: "agent" }] },
-  });
-  assert.equal(unused.status, 201, JSON.stringify(unused.body));
-  const readerBinding = await controller.request(
-    "POST",
-    `/namespaces/${empty.id}/iam/access-bindings`,
-    {
-      body: {
-        subjectKind: "identity",
-        subjectId: member.principal.id,
-        roleId: reader.data.id,
-        resourceKind: "namespace",
-        resourceId: empty.id,
-      },
-    },
-  );
-  assert.equal(readerBinding.status, 201, JSON.stringify(readerBinding.body));
-  assert.equal((await controller.request("DELETE", `/namespaces/${empty.id}`)).status, 202);
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, empty.id, "deleted");
-  assert.equal((await controller.request("GET", `/namespaces/${empty.id}`)).status, 404);
-  const remaining = await fixture.controller.transact(async (unit) => ({
-    bindings: await unit.iamPolicy.listAccessBindings(empty.id),
-    roles: await unit.iamPolicy.listRoles(empty.id),
-  }));
-  assert.deepEqual(remaining, { bindings: [], roles: [] });
-  const teardown = fixture.auditSink.events.findLast(
-    (event) =>
-      event.action === "openclaw.namespaces.lifecycle.delete" && event.resource.id === empty.id,
-  );
-  assert.equal(teardown.outcome, "success");
-  assert.deepEqual(teardown.details.removedAccessBindings, [
-    {
-      id: readerBinding.data.id,
-      subjectKind: "identity",
-      subjectId: member.principal.id,
-      roleId: reader.data.id,
-      resourceKind: "namespace",
-      resourceId: empty.id,
-    },
-  ]);
-  assert.deepEqual(
-    [...teardown.details.removedRoleIds].sort(),
-    [reader.data.id, unused.data.id].sort(),
-  );
-});
-
 test("a state conflict names what blocks the request, after authorization only", async () => {
-  const fixture = await createInjectedFixture();
+  const controller = await configuredController();
+  const { fixture } = controller;
   const member = await fixture.createAuthPrincipal("state-conflict-member");
   fixture.state.identities.push(member.principal);
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
   await bootstrap(controller);
-  const namespace = await createNamespace(controller, "state-conflict");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const namespace = await createReadyNamespace(controller, "state-conflict");
   const deletion = await controller.request("DELETE", `/namespaces/${namespace.id}`);
   assert.equal(deletion.status, 202, JSON.stringify(deletion.body));
 
@@ -1875,7 +2745,7 @@ test("Create Agent's preflight refuses what Configuration and Agent create would
   assert.equal(unknown.status, 400, JSON.stringify(unknown.body));
   assert.equal(
     unknown.body.error.message,
-    "A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: occ-plugin:missing. Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.",
+    "A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: occ-plugin:missing. Check each plugin ID and its Driver prefix against the catalog for the Agent's Harness.",
   );
 
   // No route lists Configurations; the Agent and Secret collections stay empty.
@@ -1924,712 +2794,8 @@ test("Create Agent's preflight refuses what Configuration and Agent create would
   assert.equal(both.status, 400, JSON.stringify(both.body));
 });
 
-test("Namespace IAM reports invalid policy input as 400 with the field and refuses inert Permissions", async () => {
-  const fixture = await createInjectedFixture();
-  const member = await fixture.createAuthPrincipal("policy-validation-member");
-  fixture.state.identities.push(member.principal);
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "policy-validation");
-  const other = await createNamespace(controller, "policy-validation-other");
-  const createRole = (namespaceId, permissions) =>
-    controller.request("POST", `/namespaces/${namespaceId}/iam/roles`, {
-      body: { permissions },
-    });
-
-  // Pairs that no operation checks would be stored and grant nothing.
-  for (const [action, resourceKind] of [
-    ["read_logs", "secret"],
-    ["administer", "secret"],
-    ["deploy", "configuration"],
-    ["update", "agent_revision"],
-    ["operate", "preset"],
-  ]) {
-    const rejected = await createRole(namespace.id, [
-      { action: "read", resourceKind: "agent" },
-      { action, resourceKind },
-    ]);
-    assertApiError(rejected, 400, "INVALID_REQUEST");
-    assert.deepEqual(rejected.body.error.details, [
-      { path: "/permissions", code: "INVALID_VALUE" },
-    ]);
-    assert.match(
-      rejected.body.error.message,
-      new RegExp(`grant nothing: ${resourceKind}:${action}\\.`),
-    );
-  }
-  // A Role naming many of them gets a message within the 256-character error contract.
-  const kinds = ["agent_revision", "configuration", "credential_source", "preset", "secret"];
-  const actions = ["administer", "create", "delete", "deploy", "operate", "read_logs", "update"];
-  const many = await createRole(
-    namespace.id,
-    kinds.flatMap((resourceKind) => actions.map((action) => ({ action, resourceKind }))),
-  );
-  assert.equal(many.status, 400, JSON.stringify(many.body));
-  assert.deepEqual(many.body.error.details, [{ path: "/permissions", code: "INVALID_VALUE" }]);
-  assert.ok(Array.from(many.body.error.message).length <= 256, many.body.error.message);
-  assert.match(
-    many.body.error.message,
-    /^No operation checks these Permissions, so they would grant nothing: agent_revision:administer, .* and \d+ more\. See the per-kind actions in the permissions reference\.$/,
-  );
-  const duplicate = await createRole(namespace.id, [
-    { action: "read", resourceKind: "agent" },
-    { action: "read", resourceKind: "agent" },
-  ]);
-  assert.equal(duplicate.status, 400, JSON.stringify(duplicate.body));
-  assert.deepEqual(duplicate.body.error.details, [
-    { path: "/permissions/1", code: "INVALID_VALUE" },
-  ]);
-  assert.match(duplicate.body.error.message, /agent:read more than once/);
-  const lifecycle = await createRole(namespace.id, [
-    { action: "delete", resourceKind: "namespace" },
-  ]);
-  assert.equal(lifecycle.status, 400, JSON.stringify(lifecycle.body));
-  assert.deepEqual(lifecycle.body.error.details, [
-    { path: "/permissions/0/action", code: "INVALID_VALUE" },
-  ]);
-  // create is checked on the Namespace collection and this API binds only exact resources,
-  // so every binding of such a Role would be refused; Role creation refuses it first and
-  // points at the first create Permission.
-  const createKinds = [
-    "agent",
-    "configuration",
-    "credential_source",
-    "preset",
-    "secret",
-    "service_account",
-  ];
-  for (const resourceKind of createKinds) {
-    for (const [permissions, index] of [
-      [[{ action: "create", resourceKind }], 0],
-      [
-        [
-          { action: "read", resourceKind },
-          { action: "create", resourceKind },
-        ],
-        1,
-      ],
-    ]) {
-      const rejected = await createRole(namespace.id, permissions);
-      assertApiError(rejected, 400, "INVALID_REQUEST");
-      assert.deepEqual(rejected.body.error.details, [
-        { path: `/permissions/${index}/action`, code: "INVALID_VALUE" },
-      ]);
-      assert.equal(
-        rejected.body.error.message,
-        `Namespace IAM Roles cannot grant create Permissions: ${resourceKind}:create. Create is checked on the Namespace, and this API binds only exact resources; omit them from the Role.`,
-      );
-    }
-  }
-  const allCreates = await createRole(namespace.id, [
-    { action: "read", resourceKind: "agent" },
-    ...createKinds.map((resourceKind) => ({ action: "create", resourceKind })),
-  ]);
-  assert.equal(allCreates.status, 400, JSON.stringify(allCreates.body));
-  assert.deepEqual(allCreates.body.error.details, [
-    { path: "/permissions/1/action", code: "INVALID_VALUE" },
-  ]);
-  assert.ok(Array.from(allCreates.body.error.message).length <= 256, allCreates.body.error.message);
-  assert.match(
-    allCreates.body.error.message,
-    /^Namespace IAM Roles cannot grant create Permissions: agent:create, .* and \d+ more\. .*omit them from the Role\.$/,
-  );
-  const roles = await controller.request("GET", `/namespaces/${namespace.id}/iam/roles`);
-  assert.deepEqual(roles.data, [], "rejected Roles must not be persisted");
-
-  // Every supported pair is still accepted.
-  const supported = await createRole(namespace.id, [
-    { action: "read", resourceKind: "namespace" },
-    { action: "operate", resourceKind: "secret" },
-    { action: "read_logs", resourceKind: "agent" },
-    { action: "administer", resourceKind: "agent" },
-    { action: "read", resourceKind: "agent_revision" },
-    { action: "operate", resourceKind: "credential_source" },
-  ]);
-  assert.equal(supported.status, 201, JSON.stringify(supported.body));
-  const reader = await createRole(namespace.id, [{ action: "read", resourceKind: "namespace" }]);
-  const foreignRole = await createRole(other.id, [{ action: "read", resourceKind: "namespace" }]);
-  assert.equal(foreignRole.status, 201, JSON.stringify(foreignRole.body));
-
-  const bind = (body) =>
-    controller.request("POST", `/namespaces/${namespace.id}/iam/access-bindings`, {
-      body: {
-        subjectKind: "identity",
-        subjectId: member.principal.id,
-        roleId: reader.data.id,
-        resourceKind: "namespace",
-        resourceId: namespace.id,
-        ...body,
-      },
-    });
-  for (const [body, path] of [
-    [{ resourceId: other.id }, "/resourceId"],
-    [{ roleId: foreignRole.data.id }, "/roleId"],
-    [{ roleId: `role_${randomUUID()}` }, "/roleId"],
-    [{ subjectId: `prn_${randomUUID()}` }, "/subjectId"],
-  ]) {
-    const rejected = await bind(body);
-    assertApiError(rejected, 400, "INVALID_REQUEST", path);
-    assert.deepEqual(rejected.body.error.details, [{ path, code: "INVALID_VALUE" }]);
-  }
-  // An email is the caller's own input, so the answer names that mistake; an unknown principal ID
-  // keeps the answer an ineligible one gets, so it reveals no principal (finding D753).
-  const email = await bind({ subjectId: "nora@example.com" });
-  assertApiError(email, 400, "INVALID_REQUEST", "/subjectId");
-  assert.equal(email.body.error.message, BINDING_SUBJECT_EMAIL);
-  const unknown = await bind({ subjectId: `prn_${randomUUID()}` });
-  assert.equal(unknown.body.error.message, BINDING_SUBJECT_INELIGIBLE);
-
-  // A Role still referenced by an AccessBinding names the reason, not "already exists".
-  const binding = await bind({});
-  assert.equal(binding.status, 201, JSON.stringify(binding.body));
-  const inUse = await controller.request(
-    "DELETE",
-    `/namespaces/${namespace.id}/iam/roles/${reader.data.id}`,
-  );
-  assertApiError(inUse, 409, "RESOURCE_CONFLICT");
-  assert.match(inUse.body.error.message, /referenced by AccessBindings/);
-});
-
-test("Namespace IAM Roles cannot grant Namespace lifecycle actions to a Namespace binding", async () => {
-  const fixture = await createInjectedFixture();
-  const member = await fixture.createAuthPrincipal("namespace-escalation-member");
-  fixture.state.identities.push(member.principal);
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "namespace-read-only-grant");
-  const createRole = (permissions) =>
-    controller.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
-      body: { permissions },
-    });
-  for (const action of [
-    "create",
-    "update",
-    "delete",
-    "deploy",
-    "operate",
-    "administer",
-    "read_logs",
-  ]) {
-    const rejected = await createRole([
-      { action: "read", resourceKind: "namespace" },
-      { action, resourceKind: "namespace" },
-    ]);
-    assertApiError(rejected, 400, "INVALID_REQUEST");
-  }
-  const roles = await controller.request("GET", `/namespaces/${namespace.id}/iam/roles`);
-  assert.deepEqual(roles.data, [], "rejected Namespace Roles must not be persisted");
-
-  const reader = await createRole([{ action: "read", resourceKind: "namespace" }]);
-  assert.equal(reader.status, 201, JSON.stringify(reader.body));
-  const binding = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/iam/access-bindings`,
-    {
-      body: {
-        subjectKind: "identity",
-        subjectId: member.principal.id,
-        roleId: reader.data.id,
-        resourceKind: "namespace",
-        resourceId: namespace.id,
-      },
-    },
-  );
-  assert.equal(binding.status, 201, JSON.stringify(binding.body));
-  // Mirror persisted policy into the native IAM state, as production loadNativeIAMState does.
-  fixture.state.roles.push(reader.data);
-  fixture.state.bindings.push(binding.data);
-
-  const memberApp = fixture.createApp(member.principal);
-  const read = await injectedRequest(memberApp, "GET", `/namespaces/${namespace.id}`);
-  assert.equal(read.status, 200, JSON.stringify(read.body));
-  const deletion = await injectedRequest(memberApp, "DELETE", `/namespaces/${namespace.id}`);
-  assert.equal(deletion.status, 403, JSON.stringify(deletion.body));
-  const after = await controller.request("GET", `/namespaces/${namespace.id}`);
-  assert.equal(after.data.status, read.data.status, "the Namespace must not enter deletion");
-});
-
-test("OCC rejects Namespace lifecycle Role Permissions before any IAM Driver or State write", async () => {
-  const fixture = await createInjectedFixture();
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "occ-role-permission-check");
-  const driverCalls = [];
-  // This Driver admits every request and accepts every Role without validation or State
-  // writes, so only OCC's own Permission check can reject a Namespace lifecycle action.
-  const permissiveDriver = {
-    id: "iam-permissive-role-sink",
-    capability: "iam",
-    namespacePolicyTransaction: "platform-unit-of-work",
-    implementation: "occ-permission-isolation-test",
-    async lookupIdentity(input) {
-      return input.issuer === fixture.principal.issuer &&
-        input.subject === fixture.principal.subject
-        ? fixture.principal
-        : undefined;
-    },
-    async authorize(request) {
-      return {
-        allowed: true,
-        reason: "admitted for OCC Permission isolation test",
-        driverId: "iam-permissive-role-sink",
-        evidence: {
-          identityId: request.principalId,
-          groupIds: [],
-          bindingIds: [],
-          roleIds: [],
-          restrictionIds: [],
-        },
-      };
-    },
-    async createNamespaceRole(_context, role) {
-      driverCalls.push(role);
-      return role;
-    },
-  };
-  fixture.controller.registerDriver(permissiveDriver);
-  fixture.controller.selectDriver("iam", permissiveDriver.id);
-  const createRole = (permissions) =>
-    controller.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
-      body: { permissions },
-    });
-
-  for (const action of [
-    "create",
-    "update",
-    "delete",
-    "deploy",
-    "operate",
-    "administer",
-    "read_logs",
-  ]) {
-    const rejected = await createRole([{ action, resourceKind: "namespace" }]);
-    assertApiError(rejected, 400, "INVALID_REQUEST");
-  }
-  // A create Permission on a child kind is refused by OCC too, whatever the Driver accepts.
-  const childCreate = await createRole([
-    { action: "read", resourceKind: "agent" },
-    { action: "create", resourceKind: "agent" },
-  ]);
-  assert.equal(childCreate.status, 400, JSON.stringify(childCreate.body));
-  assert.deepEqual(childCreate.body.error.details, [
-    { path: "/permissions/1/action", code: "INVALID_VALUE" },
-  ]);
-  assert.deepEqual(driverCalls, [], "OCC must reject before delegating to the IAM Driver");
-
-  // Control: the same Driver receives a Namespace read Role, so the rejection above is OCC's.
-  const reader = await createRole([{ action: "read", resourceKind: "namespace" }]);
-  assert.equal(reader.status, 201, JSON.stringify(reader.body));
-  assert.deepEqual(
-    driverCalls.map((role) => role.permissions),
-    [[{ action: "read", resourceKind: "namespace" }]],
-  );
-});
-
-test("Console share grants confer only the shared Agent and Namespace discovery", async () => {
-  const fixture = await createInjectedFixture();
-  const member = await fixture.createAuthPrincipal("share-recipient");
-  fixture.state.identities.push(member.principal);
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "share-recipient-limits");
-  const agent = await createAgent(controller, namespace.id, "shared-agent");
-  const sibling = await createAgent(controller, namespace.id, "sibling-agent");
-  const policyPath = `/namespaces/${namespace.id}/iam`;
-  // The exact grants the Console share panel writes.
-  for (const [resourceKind, resourceId, permissions] of [
-    ["namespace", namespace.id, [{ action: "read", resourceKind: "namespace" }]],
-    [
-      "agent",
-      agent.id,
-      [
-        { action: "read", resourceKind: "agent" },
-        { action: "administer", resourceKind: "agent" },
-      ],
-    ],
-  ]) {
-    const role = await controller.request("POST", `${policyPath}/roles`, {
-      body: { permissions },
-    });
-    assert.equal(role.status, 201, JSON.stringify(role.body));
-    const binding = await controller.request("POST", `${policyPath}/access-bindings`, {
-      body: {
-        subjectKind: "identity",
-        subjectId: member.principal.id,
-        roleId: role.data.id,
-        resourceKind,
-        resourceId,
-      },
-    });
-    assert.equal(binding.status, 201, JSON.stringify(binding.body));
-    // Mirror persisted policy into the native IAM state, as production loadNativeIAMState does.
-    // The live Postgres proof is in postgres-namespace-iam-policy.test.mjs.
-    fixture.state.roles.push(role.data);
-    fixture.state.bindings.push(binding.data);
-  }
-
-  const memberApp = fixture.createApp(member.principal);
-  const asMember = (method, path, options) => injectedRequest(memberApp, method, path, options);
-  for (const path of [
-    `/namespaces/${namespace.id}`,
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-  ]) {
-    const allowed = await asMember("GET", path);
-    assert.equal(allowed.status, 200, `${path}: ${JSON.stringify(allowed.body)}`);
-  }
-  for (const [method, path, body] of [
-    ["DELETE", `/namespaces/${namespace.id}`],
-    ["GET", `/namespaces/${namespace.id}/agents/${sibling.id}`],
-    ["GET", `${policyPath}/roles`],
-    ["POST", `${policyPath}/roles`, { permissions: [{ action: "read", resourceKind: "agent" }] }],
-    ["GET", `${policyPath}/access-bindings`],
-    [
-      "POST",
-      `${policyPath}/access-bindings`,
-      {
-        subjectKind: "identity",
-        subjectId: member.principal.id,
-        roleId: fixture.state.roles.at(-1).id,
-        resourceKind: "agent",
-        resourceId: sibling.id,
-      },
-    ],
-    ["DELETE", `/namespaces/${namespace.id}/agents/${agent.id}`],
-    ["GET", "/installation"],
-  ]) {
-    const denied = await asMember(method, path, body === undefined ? {} : { body });
-    assert.equal(denied.status, 403, `${method} ${path}: ${JSON.stringify(denied.body)}`);
-  }
-  const after = await controller.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
-  assert.equal(after.data.status, agent.status, "the shared Agent must not enter deletion");
-  const bindings = await controller.request("GET", `${policyPath}/access-bindings`);
-  assert.equal(bindings.data.length, 2, "denied policy writes must leave policy unchanged");
-});
-
-test("Namespace IAM read routes serialize broad native policy without widening mutations", async () => {
-  const fixture = await createInjectedFixture();
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "iam-native-read-policy");
-  const role = {
-    id: "role_native_read_policy",
-    namespaceId: namespace.id,
-    name: "Native namespace reader",
-    permissions: [
-      { action: "read", resourceKind: "namespace" },
-      { action: "read", resourceKind: "agent_revision" },
-    ],
-  };
-  const binding = {
-    id: "binding_native_group_namespace",
-    namespaceId: namespace.id,
-    subjectKind: "group",
-    subjectId: "grp_native_namespace_operators",
-    roleId: role.id,
-  };
-  const readPolicyDriver = {
-    id: "iam-native-read-policy",
-    capability: "iam",
-    implementation: "native-read-policy-test",
-    async lookupIdentity(input) {
-      if (
-        input.issuer === fixture.principal.issuer &&
-        input.subject === fixture.principal.subject
-      ) {
-        return fixture.principal;
-      }
-      return undefined;
-    },
-    async authorize(request) {
-      return {
-        allowed: true,
-        reason: "admitted for native read policy serialization",
-        driverId: "iam-native-read-policy",
-        evidence: {
-          identityId: request.principalId,
-          groupIds: [],
-          bindingIds: [],
-          roleIds: [],
-          restrictionIds: [],
-        },
-      };
-    },
-    async listNamespaceRoles(_context, namespaceId) {
-      return namespaceId === namespace.id ? [role] : [];
-    },
-    async getNamespaceRole(_context, namespaceId, roleId) {
-      return namespaceId === namespace.id && roleId === role.id ? role : undefined;
-    },
-    async listNamespaceAccessBindings(_context, namespaceId) {
-      return namespaceId === namespace.id ? [binding] : [];
-    },
-    async getNamespaceAccessBinding(_context, namespaceId, bindingId) {
-      return namespaceId === namespace.id && bindingId === binding.id ? binding : undefined;
-    },
-  };
-  fixture.controller.registerDriver(readPolicyDriver);
-  fixture.controller.selectDriver("iam", readPolicyDriver.id);
-
-  const roles = await controller.request("GET", `/namespaces/${namespace.id}/iam/roles`);
-  assert.equal(roles.status, 200, JSON.stringify(roles.body));
-  assert.deepEqual(roles.data, [role]);
-
-  const roleDetail = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/iam/roles/${role.id}`,
-  );
-  assert.equal(roleDetail.status, 200, JSON.stringify(roleDetail.body));
-  assert.deepEqual(roleDetail.data, role);
-
-  const bindings = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/iam/access-bindings`,
-  );
-  assert.equal(bindings.status, 200, JSON.stringify(bindings.body));
-  assert.deepEqual(bindings.data, [binding]);
-
-  const bindingDetail = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/iam/access-bindings/${binding.id}`,
-  );
-  assert.equal(bindingDetail.status, 200, JSON.stringify(bindingDetail.body));
-  assert.deepEqual(bindingDetail.data, binding);
-
-  const broadRoleCreate = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/iam/roles`,
-    {
-      body: {
-        name: "Rejected broad mutating role",
-        permissions: [{ action: "read", resourceKind: "installation" }],
-      },
-    },
-  );
-  assertApiError(broadRoleCreate, 400, "INVALID_REQUEST");
-
-  const groupBindingCreate = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/iam/access-bindings`,
-    {
-      body: {
-        subjectKind: "group",
-        subjectId: binding.subjectId,
-        roleId: role.id,
-        resourceKind: "secret",
-        resourceId: "sec_11111111-1111-4111-8111-111111111111",
-      },
-    },
-  );
-  assertApiError(groupBindingCreate, 400, "INVALID_REQUEST");
-
-  const broadBindingCreate = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/iam/access-bindings`,
-    {
-      body: {
-        subjectKind: "identity",
-        subjectId: fixture.principal.id,
-        roleId: role.id,
-      },
-    },
-  );
-  assertApiError(broadBindingCreate, 400, "INVALID_REQUEST");
-});
-
-test("Namespace IAM routes fail closed without policy management and roll back audit failures", async (t) => {
-  const unsupportedFixture = await createInjectedFixture();
-  const unsupported = {
-    request: (method, path, options) =>
-      injectedRequest(unsupportedFixture.app, method, path, options),
-  };
-  await bootstrap(unsupported);
-  const unsupportedNamespace = await createNamespace(unsupported, "unsupported-iam");
-  const unsupportedDriver = {
-    id: "iam-without-policy-management",
-    capability: "iam",
-    implementation: "admission-only-test",
-    async lookupIdentity(input) {
-      if (
-        input.issuer === unsupportedFixture.principal.issuer &&
-        input.subject === unsupportedFixture.principal.subject
-      ) {
-        return unsupportedFixture.principal;
-      }
-      return undefined;
-    },
-    async authorize(request) {
-      return {
-        allowed: true,
-        reason: "admitted for unsupported management test",
-        driverId: "iam-without-policy-management",
-        evidence: {
-          identityId: request.principalId,
-          groupIds: [],
-          bindingIds: [],
-          roleIds: [],
-          restrictionIds: [],
-        },
-      };
-    },
-  };
-  unsupportedFixture.controller.registerDriver(unsupportedDriver);
-  unsupportedFixture.controller.selectDriver("iam", unsupportedDriver.id);
-  const dependencyFailure = await unsupported.request(
-    "POST",
-    `/namespaces/${unsupportedNamespace.id}/iam/roles`,
-    {
-      body: {
-        name: "Unsupported",
-        permissions: [{ action: "operate", resourceKind: "secret" }],
-      },
-    },
-  );
-  assert.equal(dependencyFailure.status, 503, JSON.stringify(dependencyFailure.body));
-  assert.equal(dependencyFailure.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  assert.deepEqual(
-    await unsupportedFixture.platformState.read((unit) =>
-      unit.iamPolicy.listRoles(unsupportedNamespace.id),
-    ),
-    [],
-  );
-
-  // A Driver must declare transaction participation before any policy write.
-  // Keep the real native implementation; omit only its optional capability declaration.
-  const transactionFixture = await createInjectedFixture();
-  const transactional = {
-    request: (method, path, options) =>
-      injectedRequest(transactionFixture.app, method, path, options),
-  };
-  await bootstrap(transactional);
-  const transactionNamespace = await createNamespace(transactional, "undeclared-iam-transaction");
-  const policyPath = `/namespaces/${transactionNamespace.id}/iam`;
-  const namespaceRole = await transactional.request("POST", `${policyPath}/roles`, {
-    body: { permissions: [{ action: "read", resourceKind: "namespace" }] },
-  });
-  assert.equal(namespaceRole.status, 201);
-  const unusedRole = await transactional.request("POST", `${policyPath}/roles`, {
-    body: { permissions: [{ action: "read", resourceKind: "agent" }] },
-  });
-  assert.equal(unusedRole.status, 201);
-  const binding = {
-    subjectKind: "identity",
-    subjectId: transactionFixture.principal.id,
-    roleId: namespaceRole.data.id,
-    resourceKind: "namespace",
-    resourceId: transactionNamespace.id,
-  };
-  const existingBinding = await transactional.request("POST", `${policyPath}/access-bindings`, {
-    body: binding,
-  });
-  assert.equal(existingBinding.status, 201);
-  const policy = () =>
-    transactionFixture.platformState.read(async (unit) => ({
-      roles: await unit.iamPolicy.listRoles(transactionNamespace.id),
-      bindings: await unit.iamPolicy.listAccessBindings(transactionNamespace.id),
-      principals: await unit.iamPolicy.listServicePrincipals(transactionNamespace.id),
-    }));
-  const before = await policy();
-  const undeclared = new NativeIAMDriver(
-    { loadNativeIAMState: async () => transactionFixture.state },
-    { id: "iam-without-declared-transaction" },
-  );
-  delete undeclared.namespacePolicyTransaction;
-  transactionFixture.controller.registerDriver(undeclared);
-  transactionFixture.controller.selectDriver("iam", undeclared.id);
-  assert.equal((await transactional.request("GET", `${policyPath}/roles`)).status, 200);
-  const refusedStatuses = [];
-  for (const [method, path, body] of [
-    ["POST", `${policyPath}/roles`, { permissions: [{ action: "read", resourceKind: "agent" }] }],
-    ["DELETE", `${policyPath}/roles/${unusedRole.data.id}`],
-    ["POST", `${policyPath}/access-bindings`, binding],
-    ["DELETE", `${policyPath}/access-bindings/${existingBinding.data.id}`],
-    ["POST", `${policyPath}/service-principals`, {}],
-  ]) {
-    const refused = await transactional.request(method, path, body === undefined ? {} : { body });
-    assert.equal(refused.status, 503, `${method} ${path}: ${JSON.stringify(refused.body)}`);
-    assert.equal(refused.body.error.code, "DEPENDENCY_UNAVAILABLE");
-    refusedStatuses.push(refused.status);
-    assert.deepEqual(await policy(), before);
-    const events = transactionFixture.auditSink.events;
-    assert.equal(
-      events.some(
-        (event) => event.requestId === refused.body.meta.requestId && event.kind === "mutation",
-      ),
-      false,
-    );
-  }
-  t.diagnostic(
-    JSON.stringify({
-      scenario: "transaction-capability-refusal",
-      statuses: refusedStatuses,
-      policyPreserved: true,
-      successAudit: 0,
-    }),
-  );
-
-  const rollbackFixture = await createInjectedFixture();
-  const rollback = {
-    request: (method, path, options) => injectedRequest(rollbackFixture.app, method, path, options),
-  };
-  await bootstrap(rollback);
-  const rollbackNamespace = await createNamespace(rollback, "rollback-iam");
-  const originalAppend = rollbackFixture.auditSink.append.bind(rollbackFixture.auditSink);
-  rollbackFixture.auditSink.append = async (event) => {
-    if (
-      event.action === "openclaw.iam.roles.create" ||
-      event.action === "openclaw.iam.service_principals.create"
-    ) {
-      throw new Error("synthetic audit outage");
-    }
-    await originalAppend(event);
-  };
-
-  const auditFailure = await rollback.request(
-    "POST",
-    `/namespaces/${rollbackNamespace.id}/iam/roles`,
-    {
-      body: {
-        name: "Rolled back",
-        permissions: [{ action: "operate", resourceKind: "secret" }],
-      },
-    },
-  );
-  assert.equal(auditFailure.status, 503);
-  assert.equal(auditFailure.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  assert.deepEqual(
-    await rollbackFixture.platformState.read((unit) =>
-      unit.iamPolicy.listRoles(rollbackNamespace.id),
-    ),
-    [],
-  );
-  // A ServicePrincipal whose create cannot be audited is rolled back.
-  const principalAuditFailure = await rollback.request(
-    "POST",
-    `/namespaces/${rollbackNamespace.id}/iam/service-principals`,
-    { body: {} },
-  );
-  assert.equal(principalAuditFailure.status, 503, JSON.stringify(principalAuditFailure.body));
-  assert.equal(principalAuditFailure.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  assert.deepEqual(
-    await rollbackFixture.platformState.read((unit) =>
-      unit.iamPolicy.listServicePrincipals(rollbackNamespace.id),
-    ),
-    [],
-  );
-});
-
 test("Agent deletion closes every synchronous mutation boundary before teardown", async () => {
-  const controller = await configuredController();
+  const controller = await configuredController({ recordOperations: true });
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "deletion-race");
   const agent = await createAgent(controller, namespace.id, "deletion-race-agent");
@@ -2645,13 +2811,36 @@ test("Agent deletion closes every synchronous mutation boundary before teardown"
   );
   assert.equal(deployed.status, 202);
 
-  const deletion = await controller.request(
-    "DELETE",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-  );
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const deletion = await controller.request("DELETE", agentPath);
   assert.equal(deletion.status, 202);
   assert.equal(deletion.data.status, "deleting");
   assert.equal(deletion.data.desiredRuntimeState, "stopped");
+
+  // Repeated deletion must reuse the existing teardown through the memory work lookup.
+  const repeatedDeletion = await controller.request("DELETE", agentPath);
+  assert.equal(repeatedDeletion.status, 202);
+  assert.equal(repeatedDeletion.data.status, "deleting");
+  await controller.fixture.platformState.read(async (view) => {
+    const key = `agent:${agent.id}:reconcile:deleted`;
+    const work = await view.operations.findWork(key);
+    assert.ok(work);
+    assert.equal(work.idempotencyKey, key);
+    assert.equal(work.agentId, agent.id);
+    assert.equal(work.namespaceId, namespace.id);
+    assert.equal(work.actorId, controller.fixture.principal.id);
+    assert.equal(work.agentTarget, "deleted");
+    assert.equal(await view.operations.findWork(`${key}:undefined`), undefined);
+    const teardowns = (await view.operations.list()).filter(
+      (operation) =>
+        operation.kind === "agent" &&
+        operation.resourceId === agent.id &&
+        operation.namespaceId === namespace.id &&
+        operation.action === "reconcile" &&
+        operation.target === "deleted",
+    );
+    assert.equal(teardowns.length, 1);
+  });
 
   for (const mutation of [
     () =>
@@ -2662,7 +2851,7 @@ test("Agent deletion closes every synchronous mutation boundary before teardown"
   ]) {
     const rejected = await mutation();
     assertApiError(rejected, 409, "AGENT_DELETING");
-    assert.equal(rejected.body.error.message, "The requested Agent is being deleted.");
+    assert.equal(rejected.body.error.message, AGENT_DELETING);
   }
 
   // Credential provisioning and workspace routing are intentionally absent
@@ -2694,145 +2883,15 @@ test("Agent deletion closes every synchronous mutation boundary before teardown"
 });
 
 test("Agent Backend API preserves nullable drafts and immutable revision associations", async () => {
-  const fixture = await createInjectedFixture({
-    backends: [
-      {
-        id: "openai",
-        type: "chatgpt",
-        configuration: {
-          workspaceId: "11111111-1111-4111-8111-111111111111",
-          apiKeyPath: "/unused-in-api-contract-test",
-        },
-        drivers: { service_account: "chatgpt-service-accounts" },
-      },
-    ],
-    backendSummaries: [{ id: "openai", type: "chatgpt" }],
-  });
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const backends = await controller.request("GET", "/backends");
-  assert.equal(backends.status, 200);
-  assert.deepEqual(backends.data, [{ id: "openai", type: "chatgpt" }]);
-  assert.doesNotMatch(JSON.stringify(backends.body), /apiKey|workspaceId|credential|drivers|path/i);
-  const namespace = await createNamespace(controller, "provider-api");
-  const configuration = await createConfiguration(controller, namespace.id);
-  const collection = `/namespaces/${namespace.id}/agents`;
-
-  // Exercise wire defaults and persistence through the real authenticated Fastify routes.
-  for (const [name, association] of [
-    ["omitted", {}],
-    ["null", { backendId: null }],
-    ["selected", { backendId: "openai" }],
-  ]) {
-    const result = await controller.request("POST", collection, {
-      body: { name, configurationId: configuration.id, ...association },
-    });
-    assert.equal(result.status, 201, JSON.stringify(result.body));
-    assert.equal(result.data.backendId, association.backendId ?? null);
-    const read = await controller.request("GET", `${collection}/${result.data.id}`);
-    assert.equal(read.data.backendId, association.backendId ?? null);
-  }
-
-  const agents = await controller.request("GET", collection);
-  const selected = agents.data.find((agent) => agent.name === "selected");
-  const target = `${collection}/${selected.id}`;
-  const preserved = await controller.request("PATCH", target, {
-    body: { configurationId: configuration.id },
-  });
-  assert.equal(preserved.status, 200);
-  assert.equal(preserved.data.backendId, "openai");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  await bindHarnessKey(fixture, namespace.id, selected);
-  const revision = await controller.request("POST", `${target}/deploy`);
-  assert.equal(revision.status, 202, JSON.stringify(revision.body));
-  assert.equal(revision.data.backendId, "openai");
-
-  const cleared = await controller.request("PATCH", target, {
-    body: { configurationId: configuration.id, backendId: null },
-  });
-  assert.equal(cleared.status, 200);
-  assert.equal(cleared.data.backendId, null);
-  const prior = await controller.request("GET", `${target}/revisions/${revision.data.id}`);
-  assert.equal(prior.data.backendId, "openai", "draft changes cannot rewrite admitted revisions");
-  const independent = await controller.request("POST", `${target}/deploy`);
-  assert.equal(independent.status, 202);
-  assert.equal(independent.data.backendId, null);
-
-  for (const backendId of ["", " ", "unknown", 42, [], {}]) {
-    const expectedStatus = backendId === "unknown" ? 404 : 400;
-    const invalid = await controller.request("POST", collection, {
-      body: { name: "invalid-provider", configurationId: configuration.id, backendId },
-    });
-    assert.equal(invalid.status, expectedStatus, JSON.stringify(invalid.body));
-    const invalidPatch = await controller.request("PATCH", target, {
-      body: { configurationId: configuration.id, backendId },
-    });
-    assert.equal(invalidPatch.status, expectedStatus, JSON.stringify(invalidPatch.body));
-  }
-  const unchanged = await controller.request("GET", target);
-  assert.equal(unchanged.data.backendId, null);
-  const replaced = await controller.request("PATCH", target, {
-    body: { configurationId: configuration.id, backendId: "openai" },
-  });
-  assert.equal(replaced.status, 200);
-  assert.equal(replaced.data.backendId, "openai");
+  await runBackendAssociations(configuredController);
 });
 
 test("Installation Backend IDs and Agent backendId share the API schema's character rule", async () => {
-  // 200 code points (395 UTF-16 units) with interior whitespace: the API schema accepts it,
-  // so OCC must accept it as configuration and the state store must save it.
-  const id = `open\u00a0${"😀".repeat(195)}`;
-  const fixture = await createInjectedFixture({
-    backends: [
-      {
-        id,
-        type: "chatgpt",
-        configuration: {
-          workspaceId: "11111111-1111-4111-8111-111111111111",
-          apiKeyPath: "/unused-in-api-contract-test",
-        },
-        drivers: { service_account: "chatgpt-service-accounts" },
-      },
-    ],
-    backendSummaries: [{ id, type: "chatgpt" }],
-  });
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "backend-id-rule");
-  const configuration = await createConfiguration(controller, namespace.id);
-  const collection = `/namespaces/${namespace.id}/agents`;
-
-  const created = await controller.request("POST", collection, {
-    body: { name: "long-backend-id", configurationId: configuration.id, backendId: id },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  assert.equal(created.data.backendId, id);
-
-  // 201 code points; DEL and C1 controls (PostgreSQL's [[:cntrl:]] refuses both); line and
-  // paragraph separators.
-  for (const backendId of [
-    "😀".repeat(201),
-    "open\u007fai",
-    "open\u0085ai",
-    "open\u2028ai",
-    "open\u2029ai",
-  ]) {
-    const invalid = await controller.request("POST", collection, {
-      body: { name: "invalid-backend-id", configurationId: configuration.id, backendId },
-    });
-    assertApiError(invalid, 400, "INVALID_REQUEST");
-  }
+  await runBackendIdCharacterRule(configuredController);
 });
 
 test("Names follow the Backend ID text rule, so C1 controls are refused", async () => {
-  const fixture = await createInjectedFixture();
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
+  const controller = await configuredController();
   await bootstrap(controller);
   // 200 code points (400 UTF-16 units) with an interior NBSP is a valid Name.
   const namespace = await createNamespace(controller, `name\u00a0${"😀".repeat(195)}`);
@@ -2878,16 +2937,14 @@ test("Installation API exposes Agent provisioning capabilities without configure
     validateAgentProvisioning() {},
     async stopRevision() {},
   });
-  const fixture = await createInjectedFixture({
+  const controller = await configuredController({
     backends: [],
     backendSummaries: [],
     computeDriver,
   });
-  ensureNamespaceCalls = fixture.computeCalls.ensureNamespace;
-  deleteNamespaceCalls = fixture.computeCalls.deleteNamespace;
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
+  const { computeCalls } = controller.fixture;
+  ensureNamespaceCalls = computeCalls.ensureNamespace;
+  deleteNamespaceCalls = computeCalls.deleteNamespace;
   const bootstrapped = await bootstrap(controller);
   assert.deepEqual(bootstrapped.capabilities, {
     agentProvisioning: { executionModes: ["dedicated"] },
@@ -2908,22 +2965,10 @@ test("Installation API exposes Agent provisioning capabilities without configure
 });
 
 test("Agent deployment status polls the admitted revision work with exact read authorization", async () => {
-  const deploymentWorks = new Map();
-  const fixture = await createInjectedFixture({ deploymentWorks, recordOperations: true });
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "deployment-status");
-  const agent = await createAgent(controller, namespace.id, "status-agent");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  await bindHarnessKey(fixture, namespace.id, agent);
-
-  const admitted = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  const { controller, fixture, namespace, agent, admitted, deploymentWorks, work } =
+    await admittedDeploymentFixture("deployment-status", "status-agent", {
+      recordOperations: true,
+    });
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${admitted.data.id}`;
 
   const status = await controller.request("GET", path);
@@ -2953,21 +2998,13 @@ test("Agent deployment status polls the admitted revision work with exact read a
     check: "UNRECOGNIZED",
     code: "UNRECOGNIZED",
   };
-  deploymentWorks.set(`agent_revision:${admitted.data.id}:reconcile`, {
-    idempotencyKey: `agent_revision:${admitted.data.id}:reconcile`,
-    namespaceId: namespace.id,
-    agentId: agent.id,
-    revisionId: admitted.data.id,
-    actorId: fixture.principal.id,
-    state: "failed_permanent",
-    availableAt: new Date(0),
-    attemptCount: 1,
-    completedAt: new Date("2026-09-19T20:31:00.000Z"),
-    reasonCode: "CONVERGENCE_DEADLINE_EXCEEDED",
-    resultData: { timeoutMs: 900_000, runtimeFailure: servedRuntimeFailure },
-    createdAt: new Date(0),
-    updatedAt: new Date("2026-09-19T20:31:00.000Z"),
-  });
+  deploymentWorks.set(
+    work.key,
+    work.record("failed_permanent", "2026-09-19T20:31:00.000Z", {
+      reasonCode: "CONVERGENCE_DEADLINE_EXCEEDED",
+      resultData: { timeoutMs: 900_000, runtimeFailure: servedRuntimeFailure },
+    }),
+  );
   const failedStatus = await controller.request("GET", path);
   assert.equal(failedStatus.status, 200, JSON.stringify(failedStatus.body));
   assert.deepEqual(failedStatus.data, {
@@ -3027,8 +3064,8 @@ test("Agent deployment status polls the admitted revision work with exact read a
     checkedAt: "2026-09-19T20:30:00.000Z",
     code: "NOT_CONFIGURED",
   };
-  const deploymentWork = deploymentWorks.get(`agent_revision:${admitted.data.id}:reconcile`);
-  deploymentWorks.set(`agent_revision:${admitted.data.id}:reconcile`, {
+  const deploymentWork = deploymentWorks.get(work.key);
+  deploymentWorks.set(work.key, {
     ...deploymentWork,
     resultData: { timeoutMs: 900_000, runtimeFailure: knownRuntimeFailure },
   });
@@ -3043,7 +3080,7 @@ test("Agent deployment status polls the admitted revision work with exact read a
     checkedAt: "2026-09-19T20:30:00.000Z",
     code: "WORKSPACE_SETUP_FAILED",
   };
-  deploymentWorks.set(`agent_revision:${admitted.data.id}:reconcile`, {
+  deploymentWorks.set(work.key, {
     ...deploymentWork,
     resultData: { timeoutMs: 900_000, runtimeFailure: workspaceSetupFailure },
   });
@@ -3065,7 +3102,7 @@ test("Agent deployment status polls the admitted revision work with exact read a
       { code: "REVISION_SUPERSEDED", message: "Deployment was superseded by a newer revision." },
     ],
   ]) {
-    deploymentWorks.set(`agent_revision:${admitted.data.id}:reconcile`, {
+    deploymentWorks.set(work.key, {
       ...deploymentWork,
       state: "succeeded",
       reasonCode,
@@ -3088,22 +3125,8 @@ test("Agent deployment status polls the admitted revision work with exact read a
 test("a refused deployment's status names its cause and remedy without naming principals", async () => {
   // Finding 1039: these refusals used to fall through to "Deployment reconciliation failed.",
   // so a member whose deploy permission was revoked mid-rollout saw no cause or remedy.
-  const deploymentWorks = new Map();
-  const fixture = await createInjectedFixture({ deploymentWorks });
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "deployment-refusals");
-  const agent = await createAgent(controller, namespace.id, "refused-agent");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  await bindHarnessKey(fixture, namespace.id, agent);
-  const admitted = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-  const workKey = `agent_revision:${admitted.data.id}:reconcile`;
+  const { controller, fixture, namespace, agent, admitted, deploymentWorks, work } =
+    await admittedDeploymentFixture("deployment-refusals", "refused-agent");
   const path = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${admitted.data.id}`;
   const messages = {
     AUTHORIZATION_DENIED: DEPLOYMENT_FAILED.AUTHORIZATION_DENIED,
@@ -3135,13 +3158,16 @@ test("a refused deployment's status names its cause and remedy without naming pr
       "The controller worker stopped or lost its claim during this deployment's last attempt. Deploy again.",
     // Finding 1393: held runtime failures name the next step too, so occ and HTTP clients get
     // the guidance the console used to add on its own.
-    RUNTIME_AUTHENTICATION_FAILED:
-      "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.",
+    RUNTIME_AUTHENTICATION_FAILED: MODEL_CREDENTIAL_REJECTED_RECORDED,
     RUNTIME_CPU_STARVED: DEPLOYMENT_FAILED.RUNTIME_CPU_STARVED,
     RUNTIME_MODEL_PROBE_TIMEOUT:
       "The startup model check got no reply from the provider in time. With OpenClaw this includes an unreachable provider (refused connection or unknown host). Check egress, proxy or a custom baseUrl and that the provider responds, then deploy a new version.",
     RUNTIME_LOGIN_FAILED:
       "Deployment runtime could not sign in to the model provider. Check the Agent's model credential (for an OAuth login, sign in again) and that the runtime can reach the provider, then deploy a new version.",
+    RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE:
+      "The Codex runtime’s managed requirements reply exceeds OCE’s 1 MiB limit. Ask the policy owner to reduce the requirements document, then deploy a new version.",
+    RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE:
+      "This Codex runtime’s managed permission policy does not allow the sandbox mode, named profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.",
     RUNTIME_STARTUP_FAILED:
       "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.",
     // Finding 2537: these fell through to "Deployment reconciliation failed.", which named no
@@ -3157,20 +3183,10 @@ test("a refused deployment's status names its cause and remedy without naming pr
       "This version's repository access no longer matches the Credential Proxy delivery it was admitted with. Deploy again to admit a version with the current repository access.",
   };
   for (const [reasonCode, message] of Object.entries(messages)) {
-    deploymentWorks.set(workKey, {
-      idempotencyKey: workKey,
-      namespaceId: namespace.id,
-      agentId: agent.id,
-      revisionId: admitted.data.id,
-      actorId: fixture.principal.id,
-      state: "failed_permanent",
-      availableAt: new Date(0),
-      attemptCount: 1,
-      completedAt: new Date("2026-10-10T18:03:32.000Z"),
-      reasonCode,
-      createdAt: new Date(0),
-      updatedAt: new Date("2026-10-10T18:03:32.000Z"),
-    });
+    deploymentWorks.set(
+      work.key,
+      work.record("failed_permanent", "2026-10-10T18:03:32.000Z", { reasonCode }),
+    );
     const status = await controller.request("GET", path);
     assert.equal(status.status, 200, JSON.stringify(status.body));
     assert.equal(status.data.status, "failed", reasonCode);
@@ -3181,10 +3197,8 @@ test("a refused deployment's status names its cause and remedy without naming pr
 
 test("a deletion retry by another delete holder names the initiator condition and audits it", async () => {
   const deploymentWorks = new Map();
-  const fixture = await createInjectedFixture({ deploymentWorks, recordOperations: true });
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
+  const controller = await configuredController({ deploymentWorks, recordOperations: true });
+  const { fixture } = controller;
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "deletion-takeover");
   const agent = await createAgent(controller, namespace.id, "takeover-agent");
@@ -3250,37 +3264,12 @@ test("a deletion retry by another delete holder names the initiator condition an
 });
 
 test("Installation deployment inventory fails closed on incomplete authorization and reports in-flight work", async () => {
-  const deploymentWorks = new Map();
-  const fixture = await createInjectedFixture({ deploymentWorks, recordOperations: true });
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "deployment-inventory");
-  const agent = await createAgent(controller, namespace.id, "inventory-agent");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  await bindHarnessKey(fixture, namespace.id, agent);
-  const admitted = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-  const workKey = `agent_revision:${admitted.data.id}:reconcile`;
-  const completedWork = {
-    kind: "lifecycle",
-    idempotencyKey: workKey,
-    namespaceId: namespace.id,
-    agentId: agent.id,
-    revisionId: admitted.data.id,
-    actorId: fixture.principal.id,
-    state: "succeeded",
-    availableAt: new Date(0),
-    attemptCount: 1,
-    completedAt: new Date(1),
-    createdAt: new Date(0),
-    updatedAt: new Date(1),
-  };
-  deploymentWorks.set(workKey, completedWork);
+  const { controller, fixture, namespace, agent, admitted, deploymentWorks, work } =
+    await admittedDeploymentFixture("deployment-inventory", "inventory-agent", {
+      recordOperations: true,
+    });
+  const completedWork = { kind: "lifecycle", ...work.record("succeeded", 1) };
+  deploymentWorks.set(work.key, completedWork);
   await fixture.platformState.transact((unit) =>
     unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, admitted.data.id),
   );
@@ -3303,10 +3292,47 @@ test("Installation deployment inventory fails closed on incomplete authorization
           executionMode: "embedded",
           activeRevisionId: admitted.data.id,
           deploymentInProgress: false,
+          repositoryWorkerRestart: "unknown",
         },
       ],
     },
   );
+
+  // Hold only the external read boundary: the real API and State must detect a new Agent
+  // and reauthorize after observation. These checks do not qualify a Driver's disposition.
+  for (const change of ["new-agent", "authority"]) {
+    const observing = Promise.withResolvers();
+    const resume = Promise.withResolvers();
+    fixture.computeDriver.repositoryWorkerRestartDisposition = async () => {
+      observing.resolve();
+      await resume.promise;
+      return "unknown";
+    };
+    const pending = controller.request("GET", inventoryPath);
+    await observing.promise;
+    if (change === "new-agent") {
+      await createAgent(controller, namespace.id, "inventory-arrival");
+    } else {
+      fixture.state.restrictions.push({
+        id: "deny-inventory-during-observation",
+        resourceKind: "installation",
+        resourceId: fixture.installationId,
+        action: "administer",
+        effect: "deny",
+      });
+    }
+    resume.resolve();
+    const changed = await pending;
+    assert.equal(changed.status, change === "new-agent" ? 503 : 403);
+    assert.equal(
+      changed.body.error.code,
+      change === "new-agent" ? "DEPENDENCY_UNAVAILABLE" : "FORBIDDEN",
+    );
+    if (change === "authority") {
+      fixture.state.restrictions.pop();
+    }
+    delete fixture.computeDriver.repositoryWorkerRestartDisposition;
+  }
 
   // The inventory needs Installation administer, and a complete fleet response must not turn
   // any exact-resource denial into omission.
@@ -3357,7 +3383,7 @@ test("Installation deployment inventory fails closed on incomplete authorization
     fixture.state.restrictions.pop();
   }
 
-  deploymentWorks.set(workKey, { ...completedWork, state: "claimed" });
+  deploymentWorks.set(work.key, { ...completedWork, state: "claimed" });
   const inProgress = await controller.request("GET", inventoryPath);
   assert.equal(inProgress.status, 200, JSON.stringify(inProgress.body));
   const inProgressAgent = inProgress.data.namespaces
@@ -3365,19 +3391,26 @@ test("Installation deployment inventory fails closed on incomplete authorization
     ?.agents.find((candidate) => candidate.id === agent.id);
   assert.equal(inProgressAgent?.deploymentInProgress, true);
 
+  // Work belonging to a different Namespace cannot establish this deployment's state.
+  const otherNamespace = inventory.data.namespaces.find(
+    (candidate) => candidate.id !== namespace.id,
+  );
+  assert.ok(otherNamespace);
+  deploymentWorks.set(work.key, { ...completedWork, namespaceId: otherNamespace.id });
+  const wrongOwner = await controller.request("GET", inventoryPath);
+  assertApiError(wrongOwner, 503, "DEPENDENCY_UNAVAILABLE", "wrong-owner deployment work");
+
   // Missing durable work makes completeness unknowable and must fail the whole operation.
-  deploymentWorks.set(workKey, undefined);
+  deploymentWorks.set(work.key, undefined);
   const incomplete = await controller.request("GET", inventoryPath);
-  assert.equal(incomplete.status, 503);
-  assert.equal(incomplete.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assertApiError(incomplete, 503, "DEPENDENCY_UNAVAILABLE", "missing deployment work");
+  assert.deepEqual(Object.keys(incomplete.body).sort(), ["error", "meta"]);
 });
 
 test("Channel directory accepts Slack's null terminal cursor without losing prior matches", async () => {
-  const controller = await configuredController({ secretDriver: createTestSecretDriver() });
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "slack-terminal-cursor");
-  const { fixture } = controller;
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const { controller, fixture, namespace } = await readyNamespaceFixture("slack-terminal-cursor", {
+    secretDriver: createTestSecretDriver(),
+  });
   const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
     body: { name: "directory-bot", value: "xoxb-directory-fixture" },
   });
@@ -3645,7 +3678,7 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
   const installation = await controller.request("GET", "/installation");
   assert.equal(installation.status, 200);
-  const capabilities = installation.data.capabilities.pluginPolicies;
+  const capabilities = installation.data.capabilities.pluginCatalogs[0].pluginPolicies;
   assert.deepEqual(capabilities.driver, {
     id: "occ-plugin",
     implementation: "occ/openclaw-plugin",
@@ -3697,11 +3730,7 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   assert.deepEqual(saved.data.plugins, initialPlugins);
   assert.deepEqual(saved.data.pluginApprovers, []);
 
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
+  await controller.fixture.markNamespaceReady(namespace.id);
   await bindHarnessKey(controller.fixture, namespace.id, created.data);
   const deployment = await controller.request(
     "POST",
@@ -3822,242 +3851,7 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   ]);
 });
 
-test("Agent plugin reviewer selection preserves omission and rejects unsupported tool scope", async () => {
-  const controller = await configuredController();
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "plugin-reviewer-api");
-  // The automatic reviewer below needs an explicit on-request session policy at save.
-  const configuration = await createConfiguration(controller, namespace.id, {
-    agents: { defaults: { model: "codex/gpt-6-astra" } },
-    plugins: { entries: { codex: { config: { appServer: { approvalPolicy: "on-request" } } } } },
-  });
-  const pluginDriver = new CodexPluginDriver();
-  controller.fixture.controller.registerDriver(pluginDriver);
-  controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
-  const installation = await controller.request("GET", "/installation");
-  assert.equal(installation.status, 200);
-  const capabilities = installation.data.capabilities.pluginPolicies;
-  assert.equal(capabilities.driver.id, "codex-plugin");
-  assert.deepEqual(capabilities.toolDefaults.reviewer, ["human", "auto"]);
-  assert.deepEqual(capabilities.tools.reviewer, []);
-  assert.equal(
-    Object.hasOwn(capabilities.driverPolicySchema.properties, "approvalsReviewer"),
-    false,
-  );
-
-  const plugins = { [linearPluginId]: { enabled: true, toolDefaults: { reviewer: "auto" } } };
-  const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: {
-      name: "reviewer-agent",
-      executionMode: "dedicated",
-      configurationId: configuration.id,
-      plugins,
-    },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  assert.deepEqual(created.data.plugins, plugins);
-  const path = `/namespaces/${namespace.id}/agents/${created.data.id}`;
-  const saved = await controller.request("GET", path);
-  assert.deepEqual(saved.data.plugins, plugins);
-  const omitted = await controller.request("PATCH", path, {
-    body: { configurationId: configuration.id },
-  });
-  assert.equal(omitted.status, 200);
-  assert.deepEqual(omitted.data.plugins, plugins);
-
-  // A tool reviewer must not silently become an app reviewer, even when redundant or disabled.
-  for (const policy of [
-    {
-      enabled: true,
-      toolDefaults: { reviewer: "auto" },
-      tools: { "app/search": { reviewer: "auto" } },
-    },
-    { enabled: true, tools: { "app/search": { enabled: false, reviewer: "human" } } },
-    { enabled: false, tools: { "app/search": { reviewer: "auto" } } },
-  ]) {
-    const rejected = await controller.request("PATCH", path, {
-      body: { configurationId: configuration.id, plugins: { [linearPluginId]: policy } },
-    });
-    assertApiError(rejected, 400, "INVALID_REQUEST");
-    assert.equal(
-      rejected.body.error.message,
-      "This Plugin Driver does not support tools[id].reviewer. Use toolDefaults.reviewer when supported, or omit the reviewer.",
-    );
-  }
-  assert.deepEqual((await controller.request("GET", path)).data.plugins, plugins);
-
-  // Replacing the policy removes the explicit reviewer without writing a replacement default.
-  const inherited = { [linearPluginId]: { enabled: true } };
-  const replaced = await controller.request("PATCH", path, {
-    body: { configurationId: configuration.id, plugins: inherited },
-  });
-  assert.equal(replaced.status, 200);
-  assert.deepEqual(replaced.data.plugins, inherited);
-});
-
-test("the Codex Plugin Driver refuses an automatic reviewer without an on-request session policy at save and deployment", async () => {
-  const configurationDriver = createTestConfigurationDriver();
-  const controller = await configuredController({ configurationDriver });
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "codex-approval-policy-api");
-  const setting = "plugins.entries.codex.config.appServer.approvalPolicy";
-  const values = (approvalPolicy) => {
-    const configuration = createHarnessConfiguration("codex", "gpt-6-astra");
-    const appServer = configuration.plugins.entries.codex.config.appServer;
-    delete appServer.approvalPolicy;
-    if (approvalPolicy !== undefined) {
-      appServer.approvalPolicy = approvalPolicy;
-    }
-    return configuration;
-  };
-  // Configuration saves do not know the Agents' plugins, so an omitted or never policy saves.
-  const omitted = await createConfiguration(controller, namespace.id, values(undefined));
-  const never = await createConfiguration(controller, namespace.id, values("never"));
-  const configuration = await createConfiguration(controller, namespace.id, values("on-request"));
-  const pluginDriver = new CodexPluginDriver();
-  controller.fixture.controller.registerDriver(pluginDriver);
-  controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
-  const automatic = { [linearPluginId]: { enabled: true, toolDefaults: { reviewer: "auto" } } };
-  const assertRefused = (refused, fix, label) => {
-    assertApiError(refused, 400, "INVALID_REQUEST", label);
-    assert.equal(
-      refused.body.error.message,
-      `An automatic plugin reviewer requires Configuration setting ${setting} "on-request"; ${fix} or choose the human reviewer.`,
-    );
-  };
-  const refusals = [
-    [omitted, "set it explicitly"],
-    [never, "change it"],
-  ];
-  // Native startup checks the automatic reviewer against the policy Compute renders. When the
-  // policy is omitted, the Gateway picks its own session policy, which can be never, so the
-  // check would pass on a policy the sessions do not run (finding 988). An Agent save sees
-  // both the plugins and the Configuration it names, so it refuses the pair before any
-  // deployment (finding 995).
-  for (const [named, fix] of refusals) {
-    const refused = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-      body: {
-        name: "approval-policy-agent",
-        executionMode: "dedicated",
-        configurationId: named.id,
-        plugins: automatic,
-      },
-    });
-    assertRefused(refused, fix, `create with ${fix}`);
-  }
-  // One automatic reviewer among human ones is enough to need the policy.
-  const mixed = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: {
-      name: "approval-policy-agent",
-      executionMode: "dedicated",
-      configurationId: omitted.id,
-      plugins: {
-        "codex-plugin:github@openai-curated-remote": {
-          enabled: true,
-          toolDefaults: { reviewer: "human" },
-        },
-        ...automatic,
-      },
-    },
-  });
-  assertRefused(mixed, "set it explicitly", "create with mixed reviewers");
-  assert.deepEqual(
-    (await controller.request("GET", `/namespaces/${namespace.id}/agents`)).data,
-    [],
-  );
-  const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: {
-      name: "approval-policy-agent",
-      executionMode: "dedicated",
-      configurationId: configuration.id,
-      plugins: automatic,
-    },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const agentPath = `/namespaces/${namespace.id}/agents/${created.data.id}`;
-  // An update is checked with the plugins it leaves in place as well as the ones it sends.
-  for (const [named, fix] of refusals) {
-    for (const body of [
-      { configurationId: named.id },
-      { configurationId: named.id, plugins: automatic },
-    ]) {
-      const refused = await controller.request("PATCH", agentPath, { body });
-      assertRefused(refused, fix, `update ${JSON.stringify(body)}`);
-    }
-  }
-  const unchanged = await controller.request("GET", agentPath);
-  assert.equal(unchanged.data.configurationId, configuration.id);
-  assert.deepEqual(unchanged.data.plugins, automatic);
-  // Any other Plugin Driver refusal gets fixed text: its message may describe Configuration
-  // values the caller does not own.
-  pluginDriver.validateAgentConfiguration = () => {
-    throw new Error("synthetic Driver detail");
-  };
-  let conflict;
-  try {
-    conflict = await controller.request("PATCH", agentPath, {
-      body: { configurationId: configuration.id },
-    });
-  } finally {
-    delete pluginDriver.validateAgentConfiguration;
-  }
-  assertApiError(conflict, 409, "RESOURCE_CONFLICT");
-  assert.equal(
-    conflict.body.error.message,
-    "The selected Plugin Driver cannot run these plugin selections with this Configuration.",
-  );
-  // Clearing the plugins leaves nothing to check against that Configuration.
-  const cleared = await controller.request("PATCH", agentPath, {
-    body: { configurationId: omitted.id, plugins: {} },
-  });
-  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
-  const restored = await controller.request("PATCH", agentPath, {
-    body: { configurationId: configuration.id, plugins: automatic },
-  });
-  assert.equal(restored.status, 200, JSON.stringify(restored.body));
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
-  await bindHarnessKey(controller.fixture, namespace.id, created.data);
-  const store = async (approvalPolicy) => {
-    const stored = configurationDriver.stored({ namespaceId: namespace.id, id: configuration.id });
-    await configurationDriver.update({ ...stored, values: values(approvalPolicy) });
-  };
-  const deploy = () => controller.request("POST", `${agentPath}/deploy`);
-  const revisions = async () =>
-    (await controller.request("GET", `${agentPath}/revisions`)).data.length;
-  // A later Configuration save can still drop the policy under a saved Agent, so deployment
-  // checks the admitted pair again.
-  for (const [approvalPolicy, fix] of [
-    [undefined, "set it explicitly"],
-    ["never", "change it"],
-  ]) {
-    await store(approvalPolicy);
-    assertRefused(await deploy(), fix, `deploy with ${approvalPolicy}`);
-    assert.equal(await revisions(), 0);
-  }
-  // The Gateway runs on-failure as on-request; Compute renders on-request for both.
-  for (const approvalPolicy of ["on-request", "on-failure"]) {
-    await store(approvalPolicy);
-    const deployed = await deploy();
-    assert.equal(deployed.status, 202, `${approvalPolicy}: ${JSON.stringify(deployed.body)}`);
-  }
-  // Without an enabled automatic reviewer the native default stays, and nothing is required.
-  await store(undefined);
-  for (const plugins of [
-    { [linearPluginId]: { enabled: true, toolDefaults: { reviewer: "human" } } },
-    { [linearPluginId]: { enabled: false, toolDefaults: { reviewer: "auto" } } },
-  ]) {
-    const updated = await controller.request("PATCH", agentPath, {
-      body: { configurationId: configuration.id, plugins },
-    });
-    assert.equal(updated.status, 200, JSON.stringify(updated.body));
-    const deployed = await deploy();
-    assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
-  }
-});
+registerCodexPluginPolicyCases(configuredController);
 
 test("Agent save and deployment refuse plugins the Plugin Driver cannot run in the Agent's Harness", async () => {
   const controller = await configuredController();
@@ -4078,8 +3872,8 @@ test("Agent save and deployment refuse plugins the Plugin Driver cannot run in t
   controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
   const plugins = { [diffsPluginId]: pluginPolicy() };
   const message = (harness) =>
-    `The Installation's Plugin Driver runs plugins only in ${harness}: remove the Agent's plugins, or change its Configuration or execution mode to a Harness that runs them.`;
-  const assertRefused = (refused, label, harness = "an OpenClaw Harness") => {
+    `No Plugin Driver is enabled for the ${harness} Harness. Remove the Agent's plugins or enable its catalog.`;
+  const assertRefused = (refused, label, harness = "codex") => {
     assertApiError(refused, 400, "INVALID_REQUEST", label);
     assert.equal(refused.body.error.message, message(harness), label);
   };
@@ -4114,39 +3908,21 @@ test("Agent save and deployment refuse plugins the Plugin Driver cannot run in t
     }),
     "update",
   );
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
-  await bindHarnessKey(controller.fixture, namespace.id, created.data);
-  // An Agent stored before this check: deployment refuses it before admitting a revision.
-  await controller.fixture.controller.transact((unit) =>
-    unit.agents.updateConfiguration(
-      namespace.id,
-      created.data.id,
-      codex.id,
-      undefined,
-      undefined,
-      undefined,
-      plugins,
-    ),
-  );
-  assertRefused(await controller.request("POST", `${agentPath}/deploy`), "deploy");
-  assert.deepEqual((await controller.request("GET", `${agentPath}/revisions`)).data, []);
-  // The refusal's advice works: clearing the plugins saves.
-  const cleared = await controller.request("PATCH", agentPath, {
-    body: { configurationId: codex.id, plugins: {} },
-  });
-  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  await controller.fixture.markNamespaceReady(namespace.id);
+  await bindHarnessKey(controller.fixture, namespace.id, embedded.data);
+  // Removing an installed catalog prevents another deployment of an Agent that already selected it.
+  const openclawPath = `${agents}/${embedded.data.id}`;
+  controller.fixture.controller.installPluginDrivers([]);
+  const missing = await controller.request("POST", `${openclawPath}/deploy`);
+  assertApiError(missing, 501, "NOT_IMPLEMENTED");
+  assert.deepEqual((await controller.request("GET", `${openclawPath}/revisions`)).data, []);
 
-  // The Codex Plugin Driver runs in dedicated Codex or embedded OpenClaw, not dedicated
-  // OpenClaw; Create Agent's preflight refuses the pair as create does.
+  // An Installation offering only Codex plugins refuses both OpenClaw modes at save.
   const codexDriver = new CodexPluginDriver();
   controller.fixture.controller.registerDriver(codexDriver);
   controller.fixture.controller.selectDriver("plugin", codexDriver.id);
   const codexPlugins = { [linearPluginId]: { enabled: true } };
-  const codexHarness = "a dedicated Codex Harness or embedded OpenClaw Harness";
+  const codexHarness = "openclaw";
   assertRefused(
     await controller.request("POST", agents, {
       body: {
@@ -4173,7 +3949,7 @@ test("Agent save and deployment refuse plugins the Plugin Driver cannot run in t
   const codexEmbedded = await controller.request("POST", agents, {
     body: { name: "embedded-codex-plugins", configurationId: openclaw.id, plugins: codexPlugins },
   });
-  assert.equal(codexEmbedded.status, 201, JSON.stringify(codexEmbedded.body));
+  assertRefused(codexEmbedded, "embedded OpenClaw cannot use the Codex catalog", codexHarness);
 });
 
 test("a saved Google package refuses an incompatible Agent mode, Harness or Compute", async () => {
@@ -4198,8 +3974,7 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
     createHarnessConfiguration("openclaw", "gpt-5.1"),
   );
   const driver = new OCCPluginDriver();
-  controller.fixture.controller.registerDriver(driver);
-  controller.fixture.controller.selectDriver("plugin", driver.id);
+  controller.fixture.controller.installPluginDrivers([driver, new CodexPluginDriver()]);
   const packageId = "occ-plugin:google@1.0.0";
   const plugins = { [packageId]: { enabled: true } };
   const agentsPath = `/namespaces/${namespace.id}/agents`;
@@ -4256,7 +4031,24 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
   await changeHarness("codex");
   const deploy = await controller.request("POST", `${path}/deploy`);
   assert.equal(deploy.status, 400, JSON.stringify(deploy.body));
-  assert.equal(deploy.body.error.message, mode.body.error.message);
+  assert.match(deploy.body.error.message, /Clear the Agent's existing plugin selections/);
+  // A second Agent in the same Installation can select and admit a plugin through Codex.
+  const codexAgent = await controller.request("POST", agentsPath, {
+    body: {
+      name: "Codex Agent",
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      plugins: { [linearPluginId]: { enabled: true } },
+    },
+  });
+  assert.equal(codexAgent.status, 201, JSON.stringify(codexAgent.body));
+  await bindHarnessKey(controller.fixture, namespace.id, codexAgent.data);
+  const codexRevision = await controller.request(
+    "POST",
+    `${agentsPath}/${codexAgent.data.id}/deploy`,
+  );
+  assert.equal(codexRevision.status, 202, JSON.stringify(codexRevision.body));
+  assert.equal(codexRevision.data.plugins.driver.id, "codex-plugin");
 
   // The Sandbox can provision native workers. The replacement Compute cannot deliver the package.
   await changeHarness("openclaw");
@@ -4282,122 +4074,14 @@ test("a saved Google package refuses an incompatible Agent mode, Harness or Comp
   });
 });
 
-test("the OpenClaw Plugin Driver refuses a selection whose every tool the Configuration denies at save and deployment", async () => {
-  const configurationDriver = createTestConfigurationDriver();
-  const controller = await configuredController({ configurationDriver });
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "openclaw-plugin-tool-deny");
-  // Configuration saves do not know the Agents' plugins, so a deny-all list saves.
-  const denials = [["*"], [" DIFFS "], ["group:plugins"], ["dif*"], ["exec", "*"]];
-  const denying = [];
-  for (const deny of denials) {
-    denying.push(await createConfiguration(controller, namespace.id, { tools: { deny } }));
-  }
-  const allowed = { tools: { deny: ["exec", "diffs-*", 7] } };
-  const configuration = await createConfiguration(controller, namespace.id, allowed);
-  const pluginDriver = new OCCPluginDriver();
-  controller.fixture.controller.registerDriver(pluginDriver);
-  controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
-  const plugins = { [diffsPluginId]: pluginPolicy() };
-  const assertRefused = (refused, label) => {
-    assertApiError(refused, 400, "INVALID_REQUEST", label);
-    assert.equal(
-      refused.body.error.message,
-      `Configuration setting tools.deny blocks every tool of plugin ${diffsPluginId}; remove the matching deny entry or deselect the plugin.`,
-    );
-  };
-  // The translator adds the selected plugin to the tool allowlist, and a deny-all list then
-  // leaves no callable tool: deployment succeeded and every turn failed (finding 508). An
-  // Agent save sees both the plugins and the Configuration, so it refuses the pair.
-  for (const [index, named] of denying.entries()) {
-    const refused = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-      body: { name: "tool-deny-agent", configurationId: named.id, plugins },
-    });
-    assertRefused(refused, `create with ${JSON.stringify(denials[index])}`);
-  }
-  // Every session runs as a sole roster entry, so its tools.deny counts too (finding 1848).
-  const entryDenying = await createConfiguration(controller, namespace.id, {
-    agents: { entries: { main: { tools: { deny: ["*"] } } } },
-  });
-  const refusedEntry = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "tool-deny-agent", configurationId: entryDenying.id, plugins },
-  });
-  assert.equal(refusedEntry.status, 400, JSON.stringify(refusedEntry.body));
-  assert.equal(
-    refusedEntry.body.error.message,
-    `Configuration setting agents.entries.main.tools.deny blocks every tool of plugin ${diffsPluginId}; remove the matching deny entry or deselect the plugin.`,
-  );
-  // The primary model's tools.byProvider deny list is its own deny step (finding 1855).
-  const providerDenying = await createConfiguration(controller, namespace.id, {
-    agents: { defaults: { model: "openai/gpt-5.1" } },
-    tools: { byProvider: { openai: { deny: ["*"] } } },
-  });
-  const refusedProvider = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "tool-deny-agent", configurationId: providerDenying.id, plugins },
-  });
-  assert.equal(refusedProvider.status, 400, JSON.stringify(refusedProvider.body));
-  assert.equal(
-    refusedProvider.body.error.message,
-    `Configuration setting tools.byProvider.openai.deny blocks every tool of plugin ${diffsPluginId}; remove the matching deny entry or deselect the plugin.`,
-  );
-  assert.deepEqual(
-    (await controller.request("GET", `/namespaces/${namespace.id}/agents`)).data,
-    [],
-  );
-  // A disabled selection adds nothing to the allowlist, so it can stay denied.
-  const disabled = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: {
-      name: "tool-deny-disabled",
-      configurationId: denying[0].id,
-      plugins: { [diffsPluginId]: { enabled: false } },
-    },
-  });
-  assert.equal(disabled.status, 201, JSON.stringify(disabled.body));
-  const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "tool-deny-agent", configurationId: configuration.id, plugins },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const agentPath = `/namespaces/${namespace.id}/agents/${created.data.id}`;
-  // An update is checked with the plugins it leaves in place as well as the ones it sends.
-  for (const body of [
-    { configurationId: denying[0].id },
-    { configurationId: denying[0].id, plugins },
-  ]) {
-    const refused = await controller.request("PATCH", agentPath, { body });
-    assertRefused(refused, `update ${JSON.stringify(body)}`);
-  }
-  const unchanged = await controller.request("GET", agentPath);
-  assert.equal(unchanged.data.configurationId, configuration.id);
-  assert.deepEqual(unchanged.data.plugins, plugins);
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
-  await bindHarnessKey(controller.fixture, namespace.id, created.data);
-  const store = async (values) => {
-    const stored = configurationDriver.stored({ namespaceId: namespace.id, id: configuration.id });
-    await configurationDriver.update({ ...stored, values });
-  };
-  const deploy = () => controller.request("POST", `${agentPath}/deploy`);
-  const revisions = async () =>
-    (await controller.request("GET", `${agentPath}/revisions`)).data.length;
-  // A later Configuration save can still deny every tool under a saved Agent, so deployment
-  // checks the admitted pair again and creates no revision.
-  await store({ tools: { deny: ["*"] } });
-  assertRefused(await deploy(), "deploy with a deny-all list");
-  assert.equal(await revisions(), 0);
-  await store(allowed);
-  const deployed = await deploy();
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
-});
+registerOpenClawPluginPolicyCases(configuredController);
 
 test("Codex Agents refuse plugin and tool approver overrides and keep Agent-wide approvers", async () => {
   const controller = await configuredController();
   await bootstrap(controller);
   const namespace = await createNamespace(controller, "codex-plugin-approvers-api");
   const configuration = await createConfiguration(controller, namespace.id, {
-    agents: { defaults: { model: "codex/gpt-6-astra" } },
+    ...createHarnessConfiguration("codex", "gpt-6-astra"),
   });
   const pluginDriver = new CodexPluginDriver();
   controller.fixture.controller.registerDriver(pluginDriver);
@@ -4405,7 +4089,7 @@ test("Codex Agents refuse plugin and tool approver overrides and keep Agent-wide
   // The Console reads this capability to hide plugin and tool approver fields for Codex.
   const installation = await controller.request("GET", "/installation");
   assert.equal(installation.status, 200);
-  assert.deepEqual(installation.data.capabilities.pluginPolicies.approvers, {
+  assert.deepEqual(installation.data.capabilities.pluginCatalogs[0].pluginPolicies.approvers, {
     agent: true,
     plugin: false,
     tools: false,
@@ -4654,6 +4338,22 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
   });
   assertApiError(foreignUpdate, 403, "FORBIDDEN");
 
+  // A catalog refusal must not bypass the exact grant on a newly requested source.
+  const requestedSourceId = `cs_${randomUUID()}`;
+  const deniedSource = await injectedRequest(exactAgentApp, "PATCH", agentPath, {
+    body: {
+      configurationId: configuration.id,
+      credentialSources: [{ sourceId: requestedSourceId }],
+      plugins: { [linearPluginId]: { enabled: true } },
+    },
+  });
+  assertApiError(deniedSource, 403, "FORBIDDEN");
+  assert.deepEqual(controller.fixture.auditSink.events.at(-1).authorization.resource, {
+    kind: "credential_source",
+    namespaceId: namespace.id,
+    id: requestedSourceId,
+  });
+
   const updated = await injectedRequest(exactAgentApp, "PATCH", agentPath, {
     body: { configurationId: configuration.id, plugins: { [diffsPluginId]: pluginPolicy() } },
   });
@@ -4705,647 +4405,12 @@ test("Agent plugin maps reject structural errors and preserve exact authorizatio
     assertApiError(response, 400, "INVALID_REQUEST");
     assert.match(
       response.body.error.message,
-      /^A plugin selection names a plugin that the selected Plugin Driver \(codex-plugin\) does not offer: occ-plugin:diffs\./,
+      /No Plugin Driver is enabled for the openclaw Harness/,
     );
     assert.equal(Object.hasOwn(response.body.error, "details"), false);
   }
   const afterStoredRefusal = await controller.request("GET", agentPath);
   assert.deepEqual(afterStoredRefusal.data, beforeDriverSwitch.data);
-});
-
-test("a forced ServiceAccount delete without a ChatGPT Backend removes an account whose token nothing can revoke and audits it", async () => {
-  const controller = await configuredController();
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "service-account-force-delete");
-  const account = await createServiceAccount(controller, namespace.id, "orphaned-token");
-  const accountPath = `/namespaces/${namespace.id}/service-accounts/${account.id}`;
-  const missingPath = `/namespaces/${namespace.id}/service-accounts/sa_00000000-0000-4000-8000-000000000000`;
-  // The token was issued while a ChatGPT Backend was configured; this Installation has none.
-  await controller.fixture.controller.transact((unit) =>
-    unit.serviceAccounts.updateCredential(namespace.id, account.id, {
-      kind: "access_token",
-      secretRef: { name: `account-${account.id.slice(3)}`, key: "token" },
-    }),
-  );
-
-  // Without force, and with an explicit force=false, deletion still refuses and names both ways out.
-  for (const path of [accountPath, `${accountPath}?force=false`]) {
-    const refused = await controller.request("DELETE", path);
-    assertApiError(refused, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
-    assert.match(
-      refused.body.error.message,
-      /force the delete and revoke the token at the provider/,
-    );
-  }
-  const malformed = await controller.request("DELETE", `${accountPath}?force=yes`);
-  assertApiError(malformed, 400, "INVALID_REQUEST");
-
-  // Force adds no oracle: a caller without delete gets the same 403 for a real and an unknown
-  // account, and the grant holder the usual 404 for an unknown one.
-  const outsider = await controller.fixture.createAuthPrincipal("service-account-force-outsider");
-  controller.fixture.state.identities.push(outsider.principal);
-  const denied = await assertSameAnswer(
-    (id) =>
-      controller.request(
-        "DELETE",
-        `/namespaces/${namespace.id}/service-accounts/${id}?force=true`,
-        { session: outsider.session },
-      ),
-    [account.id, missingPath.split("/").at(-1)],
-  );
-  // The denial names the account ID its request sent, and nothing else about it.
-  assert.equal(denied.message, callerDenied("ServiceAccount delete", "ServiceAccount <id>"));
-  const unknown = await controller.request("DELETE", `${missingPath}?force=true`);
-  assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
-
-  const forced = await controller.request("DELETE", `${accountPath}?force=true`);
-  assert.equal(forced.status, 200, JSON.stringify(forced.body));
-  // The in-memory state keeps no Backend binding, so no binding identity is reported.
-  assert.deepEqual(forced.data, {
-    id: account.id,
-    namespaceId: namespace.id,
-    revocation: "skipped",
-  });
-  assert.equal((await controller.request("GET", accountPath)).status, 404);
-
-  const deletion = controller.fixture.auditSink.events.findLast(
-    (event) => event.action === "openclaw.service_accounts.delete",
-  );
-  assert.equal(deletion.outcome, "success");
-  assert.equal(deletion.actorId, controller.fixture.principal.id);
-  assert.deepEqual(deletion.resource, {
-    kind: "service_account",
-    id: account.id,
-    namespaceId: namespace.id,
-  });
-  // `revocation` survives audit redaction, which a `tokenRevoked` key would not.
-  assert.equal(deletion.details.force, true);
-  assert.equal(deletion.details.revocation, "skipped");
-
-  // PostgreSQL state also reports the token's Backend binding (postgres-service-account-deletion
-  // pins the lookup). The response names only the Backend; the audit event keeps every binding
-  // ID, which redaction leaves alone because each key ends in "Id", so the token can be revoked.
-  const bound = await createServiceAccount(controller, namespace.id, "orphaned-bound-token");
-  await controller.fixture.controller.transact((unit) =>
-    unit.serviceAccounts.updateCredential(namespace.id, bound.id, {
-      kind: "access_token",
-      secretRef: { name: `account-${bound.id.slice(3)}`, key: "token" },
-    }),
-  );
-  const binding = {
-    backendId: "chatgpt",
-    workspaceId: "11111111-1111-4111-8111-111111111111",
-    externalAccountId: "user-account-bound",
-    credentialId: "key-bound",
-  };
-  const occ = controller.fixture.controller;
-  const deleteServiceAccount = occ.deleteServiceAccount;
-  occ.deleteServiceAccount = async (...args) => {
-    const deleted = await deleteServiceAccount.apply(occ, args);
-    return { ...deleted, unrevokedCredential: binding };
-  };
-  let boundForced;
-  try {
-    boundForced = await controller.request(
-      "DELETE",
-      `/namespaces/${namespace.id}/service-accounts/${bound.id}?force=true`,
-    );
-  } finally {
-    delete occ.deleteServiceAccount;
-  }
-  assert.equal(boundForced.status, 200, JSON.stringify(boundForced.body));
-  assert.deepEqual(boundForced.data, {
-    id: bound.id,
-    namespaceId: namespace.id,
-    revocation: "skipped",
-    backendId: "chatgpt",
-  });
-  const boundEvent = controller.fixture.auditSink.events.findLast(
-    (event) => event.action === "openclaw.service_accounts.delete",
-  );
-  assert.equal(boundEvent.resource.id, bound.id);
-  assert.deepEqual(boundEvent.details, { force: true, revocation: "skipped", ...binding });
-
-  // An account without an issued token never needed revocation: force answers the usual 204.
-  const native = await createServiceAccount(controller, namespace.id, "native");
-  const nativeDeleted = await controller.request(
-    "DELETE",
-    `/namespaces/${namespace.id}/service-accounts/${native.id}?force=true`,
-  );
-  assert.equal(nativeDeleted.status, 204);
-  const nativeEvent = controller.fixture.auditSink.events.findLast(
-    (event) => event.action === "openclaw.service_accounts.delete",
-  );
-  assert.equal(nativeEvent.resource.id, native.id);
-  // The requested force is recorded, but nothing was skipped.
-  assert.equal(nativeEvent.details.force, true);
-  assert.equal(Object.hasOwn(nativeEvent.details, "revocation"), false);
-});
-
-test("native ServiceAccounts keep private credential references and cannot admit Harness authentication", async () => {
-  const controller = await configuredController({ recordOperations: true });
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "service-account-lifecycle");
-  const account = await createServiceAccount(controller, namespace.id, "model-provider");
-  const accountPath = `/namespaces/${namespace.id}/service-accounts/${account.id}`;
-
-  const detail = await controller.request("GET", accountPath);
-  assert.deepEqual(detail.data, account);
-
-  const configuration = await createConfiguration(controller, namespace.id);
-  const agentResult = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: {
-      name: "service-account-agent",
-      configurationId: configuration.id,
-      harnessAuth: {
-        method: "codex_pat",
-        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
-      },
-    },
-  });
-  assert.equal(agentResult.status, 201);
-  assert.equal(agentResult.data.harnessAuth.source.id, account.id);
-  const agent = agentResult.data;
-  const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
-
-  // A ready Namespace is insufficient: associated accounts without credentials cannot admit revisions.
-  await controller.fixture.controller.handleNamespaceLifecycle(
-    controller.fixture.principal.id,
-    namespace.id,
-    "ready",
-  );
-  // This Installation has no ChatGPT Backend: issuance is a conflict naming the fix, not an
-  // outage, and only after the caller's grant and the account lookup.
-  const issuance = await controller.request("POST", `${accountPath}/credentials`, { body: {} });
-  assertApiError(issuance, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
-  assert.equal(
-    issuance.body.error.message,
-    "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An Installation administrator must configure it and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
-  );
-  const unknownIssuance = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/service-accounts/sa_00000000-0000-4000-8000-000000000000/credentials`,
-    { body: {} },
-  );
-  assert.equal(unknownIssuance.status, 404, JSON.stringify(unknownIssuance.body));
-  const issuer = await controller.fixture.createAuthPrincipal("service-account-no-backend-issuer");
-  controller.fixture.state.identities.push(issuer.principal);
-  const deniedIssuance = await controller.request("POST", `${accountPath}/credentials`, {
-    body: {},
-    session: issuer.session,
-  });
-  assert.equal(deniedIssuance.status, 403, JSON.stringify(deniedIssuance.body));
-
-  // Without a Backend no account can hold an access token, so deployment names the Backend too.
-  const missingCredential = await controller.request("POST", deploymentPath);
-  assertApiError(missingCredential, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
-  assert.equal(
-    missingCredential.body.error.message,
-    "ChatGPT Harness authentication needs an issued access-token credential, and this Installation has no ChatGPT Backend to issue one. An Installation administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
-  );
-
-  const initialCredential = {
-    kind: "api_key",
-    secretRef: { name: "namespace-provider-source", key: "provider-api-key" },
-  };
-  const assigned = await controller.request("PATCH", `${accountPath}/credential`, {
-    body: initialCredential,
-  });
-  assert.equal(assigned.status, 200);
-  assert.deepEqual(assigned.data.credential, { kind: initialCredential.kind });
-  assert.deepEqual(
-    (
-      await controller.fixture.controller.getServiceAccount(
-        controller.fixture.principal.id,
-        namespace.id,
-        account.id,
-      )
-    ).credential,
-    initialCredential,
-  );
-
-  const nativeDeployment = await controller.request("POST", deploymentPath);
-  assertApiError(nativeDeployment, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
-  // A PAT source admits only an access-token credential, never an API key in its place.
-  assert.match(nativeDeployment.body.error.message, /needs an issued access-token credential/);
-
-  // OAuth references are representable, but no refresh or OAuth execution exists yet.
-  const oauthCredential = {
-    kind: "oauth_access_token",
-    secretRef: { name: "namespace-oauth-source", key: "access-token" },
-  };
-  const oauthUpdate = await controller.request("PATCH", `${accountPath}/credential`, {
-    body: oauthCredential,
-  });
-  assert.equal(oauthUpdate.status, 200);
-  const oauthDeployment = await controller.request("POST", deploymentPath);
-  assertApiError(oauthDeployment, 409, "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED");
-  assert.match(oauthDeployment.body.error.message, /needs an issued access-token credential/);
-
-  const replacementCredential = {
-    kind: "api_key",
-    secretRef: { name: "namespace-provider-rotated", key: "rotated-api-key" },
-  };
-  const replaced = await controller.request("PATCH", `${accountPath}/credential`, {
-    body: replacementCredential,
-  });
-  assert.equal(replaced.status, 200);
-  assert.deepEqual(replaced.data.credential, { kind: replacementCredential.kind });
-  assert.deepEqual(
-    (
-      await controller.fixture.controller.getServiceAccount(
-        controller.fixture.principal.id,
-        namespace.id,
-        account.id,
-      )
-    ).credential,
-    replacementCredential,
-  );
-  assert.deepEqual(
-    (await controller.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}/revisions`))
-      .data,
-    [],
-  );
-
-  // The caller holds delete on the account, so the conflict names what still depends on it.
-  const boundDeletion = await controller.request("DELETE", accountPath);
-  assertApiError(boundDeletion, 409, "RESOURCE_CONFLICT");
-  assert.equal(
-    boundDeletion.body.error.message,
-    "An Agent draft, active revision, pending deployment, or pending Agent provisioning request still references the ServiceAccount. Remove those references, or let provisioning finish, first.",
-  );
-  // Authorization precedes the reference check: a caller without delete learns nothing about references.
-  const outsider = await controller.fixture.createAuthPrincipal("service-account-outsider");
-  controller.fixture.state.identities.push(outsider.principal);
-  const forbidden = await controller.request("DELETE", accountPath, { session: outsider.session });
-  assertApiError(forbidden, 403, "FORBIDDEN");
-
-  const detached = await controller.request(
-    "PATCH",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-    {
-      body: { configurationId: configuration.id, harnessAuth: null },
-    },
-  );
-  assert.equal(detached.status, 200);
-  assert.equal(detached.data.harnessAuth, null);
-
-  // Failed admissions create no pending revision that could keep a detached account referenced.
-  const deletedDetached = await controller.fixture.app.fetch(
-    new Request(`http://127.0.0.1${accountPath}`, {
-      method: "DELETE",
-      headers: authenticatedHeaders(controller.fixture.session),
-    }),
-  );
-  assert.equal(deletedDetached.status, 204);
-
-  const unusedAccount = await createServiceAccount(controller, namespace.id, "unused-provider");
-  const unusedAccountPath = `/namespaces/${namespace.id}/service-accounts/${unusedAccount.id}`;
-  // Successful DELETE is intentionally bodyless, unlike canonical JSON resource responses.
-  const deleted = await controller.fixture.app.fetch(
-    new Request(`http://127.0.0.1${unusedAccountPath}`, {
-      method: "DELETE",
-      headers: authenticatedHeaders(controller.fixture.session),
-    }),
-  );
-  assert.equal(deleted.status, 204);
-  const missingAccount = await controller.request("GET", unusedAccountPath);
-  assert.equal(missingAccount.status, 404);
-
-  const accountEvents = controller.fixture.auditSink.events.filter(
-    (event) => event.kind === "mutation" && event.resource.kind === "service_account",
-  );
-  assert.deepEqual(
-    new Set(accountEvents.map(({ action }) => action)),
-    new Set([
-      "openclaw.service_accounts.create",
-      "openclaw.service_accounts.update",
-      "openclaw.service_accounts.delete",
-    ]),
-  );
-  assert.deepEqual(accountEvents[0].authorization.resource, {
-    kind: "service_account",
-    id: namespace.id,
-    namespaceId: namespace.id,
-  });
-  assert.deepEqual(accountEvents.at(-1).authorization.resource, {
-    kind: "service_account",
-    id: unusedAccount.id,
-    namespaceId: namespace.id,
-  });
-});
-
-test("native ServiceAccounts reject invalid references and enforce exact Namespace-scoped access", async () => {
-  const controller = await configuredController();
-  await bootstrap(controller);
-  const namespaceA = await createNamespace(controller, "service-account-namespace-a");
-  const namespaceB = await createNamespace(controller, "service-account-namespace-b");
-  const accountA = await createServiceAccount(controller, namespaceA.id, "account-a");
-  const accountB = await createServiceAccount(controller, namespaceA.id, "account-b");
-  const exactAccountPath = `/namespaces/${namespaceA.id}/service-accounts/${accountA.id}`;
-
-  const duplicate = await controller.request(
-    "POST",
-    `/namespaces/${namespaceA.id}/service-accounts`,
-    { body: { name: "account-a" } },
-  );
-  assertApiError(duplicate, 409, "RESOURCE_CONFLICT");
-  // The caller chose only the name, so the conflict says the name is taken here.
-  assert.equal(
-    duplicate.body.error.message,
-    "A ServiceAccount with this name already exists in this Namespace. Choose a different name.",
-  );
-
-  // Account ownership participates in Namespace emptiness even before any Agent is created.
-  const occupiedNamespace = await controller.request("DELETE", `/namespaces/${namespaceA.id}`);
-  assertApiError(occupiedNamespace, 409, "NAMESPACE_NOT_EMPTY");
-
-  for (const invalid of [
-    { name: "unrecognized-field", implementation: "native" },
-    { name: "cross-namespace", namespaceId: namespaceB.id },
-  ]) {
-    const rejected = await controller.request(
-      "POST",
-      `/namespaces/${namespaceA.id}/service-accounts`,
-      { body: invalid },
-    );
-    assert.equal(rejected.status, 400);
-  }
-
-  for (const invalid of [
-    ...[".", ".."].map((key) => ({ kind: "api_key", secretRef: { name: "valid-source", key } })),
-    { kind: "api_key", secretRef: { name: "valid-source", key: "credential", namespace: "other" } },
-    { kind: "provider_token", secretRef: { name: "valid-source", key: "credential" } },
-  ]) {
-    const rejected = await controller.request("PATCH", `${exactAccountPath}/credential`, {
-      body: invalid,
-    });
-    assertApiError(rejected, 400, "INVALID_REQUEST");
-  }
-
-  const credential = { kind: "api_key", secretRef: { name: "account-a-source", key: "api-key" } };
-  const assigned = await controller.request("PATCH", `${exactAccountPath}/credential`, {
-    body: credential,
-  });
-  assert.equal(assigned.status, 200);
-
-  // A real account ID never becomes accessible by substituting a sibling Namespace in the URL.
-  for (const [method, suffix, options] of [
-    ["GET", ""],
-    ["PATCH", "/credential", { body: credential }],
-    ["DELETE", ""],
-  ]) {
-    const crossNamespace = await controller.request(
-      method,
-      `/namespaces/${namespaceB.id}/service-accounts/${accountA.id}${suffix}`,
-      options,
-    );
-    assert.equal(crossNamespace.status, 404);
-  }
-
-  const configurationB = await createConfiguration(controller, namespaceB.id);
-  const configurationA = await createConfiguration(controller, namespaceA.id);
-  const crossNamespaceAssociation = await controller.request(
-    "POST",
-    `/namespaces/${namespaceB.id}/agents`,
-    {
-      body: {
-        name: "cross-namespace-agent",
-        configurationId: configurationB.id,
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: namespaceB.id, id: accountA.id },
-        },
-      },
-    },
-  );
-  assert.equal(crossNamespaceAssociation.status, 404);
-  // A source naming another Namespace is refused as such, even when the route Namespace holds
-  // an account with that id: the reference itself must not cross Namespaces.
-  const foreignSourceAssociation = await controller.request(
-    "POST",
-    `/namespaces/${namespaceA.id}/agents`,
-    {
-      body: {
-        name: "foreign-source-agent",
-        configurationId: configurationA.id,
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: namespaceB.id, id: accountA.id },
-        },
-      },
-    },
-  );
-  // The rule reads only the request, before any account lookup, so the API names it as a request
-  // error instead of a 404 (finding 2536): the text is the same whether the account exists.
-  assert.equal(foreignSourceAssociation.status, 400, JSON.stringify(foreignSourceAssociation.body));
-  assert.equal(foreignSourceAssociation.body.error.code, "INVALID_REQUEST");
-  assert.equal(foreignSourceAssociation.body.error.message, SERVICE_ACCOUNT_CROSS_NAMESPACE);
-  const missingForeignSource = await controller.request(
-    "POST",
-    `/namespaces/${namespaceA.id}/agents`,
-    {
-      body: {
-        name: "foreign-source-agent",
-        configurationId: configurationA.id,
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: namespaceB.id, id: `sa_${randomUUID()}` },
-        },
-      },
-    },
-  );
-  assert.deepEqual(missingForeignSource.body.error, foreignSourceAssociation.body.error);
-
-  // Namespace-wide Agent authority never substitutes for an exact ServiceAccount binding.
-  controller.fixture.state.roles.push(
-    {
-      id: "role-service-account-namespace-reader",
-      namespaceId: namespaceA.id,
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "configuration" },
-        { action: "create", resourceKind: "agent" },
-        { action: "read", resourceKind: "agent" },
-        { action: "update", resourceKind: "agent" },
-      ],
-    },
-    {
-      id: "role-exact-service-account-reader",
-      namespaceId: namespaceA.id,
-      permissions: [{ action: "read", resourceKind: "service_account" }],
-    },
-  );
-  async function exactReader(suffix, accountId) {
-    const { principal: identity } = await controller.fixture.createAuthPrincipal(suffix);
-    controller.fixture.state.identities.push(identity);
-    controller.fixture.state.bindings.push(
-      ...["namespace", "account"].map((kind) => ({
-        id: `binding-${suffix}-${kind}`,
-        namespaceId: namespaceA.id,
-        subjectKind: "identity",
-        subjectId: identity.id,
-        roleId:
-          kind === "namespace"
-            ? "role-service-account-namespace-reader"
-            : "role-exact-service-account-reader",
-        ...(kind === "account" ? { resourceKind: "service_account", resourceId: accountId } : {}),
-      })),
-    );
-    return { identity, app: controller.fixture.createApp(identity) };
-  }
-
-  const { identity: reader, app: readerApp } = await exactReader(
-    "existing-account-reader",
-    accountA.id,
-  );
-
-  const authorizedAccount = await injectedRequest(readerApp, "GET", exactAccountPath);
-  assert.equal(authorizedAccount.status, 200);
-
-  const accountList = await injectedRequest(
-    readerApp,
-    "GET",
-    `/namespaces/${namespaceA.id}/service-accounts`,
-  );
-  assert.equal(accountList.status, 200);
-  assert.deepEqual(accountList.data, [assigned.data]);
-  assert.equal(JSON.stringify(accountList.data).includes(accountB.id), false);
-  assert.equal(Object.hasOwn(accountList.data[0], "backendId"), false);
-
-  const denied = await injectedRequest(
-    readerApp,
-    "GET",
-    `/namespaces/${namespaceA.id}/service-accounts/${accountB.id}`,
-  );
-  assertApiError(denied, 403, "FORBIDDEN");
-  const denial = controller.fixture.auditSink.events.at(-1);
-  assert.deepEqual(denial.resource, {
-    kind: "service_account",
-    id: accountB.id,
-    namespaceId: namespaceA.id,
-  });
-  assert.equal(denial.action, "openclaw.service_accounts.read");
-
-  // Agent creation still needs read permission on its exact associated account, not a sibling.
-  const deniedAssociation = await injectedRequest(
-    readerApp,
-    "POST",
-    `/namespaces/${namespaceA.id}/agents`,
-    {
-      body: {
-        name: "denied-account-association",
-        configurationId: configurationA.id,
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: accountB.namespaceId, id: accountB.id },
-        },
-      },
-    },
-  );
-  assert.equal(deniedAssociation.status, 403);
-  const deniedAssociationAudit = controller.fixture.auditSink.events.at(-1);
-  assert.equal(deniedAssociationAudit.action, "openclaw.agents.create");
-  assert.deepEqual(deniedAssociationAudit.authorization, {
-    principalId: reader.id,
-    action: "read",
-    resource: { kind: "service_account", id: accountB.id, namespaceId: namespaceA.id },
-  });
-
-  const allowedAssociation = await injectedRequest(
-    readerApp,
-    "POST",
-    `/namespaces/${namespaceA.id}/agents`,
-    {
-      body: {
-        name: "allowed-account-association",
-        configurationId: configurationA.id,
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: accountA.namespaceId, id: accountA.id },
-        },
-      },
-    },
-  );
-  assert.equal(allowedAssociation.status, 201);
-  assert.equal(allowedAssociation.data.harnessAuth.source.id, accountA.id);
-  const associatedAgentPath = `/namespaces/${namespaceA.id}/agents/${allowedAssociation.data.id}`;
-
-  // Replacing A with B requires exact read on the new account, not merely authority over A.
-  const deniedNewAccount = await injectedRequest(readerApp, "PATCH", associatedAgentPath, {
-    body: {
-      configurationId: configurationA.id,
-      harnessAuth: {
-        method: "codex_pat",
-        source: { kind: "service_account", namespaceId: accountB.namespaceId, id: accountB.id },
-      },
-    },
-  });
-  assert.equal(deniedNewAccount.status, 403);
-  const unchangedAfterNewAccountDenial = await injectedRequest(
-    readerApp,
-    "GET",
-    associatedAgentPath,
-  );
-  assert.equal(unchangedAfterNewAccountDenial.data.harnessAuth.source.id, accountA.id);
-
-  const deniedCreation = await injectedRequest(
-    readerApp,
-    "POST",
-    `/namespaces/${namespaceA.id}/service-accounts`,
-    { body: { name: "unauthorized-account" } },
-  );
-  assert.equal(deniedCreation.status, 403);
-  assert.deepEqual(controller.fixture.auditSink.events.at(-1).resource, {
-    kind: "service_account",
-    id: namespaceA.id,
-    namespaceId: namespaceA.id,
-  });
-
-  // Reading replacement account B cannot authorize detaching or replacing the existing account A.
-  const { identity: replacementOnlyReader, app: replacementOnlyApp } = await exactReader(
-    "replacement-only-reader",
-    accountB.id,
-  );
-
-  for (const serviceAccountId of [null, accountB.id]) {
-    const deniedOldAccount = await injectedRequest(
-      replacementOnlyApp,
-      "PATCH",
-      associatedAgentPath,
-      {
-        body: {
-          configurationId: configurationA.id,
-          harnessAuth:
-            serviceAccountId === null
-              ? null
-              : {
-                  method: "codex_pat",
-                  source: {
-                    kind: "service_account",
-                    namespaceId: namespaceA.id,
-                    id: serviceAccountId,
-                  },
-                },
-        },
-      },
-    );
-    assert.equal(deniedOldAccount.status, 403);
-    const deniedOldAccountAudit = controller.fixture.auditSink.events.at(-1);
-    assert.equal(deniedOldAccountAudit.action, "openclaw.agents.update");
-    assert.deepEqual(deniedOldAccountAudit.authorization, {
-      principalId: replacementOnlyReader.id,
-      action: "read",
-      resource: {
-        kind: "service_account",
-        id: accountA.id,
-        namespaceId: namespaceA.id,
-      },
-    });
-
-    const unchanged = await injectedRequest(replacementOnlyApp, "GET", associatedAgentPath);
-    assert.equal(unchanged.data.harnessAuth.source.id, accountA.id);
-  }
 });
 
 test("session inspection stays optional and never exposes session or credential secrets", async () => {
@@ -5415,7 +4480,7 @@ test("session inspection stays optional and never exposes session or credential 
 
 test("administrator-created auth accounts sign in and receive only provisioned IAM access", async () => {
   let provisionedSeed;
-  const fixture = await createInjectedFixture({
+  const controller = await configuredController({
     provisionAuthAccount(seed, { installAuthSeed, state, auditEvent }) {
       provisionedSeed = seed;
       // Use the production validator so Role errors map exactly as they do on PostgreSQL.
@@ -5423,11 +4488,8 @@ test("administrator-created auth accounts sign in and receive only provisioned I
       return installAuthSeed(seed, { auditEvent });
     },
   });
+  const { fixture } = controller;
   const selectedIAMDriver = fixture.iamDriver;
-  const controller = {
-    fixture,
-    request: (method, pathname, options) => injectedRequest(fixture.app, method, pathname, options),
-  };
   await bootstrap(controller, "Provisioned account installation");
   const readOnlyRole = {
     id: "role-read-only-auth-account",
@@ -5675,54 +4737,7 @@ test("administrator-created auth accounts sign in and receive only provisioned I
 test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB limit", async () => {
   const controller = await configuredController();
 
-  const malformedJson = await controller.request("POST", "/installation/bootstrap", {
-    rawBody: "{not-json",
-    headers: { "content-type": "application/json" },
-  });
-  assertApiError(malformedJson, 400, "INVALID_REQUEST");
-
-  const unsupportedType = await controller.request("POST", "/installation/bootstrap", {
-    rawBody: "name=enterprise",
-    headers: { "content-type": "text/plain" },
-  });
-  assertApiError(unsupportedType, 415, "UNSUPPORTED_MEDIA_TYPE");
-
-  for (const invalid of [null, [], {}, { name: "" }, { name: "   " }]) {
-    const result = await controller.request("POST", "/installation/bootstrap", { body: invalid });
-    assert.equal(result.status, 400);
-  }
-
-  await bootstrap(controller);
-
-  for (const invalid of [null, [], {}, { name: "" }, { name: 4 }]) {
-    const result = await controller.request("POST", "/namespaces", {
-      body: invalid,
-    });
-    assert.equal(result.status, 400);
-  }
-
-  const namespace = await createNamespace(controller, "validated");
-  const duplicateNamespace = await controller.request("POST", "/namespaces", {
-    body: { name: "validated" },
-  });
-  assertApiError(duplicateNamespace, 409, "RESOURCE_CONFLICT");
-  assert.equal(
-    duplicateNamespace.body.error.message,
-    "A Namespace with this name already exists. Choose a different name.",
-  );
-
-  const invalidAgent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "" },
-  });
-  assert.equal(invalidAgent.status, 400);
-
-  const agent = await createAgent(controller, namespace.id, "valid-agent");
-  const duplicateAgent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: { name: "valid-agent", configurationId: agent.configurationId },
-  });
-  assertApiError(duplicateAgent, 409, "RESOURCE_CONFLICT");
-  // The caller chose only the name, so the conflict says the name is taken here.
-  assert.equal(duplicateAgent.body.error.message, AGENT_NAME_CONFLICT);
+  const { namespace, agent } = await checkResourceCreationSchemas(controller);
 
   for (const configurationId of [null, [], "invalid"]) {
     const invalidCreation = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
@@ -5738,7 +4753,7 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
     assert.equal(invalidReplacement.status, 400);
   }
 
-  for (const body of [{ configuration: {} }, { draft_spec: {} }, {}]) {
+  for (const body of [{ configuration: {} }, { draft_spec: {} }]) {
     const invalidDeployment = await controller.request(
       "POST",
       `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
@@ -5795,55 +4810,8 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
   const unexpectedQuery = await controller.request("GET", "/namespaces?owner=foreign");
   assertApiError(unexpectedQuery, 400, "INVALID_REQUEST");
 
-  const malformedIdentifier = await controller.request("GET", "/namespaces/ns_not-a-uuid");
-  assert.equal(malformedIdentifier.status, 400);
-  // Path-parameter failures name the parameter and its syntax, like body failures name fields.
-  assert.deepEqual(malformedIdentifier.body.error.details, [
-    { path: "/namespaceId", code: "INVALID_FORMAT" },
-  ]);
-  assert.match(malformedIdentifier.body.error.message, /params \/namespaceId .* expected ns_ /);
-
-  const wrongResourceKind = await controller.request("GET", `/namespaces/${agent.id}`);
-  assert.equal(wrongResourceKind.status, 400);
-
-  const nonV4Agent = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/agt_00000000-0000-0000-0000-000000000000`,
-  );
-  assert.equal(nonV4Agent.status, 400);
-  assert.deepEqual(nonV4Agent.body.error.details, [{ path: "/agentId", code: "INVALID_FORMAT" }]);
-
-  // A deployment is addressed by its revision ID, so the message names the rev_ prefix.
-  const malformedDeployment = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deployments/rev_bogus/runtime/logs?source=gateway`,
-  );
-  assert.equal(malformedDeployment.status, 400);
-  assert.deepEqual(malformedDeployment.body.error.details, [
-    { path: "/deploymentId", code: "INVALID_FORMAT" },
-  ]);
-  assert.match(malformedDeployment.body.error.message, /params \/deploymentId .* expected rev_ /);
-
-  const oversized = await controller.request("POST", "/namespaces", {
-    body: { name: "x".repeat(64 * 1024) },
-  });
-  assertApiError(oversized, 413, "PAYLOAD_TOO_LARGE");
-
-  // Keep method order and overlapping literal/parameter paths in the public Allow header.
-  for (const [method, path, allowed] of [
-    ["DELETE", "/namespaces", "POST, GET"],
-    [
-      "OPTIONS",
-      `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-      "GET, PATCH, DELETE",
-    ],
-    ["OPTIONS", `/namespaces/${namespace.id}/agents/${agent.id}/deploy?ignored=true`, "POST"],
-    ["OPTIONS", `/namespaces/${namespace.id}/agents/provision`, "POST, PATCH, GET, DELETE"],
-  ]) {
-    const unsupportedMethod = await controller.request(method, path);
-    assertApiError(unsupportedMethod, 405, "METHOD_NOT_ALLOWED");
-    assert.equal(unsupportedMethod.headers.get("allow"), allowed);
-  }
+  await checkMalformedResourcePaths(controller, namespace, agent);
+  await checkPayloadLimitAndAllowedMethods(controller, namespace, agent);
 
   const fixture = await createInjectedFixture();
   const bootstrapped = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
@@ -5851,52 +4819,26 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
   });
   assert.equal(bootstrapped.status, 201);
 
-  const originalLookup = fixture.iamDriver.lookupIdentity;
-  const originalAuthorize = fixture.iamDriver.authorize;
-  let identityLookups = 0;
-  let authorizationChecks = 0;
-  fixture.iamDriver.lookupIdentity = async (...args) => {
-    identityLookups += 1;
-    return originalLookup.apply(fixture.iamDriver, args);
-  };
-  fixture.iamDriver.authorize = async (...args) => {
-    authorizationChecks += 1;
-    return originalAuthorize.apply(fixture.iamDriver, args);
-  };
-  const auditCount = fixture.auditSink.events.length;
-
-  try {
+  await withValidationBeforeIam(fixture, async (assertUnchanged) => {
     for (const options of [
       { rawBody: '{"name":' },
       { body: { name: "invalid-scope", installationId: fixture.installationId } },
     ]) {
       const invalid = await injectedRequest(fixture.app, "POST", "/namespaces", options);
       assertApiError(invalid, 400, "INVALID_REQUEST");
-      assert.equal(identityLookups, 0);
-      assert.equal(authorizationChecks, 0);
-      assert.equal(fixture.auditSink.events.length, auditCount);
+      assertUnchanged();
     }
-  } finally {
-    fixture.iamDriver.lookupIdentity = originalLookup;
-    fixture.iamDriver.authorize = originalAuthorize;
-  }
+  });
 
   const untouched = await injectedRequest(fixture.app, "GET", "/namespaces");
   assertOnlyDefaultNamespace(untouched);
 });
 
 test("Configuration and Agent writes reject invalid Secret bindings as invalid requests", async () => {
-  const fixture = await createInjectedFixture();
-  const installation = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
-    body: { name: "Binding validation installation" },
-  });
-  assert.equal(installation.status, 201);
-  const namespace = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "binding-validation" },
-  });
-  assert.equal(namespace.status, 201);
-  const namespaceId = namespace.data.id;
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespaceId, "ready");
+  const controller = await configuredController();
+  const { fixture } = controller;
+  await bootstrap(controller, "Binding validation installation");
+  const { id: namespaceId } = await createReadyNamespace(controller, "binding-validation");
   const secret = await injectedRequest(fixture.app, "POST", `/namespaces/${namespaceId}/secrets`, {
     body: { name: "tool-api-key", value: `tool-key-${randomUUID()}` },
   });
@@ -6087,11 +5029,16 @@ test("Configuration and Agent writes reject invalid Secret bindings as invalid r
   assert.deepEqual(storedAgent.data.harnessAuth, agent.data.harnessAuth);
 });
 
+async function assertNoAgentsInNamespace(fixture, namespaceId, message) {
+  const agents = await fixture.platformState.read((view) => view.agents.listAgents(namespaceId));
+  assert.deepEqual(agents, [], message);
+}
+
 test("Agent provisioning API validates inline configuration with existing Secret references", async () => {
   const computeDriver = createProvisioningCapableComputeDriver();
   const configurationDriver = createProvisioningCapableConfigurationDriver();
   const logLines = [];
-  const fixture = await createInjectedFixture({
+  const controller = await configuredController({
     computeDriver,
     configurationDriver,
     logger: createOccLogger({
@@ -6100,34 +5047,24 @@ test("Agent provisioning API validates inline configuration with existing Secret
       destination: jsonLineDestination(logLines),
     }),
   });
-  const installation = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
-    body: { name: "Provisioning validation installation" },
+  const { fixture } = controller;
+  await bootstrap(controller, "Provisioning validation installation");
+  const namespace = await createNamespace(controller, "provisioning-validation");
+
+  const provisionPath = `/namespaces/${namespace.id}/agents/provision`;
+  const provision = (body) => controller.request("POST", provisionPath, { body });
+
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
+  const modelApiKey = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "model-api-key", value: `model-key-${randomUUID()}` },
   });
-  assert.equal(installation.status, 201);
-  const namespace = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "provisioning-validation" },
-  });
-  assert.equal(namespace.status, 201);
-  await fixture.controller.handleNamespaceLifecycle(
-    fixture.principal.id,
-    namespace.data.id,
-    "ready",
-  );
-  const modelApiKey = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/secrets`,
-    { body: { name: "model-api-key", value: `model-key-${randomUUID()}` } },
-  );
   assert.equal(modelApiKey.status, 201, JSON.stringify(modelApiKey.body));
-  const toolApiKey = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/secrets`,
-    { body: { name: "tool-api-key", value: `tool-key-${randomUUID()}` } },
-  );
+  const toolApiKey = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "tool-api-key", value: `tool-key-${randomUUID()}` },
+  });
   assert.equal(toolApiKey.status, 201, JSON.stringify(toolApiKey.body));
   const secrets = { modelApiKey: modelApiKey.data, toolApiKey: toolApiKey.data };
+  const requestBody = (overrides) => provisioningRequestBody(namespace.id, secrets, overrides);
 
   const foreignNamespaceId = `ns_${randomUUID()}`;
   const foreignSecretId = `sec_${randomUUID()}`;
@@ -6135,17 +5072,18 @@ test("Agent provisioning API validates inline configuration with existing Secret
     Array.from({ length: 65 }, (_, index) => [`TOOL_${index}`, { source: toolApiKey.data.ref }]),
   );
   const invalidBodies = [
-    [
-      "submitted Secret values",
-      {
-        ...provisioningRequestBody(namespace.data.id, secrets),
+    {
+      description: "submitted Secret values",
+      body: {
+        ...requestBody(),
         secrets: [{ name: "tool-api-key", value: `tool-key-${randomUUID()}` }],
       },
-      "The request does not match the operation contract: body /secrets is not an accepted field.",
-    ],
-    [
-      "request-local Secret binding sources",
-      provisioningRequestBody(namespace.data.id, secrets, {
+      message:
+        "The request does not match the operation contract: body /secrets is not an accepted field.",
+    },
+    {
+      description: "request-local Secret binding sources",
+      body: requestBody({
         configuration: {
           secretBindings: {
             TOOL_API_KEY: {
@@ -6154,57 +5092,65 @@ test("Agent provisioning API validates inline configuration with existing Secret
           },
         },
       }),
-      "The request does not match the operation contract: body /configuration/secretBindings/TOOL_API_KEY/source/namespaceId is required.",
-    ],
-    [
-      "request-local Harness Secret source",
-      provisioningRequestBody(namespace.data.id, secrets, {
+      message:
+        "The request does not match the operation contract: body /configuration/secretBindings/TOOL_API_KEY/source/namespaceId is required.",
+    },
+    {
+      description: "request-local Harness Secret source",
+      body: requestBody({
         harnessAuth: {
           method: "api_key",
           source: { kind: "provisioning-secret", name: "model-api-key" },
         },
       }),
-      "The request does not match the operation contract: body /harnessAuth/source/namespaceId is required.",
-    ],
-    [
+      message:
+        "The request does not match the operation contract: body /harnessAuth/source/namespaceId is required.",
+    },
+    {
       // Only the source kind is wrong, so the api_key shape fits and the other Harness
       // authentication shapes' fields are not listed.
-      "Harness Secret source of another kind",
-      provisioningRequestBody(namespace.data.id, secrets, {
+      description: "Harness Secret source of another kind",
+      body: requestBody({
         harnessAuth: {
           method: "api_key",
           source: {
-            ...exactSecretRef(namespace.data.id, secrets.modelApiKey.id),
+            ...exactSecretRef(namespace.id, secrets.modelApiKey.id),
             kind: "provisioning-secret",
           },
         },
       }),
-      'The request does not match the operation contract: body /harnessAuth/source/kind has an unsupported value (expected "secret").',
-    ],
-    [
+      message:
+        'The request does not match the operation contract: body /harnessAuth/source/kind has an unsupported value (expected "secret").',
+    },
+    {
       // A string fits neither a Harness authentication shape nor null: one wrong-type problem
       // names both, not one per union level.
-      "Harness authentication of the wrong type",
-      provisioningRequestBody(namespace.data.id, secrets, { harnessAuth: "api_key" }),
-      "The request does not match the operation contract: body /harnessAuth has the wrong type (expected one of object, null).",
-    ],
-    [
+      description: "Harness authentication of the wrong type",
+      body: requestBody({ harnessAuth: "api_key" }),
+      message:
+        "The request does not match the operation contract: body /harnessAuth has the wrong type (expected one of object, null).",
+      details: [{ path: "/harnessAuth", code: "INVALID_TYPE" }],
+    },
+    {
       // The method selects the api_key shape, so only its missing source is reported, not
       // the fields of the other methods' shapes or the runtime method's literal.
-      "Harness authentication method without its source",
-      provisioningRequestBody(namespace.data.id, secrets, { harnessAuth: { method: "api_key" } }),
-      "The request does not match the operation contract: body /harnessAuth/source is required.",
-    ],
-    [
-      "too many binding destinations",
-      provisioningRequestBody(namespace.data.id, secrets, {
+      description: "Harness authentication method without its source",
+      body: requestBody({ harnessAuth: { method: "api_key" } }),
+      message:
+        "The request does not match the operation contract: body /harnessAuth/source is required.",
+      details: [{ path: "/harnessAuth/source", code: "REQUIRED" }],
+    },
+    {
+      description: "too many binding destinations",
+      body: requestBody({
         configuration: { secretBindings: oversizedBindings },
       }),
-      "The request does not match the operation contract: body /configuration/secretBindings has an unsupported value (expected at most 64 fields).",
-    ],
-    [
-      "non-env delivery",
-      provisioningRequestBody(namespace.data.id, secrets, {
+      message:
+        "The request does not match the operation contract: body /configuration/secretBindings has an unsupported value (expected at most 64 fields).",
+    },
+    {
+      description: "non-env delivery",
+      body: requestBody({
         configuration: {
           secretBindings: {
             TOOL_API_KEY: {
@@ -6214,11 +5160,12 @@ test("Agent provisioning API validates inline configuration with existing Secret
           },
         },
       }),
-      'The request does not match the operation contract: body /configuration/secretBindings/TOOL_API_KEY/delivery/type has an unsupported value (expected "env").',
-    ],
-    [
-      "cross-Namespace Secret references",
-      provisioningRequestBody(namespace.data.id, secrets, {
+      message:
+        'The request does not match the operation contract: body /configuration/secretBindings/TOOL_API_KEY/delivery/type has an unsupported value (expected "env").',
+    },
+    {
+      description: "cross-Namespace Secret references",
+      body: requestBody({
         configuration: {
           secretBindings: {
             TOOL_API_KEY: {
@@ -6227,23 +5174,25 @@ test("Agent provisioning API validates inline configuration with existing Secret
           },
         },
       }),
-      "Secret references cannot cross Namespaces.",
-    ],
-    [
+      message: "Secret references cannot cross Namespaces.",
+    },
+    {
       // executionMode is optional and defaults to embedded; the Compute Driver provisions only
       // dedicated Agents, so the request is refused naming the field to set.
-      "omitted execution mode",
-      provisioningRequestBody(namespace.data.id, secrets, { executionMode: undefined }),
-      "Agent provisioning needs dedicated execution; this request uses embedded execution. Set executionMode.",
-    ],
-    [
-      "embedded execution mode",
-      provisioningRequestBody(namespace.data.id, secrets, { executionMode: "embedded" }),
-      "Agent provisioning needs dedicated execution; this request uses embedded execution. Set executionMode.",
-    ],
-    [
-      "reserved environment destinations",
-      provisioningRequestBody(namespace.data.id, secrets, {
+      description: "omitted execution mode",
+      body: requestBody({ executionMode: undefined }),
+      message:
+        "Agent provisioning needs dedicated execution; this request uses embedded execution. Set executionMode.",
+    },
+    {
+      description: "embedded execution mode",
+      body: requestBody({ executionMode: "embedded" }),
+      message:
+        "Agent provisioning needs dedicated execution; this request uses embedded execution. Set executionMode.",
+    },
+    {
+      description: "reserved environment destinations",
+      body: requestBody({
         configuration: {
           secretBindings: {
             OPENCLAW_TOKEN: {
@@ -6252,18 +5201,15 @@ test("Agent provisioning API validates inline configuration with existing Secret
           },
         },
       }),
-      "A secret binding destination uses the reserved prefix OPENCLAW_*: OPENCLAW_TOKEN.",
-    ],
+      message: "A secret binding destination uses the reserved prefix OPENCLAW_*: OPENCLAW_TOKEN.",
+      // The reserved destination is named by its pointer under the inline Configuration.
+      details: [{ path: "/configuration/secretBindings/OPENCLAW_TOKEN", code: "INVALID_VALUE" }],
+    },
   ];
 
   // Each case must fail on its own rule (the exact message), not on an unrelated one.
-  for (const [description, body, message] of invalidBodies) {
-    const result = await injectedRequest(
-      fixture.app,
-      "POST",
-      `/namespaces/${namespace.data.id}/agents/provision`,
-      { body },
-    );
+  for (const { description, body, message } of invalidBodies) {
+    const result = await provision(body);
     assertApiError(result, 400, "INVALID_REQUEST", description);
     if (message instanceof RegExp) {
       assert.match(result.body.error.message, message, description);
@@ -6287,15 +5233,10 @@ test("Agent provisioning API validates inline configuration with existing Secret
       "Configuration setting gateway.trustedProxies must be omitted or match the Installation's network.gatewayTrustedProxyCidrs.",
     ],
   ]) {
-    const refused = await injectedRequest(
-      fixture.app,
-      "POST",
-      `/namespaces/${namespace.data.id}/agents/provision`,
-      {
-        body: provisioningRequestBody(namespace.data.id, secrets, {
-          configuration: { values: { ...model, gateway } },
-        }),
-      },
+    const refused = await provision(
+      requestBody({
+        configuration: { values: { ...model, gateway } },
+      }),
     );
     assert.equal(refused.status, 409, JSON.stringify(refused.body));
     assert.deepEqual(
@@ -6305,22 +5246,17 @@ test("Agent provisioning API validates inline configuration with existing Secret
     assert.doesNotMatch(JSON.stringify(refused.body), /10\.99\./);
   }
   // The retired Codex untrusted approval policy is one of those gateway settings (finding 987).
-  const untrustedPolicy = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    {
-      body: provisioningRequestBody(namespace.data.id, secrets, {
-        configuration: {
-          values: {
-            ...model,
-            plugins: {
-              entries: { codex: { config: { appServer: { approvalPolicy: "untrusted" } } } },
-            },
+  const untrustedPolicy = await provision(
+    requestBody({
+      configuration: {
+        values: {
+          ...model,
+          plugins: {
+            entries: { codex: { config: { appServer: { approvalPolicy: "untrusted" } } } },
           },
         },
-      }),
-    },
+      },
+    }),
   );
   assert.equal(untrustedPolicy.status, 409, JSON.stringify(untrustedPolicy.body));
   assert.deepEqual(
@@ -6338,25 +5274,20 @@ test("Agent provisioning API validates inline configuration with existing Secret
   // Kubernetes Compute, as on every other Compute; the filled name is checked at provisioning.
   configurationDriver.validateValues = async () => {};
   const placeholder = "{{ vars.header }}";
-  const preset = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/presets`,
-    {
-      body: {
-        name: "Header variable",
-        template: {
-          variables: { header: { type: "string" } },
-          configuration: {
-            values: {
-              ...model,
-              models: {
-                providers: {
-                  openai: {
-                    headers: { [placeholder]: "v" },
-                    request: { headers: { [placeholder]: "v" } },
-                    models: [{ id: "m", headers: { [placeholder]: "v" } }],
-                  },
+  const preset = await controller.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Header variable",
+      template: {
+        variables: { header: { type: "string" } },
+        configuration: {
+          values: {
+            ...model,
+            models: {
+              providers: {
+                openai: {
+                  headers: { [placeholder]: "v" },
+                  request: { headers: { [placeholder]: "v" } },
+                  models: [{ id: "m", headers: { [placeholder]: "v" } }],
                 },
               },
             },
@@ -6364,16 +5295,15 @@ test("Agent provisioning API validates inline configuration with existing Secret
         },
       },
     },
-  );
+  });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   delete configurationDriver.validateValues;
-  const agentsBefore = (
-    await fixture.controller.listAgents(fixture.principal.id, namespace.data.id)
-  ).length;
+  const agentsBefore = (await fixture.controller.listAgents(fixture.principal.id, namespace.id))
+    .length;
   for (const [values, message] of [
     [
       { ...model, channels: { discord: { enabled: true } } },
-      "Configuration setting channels.discord is not a supported channel: use slack or msteams, or set its enabled to false.",
+      unsupportedChannelRefusal("channels.discord"),
     ],
     [
       { ...model, env: { OPENAI_API_KEY: "${OPENAI_API_KEY}" } },
@@ -6399,12 +5329,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
       'The OpenClaw Gateway needs agents.ownership "explicit" for more than one agents.entries entry: set it, or keep one entry.',
     ],
   ]) {
-    const refused = await injectedRequest(
-      fixture.app,
-      "POST",
-      `/namespaces/${namespace.data.id}/agents/provision`,
-      { body: provisioningRequestBody(namespace.data.id, secrets, { configuration: { values } }) },
-    );
+    const refused = await provision(requestBody({ configuration: { values } }));
     assert.equal(refused.status, 400, JSON.stringify(refused.body));
     assert.deepEqual(
       { code: refused.body.error.code, message: refused.body.error.message },
@@ -6415,20 +5340,15 @@ test("Agent provisioning API validates inline configuration with existing Secret
   // never its value, whatever word the rule matched.
   const sentinel = `synthetic-filled-header-${randomUUID()}`;
   for (const name of ["X-Upstream-Pwd", "X-Signature-Sha256"]) {
-    const filled = await injectedRequest(
-      fixture.app,
-      "POST",
-      `/namespaces/${namespace.data.id}/agents/provision`,
-      {
-        body: provisioningRequestBody(namespace.data.id, secrets, {
-          configuration: {
-            values: {
-              ...model,
-              models: { providers: { openai: { headers: { [name]: sentinel } } } },
-            },
+    const filled = await provision(
+      requestBody({
+        configuration: {
+          values: {
+            ...model,
+            models: { providers: { openai: { headers: { [name]: sentinel } } } },
           },
-        }),
-      },
+        },
+      }),
     );
     assert.equal(filled.status, 400, JSON.stringify(filled.body));
     assert.deepEqual(
@@ -6441,7 +5361,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     assert.equal(JSON.stringify(filled.body).includes(sentinel), false);
   }
   assert.equal(
-    (await fixture.controller.listAgents(fixture.principal.id, namespace.data.id)).length,
+    (await fixture.controller.listAgents(fixture.principal.id, namespace.id)).length,
     agentsBefore,
   );
   delete computeDriver.validateConfiguration;
@@ -6453,12 +5373,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     routed: false,
   });
   computeDriver.validateAgentProvisioning = (input) => unrouted.validateAgentProvisioning(input);
-  const computeRefused = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    { body: provisioningRequestBody(namespace.data.id, secrets) },
-  );
+  const computeRefused = await provision(requestBody());
   assert.equal(computeRefused.status, 409, JSON.stringify(computeRefused.body));
   const refusals = logLines.filter((line) => line.event === "agent_provisioning.compute_refused");
   assert.equal(refusals.length, 1, JSON.stringify(refusals));
@@ -6471,7 +5386,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     {
       severity: "WARN",
       requestId: computeRefused.body.meta.requestId,
-      reason: "Dedicated Harness storage requires gateway routing and node enrollment.",
+      reason: DEDICATED_STORAGE_ROUTING_REQUIRED,
     },
   );
   assert.equal(computeRefused.body.error.code, "RESOURCE_CONFLICT");
@@ -6483,51 +5398,35 @@ test("Agent provisioning API validates inline configuration with existing Secret
   // about the Installation's Compute settings.
   fixture.state.restrictions.push({
     id: "deny-provisioning-agent-create",
-    namespaceId: namespace.data.id,
+    namespaceId: namespace.id,
     resourceKind: "agent",
-    resourceId: namespace.data.id,
+    resourceId: namespace.id,
     action: "create",
     effect: "deny",
   });
-  const refusedUnauthorized = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    { body: provisioningRequestBody(namespace.data.id, secrets) },
-  );
+  const refusedUnauthorized = await provision(requestBody());
   assert.equal(refusedUnauthorized.status, 403, JSON.stringify(refusedUnauthorized.body));
   // Authorization also precedes OCC's own plan checks. Each body below draws a 400 from
   // an authorized caller; without the grant it is the same 403, so a caller learns nothing about
   // a Namespace they cannot provision in from how the plan is refused.
   const planRefusals = [
-    [
-      "omitted execution mode",
-      provisioningRequestBody(namespace.data.id, secrets, { executionMode: undefined }),
-      400,
-    ],
+    { description: "omitted execution mode", body: requestBody({ executionMode: undefined }) },
     // Provisioning needs dedicated Harness authentication. The rule is about the body, so an
     // authorized caller gets it by name, not a generic "not found" (D547).
-    [
-      "no Harness authentication",
-      provisioningRequestBody(namespace.data.id, secrets, { harnessAuth: null }),
-      400,
-      "Agent provisioning requires dedicated Harness authentication.",
-    ],
-    [
-      "runtime Harness authentication",
-      provisioningRequestBody(namespace.data.id, secrets, { harnessAuth: { method: "runtime" } }),
-      400,
-      "Agent provisioning requires dedicated Harness authentication.",
-    ],
+    {
+      description: "no Harness authentication",
+      body: requestBody({ harnessAuth: null }),
+      message: "Agent provisioning requires dedicated Harness authentication.",
+    },
+    {
+      description: "runtime Harness authentication",
+      body: requestBody({ harnessAuth: { method: "runtime" } }),
+      message: "Agent provisioning requires dedicated Harness authentication.",
+    },
   ];
   const assertPlanRefusalsDenied = async (grant) => {
-    for (const [description, body] of planRefusals) {
-      const denied = await injectedRequest(
-        fixture.app,
-        "POST",
-        `/namespaces/${namespace.data.id}/agents/provision`,
-        { body },
-      );
+    for (const { description, body } of planRefusals) {
+      const denied = await provision(body);
       assertApiError(denied, 403, "FORBIDDEN", `${grant}, ${description}`);
     }
   };
@@ -6542,14 +5441,9 @@ test("Agent provisioning API validates inline configuration with existing Secret
   });
   await assertPlanRefusalsDenied("without Installation administer");
   fixture.state.restrictions.pop();
-  for (const [description, body, status, message] of planRefusals) {
-    const refused = await injectedRequest(
-      fixture.app,
-      "POST",
-      `/namespaces/${namespace.data.id}/agents/provision`,
-      { body },
-    );
-    assert.equal(refused.status, status, `${description}: ${JSON.stringify(refused.body)}`);
+  for (const { description, body, message } of planRefusals) {
+    const refused = await provision(body);
+    assert.equal(refused.status, 400, `${description}: ${JSON.stringify(refused.body)}`);
     if (message !== undefined) {
       assert.deepEqual(
         { code: refused.body.error.code, message: refused.body.error.message },
@@ -6567,12 +5461,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
       throw thrown;
     };
     const logged = logLines.length;
-    const refused = await injectedRequest(
-      fixture.app,
-      "POST",
-      `/namespaces/${namespace.data.id}/agents/provision`,
-      { body: provisioningRequestBody(namespace.data.id, secrets) },
-    );
+    const refused = await provision(requestBody());
     assert.equal(refused.status, 409, JSON.stringify(refused.body));
     assert.doesNotMatch(JSON.stringify(refused.body), /internal driver detail|r{512}/);
     assert.deepEqual(
@@ -6587,163 +5476,92 @@ test("Agent provisioning API validates inline configuration with existing Secret
   computeDriver.validateAgentProvisioning = () => {
     throw new DependencyUnavailableError("The Compute Driver is unavailable.");
   };
-  const computeUnavailable = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    { body: provisioningRequestBody(namespace.data.id, secrets) },
-  );
+  const computeUnavailable = await provision(requestBody());
   computeDriver.validateAgentProvisioning = () => {};
   assert.equal(computeUnavailable.status, 503, JSON.stringify(computeUnavailable.body));
   assert.equal(computeUnavailable.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  const wrongTypeHarnessAuth = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    {
-      body: invalidBodies.find(([description]) =>
-        description.startsWith("Harness authentication"),
-      )[1],
-    },
-  );
-  assert.deepEqual(wrongTypeHarnessAuth.body.error.details, [
-    { path: "/harnessAuth", code: "INVALID_TYPE" },
-  ]);
-  const methodWithoutSource = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    {
-      body: invalidBodies.find(([description]) =>
-        description.startsWith("Harness authentication method"),
-      )[1],
-    },
-  );
-  assert.deepEqual(methodWithoutSource.body.error.details, [
-    { path: "/harnessAuth/source", code: "REQUIRED" },
-  ]);
-  // The reserved destination is named by its pointer under the inline Configuration.
-  const reservedProvisioning = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    { body: invalidBodies.find(([description]) => description.startsWith("reserved"))[1] },
-  );
-  assert.deepEqual(reservedProvisioning.body.error.details, [
-    { path: "/configuration/secretBindings/OPENCLAW_TOKEN", code: "INVALID_VALUE" },
-  ]);
+  for (const { body, details } of invalidBodies) {
+    if (details) {
+      const refused = await provision(body);
+      assert.deepEqual(refused.body.error.details, details);
+    }
+  }
 
   // A model provider baseUrl the runtime cannot use is refused at admission with the field
   // named, instead of surfacing later as an unexplained startup model check failure.
-  const badBaseUrl = provisioningRequestBody(namespace.data.id, secrets);
+  const badBaseUrl = requestBody();
   badBaseUrl.configuration.values = {
     ...badBaseUrl.configuration.values,
     models: { providers: { codex: { baseUrl: "not a url", api: "openai-responses" } } },
   };
-  const refusedBaseUrl = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    { body: badBaseUrl },
-  );
+  const refusedBaseUrl = await provision(badBaseUrl);
   assert.equal(refusedBaseUrl.status, 400, JSON.stringify(refusedBaseUrl.body));
   assert.equal(
     refusedBaseUrl.body.error.message,
     "Configuration field /models/providers/codex/baseUrl must be an absolute http or https URL.",
   );
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
-    [],
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
 
   const pluginDriver = new CodexPluginDriver();
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
   // Driver-specific validation must precede durable provisioning and resource creation.
-  const invalidPolicy = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    {
-      body: provisioningRequestBody(namespace.data.id, secrets, {
-        plugins: {
-          [linearPluginId]: { enabled: true, tools: { "app/search": { reviewer: "auto" } } },
-        },
-      }),
-    },
+  const invalidPolicy = await provision(
+    requestBody({
+      configuration: { values: createHarnessConfiguration("codex", "gpt-6-astra") },
+      plugins: {
+        [linearPluginId]: { enabled: true, tools: { "app/search": { reviewer: "auto" } } },
+      },
+    }),
   );
   assertApiError(invalidPolicy, 400, "INVALID_REQUEST");
   assert.equal(
     invalidPolicy.body.error.message,
     "This Plugin Driver does not support tools[id].reviewer. Use toolDefaults.reviewer when supported, or omit the reviewer.",
   );
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
-    [],
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
   // The Codex Plugin Driver's automatic reviewer rule (finding 988) also refuses a
   // provisioning request before anything durable is written.
-  const automaticReviewer = provisioningRequestBody(namespace.data.id, secrets, {
+  const automaticReviewer = requestBody({
     plugins: { [linearPluginId]: { enabled: true, toolDefaults: { reviewer: "auto" } } },
   });
   automaticReviewer.configuration.values = {
-    ...automaticReviewer.configuration.values,
+    ...createHarnessConfiguration("codex", "gpt-6-astra"),
     plugins: { entries: { codex: { config: { appServer: { approvalPolicy: "never" } } } } },
   };
-  const refusedReviewer = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    { body: automaticReviewer },
-  );
+  const refusedReviewer = await provision(automaticReviewer);
   assertApiError(refusedReviewer, 400, "INVALID_REQUEST");
   assert.equal(
     refusedReviewer.body.error.message,
     'An automatic plugin reviewer requires Configuration setting plugins.entries.codex.config.appServer.approvalPolicy "on-request"; change it or choose the human reviewer.',
   );
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
-    [],
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
   // The OpenClaw Plugin Driver refuses a selection whose every tool the inline Configuration
   // denies (finding 508) before anything durable is written.
   const openClawDriver = new OCCPluginDriver();
   fixture.controller.registerDriver(openClawDriver);
   fixture.controller.selectDriver("plugin", openClawDriver.id);
-  const deniedTools = provisioningRequestBody(namespace.data.id, secrets, {
+  const deniedTools = requestBody({
     plugins: { [diffsPluginId]: pluginPolicy() },
   });
   deniedTools.configuration.values = {
-    ...deniedTools.configuration.values,
+    ...createHarnessConfiguration("openclaw", "gpt-5.1"),
     tools: { deny: ["*"] },
   };
-  const refusedDenial = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    { body: deniedTools },
-  );
+  const refusedDenial = await provision(deniedTools);
   assertApiError(refusedDenial, 400, "INVALID_REQUEST");
   assert.equal(
     refusedDenial.body.error.message,
     `Configuration setting tools.deny blocks every tool of plugin ${diffsPluginId}; remove the matching deny entry or deselect the plugin.`,
   );
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
-    [],
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
   // Its plugins run only in an OpenClaw Harness, and this request provisions dedicated Codex
   // (finding 2348).
-  const codexPlugins = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    {
-      body: provisioningRequestBody(namespace.data.id, secrets, {
-        configuration: { values: createHarnessConfiguration("codex", "gpt-6-astra") },
-        plugins: { [diffsPluginId]: pluginPolicy() },
-      }),
-    },
+  const codexPlugins = await provision(
+    requestBody({
+      configuration: { values: createHarnessConfiguration("codex", "gpt-6-astra") },
+      plugins: { [diffsPluginId]: pluginPolicy() },
+    }),
   );
   assert.equal(codexPlugins.status, 400, JSON.stringify(codexPlugins.body));
   assert.deepEqual(
@@ -6751,26 +5569,18 @@ test("Agent provisioning API validates inline configuration with existing Secret
     {
       code: "INVALID_REQUEST",
       message:
-        "The Installation's Plugin Driver runs plugins only in an OpenClaw Harness: remove the Agent's plugins, or change its Configuration or execution mode to a Harness that runs them.",
+        "No Plugin Driver is enabled for the codex Harness. Remove the Agent's plugins or enable its catalog.",
     },
   );
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
-    [],
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
 
-  const durableOnly = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    { body: provisioningRequestBody(namespace.data.id, secrets) },
-  );
+  const durableOnly = await provision(requestBody());
   assert.equal(durableOnly.status, 503, JSON.stringify(durableOnly.body));
   assert.equal(durableOnly.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
-    [],
+  await assertNoAgentsInNamespace(
+    fixture,
+    namespace.id,
     "in-memory admission must stop before creating an Agent",
   );
 
@@ -6780,20 +5590,20 @@ test("Agent provisioning API validates inline configuration with existing Secret
   const account = await fixture.platformState.transact((unit) =>
     unit.serviceAccounts.createServiceAccount({
       id: `sa_${randomUUID()}`,
-      namespaceId: namespace.data.id,
+      namespaceId: namespace.id,
       name: `provisioning-account-${randomUUID().slice(0, 8)}`,
     }),
   );
-  const managedSource = { kind: "service_account", namespaceId: namespace.data.id, id: account.id };
+  const managedSource = { kind: "service_account", namespaceId: namespace.id, id: account.id };
   const provisionWithAccount = (source) =>
-    injectedRequest(fixture.app, "POST", `/namespaces/${namespace.data.id}/agents/provision`, {
-      body: provisioningRequestBody(namespace.data.id, secrets, {
+    provision(
+      requestBody({
         harnessAuth: { method: "codex_pat", source },
       }),
-    });
+    );
   fixture.state.restrictions.push({
     id: "deny-provisioning-account-read",
-    namespaceId: namespace.data.id,
+    namespaceId: namespace.id,
     resourceKind: "service_account",
     resourceId: account.id,
     action: "read",
@@ -6816,120 +5626,29 @@ test("Agent provisioning API validates inline configuration with existing Secret
   assert.equal(acceptedAccount.status, 503, JSON.stringify(acceptedAccount.body));
   assert.equal(acceptedAccount.body.error.code, "DEPENDENCY_UNAVAILABLE");
 
-  const oversized = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents/provision`,
-    {
-      rawBody: JSON.stringify(
-        provisioningRequestBody(namespace.data.id, secrets, {
-          configuration: { values: { payload: "x".repeat(448 * 1024) } },
-        }),
-      ),
-    },
+  const rawBody = JSON.stringify(
+    requestBody({
+      configuration: { values: { payload: "x".repeat(448 * 1024) } },
+    }),
   );
+  const oversized = await controller.request("POST", provisionPath, { rawBody });
   assertApiError(oversized, 413, "PAYLOAD_TOO_LARGE");
 });
 
-test("bootstrap fails closed when IAM omits structured authorization evidence", async () => {
-  const fixture = await createInjectedFixture();
-  fixture.iamDriver.authorize = async () => ({
-    allowed: true,
-    driverId: fixture.iamDriver.id,
-  });
+registerBootstrapAuthorizationEvidenceCase(createInjectedFixture);
 
-  const response = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
-    body: { name: "Must not initialize" },
-  });
-
-  assert.equal(response.status, 503);
-  assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  assert.equal(fixture.controller, undefined);
-  assert.deepEqual(fixture.auditSink.events, []);
+test("OCC development subprocess requires PostgreSQL-backed startup", async (t) => {
+  await assertUnsafeStartupRejected(t);
 });
 
-test("OCC development subprocess requires PostgreSQL-backed startup", async () => {
-  await assertUnsafeStartupRejected();
-});
-
-test("bodyless OCC routes reject request payloads before IAM or domain side effects", async () => {
-  const fixture = await createInjectedFixture();
-  const installation = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
-    body: { name: "Bodyless-route installation" },
-  });
-  assert.equal(installation.status, 201);
-
-  const namespace = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "bodyless-route-namespace" },
-  });
-  assert.equal(namespace.status, 201);
-
-  const configuration = await createInjectedConfiguration(fixture, namespace.data.id);
-  const agent = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents`,
-    { body: { name: "bodyless-route-agent", configurationId: configuration.id } },
-  );
-  assert.equal(agent.status, 201);
-
-  const originalLookup = fixture.iamDriver.lookupIdentity;
-  const originalAuthorize = fixture.iamDriver.authorize;
-  let identityLookups = 0;
-  let authorizationChecks = 0;
-  fixture.iamDriver.lookupIdentity = async (...args) => {
-    identityLookups += 1;
-    return originalLookup.apply(fixture.iamDriver, args);
-  };
-  fixture.iamDriver.authorize = async (...args) => {
-    authorizationChecks += 1;
-    return originalAuthorize.apply(fixture.iamDriver, args);
-  };
-  const auditCount = fixture.auditSink.events.length;
-  const app = fixture.createApp(fixture.principal, createFastifyApp);
-
-  try {
-    for (const [method, url] of [
-      ["GET", "/installation"],
-      ["GET", "/namespaces"],
-      ["GET", `/namespaces/${namespace.data.id}`],
-      ["GET", `/namespaces/${namespace.data.id}/service-accounts`],
-      ["GET", `/namespaces/${namespace.data.id}/agents`],
-      ["GET", `/namespaces/${namespace.data.id}/agents/${agent.data.id}`],
-      ["GET", `/namespaces/${namespace.data.id}/agents/${agent.data.id}/revisions`],
-      [
-        "GET",
-        `/namespaces/${namespace.data.id}/agents/${agent.data.id}/revisions/${missingRevisionId}`,
-      ],
-      ["POST", `/namespaces/${namespace.data.id}/agents/${agent.data.id}/deploy`],
-      ["POST", `/namespaces/${namespace.data.id}/agents/${agent.data.id}/stop`],
-    ]) {
-      const response = await app.inject({
-        method,
-        url,
-        headers: {
-          ...authenticatedHeaders(app.defaultSession),
-          "content-type": "application/json",
-          host: "127.0.0.1",
-        },
-        payload: JSON.stringify({ unexpected: "request body" }),
-        remoteAddress: "127.0.0.1",
-      });
-      const body = response.json();
-
-      assert.equal(response.statusCode, 400, url);
-      assert.equal(body.error.code, "INVALID_REQUEST", url);
-      assert.match(body.meta.requestId, identifier("req"));
-      assert.equal(identityLookups, 0, url);
-      assert.equal(authorizationChecks, 0, url);
-      assert.equal(fixture.auditSink.events.length, auditCount, url);
-    }
-  } finally {
-    fixture.iamDriver.lookupIdentity = originalLookup;
-    fixture.iamDriver.authorize = originalAuthorize;
-    await app.close();
-  }
-});
+test("bodyless OCC routes reject request payloads before IAM or domain side effects", () =>
+  runBodylessRoutes({
+    configuredController,
+    bootstrap,
+    createNamespace,
+    createAgent,
+    missingRevisionId,
+  }));
 
 test("API response serializers keep same-$id shared schemas of sibling plugins apart", async () => {
   // The serializer cache keys shared schemas by identity: two plugins that each add a
@@ -6975,210 +5694,38 @@ test("API serializer compiler is the copy Fastify itself loads", () => {
   );
 });
 
-test("OCC isolates Namespace ownership and filters collections by exact IAM grants", async () => {
-  const controller = await configuredController();
-  await bootstrap(controller);
-
-  const namespaceA = await createNamespace(controller, "namespace-a");
-  const namespaceB = await createNamespace(controller, "namespace-b");
-  const agentA = await createAgent(controller, namespaceA.id, "private-agent-a");
-  const agentB = await createAgent(controller, namespaceB.id, "private-agent-b");
-
-  const listedA = await controller.request("GET", `/namespaces/${namespaceA.id}/agents`);
-  const listedB = await controller.request("GET", `/namespaces/${namespaceB.id}/agents`);
-  assert.deepEqual(listedA.data, [agentA]);
-  assert.deepEqual(listedB.data, [agentB]);
-
-  for (const [method, path, options] of [
-    ["GET", `/namespaces/${namespaceB.id}/agents/${agentA.id}`],
-    ["POST", `/namespaces/${namespaceB.id}/agents/${agentA.id}/deploy`],
-    ["POST", `/namespaces/${namespaceB.id}/agents/${agentA.id}/stop`],
-    [
-      "PATCH",
-      `/namespaces/${namespaceB.id}/agents/${agentA.id}`,
-      { body: { configurationId: agentB.configurationId } },
-    ],
-    ["GET", `/namespaces/${namespaceB.id}/agents/${agentA.id}/revisions`],
-    ["GET", `/namespaces/${namespaceB.id}/agents/${agentA.id}/revisions/${missingRevisionId}`],
-    ["GET", `/namespaces/${namespaceB.id}/agents/${agentB.id}/revisions/${missingRevisionId}`],
-  ]) {
-    const response = await controller.request(method, path, options);
-    assert.ok(
-      [403, 404].includes(response.status),
-      `${method} ${path} must not expose cross-Namespace resources`,
-    );
-    const serialized = JSON.stringify(response.body);
-    assert.ok(!serialized.includes("private-agent-a"));
-    assert.ok(!serialized.includes("namespace-a-only"));
-  }
-
-  const original = await controller.request(
-    "GET",
-    `/namespaces/${namespaceA.id}/agents/${agentA.id}/revisions`,
-  );
-  assert.deepEqual(original.data, []);
-
-  const fixture = await createInjectedFixture();
-  const bootstrapped = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
-    body: { name: "IAM-scoped installation" },
-  });
-  assert.equal(bootstrapped.status, 201);
-
-  const tenantA = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "tenant-a" },
-  });
-  const tenantB = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "tenant-b" },
-  });
-  assert.equal(tenantA.status, 201);
-  assert.equal(tenantB.status, 201);
-
-  const tenantBConfiguration = await createInjectedConfiguration(fixture, tenantB.data.id);
-  const ownAgent = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${tenantB.data.id}/agents`,
-    { body: { name: "tenant-b-agent", configurationId: tenantBConfiguration.id } },
-  );
-  assert.equal(ownAgent.status, 201);
-
-  const { principal: reader } = await fixture.createAuthPrincipal("tenant-b-reader");
-  fixture.state.identities.push(reader);
-  fixture.state.roles.push({
-    id: "role-tenant-b-reader",
-    namespaceId: tenantB.data.id,
-    permissions: [
-      { action: "read", resourceKind: "namespace" },
-      { action: "read", resourceKind: "agent" },
-      { action: "read", resourceKind: "agent_revision" },
-    ],
-  });
-  fixture.state.bindings.push({
-    id: "binding-tenant-b-reader",
-    namespaceId: tenantB.data.id,
-    subjectKind: "identity",
-    subjectId: reader.id,
-    roleId: "role-tenant-b-reader",
-  });
-  const readerApp = fixture.createApp(reader);
-
-  const visibleNamespaces = await injectedRequest(readerApp, "GET", "/namespaces");
-  assert.equal(visibleNamespaces.status, 200);
-  assert.deepEqual(
-    visibleNamespaces.data.map((item) => item.id),
-    [tenantB.data.id],
-  );
-
-  const visibleAgent = await injectedRequest(
-    readerApp,
-    "GET",
-    `/namespaces/${tenantB.data.id}/agents/${ownAgent.data.id}`,
-  );
-  assert.equal(visibleAgent.status, 200);
-
-  const { principal: revisionReader } = await fixture.createAuthPrincipal("revision-only-reader");
-  fixture.state.identities.push(revisionReader);
-  fixture.state.roles.push({
-    id: "role-revision-only-reader",
-    namespaceId: tenantB.data.id,
-    permissions: [{ action: "read", resourceKind: "agent_revision" }],
-  });
-  fixture.state.bindings.push({
-    id: "binding-revision-only-reader",
-    namespaceId: tenantB.data.id,
-    subjectKind: "identity",
-    subjectId: revisionReader.id,
-    roleId: "role-revision-only-reader",
-  });
-  const revisionReaderApp = fixture.createApp(revisionReader);
-  const ownRevisionPath = `/namespaces/${tenantB.data.id}/agents/${ownAgent.data.id}/revisions/${missingRevisionId}`;
-
-  const parentDenied = await injectedRequest(
-    revisionReaderApp,
-    "GET",
-    `/namespaces/${tenantB.data.id}/agents/${ownAgent.data.id}`,
-  );
-  assert.equal(parentDenied.status, 403);
-
-  const exactRevision = await injectedRequest(revisionReaderApp, "GET", ownRevisionPath);
-  assertApiError(exactRevision, 404, "NOT_FOUND");
-
-  // The reader holds no grant in tenant A, so the misplaced parent is refused before any
-  // lookup, as getAgent does; a 404 here would confirm which Agents tenant A lacks.
-  const wrongParent = await injectedRequest(
-    revisionReaderApp,
-    "GET",
-    `/namespaces/${tenantA.data.id}/agents/${ownAgent.data.id}/revisions/${missingRevisionId}`,
-  );
-  assert.equal(wrongParent.status, 403);
-
-  fixture.state.roles.find((role) => role.id === "role-revision-only-reader").permissions.length =
-    0;
-  const deniedRevisionApp = fixture.createApp(revisionReader);
-  const deniedRevision = await injectedRequest(deniedRevisionApp, "GET", ownRevisionPath);
-  assert.equal(deniedRevision.status, 403);
-  const denialEvent = fixture.auditSink.events.at(-1);
-  assert.equal(denialEvent.kind, "authorization_denial");
-  assert.equal(denialEvent.action, "openclaw.agent_revisions.read");
-  assert.deepEqual(denialEvent.resource, {
-    kind: "agent_revision",
-    id: missingRevisionId,
-    namespaceId: tenantB.data.id,
-  });
-  assert.deepEqual(denialEvent.authorization, {
-    principalId: revisionReader.id,
-    action: "read",
-    resource: denialEvent.resource,
-  });
-
-  const refreshedReaderApp = fixture.createApp(reader);
-  for (const [method, pathname, options] of [
-    ["GET", `/namespaces/${tenantA.data.id}`],
-    ["GET", `/namespaces/${tenantA.data.id}/agents`],
-    [
-      "POST",
-      `/namespaces/${tenantA.data.id}/agents`,
-      { body: { name: "unauthorized-agent", configurationId: tenantBConfiguration.id } },
-    ],
-  ]) {
-    const denied = await injectedRequest(refreshedReaderApp, method, pathname, options);
-    assertApiError(denied, 403, "FORBIDDEN", `${method} ${pathname}`);
-  }
-});
+test("OCC isolates Namespace ownership and filters collections by exact IAM grants", () =>
+  runNamespaceIsolation({
+    configuredController,
+    bootstrap,
+    createNamespace,
+    createAgent,
+    missingRevisionId,
+  }));
 
 test("two Namespaces become independently ready and deletion tombstones only its exact target", async () => {
-  const fixture = await createInjectedFixture();
-  await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
-    body: { name: "Lifecycle installation" },
-  });
-  const namespaceA = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "lifecycle-a" },
-  });
-  const namespaceB = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "lifecycle-b" },
-  });
-  assert.equal(namespaceA.data.status, "provisioning");
-  assert.equal(namespaceB.data.status, "provisioning");
+  const controller = await configuredController();
+  const { fixture } = controller;
+  await bootstrap(controller, "Lifecycle installation");
+  const namespaceA = await createNamespace(controller, "lifecycle-a");
+  const namespaceB = await createNamespace(controller, "lifecycle-b");
 
-  const originalConfiguration = await createInjectedConfiguration(fixture, namespaceA.data.id, {
+  const originalConfiguration = await createConfiguration(controller, namespaceA.id, {
     model: "original",
   });
-  const agentA = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespaceA.data.id}/agents`,
-    { body: { name: "lifecycle-agent-a", configurationId: originalConfiguration.id } },
-  );
+  const agentA = await injectedRequest(fixture.app, "POST", `/namespaces/${namespaceA.id}/agents`, {
+    body: { name: "lifecycle-agent-a", configurationId: originalConfiguration.id },
+  });
   assert.equal(agentA.status, 201);
   assert.equal(agentA.data.configurationId, originalConfiguration.id);
-  const firstConfiguration = await createInjectedConfiguration(fixture, namespaceA.data.id, {
+  const firstConfiguration = await createConfiguration(controller, namespaceA.id, {
     model: "first",
     temperature: "0",
   });
   const replacedReference = await injectedRequest(
     fixture.app,
     "PATCH",
-    `/namespaces/${namespaceA.data.id}/agents/${agentA.data.id}`,
+    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}`,
     { body: { configurationId: firstConfiguration.id } },
   );
   assert.equal(replacedReference.status, 200);
@@ -7187,30 +5734,22 @@ test("two Namespaces become independently ready and deletion tombstones only its
   const unavailable = await injectedRequest(
     fixture.app,
     "POST",
-    `/namespaces/${namespaceA.data.id}/agents/${agentA.data.id}/deploy`,
+    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}/deploy`,
   );
   assertApiError(unavailable, 409, "NAMESPACE_NOT_READY");
 
-  await fixture.controller.handleNamespaceLifecycle(
-    fixture.principal.id,
-    namespaceA.data.id,
-    "ready",
-  );
-  await fixture.controller.handleNamespaceLifecycle(
-    fixture.principal.id,
-    namespaceB.data.id,
-    "ready",
-  );
-  assert.deepEqual(fixture.computeCalls.ensureNamespace, [namespaceA.data.id, namespaceB.data.id]);
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespaceA.id, "ready");
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespaceB.id, "ready");
+  assert.deepEqual(fixture.computeCalls.ensureNamespace, [namespaceA.id, namespaceB.id]);
 
-  await bindHarnessKey(fixture, namespaceA.data.id, {
+  await bindHarnessKey(fixture, namespaceA.id, {
     ...agentA.data,
     configurationId: firstConfiguration.id,
   });
   const readyDeployment = await injectedRequest(
     fixture.app,
     "POST",
-    `/namespaces/${namespaceA.data.id}/agents/${agentA.data.id}/deploy`,
+    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}/deploy`,
   );
   assert.equal(readyDeployment.status, 202);
   assert.match(readyDeployment.data.id, identifier("rev"));
@@ -7241,6 +5780,8 @@ test("two Namespaces become independently ready and deletion tombstones only its
     id: "openclaw",
     version: "1.0.0",
     mode: "embedded",
+    overrides: {},
+    configuration: {},
   });
   assert.deepEqual(readyDeployment.data.compute, {
     id: "compute-integration",
@@ -7249,21 +5790,21 @@ test("two Namespaces become independently ready and deletion tombstones only its
   assert.equal(readyDeployment.data.revision, 1);
   assert.equal(Object.hasOwn(readyDeployment.data, "servicePrincipalId"), false);
 
-  const secondConfiguration = await createInjectedConfiguration(fixture, namespaceA.data.id, {
+  const secondConfiguration = await createConfiguration(controller, namespaceA.id, {
     model: "second",
     temperature: "1",
   });
   const nextReference = await injectedRequest(
     fixture.app,
     "PATCH",
-    `/namespaces/${namespaceA.data.id}/agents/${agentA.data.id}`,
+    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}`,
     { body: { configurationId: secondConfiguration.id } },
   );
   assert.equal(nextReference.status, 200);
   const historical = await injectedRequest(
     fixture.app,
     "GET",
-    `/namespaces/${namespaceA.data.id}/agents/${agentA.data.id}/revisions/${readyDeployment.data.id}`,
+    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}/revisions/${readyDeployment.data.id}`,
   );
   assert.equal(historical.status, 200);
   assert.deepEqual(historical.data, readyDeployment.data);
@@ -7271,7 +5812,7 @@ test("two Namespaces become independently ready and deletion tombstones only its
   const nextDeployment = await injectedRequest(
     fixture.app,
     "POST",
-    `/namespaces/${namespaceA.data.id}/agents/${agentA.data.id}/deploy`,
+    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}/deploy`,
   );
   assert.equal(nextDeployment.status, 202);
   assert.equal(nextDeployment.data.revision, 2);
@@ -7285,7 +5826,7 @@ test("two Namespaces become independently ready and deletion tombstones only its
   const admittedRevisions = await injectedRequest(
     fixture.app,
     "GET",
-    `/namespaces/${namespaceA.data.id}/agents/${agentA.data.id}/revisions`,
+    `/namespaces/${namespaceA.id}/agents/${agentA.data.id}/revisions`,
   );
   // The list returns summaries, newest first, on one page.
   const summary = (revision) => ({
@@ -7307,37 +5848,29 @@ test("two Namespaces become independently ready and deletion tombstones only its
     summary(readyDeployment.data),
   ]);
   assert.equal(admittedRevisions.body.meta.nextCursor, null);
-  assert.deepEqual(fixture.computeCalls.ensureNamespace, [namespaceA.data.id, namespaceB.data.id]);
+  assert.deepEqual(fixture.computeCalls.ensureNamespace, [namespaceA.id, namespaceB.id]);
 
-  const deleting = await injectedRequest(
-    fixture.app,
-    "DELETE",
-    `/namespaces/${namespaceB.data.id}`,
-  );
+  const deleting = await injectedRequest(fixture.app, "DELETE", `/namespaces/${namespaceB.id}`);
   assert.equal(deleting.status, 202);
   assert.equal(deleting.data.status, "deleting");
   const rejectedChild = await injectedRequest(
     fixture.app,
     "POST",
-    `/namespaces/${namespaceB.data.id}/agents`,
+    `/namespaces/${namespaceB.id}/agents`,
     { body: { name: "too-late", configurationId: firstConfiguration.id } },
   );
   assert.equal(rejectedChild.status, 409);
 
-  await fixture.controller.handleNamespaceLifecycle(
-    fixture.principal.id,
-    namespaceB.data.id,
-    "deleted",
-  );
-  assert.deepEqual(fixture.computeCalls.deleteNamespace, [namespaceB.data.id]);
-  const absent = await injectedRequest(fixture.app, "GET", `/namespaces/${namespaceB.data.id}`);
+  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespaceB.id, "deleted");
+  assert.deepEqual(fixture.computeCalls.deleteNamespace, [namespaceB.id]);
+  const absent = await injectedRequest(fixture.app, "GET", `/namespaces/${namespaceB.id}`);
   assert.equal(absent.status, 404);
   const listed = await injectedRequest(fixture.app, "GET", "/namespaces");
   assert.deepEqual(
     listed.data.map(({ name }) => name),
     [BOOTSTRAP_DEFAULT_NAMESPACE_NAME, "lifecycle-a"],
   );
-  const stillReady = await injectedRequest(fixture.app, "GET", `/namespaces/${namespaceA.data.id}`);
+  const stillReady = await injectedRequest(fixture.app, "GET", `/namespaces/${namespaceA.id}`);
   assert.equal(stillReady.data.status, "ready");
   // The tombstone keeps its name: a new Namespace cannot reuse it, and the 409 says the name
   // belongs to a deleted Namespace rather than one the caller could find in the list.
@@ -7352,26 +5885,12 @@ test("two Namespaces become independently ready and deletion tombstones only its
 });
 
 test("bootstrap, mutations, and denials emit attributable private audit events", async () => {
-  const fixture = await createInjectedFixture();
+  const controller = await configuredController();
+  const { fixture } = controller;
   const originalIAMDriverId = fixture.iamDriver.id;
-  const installation = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
-    body: { name: "Audited installation" },
-  });
-  assert.equal(installation.status, 201);
-
-  const namespace = await injectedRequest(fixture.app, "POST", "/namespaces", {
-    body: { name: "audited-namespace" },
-  });
-  assert.equal(namespace.status, 201);
-
-  const configuration = await createInjectedConfiguration(fixture, namespace.data.id);
-  const agent = await injectedRequest(
-    fixture.app,
-    "POST",
-    `/namespaces/${namespace.data.id}/agents`,
-    { body: { name: "audited-agent", configurationId: configuration.id } },
-  );
-  assert.equal(agent.status, 201);
+  await bootstrap(controller, "Audited installation");
+  const namespace = await createNamespace(controller, "audited-namespace");
+  const agent = await createAgent(controller, namespace.id, "audited-agent");
 
   // Beginning deletion is an audited mutation in its own right: it is the
   // record that attributes the teardown to the principal who requested it,
@@ -7379,7 +5898,7 @@ test("bootstrap, mutations, and denials emit attributable private audit events",
   const deletion = await injectedRequest(
     fixture.app,
     "DELETE",
-    `/namespaces/${namespace.data.id}/agents/${agent.data.id}`,
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
   );
   assert.equal(deletion.status, 202);
   assert.equal(deletion.data.status, "deleting");
@@ -7412,7 +5931,7 @@ test("bootstrap, mutations, and denials emit attributable private audit events",
   const deletionDenied = await injectedRequest(
     denialApp,
     "DELETE",
-    `/namespaces/${namespace.data.id}/agents/${agent.data.id}`,
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
   );
   assert.equal(deletionDenied.status, 403);
 
@@ -7466,8 +5985,8 @@ test("bootstrap, mutations, and denials emit attributable private audit events",
         action: "create",
         resource: {
           kind: "configuration",
-          id: namespace.data.id,
-          namespaceId: namespace.data.id,
+          id: namespace.id,
+          namespaceId: namespace.id,
         },
       },
       {
@@ -7475,8 +5994,8 @@ test("bootstrap, mutations, and denials emit attributable private audit events",
         action: "create",
         resource: {
           kind: "agent",
-          id: namespace.data.id,
-          namespaceId: namespace.data.id,
+          id: namespace.id,
+          namespaceId: namespace.id,
         },
       },
       {
@@ -7484,8 +6003,8 @@ test("bootstrap, mutations, and denials emit attributable private audit events",
         action: "delete",
         resource: {
           kind: "agent",
-          id: agent.data.id,
-          namespaceId: namespace.data.id,
+          id: agent.id,
+          namespaceId: namespace.id,
         },
       },
     ],
@@ -7513,457 +6032,18 @@ test("bootstrap, mutations, and denials emit attributable private audit events",
       ["delete", "agent"],
     ],
   );
-  assert.equal(authorizationDenials[1].authorization.resource.id, agent.data.id);
+  assert.equal(authorizationDenials[1].authorization.resource.id, agent.id);
 
   const recorded = JSON.stringify(fixture.auditSink.events);
   assert.equal(recorded.includes(fixture.session.cookie), false);
   assert.equal(recorded.includes("never-log-this-request-body"), false);
 });
 
-test("authorization accepts getter-backed decisions and unrelated function properties", async () => {
-  for (const kind of ["getters", "function"]) {
-    const fixture = await createInjectedFixture();
-    const controller = {
-      request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-    };
-    await bootstrap(controller, "Decision compatibility");
-    const originalAuthorize = fixture.iamDriver.authorize;
-    fixture.iamDriver.authorize = async (...args) => {
-      const decision = await originalAuthorize.apply(fixture.iamDriver, args);
-      if (kind === "function") {
-        return { ...decision, extra: () => {} };
-      }
-      return new (class {
-        get allowed() {
-          return decision.allowed;
-        }
-        get reason() {
-          return decision.reason;
-        }
-        get driverId() {
-          return decision.driverId;
-        }
-        get evidence() {
-          return decision.evidence;
-        }
-      })();
-    };
-    const namespace = await createNamespace(controller, `decision-compatibility-${kind}`);
-    assert.ok(namespace.id);
-  }
-});
+registerAuthorizationDecisionCases(configuredController);
 
-test("authorization rejects sparse decision evidence", async () => {
-  const fixture = await createInjectedFixture();
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller, "Sparse decision evidence");
-  const originalAuthorize = fixture.iamDriver.authorize;
-  fixture.iamDriver.authorize = async (...args) => {
-    const decision = await originalAuthorize.apply(fixture.iamDriver, args);
-    if (args[0].action !== "create") {
-      return decision;
-    }
-    return { ...decision, evidence: { ...decision.evidence, groupIds: Array(1) } };
-  };
-  const response = await controller.request("POST", "/namespaces", {
-    body: { name: "sparse-evidence" },
-  });
-  assert.equal(response.status, 503);
-  assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
-});
+registerGatewayAdmissionCases();
 
-test("deployment refuses a Codex approval policy the Gateway refuses across Compute Drivers", async (t) => {
-  for (const [kind, nativeCompute] of plaintextGatewayComputeDrivers()) {
-    await t.test(kind, async () => {
-      // The API/state fixture owns lifecycle and credentials; the actual selected
-      // Driver owns admission. No worker or remote backend is dispatched here.
-      const computeDriver = createProvisioningCapableComputeDriver();
-      computeDriver.validateGatewaySettings = (configuration) =>
-        nativeCompute.validateGatewaySettings?.(configuration);
-      const fixture = await createInjectedFixture({ computeDriver });
-      const controller = {
-        request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-      };
-      await bootstrap(controller, `Codex approval ${kind}`);
-      const namespace = await createNamespace(controller, `codex-approval-${kind}`);
-      await fixture.controller.handleNamespaceLifecycle(
-        fixture.principal.id,
-        namespace.id,
-        "ready",
-      );
-      const setting = "plugins.entries.codex.config.appServer.approvalPolicy";
-      // The pinned Gateway refuses untrusted at configuration load, with a doctor hint that
-      // cannot edit Compute's read-only configuration (finding 987), and any value outside its
-      // enum; preparation refused those only after a dedicated deployment stopped the running
-      // revision (finding 1113). Configuration save refuses them now, so each is a row an older
-      // release saved, written past OCC.
-      for (const [name, approvalPolicy, message] of [
-        [
-          "untrusted",
-          "untrusted",
-          `Configuration setting ${setting} must not be "untrusted", which the OpenClaw runtime retired: use "on-request".`,
-        ],
-        [
-          "always",
-          "always",
-          `Configuration setting ${setting} must be "never", "on-request" or "on-failure".`,
-        ],
-        ["on-failure", "on-failure"],
-        ["omitted", undefined],
-      ]) {
-        const agent = await createAgent(controller, namespace.id, `codex-approval-${name}`);
-        const stored = fixture.configurationDriver.stored({
-          namespaceId: namespace.id,
-          id: agent.configurationId,
-        });
-        await fixture.configurationDriver.update({
-          ...stored,
-          values: {
-            ...stored.values,
-            plugins: {
-              entries: {
-                codex: {
-                  config: { appServer: approvalPolicy === undefined ? {} : { approvalPolicy } },
-                },
-              },
-            },
-          },
-        });
-        await bindHarnessKey(fixture, namespace.id, agent);
-        const result = await controller.request(
-          "POST",
-          `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-        );
-        assert.equal(
-          result.status,
-          message === undefined ? 202 : 409,
-          `${kind}: ${JSON.stringify(result.body)}`,
-        );
-        if (message !== undefined) {
-          assert.equal(result.body.error.code, "RESOURCE_CONFLICT");
-          assert.equal(result.body.error.message, message);
-          // No revision is admitted, so the worker never stops the running one.
-          const revisions = await controller.request(
-            "GET",
-            `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
-          );
-          assert.deepEqual(revisions.data, []);
-        }
-      }
-    });
-  }
-});
-
-test("deployment refuses native listener TLS before admitting a revision across Compute Drivers", async (t) => {
-  for (const [kind, nativeCompute] of plaintextGatewayComputeDrivers()) {
-    await t.test(kind, async () => {
-      // The API/state fixture owns lifecycle and credentials; the actual selected
-      // Driver owns admission. No worker or remote backend is dispatched here.
-      const computeDriver = createProvisioningCapableComputeDriver();
-      computeDriver.validateGatewaySettings = (configuration) =>
-        nativeCompute.validateGatewaySettings?.(configuration);
-      const fixture = await createInjectedFixture({ computeDriver });
-      const controller = {
-        request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-      };
-      await bootstrap(controller, `Native HTTP ${kind}`);
-      const namespace = await createNamespace(controller, `native-http-${kind}`);
-      await fixture.controller.handleNamespaceLifecycle(
-        fixture.principal.id,
-        namespace.id,
-        "ready",
-      );
-      for (const [name, tls, expectedStatus] of [
-        ["enabled", { enabled: true, certPath: "/owned/cert.pem" }, 409],
-        ["disabled", { enabled: false }, 202],
-        ["omitted", undefined, 202],
-      ]) {
-        const agent = await createAgent(controller, namespace.id, `native-http-${name}`, {
-          gateway: tls === undefined ? {} : { tls },
-        });
-        await bindHarnessKey(fixture, namespace.id, agent);
-        const result = await controller.request(
-          "POST",
-          `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-        );
-        assert.equal(result.status, expectedStatus, `${kind}: ${JSON.stringify(result.body)}`);
-        if (expectedStatus === 409) {
-          assert.equal(result.body.error.code, "RESOURCE_CONFLICT");
-          assert.match(result.body.error.message, /gateway\.tls\.enabled must be omitted or false/);
-          assert.doesNotMatch(JSON.stringify(result.body), /owned\/cert/);
-          const revisions = await controller.request(
-            "GET",
-            `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
-          );
-          assert.deepEqual(revisions.data, []);
-        }
-      }
-    });
-  }
-});
-
-test("deploy reports Configuration content a Compute Driver names as unsupported", async () => {
-  // D321: a refused Codex Gateway setting surfaced as "resource already exists".
-  const computeDriver = createProvisioningCapableComputeDriver();
-  let refusal;
-  computeDriver.validateHarnessAuth = () => {
-    if (refusal !== undefined) {
-      throw refusal;
-    }
-  };
-  const fixture = await createInjectedFixture({ computeDriver });
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller, "Unsupported Configuration content");
-  const namespace = await createNamespace(controller, "unsupported-configuration");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const agent = await createAgent(controller, namespace.id, "unsupported-configuration-agent");
-  await bindHarnessKey(fixture, namespace.id, agent);
-  const deploy = () =>
-    controller.request("POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`);
-
-  refusal = new ConfigurationHarnessError(
-    "Configuration setting cron must be an object: a dedicated Codex Gateway cannot apply it otherwise.",
-  );
-  const named = await deploy();
-  assertApiError(named, 400, "INVALID_REQUEST");
-  assert.equal(named.body.error.message, refusal.message);
-
-  // Other driver refusals can carry internal detail and get fixed text, not "already exists".
-  refusal = new Error("internal driver detail");
-  const generic = await deploy();
-  assertApiError(generic, 409, "RESOURCE_CONFLICT");
-  assert.equal(
-    generic.body.error.message,
-    "The selected Compute Driver cannot deliver this Harness authentication binding to the configured model and topology.",
-  );
-  assert.doesNotMatch(JSON.stringify(generic.body), /internal driver detail/);
-
-  // A gateway setting Kubernetes Compute refuses would fail every preparation attempt as an
-  // unavailable dependency; admission names it without its value, as provisioning does.
-  refusal = undefined;
-  const kubernetes = createTestKubernetesComputeDriver("compute-deploy-gateway-settings");
-  computeDriver.validateGatewaySettings = (configuration) =>
-    kubernetes.validateGatewaySettings(configuration);
-  for (const [name, gateway, message] of [
-    [
-      "gateway-token-agent",
-      { auth: { mode: "token" } },
-      "Configuration setting gateway.auth.mode must be trusted-proxy: Kubernetes Compute supports only native trusted-proxy gateway authentication.",
-    ],
-    [
-      "gateway-proxies-agent",
-      { trustedProxies: ["10.99.0.0/16"] },
-      "Configuration setting gateway.trustedProxies must be omitted or match the Installation's network.gatewayTrustedProxyCidrs.",
-    ],
-  ]) {
-    const refusedAgent = await createAgent(controller, namespace.id, name, { gateway });
-    await bindHarnessKey(fixture, namespace.id, refusedAgent);
-    const refused = await controller.request(
-      "POST",
-      `/namespaces/${namespace.id}/agents/${refusedAgent.id}/deploy`,
-    );
-    assert.equal(refused.status, 409, JSON.stringify(refused.body));
-    assert.deepEqual(
-      { code: refused.body.error.code, message: refused.body.error.message },
-      { code: "RESOURCE_CONFLICT", message },
-    );
-    assert.doesNotMatch(JSON.stringify(refused.body), /10\.99\./);
-    const revisions = await controller.request(
-      "GET",
-      `/namespaces/${namespace.id}/agents/${refusedAgent.id}/revisions`,
-    );
-    assert.deepEqual(revisions.data, [], JSON.stringify(revisions.body));
-  }
-  // A setting Compute leaves to preparation is admitted as before.
-  const allowUsersAgent = await createAgent(controller, namespace.id, "gateway-allow-users-agent", {
-    gateway: { auth: { mode: "trusted-proxy", trustedProxy: { allowUsers: ["someone"] } } },
-  });
-  await bindHarnessKey(fixture, namespace.id, allowUsersAgent);
-  const admitted = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${allowUsersAgent.id}/deploy`,
-  );
-  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-  // The driver hook names only settings every preparation attempt refuses.
-  assert.doesNotThrow(() =>
-    kubernetes.validateGatewaySettings({
-      gateway: { auth: { mode: "trusted-proxy", trustedProxy: { allowUsers: ["someone"] } } },
-    }),
-  );
-
-  // Deploy authorization comes first: a caller who cannot deploy learns nothing of the setting.
-  const deniedAgent = await createAgent(controller, namespace.id, "gateway-denied-agent", {
-    gateway: { auth: { mode: "token" } },
-  });
-  await bindHarnessKey(fixture, namespace.id, deniedAgent);
-  const { principal: viewer } = await fixture.createAuthPrincipal("gateway-deploy-viewer");
-  fixture.state.identities.push(viewer);
-  fixture.state.roles.push({
-    id: "role-gateway-deploy-viewer",
-    namespaceId: namespace.id,
-    permissions: [
-      { action: "read", resourceKind: "agent" },
-      { action: "read", resourceKind: "configuration" },
-    ],
-  });
-  fixture.state.bindings.push({
-    id: "binding-gateway-deploy-viewer",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: viewer.id,
-    roleId: "role-gateway-deploy-viewer",
-  });
-  const denied = await injectedRequest(
-    fixture.createApp(viewer),
-    "POST",
-    `/namespaces/${namespace.id}/agents/${deniedAgent.id}/deploy`,
-  );
-  assertApiError(denied, 403, "FORBIDDEN");
-  assert.doesNotMatch(JSON.stringify(denied.body), /gateway\.auth|trusted-proxy/);
-
-  // An unavailable hook dependency answers 503; any other hook refusal stays with preparation.
-  const hookAgent = await createAgent(controller, namespace.id, "gateway-hook-agent");
-  await bindHarnessKey(fixture, namespace.id, hookAgent);
-  const deployHookAgent = () =>
-    controller.request("POST", `/namespaces/${namespace.id}/agents/${hookAgent.id}/deploy`);
-  computeDriver.validateGatewaySettings = () => {
-    throw new DependencyUnavailableError("The gateway setting check is unavailable.");
-  };
-  const unavailable = await deployHookAgent();
-  assert.equal(unavailable.status, 503, JSON.stringify(unavailable.body));
-  assert.equal(unavailable.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  const noRevisions = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${hookAgent.id}/revisions`,
-  );
-  assert.deepEqual(noRevisions.data, [], JSON.stringify(noRevisions.body));
-  computeDriver.validateGatewaySettings = () => {
-    throw new Error("internal gateway detail");
-  };
-  const deferred = await deployHookAgent();
-  assert.equal(deferred.status, 202, JSON.stringify(deferred.body));
-});
-
-test("deploy audit preserves its authorization decision and rolls back with append failure", async () => {
-  let fixture;
-  let laterIAMDriver;
-  const sharedEvidence = ["matching-restriction"];
-  sharedEvidence[Symbol.iterator] = function* () {
-    yield "forged-iterator-value";
-  };
-  const computeDriver = createProvisioningCapableComputeDriver();
-  // Agent saves run this check too; only the deployment below swaps the IAM Driver.
-  let deploying = false;
-  computeDriver.validateHarnessAuth = () => {
-    if (!deploying || fixture.controller.selectedDriver("iam").id === laterIAMDriver.id) {
-      return;
-    }
-    sharedEvidence.push("mutated-after-authorization");
-    fixture.controller.registerDriver(laterIAMDriver);
-    fixture.controller.selectDriver("iam", laterIAMDriver.id);
-  };
-  fixture = await createInjectedFixture({ computeDriver, recordOperations: true });
-  laterIAMDriver = new NativeIAMDriver(
-    { loadNativeIAMState: async () => fixture.state },
-    { id: "iam-selected-after-deploy-decision" },
-  );
-  const controller = {
-    request: (method, path, options) => injectedRequest(fixture.app, method, path, options),
-  };
-  await bootstrap(controller, "Deploy audit provenance");
-  const namespace = await createNamespace(controller, "deploy-audit-provenance");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const agent = await createAgent(controller, namespace.id, "decision-bound-agent");
-  await bindHarnessKey(fixture, namespace.id, agent);
-  const authorizingDriverId = fixture.iamDriver.id;
-  const originalAuthorize = fixture.iamDriver.authorize;
-  fixture.iamDriver.authorize = async (...args) => {
-    const decision = await originalAuthorize.apply(fixture.iamDriver, args);
-    if (args[0].action !== "deploy") {
-      return decision;
-    }
-    return {
-      ...decision,
-      evidence: { ...decision.evidence, groupIds: sharedEvidence, restrictionIds: sharedEvidence },
-    };
-  };
-  const auditCount = fixture.auditSink.events.length;
-
-  // Harness validation runs after OCC has checked deploy authorization. Changing
-  // Driver selection here proves the audit uses that completed decision.
-  deploying = true;
-  const deployed = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
-  assert.equal(sharedEvidence.length, 2);
-  assert.equal(sharedEvidence[0], "matching-restriction");
-  assert.equal(sharedEvidence[1], "mutated-after-authorization");
-  assert.equal(fixture.controller.selectedDriver("iam").id, laterIAMDriver.id);
-  const deployEvents = fixture.auditSink.events
-    .slice(auditCount)
-    .filter(
-      (event) => event.resource.kind === "agent_revision" && event.resource.id === deployed.data.id,
-    );
-  assert.equal(deployEvents.length, 1);
-  assert.equal(deployEvents[0].iamDriverId, authorizingDriverId);
-  assert.equal(deployEvents[0].outcome, "success");
-  assert.equal(deployEvents[0].decisionReason, undefined);
-  assert.deepEqual(deployEvents[0].authorization, {
-    principalId: fixture.principal.id,
-    action: "deploy",
-    resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
-  });
-  assert.deepEqual(deployEvents[0].details?.iamEvidence, {
-    identityId: fixture.principal.id,
-    groupIds: ["matching-restriction"],
-    bindingIds: ["binding-admin"],
-    roleIds: [fixture.state.roles[0].id],
-    restrictionIds: ["matching-restriction"],
-  });
-
-  const failedAgent = await createAgent(controller, namespace.id, "audit-failure-agent");
-  await bindHarnessKey(fixture, namespace.id, failedAgent);
-  const revisionsBefore = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${failedAgent.id}/revisions`,
-  );
-  assert.deepEqual(revisionsBefore.data, []);
-  const workCount = fixture.controller.pendingOperations().length;
-  const failureAuditCount = fixture.auditSink.events.length;
-  const originalAppend = fixture.auditSink.append;
-  fixture.auditSink.append = async () => {
-    throw new Error("deploy audit unavailable");
-  };
-  let failedDeploy;
-  try {
-    failedDeploy = await controller.request(
-      "POST",
-      `/namespaces/${namespace.id}/agents/${failedAgent.id}/deploy`,
-    );
-  } finally {
-    fixture.auditSink.append = originalAppend;
-  }
-  assert.equal(failedDeploy.status, 503);
-  assert.equal(failedDeploy.body.error.code, "DEPENDENCY_UNAVAILABLE");
-  const unchangedRevisions = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${failedAgent.id}/revisions`,
-  );
-  assert.deepEqual(unchangedRevisions.data, []);
-  const unchangedAgent = await controller.request(
-    "GET",
-    `/namespaces/${namespace.id}/agents/${failedAgent.id}`,
-  );
-  assert.equal(unchangedAgent.data.desiredRuntimeState, "stopped");
-  assert.equal(fixture.controller.pendingOperations().length, workCount);
-  assert.equal(fixture.auditSink.events.length, failureAuditCount);
-});
+registerDeploymentAuthorizationEvidenceCase(configuredController);
 
 test("IAM and audit dependency failures fail closed without orphaned state", async () => {
   const bootstrapFailure = await createInjectedFixture();
@@ -8043,469 +6123,64 @@ test("IAM and audit dependency failures fail closed without orphaned state", asy
   assertOnlyDefaultNamespace(stillUnchanged);
 });
 
-test("SSH Compute refuses managed mode at save and deploy and validates runtime authentication and deployment authorization", async () => {
-  const computeDriver = new SshComputeDriver({
-    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
-    hosts: { runtime: { address: "127.0.0.1", user: "root" } },
-    runtime: {
-      nodePath: "/usr/bin/node",
-      openclawPath: "/opt/openclaw/index.js",
-      user: "openclaw",
-      root: "/var/lib/ssh-runtime-test",
-    },
-    network: { gatewayPortRange: { start: 18800, end: 18899 } },
-  });
-  const controller = await configuredController({ computeDriver, recordOperations: true });
+registerSshAdmissionCases();
+
+async function createSlackValidationFixture(controller, namespaceName) {
+  const { fixture } = controller;
   await bootstrap(controller);
-  const namespace = await createNamespace(controller, "runtime");
-  // Namespace provisioning is a prerequisite; this test exercises admission, not SSH transport.
-  await controller.fixture.platformState.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-  );
-  const configuration = await createConfiguration(
-    controller,
-    namespace.id,
-    createHarnessConfiguration("openclaw", "gpt-5.1"),
-  );
-  // Neither an actor source grant nor an Agent source grant is needed: OCC owns no source.
-  for (const resourceKind of ["secret", "service_account"]) {
-    for (const action of ["read", "operate"]) {
-      controller.fixture.state.restrictions.push({
-        id: `deny-runtime-${resourceKind}-${action}`,
-        namespaceId: namespace.id,
-        resourceKind,
-        action,
-        effect: "deny",
+  const namespace = await createReadyNamespace(controller, namespaceName);
+  const base = `/namespaces/${namespace.id}`;
+  const makeSecret = async (name, value) => {
+    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
+    assert.equal(result.status, 201);
+    return result.data;
+  };
+  const app = await makeSecret("app", "xapp-synthetic-app");
+  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
+  const model = await makeSecret("model", "synthetic-model");
+  const secrets = { modelApiKey: model, toolApiKey: model };
+  return {
+    fixture,
+    namespace,
+    base,
+    app,
+    bot,
+    async saveConfiguration(configuration) {
+      const result = await controller.request("POST", `${base}/configurations`, {
+        body: configuration,
       });
-    }
-  }
-  const collection = `/namespaces/${namespace.id}/agents`;
-  for (const extra of [
-    { source: { kind: "secret" } },
-    { serviceAccountId: "sa_not_allowed" },
-    { value: "never-a-credential" },
-    { environmentVariable: "OPENAI_API_KEY" },
-  ]) {
-    const invalid = await controller.request("POST", collection, {
-      body: {
-        name: "invalid-runtime",
-        configurationId: configuration.id,
-        harnessAuth: { method: "runtime", ...extra },
-      },
-    });
-    assert.equal(invalid.status, 400);
-  }
-  const created = await controller.request("POST", collection, {
-    body: {
-      name: "Runtime Agent",
-      configurationId: configuration.id,
-      harnessAuth: { method: "runtime" },
+      assert.equal(result.status, 201, JSON.stringify(result.body));
+      return result.data;
     },
-  });
-  assert.equal(created.status, 201);
-  assert.deepEqual(created.data.harnessAuth, { method: "runtime" });
-  // SSH Compute cannot enforce managed mode, so a new Agent defaults to off (finding 2676).
-  assert.equal(created.data.gatewayManagedMode, false);
-  const path = `${collection}/${created.data.id}`;
-  const unsupported =
-    "Agent setting gatewayManagedMode is not supported by the selected Compute Driver.";
-  // Asking for managed mode fails at save and in the create preflight, not at the next deploy.
-  for (const [method, target, body] of [
-    [
-      "POST",
-      collection,
-      { name: "Managed SSH Agent", configurationId: configuration.id, gatewayManagedMode: true },
-    ],
-    [
-      "POST",
-      `${collection}/validate`,
-      { configuration: { kind: "agent", values: configuration.values }, gatewayManagedMode: true },
-    ],
-    ["PATCH", path, { gatewayManagedMode: true }],
-  ]) {
-    const refused = await controller.request(method, target, { body });
-    assert.equal(refused.status, 400, `${method} ${target}: ${JSON.stringify(refused.body)}`);
-    assert.equal(refused.body.error.message, unsupported);
-  }
-  // An Agent saved before managed mode existed was migrated to on; deploy still refuses it
-  // until an Installation administrator turns it off.
-  await controller.fixture.platformState.transact((unit) =>
-    unit.agents.updateConfiguration(
-      namespace.id,
-      created.data.id,
-      configuration.id,
-      ...Array(8).fill(undefined),
-      true,
-    ),
-  );
-  const rejected = await controller.request("POST", `${path}/deploy`);
-  assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
-  assert.equal(rejected.body.error.message, unsupported);
-  assert.deepEqual((await controller.request("GET", `${path}/revisions`)).data, []);
-  const updated = await controller.request("PATCH", path, { body: { gatewayManagedMode: false } });
-  assert.equal(updated.status, 200, JSON.stringify(updated.body));
-  const deployed = await controller.request("POST", `${path}/deploy`);
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
-  assert.deepEqual(deployed.data.harnessAuth, { method: "runtime" });
-  const admitted = await controller.fixture.platformState.read((view) =>
-    view.revisions.findRevision(namespace.id, created.data.id, deployed.data.id),
-  );
-  assert.deepEqual(admitted.harnessAuth, { method: "runtime" });
-  const detached = await controller.request("PATCH", path, {
-    body: { configurationId: configuration.id, harnessAuth: null },
-  });
-  assert.equal(detached.status, 200);
-  assert.deepEqual(
-    (await controller.request("GET", `${path}/revisions/${deployed.data.id}`)).data.harnessAuth,
-    { method: "runtime" },
-  );
-  await controller.request("PATCH", path, {
-    body: { configurationId: configuration.id, harnessAuth: { method: "runtime" } },
-  });
-  controller.fixture.state.restrictions.push({
-    id: "deny-runtime-deploy",
-    namespaceId: namespace.id,
-    resourceKind: "agent",
-    resourceId: created.data.id,
-    action: "deploy",
-    effect: "deny",
-  });
-  assert.equal((await controller.request("POST", `${path}/deploy`)).status, 403);
-});
-
-test("SSH Compute names a Harness authentication method other than runtime at Agent save", async () => {
-  const computeDriver = new SshComputeDriver({
-    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
-    hosts: { "auth-method": { address: "127.0.0.1", user: "root" } },
-    runtime: {
-      nodePath: "/usr/bin/node",
-      openclawPath: "/opt/openclaw/index.js",
-      user: "openclaw",
-      root: "/var/lib/ssh-runtime-test",
+    async createAgent(name, configurationId) {
+      const result = await controller.request("POST", `${base}/agents`, {
+        body: { name, configurationId },
+      });
+      assert.equal(result.status, 201, JSON.stringify(result.body));
+      return result.data;
     },
-    network: { gatewayPortRange: { start: 18800, end: 18899 } },
-  });
-  const controller = await configuredController({ computeDriver });
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "auth-method");
-  await controller.fixture.platformState.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-  );
-  const configuration = await createConfiguration(
-    controller,
-    namespace.id,
-    createHarnessConfiguration("openclaw", "gpt-5.1"),
-  );
-  const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
-    body: { name: "model", value: "synthetic-model" },
-  });
-  assert.equal(secret.status, 201, JSON.stringify(secret.body));
-  const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: {
-      name: "API key Agent",
-      configurationId: configuration.id,
-      harnessAuth: { method: "api_key", source: secret.data.ref },
+    provision(configuration) {
+      return controller.request("POST", `${base}/agents/provision`, {
+        body: provisioningRequestBody(namespace.id, secrets, { configuration }),
+      });
     },
-  });
-  assertApiError(created, 400, "INVALID_REQUEST");
-  assert.equal(
-    created.body.error.message,
-    "Agent setting harnessAuth.method must be runtime for embedded OpenClaw on SSH Compute: change harnessAuth.",
-  );
-});
-
-test("SSH Compute refuses at deploy gateway authentication and Secret bindings it cannot deliver", async () => {
-  // Finding 2351: only preparation refused these, so deploy admitted a revision every
-  // preparation attempt failed. Deploy now names the setting, without its value.
-  const computeDriver = new SshComputeDriver({
-    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
-    hosts: { "gateway-auth": { address: "127.0.0.1", user: "root" } },
-    runtime: {
-      nodePath: "/usr/bin/node",
-      openclawPath: "/opt/openclaw/index.js",
-      user: "openclaw",
-      root: "/var/lib/ssh-runtime-test",
-    },
-    network: { gatewayPortRange: { start: 18800, end: 18899 } },
-  });
-  const controller = await configuredController({ computeDriver });
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "gateway-auth");
-  await controller.fixture.platformState.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-  );
-  const values = createHarnessConfiguration("openclaw", "gpt-5.1");
-  const collection = `/namespaces/${namespace.id}/agents`;
-  const createAgentFor = async (name, configuration) => {
-    const created = await controller.request("POST", collection, {
-      body: {
-        name,
-        configurationId: configuration.id,
-        harnessAuth: { method: "runtime" },
-        gatewayManagedMode: false,
-      },
-    });
-    assert.equal(created.status, 201, JSON.stringify(created.body));
-    return created.data;
   };
-  const deploy = (agent) => controller.request("POST", `${collection}/${agent.id}/deploy`);
-  const assertNoRevision = async (agent) => {
-    const revisions = await controller.request("GET", `${collection}/${agent.id}/revisions`);
-    assert.deepEqual(revisions.data, [], JSON.stringify(revisions.body));
-  };
-  const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
-  for (const [name, gateway, message] of [
-    [
-      "token-mode",
-      { auth: { mode: "token" } },
-      setting(
-        "gateway.auth.mode",
-        "must be trusted-proxy or password: SSH Compute supports only native trusted-proxy or password gateway authentication",
-      ),
-    ],
-    [
-      "token-field",
-      { auth: { token: "synthetic-gateway-token" } },
-      setting("gateway.auth.token", "is not a supported native gateway authentication field"),
-    ],
-    ["auth-not-object", { auth: "password" }, setting("gateway.auth", "must be an object")],
-    [
-      "other-password-variable",
-      {
-        auth: {
-          mode: "password",
-          password: { source: "env", provider: "default", id: "SYNTHETIC_GATEWAY_PASSWORD" },
-        },
-      },
-      setting(
-        "gateway.auth.password",
-        'must be "${OPENCLAW_GATEWAY_PASSWORD}" or the default-provider environment SecretRef with id OPENCLAW_GATEWAY_PASSWORD, whose value SSH Compute generates',
-      ),
-    ],
-    ["password", { auth: { mode: "password" } }],
-    [
-      "password-expression",
-      { auth: { mode: "password", password: "${OPENCLAW_GATEWAY_PASSWORD}" } },
-    ],
-    ["omitted", undefined],
-  ]) {
-    const configuration = await createConfiguration(controller, namespace.id, {
-      ...values,
-      ...(gateway === undefined ? {} : { gateway: { ...values.gateway, ...gateway } }),
+}
+
+async function bindSlackDeploymentCredentials(fixture, namespaceId, agent, { app, bot }) {
+  await bindHarnessKey(fixture, namespaceId, agent);
+  for (const secret of [app, bot]) {
+    fixture.state.bindings.push({
+      id: `slack-${secret.id}`,
+      namespaceId,
+      subjectKind: "identity",
+      subjectId: agent.servicePrincipalId,
+      roleId: `harness-key-${agent.id}`,
+      resourceKind: "secret",
+      resourceId: secret.id,
     });
-    const agent = await createAgentFor(`gateway-${name}`, configuration);
-    const deployed = await deploy(agent);
-    assert.equal(deployed.status, message === undefined ? 202 : 409, JSON.stringify(deployed.body));
-    if (message !== undefined) {
-      assert.deepEqual(
-        { code: deployed.body.error.code, message: deployed.body.error.message },
-        { code: "RESOURCE_CONFLICT", message },
-      );
-      assert.doesNotMatch(JSON.stringify(deployed.body), /synthetic-gateway|SYNTHETIC/);
-      await assertNoRevision(agent);
-    }
   }
-
-  // Agent save passes no bindings (a Configuration may stage them later); deploy refuses them.
-  const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
-    body: { name: "tool", value: "synthetic-tool-key" },
-  });
-  assert.equal(secret.status, 201, JSON.stringify(secret.body));
-  const bound = await controller.request("POST", `/namespaces/${namespace.id}/configurations`, {
-    body: {
-      kind: "agent",
-      values,
-      secretBindings: { TOOL_API_KEY: { source: secret.data.ref, delivery: { type: "env" } } },
-    },
-  });
-  assert.equal(bound.status, 201, JSON.stringify(bound.body));
-  const agent = await createAgentFor("secret-bindings", bound.data);
-  // Grant the Agent the bound Secret, so only the Compute Driver's refusal remains.
-  const { state } = controller.fixture;
-  state.identities.push({
-    kind: "service_principal",
-    id: agent.servicePrincipalId,
-    namespaceId: namespace.id,
-  });
-  state.roles.push({
-    id: "ssh-tool-key",
-    namespaceId: namespace.id,
-    permissions: [{ action: "operate", resourceKind: "secret" }],
-  });
-  state.bindings.push({
-    id: "ssh-tool-key",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: agent.servicePrincipalId,
-    roleId: "ssh-tool-key",
-    resourceKind: "secret",
-    resourceId: secret.data.id,
-  });
-  const deployed = await deploy(agent);
-  assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
-  assert.deepEqual(
-    { code: deployed.body.error.code, message: deployed.body.error.message },
-    {
-      code: "INVALID_REQUEST",
-      message:
-        "Configuration secretBindings must be empty on SSH Compute: provision credentials in the operator-owned <agentDir>/env file.",
-    },
-  );
-  await assertNoRevision(agent);
-});
-
-test("SSH Compute refuses at Agent save and deploy a roster or workspace whose main Agent cannot read initial workspace files", async () => {
-  // Findings 2285 and 2289: only the host refused these, at deployment, which retried until it
-  // failed. The host accepts only a path derived from each Agent's id, which a Configuration
-  // cannot name, so any explicit workspace is refused.
-  const computeDriver = new SshComputeDriver({
-    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
-    hosts: { "workspace-roster": { address: "127.0.0.1", user: "root" } },
-    runtime: {
-      nodePath: "/usr/bin/node",
-      openclawPath: "/opt/openclaw/index.js",
-      user: "openclaw",
-      root: "/var/lib/ssh-runtime-test",
-    },
-    network: { gatewayPortRange: { start: 18800, end: 18899 } },
-  });
-  const controller = await configuredController({ computeDriver });
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "workspace-roster");
-  await controller.fixture.platformState.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
-  );
-  const values = createHarnessConfiguration("openclaw", "gpt-5.1");
-  const withAgents = (agents) => ({ ...values, agents: { ...values.agents, ...agents } });
-  const collection = `/namespaces/${namespace.id}/agents`;
-  const files = { "USER.md": "ssh-workspace-roster" };
-  const create = (name, configurationId, extra = {}) =>
-    controller.request("POST", collection, {
-      body: {
-        name,
-        configurationId,
-        harnessAuth: { method: "runtime" },
-        gatewayManagedMode: false,
-        ...extra,
-      },
-    });
-  const roster =
-    "Configuration setting agents.entries must hold only main, or be omitted, for initial workspace files: only the main Agent reads them.";
-  const workspace = (setting) =>
-    `Configuration setting ${setting} must be unset for initial workspace files on SSH Compute: the host chooses the workspace under the Agent's own directory.`;
-  // Kubernetes Compute accepts this managed path; the SSH host never does.
-  const managed = "/home/node/.openclaw/workspace";
-  // Keep the model selection, or save treats the Configuration as a draft and checks nothing.
-  const defaults = { ...values.agents.defaults, workspace: managed };
-  // (Configuration save itself refuses a null main entry.)
-  for (const [agents, message] of [
-    [{ entries: {} }, roster],
-    [{ ownership: "explicit", entries: { main: {}, helper: {} } }, roster],
-    [{ defaults }, workspace("agents.defaults.workspace")],
-    // The main entry's workspace wins over the defaults, so the refusal names it.
-    [
-      { defaults, entries: { Main: { workspace: managed } } },
-      workspace("agents.entries.Main.workspace"),
-    ],
-  ]) {
-    const configuration = await createConfiguration(controller, namespace.id, withAgents(agents));
-    const refused = await create("Unreadable setup", configuration.id, {
-      initialWorkspaceFiles: files,
-    });
-    assert.equal(refused.status, 400, JSON.stringify(refused.body));
-    assert.equal(refused.body.error.message, message);
-    // Without initial workspace files the same Configuration saves.
-    const plain = await create(`Plain ${configuration.id}`, configuration.id);
-    assert.equal(plain.status, 201, JSON.stringify(plain.body));
-  }
-  // A main entry in any letter case saves; a roster changed after save refuses the deploy.
-  const configuration = await createConfiguration(
-    controller,
-    namespace.id,
-    withAgents({ entries: { Main: {} } }),
-  );
-  const created = await create("Pending setup", configuration.id, {
-    initialWorkspaceFiles: files,
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const changed = await controller.request(
-    "PATCH",
-    `/namespaces/${namespace.id}/configurations/${configuration.id}`,
-    { body: { values: withAgents({ entries: {} }) } },
-  );
-  assert.equal(changed.status, 200, JSON.stringify(changed.body));
-  const path = `${collection}/${created.data.id}`;
-  const deployed = await controller.request("POST", `${path}/deploy`);
-  assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
-  assert.equal(deployed.body.error.message, roster);
-  // A workspace added after save refuses the deploy too.
-  const moved = await controller.request(
-    "PATCH",
-    `/namespaces/${namespace.id}/configurations/${configuration.id}`,
-    { body: { values: withAgents({ entries: { Main: { workspace: managed } } }) } },
-  );
-  assert.equal(moved.status, 200, JSON.stringify(moved.body));
-  const redeployed = await controller.request("POST", `${path}/deploy`);
-  assert.equal(redeployed.status, 400, JSON.stringify(redeployed.body));
-  assert.equal(redeployed.body.error.message, workspace("agents.entries.Main.workspace"));
-  assert.deepEqual((await controller.request("GET", `${path}/revisions`)).data, []);
-
-  // Finding 2286: after the setup completed, every later deployment still delivers it, and the
-  // host refuses the same roster again at preparation, where the refusal was retried until the
-  // deployment failed. Deployment refuses it with the same message instead.
-  const restored = await controller.request(
-    "PATCH",
-    `/namespaces/${namespace.id}/configurations/${configuration.id}`,
-    { body: { values: withAgents({ entries: { Main: {} } }) } },
-  );
-  assert.equal(restored.status, 200, JSON.stringify(restored.body));
-  const first = await controller.request("POST", `${path}/deploy`);
-  assert.equal(first.status, 202, JSON.stringify(first.body));
-  // What the worker records when the first revision activates: the revision becomes active,
-  // then the setup completes.
-  const [revision] = (await controller.request("GET", `${path}/revisions`)).data;
-  await controller.fixture.platformState.transact(async (unit) => {
-    await unit.agents.compareAndSetActiveRevision(
-      namespace.id,
-      created.data.id,
-      undefined,
-      revision.id,
-    );
-    const setup = await unit.workspaceSetups.find(namespace.id, created.data.id);
-    await unit.workspaceSetups.complete(namespace.id, created.data.id, setup.id);
-  });
-  const emptied = await controller.request(
-    "PATCH",
-    `/namespaces/${namespace.id}/configurations/${configuration.id}`,
-    { body: { values: withAgents({ entries: {} }) } },
-  );
-  assert.equal(emptied.status, 200, JSON.stringify(emptied.body));
-  const completed = await controller.request("POST", `${path}/deploy`);
-  assert.equal(completed.status, 400, JSON.stringify(completed.body));
-  assert.equal(completed.body.error.message, roster);
-  assert.equal((await controller.request("GET", `${path}/revisions`)).data.length, 1);
-
-  // Finding 2296: an update naming another Configuration checks a completed setup too, so it
-  // no longer saves a pair the next deploy refuses. An update that keeps the Configuration and
-  // execution mode is not checked, so an Agent already broken by a Configuration write can
-  // still be edited.
-  const broken = await createConfiguration(controller, namespace.id, withAgents({ entries: {} }));
-  const switched = await controller.request("PATCH", path, {
-    body: { configurationId: broken.id },
-  });
-  assert.equal(switched.status, 400, JSON.stringify(switched.body));
-  assert.equal(switched.body.error.message, roster);
-  // Restating the stored execution mode is no change either.
-  for (const body of [
-    { configurationId: configuration.id },
-    { configurationId: configuration.id, executionMode: created.data.executionMode },
-  ]) {
-    const kept = await controller.request("PATCH", path, { body });
-    assert.equal(kept.status, 200, JSON.stringify(kept.body));
-    assert.equal(kept.body.data.configurationId, configuration.id);
-    assert.equal(kept.body.data.executionMode, created.data.executionMode);
-  }
-});
+}
 
 test("Agent provisioning and deploy name a refused channel token reference form before Slack validation", async () => {
   // Finding 2506: provisioning ran the Slack Channel Driver's check before the Configuration rules
@@ -8524,19 +6199,8 @@ test("Agent provisioning and deploy name a refused channel token reference form 
     },
     configurationDriver,
   });
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "slack-reference-forms");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const base = `/namespaces/${namespace.id}`;
-  const makeSecret = async (name, value) => {
-    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
-    assert.equal(result.status, 201);
-    return result.data;
-  };
-  const app = await makeSecret("app", "xapp-synthetic-app");
-  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
-  const model = await makeSecret("model", "synthetic-model");
+  const { fixture, namespace, base, app, bot, saveConfiguration, createAgent, provision } =
+    await createSlackValidationFixture(controller, "slack-reference-forms");
   let calls = 0;
   const channel = new SlackChannelDriver(async () => {
     calls++;
@@ -8544,33 +6208,6 @@ test("Agent provisioning and deploy name a refused channel token reference form 
   });
   fixture.controller.registerDriver(channel);
   fixture.controller.selectDriver("channel", channel.id);
-  const provision = (botToken) =>
-    controller.request("POST", `${base}/agents/provision`, {
-      body: provisioningRequestBody(
-        namespace.id,
-        { modelApiKey: model, toolApiKey: model },
-        {
-          configuration: {
-            kind: "agent",
-            values: {
-              agents: { defaults: { model: "codex/gpt-6-astra" } },
-              channels: {
-                slack: {
-                  enabled: true,
-                  mode: "socket",
-                  appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-                  botToken,
-                },
-              },
-            },
-            secretBindings: {
-              SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
-              SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
-            },
-          },
-        },
-      ),
-    });
   const form = (name) => referenceFormRefusal("channels.slack.botToken", name);
   const unbound = unboundReferenceRefusal("channels.slack.botToken", "SLACK_SPARE_TOKEN");
   const forms = [
@@ -8587,56 +6224,49 @@ test("Agent provisioning and deploy name a refused channel token reference form 
     // Finding 2520: the binding rule answers before the form rule, at save and at deploy.
     ["xoxb-${SLACK_SPARE_TOKEN}", unbound],
   ];
+  const configurationWithBotToken = (botToken) => ({
+    kind: "agent",
+    values: {
+      agents: { defaults: { model: "codex/gpt-6-astra" } },
+      channels: {
+        slack: {
+          enabled: true,
+          mode: "socket",
+          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+          botToken,
+        },
+      },
+    },
+    secretBindings: {
+      SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+      SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
+    },
+  });
   for (const [botToken, message] of forms) {
-    const refused = await provision(botToken);
+    const refused = await provision(configurationWithBotToken(botToken));
     assertApiError(refused, 400, "INVALID_REQUEST");
     assert.equal(refused.body.error.message, message, botToken);
     assert.doesNotMatch(JSON.stringify(refused.body), /xoxb-synthetic|SECRET/);
   }
   // Each was refused before Slack was asked, and nothing was created.
   assert.equal(calls, 0);
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
-    [],
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
 
   // Finding 2516: deployment also asked the Slack Channel Driver first. A stored Configuration
   // that predates these rules, written past OCC, now gets the rule's message at deploy, still
   // before Slack is asked.
-  const values = {
-    agents: { defaults: { model: "codex/gpt-6-astra" } },
-    channels: {
-      slack: {
-        enabled: true,
-        mode: "socket",
-        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-        botToken: "${SLACK_BOT_TOKEN}",
-      },
-    },
-  };
-  const config = await controller.request("POST", `${base}/configurations`, {
-    body: {
-      kind: "agent",
-      values,
-      secretBindings: {
-        SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
-        SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
-      },
-    },
-  });
-  assert.equal(config.status, 201, JSON.stringify(config.body));
-  const agent = await controller.request("POST", `${base}/agents`, {
-    body: { name: "slack-forms", configurationId: config.data.id },
-  });
-  assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await bindHarnessKey(fixture, namespace.id, agent.data);
+  const configuration = configurationWithBotToken("${SLACK_BOT_TOKEN}");
+  const { values } = configuration;
+  const config = await saveConfiguration(configuration);
+  const agent = await createAgent("slack-forms", config.id);
+  await bindHarnessKey(fixture, namespace.id, agent);
   for (const [botToken, message] of forms) {
-    const stored = configurationDriver.stored({ namespaceId: namespace.id, id: config.data.id });
+    const stored = configurationDriver.stored({ namespaceId: namespace.id, id: config.id });
     await configurationDriver.update({
       ...stored,
       values: { ...values, channels: { slack: { ...values.channels.slack, botToken } } },
     });
-    const refused = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
+    const refused = await controller.request("POST", `${base}/agents/${agent.id}/deploy`);
     assertApiError(refused, 400, "INVALID_REQUEST");
     assert.equal(refused.body.error.message, message, botToken);
     assert.doesNotMatch(JSON.stringify(refused.body), /xoxb-synthetic|SECRET/);
@@ -8649,19 +6279,8 @@ test("Slack validation rejects swapped credentials and preserves authorization",
     computeDriver: createProvisioningCapableComputeDriver(),
     configurationDriver: createProvisioningCapableConfigurationDriver(),
   });
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "slack-admission");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const base = `/namespaces/${namespace.id}`;
-  const makeSecret = async (name, value) => {
-    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
-    assert.equal(result.status, 201);
-    return result.data;
-  };
-  const app = await makeSecret("app", "xapp-synthetic-app");
-  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
-  const model = await makeSecret("model", "synthetic-model");
+  const { fixture, namespace, base, app, bot, saveConfiguration, createAgent, provision } =
+    await createSlackValidationFixture(controller, "slack-admission");
   let calls = 0;
   let response = { ok: true, bot_id: "B123", team_id: "T123" };
   const channel = new SlackChannelDriver(async (url, options) => {
@@ -8693,44 +6312,25 @@ test("Slack validation rejects swapped credentials and preserves authorization",
       SLACK_BOT_TOKEN: { source: app.ref, delivery: { type: "env" } },
     },
   };
-  const provision = () =>
-    controller.request("POST", `${base}/agents/provision`, {
-      body: provisioningRequestBody(
-        namespace.id,
-        { modelApiKey: model, toolApiKey: model },
-        { configuration },
-      ),
-    });
   // A foreign channel Secret is an invalid request, not a scope miss from channel validation.
   const foreignBot = { ...bot.ref, namespaceId: `ns_${randomUUID()}` };
-  const foreign = await controller.request("POST", `${base}/agents/provision`, {
-    body: provisioningRequestBody(
-      namespace.id,
-      { modelApiKey: model, toolApiKey: model },
-      {
-        configuration: {
-          ...configuration,
-          secretBindings: {
-            ...configuration.secretBindings,
-            SLACK_BOT_TOKEN: { source: foreignBot, delivery: { type: "env" } },
-          },
-        },
-      },
-    ),
+  const foreign = await provision({
+    ...configuration,
+    secretBindings: {
+      ...configuration.secretBindings,
+      SLACK_BOT_TOKEN: { source: foreignBot, delivery: { type: "env" } },
+    },
   });
   assertApiError(foreign, 400, "INVALID_REQUEST");
   assert.equal(foreign.body.error.message, "Secret references cannot cross Namespaces.");
   assert.equal(calls, 0);
-  const swapped = await provision();
+  const swapped = await provision(configuration);
   assertApiError(swapped, 400, "CHANNEL_CREDENTIAL_ROLE_MISMATCH");
   assert.equal(swapped.body.error.details[0].path, "/channels/slack/appToken");
   assert.equal(calls, 0);
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
-    [],
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
   configuration.secretBindings.SLACK_APP_TOKEN.source = app.ref;
-  const wrongBotRole = await provision();
+  const wrongBotRole = await provision(configuration);
   assert.equal(wrongBotRole.body.error.code, "CHANNEL_CREDENTIAL_ROLE_MISMATCH");
   assert.equal(wrongBotRole.body.error.details[0].path, "/channels/slack/botToken");
   assert.equal(calls, 0);
@@ -8743,21 +6343,24 @@ test("Slack validation rejects swapped credentials and preserves authorization",
     action: "operate",
     effect: "deny",
   });
-  assert.equal((await provision()).status, 403);
+  assert.equal((await provision(configuration)).status, 403);
   assert.equal(calls, 0);
   fixture.state.restrictions.pop();
   response = new Error("xoxb-sensitive-provider-error");
-  const unavailable = await provision();
+  const unavailable = await provision(configuration);
   assert.equal(unavailable.status, 503);
   assert.equal(unavailable.body.error.code, "CHANNEL_CREDENTIAL_UNAVAILABLE");
   assert.equal(unavailable.body.error.details[0].path, "/channels/slack/botToken");
   assert.doesNotMatch(JSON.stringify(unavailable.body), /xoxb|sensitive/);
   response = { ok: false, error: "invalid_auth" };
-  assert.equal((await provision()).body.error.code, "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED");
+  assert.equal(
+    (await provision(configuration)).body.error.code,
+    "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED",
+  );
   response = { ok: true, bot_id: "B123", team_id: "T123" };
   // The in-memory fixture deliberately has no durable work queue. Reaching its
   // error proves credentials passed without substituting for the durable worker test.
-  assert.equal((await provision()).body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal((await provision(configuration)).body.error.code, "DEPENDENCY_UNAVAILABLE");
   const enterprise = {
     ok: true,
     bot_id: "B123",
@@ -8765,36 +6368,19 @@ test("Slack validation rejects swapped credentials and preserves authorization",
     enterprise_id: "E123",
   };
   response = { ...enterprise, team_id: enterprise.enterprise_id };
-  assert.equal((await provision()).body.error.code, "DEPENDENCY_UNAVAILABLE");
-  const config = await controller.request("POST", `${base}/configurations`, {
-    body: configuration,
-  });
-  assert.equal(config.status, 201, JSON.stringify(config.body));
-  const agent = await controller.request("POST", `${base}/agents`, {
-    body: { name: "slack-agent", configurationId: config.data.id },
-  });
-  assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await bindHarnessKey(fixture, namespace.id, agent.data);
-  for (const secret of [app, bot]) {
-    fixture.state.bindings.push({
-      id: `slack-${secret.id}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: agent.data.servicePrincipalId,
-      roleId: `harness-key-${agent.data.id}`,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    });
-  }
+  assert.equal((await provision(configuration)).body.error.code, "DEPENDENCY_UNAVAILABLE");
+  const config = await saveConfiguration(configuration);
+  const agent = await createAgent("slack-agent", config.id);
+  await bindSlackDeploymentCredentials(fixture, namespace.id, agent, { app, bot });
   response = { ok: false, error: "invalid_auth" };
-  const deploy = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
+  const deploy = await controller.request("POST", `${base}/agents/${agent.id}/deploy`);
   assert.equal(deploy.status, 400, JSON.stringify(deploy.body));
   assert.equal(deploy.body.error.details[0].path, "/channels/slack/botToken");
   response = enterprise;
-  const good = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
+  const good = await controller.request("POST", `${base}/agents/${agent.id}/deploy`);
   assert.equal(good.status, 202, JSON.stringify(good.body));
   response = { ...enterprise, enterprise_id: "invalid", team_id: "T123" };
-  assert.equal((await provision()).body.error.code, "CHANNEL_CREDENTIAL_UNAVAILABLE");
+  assert.equal((await provision(configuration)).body.error.code, "CHANNEL_CREDENTIAL_UNAVAILABLE");
   response = enterprise;
   // Named accounts do not hide the top-level tokens: OpenClaw starts them as the
   // implicit default account, so they need Secret-backed refs too.
@@ -8813,20 +6399,12 @@ test("Slack validation rejects swapped credentials and preserves authorization",
     SLACK_WORK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
     SLACK_WORK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
   };
-  const provisionNamed = () =>
-    controller.request("POST", `${base}/agents/provision`, {
-      body: provisioningRequestBody(
-        namespace.id,
-        { modelApiKey: model, toolApiKey: model },
-        { configuration: namedAccounts },
-      ),
-    });
-  const plaintextDefault = await provisionNamed();
+  const plaintextDefault = await provision(namedAccounts);
   assertApiError(plaintextDefault, 400, "CHANNEL_CREDENTIAL_BINDING_REQUIRED");
   assert.equal(plaintextDefault.body.error.details[0].path, "/channels/slack/appToken");
   // An account named "default" replaces the implicit one and inherits the top level.
   namedAccounts.values.channels.slack.accounts.default = {};
-  const explicitDefault = await provisionNamed();
+  const explicitDefault = await provision(namedAccounts);
   assert.equal(explicitDefault.status, 400, JSON.stringify(explicitDefault.body));
   assert.equal(
     explicitDefault.body.error.details[0].path,
@@ -8835,11 +6413,11 @@ test("Slack validation rejects swapped credentials and preserves authorization",
   delete namedAccounts.values.channels.slack.accounts.default;
   delete namedAccounts.values.channels.slack.appToken;
   delete namedAccounts.values.channels.slack.botToken;
-  assert.equal((await provisionNamed()).body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal((await provision(namedAccounts)).body.error.code, "DEPENDENCY_UNAVAILABLE");
   const beforeDisabled = calls;
   configuration.values.channels.slack.enabled = false;
   configuration.secretBindings = {};
-  const disabled = await provision();
+  const disabled = await provision(configuration);
   assert.equal(disabled.body.error.code, "DEPENDENCY_UNAVAILABLE");
   assert.equal(calls, beforeDisabled);
 });
@@ -8849,19 +6427,8 @@ test("Slack validation reads a whole ${NAME} token as the env SecretRef it binds
     computeDriver: createProvisioningCapableComputeDriver(),
     configurationDriver: createProvisioningCapableConfigurationDriver(),
   });
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "slack-whole-reference");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const base = `/namespaces/${namespace.id}`;
-  const makeSecret = async (name, value) => {
-    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
-    assert.equal(result.status, 201);
-    return result.data;
-  };
-  const app = await makeSecret("app", "xapp-synthetic-app");
-  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
-  const model = await makeSecret("model", "synthetic-model");
+  const { fixture, namespace, base, app, bot, saveConfiguration, createAgent, provision } =
+    await createSlackValidationFixture(controller, "slack-whole-reference");
   const tokens = [];
   const channel = new SlackChannelDriver(async (url, options) => {
     assert.equal(new URL(url).pathname, "/api/auth.test");
@@ -8889,14 +6456,6 @@ test("Slack validation reads a whole ${NAME} token as the env SecretRef it binds
       SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
     },
   };
-  const provision = (plan) =>
-    controller.request("POST", `${base}/agents/provision`, {
-      body: provisioningRequestBody(
-        namespace.id,
-        { modelApiKey: model, toolApiKey: model },
-        { configuration: plan },
-      ),
-    });
   // The fixture has no durable work queue: its error means the plan passed channel validation,
   // which sent the bound bot token to Slack.
   assert.equal((await provision(configuration)).body.error.code, "DEPENDENCY_UNAVAILABLE");
@@ -8911,28 +6470,11 @@ test("Slack validation reads a whole ${NAME} token as the env SecretRef it binds
   assert.equal(tokens.length, 1);
 
   // Deployment of a saved Configuration applies the same rule.
-  const config = await controller.request("POST", `${base}/configurations`, {
-    body: configuration,
-  });
-  assert.equal(config.status, 201, JSON.stringify(config.body));
-  assert.equal(config.data.values.channels.slack.botToken, "${SLACK_BOT_TOKEN}");
-  const agent = await controller.request("POST", `${base}/agents`, {
-    body: { name: "slack-whole-reference", configurationId: config.data.id },
-  });
-  assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await bindHarnessKey(fixture, namespace.id, agent.data);
-  for (const secret of [app, bot]) {
-    fixture.state.bindings.push({
-      id: `slack-${secret.id}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: agent.data.servicePrincipalId,
-      roleId: `harness-key-${agent.data.id}`,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    });
-  }
-  const deploy = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
+  const config = await saveConfiguration(configuration);
+  assert.equal(config.values.channels.slack.botToken, "${SLACK_BOT_TOKEN}");
+  const agent = await createAgent("slack-whole-reference", config.id);
+  await bindSlackDeploymentCredentials(fixture, namespace.id, agent, { app, bot });
+  const deploy = await controller.request("POST", `${base}/agents/${agent.id}/deploy`);
   assert.equal(deploy.status, 202, JSON.stringify(deploy.body));
   assert.deepEqual(tokens, ["Bearer xoxb-synthetic-bot", "Bearer xoxb-synthetic-bot"]);
 });
@@ -8942,19 +6484,8 @@ test("Slack validation with no Slack proxy names the setting at provision and de
     computeDriver: createProvisioningCapableComputeDriver(),
     configurationDriver: createProvisioningCapableConfigurationDriver(),
   });
-  const { fixture } = controller;
-  await bootstrap(controller);
-  const namespace = await createNamespace(controller, "slack-no-route");
-  await fixture.controller.handleNamespaceLifecycle(fixture.principal.id, namespace.id, "ready");
-  const base = `/namespaces/${namespace.id}`;
-  const makeSecret = async (name, value) => {
-    const result = await controller.request("POST", `${base}/secrets`, { body: { name, value } });
-    assert.equal(result.status, 201);
-    return result.data;
-  };
-  const app = await makeSecret("app", "xapp-synthetic-app");
-  const bot = await makeSecret("bot", "xoxb-synthetic-bot");
-  const model = await makeSecret("model", "synthetic-model");
+  const { fixture, namespace, base, app, bot, saveConfiguration, createAgent, provision } =
+    await createSlackValidationFixture(controller, "slack-no-route");
   // Finding 2521: production composition builds the Driver with expectProxy, since its API
   // egress is default-deny unless sign-in settings open it. With no proxy URL, a check that gets
   // no answer from Slack usually means the Installation has no Slack route: a fixed refusal names
@@ -8996,67 +6527,131 @@ test("Slack validation with no Slack proxy names the setting at provision and de
       SLACK_BOT_TOKEN: { source: app.ref, delivery: { type: "env" } },
     },
   };
-  const provision = () =>
-    controller.request("POST", `${base}/agents/provision`, {
-      body: provisioningRequestBody(
-        namespace.id,
-        { modelApiKey: model, toolApiKey: model },
-        { configuration },
-      ),
-    });
   const noRoute = SLACK_ROUTE_NOT_CONFIGURED;
   // Checks that need no provider call keep their own answers: a wrong token role is still named.
-  assertApiError(await provision(), 400, "CHANNEL_CREDENTIAL_ROLE_MISMATCH");
+  assertApiError(await provision(configuration), 400, "CHANNEL_CREDENTIAL_ROLE_MISMATCH");
   assert.equal(calls, 0);
   configuration.secretBindings.SLACK_BOT_TOKEN.source = bot.ref;
-  const refused = await provision();
+  const refused = await provision(configuration);
   assertApiError(refused, 409, "RESOURCE_CONFLICT");
   assert.equal(refused.body.error.message, noRoute);
   assert.doesNotMatch(JSON.stringify(refused.body), /xoxb-synthetic|xapp-synthetic/);
   assert.equal(calls, 1);
-  assert.deepEqual(
-    await fixture.platformState.read((view) => view.agents.listAgents(namespace.id)),
-    [],
-  );
+  await assertNoAgentsInNamespace(fixture, namespace.id);
   // An answer from Slack proves a route exists, so its failure stays the transient outage.
   answer = () => new Response("upstream unavailable", { status: 503 });
-  assertApiError(await provision(), 503, "CHANNEL_CREDENTIAL_UNAVAILABLE");
+  assertApiError(await provision(configuration), 503, "CHANNEL_CREDENTIAL_UNAVAILABLE");
   // A route an operator approved instead of the proxy still validates: the fixture has no
   // durable work queue, so its error means the plan passed channel validation.
   answer = () => new Response(JSON.stringify({ ok: true, bot_id: "B123", team_id: "T123" }));
   const before = calls;
-  assertApiError(await provision(), 503, "DEPENDENCY_UNAVAILABLE");
+  assertApiError(await provision(configuration), 503, "DEPENDENCY_UNAVAILABLE");
   // auth.test ran and passed: the 503 comes after validation, not from skipping it.
   assert.equal(calls, before + 1);
   answer = timedOut();
 
   // Deployment of a saved Agent gets the same answer.
-  const config = await controller.request("POST", `${base}/configurations`, {
-    body: configuration,
-  });
-  assert.equal(config.status, 201, JSON.stringify(config.body));
-  const agent = await controller.request("POST", `${base}/agents`, {
-    body: { name: "slack-no-route", configurationId: config.data.id },
-  });
-  assert.equal(agent.status, 201, JSON.stringify(agent.body));
-  await bindHarnessKey(fixture, namespace.id, agent.data);
-  for (const secret of [app, bot]) {
-    fixture.state.bindings.push({
-      id: `slack-${secret.id}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: agent.data.servicePrincipalId,
-      roleId: `harness-key-${agent.data.id}`,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    });
-  }
-  const deploy = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
+  const config = await saveConfiguration(configuration);
+  const agent = await createAgent("slack-no-route", config.id);
+  await bindSlackDeploymentCredentials(fixture, namespace.id, agent, { app, bot });
+  const deploy = await controller.request("POST", `${base}/agents/${agent.id}/deploy`);
   assertApiError(deploy, 409, "RESOURCE_CONFLICT");
   assert.equal(deploy.body.error.message, noRoute);
 });
 
-test("saved-Agent discovery offers the Google package only where Agent save admits it", async () => {
+test("managed MCP discovery reads tool names using one pinned authenticated session", async () => {
+  const url = "https://tools.example/api/mcp/v1";
+  const token = "fixture-mcp-discovery-token";
+  const calls = [];
+  const result = await listManagedMcpToolNames(url, token, undefined, {
+    async resolveHost(host) {
+      assert.equal(host, "tools.example");
+      return [{ address: "8.8.8.8", family: 4 }];
+    },
+    async fetch(target, request) {
+      assert.equal(target.href, url);
+      assert.equal(request.credentials, "omit");
+      assert.equal(request.redirect, "error");
+      const headers = new Headers(request.headers);
+      assert.equal(headers.get("Authorization"), `Bearer ${token}`);
+      const body = request.body === undefined ? undefined : JSON.parse(request.body);
+      calls.push(body?.method ?? request.method);
+      if (body?.method === "initialize") {
+        return Response.json(
+          {
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              protocolVersion: "2025-11-25",
+              capabilities: { tools: {} },
+              serverInfo: { name: "Document MCP fixture", version: "1" },
+            },
+          },
+          { headers: { "mcp-session-id": "fixture-session" } },
+        );
+      }
+      assert.equal(headers.get("mcp-session-id"), "fixture-session");
+      if (body?.method === "notifications/initialized") {
+        return new Response(null, { status: 202 });
+      }
+      if (request.method === "GET" || request.method === "DELETE") {
+        return new Response(null, { status: 405 });
+      }
+      assert.equal(body?.method, "tools/list");
+      const secondPage = body.params?.cursor === "next";
+      const payload = {
+        jsonrpc: "2.0",
+        id: body.id,
+        result: {
+          tools: [
+            {
+              name: secondPage ? "create_document" : "search_documents",
+              inputSchema: { type: "object" },
+            },
+          ],
+          ...(secondPage ? {} : { nextCursor: "next" }),
+        },
+      };
+      return new Response(`event: message\ndata: ${JSON.stringify(payload)}\n\n`, {
+        headers: { "content-type": "text/event-stream" },
+      });
+    },
+  });
+  assert.deepEqual([...result], ["search_documents", "create_document"]);
+  assert.deepEqual(
+    calls.filter((method) => method !== "GET"),
+    ["initialize", "notifications/initialized", "tools/list", "tools/list", "DELETE"],
+  );
+});
+
+test("managed MCP discovery refuses private DNS answers and redirects", async () => {
+  const url = "https://tools.example/api/mcp/v1";
+  const token = "fixture-mcp-discovery-token";
+  let attempted = false;
+  await assert.rejects(
+    listManagedMcpToolNames(url, token, undefined, {
+      resolveHost: async () => [{ address: "127.0.0.1", family: 4 }],
+      async fetch() {
+        attempted = true;
+        throw new Error("Unexpected request");
+      },
+    }),
+    { reason: "unavailable" },
+  );
+  assert.equal(attempted, false);
+  await assert.rejects(
+    listManagedMcpToolNames(url, token, undefined, {
+      resolveHost: async () => [{ address: "8.8.8.8", family: 4 }],
+      async fetch(target) {
+        assert.equal(target.href, url);
+        return Response.redirect("https://other.example/mcp");
+      },
+    }),
+    { reason: "invalid_response" },
+  );
+});
+
+test("saved-Agent discovery offers managed packages only where Agent save admits them", async () => {
   // Finding 2787: the Plugin Driver's catalog takes no Agent, so OCC checks each entry against
   // the Agent's Harness and the Installation's Compute, as Agent save does.
   const sandbox = {
@@ -9082,7 +6677,7 @@ test("saved-Agent discovery offers the Google package only where Agent save admi
   const driver = new OCCPluginDriver();
   controller.fixture.controller.registerDriver(driver);
   controller.fixture.controller.selectDriver("plugin", driver.id);
-  const packageId = "occ-plugin:google@1.0.0";
+  const packageId = "occ-plugin:slack@1.0.0";
   const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
       name: "Discovery Agent",
@@ -9095,22 +6690,51 @@ test("saved-Agent discovery offers the Google package only where Agent save admi
   // Each step compares discovery with what saving the package on this Agent returns.
   const discoverAndSave = async () => {
     const catalog = await controller.request("POST", `${path}/plugins`, { body: {} });
-    assert.equal(catalog.status, 200, JSON.stringify(catalog.body));
+
     const details = await controller.request("POST", `${path}/plugins/details`, {
       body: { pluginId: packageId },
     });
     const save = await controller.request("PATCH", path, {
       body: { configurationId: configuration.id, plugins: { [packageId]: { enabled: true } } },
     });
-    return { ids: catalog.data.plugins.map((entry) => entry.id), details, save };
+    return { catalog, details, save };
   };
 
   // A dedicated OpenClaw Agent on Kubernetes Compute is offered the package and may save it.
   const offered = await discoverAndSave();
-  assert.deepEqual(offered.ids, [packageId]);
+  assert.equal(offered.catalog.status, 200);
+  assert.deepEqual(
+    offered.catalog.data.plugins.map((entry) => entry.id),
+    ["occ-plugin:google@1.0.0", packageId],
+  );
   assert.equal(offered.details.status, 200, JSON.stringify(offered.details.body));
   assert.equal(offered.details.data.id, packageId);
   assert.equal(offered.save.status, 200, JSON.stringify(offered.save.body));
+  // Finding 2790: an ID the catalog does not offer is the caller's error, not a catalog
+  // failure to retry. The unversioned package ID names its versioned one.
+  for (const [pluginId, advice] of [
+    ["occ-plugin:google", "Use occ-plugin:google@1.0.0."],
+    [
+      "occ-plugin:nope@1.0.0",
+      "Check each plugin ID and its Driver prefix against the catalog for the Agent's Harness.",
+    ],
+  ]) {
+    const unknown = await controller.request("POST", `${path}/plugins/details`, {
+      body: { pluginId },
+    });
+    assertApiError(unknown, 400, "INVALID_REQUEST");
+    assert.equal(
+      unknown.body.error.message,
+      `A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: ${pluginId}. ${advice}`,
+    );
+    assert.equal(unknown.body.error.details, undefined);
+  }
+  // Request text outside the plugin ID shape is never echoed into the refusal.
+  const unshaped = await controller.request("POST", `${path}/plugins/details`, {
+    body: { pluginId: "occ-plugin:google\u202e@1.0.0" },
+  });
+  assertApiError(unshaped, 400, "INVALID_REQUEST");
+  assert.match(unshaped.body.error.message, /\(occ-plugin\) does not offer\. Check each plugin ID/);
   const cleared = await controller.request("PATCH", path, {
     body: { configurationId: configuration.id, plugins: {} },
   });
@@ -9124,14 +6748,13 @@ test("saved-Agent discovery offers the Google package only where Agent save admi
   );
   assert.equal(codex.status, 200, JSON.stringify(codex.body));
   const codexOffer = await discoverAndSave();
-  assert.deepEqual(codexOffer.ids, []);
+  assertApiError(codexOffer.catalog, 501, "NOT_IMPLEMENTED");
+  assertApiError(codexOffer.details, 501, "NOT_IMPLEMENTED");
   assertApiError(codexOffer.save, 400, "INVALID_REQUEST");
   assert.match(
     codexOffer.save.body.error.message,
-    /Google Workspace requires a dedicated OpenClaw/,
+    /No Plugin Driver is enabled for the codex Harness/,
   );
-  assertApiError(codexOffer.details, 400, "INVALID_REQUEST");
-  assert.equal(codexOffer.details.body.error.message, codexOffer.save.body.error.message);
 
   // Back on OpenClaw, Compute that cannot deliver the package refuses it the same way.
   const openclaw = await controller.request(
@@ -9149,12 +6772,132 @@ test("saved-Agent discovery offers the Google package only where Agent save admi
     controller.fixture.controller.selectDriver(replacement.capability, replacement.id);
   }
   const computeOffer = await discoverAndSave();
-  assert.deepEqual(computeOffer.ids, []);
+  assert.equal(computeOffer.catalog.status, 200);
+  assert.deepEqual(computeOffer.catalog.data.plugins, []);
   assertApiError(computeOffer.save, 400, "INVALID_REQUEST");
-  assert.equal(
-    computeOffer.save.body.error.message,
-    "Google Workspace requires Kubernetes Compute.",
-  );
+  assert.equal(computeOffer.save.body.error.message, "Slack requires Kubernetes Compute.");
   assertApiError(computeOffer.details, 400, "INVALID_REQUEST");
   assert.equal(computeOffer.details.body.error.message, computeOffer.save.body.error.message);
+});
+
+test("ordinary deployment admits only the Configuration and Drivers whose channels were validated", async (t) => {
+  for (const change of [
+    "unchanged",
+    "generation",
+    "binding",
+    "configuration",
+    "configuration-driver",
+    "channel",
+    "channel-validator",
+  ]) {
+    await t.test(change, async () => {
+      const { promise: reached, resolve: reach } = Promise.withResolvers();
+      const { promise: released, resolve: release } = Promise.withResolvers();
+      let held = false;
+      const deployment = await slackFirstDeploymentFixture(true, async () => {
+        if (held) {
+          reach();
+          await released;
+        }
+      });
+      const { controller, namespace, agent, path, work, channelDriver, providerCalls } = deployment;
+      const fixture = controller.fixture;
+      const replacement = await createConfiguration(controller, namespace.id);
+      const app = fixture.createApp(undefined, createFastifyApp);
+      try {
+        const url = await app.listen({ host: "127.0.0.1", port: 0 });
+        const send = () => request(url, "POST", `${path}/deploy`, { session: app.defaultSession });
+        // A normal later deployment remains intentional: seed its first admitted revision.
+        const first = await send();
+        assert.equal(first.status, 202, JSON.stringify(first.body));
+        assert.equal(first.data.revision, 1);
+        held = true;
+        const pending = send();
+        await reached;
+        if (change === "generation") {
+          const updated = await controller.request(
+            "PATCH",
+            `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+            {
+              body: { values: { temperature: "1" } },
+            },
+          );
+          assert.equal(updated.status, 200, JSON.stringify(updated.body));
+        } else if (change === "binding") {
+          const updated = await controller.request("PATCH", path, {
+            body: { configurationId: replacement.id },
+          });
+          assert.equal(updated.status, 200, JSON.stringify(updated.body));
+        } else if (change === "configuration") {
+          const driver = fixture.configurationDriver;
+          const saved = driver.stored({ namespaceId: namespace.id, id: agent.configurationId });
+          await driver.update({ ...saved, values: { temperature: "1" } });
+        } else if (change === "configuration-driver") {
+          const driver = createTestConfigurationDriver({ id: "replacement-configuration" });
+          fixture.controller.registerDriver(driver);
+          fixture.controller.selectDriver("configuration", driver.id);
+        } else if (change === "channel") {
+          const driver = new SlackChannelDriver(async () => assert.fail("Unexpected provider"));
+          driver.id = "replacement-channel";
+          fixture.controller.registerDriver(driver);
+          fixture.controller.selectDriver("channel", driver.id);
+        } else if (change === "channel-validator") {
+          channelDriver.validateCredentials = async () => assert.fail("Unexpected validation");
+        }
+        const successes = () =>
+          fixture.auditSink.events.filter(
+            (event) => event.action === "openclaw.agents.deploy" && event.outcome === "success",
+          ).length;
+        const beforeAudit = successes();
+        const beforeWork = work().length;
+        release();
+        const result = await pending;
+        assert.equal(
+          result.status,
+          change === "unchanged" ? 202 : 409,
+          JSON.stringify(result.body),
+        );
+        assert.equal(providerCalls(), 2, "one provider request per attempted deployment");
+        assert.equal(work().length - beforeWork, change === "unchanged" ? 1 : 0);
+        assert.equal(successes() - beforeAudit, change === "unchanged" ? 1 : 0);
+        const revisions = await deployment.listRevisionMetadata();
+        assert.equal(revisions.length, change === "unchanged" ? 2 : 1);
+        if (change === "unchanged") {
+          assert.equal(result.data.revision, 2);
+          assert.equal(result.data.configurationId, agent.configurationId);
+        } else {
+          assert.doesNotMatch(
+            result.body.error.message,
+            /Recover the original first-deployment receipt/,
+          );
+        }
+      } finally {
+        release();
+        await app.close();
+      }
+    });
+  }
+});
+
+test("deployment credential use retains the selected Secret storage object after its read", async () => {
+  const { controller, namespace, bot, path, intent, secretDriver, providerCalls, work } =
+    await slackFirstDeploymentFixture();
+  const replacement = createTestSecretDriver({ id: "replacement-secret-storage" });
+  controller.fixture.controller.registerDriver(replacement);
+  const withValue = secretDriver.withValue.bind(secretDriver);
+  secretDriver.withValue = (secret, use) =>
+    withValue(secret, (value) => {
+      controller.fixture.controller.selectDriver("secret", replacement.id);
+      return use(value);
+    });
+  const result = await controller.request("POST", `${path}/deploy-first`, { body: intent });
+  assert.equal(result.status, 503, JSON.stringify(result.body));
+  assert.equal(providerCalls(), 0, "a replaced storage selection must prevent provider dispatch");
+  assert.equal(work().length, 0);
+  assert.equal(
+    secretDriver.calls.filter((call) => call.operation === "withValue" && call.secret.id === bot.id)
+      .length,
+    1,
+  );
+  assert.equal(namespace.id, bot.ref.namespaceId);
 });

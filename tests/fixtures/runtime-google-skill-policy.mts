@@ -12,7 +12,7 @@ const { captureRuntimeConfigAsyncReader } = await import(snapshot);
 const config = await captureRuntimeConfigAsyncReader()();
 const pluginConfig = config.plugins.entries["file-transfer"].config;
 const { nodeId, remoteRoot: workspaceDir } = pluginConfig.workspaces.main;
-const root = "/usr/local/lib/oce/plugins/google";
+const root = "/usr/local/lib/oce/plugin-catalog/oce-google-workspace";
 const skills = root + "/skills";
 const skill = skills + "/oce-google";
 const enabled = process.argv[2] === "true";

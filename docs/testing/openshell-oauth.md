@@ -1,3 +1,9 @@
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
 # Test experimental OpenShell OAuth
 
 Verify the [experimental Codex OAuth source](../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc)
@@ -6,19 +12,20 @@ environment; this procedure does not establish production support.
 
 ## Prepare images and trust
 
-Select official OpenShell `v0.1.5`, source commit
-`bdb956f2cd65a635f1294fccf1d138d263bf650f`, for the gateway, supervisor, and
-static sandbox launcher. Use the immutable digests of the stable `0.1.5` image
+Select official OpenShell `v0.1.8`, source commit
+`f3d976590d3eb1379690a2abaf0f0e26c21d487d`, for the gateway, supervisor, and
+static sandbox launcher. Use the immutable digests of the stable `0.1.8` image
 tags and gateway/Workspace Helm charts from that version. The stable release
-rebuilds its images, so the source-commit image tags select different digests. This release includes operator `GetProviderCredentials`
+rebuilds its images, so the source-commit image tags select different digests. This release includes emSign public-key distrust from
+[OpenShell #4794](https://github.com/NVIDIA/OpenShell/pull/4794), as well as operator `GetProviderCredentials`
 from [OpenShell #4357](https://github.com/NVIDIA/OpenShell/pull/4357) and the alias
 resolver correction in [#4390](https://github.com/NVIDIA/OpenShell/pull/4390).
 
 | Component               | Immutable image                                                                                               |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Gateway                 | `ghcr.io/nvidia/openshell/gateway@sha256:ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6`    |
-| Supervisor              | `ghcr.io/nvidia/openshell/supervisor@sha256:fabcd01f656e9d23df4386f82e80b4f48b90f3452d7d5c58889007643a069161` |
-| Static sandbox launcher | `ghcr.io/nvidia/openshell/sandbox@sha256:e9adf9ecde328122414ad2ee8c6fc5d5b389e4cf168daf4357c46f5a77d55851`    |
+| Gateway                 | `ghcr.io/nvidia/openshell/gateway@sha256:d66352a54c680b652e5ddd7d19b9c1189568d18016f360b9b8c64014f13d89c4`    |
+| Supervisor              | `ghcr.io/nvidia/openshell/supervisor@sha256:deadeacfdba6d12ca27e538d0002696369d4de5a4fcad075ab503495503af9d1` |
+| Static sandbox launcher | `ghcr.io/nvidia/openshell/sandbox@sha256:f0fe7dbf18d833acb5da99c405231124718f23b524aa8e3c0108e6f37530033b`    |
 
 OCE keeps its JWT wrapper: Codex needs the local account claims, while the
 supervisor replaces the whole alias with the live credential. Stable-handle
@@ -31,11 +38,13 @@ imports these same pins. When installing separately, select all three immutable
 references through `gateway.image`, `supervisor.image`, and `sandboxRuntime.image`.
 Selecting local charts alone does not select those binaries. Record actual launched
 versions. Earlier `dev.8` and `dev.47` evidence remains bound to its tested pins;
-neither qualifies `v0.1.5`. The release update does not establish a fix for the
+neither qualifies `v0.1.8`. The release update does not establish a fix for the
 known provider-environment disconnect or a successful restart/withdrawal proof.
 
-The previous selection was `v0.1.4`, source commit
-`5a7728c304b5528e954e9ae900cf21f84e1a12b1`.
+The opt-in observed-hook repository credential preview admits 0.1.5 and 0.1.6.
+Use patched 0.1.6 with the existing dedicated workspace, held-launcher challenge
+and live policy/recipient checks. This remains startup observation, not mandatory
+request-hook enforcement for every future request.
 
 Configure the shared [OpenShell Backend](../reference/backends.md#openshell-gateway)
 with its selected `credential_refresh` member, ordinary bearer authentication,
@@ -133,7 +142,7 @@ and reject reused refresh tokens. Use fresh fixture identities and state;
 never point this lane at an existing user's deployment.
 
 ```sh
-node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.mjs run openshell-oauth \
+node --env-file="$TEST_ENV_FILE" scripts/ci/run-tests.ts run openshell-oauth \
   --state /tmp/oce-openshell-oauth-state.json \
   --results /tmp/oce-openshell-oauth-results.json
 ```
@@ -158,7 +167,7 @@ does not prove plugin execution. The remaining qualification boundaries are belo
 
 ## Receiver fixtures and full-stack qualification
 
-`tests/integration/device-authorization-api.test.mjs` exercises real Fastify,
+`tests/integration/device-authorization-api.test.ts` exercises real Fastify,
 OCC, IAM and credential-source storage through login, Agent creation/version
 admission and plugin discovery. The external credential services and provider HTTP
 are simulated. It verifies session fencing, source grants, configuration discovery after
@@ -169,7 +178,7 @@ separate simulated UI evidence. Neither proves external token refresh or injecti
 `tests/conformance/kubernetes-compute.test.mjs` exercises the real Compute
 preparation path with Driver transport fixtures. It checks source matching,
 Harness-only placeholder/metadata delivery, and refusal before provisioning on
-invalid attachments. `tests/integration/codex-model-probe.test.mjs` runs the
+invalid attachments. `tests/integration/codex-model-probe.test.ts` runs the
 emitted launcher in Docker with a substituted Codex executable, checking the
 generated auth file at both the probe and app-server boundaries. Select its
 immutable Node image with `OCC_TEST_CODEX_PROBE_IMAGE`.

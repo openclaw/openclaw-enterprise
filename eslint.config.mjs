@@ -73,7 +73,12 @@ export default defineConfig(
     ".agents/**",
   ]),
   {
-    files: ["{apps,packages,scripts,tests}/**/*.{js,mjs,cjs,ts,mts}", "*.{js,mjs,cjs,ts}"],
+    files: [
+      "{apps,packages,scripts,tests}/**/*.{js,mjs,cjs,ts,mts}",
+      "deploy/helm/src/*.ts",
+      "docs/snippets/openshell-quickstart/**/*.mts",
+      "*.{js,mjs,cjs,ts}",
+    ],
     extends: [js.configs.recommended],
     languageOptions: { globals: globals.node },
     plugins: { "@stylistic": stylistic },
@@ -139,11 +144,12 @@ export default defineConfig(
   {
     files: [
       "apps/controller/src/console/**/*.{mjs,mts}",
-      "scripts/docs-site/site.mjs",
-      "scripts/docs-site/api-explorer.mjs",
+      "scripts/docs-site/site.mts",
+      "scripts/docs-site/api-explorer.mts",
       "scripts/console-storybook/story.ts",
       "scripts/console-storybook/public/*.mjs",
-      "scripts/docs-site/compute-matrix-browser.mjs",
+      "scripts/docs-site/compute-matrix-browser.mts",
+      "scripts/docs-site/preview-client.mts",
     ],
     languageOptions: {
       globals: {

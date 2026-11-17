@@ -17,8 +17,10 @@ custody and retirement. Provider adapters own provider-specific scope, injection
 and response rules. The proxy enforces requests and obtains eligible material;
 it does not run a credential renewal loop.
 
-Credential Proxy does not replace every Credential Gateway. Existing static
-Gateway-owned attachments retain their own delivery path.
+Selecting Credential Proxy does not adopt ordinary sources into protected delivery.
+New and existing ordinary sources use Credential Gateway. Protected sources and
+repository bindings require Proxy admission; an Agent with neither needs no Proxy
+plan. An unavailable Proxy never permits Gateway fallback for a protected source.
 
 ## Interface
 
@@ -50,12 +52,19 @@ route set must still enforce deny-all.
 
 ### Delivery profiles
 
-`repositoryGitDeliveryProfile` admits exactly one repository binding:
-`git-write` maps to `repository_git`; installation profiles map to
-`github_installation`. The latter requires positive counterpart confirmation;
-a Driver that ignores the profile argument does not qualify. Deploy refuses any
-other binding (`git-read`, `git-full`, or more than one) before reading the
-counterpart, with `409 REPOSITORY_GIT_PROFILE_UNSUPPORTED`.
+`repositoryGitDeliveryProfile` maps a nonempty set of `github-repository`
+bindings to `github_repository`. All members must have that profile. One
+`git-write` binding maps to `repository_git` and keeps its ref restrictions.
+One installation binding maps to `github_installation` and requires positive
+counterpart confirmation. Mixed profiles, multiple legacy bindings, and standalone
+`git-read` or `git-full` do not qualify for protected delivery. If a resolved
+selection reaches protected admission without a supported profile, deploy returns
+`409 REPOSITORY_GIT_PROFILE_UNSUPPORTED`.
+
+For bundled OpenShell, `github_repository` and `repository_git` require a
+mandatory pre-credentials request binding. Before release, OCE verifies the
+registration and an authenticated denial for the held launcher request.
+Installation-wide access still requires its separate preview opt-in.
 
 `repositoryGitAuthorization` distinguishes exact dispatch, `online-request`,
 `request-hook-observed` and unavailable. Admission versions 4, 5 and 6 preserve
@@ -116,6 +125,12 @@ also binds provider, attachment epoch, process and network identities. These
 fields must describe authenticated backend observations. Matching names or a
 shared registration do not prove no-bypass networking.
 
+Provider `routes` receives the resolved revision Harness configuration during
+admission. Request-time authority calls the same provider with the saved settings
+and current source, then compares the requested route with that result. A mismatch
+refuses credential delivery, send authorization, or refresh. Source registration
+never chooses the Agent's inference destination. See the [model provider contract](kubernetes-compute/model-provider.md).
+
 ### Request-time exchange
 
 [API binding](../../../apps/controller/src/composition/egress-authority.ts)
@@ -128,6 +143,15 @@ live transport custody, not just stored IDs.
 version and request and returns a deadline-bound decision. Match request and
 injection digests and enforce `sendStartBy` at the last controlled send boundary.
 Do not treat resolution as send permission.
+
+A provider's `classify` may synchronously report one stable rule ID (1–255) through
+its optional refusal callback. IDs must not encode request data or be reassigned.
+OCC records `classificationRule` only when no operation matches and exactly one
+refused route reports a valid ID. Accepted operations, missing or repeated reports,
+and ambiguous diagnostics provide no rule. The audit binds the authenticated
+execution, source and exact request ID without inventing an operation or accessing
+credentials. Interpretation belongs to the selected provider; the wire refusal
+remains generic. See the [diagnostic flow](../../flows/credential-source-egress.md#debugging-and-verification).
 
 Response acceptance and lease renewal remain bound to that exchange.
 `protectResponse` processes the complete response, including trailers; an
@@ -150,7 +174,7 @@ version at the same recipient before `confirmInstall(pending)`. Preserve the
 pair through renewal. A replacement process must re-observe the recipient;
 a lost installation or confirmation remains pending and cannot be replayed or
 adopted as success. OCC stores fences and delivery facts; Token Service stores
-material. The [recipient evidence checks](../../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts)
+material. The [recipient evidence checks](../../../apps/controller/src/drivers/repo/access/protected-repository-git-installation.ts)
 require installed state and the exact attempt/version for use.
 
 Call `authorize` once for the captured request and installed version. An exact
@@ -179,9 +203,9 @@ an already authorized request. Credential retirement remains Token Service work.
 ## Limits
 
 Protected release currently uses bundled Kubernetes Compute. The repository
-`bindRepositoryGit` port is specifically for Git and GitHub installation delivery;
-it is not a general arbitrary-provider installation API. Its `githubInstallation`
-member is optional and scope-specific. `observedHook` is restricted to the
+`bindRepositoryGit` port supports Git, selected GitHub repository sets and the installation preview;
+it is not a general arbitrary-provider installation API. Its `githubRepository` and
+`githubInstallation` members are optional and scope-specific. `observedHook` is restricted to the
 bundled version 6 preview. Do not infer support from interface membership alone.
 
 Online request authorization does not establish exact dispatch or response

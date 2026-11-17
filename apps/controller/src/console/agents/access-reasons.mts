@@ -109,6 +109,9 @@ const IF_NEEDED_VERSION_READ = `If you need it, ${ASK_INSTALLATION_ADMINISTRATOR
 export const VERSION_UNAVAILABLE = `This version does not exist or your access does not include it. ${IF_NEEDED_VERSION_READ}`;
 export const requestedVersionUnavailable = (version: string) =>
   `Version ${version} does not exist or your access does not include it, so this page shows no progress or outcome for it. ${IF_NEEDED_VERSION_READ}`;
+// A version the page showed as selected for service exists, so once a stop or another version
+// takes its place it is not named as one that may not exist, nor by its raw ID (finding 3000).
+export const FORMER_CURRENT_VERSION_UNREADABLE = `You cannot read the version that was selected for service, so this page shows no progress or outcome for it. ${IF_NEEDED_VERSION_READ}`;
 // A version this tab's own Deploy created exists: the API accepted it. A deployer without read on
 // it is told that, not that it may not exist (finding D751).
 export const deployAcceptedVersionUnreadable = (version: string) =>

@@ -43,6 +43,29 @@ bundled Kubernetes Compute, Configuration save already checked the channel
 Secret bindings (below). A stored
 Agent that fails a check still reads; its next update must fix the pair.
 
+## Immutable runtime inputs
+
+After `admitRevision`, OCC may call `snapshotRuntimeInputs` on the admitted
+revision. The optional opaque string is stored as `compute.runtimeInputs` in
+the existing revision snapshot (printable ASCII, at most 4096 characters).
+It is private launch metadata; `compute.admission` keeps its existing format
+and authorization checks. SQL migration 0078 permits and validates the new
+optional field without adding a table or column.
+
+Kubernetes captures Gateway and agent images for locally managed dedicated
+Codex revisions without protected egress, including the Gateway image used
+for workspace initialization. Preparing or activating that same revision
+continues to use those images after Installation defaults change. A new
+revision captures the new images. It also records a non-image compatibility
+fingerprint for planned-replacement eligibility; that fingerprint does not
+relax authorization or make ordinary preparation refuse a changed Installation.
+
+Revisions without this metadata keep their existing behavior. A malformed or
+unknown snapshot version fails closed. Older readers retain the original
+admission string and ignore this optional metadata; older controllers do not
+provide the image-preservation guarantee. This capability alone does not enable
+completion waiting, change new-message admission, or extend deployment timeouts.
+
 ## Kubernetes Compute
 
 [Kubernetes Compute](kubernetes-compute.md) keeps these rules in
@@ -85,6 +108,42 @@ Agent that fails a check still reads; its next update must fix the pair.
   or provider key whose provider waits on a variable, or an `apiKey` whose
   value or `secrets` source does: the launch checks them once filled. A draft
   whose model policy selects no Harness is left to deployment.
+- a reference OpenClaw cannot read in an active plugin's
+  [secret input](../harness-execution.md#native-runtime-selection), with the
+  deployment refusal's text. A Preset save leaves it to the launch when
+  `plugins` or `secrets` waits on a variable.
+- once the model policy selects Codex, which runs only as Dedicated Codex, a
+  plugin policy that turns off the `codex` plugin every Dedicated Codex Gateway
+  enables, which would stop that Gateway at every start: `plugins.enabled: false`,
+  a `plugins.deny` that lists `codex`, or a non-empty `plugins.allow` without it
+  (IDs compared trimmed and lowercased, blank items ignored). Except at
+  provisioning, an item that is not text gets the [save rule](../configuration.md)
+  first. `plugins.entries.codex.enabled: false` passes:
+  startup turns that entry back on. A Preset save leaves an item that waits on a
+  variable to the launch. `validateHarnessAuth` applies this rule to every
+  Dedicated Codex Agent, after the rule that keeps file-transfer on for a
+  Gateway that hosts the Agent's workspace node. Configuration save and
+  deployment run this save rule first, so when both apply they name `codex`
+  first; Agent save and provisioning run `validateHarnessAuth` first and name
+  file-transfer.
+- a `gateway.auth.trustedProxy.allowUsers` without `occ-workspace-files`, or
+  with an identity [Gateway authentication](kubernetes-compute/gateway-authentication.md)
+  refuses, and a `trustedProxy.deviceAutoApprove` the Gateway's schema refuses.
+  Deployment runs this save rule first (`400`) and `validateGatewaySettings`
+  after it (`409`); provisioning applies the rule through
+  `validateAgentProvisioning` (`409`). Either way a dedicated Agent's running
+  revision keeps serving. A Preset save leaves a setting that waits on a variable to the launch.
+- once the model policy selects Codex, a missing `gateway.auth.password` when
+  the Installation sets `runtime`, `gatewayRouting` and
+  `network.pluginStatusProxySourceCidrs`. The Gateway then applies the Agent's
+  workspace node at runtime and confirms it through its own Gateway client,
+  which signs in with the
+  [generated password](kubernetes-compute/storage-and-credentials.md#runtime-credentials);
+  without it every activation failed with `AGENT_GATEWAY_UNAUTHORIZED` after
+  the running revision stopped. Deployment refuses a stored one with the same
+  `400` before any revision, and the Console Agent page holds **Deploy** with
+  that text. OpenClaw Agents, and Installations without private
+  status (the node is then in the pod spec), need no password.
 
 This Compute delivers channel credentials only from Configuration Secret
 bindings. OCC, not a Driver member, refuses at Configuration create and update,

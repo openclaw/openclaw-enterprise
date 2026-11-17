@@ -25,6 +25,7 @@ import {
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
   configurationSettingMessage,
+  gatewayPasswordRequirement,
   keyedSettingPath,
 } from "@openclaw-enterprise/occ";
 import {
@@ -39,12 +40,17 @@ import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
 import { failureAfterCleanup } from "../cleanup-failure.ts";
-import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-context.ts";
+import {
+  currentComputeAbortSignal,
+  currentComputeOperationLifetime,
+  withComputeAbortSignal,
+} from "../operation-context.ts";
 import {
   AGENT_READINESS_ENTRYPOINT,
-  AGENT_RUNTIME_ENTRYPOINT,
+  COMPUTE_AGENT_RUNTIME_ENTRYPOINT as AGENT_RUNTIME_ENTRYPOINT,
   PLUGIN_RUNTIME_HELPERS,
 } from "../kubernetes/runtime-entrypoints.ts";
+import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import {
   embeddedGatewayVolumeInstance,
   observeEmbeddedGateway,
@@ -84,6 +90,11 @@ export interface DockerComputeDriverOptions {
     readonly agent: string;
   };
   readonly loggingAddress?: string;
+  /**
+   * How long one preparation waits for the workspace setup container before it reports the
+   * revision unready (default 120 s). Internal: tests shorten it; configuration never sets it.
+   */
+  readonly workspaceSetupWaitMs?: number;
 }
 
 interface DockerContainerInspect extends EmbeddedContainerInspect {
@@ -173,6 +184,30 @@ const CONFIGURATION_DOCUMENT = "/home/node/.openclaw/openclaw.json";
 const GATEWAY_PASSWORD_ENV = "OPENCLAW_GATEWAY_PASSWORD";
 const GATEWAY_PASSWORD_REFERENCE = `\${${GATEWAY_PASSWORD_ENV}}`;
 
+// Only fixed route names enter diagnostics; resource IDs and query values do not.
+const requestOperations = [
+  ["ping", /^\/_ping$/],
+  ["version", /^\/version$/],
+  ["container-list", /^\/containers\/json(?:\?|$)/],
+  ["container-create", /^\/containers\/create(?:\?|$)/],
+  ["container-inspect", /^\/containers\/[^/?]+\/json$/],
+  ["container-start", /^\/containers\/[^/?]+\/start$/],
+  ["container-stop", /^\/containers\/[^/?]+\/stop(?:\?|$)/],
+  ["container-kill", /^\/containers\/[^/?]+\/kill(?:\?|$)/],
+  ["container-wait", /^\/containers\/[^/?]+\/wait(?:\?|$)/],
+  ["container-archive", /^\/containers\/[^/?]+\/archive(?:\?|$)/],
+  ["container-exec", /^\/containers\/[^/?]+\/exec$/],
+  ["container-remove", /^\/containers\/[^/?]+(?:\?|$)/],
+  ["network-create", /^\/networks\/create$/],
+  ["network", /^\/networks\/[^/?]+$/],
+  ["volume-create", /^\/volumes\/create$/],
+  ["volume-list", /^\/volumes(?:\?|$)/],
+  ["volume", /^\/volumes\/[^/?]+$/],
+  ["image-inspect", /^\/images\/[^/?]+\/json$/],
+  ["exec-start", /^\/exec\/[^/?]+\/start$/],
+  ["exec-inspect", /^\/exec\/[^/?]+\/json$/],
+] as const;
+
 // Deployment admission (validateGatewaySettings) and preparation apply the same rules, so a
 // deploy that preparation would refuse never stops the running revision first (finding 2352).
 function dockerGatewayConfigurationDocument(
@@ -206,6 +241,12 @@ function dockerGatewayConfigurationDocument(
       keyedSettingPath("gateway.auth", unsupported[0]!),
       "is not a supported native gateway authentication field",
     );
+  }
+  // OpenClaw resolves the password in both modes Docker Compute admits, with the Configuration's
+  // own secrets; Configuration save refuses the same objects (finding 3061).
+  const passwordRequirement = gatewayPasswordRequirement(auth.password, configuration.secrets);
+  if (passwordRequirement !== undefined) {
+    throw createError("gateway.auth.password", passwordRequirement);
   }
   const passwordReference =
     auth.password === undefined ? undefined : gatewayPasswordEnvironmentReference(auth.password);
@@ -264,6 +305,7 @@ process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
 
 ${PLUGIN_RUNTIME_HELPERS}
 ${GATEWAY_TOOL_POLICY_RUNTIME}
+${OPENCLAW_CONFIG_ISSUE_HELPER}
 ${startupPhaseHelper("gateway")}
 ${openClawStateMigrationHelper("Gateway", "deploy the Agent again")}
 
@@ -309,7 +351,7 @@ if (gatewayToolPolicyInput !== undefined) configureManagedGatewayTools(gatewayTo
 // before readiness and nothing restarts it.
 const gatewayStateDirectory = process.env.OPENCLAW_STATE_DIR || "/home/node/.openclaw";
 const outdatedDatabases = outdatedOpenClawDatabases(gatewayStateDirectory);
-if (outdatedDatabases.length === 0) {
+if (outdatedDatabases.length === 0 && !openClawMaintenancePending(gatewayStateDirectory)) {
   startGateway();
 } else {
   migrateOpenClawState(gatewayStateDirectory, outdatedDatabases, process.env).then(
@@ -495,6 +537,12 @@ export class DockerComputeDriver implements ComputeDriver {
     required(options.images.gateway, "Docker gateway image");
     required(options.images.agent, "Docker Codex Agent image");
     const loggingAddress = dockerLoggingAddress(options.loggingAddress);
+    if (
+      options.workspaceSetupWaitMs !== undefined &&
+      (!Number.isSafeInteger(options.workspaceSetupWaitMs) || options.workspaceSetupWaitMs < 1)
+    ) {
+      throw new Error("Docker workspace setup wait must be a positive integer.");
+    }
     this.options = immutableCopy({
       ...options,
       ...(loggingAddress === undefined ? {} : { loggingAddress }),
@@ -550,13 +598,28 @@ export class DockerComputeDriver implements ComputeDriver {
         return result;
       }
       this.verifyOwnership(observed.Labels, ownership, `network ${name}`);
-      await this.lifecycle.afterNamespacePrepared(namespace);
       return { ...result, namespaceReady: true };
     } catch (error) {
       if (created) {
         await this.removeNetwork(name).catch(() => {});
       }
       return { ...result, failure: failure(error) };
+    }
+  }
+
+  async checkNamespaceDeletion(namespace: Readonly<Namespace>, signal: AbortSignal) {
+    signal.throwIfAborted();
+    try {
+      const name = this.networkName(namespace.id);
+      const existing = await this.network(name);
+      if (existing !== undefined) {
+        this.verifyOwnership(existing.Labels, { namespaceId: namespace.id }, `network ${name}`);
+      }
+      signal.throwIfAborted();
+      return { namespaceId: namespace.id, deletionAllowed: true };
+    } catch (error) {
+      signal.throwIfAborted();
+      return { namespaceId: namespace.id, deletionAllowed: false, failure: failure(error) };
     }
   }
 
@@ -569,7 +632,6 @@ export class DockerComputeDriver implements ComputeDriver {
       if (existing !== undefined) {
         this.verifyOwnership(existing.Labels, { namespaceId: namespace.id }, `network ${name}`);
       }
-      await this.lifecycle.beforeNamespaceDelete(namespace);
       for (const containerId of await this.containerIdsForNamespace(namespace.id)) {
         await this.removeContainer(containerId);
       }
@@ -686,8 +748,12 @@ export class DockerComputeDriver implements ComputeDriver {
     let agentCreated: string | undefined;
     let gatewayCreated: string | undefined;
     try {
-      if (context?.workspaceSetup !== undefined) {
-        await this.initializeWorkspace(prepared, context.workspaceSetup);
+      if (
+        context?.workspaceSetup !== undefined &&
+        !(await this.initializeWorkspace(prepared, context.workspaceSetup))
+      ) {
+        // Setup is still running: the worker rechecks within the deployment's deadline.
+        return result;
       }
       const launch = await this.lifecycle.beforeWorkloadStart(prepared);
       launchPrepared = true;
@@ -874,7 +940,7 @@ export class DockerComputeDriver implements ComputeDriver {
   private async initializeWorkspace(
     revision: Readonly<AgentRevision>,
     setup: Readonly<WorkspaceSetup>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (setup.namespaceId !== revision.namespaceId || setup.agentId !== revision.agentId) {
       throw new OwnershipFailure("Workspace setup must belong to the exact Agent.");
     }
@@ -907,7 +973,8 @@ export class DockerComputeDriver implements ComputeDriver {
     if (existing !== undefined) {
       this.verifyOwnership(existing.Config?.Labels, ownership, `container ${name}`);
       if (existing.State?.Running) {
-        throw new Error("Workspace initialization is already running.");
+        // Still running after an earlier attempt (see the end of the wait below).
+        return false;
       }
       await this.removeContainer(name);
     }
@@ -949,6 +1016,11 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       },
       [201],
     );
+    // Removed afterwards only if it was seen to exit, or its start request failed and it is
+    // not running: a failed poll (for example a Docker inspect timeout) leaves a started setup
+    // running (finding 3114).
+    let started = false;
+    let exited = false;
     try {
       // Docker's archive endpoint keeps the payload out of container arguments and metadata.
       // A single fixed-name, owner-only ustar entry is sufficient; no host files are staged.
@@ -987,23 +1059,46 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         undefined,
         [204, 304],
       );
-      const started = Date.now();
-      while (Date.now() - started < STARTUP_TIMEOUT_MS) {
+      started = true;
+      const startedAt = Date.now();
+      const waitMs = this.options.workspaceSetupWaitMs ?? STARTUP_TIMEOUT_MS;
+      while (Date.now() - startedAt < waitMs) {
         const inspected = await this.container(name);
         if (inspected === undefined) {
           throw new Error("Workspace initializer disappeared.");
         }
         if (inspected.State?.Running === false) {
+          exited = true;
           if (inspected.State.ExitCode !== 0) {
             throw new Error("Workspace initialization failed.");
           }
-          return;
+          return true;
         }
         await new Promise<void>((resolve) => setTimeout(resolve, 100));
       }
-      throw new Error("Workspace initialization timed out.");
+      // Leave a setup that outlives this wait running (finding 3109). Native setup holds
+      // OpenClaw's state lock on the retained state volume, and its PID 1 ignores SIGTERM, so
+      // a stop would SIGKILL it with the lock held. Every later setup and Gateway on that
+      // state, in another PID namespace, would then refuse it. The setup bounds its own
+      // native runs; preparation stays unready while it runs and removes it once it exits.
+      return false;
     } finally {
-      await this.removeContainer(name);
+      if (exited || (!started && !(await this.workspaceSetupMayRun(name)))) {
+        await this.removeContainer(name);
+      }
+    }
+  }
+
+  // Whether a setup whose start request failed may still be running: the request can fail
+  // after Docker started it (for example a lost response), and removal would SIGKILL a setup
+  // that may hold the state lock (finding 3115). When the inspect fails too, it leaves the
+  // container, and the next attempt inspects it again: it reports a running setup pending
+  // and removes a stopped one.
+  private async workspaceSetupMayRun(name: string): Promise<boolean> {
+    try {
+      return (await this.container(name))?.State?.Running === true;
+    } catch {
+      return true;
     }
   }
 
@@ -1626,6 +1721,11 @@ ${WORKSPACE_SETUP_RUNTIME}`,
     expected: readonly number[],
     timeoutMs = REQUEST_TIMEOUT_MS,
   ): Promise<unknown> {
+    const started = performance.now();
+    const deadline = Math.min(
+      Date.now() + timeoutMs,
+      currentComputeOperationLifetime()?.deadline ?? Infinity,
+    );
     const ownerSignal = currentComputeAbortSignal();
     const timeout = AbortSignal.timeout(timeoutMs);
     const signal = ownerSignal === undefined ? timeout : AbortSignal.any([ownerSignal, timeout]);
@@ -1633,6 +1733,23 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       signal,
       () =>
         new Promise<unknown>((resolve, reject) => {
+          const rejectRequest = (error: Error) => {
+            if (signal.aborted && Object.is(error.cause, signal.reason)) {
+              const operation =
+                requestOperations.find(
+                  ([name, route]) =>
+                    route.test(path) && (name !== "volume-create" || method === "POST"),
+                )?.[0] ?? "other";
+              const verb = ["GET", "POST", "PUT", "DELETE"].includes(method) ? method : "OTHER";
+              const reason =
+                ownerSignal?.aborted && Object.is(signal.reason, ownerSignal.reason)
+                  ? "caller cancellation"
+                  : "request timeout";
+              // Only native HTTP errors are annotated; a pre-aborted caller keeps its own reason.
+              error.message = `Docker ${verb} ${operation}: ${reason} after ${Math.round(performance.now() - started)} ms (request timeout ${timeoutMs} ms; deadline ${new Date(deadline).toISOString()}).`;
+            }
+            reject(error);
+          };
           const payload =
             body === undefined ? undefined : Buffer.isBuffer(body) ? body : JSON.stringify(body);
           const request = httpRequest(
@@ -1654,7 +1771,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
             (response) => {
               const chunks: Buffer[] = [];
               let responseBytes = 0;
-              response.once("error", reject);
+              response.once("error", rejectRequest);
               const contentLength = response.headers["content-length"];
               if (
                 typeof contentLength === "string" &&
@@ -1696,7 +1813,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
               });
             },
           );
-          request.once("error", reject);
+          request.once("error", rejectRequest);
           if (payload !== undefined) {
             request.write(payload);
           }

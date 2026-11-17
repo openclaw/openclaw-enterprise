@@ -12,8 +12,10 @@ simulated data.
    right. Focus starts inside the dialog (Cancel for Stop and Delete, Name for
    Create Secret).
    In Delete, read what stays in the Namespace, then open **View separate cleanup
-   commands**. Each command includes the Namespace ID. Copying it keeps the
-   confirmation open and runs nothing.
+   commands**. Each command includes the Namespace ID. Press Enter on **Copy
+   Configuration command**, then on **Copy Secret command** if it appears. Only
+   the latest row shows feedback. If copying fails, its full command is selected.
+   Copying keeps the confirmation open and runs nothing. Choose **Cancel**.
    In **Backdrop at the desktop scrollbar**, choose **Open preview in its own tab**
    to check the window’s scrollbar gutter, rather than the surrounding frame.
    An empty gutter blends into the backdrop; a classic scrollbar remains visible.
@@ -24,6 +26,18 @@ simulated data.
    Open **Plugins (tablet)** (a 1024 px frame). Up to 1100 px the workspace
    stacks: the catalog shows alone, choosing Calendar replaces it with
    Calendar's detail, and **Back to plugins** returns to the catalog.
+   In **Components / Plugins / Available catalog**, add Calendar. Set
+   **Destructive tools** to **Disabled**, read its hint, and check that
+   **Calendar tools enabled by default** still says **Inherit default policy**.
+   The preview exercises the form; it does not submit a policy to a Controller.
+   In **Components / Plugins / Install Google Workspace**, confirm Google
+   Workspace appears and its policy controls are visible. This component fixture
+   supplies catalog data directly. The saved-Agent browser test checks discovery
+   through the Controller for a dedicated Agent using the default Harness.
+   In **Pages / Create Agent / Short window plugin picker** (1440×480), expand
+   and collapse **Access and credential setup**. Scroll the catalog browser:
+   plugin names stay readable, Calendar opens its details, and pagination is
+   reachable. Repeat at 390×844.
 3. Open **Slack editor (drawer)**. The drawer floats 16 px from the right, top
    and bottom edges with the same corners, and slides in from the right.
 4. Press Escape in each dialog. It closes and focus returns to the button that

@@ -3,12 +3,36 @@
 Use **Pages/Agent detail → Policy Denials Many** for 200 simulated denials and
 **Policy Rules Populated** for ten applied network rules.
 
+For the keyboard focus check, reset **Policy Rules Populated** and open **Manage
+rules**. Repeat at 1440px and 390px:
+
+- Tab to **Add rule** and press Enter. Focus moves to **Executable path**; the
+  Rule ID is already filled in.
+- Tab to **Add Port ranges** and press Enter. Focus moves to the new **Start
+  port**. Type `443`: focus stays there. Tab moves to **End port**.
+- Tab to **Add Port ranges** and press Space. Focus moves to the second **Start
+  port**. Tab moves to its **End port**.
+- Tab to **Remove Port ranges 1** and press Enter. Focus moves to the surviving
+  **Start port**, whose value is `1`.
+- Add another range, then Tab to **Remove Port ranges 2** and press Space.
+  Focus returns to the previous **Start port**. With one range left, Remove is
+  disabled. Tab moves to **End port**, then **Add Port ranges**.
+
+Do not review, save, or apply during this check. Reset the story before the
+remaining checks. These fixtures demonstrate simulated UI behavior only.
+
+In **Policy Unicode Executable**, expand **Policy details**, then
+**Read-only Installation defaults**. Check the indentation of the nested
+binaries and endpoints. On a phone, the long path wraps inside the code block.
+
 1. Confirm the Network policy card and suggestion appear above the denial log.
    The initial page shows five of 200 denials, on page one of 40. Search the loaded
    window, clear the filter, and expand a denial to inspect its sanitized log.
 2. Select the visible page, go to the next page, and select another denial. Check
    the total and the count outside this page. Enable **Follow**: the new-denial
    button appears while the inspected rows, details, and selection stay in place.
+   Choose **Show newest**. The count increases to 212 and the pager returns to
+   page one. The pager is the last control below the denial rows.
 3. Choose **Allow selected**. Check the selected-record, distinct-request, and
    new-rule counts. Repeated requests produce one rule. Review the changes and
    expand the previously saved rules to check existing access. No save or apply

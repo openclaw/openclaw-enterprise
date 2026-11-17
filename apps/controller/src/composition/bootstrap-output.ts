@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { basename, dirname, isAbsolute, sep } from "node:path";
@@ -20,8 +21,8 @@ export function bootstrapOutputPath(value: string, name: string): string {
   if (value.endsWith(sep)) {
     throw new Error(`${name} must identify a file, not a directory path.`);
   }
-  if (basename(value).length > 255) {
-    throw new Error(`${name} must use a basename of at most 255 characters.`);
+  if (Buffer.byteLength(basename(value), "utf8") > 255) {
+    throw new Error(`${name} must use a basename of at most 255 bytes.`);
   }
   return value;
 }

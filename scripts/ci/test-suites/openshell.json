@@ -1,20 +1,5 @@
 {
-  "requiredEnv": [
-    "OCC_TEST_KUBERNETES_KUBECONFIG",
-    "OCC_TEST_KUBERNETES_CONTEXT",
-    "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
-    "OCC_TEST_KUBERNETES_AGENT_IMAGE",
-    "CODEX_ACCESS_TOKEN",
-    "OPENAI_API_KEY",
-    "OCC_TEST_OPENAI_MODEL",
-    "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
-    "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
-    "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
-    "OCC_TEST_OPENSHELL_HELM",
-    "OCC_TEST_OPENSHELL_HELM_CHART",
-    "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
-    "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
-  ],
+  "requiredEnv": ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"],
   "env": {
     "OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL": "1",
     "OCC_TEST_DEV_UP_OPENSHELL_REAL": "1",
@@ -33,11 +18,96 @@
       "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
       "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
       "OCC_TEST_KEYCLOAK_IMAGE"
+    ],
+    "selfProvisionedFiles": [
+      "tests/integration/local-first-agent-openshell-real.test.mjs",
+      "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+      "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+      "tests/integration/openshell-git-retention-real.test.ts",
+      "tests/integration/openshell-git-finite-removal-real.test.ts"
+    ],
+    "sourceBuildFiles": [
+      "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+      "tests/integration/openshell-git-retention-real.test.ts",
+      "tests/integration/openshell-git-finite-removal-real.test.ts"
     ]
   },
   "files": [
     {
+      "path": "tests/integration/openshell-refresh-real.test.ts",
+      "expectedTests": ["OpenShell gateway recovery preserves OAuth refresh and revocation"],
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ],
+      "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
+    },
+    {
+      "path": "tests/integration/openshell-withdrawal-real.test.ts",
+      "expectedTests": ["OpenShell credential withdrawal revokes live model access"],
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ],
+      "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
+    },
+    {
+      "path": "tests/integration/openshell-credentials-real.test.ts",
+      "expectedTests": ["OpenShell credential replacement preserves isolation"],
+      "requiredEnv": [
+        "CODEX_ACCESS_TOKEN",
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ]
+    },
+    {
+      "path": "tests/integration/openshell-upstream-real.test.ts",
+      "expectedTests": ["OpenShell model and tool upstream outages fail closed"],
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ],
+      "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
+    },
+    {
       "path": "tests/integration/local-first-agent-openshell-real.test.mjs",
+      "optionalEnv": ["OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE"],
       "expectedTests": [
         "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",
         "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution"
@@ -45,16 +115,68 @@
     },
     {
       "path": "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+      "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"],
       "expectedTests": [
         "dev-up installs the pinned OpenShell profile in its owned k3d cluster",
         "dev-up runs OCC in Compose with OpenShell and Kubernetes Compute in k3d"
       ]
     },
     {
-      "path": "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+      "path": "tests/integration/openshell-gateway-tool-policy-real.test.ts",
       "expectedTests": [
-        "OpenShell enforces provider delivery and authenticated Codex exposure",
         "OpenShell dedicated Agents enforce Gateway tool policy during normal work"
+      ],
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ],
+      "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
+    },
+    {
+      "path": "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+      "expectedTests": ["OpenShell enforces provider delivery and authenticated Codex exposure"],
+      "requiredEnv": [
+        "CODEX_ACCESS_TOKEN",
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ]
+    },
+    {
+      "path": "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts",
+      "expectedTests": [
+        "OpenShell mounts the admitted operator scratch PVC through the Agent workflow"
+      ],
+      "requiredEnv": [
+        "CODEX_ACCESS_TOKEN",
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
       ]
     },
     {
@@ -66,11 +188,68 @@
     },
     {
       "path": "tests/integration/openshell-plugin-install-real.test.ts",
-      "expectedTests": ["OpenShell Agent workflow installs and retains selected Codex plugins"]
+      "expectedTests": ["OpenShell Agent workflow installs and retains selected Codex plugins"],
+      "requiredEnv": [
+        "CODEX_ACCESS_TOKEN",
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ]
+    },
+    {
+      "path": "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
+      "expectedTests": [
+        "bootstrap reconciles OpenShell gateways and Workspaces before any Agent, then runs Agents in both Namespaces"
+      ],
+      "requiredEnv": [
+        "CODEX_ACCESS_TOKEN",
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ],
+      "env": {
+        "OCC_TEST_NAMESPACE_OPENSHELL_REAL": "1",
+        "OCC_TEST_OPENSHELL_HARNESS": "openclaw"
+      }
+    },
+    {
+      "path": "tests/integration/openshell-git-retention-real.test.ts",
+      "expectedTests": [
+        "OpenShell standing Git remains available when a controller-only upgrade refuses worker replacement",
+        "OpenShell retains its runtime after Git expiry and worker restart",
+        "OpenShell isolates Git withdrawal before worker replacement and retains denial afterward"
+      ],
+      "requiredEnv": ["CODEX_ACCESS_TOKEN"]
+    },
+    {
+      "path": "tests/integration/openshell-git-finite-removal-real.test.ts",
+      "expectedTests": [
+        "OpenShell retains a finite Agent after repository removal until model authority is withdrawn"
+      ],
+      "requiredEnv": ["CODEX_ACCESS_TOKEN"]
     }
   ],
+  "focusedEnv": ["OCC_TEST_OPENSHELL_HARNESS", "OCC_TEST_OPENSHELL_MODEL_BASE_URL"],
   "optionalEnv": [
     "OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE",
-    "OCC_TEST_CODEX_INSTALL_PLUGIN_ID"
+    "OCC_TEST_CODEX_INSTALL_PLUGIN_ID",
+    "OCC_TEST_BROWSER_EXECUTABLE",
+    "OCC_TEST_NATIVE_BROWSER_RECEIPT"
   ]
 }

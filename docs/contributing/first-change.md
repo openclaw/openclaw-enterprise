@@ -7,9 +7,10 @@ platform, see [Local development](local-development.md).
 
 ## 1. Prepare a checkout
 
-You need Git, Node.js 24.22.1 or newer, the pnpm
-version pinned in [`package.json`](../../package.json), and Go 1.27 as selected by
-[`go.mod`](../../go.mod). If you do not have a checkout yet:
+You need Git, a Node.js version supported by [`package.json`](../../package.json),
+its pinned pnpm version, the Bun version in [`.bun-version`](../../.bun-version),
+and the Go version in [`go.mod`](../../go.mod). The managed pre-push hook requires
+Bun to check formatting. If you do not have a checkout yet:
 
 ```sh
 git clone https://github.com/openclaw/openclaw-enterprise.git

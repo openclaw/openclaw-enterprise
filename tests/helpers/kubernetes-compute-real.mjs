@@ -2,30 +2,20 @@ import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import pg from "pg";
-import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
-import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
-import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
-import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
-import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import {
   assertProbeDenied,
   createKubernetesFixtureHarnessAuth,
   inlineProbeCommand,
   retryKubectlRead,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
-import { kubectlGetJson } from "../helpers/kubernetes-api-read.mjs";
-import { waitForResult } from "../helpers/wait-for.mjs";
+} from "../helpers/kubernetes-real.ts";
+import { kubectlGetJson } from "../helpers/kubernetes-api-read.ts";
+import { waitForResult } from "../helpers/wait-for.ts";
 
 export const execute = promisify(execFile);
 export const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
@@ -52,16 +42,18 @@ export const { kubernetesGatewayNamespaceName } =
 export const driverPath = "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 const configurationIds = new Map();
 export const probeSource = await readFile(
-  new URL("../fixtures/kubernetes/probe.mjs", import.meta.url),
+  new URL("../fixtures/kubernetes/probe.mts", import.meta.url),
   "utf8",
 );
 const harnessAuthentication = new Map();
 const sharedWorkspaceSize = "40Gi";
 
+/** @param {string} value */
 export function hash(value, length = 12) {
   return sha256Hex(value, length);
 }
 
+/** @param {...string} args */
 export async function kubectl(...args) {
   const answered = await kubectlGetJson({ kubeconfigPath, kubernetesContext }, args);
   if (answered !== undefined) {
@@ -78,10 +70,12 @@ export async function kubectl(...args) {
 // A get, or an exec that only reads, survives a dropped API server or kubelet
 // stream (finding 308: an exec into a Ready gateway Pod failed with
 // "error: EOF"). Commands that change state stay single-shot.
+/** @param {...string} args */
 export function kubectlRead(...args) {
   return retryKubectlRead(() => kubectl(...args));
 }
 
+/** @param {string} kind @param {string} name @param {string} [namespace] */
 export async function resource(kind, name, namespace) {
   const args = ["get", kind, name, "-o", "json"];
   if (namespace !== undefined) {
@@ -90,6 +84,7 @@ export async function resource(kind, name, namespace) {
   return JSON.parse(await kubectlRead(...args));
 }
 
+/** @param {string} kind @param {string} namespace */
 export async function resources(kind, namespace) {
   return JSON.parse(await kubectlRead("get", kind, "--namespace", namespace, "-o", "json")).items;
 }
@@ -98,6 +93,7 @@ function notFound(error) {
   return /NotFound|not found/i.test(error.stderr ?? error.message);
 }
 
+/** @param {string} kind @param {string} name @param {string} [namespace] */
 export async function missing(kind, name, namespace) {
   try {
     await resource(kind, name, namespace);
@@ -110,6 +106,12 @@ export async function missing(kind, name, namespace) {
   }
 }
 
+/**
+ * @template T
+ * @param {string | (() => string)} description
+ * @param {() => T | false | undefined | PromiseLike<T | false | undefined>} operation
+ * @returns {Promise<T>}
+ */
 export function waitFor(description, operation, timeoutMs = 120_000) {
   return waitForResult(description, operation, { timeoutMs, intervalMs: 500 });
 }
@@ -141,228 +143,10 @@ export async function waitForDeletedClaim(name, namespace) {
 // them, and each deletion waits out namespace-controller passes (5 s each, longer while Pods
 // terminate). local-path removes a deleted claim's volume directory with a helper Pod, maybe
 // after the file ends; lane cleanup removes whatever such volumes leave in the shared storage
-// (scripts/ci/cleanup.mjs), so no file waits for them.
+// (scripts/ci/cleanup.ts), so no file waits for them.
+/** @param {...string} names */
 export function deleteNamespaces(...names) {
   return kubectl("delete", "namespace", ...names, "--ignore-not-found=true", "--wait=false");
-}
-
-export function provisioningRequestBody({
-  modelSecretRef,
-  slackBotSecretRef,
-  authMethod = "api_key",
-}) {
-  const model = "codex/gpt-6-astra";
-  return {
-    requestId: `req_${randomUUID()}`,
-    name: `Kubernetes provisioned ${randomUUID().slice(0, 8)}`,
-    executionMode: "dedicated",
-    configuration: {
-      kind: "agent",
-      values: {
-        gateway: { controlUi: { enabled: false } },
-        agents: {
-          defaults: {
-            model,
-            models: { [model]: { agentRuntime: { id: "codex" } } },
-          },
-        },
-        channels: {
-          slack: {
-            enabled: true,
-            mode: "http",
-            botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-          },
-        },
-      },
-      secretBindings: {
-        SLACK_BOT_TOKEN: {
-          source: slackBotSecretRef,
-          delivery: { type: "env" },
-        },
-      },
-    },
-    harnessAuth: {
-      method: authMethod,
-      source: modelSecretRef,
-    },
-  };
-}
-
-function runtimeDrivers({ computeDriver, configurationDriver, secretDriver }) {
-  return {
-    installation: {
-      occ: { cluster: "kubernetes-agent-provisioning" },
-      logging: {},
-      backend: [],
-      drivers: {
-        iam: { id: "native-iam", implementation: "native", configuration: {} },
-        compute: {
-          id: computeDriver.id,
-          implementation: computeDriver.implementation,
-          configuration: {},
-        },
-        configuration: {
-          id: configurationDriver.id,
-          implementation: configurationDriver.implementation,
-          configuration: {},
-        },
-        secret: {
-          id: secretDriver.id,
-          implementation: secretDriver.implementation,
-          configuration: {},
-        },
-      },
-    },
-    computeDriver,
-    configurationDriver,
-    secretDriver,
-    createIAMDriver: (state) =>
-      new NativeIAMDriver(state, { id: "native-iam", implementation: "native" }),
-  };
-}
-
-async function privateBootstrapDirectory(context) {
-  const directory = await mkdtemp(join(tmpdir(), "openclaw-kubernetes-provisioning-bootstrap-"));
-  await chmod(directory, 0o700);
-  context.after(() => rm(directory, { recursive: true, force: true }));
-  return directory;
-}
-
-export async function createProvisioningApiFixture(
-  context,
-  computeDriver,
-  authentication,
-  { emit = () => {} } = {},
-) {
-  // Exercise real admission with Kubernetes Secrets; fixture credentials never reach Slack.
-  const originalFetch = globalThis.fetch;
-  context.mock.method(globalThis, "fetch", async (url, init) => {
-    if (String(url) === "https://slack.com/api/auth.test") {
-      assert.match(init.headers.authorization, /^Bearer xoxb-/);
-      return Response.json({ ok: true, bot_id: "B0123456789", team_id: "T0123456789" });
-    }
-    return originalFetch(url, init);
-  });
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
-  let workerPool;
-  const state = new PostgresPlatformState(pool);
-  const existingInstallation = await state.loadInstallation();
-  const authSecret = "kubernetes-integration-auth-secret-32-bytes";
-  const authBaseURL = "http://127.0.0.1";
-  const credentials = {
-    email: "admin-kubernetes-integration@example.test",
-    password: "kubernetes-integration-admin-password",
-  };
-  if (existingInstallation === undefined) {
-    await ensureDevelopmentBootstrap(context, {
-      databaseUrl,
-      directory: await privateBootstrapDirectory(context),
-      email: credentials.email,
-      password: credentials.password,
-      authSecret,
-      authBaseURL,
-      installationName: "OpenClaw Kubernetes integration",
-      environment: { PATH: process.env.PATH },
-    });
-  }
-  const bootstrapNamespaceIds = (await state.read((view) => view.namespaces.listNamespaces())).map(
-    ({ id }) => id,
-  );
-  const configurationDriver = new KubernetesConfigurationDriver(
-    { authentication },
-    { id: "configuration-kubernetes-provisioning" },
-  );
-  const secretDriver = new KubernetesSecretDriver(
-    { authentication },
-    { id: "secret-kubernetes-provisioning" },
-  );
-  let worker;
-  const drivers = {
-    ...runtimeDrivers({ computeDriver, configurationDriver, secretDriver }),
-    pluginDriver: new CodexPluginDriver(),
-  };
-  const app = await composePostgresDevelopment(
-    {
-      mode: "development",
-      host: "127.0.0.1",
-      databaseUrl,
-      authSecret,
-      authBaseURL,
-    },
-    drivers,
-  );
-  const session = await signInToControllerApp(app, credentials);
-  context.after(async () => {
-    await stopWorker();
-    await app.close?.();
-    if (workerPool !== undefined) {
-      await workerPool.end();
-      workerPool = undefined;
-    }
-    await pool.end();
-  });
-
-  async function request(method, path, body) {
-    const response = await app.inject({
-      method,
-      url: path,
-      headers: {
-        ...authenticatedHeaders(session),
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-        ...(method === "GET" ? {} : { origin: "http://127.0.0.1" }),
-        host: "127.0.0.1",
-      },
-      remoteAddress: "127.0.0.1",
-      ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
-    });
-    const text = response.body;
-    const payload = text.length === 0 ? undefined : JSON.parse(text);
-    return {
-      status: response.statusCode,
-      body: payload,
-      data: payload?.data,
-      error: payload?.error,
-    };
-  }
-
-  async function startWorker() {
-    assert.equal(worker, undefined, "the fixture worker is already running");
-    assert.equal(workerPool, undefined, "the fixture worker pool is already open");
-    workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
-    worker = createControllerWorker({
-      pool: workerPool,
-      drivers,
-      pollIntervalMs: 25,
-      leaseDurationMs: 30_000,
-      maxAttempts: 3,
-      emit,
-    });
-    await worker.start();
-  }
-
-  async function stopWorker() {
-    if (worker === undefined) {
-      return;
-    }
-    const current = worker;
-    worker = undefined;
-    workerPool = undefined;
-    await current.stop();
-  }
-
-  return {
-    bootstrapNamespaceIds,
-    async readWork(idempotencyKey) {
-      const result = await pool.query(
-        "SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
-        [idempotencyKey],
-      );
-      return result.rows[0];
-    },
-    request,
-    startWorker,
-    stopWorker,
-  };
 }
 
 export async function assertKubernetesFixtureAvailable() {
@@ -402,7 +186,7 @@ export function revision(driver, owner, agentId, number) {
     configurationIds.set(identity, configurationId);
   }
   const loggingLevel = number === 1 ? "info" : "debug";
-  return {
+  const candidate = {
     id: `rev_${randomUUID()}`,
     namespaceId: owner.id,
     agentId,
@@ -425,20 +209,31 @@ export function revision(driver, owner, agentId, number) {
     servicePrincipalId: `service-agent-${agentId}`,
     createdAt: new Date().toISOString(),
   };
+  candidate.harness.overrides = {};
+  candidate.harness.configuration = driver.resolveHarnessConfiguration(
+    candidate.harness,
+    candidate.harnessAuth,
+    candidate.configuration,
+  );
+  candidate.compute.admission = driver.admitRevision(candidate);
+  return candidate;
 }
 
 export function agentName(agentId) {
   return `agent-${hash(agentId)}`;
 }
 
+/** @param {string} agentId */
 export function gatewayName(agentId) {
   return `gateway-${hash(agentId)}`;
 }
 
+/** @param {string} agentId */
 export function harnessWorkspaceClaimName(agentId) {
   return `workspace-${hash(agentId)}`;
 }
 
+/** @param {{agentId: string, id: string}} candidate */
 export function revisionName(candidate) {
   return `${agentName(candidate.agentId)}-rev-${hash(candidate.id)}`;
 }
@@ -506,15 +301,75 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
             auth: {
               ...snapshot.configuration.gateway?.auth,
               mode: "trusted-proxy",
+              // Compute keeps explicit identities and grants; omission is machine-only.
+              // Admitting a human makes the Gateway require x-openclaw-scopes (finding 2183).
               trustedProxy: {
+                ...snapshot.configuration.gateway?.auth?.trustedProxy,
+                ...((snapshot.configuration.gateway?.auth?.trustedProxy?.allowUsers ?? []).some(
+                  (user) => user !== "occ-workspace-files",
+                )
+                  ? {
+                      requiredHeaders: [
+                        ...(snapshot.configuration.gateway?.auth?.trustedProxy?.requiredHeaders ??
+                          []),
+                        ...((
+                          snapshot.configuration.gateway?.auth?.trustedProxy?.requiredHeaders ?? []
+                        ).some((header) => header.toLowerCase() === "x-openclaw-scopes")
+                          ? []
+                          : ["x-openclaw-scopes"]),
+                      ],
+                    }
+                  : {}),
                 userHeader: "x-occ-identity",
-                allowUsers: ["occ-workspace-files"],
+                allowUsers: snapshot.configuration.gateway?.auth?.trustedProxy?.allowUsers ?? [
+                  "occ-workspace-files",
+                ],
               },
-              identityScopes: { "occ-workspace-files": ["operator.admin"] },
+              identityScopes: snapshot.configuration.gateway?.auth?.identityScopes ?? {
+                "occ-workspace-files": ["operator.admin"],
+              },
             },
           },
         };
   if (snapshot !== undefined) {
+    const provider = snapshot.harness.configuration.modelProvider;
+    if (snapshot.harness.id === "openclaw" && provider !== undefined) {
+      expectedNativeDocument.models = {
+        ...expectedNativeDocument.models,
+        providers: {
+          ...expectedNativeDocument.models?.providers,
+          openai: {
+            ...expectedNativeDocument.models?.providers?.openai,
+            api:
+              provider.protocol === "openai-responses" ? "openai-responses" : "openai-completions",
+            baseUrl: provider.baseUrl,
+          },
+        },
+      };
+    }
+    if (snapshot.harness.id === "codex" && provider !== undefined) {
+      // Saved API-key destinations select the explicit compatible provider in the Gateway;
+      // the paired Harness alone receives the credential and performs model requests.
+      const model = snapshot.configuration.agents.defaults.model;
+      assert.equal(typeof model, "string", "these cluster fixtures select one primary model");
+      assert.ok(model.startsWith("codex/"));
+      const id = model.slice("codex/".length);
+      const rendered = `codex/openai-compatible/${id}`;
+      expectedNativeDocument.agents.defaults.model = rendered;
+      const policies = expectedNativeDocument.agents.defaults.models;
+      if (policies !== undefined) {
+        expectedNativeDocument.agents.defaults.models = Object.fromEntries(
+          Object.entries(policies).map(([ref, policy]) => [ref === model ? rendered : ref, policy]),
+        );
+      }
+      expectedNativeDocument.models = {
+        ...expectedNativeDocument.models,
+        providers: {
+          ...expectedNativeDocument.models?.providers,
+          codex: { models: [{ id: `openai-compatible/${id}`, name: id }] },
+        },
+      };
+    }
     const document = JSON.stringify(snapshot.configuration);
     for (const metadata of [deployment.metadata, deployment.spec.template.metadata]) {
       assert.equal(metadata.annotations["openclaw.dev/configuration-id"], snapshot.configurationId);
@@ -726,8 +581,13 @@ export function fixtureComputeConfiguration(overrides = {}) {
   };
 }
 
+/**
+ * @param {Partial<import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions>} [overrides]
+ * @param {ConstructorParameters<typeof import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriver>[1]} [selection]
+ */
 export async function createDriver(overrides = {}, selection = {}) {
-  const { KubernetesComputeDriver, kubernetesNamespaceName } = await import(driverPath);
+  const { KubernetesComputeDriver, kubernetesNamespaceName } =
+    await import("../../apps/controller/src/drivers/compute/kubernetes/index.ts");
   return {
     driver: new KubernetesComputeDriver(fixtureComputeConfiguration(overrides), selection),
     kubernetesNamespaceName,
@@ -1033,6 +893,12 @@ export async function authorized(namespaceName, actor, verb, kind) {
   return output.trim() === "yes";
 }
 
+/**
+ * @param {import("./console-file-app.ts").CleanupRegistrar} context
+ * @param {string} installationId
+ * @param {string} platformNamespace
+ * @returns {Promise<{authentication: Extract<import("../../apps/controller/src/drivers/kubernetes/authentication.ts").KubernetesAuthentication, {mode: "kubeconfig"}>, account: string, tenantRole: string}>}
+ */
 export async function createScopedController(context, installationId, platformNamespace) {
   const identifier = hash(installationId);
   const account = "openclaw-controller";

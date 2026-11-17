@@ -47,6 +47,20 @@ const ALLOWED_FIELDS = new Set([
   "activationMs",
   "agentId",
   "attempt",
+  "attemptId",
+  "admissionCurrent",
+  "inBounds",
+  "stale",
+  "clockTolerance",
+  "stage",
+  "firstFailureStage",
+  "httpStatus",
+  "responseComplete",
+  "candidateIdentified",
+  "requestEndCalled",
+  "validationKind",
+  "validationCode",
+  "publication",
   "candidatePreparationReached",
   "cause",
   "cleanupCause",
@@ -147,7 +161,7 @@ export function createOccLogger(options: OccLoggerOptions): OccLogger {
 }
 
 function safeString(value: string): string | undefined {
-  if (!SAFE_STRING.test(value) || resemblesToken(value)) {
+  if (!SAFE_STRING.test(value) || resemblesCredential(value)) {
     return undefined;
   }
   return value;
@@ -251,6 +265,9 @@ function safeNumber(key: string, value: number): number | undefined {
   if (key === "durationMs") {
     return value >= 0 ? Math.round(value * 1000) / 1000 : undefined;
   }
+  if (key === "elapsedMs") {
+    return value >= 0 && value <= Number.MAX_SAFE_INTEGER ? value : undefined;
+  }
   if (!Number.isSafeInteger(value)) {
     return undefined;
   }
@@ -261,6 +278,29 @@ function safeNumber(key: string, value: number): number | undefined {
 }
 
 function safeScalar(key: string, value: unknown): string | number | boolean | undefined {
+  if (
+    [
+      "admissionCurrent",
+      "inBounds",
+      "stale",
+      "clockTolerance",
+      "responseComplete",
+      "candidateIdentified",
+      "requestEndCalled",
+    ].includes(key)
+  ) {
+    return typeof value === "boolean" ? value : undefined;
+  }
+  if (key === "httpStatus") {
+    return typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599
+      ? value
+      : undefined;
+  }
+  if (
+    ["stage", "firstFailureStage", "validationKind", "validationCode", "publication"].includes(key)
+  ) {
+    return safeCode(value);
+  }
   if (key === "stopYields") {
     return typeof value === "number" && value >= 0 ? safeNumber(key, value) : undefined;
   }
@@ -272,6 +312,9 @@ function safeScalar(key: string, value: unknown): string | number | boolean | un
   if (key === "validationCategory") {
     return value === "POLICY_SAFETY" ||
       value === "POLICY_MIDDLEWARE_VALIDATION" ||
+      value === "PVC_ADMISSION_LABELS" ||
+      value === "CLASS_ADMISSION_LABELS" ||
+      value === "RESOURCE_METADATA_FORBIDDEN" ||
       value === "UNKNOWN"
       ? value
       : undefined;

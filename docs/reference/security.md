@@ -128,7 +128,7 @@ runtime verification. Profile generation and CI use the same reviewed rules;
 host installation remains operator-owned.
 
 The optional profile is for cases where `RuntimeDefault` blocks the
-user-namespace `clone`, `unshare`, `mount`, and `pivot_root` calls used by Codex `0.163.0-alpha.2`
+user-namespace `clone`, `unshare`, `mount`, and `pivot_root` calls used by Codex `0.164.0`
 and bubblewrap. The profile is a syscall compatibility allowlist, not the
 filesystem or network boundary. Codex and bubblewrap continue to own runtime
 filesystem enforcement, and Kubernetes NetworkPolicies plus the configured
@@ -203,6 +203,9 @@ can interpolate chat text, keep the event name; other Codex warnings are dropped
 oversized, unclassified, unspecified-severity, and Codex stdout protocol records.
 Resource identity comes from protected Docker labels or Kubernetes Pod metadata;
 request, work, Namespace, Agent, and Agent revision IDs remain attributes.
+Local approved scalar strings reject recognized URL and connection-string credentials.
+The Collector omits recognized key or token shapes from diagnostic codes and cleanup
+cause codes while retaining ordinary uppercase codes and SQLSTATE.
 
 A Gateway startup failure (OpenClaw's `Gateway failed to start:` error, which has
 no subsystem) is promoted as `gateway.startup_failed`; its body keeps the message

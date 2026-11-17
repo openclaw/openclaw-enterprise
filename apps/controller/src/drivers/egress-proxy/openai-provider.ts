@@ -1,3 +1,8 @@
+import {
+  modelProviderBaseUrl,
+  savedModelProvider,
+  requireModelSourceDestination,
+} from "../compute/model-provider.ts";
 import type {
   CredentialProviderDefinition,
   EgressRequest,
@@ -6,9 +11,9 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
-import { validChatRequest, validResponsesRequest } from "./openai-responses.ts";
+import { validChatRequest, responsesRequestFailure } from "./openai-responses.ts";
 import { protectedResponseOutput, protectedResponsesStream } from "./openai-responses-stream.ts";
-import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
+import { parseUnambiguousJson } from "../repo/access/json-members.ts";
 
 const maximumResponseBytes = 4 * 1024 * 1024;
 
@@ -138,29 +143,43 @@ function protectedResponse(
   }
 }
 
+/** Exact identity shared with bundled composition's new-use admission policy. */
+export const openAiStaticProviderRef = Object.freeze({
+  id: "openai-static-https",
+  generation: 3,
+});
+
 /** Bounded inference with Harness-local tools and complete finite Responses SSE custody. */
-export const openAiStaticProvider: CredentialProviderDefinition =
-  Object.freeze<CredentialProviderDefinition>({
-    // Generation 1 could grant only one executable. Exact provider-generation
-    // matching prevents an upgrade or rollback from reinterpreting that grant.
-    ref: { id: "openai-static-https", generation: 2 },
+export function createOpenAiStaticProvider(): CredentialProviderDefinition {
+  return Object.freeze<CredentialProviderDefinition>({
+    // Generation 3 separates destination authorization from routing. Existing
+    // grants must not be reinterpreted under the shared provider contract.
+    ref: openAiStaticProviderRef,
     schemaVersion: 1,
     sourceType: {
       type: "openai",
-      config: [{ name: "base_url", required: false }],
+      config: [
+        {
+          name: "authorized_base_url",
+          required: false,
+          description: "Immutable destination authorization; must match the revision destination.",
+        },
+      ],
       secrets: [{ name: "api_key", required: true }],
       rotation: "external",
       harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
     },
     normalizeConfig(config) {
-      if (Object.keys(config).some((field) => field !== "base_url")) {
+      if (Object.keys(config).some((field) => field !== "authorized_base_url")) {
         throw new Error("Unsupported inference source configuration.");
       }
-      const baseUrl = normalizeOpenAiBaseUrl(config.base_url ?? "https://api.openai.com/v1");
+      const baseUrl = normalizeOpenAiBaseUrl(
+        config.authorized_base_url ?? "https://api.openai.com/v1",
+      );
       if (!baseUrl) {
         throw new Error("Unsupported inference source endpoint.");
       }
-      return { base_url: baseUrl };
+      return { authorized_base_url: baseUrl };
     },
     normalizeGrant(models) {
       if (models.length !== 1 || !models[0] || models[0].length > 256) {
@@ -168,8 +187,11 @@ export const openAiStaticProvider: CredentialProviderDefinition =
       }
       return immutableCopy({ kind: "inference", models, providerTools: "none" as const });
     },
-    routes(source, binding) {
-      const base = new URL(this.normalizeConfig(source.config).base_url!);
+    routes(source, binding, harnessConfiguration) {
+      this.normalizeConfig(source.config);
+      const modelProvider = savedModelProvider(harnessConfiguration);
+      requireModelSourceDestination(source.config, modelProvider);
+      const base = new URL(modelProviderBaseUrl(modelProvider));
       return ["responses", "chat/completions"].map((operation) =>
         immutableCopy({
           route: {
@@ -186,7 +208,7 @@ export const openAiStaticProvider: CredentialProviderDefinition =
         }),
       );
     },
-    classify(route, request) {
+    classify(route, request, refused) {
       let url: URL;
       try {
         url = new URL(request.url);
@@ -216,8 +238,16 @@ export const openAiStaticProvider: CredentialProviderDefinition =
       ) {
         return undefined;
       }
-      const valid = route.path.endsWith("/responses") ? validResponsesRequest : validChatRequest;
-      return valid(body) ? { kind: "inference", action: "generate", model: body.model } : undefined;
+      if (route.path.endsWith("/responses")) {
+        const rule = responsesRequestFailure(body);
+        if (rule !== undefined) {
+          refused?.(rule);
+          return undefined;
+        }
+      } else if (!validChatRequest(body)) {
+        return undefined;
+      }
+      return { kind: "inference", action: "generate", model: body.model };
     },
     inject(value) {
       if (value.length < 8 || value.length > 8192 || /[^\x21-\x7e]/.test(value)) {
@@ -245,3 +275,4 @@ export const openAiStaticProvider: CredentialProviderDefinition =
     protectResponse: (response, value, request, operation) =>
       value === undefined ? undefined : protectedResponse(response, value, request, operation),
   });
+}

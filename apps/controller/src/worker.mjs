@@ -5,10 +5,8 @@ import {
   PreparedGitHubAppKeyError,
   startPreparedGitHubGitOwner,
 } from "./backends/repository-credentials/prepared-git-owner.ts";
-import {
-  bindRepositoryGitTransport,
-  repositoryGitAuthority,
-} from "./composition/repository-credentials/transport.ts";
+import { bindRepositoryGitTransport } from "./composition/repository-credentials/transport.ts";
+import { repositoryGitAuthority } from "./composition/repository-credentials/custody-selection.ts";
 import {
   loadInstallationConfiguration,
   loadOperationalLoggingConfiguration,
@@ -18,6 +16,7 @@ import {
 import { PresetFileError } from "./composition/installation-presets.ts";
 import { createOccLogger, createWorkerLogEmitter, emitOccLogEvent } from "./logging.ts";
 import { createControllerWorker, workerDatabasePoolOptions } from "./worker.ts";
+import { closeWorkerComposition } from "./worker/shutdown.ts";
 import { workerEnvironmentSettings } from "./worker/timer-settings.ts";
 import { PostgresMetricsSnapshot } from "@openclaw-enterprise/occ";
 import { createOccMetrics } from "./metrics/index.ts";
@@ -25,8 +24,13 @@ import {
   startupDependencyFailure,
   startupConfigurationFailure,
   startupListenerFailure,
+  installationSettingFailureCode,
 } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
+import {
+  controlPlaneAuditDatabaseOptions,
+  controlPlaneAuditEnabled,
+} from "./composition/control-plane-audit.ts";
 
 function configuration() {
   const mode = process.env.NODE_ENV;
@@ -48,6 +52,10 @@ function configuration() {
   return {
     mode,
     databaseUrl,
+    controlPlaneAuditEnabled: controlPlaneAuditEnabled(
+      mode,
+      process.env.OCC_CONTROL_PLANE_AUDIT_ENABLED,
+    ),
     ...workerEnvironmentSettings(process.env),
   };
 }
@@ -75,19 +83,9 @@ function workerStartupFailureCode(error) {
   if (/PostgreSQL connection URL/.test(message)) {
     return "DATABASE_CONFIGURATION_INVALID";
   }
-  if (
-    /observability\.url (?:IPv4 host must be four decimal octets|must not contain user info|must not contain a tab|must be an absolute HTTP)/.test(
-      message,
-    )
-  ) {
-    return "OBSERVABILITY_URL_INVALID";
-  }
-  if (
-    /(?:Gateway|Agent) image (?:must use an immutable SHA-256 digest|repository path must be lowercase|must be a container image reference Kubernetes can pull)/.test(
-      message,
-    )
-  ) {
-    return "RUNTIME_IMAGE_INVALID";
+  const settingCode = installationSettingFailureCode(message);
+  if (settingCode !== undefined) {
+    return settingCode;
   }
   if (/platform persistence repository|ECONNREFUSED|ECONNRESET|connect /i.test(message)) {
     return "PERSISTENCE_UNAVAILABLE";
@@ -181,7 +179,22 @@ try {
       await computeDriver.preflight();
     }
   }
-  pool = await createPostgresPool(databaseUrl, workerDatabasePoolOptions(databaseTimeoutMs));
+  const databasePoolOptions = workerDatabasePoolOptions(databaseTimeoutMs);
+  pool = await createPostgresPool(databaseUrl, {
+    ...databasePoolOptions,
+    ...(options.controlPlaneAuditEnabled
+      ? {
+          connectionTimeoutMillis: Math.min(
+            databasePoolOptions.connectionTimeoutMillis,
+            controlPlaneAuditDatabaseOptions.connectionTimeoutMillis,
+          ),
+          query_timeout: Math.min(
+            databasePoolOptions.query_timeout,
+            controlPlaneAuditDatabaseOptions.query_timeout,
+          ),
+        }
+      : {}),
+  });
   const repositoryOwner = drivers?.repositoryOwner;
   if (repositoryOwner?.controlSocket !== undefined) {
     receiptServer = await startRepositoryReceiptServer({
@@ -198,8 +211,8 @@ try {
       pool,
       registry: drivers.repositoryRegistry,
       ...repositoryGitAuthority(drivers),
-      report: (code, context) =>
-        emitOccLogEvent(logger, { event: "worker.error", code, ...context }),
+      report: (code, context, severity = "error") =>
+        emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
     });
     repositoryGitTransport = await bindRepositoryGitTransport(
       drivers,
@@ -253,7 +266,9 @@ try {
   preparedGitHub = drivers?.preparedGitHub;
   await preparedGitHub?.connect(pool);
   await worker.start();
-  preparedGitHub?.startWorker((code) => emitOccLogEvent(logger, { event: "worker.error", code }));
+  preparedGitHub?.startWorker((code, context, severity = "error") =>
+    emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
+  );
 
   let closing = false;
   async function shutdown() {
@@ -262,24 +277,15 @@ try {
     }
     closing = true;
     try {
-      if (readinessPath !== undefined) {
-        await unlink(readinessPath).catch(() => {});
-      }
-      try {
-        try {
-          try {
-            await repositoryGitTransport?.close();
-          } finally {
-            await preparedRepositoryGit?.close();
-          }
-          await receiptServer?.close();
-        } finally {
-          await closeMetrics();
-        }
-      } finally {
-        await preparedGitHub?.close();
-        await worker.stop();
-      }
+      await closeWorkerComposition({
+        readinessPath,
+        repositoryGitTransport,
+        preparedRepositoryGit,
+        receiptServer,
+        closeMetrics,
+        preparedGitHub,
+        worker,
+      });
       process.exitCode = 0;
     } catch {
       emitOccLogEvent(logger, { event: "worker.error", code: "SHUTDOWN_FAILED" });

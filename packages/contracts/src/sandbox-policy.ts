@@ -51,6 +51,13 @@ export interface SandboxPolicySnapshot {
   readonly additions: readonly SandboxNetworkGrant[];
 }
 
+/** Explicit, nonsecret acknowledgement; only its validated snapshot is persisted. */
+export interface ProtectedCodexArtifactPolicyAdmission {
+  readonly purpose: "protected-codex-artifacts";
+  readonly declaredRuleNames: readonly string[];
+  readonly snapshot: SandboxPolicySnapshot;
+}
+
 export interface SandboxPolicyApplication {
   readonly id: string;
   readonly revisionId: string;

@@ -1,8 +1,0 @@
-export declare const WORKSPACE_DEFAULTS_VERSION: "2026.10.8";
-export declare const WORKSPACE_DEFAULTS_ID: string;
-export declare const WORKSPACE_DEFAULTS: Readonly<{
-  "AGENTS.md": string;
-  "SOUL.md": string;
-  "IDENTITY.md": string;
-  "USER.md": string;
-}>;

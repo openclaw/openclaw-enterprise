@@ -1,5 +1,4 @@
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
-import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { randomUUID, createHash } from "node:crypto";
 import {
@@ -8,12 +7,15 @@ import {
 } from "./postgres-worker-revision-fixture.mjs";
 import { databaseUrl } from "./postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "./postgres-agent-app.mjs";
-import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
+import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.ts";
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
-import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import type { CredentialGatewayDriver } from "../../packages/contracts/src/index.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
+import type {
+  CredentialGatewayDriver,
+  PluginRevisionState,
+} from "../../packages/contracts/src/index.ts";
 import type { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import type { Pool } from "pg";
 import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
@@ -75,7 +77,7 @@ export async function setupStandingWorkerDatabase(
 export async function setupStandingWorkerAuthority(
   t: TestContext,
   f: Awaited<ReturnType<typeof setupStandingWorkerDatabase>>,
-  options: { nonModelSources?: number } = {},
+  { nonModelSources, plugins }: { nonModelSources?: number; plugins?: PluginRevisionState } = {},
 ) {
   const credentials = await startRegistryCredentialServiceFixture(t, {
     namespaceId: f.namespace.id,
@@ -84,14 +86,17 @@ export async function setupStandingWorkerAuthority(
     limits: { exchangeMs: 5_000, credentialMarginMs: 1_000 },
     gateway: { listen: "127.0.0.1:0" },
   });
-  assert.ok(credentials);
-  const registry = structuredClone(credentials.registry);
-  registry.allowStandingApprovals = true;
-  for (const r of registry.repositories) {
-    for (const p of r.namespaces) {
-      p.allowStandingApproval = true;
-    }
-  }
+  const registry = {
+    ...credentials.registry,
+    allowStandingApprovals: true as const,
+    repositories: credentials.registry.repositories.map((repository) => ({
+      ...repository,
+      namespaces: repository.namespaces.map((policy) => ({
+        ...policy,
+        allowStandingApproval: true as const,
+      })),
+    })),
+  };
   const backend = {
     id: credentials.backendId,
     client: new UnixRepositoryCredentialControlClient({
@@ -99,7 +104,11 @@ export async function setupStandingWorkerAuthority(
     }),
     drivers: { repo: "repository-credentials" },
   };
-  const driver = new GitHubRepositoryPolicy(backend, registry, { sessionDurationSeconds: 90 });
+  const driver = new GitHubRepositoryPolicy(
+    { driverId: backend.drivers.repo, backendId: backend.id },
+    registry,
+    { sessionDurationSeconds: 90 },
+  );
   const sender = new GitHubNativeRepositorySender(backend, { publicCa: credentials.tls.ca });
   const receipt = await startRepositoryReceiptServer({
     state: f.state,
@@ -109,7 +118,7 @@ export async function setupStandingWorkerAuthority(
     backendId: credentials.backendId,
   });
   t.after(() => receipt.close());
-  const owner = await f.agent("standing-runtime", { auth: "credential_source", ...options });
+  const owner = await f.agent("standing-runtime", { auth: "credential_source", nonModelSources });
   const modelSourceId =
     owner.harnessAuth?.method === "credential_source" ? owner.harnessAuth.sourceId : undefined;
   const [selected] = driver.resolve({
@@ -142,6 +151,7 @@ export async function setupStandingWorkerAuthority(
   );
   const originalBoundary = Date.now() + 90_000;
   const revisionOptions = {
+    ...(plugins === undefined ? {} : { plugins }),
     actorId: f.actor.id,
     repositoryCredentials: {
       driver: { id: driver.id, implementation: driver.implementation },

@@ -1,0 +1,43 @@
+import type { TestContext } from "node:test";
+
+import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
+import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+
+type RuntimeAuthFixtureOptions = NonNullable<Parameters<typeof createConsoleAppFixture>[1]> & {
+  computeDriver?: never;
+  state?: never;
+  agentGatewayManagedMode?: never;
+};
+
+export async function createRuntimeAuthFixture(
+  t: TestContext,
+  namespaceName: string,
+  fixtureOptions: RuntimeAuthFixtureOptions = {},
+) {
+  const computeDriver = new SshComputeDriver({
+    ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
+    hosts: { runtime: { address: "127.0.0.1", user: "root" } },
+    runtime: {
+      nodePath: "/usr/bin/node",
+      openclawPath: "/opt/openclaw/index.js",
+      user: "openclaw",
+      root: "/var/lib/ssh-runtime-test",
+    },
+    network: { gatewayPortRange: { start: 18800, end: 18899 } },
+  });
+  const state = new InMemoryPlatformState();
+  // SSH does not support managed Gateway deployments; these cases exercise runtime auth and lifecycle.
+  const fixture = await createConsoleAppFixture(t, {
+    ...fixtureOptions,
+    computeDriver,
+    state,
+    agentGatewayManagedMode: false,
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(namespaceName);
+  await state.transact((unit) =>
+    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  return { fixture, namespace, state };
+}

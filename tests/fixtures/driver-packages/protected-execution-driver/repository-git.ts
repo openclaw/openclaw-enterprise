@@ -21,8 +21,10 @@ import type {
   CredentialProxyExchange,
   AcceptedEgressAssociation,
   CapturedEgressUse,
+  PreparedGitHubPullScope,
+  PreparedGitHubUseRequest,
   RepositoryGitMaterialVersion,
-} from "../../../../packages/contracts/src/index.ts";
+} from "@openclaw-enterprise/contracts";
 
 // This external adapter supports one credential-free metadata operation beside Git.
 // Its platform grant is still admitted and authorized by OCC; the peer enforces exact routes.
@@ -198,6 +200,37 @@ export function validateConfiguration(config: Readonly<Config>): readonly ErrorD
       },
     ];
   }
+}
+
+/** Ref names of a receive-pack command list, or undefined for anything else. */
+function pushedRefs(body: Buffer): string[] | undefined {
+  const refs: string[] = [];
+  for (let at = 0; at + 4 <= body.length;) {
+    const length = body.subarray(at, at + 4).toString("latin1");
+    if (!/^[0-9a-f]{4}$/.test(length)) {
+      return undefined;
+    }
+    const size = Number.parseInt(length, 16);
+    if (size === 0) {
+      return refs;
+    }
+    if (size < 4 || at + size > body.length) {
+      return undefined;
+    }
+    const line = body
+      .subarray(at + 4, at + size)
+      .toString("latin1")
+      .split("\0")[0]!
+      .replace(/\n$/, "");
+    const command =
+      /^(?:[0-9a-f]{40}|[0-9a-f]{64}) (?:[0-9a-f]{40}|[0-9a-f]{64}) (refs\/\S+)$/.exec(line);
+    if (!command) {
+      return undefined;
+    }
+    refs.push(command[1]!);
+    at += size;
+  }
+  return undefined;
 }
 
 // The test has the workload's credential-free endpoint and can drive ordinary installer work.
@@ -612,7 +645,8 @@ export function createDriver(options: {
             return;
           }
           const broad = "scope" in m;
-          const api = broad && req.headers.host === apiUrl.host;
+          // Repository material also serves one route on the API host: a draft pull request.
+          const api = req.headers.host === apiUrl.host;
           const path = req.url ?? "";
           const method = req.method;
           const marker = broad ? (api ? "Bearer " + gitMarker : basic(gitMarker)) : clientSecret;
@@ -631,10 +665,53 @@ export function createDriver(options: {
           }
           // Interpret the actual raw target without resolving or normalizing it. Git and API
           // arrive with different Host values and have separate fixed, TLS-verified origins.
-          let operation: InstallationOperation;
+          const body = await buffer(req);
+          let operation: InstallationOperation | "create-draft-pull";
           let contentType: string | undefined;
           let gitProtocol: string | undefined;
-          if (api) {
+          // Repository material: OCC decides the ref and the draft scope this sender reports.
+          let pushRef = broad ? undefined : m.pushRef;
+          let pull: PreparedGitHubPullScope | undefined;
+          if (api && !broad) {
+            let fields: Record<string, unknown> = {};
+            try {
+              const parsed: unknown = JSON.parse(body.toString("utf8"));
+              if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                fields = parsed as typeof fields;
+              }
+            } catch {
+              // Refused below.
+            }
+            // OCE's own draft path accepts only these fields, and only a draft; anything else is
+            // refused here, before OCC spends the allowance or the provider sees it.
+            const { title, head, base, body: text = "", draft } = fields;
+            if (
+              method !== "POST" ||
+              path !== "/repos/" + m.repository + "/pulls" ||
+              req.headers["content-type"] !== "application/json" ||
+              Object.keys(fields).some(
+                (key) => !["title", "head", "base", "body", "draft"].includes(key),
+              ) ||
+              draft !== true ||
+              typeof title !== "string" ||
+              !title.trim() ||
+              typeof text !== "string" ||
+              typeof head !== "string" ||
+              typeof base !== "string"
+            ) {
+              res.writeHead(403).end();
+              return;
+            }
+            operation = "create-draft-pull";
+            contentType = "application/json";
+            pull = {
+              operationId: randomUUID(),
+              apiOrigin: m.apiOrigin,
+              repository: m.repository,
+              head,
+              base,
+            };
+          } else if (api) {
             if (method === "POST" && path === "/graphql") {
               operation = "github-graphql";
             } else if (
@@ -656,7 +733,7 @@ export function createDriver(options: {
             if (
               !match ||
               method !== (discovery ? "GET" : "POST") ||
-              (!broad && (m.repository !== repository || service !== "upload"))
+              (!broad && m.repository !== repository)
             ) {
               res.writeHead(403).end();
               return;
@@ -678,9 +755,17 @@ export function createDriver(options: {
             if (broad && req.headers["git-protocol"] === "version=2") {
               gitProtocol = "version=2";
             }
+            if (!broad && operation === "receive-pack") {
+              // Forward exactly one ref update and report it; OCC compares it with the grant.
+              const refs = pushedRefs(body);
+              if (refs?.length !== 1) {
+                res.writeHead(403).end();
+                return;
+              }
+              pushRef = refs[0];
+            }
           }
-          const upstreamOrigin = api ? installationApiOrigin! : origin;
-          const body = await buffer(req);
+          const upstreamOrigin = api ? (broad ? installationApiOrigin! : m.apiOrigin) : origin;
           const { sessionId, grantId, providerInstanceId, preparationAttemptId, materialVersion } =
             m;
           const requestDigestSha256 = hash(
@@ -722,13 +807,14 @@ export function createDriver(options: {
             return authorize();
           };
           const decision = broad
-            ? await allowInstallation(operation, m.installationId)
-            : await host.authorize(
+            ? await allowInstallation(operation as InstallationOperation, m.installationId)
+            : await (authorization ? host.online : host).authorize(
                 {
                   ...q,
-                  operation: operation as "upload-pack" | "advertise-upload-pack",
+                  operation: operation as PreparedGitHubUseRequest["operation"],
                   repositoryId: m.repositoryId,
-                  pushRef: m.pushRef,
+                  pushRef: pushRef!,
+                  ...(pull && { pull }),
                 },
                 confirmation,
                 signal(),

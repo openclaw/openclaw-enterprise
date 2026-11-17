@@ -65,8 +65,8 @@ Use [enterprise-testing](../enterprise-testing/SKILL.md) to choose the smallest
 real proof. Run commands from the repository root, for example:
 
 ```sh
-node --test tests/conformance/contracts.test.mjs
-node --test tests/integration/console-api.test.mjs
+node --test tests/conformance/contracts.test.ts
+node --test tests/integration/console-api.test.ts
 git diff --check
 ```
 
