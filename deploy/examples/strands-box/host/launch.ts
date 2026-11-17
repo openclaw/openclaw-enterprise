@@ -51,12 +51,7 @@ import {
   workspaceVerifierPolicy,
   workspaceVerifierTool,
 } from "./workspace-verifier.ts";
-import {
-  ensureWorkspaceCodex,
-  execCoversGit,
-  stockGitPolicy,
-  stockGitTools,
-} from "./stock-git.ts";
+import { ensureWorkspaceCodex, execCoversGit, stockGitPolicy, stockGitTools } from "./stock-git.ts";
 import {
   nativeHookPolicy,
   nativeHookProbe,

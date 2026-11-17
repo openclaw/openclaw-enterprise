@@ -858,67 +858,76 @@ test(
   },
 );
 
-test(
-  "the agent's exec list never covers git or gh (finding 3325)",
-  { skip: unsupported },
-  () => {
-    const root = temporary();
-    const runtimeDir = join(root, "run");
-    const workspace = join(root, "work");
-    const agentBuildDir = join(root, "compiled");
-    for (const directory of [runtimeDir, workspace, agentBuildDir]) {
-      mkdirSync(directory, { mode: 0o700 });
-    }
-    for (const file of ["box-agent.js", "transport.js", "diagnostics.js"]) {
-      writeFileSync(join(agentBuildDir, file), "", { mode: 0o600 });
-    }
-    const node = realpathSync(process.execPath);
-    const config = (exec: string[]) =>
-      hostConfig({
-        boxBin: node,
-        nodeBin: node,
-        codexBin: node,
-        agentBuildDir,
-        runtimeDir,
-        workspace,
-        read: [],
-        exec,
-        linuxPreview: true,
+test("the agent's exec list never covers git or gh (finding 3325)", { skip: unsupported }, () => {
+  const root = temporary();
+  const runtimeDir = join(root, "run");
+  const workspace = join(root, "work");
+  const agentBuildDir = join(root, "compiled");
+  for (const directory of [runtimeDir, workspace, agentBuildDir]) {
+    mkdirSync(directory, { mode: 0o700 });
+  }
+  for (const file of ["box-agent.js", "transport.js", "diagnostics.js"]) {
+    writeFileSync(join(agentBuildDir, file), "", { mode: 0o600 });
+  }
+  const node = realpathSync(process.execPath);
+  const config = (exec: string[]) =>
+    hostConfig({
+      boxBin: node,
+      nodeBin: node,
+      codexBin: node,
+      agentBuildDir,
+      runtimeDir,
+      workspace,
+      read: [],
+      exec,
+      linuxPreview: true,
+    });
+  try {
+    // Codex runs git itself in the workspace root, in the agent's boundary: git, its helpers
+    // and gh are refused there, as a file or under any directory grant.
+    for (const grant of [
+      "/usr/bin/git",
+      "/bin/git",
+      "/usr/local/bin/git",
+      "/usr/lib/git-core",
+      "/usr/libexec/git-core",
+      "/usr/lib/git-core/git-remote-https",
+      "/usr/local/bin/gh",
+      "/usr/bin/gh",
+      "/usr/bin",
+      "/usr/local/sbin",
+      "/usr",
+      "/",
+    ]) {
+      assert.throws(() => config([node, grant]), {
+        message: "phase=exec-grants reason=agent_exec_covers_git",
       });
-    try {
-      // Codex runs git itself in the workspace root, in the agent's boundary: git, its helpers
-      // and gh are refused there, as a file or under any directory grant.
-      for (const grant of [
-        "/usr/bin/git",
-        "/bin/git",
-        "/usr/local/bin/git",
-        "/usr/lib/git-core",
-        "/usr/libexec/git-core",
-        "/usr/lib/git-core/git-remote-https",
-        "/usr/local/bin/gh",
-        "/usr/bin/gh",
-        "/usr/bin",
-        "/usr/local/sbin",
-        "/usr",
-        "/",
-      ]) {
-        assert.throws(() => config([node, grant]), {
-          message: "phase=exec-grants reason=agent_exec_covers_git",
-        });
-      }
-      // Other programs and directories stay grantable (they must exist on the host).
-      const tools = join(root, "tools");
-      mkdirSync(tools, { mode: 0o700 });
-      writeFileSync(join(tools, "gitk"), "", { mode: 0o700 });
-      assert.deepEqual(config([node, tools, join(tools, "gitk")]).exec, [node, tools, join(tools, "gitk")]);
-      // A directory on the agent's own search path is refused at start, where that path is known.
-      assert.equal(execCoversGit(["/opt/tools"], ["/opt/tools", "/usr/bin"]), true);
-      assert.equal(execCoversGit(["/opt/tools/node"], ["/opt/tools"]), false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
     }
-  },
-);
+    // Other programs and directories stay grantable (they must exist on the host).
+    const tools = join(root, "tools");
+    mkdirSync(tools, { mode: 0o700 });
+    writeFileSync(join(tools, "gitk"), "", { mode: 0o700 });
+    assert.deepEqual(config([node, tools, join(tools, "gitk")]).exec, [
+      node,
+      tools,
+      join(tools, "gitk"),
+    ]);
+    // A directory on the agent's own search path is refused at start, where that path is known.
+    assert.equal(execCoversGit(["/opt/tools"], ["/opt/tools", "/usr/bin"]), true);
+    assert.equal(execCoversGit(["/opt/tools/node"], ["/opt/tools"]), false);
+    // A git on the search path that links to a file elsewhere: that file's directory is refused.
+    const linked = join(root, "linked");
+    const real = join(root, "real");
+    mkdirSync(linked, { mode: 0o700 });
+    mkdirSync(real, { mode: 0o700 });
+    writeFileSync(join(real, "git-build"), "", { mode: 0o700 });
+    symlinkSync(join(real, "git-build"), join(linked, "git"));
+    assert.equal(execCoversGit([real], [linked]), true);
+    assert.equal(execCoversGit([real], []), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("selected package implementation is canonical and bound separately from resource identifiers", () => {
   const owner = {
