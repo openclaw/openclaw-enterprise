@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { buffer } from "node:stream/consumers";
 import test, { type TestContext } from "node:test";
 import type {
+  GitHubRequestView,
   PreparedGitHubInstallationUseRequest,
   PreparedGitHubRepositoryUseRequest,
   PreparedGitHubUseRequest,
@@ -17,6 +18,7 @@ import {
   type InstallationRuntimeDrivers,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
+import { createRepositoryGitRequests } from "../../apps/controller/src/drivers/repo/github/access/protected-requests.ts";
 import type { PostgresPool } from "../../packages/occ/src/index.ts";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
@@ -37,7 +39,7 @@ type Use =
   | PreparedGitHubInstallationUseRequest
   | PreparedGitHubRepositoryUseRequest;
 type Request = {
-  host: "github.com" | "api.github.com";
+  host: "github.com" | "api.github.com" | "gist.github.com";
   method: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
   query?: string;
@@ -124,7 +126,16 @@ const draft = (base = "main"): Request => ({
   }),
 });
 
-/** Expected decision per profile; each list runs in order against one fresh authority. */
+const gzipPush = (body: Buffer): Request => {
+  const request = pack("example/project", body);
+  return { ...request, headers: [...request.headers!, ["content-encoding", "gzip"]] };
+};
+
+/**
+ * Expected decision per profile; each list runs in order against one fresh authority.
+ * "allow", or the Agent's reason code and OCE's refusal ("code:refusal"). Both sides must also
+ * name the same operation.
+ */
 const journeys: Record<Profile, [string, Request, string][]> = {
   repository_git: [
     ["fetch discovery", discovery("example/project", "git-upload-pack"), "allow"],
@@ -134,23 +145,54 @@ const journeys: Record<Profile, [string, Request, string][]> = {
     [
       "push to another ref",
       pack("example/project", push("refs/heads/main")),
-      "request_not_allowed",
+      "request_not_allowed:ref_not_allowed",
     ],
     [
       "push that also updates another ref",
       pack("example/project", push(pushRef, "refs/heads/main")),
-      "request_not_allowed",
+      "request_not_allowed:ref_not_allowed",
     ],
-    ["push to a tag", pack("example/project", push("refs/tags/v1")), "request_not_allowed"],
+    [
+      "push to a tag",
+      pack("example/project", push("refs/tags/v1")),
+      "request_not_allowed:ref_not_allowed",
+    ],
     [
       "fetch from another repository",
       discovery("example/other", "git-upload-pack"),
-      "request_not_allowed",
+      "request_not_allowed:route_unsupported",
     ],
-    ["REST outside the grant", api("GET", "/repos/example/project"), "request_not_allowed"],
-    ["draft with another base", draft("release"), "request_not_allowed"],
+    [
+      "push to another host",
+      { ...pack("example/project", push(pushRef)), host: "api.github.com" },
+      "request_not_allowed:origin_mismatch",
+    ],
+    [
+      "discovery with a body",
+      { ...discovery("example/project", "git-upload-pack"), body: Buffer.from("0000") },
+      "request_not_allowed:discovery_body",
+    ],
+    ["empty push", pack("example/project", Buffer.alloc(0)), "request_not_allowed:body_empty"],
+    [
+      "fetch over 1 MiB",
+      pack("example/project", Buffer.concat([fetchBody, Buffer.alloc(1024 * 1024)]), "upload"),
+      "request_not_allowed:body_too_large",
+    ],
+    ["compressed push", gzipPush(push(pushRef)), "request_not_allowed:encoding_unsupported"],
+    // A repository grant admits only its draft create on the API.
+    [
+      "REST outside the grant",
+      api("GET", "/repos/example/project"),
+      "request_not_allowed:draft_rejected",
+    ],
+    ["draft with another base", draft("release"), "request_not_allowed:draft_rejected"],
+    [
+      "pull request that is not a draft",
+      { ...draft(), body: json({ ...JSON.parse(draft().body!.toString()), draft: false }) },
+      "request_not_allowed:draft_rejected",
+    ],
     ["draft create", draft(), "allow"],
-    ["second draft create", draft(), "draft_already_opened"],
+    ["second draft create", draft(), "draft_already_opened:draft_already_opened"],
   ],
   github_repository: [
     ["fetch discovery", discovery("example/project", "git-upload-pack"), "allow"],
@@ -158,7 +200,12 @@ const journeys: Record<Profile, [string, Request, string][]> = {
     [
       "fetch from another repository",
       discovery("example/other", "git-upload-pack"),
-      "request_not_allowed",
+      "request_not_allowed:route_unsupported",
+    ],
+    [
+      "fetch from another host",
+      { ...discovery("example/project", "git-upload-pack"), host: "gist.github.com" },
+      "request_not_allowed:origin_mismatch",
     ],
     ["gh auth status discovery", api("GET", "/"), "allow"],
     ["gh api repository read", api("GET", "/repos/example/project"), "allow"],
@@ -188,13 +235,17 @@ const journeys: Record<Profile, [string, Request, string][]> = {
       api("POST", "/graphql", {
         query: 'query { repository(owner: "example", name: "project") { tempCloneToken } }',
       }),
-      "request_not_allowed",
+      "request_not_allowed:route_unsupported",
     ],
-    ["REST on another repository", api("GET", "/repos/example/other"), "request_not_allowed"],
+    [
+      "REST on another repository",
+      api("GET", "/repos/example/other"),
+      "request_not_allowed:route_unsupported",
+    ],
     [
       "deploy key creation",
       api("POST", "/repos/example/project/keys", { title: "k", key: "ssh-ed25519 AAAA" }),
-      "request_not_allowed",
+      "request_not_allowed:route_unsupported",
     ],
   ],
   github_installation: [
@@ -210,7 +261,19 @@ const journeys: Record<Profile, [string, Request, string][]> = {
           ["content-type", "application/json; charset=utf-8"],
         ],
       },
-      "request_not_allowed",
+      "request_not_allowed:route_unsupported",
+    ],
+    [
+      "API body over 64 KiB",
+      {
+        ...api("POST", "/repos/example/other/issues", { title: "t", body: "x".repeat(65536) }),
+        headers: [
+          ...gh.filter(([name]) => name !== "time-zone"),
+          ["content-type", "application/json"],
+        ],
+      },
+      // The installation API's size bound refuses the route, not the body.
+      "request_not_allowed:route_unsupported",
     ],
   ],
 };
@@ -303,15 +366,21 @@ function modelledAuthority(profile: Profile) {
   return { state, authority, binding, online: decide("allow") };
 }
 
+/** One side's decision: "allow" or "reasonCode:refusal", and the operation it named. */
+type Decided = { outcome: string; operation?: string };
+
 async function openShellRoute(t: TestContext, profile: Profile) {
   const owner = modelledAuthority(profile);
+  const denials: { reason: string; reasonCode?: string; operation?: string }[] = [];
   const { client, keys } = await openShellOnlineGitWire(t, {
     budgetMs: 3000,
     lookupBinding: async () => owner.binding,
     authorizeOnlineRequest: owner.online,
+    onDeny: (denial: (typeof denials)[number]) => denials.push(denial),
   });
   const bearer = token(keys, "supervisor", owner.binding.sandboxId);
-  const decide = async (q: Request) => {
+  const decide = async (q: Request): Promise<Decided> => {
+    const [denied, used] = [denials.length, owner.state.uses.length];
     const result = await invoke(
       client,
       "EvaluateHttpRequest",
@@ -337,7 +406,19 @@ async function openShellRoute(t: TestContext, profile: Profile) {
       },
       bearer,
     );
-    return result.decision === 1 ? "allow" : (result.reason_code ?? "deny");
+    if (result.decision === 1) {
+      assert.equal(denials.length, denied);
+      assert.equal(owner.state.uses.length, used + 1);
+      return { outcome: "allow", operation: owner.state.uses.at(-1)!.operation };
+    }
+    // The hook journals every refusal it decides; the wire layer adds none of its own here.
+    assert.equal(denials.length, denied + 1, "OpenShell journals the refusal");
+    const { reason, reasonCode, operation } = denials.at(-1)!;
+    assert.equal(result.reason_code, reasonCode);
+    return {
+      outcome: (reasonCode ?? "deny") + ":" + reason,
+      ...(operation === undefined ? {} : { operation }),
+    };
   };
   return { owner, decide };
 }
@@ -415,8 +496,9 @@ async function installedInjector(t: TestContext, profile: Profile) {
   assert.equal(injector.bound, 1);
   assert.equal(injector.requestsSupplied, true);
   injector.route = route;
-  const decide = async (q: Request) => {
+  const decide = async (q: Request): Promise<Decided> => {
     const before = upstream.length;
+    const decided = injector.decisions.length;
     const { status, body } = await new Promise<{ status: number; body: Buffer }>(
       (resolve, reject) => {
         httpsRequest(
@@ -425,11 +507,13 @@ async function installedInjector(t: TestContext, profile: Profile) {
             method: q.method,
             ca: tls.ca,
             agent: false,
-            // Raw pairs keep a repeated name repeated, as a client may send it.
+            // Raw pairs keep a repeated name repeated, as a client may send it. A GET body
+            // needs its length, or the client sends it unframed.
             headers: [
               ["host", q.host],
               ["authorization", "Bearer " + injector.marker],
               ...(q.headers ?? []),
+              ...(q.body && q.method === "GET" ? [["content-length", String(q.body.length)]] : []),
             ].flat(),
           },
           (response) =>
@@ -442,10 +526,19 @@ async function installedInjector(t: TestContext, profile: Profile) {
           .end(q.body);
       },
     );
+    assert.equal(injector.decisions.length, decided + 1, "the injector asked OCE once");
+    const decision = injector.decisions.at(-1) as {
+      kind: string;
+      refusal?: string;
+      reasonCode?: string;
+      operation?: string;
+    };
+    const named = decision.operation === undefined ? {} : { operation: decision.operation };
     if (status === 403) {
       assert.equal(upstream.length, before, "a refused request never reaches GitHub");
       const { reason_code } = JSON.parse(body.toString()) as { reason_code: string };
-      return reason_code === "denied" ? "deny" : reason_code;
+      assert.equal(reason_code, decision.reasonCode ?? "denied");
+      return { outcome: (decision.reasonCode ?? "deny") + ":" + decision.refusal, ...named };
     }
     assert.ok(status === 200 || status === 201, `unexpected status ${status}`);
     const sent = upstream.at(-1)!;
@@ -458,7 +551,7 @@ async function installedInjector(t: TestContext, profile: Profile) {
         ? "Basic " + Buffer.from("x-access-token:" + secret).toString("base64")
         : "Bearer " + secret,
     );
-    return "allow";
+    return { outcome: "allow", ...named };
   };
   return { owner, decide, injector, upstream };
 }
@@ -468,8 +561,10 @@ for (const profile of Object.keys(journeys) as Profile[]) {
     const bundled = await openShellRoute(t, profile);
     const installed = await installedInjector(t, profile);
     for (const [name, request, expected] of journeys[profile]) {
-      assert.equal(await bundled.decide(request), expected, `OpenShell: ${name}`);
-      assert.equal(await installed.decide(request), expected, `installed: ${name}`);
+      const openShell = await bundled.decide(request);
+      assert.equal(openShell.outcome, expected, `OpenShell: ${name}`);
+      // The same refusal, reason code and operation, not only the Agent's reason code.
+      assert.deepEqual(await installed.decide(request), openShell, `installed: ${name}`);
     }
     // Both recorded the same operations, in the same order, for the same grant.
     const used = (uses: Use[]) =>
@@ -481,30 +576,408 @@ for (const profile of Object.keys(journeys) as Profile[]) {
     const next = journeys[profile][0]![1];
     bundled.owner.state.withdrawn = true;
     installed.owner.state.withdrawn = true;
-    assert.equal(await bundled.decide(next), "access_withdrawn");
-    assert.equal(await installed.decide(next), "access_withdrawn");
-    // An installed sender also reads material per request; withdrawn material is refused alike.
+    const withdrawn = await bundled.decide(next);
+    assert.equal(withdrawn.outcome, "access_withdrawn:session_closed");
+    assert.deepEqual(await installed.decide(next), withdrawn);
+    // An installed sender also reads material per request; withdrawn material is refused
+    // alike, before classification, so it names no operation.
     installed.owner.state.withdrawn = false;
     installed.owner.state.materialWithdrawn = true;
-    assert.equal(await installed.decide(next), "access_withdrawn");
-    assert.deepEqual(
-      (installed.injector.decisions.at(-1) as { refusal?: string }).refusal,
-      "session_closed",
-    );
+    assert.deepEqual(await installed.decide(next), { outcome: "access_withdrawn:session_closed" });
   });
 }
 
 test("the requests port refuses a request an injector must not forward", async (t) => {
+  const bundled = await openShellRoute(t, "repository_git");
   const installed = await installedInjector(t, "repository_git");
   const granted = pack("example/project", push(pushRef));
-  // Repeated, unknown or credential-shaped headers are refused, never interpreted.
+  // Repeated or unknown headers are refused, never interpreted, on both routes.
   for (const headers of [
     [...granted.headers!, ["user-agent", "git/2.55.0"]],
     [...granted.headers!, ["x-forwarded-for", "10.0.0.1"]],
-    [...granted.headers!, ["proxy-authorization", "Basic eA=="]],
   ] as [string, string][][]) {
-    assert.equal(await installed.decide({ ...granted, headers }), "request_not_allowed");
+    const openShell = await bundled.decide({ ...granted, headers });
+    assert.equal(openShell.outcome, "request_not_allowed:request_invalid");
+    assert.deepEqual(await installed.decide({ ...granted, headers }), openShell);
   }
-  assert.equal(await installed.decide(granted), "allow");
+  // A credential-shaped header never reaches OCE's classifier from the bundled supervisor, so
+  // only the installed side can send one; its view bounds refuse it.
+  assert.deepEqual(
+    await installed.decide({
+      ...granted,
+      headers: [...granted.headers!, ["proxy-authorization", "Basic eA=="]],
+    }),
+    { outcome: "request_not_allowed:request_invalid" },
+  );
+  assert.deepEqual(await installed.decide(granted), await bundled.decide(granted));
   assert.equal(installed.owner.state.uses.length, 1, "only the admitted request records a use");
+});
+
+/** The port's own guards against a scripted authority: no HTTP, no package, one call each. */
+function scriptedPort(
+  profile: Profile,
+  script: {
+    readonly material?: (material: ReturnType<typeof materialFor>) => unknown;
+    readonly read?: () => void;
+    readonly answer?: (allow: Record<string, unknown>) => unknown;
+    readonly subPorts?: false;
+  } = {},
+) {
+  const calls = { reads: 0, uses: [] as Use[] };
+  const material = materialFor(profile);
+  const port = (kind: "allow" | "permit", scope?: string) => ({
+    readMaterial: async (observed: RepositoryGitInstallationFence) => {
+      calls.reads++;
+      script.read?.();
+      if (observed.revisionId !== route.revisionId || observed.fence !== route.fence) {
+        return { absent: "unprepared" as const };
+      }
+      if (script.material) {
+        return script.material(material);
+      }
+      return ("scope" in material ? material.scope : undefined) === scope
+        ? material
+        : { absent: "unprepared" as const };
+    },
+    authorize: async (
+      q: Use,
+      installed: typeof version & { route: RepositoryGitInstallationFence },
+    ) => {
+      calls.uses.push(q);
+      const allow = onlineGitAllow(q, installed);
+      const answer: Record<string, unknown> =
+        kind === "allow"
+          ? { ...allow }
+          : { ...allow, kind: "permit", replyBy: undefined, sendStartBy: allow.replyBy };
+      if ("scope" in q && q.scope === "github-installation") {
+        Object.assign(answer, {
+          scope: q.scope,
+          operation: q.operation,
+          revisionId: installed.route.revisionId,
+          fence: installed.route.fence,
+        });
+      }
+      return script.answer ? script.answer(answer) : answer;
+    },
+  });
+  const mode = (kind: "allow" | "permit") => ({
+    ...port(kind),
+    ...(script.subPorts === false
+      ? {}
+      : {
+          githubRepository: port(kind, "github-repository"),
+          githubInstallation: port(kind, "github-installation"),
+        }),
+  });
+  const authority = {
+    ...mode("permit"),
+    online: mode("allow"),
+  } as unknown as ProtectedRepositoryGitAuthority;
+  return { calls, requests: createRepositoryGitRequests(authority) };
+}
+
+const viewOf = (q: Request): GitHubRequestView => ({
+  target: { host: q.host, port: 443, method: q.method, path: q.path, query: q.query ?? "" },
+  headers: q.headers ?? [],
+  body: q.body ?? Buffer.alloc(0),
+});
+
+const refused = (refusal: string, reasonCode?: string, operation?: string) => ({
+  kind: "refused",
+  refusal,
+  ...(reasonCode === undefined ? {} : { reasonCode }),
+  ...(operation === undefined ? {} : { operation }),
+});
+
+test("the requests port refuses at each of its own guards", async (t) => {
+  const granted = pack("example/project", push(pushRef));
+  const installationRead = api("GET", "/repos/example/other");
+  const pushOf = (bytes: number) => {
+    const commands = push(pushRef);
+    return pack(
+      "example/project",
+      Buffer.concat([commands, Buffer.alloc(bytes - commands.length)]),
+    );
+  };
+  const withUserAgent = (length: number): Request => ({
+    ...granted,
+    headers: [["user-agent", "u".repeat(length)], ...granted.headers!.slice(1)],
+  });
+  const headerBytes = granted.headers!.slice(1).reduce((n, [k, v]) => n + k.length + v.length, 0);
+  const past = new Date(Date.now() - 60_000).toISOString();
+  const controller = () => new AbortController();
+  type Row = {
+    readonly name: string;
+    readonly profile?: Profile;
+    readonly script?: Parameters<typeof scriptedPort>[1];
+    readonly request?: Request;
+    readonly input?: (input: Record<string, unknown>) => unknown;
+    readonly signal?: AbortController;
+    readonly expected: Record<string, unknown>;
+    readonly reads: number;
+    readonly uses: number;
+  };
+  const abortDuringRead = controller();
+  const abortDuringAuthorize = controller();
+  const rows: Row[] = [
+    {
+      name: "a current request",
+      expected: { kind: "allow", operation: "receive-pack" },
+      reads: 1,
+      uses: 1,
+    },
+    // Material
+    {
+      name: "expired material",
+      script: { material: (m) => ({ ...m, expiresAt: past }) },
+      expected: refused("material_unavailable", "route_not_ready"),
+      reads: 1,
+      uses: 0,
+    },
+    {
+      name: "installation material for a repository grant",
+      script: { material: (m) => ({ ...m, scope: "github-installation", installationId: "71" }) },
+      expected: refused("material_unavailable", "route_not_ready"),
+      reads: 1,
+      uses: 0,
+    },
+    {
+      name: "repository material for an installation grant",
+      profile: "github_installation",
+      request: installationRead,
+      script: { material: (m) => ({ ...m, scope: "github-repository", repositories }) },
+      expected: refused("material_unavailable", "route_not_ready"),
+      reads: 1,
+      uses: 0,
+    },
+    {
+      name: "unprepared material",
+      script: { material: () => ({ absent: "unprepared" }) },
+      expected: refused("material_unavailable", "route_not_ready"),
+      reads: 1,
+      uses: 0,
+    },
+    {
+      name: "a failed material read",
+      script: {
+        material: () => {
+          throw new Error("owner unavailable");
+        },
+      },
+      expected: refused("material_unavailable", "route_not_ready"),
+      reads: 1,
+      uses: 0,
+    },
+    {
+      name: "no installation port",
+      profile: "github_installation",
+      request: installationRead,
+      script: { subPorts: false },
+      expected: refused("material_unavailable", "route_not_ready"),
+      reads: 0,
+      uses: 0,
+    },
+    {
+      name: "material outside a valid binding",
+      script: { material: (m) => ({ ...m, pushRef: "refs/heads/*" }) },
+      expected: refused("binding_mismatch"),
+      reads: 1,
+      uses: 0,
+    },
+    // The owner's answer
+    ...(
+      [
+        ["scope", { scope: "github-repository" }],
+        ["operation", { operation: "upload-pack" }],
+        ["recipient", { revisionId: "execution-two" }],
+        ["fence", { fence: route.fence + 1 }],
+      ] as const
+    ).map(([field, change]) => ({
+      name: `an installation answer for another ${field}`,
+      profile: "github_installation" as const,
+      request: installationRead,
+      script: { answer: (a: Record<string, unknown>) => ({ ...a, ...change }) },
+      expected: refused("approval_denied", "route_not_ready", "github-rest"),
+      reads: 1,
+      uses: 1,
+    })),
+    {
+      name: "an allow already past its send-by",
+      script: { answer: (a) => ({ ...a, replyBy: new Date(Date.now() - 1000).toISOString() }) },
+      expected: refused("approval_denied", "route_not_ready", "receive-pack"),
+      reads: 1,
+      uses: 1,
+    },
+    // The caller's input
+    ...(
+      [
+        ["a route without a revision", { route: { ...route, revisionId: 7 } }],
+        ["a route without a numeric fence", { route: { ...route, fence: "3" } }],
+        ["no route", { route: null }],
+        ["an unknown profile", { profile: "git_read" }],
+        ["an unknown authorization mode", { authorization: "observed" }],
+        ["an unparsable deadline", { deadlineAt: "soon" }],
+        ["a past deadline", { deadlineAt: past }],
+        [
+          "a deadline over 30 seconds ahead",
+          { deadlineAt: new Date(Date.now() + 31_000).toISOString() },
+        ],
+        ["no request", { request: undefined }],
+        ["no signal", { signal: undefined }],
+        ["headers that are not pairs", { request: { ...viewOf(granted), headers: {} } }],
+        ["a body that is not bytes", { request: { ...viewOf(granted), body: "0000" } }],
+      ] as const
+    ).map(([name, change]) => ({
+      name,
+      input: (input: Record<string, unknown>) => ({ ...input, ...change }),
+      expected: refused("request_invalid", "request_not_allowed"),
+      reads: 0,
+      uses: 0,
+    })),
+    {
+      name: "no input at all",
+      input: () => undefined,
+      expected: refused("request_invalid", "request_not_allowed"),
+      reads: 0,
+      uses: 0,
+    },
+    {
+      name: "a deadline 29 seconds ahead",
+      input: (input) => ({ ...input, deadlineAt: new Date(Date.now() + 29_000).toISOString() }),
+      expected: { kind: "allow", operation: "receive-pack" },
+      reads: 1,
+      uses: 1,
+    },
+    // The view bounds, at and past each limit
+    {
+      name: "a 4 MiB push",
+      request: pushOf(4 * 1024 * 1024),
+      expected: { kind: "allow", operation: "receive-pack" },
+      reads: 1,
+      uses: 1,
+    },
+    {
+      name: "a push one byte over 4 MiB",
+      request: pushOf(4 * 1024 * 1024 + 1),
+      expected: refused("request_invalid", "request_not_allowed"),
+      reads: 0,
+      uses: 0,
+    },
+    {
+      name: "64 KiB of headers",
+      request: withUserAgent(64 * 1024 - headerBytes - "user-agent".length),
+      expected: { kind: "allow", operation: "receive-pack" },
+      reads: 1,
+      uses: 1,
+    },
+    {
+      name: "headers one byte over 64 KiB",
+      request: withUserAgent(64 * 1024 - headerBytes - "user-agent".length + 1),
+      expected: refused("request_invalid", "request_not_allowed"),
+      reads: 0,
+      uses: 0,
+    },
+    {
+      name: "129 headers",
+      request: {
+        ...granted,
+        headers: Array.from({ length: 129 }, (_, i) => [`x-h${i}`, "v"] as [string, string]),
+      },
+      expected: refused("request_invalid", "request_not_allowed"),
+      reads: 0,
+      uses: 0,
+    },
+    ...["authorization", "proxy-authorization", "host", "transfer-encoding"].map((name) => ({
+      name: `a ${name} header`,
+      request: { ...granted, headers: [...granted.headers!, [name, "x"] as [string, string]] },
+      expected: refused("request_invalid", "request_not_allowed"),
+      reads: 0,
+      uses: 0,
+    })),
+    // Cancellation at each await
+    {
+      name: "a signal aborted before the call",
+      input: (input) => ({ ...input, signal: AbortSignal.abort() }),
+      expected: refused("aborted", "route_not_ready"),
+      reads: 0,
+      uses: 0,
+    },
+    {
+      name: "an abort during the material read",
+      signal: abortDuringRead,
+      script: { read: () => abortDuringRead.abort() },
+      expected: refused("aborted", "route_not_ready", "receive-pack"),
+      reads: 1,
+      uses: 0,
+    },
+    {
+      name: "an abort before the owner's allow arrives",
+      signal: abortDuringAuthorize,
+      script: {
+        answer: (a) => {
+          abortDuringAuthorize.abort();
+          return a;
+        },
+      },
+      expected: refused("approval_denied", "route_not_ready", "receive-pack"),
+      reads: 1,
+      uses: 1,
+    },
+  ];
+  for (const row of rows) {
+    await t.test(row.name, async () => {
+      const { calls, requests } = scriptedPort(row.profile ?? "repository_git", row.script);
+      const input = {
+        route,
+        profile: row.profile ?? "repository_git",
+        authorization: "online-request",
+        request: viewOf(row.request ?? granted),
+        signal: row.signal?.signal ?? AbortSignal.timeout(5000),
+      };
+      const decision = await requests.authorize(
+        (row.input ? row.input(input) : input) as Parameters<typeof requests.authorize>[0],
+      );
+      const { inject, sendBy, ...rest } = decision as Record<string, unknown>;
+      assert.deepEqual(rest, row.expected);
+      assert.equal(inject !== undefined, decision.kind === "allow");
+      assert.equal(sendBy !== undefined, decision.kind === "allow");
+      assert.deepEqual([calls.reads, calls.uses.length], [row.reads, row.uses]);
+    });
+  }
+});
+
+test("the requests port digests the whole classified view and nothing else", async () => {
+  const { calls, requests } = scriptedPort("repository_git");
+  const granted = viewOf(pack("example/project", push(pushRef)));
+  const digest = async (request: GitHubRequestView) => {
+    const decision = await requests.authorize({
+      route,
+      profile: "repository_git",
+      authorization: "online-request",
+      request,
+      signal: AbortSignal.timeout(5000),
+    });
+    assert.equal(decision.kind, "allow");
+    return calls.uses.at(-1)!.requestDigestSha256;
+  };
+  const base = await digest(granted);
+  assert.equal(await digest(granted), base, "the same view, the same digest");
+  const { host, port, method, path, query } = granted.target;
+  // Key order and keys the view does not define do not change it.
+  assert.equal(
+    await digest({
+      ...granted,
+      target: { query, path, method, port, host, extra: "x" } as GitHubRequestView["target"],
+    }),
+    base,
+  );
+  for (const [name, changed] of [
+    ["body", { ...granted, body: Buffer.concat([granted.body, Buffer.from("PACK")]) }],
+    [
+      "header value",
+      { ...granted, headers: [["user-agent", "git/2.56.0"], ...granted.headers.slice(1)] },
+    ],
+  ] as const) {
+    assert.notEqual(await digest(changed as GitHubRequestView), base, name);
+  }
 });

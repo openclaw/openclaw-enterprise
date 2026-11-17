@@ -777,7 +777,9 @@
         "repository_git: the installed injector and the bundled OpenShell route decide alike",
         "github_repository: the installed injector and the bundled OpenShell route decide alike",
         "github_installation: the installed injector and the bundled OpenShell route decide alike",
-        "the requests port refuses a request an injector must not forward"
+        "the requests port refuses a request an injector must not forward",
+        "the requests port refuses at each of its own guards",
+        "the requests port digests the whole classified view and nothing else"
       ]
     },
     {
