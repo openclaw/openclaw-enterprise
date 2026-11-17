@@ -369,24 +369,34 @@ test(
     }
 
     // An incomplete HTTPS body must leave the only authentication slot available.
-    const pending = httpsRequest(tokenEndpoint, {
-      method: "POST",
-      ca: tls.caBundle,
-      family: 4,
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-    });
-    const pendingClosed = new Promise<void>((resolve) => pending.once("close", resolve));
-    pending.on("error", () => {});
-    t.after(() => pending.destroy());
-    await new Promise<void>((resolve, reject) =>
-      pending.write("client_assertion=", (error) => (error ? reject(error) : resolve())),
-    );
+    async function incompleteGrant() {
+      const pending = httpsRequest(tokenEndpoint, {
+        method: "POST",
+        ca: tls.caBundle,
+        family: 4,
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      const closed = new Promise<void>((resolve) => pending.once("close", resolve));
+      pending.on("error", () => {});
+      t.after(() => pending.destroy());
+      await new Promise<void>((resolve, reject) =>
+        pending.write("client_assertion=", (error) => (error ? reject(error) : resolve())),
+      );
+      return { pending, closed };
+    }
+    const { pending, closed } = await incompleteGrant();
     const capacityInput = fixture.request();
     assert.equal((await evaluate(capacityInput)).decision, 1);
     assert.equal((await redeem(capacityInput)).status, 200);
     assert.equal(pending.destroyed, false);
-    pending.destroy();
-    await pendingClosed;
+    assert.equal(
+      await Promise.race([closed.then(() => true), delay(8_000, false, { ref: false })]),
+      true,
+      "the authority closes an incomplete body at its read deadline",
+    );
+    const interrupted = await incompleteGrant();
+    interrupted.pending.destroy();
+    await interrupted.closed;
 
     // Key rotation is observed without provider recreation; removing a trust key takes effect
     // on the next HTTPS request and never reaches the Secret reader.
