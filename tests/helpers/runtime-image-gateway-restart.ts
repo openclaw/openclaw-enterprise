@@ -356,9 +356,18 @@ export function uncleanStopRestartTest(recovery: Recovery, title: string): void 
 const gatewayStateLock = "/home/node/.openclaw/tmp/openclaw-1000/gateway.state.lock";
 
 // Runs in the Gateway container: stops the native Gateway as soon as its state
-// lock names it, so the test, not CPU timing, decides where startup ends, and
-// reports whether OpenClaw already handled SIGTERM (bit 14 of SigCgt) then.
-async function freezeLockHolder({ lockPath, budgetMs }: { lockPath: string; budgetMs: number }) {
+// lock names it (with the given role, if any), so the test, not CPU timing,
+// decides where startup ends, and reports whether OpenClaw already handled
+// SIGTERM (bit 14 of SigCgt) then.
+async function freezeLockHolder({
+  lockPath,
+  role,
+  budgetMs,
+}: {
+  lockPath: string;
+  role: string | null;
+  budgetMs: number;
+}) {
   const fs = await import("node:fs");
   const mask = (status: string, field: string) =>
     BigInt("0x" + (new RegExp("^" + field + ":\\s*([0-9a-f]+)$", "m").exec(status)?.[1] ?? "0"));
@@ -366,7 +375,8 @@ async function freezeLockHolder({ lockPath, budgetMs }: { lockPath: string; budg
   for (;;) {
     let pid: unknown;
     try {
-      pid = JSON.parse(fs.readFileSync(lockPath, "utf8")).pid;
+      const holder = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+      if (role === null || holder.role === role) pid = holder.pid;
     } catch {
       // Not written yet.
     }
@@ -442,7 +452,9 @@ const unverifiableOwner = /an unverifiable owner will not be reclaimed automatic
 // The 3257 sequence on one retained state volume: the Pod stop reaches a
 // Gateway that holds its state lock mid-startup and ends it, then a new Pod
 // (another container: new hostname and PID namespace) starts on that state.
-export function stoppedStarterReplacementTest(title: string): void {
+// Role null stops it at its first lock, taken by startup admission (no
+// incarnation witness); "gateway" stops it at the lock it serves under.
+export function stoppedStarterReplacementTest(title: string, role: string | null): void {
   test(title, { ...imageTestOptions, timeout: 900_000 }, async (t) => {
     assert.ok(image !== undefined, "the runtime image must be selected");
     const volume = await gatewayStateVolume(t, "/home/node");
@@ -470,7 +482,7 @@ export function stoppedStarterReplacementTest(title: string): void {
             await inGatewayContainer(
               containerName,
               freezeLockHolder,
-              { lockPath: gatewayStateLock, budgetMs },
+              { lockPath: gatewayStateLock, role, budgetMs },
               budgetMs,
             )
           ).stdout,

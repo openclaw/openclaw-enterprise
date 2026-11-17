@@ -55,7 +55,7 @@ index 5ff6dbe40893bad2c969677308fbc3fcf75c858c..2513bfce56d8a91612b398b002634e23
    parentStartTime: z.number().optional(),
    // Null and absent identities cannot establish the owner's process namespace.
 diff --git a/src/infra/gateway-lock-recovery.test.ts b/src/infra/gateway-lock-recovery.test.ts
-index 37a61eeaae5ab87085f84ef21ddae099b5a92959..73ef4b5d83a55be81079fd4adb696e4b16420e9f 100644
+index 37a61eeaae5ab87085f84ef21ddae099b5a92959..ecf7f2e851d459b5490b264e4cbf791609ec2fa6 100644
 --- a/src/infra/gateway-lock-recovery.test.ts
 +++ b/src/infra/gateway-lock-recovery.test.ts
 @@ -7,7 +7,11 @@ import {
@@ -100,7 +100,7 @@ index 37a61eeaae5ab87085f84ef21ddae099b5a92959..73ef4b5d83a55be81079fd4adb696e4b
  describe("explicit Gateway lock recovery", () => {
    it("inspects without changing files and removes only the confirmed foreign owner", async () => {
      const { env, lockPaths } = fixture();
-@@ -167,8 +177,95 @@ describe("explicit Gateway lock recovery", () => {
+@@ -167,8 +177,130 @@ describe("explicit Gateway lock recovery", () => {
      expect(lockPaths.every((pathname) => fs.existsSync(pathname))).toBe(true);
    });
  
@@ -152,6 +152,41 @@ index 37a61eeaae5ab87085f84ef21ddae099b5a92959..73ef4b5d83a55be81079fd4adb696e4b
 +    },
 +  );
 +
++  it.skipIf(process.platform !== "linux").each(["agent-embedded", "sqlite-maintenance"])(
++    "recovers a %s record without an incarnation witness only once its PID is dead here",
++    async (role) => {
++      const { payload, lockPaths } = fixture();
++      const local = readGatewayLockProcessNamespace();
++      if (local?.platform !== "linux") throw Error("Linux namespace fixture required");
++      const namespace = { ...local, host: "stopped-starting-container" };
++      const write = (pid: number) => {
++        for (const pathname of lockPaths) {
++          fs.writeFileSync(
++            pathname,
++            JSON.stringify({
++              ...payload,
++              pid,
++              role,
++              pidNsInitStartTicks: undefined,
++              processNamespace: namespace,
++            }),
++          );
++        }
++      };
++      const proofOfStop = { ...namespace, pidNsInitStartTicks: 101 };
++      write(process.pid);
++      await expect(recoverTerminatedGatewayNamespace(proofOfStop)).rejects.toThrow(
++        "Cannot prove Gateway PID",
++      );
++      expect(lockPaths.every((pathname) => fs.existsSync(pathname))).toBe(true);
++      write(2147483647);
++      await expect(recoverTerminatedGatewayNamespace(proofOfStop)).resolves.toEqual({
++        recovered: true,
++        removed: 3,
++      });
++    },
++  );
++
 +  it
 +    .skipIf(process.platform !== "linux")
 +    .each([
@@ -198,7 +233,7 @@ index 37a61eeaae5ab87085f84ef21ddae099b5a92959..73ef4b5d83a55be81079fd4adb696e4b
      fs.mkdirSync(path.dirname(databasePath), { recursive: true });
      const db = openNodeSqliteDatabase(databasePath);
      db.exec(
-@@ -186,25 +283,45 @@ describe("explicit Gateway lock recovery", () => {
+@@ -186,25 +318,45 @@ describe("explicit Gateway lock recovery", () => {
            pid: payload.pid,
            host: "stopped-foreign-container",
            startedAt: payload.startTime ?? null,
@@ -251,7 +286,7 @@ index 37a61eeaae5ab87085f84ef21ddae099b5a92959..73ef4b5d83a55be81079fd4adb696e4b
    });
  });
 diff --git a/src/infra/gateway-lock-recovery.ts b/src/infra/gateway-lock-recovery.ts
-index 8ec9c1f51668cad84524aa06c723244d1aeb0940..8283737500b7899e431e5e2b42c9eac3e3d9e31a 100644
+index 8ec9c1f51668cad84524aa06c723244d1aeb0940..3bf8e54c03c65c56a2a50717d3b003e160de9665 100644
 --- a/src/infra/gateway-lock-recovery.ts
 +++ b/src/infra/gateway-lock-recovery.ts
 @@ -1,12 +1,16 @@
@@ -279,7 +314,7 @@ index 8ec9c1f51668cad84524aa06c723244d1aeb0940..8283737500b7899e431e5e2b42c9eac3
  
  type ObservedFile = { path: string; raw: string; identity: string; holder: LockPayload | null };
  
-@@ -99,6 +104,78 @@ export async function inspectGatewayLockRecovery(options: { env?: NodeJS.Process
+@@ -99,6 +104,83 @@ export async function inspectGatewayLockRecovery(options: { env?: NodeJS.Process
    };
  }
  
@@ -328,10 +363,15 @@ index 8ec9c1f51668cad84524aa06c723244d1aeb0940..8283737500b7899e431e5e2b42c9eac3
 +  const inspection = await inspectGatewayLockRecovery();
 +  for (const { path, observed } of inspection.files) {
 +    if (!observed) continue;
++    // Elsewhere only a Gateway record's incarnation witness ties it to the stopped
++    // namespace. In this PID namespace a holder of any role, such as one stopped
++    // during startup admission, must instead be proven dead below.
 +    if (
-+      observed.holder?.role !== "gateway" ||
-+      observed.holder.pidNsInitStartTicks !== pidNsInitStartTicks ||
-+      !matches(observed.holder.processNamespace)
++      !observed.holder ||
++      !matches(observed.holder.processNamespace) ||
++      (!samePidSpace &&
++        (observed.holder.role !== "gateway" ||
++          observed.holder.pidNsInitStartTicks !== pidNsInitStartTicks))
 +    ) {
 +      throw new Error(`Gateway lock at ${path} is not attributable to the terminated namespace.`);
 +    }

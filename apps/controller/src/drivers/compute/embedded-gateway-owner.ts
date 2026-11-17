@@ -59,9 +59,9 @@ export function embeddedGatewayRecoveryPreamble(namespace?: GatewayPidNamespace)
 // does only after it takes the state lock. A Gateway in another container, such
 // as a replacement Pod, cannot verify that holder and stays unready until an
 // operator recovers it (finding 3257). Here the wrapper has reaped that process.
-// Given this namespace, OpenClaw recovers only Gateway records of this PID 1
-// lifetime, and only once it finds each holder PID dead here; any other holder,
-// live or foreign, keeps every lock. A clean exit (status 0) released them.
+// Given this namespace, OpenClaw recovers only records written in it, and only
+// once it finds each holder PID dead here; any other holder, live or foreign,
+// keeps every lock. A clean exit (status 0) released them.
 export function exitedGatewayStateRelease(environment: string) {
   return String.raw`
 function releaseExitedGatewayState(code) {

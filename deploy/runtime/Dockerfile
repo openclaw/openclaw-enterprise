@@ -233,7 +233,7 @@ RUN echo '21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c  /tmp
 # The runtime needs supervised recovery across private PID namespaces. Native
 # lock reinspection and custody still guard every destructive operation.
 COPY deploy/runtime/openclaw-terminated-gateway-namespace.patch /tmp/openclaw-terminated-gateway-namespace.patch
-RUN echo '1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
+RUN echo '1715b52a9542eea0ebd82460e633117b7e17af94e38a4f3443a38685538e7f41  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-terminated-gateway-namespace.patch
 
 # Forward the scoped Google placeholder and the OpenShell TLS root to native worker children.

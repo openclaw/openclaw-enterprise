@@ -18,7 +18,12 @@ uncleanStopRestartTest(
   "an embedded Gateway container restarted in the same Kubernetes Pod recovers its first owner",
 );
 stoppedStarterReplacementTest(
-  "a new Gateway Pod starts on state whose previous Gateway was stopped while it took its state lock",
+  "a new Gateway Pod starts on state whose previous Gateway was stopped during startup admission",
+  null,
+);
+stoppedStarterReplacementTest(
+  "a new Gateway Pod starts on state whose previous Gateway was stopped while it took its Gateway lock",
+  "gateway",
 );
 liveHolderKeepsStateTest(
   "a Gateway that exits beside a live Gateway on the same state leaves that Gateway's lock in place",
