@@ -3353,6 +3353,8 @@ function gatewayEnvironment() {
 
 // Set while the wrapper holds a startup failure of its native Gateway; the polls stop.
 let gatewayStartupHeld = false;
+// Set when OpenClaw kept the records of the native Gateway that last exited (finding 3310).
+let exitedGatewayStateKept = false;
 
 // OpenClaw exits at startup (status 78) when any setting fails its schema, including a plugin
 // entry's config when that plugin is disabled or denied (finding 3043; the runtime image carries
@@ -3391,11 +3393,14 @@ function holdInvalidGatewayConfiguration(code, signal) {
 // each container restart repeats that (finding 3288). So after a Gateway that never served
 // exits 1, the wrapper runs OpenClaw's lock inspection: recover-lock without --confirm reads a
 // private snapshot and changes nothing. Holders that the exit release above left are held as
-// check gateway-state-lock with the tool policy step's log line. The wrapper never recovers the
-// lock; an operator first proves that the holder stopped. A held wrapper inspects again every
-// 5 minutes: once no holder remains, it restarts its container on purpose and the next start
+// check gateway-state-lock with the tool policy step's log line. The wrapper never recovers a
+// lock it cannot prove stopped; an operator does. A held wrapper inspects again every 5
+// minutes: once no holder remains, it restarts its container on purpose and the next start
 // takes the lock. An inspection that fails, or finds no holder, exits 1 as before.
 const GATEWAY_STATE_LOCK_RECHECK_MS = 300_000;
+// OpenClaw lists at most three lock files and then the owner lease, which the recovery steps
+// name; each holder is cut on its own so that a long one never drops the lease.
+const GATEWAY_STATE_LOCK_HOLDER_CHARS = 500;
 function gatewayStateLockHolders() {
   const inspection = pluginSpawnSync("node", ["/app/openclaw.mjs", "gateway", "recover-lock", "--json"], {
     env: { ...gatewayEnvironment(), OPENCLAW_CONFIG_READONLY: "1" },
@@ -3419,9 +3424,17 @@ function holdGatewayStateLock(code) {
   const holders = gatewayStateLockHolders();
   if (holders === undefined || holders.length === 0) return false;
   gatewayStartupHeld = true;
-  holdGatewayToolPolicyFailure(new GatewayStateLockError(holders.join(" ").slice(0, 1000)));
+  holdGatewayToolPolicyFailure(new GatewayStateLockError(
+    holders.map((holder) => holder.slice(0, GATEWAY_STATE_LOCK_HOLDER_CHARS)).join(" "),
+  ));
   const recheck = setInterval(() => {
     if (gatewayTerminating) return;
+    // A failed exit release (it timed out, or a foreign record made OpenClaw keep every lock)
+    // would otherwise hold the child's own records for ever. This namespace still lives, so the
+    // release can still prove the child dead; a retry runs at most 60 s, the inspection 30 s.
+    if (exitedGatewayStateKept) {
+      exitedGatewayStateKept = !releaseExitedGatewayState(code, gatewayEnvironment());
+    }
     const current = gatewayStateLockHolders();
     if (current !== undefined && current.length > 0) return;
     clearInterval(recheck);
@@ -3445,7 +3458,7 @@ function startGatewayProcess() {
       if (spawned === child) {
         childRunning = false;
         // Before the wrapper exits or starts another Gateway (finding 3257).
-        releaseExitedGatewayState(code, gatewayEnvironment());
+        exitedGatewayStateKept = !releaseExitedGatewayState(code, gatewayEnvironment());
       }
       resolve();
       if (stoppingContainer) {

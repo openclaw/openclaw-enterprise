@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { constants as fsConstants } from "node:fs";
 import type { RequestListener } from "node:http";
 import type { TestContext } from "node:test";
 import vm from "node:vm";
@@ -57,6 +58,13 @@ type SupervisorState = {
     args: readonly string[];
     readOnly: string | undefined;
   }[];
+  // `recover-lock --terminated-namespace` after a native exit: what it does, and the namespace
+  // each call named. It runs only when a test supplies the namespace files the probe reads.
+  exitRelease: () => { status: number | null; stdout: string; error?: Error };
+  exitReleaseCalls: unknown[];
+  // Directories `accessSync` reports writable; none by default, so the configuration is
+  // externally managed and every OpenClaw command gets OPENCLAW_CONFIG_READONLY.
+  writableDirectories: Set<string>;
   children: Child[];
   exits: number[];
   intervals: { callback: () => unknown; delay: number }[];
@@ -148,6 +156,9 @@ export async function startCodexGatewaySupervisor(
       }),
     },
     lockInspectionCalls: [],
+    exitRelease: () => ({ status: 0, stdout: JSON.stringify({ recovered: false, removed: 0 }) }),
+    exitReleaseCalls: [],
+    writableDirectories: new Set(),
     children: [],
     exits: [],
     intervals: [],
@@ -275,6 +286,12 @@ export async function startCodexGatewaySupervisor(
       }
       if (specifier === "node:fs") {
         return {
+          accessSync(path: string) {
+            if (!fixture.writableDirectories.has(path)) {
+              throw Object.assign(new Error(`Not writable: ${path}`), { code: "EACCES" });
+            }
+          },
+          constants: { W_OK: fsConstants.W_OK },
           existsSync: (path: string) => fixture.files.has(path),
           lstatSync(path: string) {
             if (!fixture.files.has(path)) {
@@ -283,6 +300,13 @@ export async function startCodexGatewaySupervisor(
             return { isFile: () => true, mode: 0o600 };
           },
           mkdirSync() {},
+          // The exited-state release's namespace probe reads its PID namespace link.
+          readlinkSync(path: string) {
+            if (!fixture.files.has(path)) {
+              throw new Error(`Missing mocked file: ${path}`);
+            }
+            return fixture.files.get(path);
+          },
           readFileSync(path: string) {
             if (!fixture.files.has(path)) {
               throw new Error(`Missing mocked file: ${path}`);
@@ -352,6 +376,10 @@ export async function startCodexGatewaySupervisor(
             return child;
           },
           spawnSync(command: string, args: readonly string[], options: SpawnOptions) {
+            if (args[1] === "gateway" && args[3] === "--terminated-namespace") {
+              fixture.exitReleaseCalls.push(JSON.parse(String(args[4])));
+              return fixture.exitRelease();
+            }
             if (args[1] === "gateway" && args[2] === "recover-lock") {
               fixture.lockInspectionCalls.push({
                 command,
