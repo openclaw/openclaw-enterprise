@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { chmod, cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer, type IncomingMessage } from "node:http";
-import { request } from "node:https";
-import { createServer as createNetServer } from "node:net";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { isDeepStrictEqual } from "node:util";
 import test, { type TestContext } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -20,7 +19,16 @@ import {
   signComputeExecutionRelease,
 } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
-import { verifyRelease } from "../../deploy/examples/strands-box/host/control.ts";
+import {
+  deliveredMaterial,
+  verifyRelease,
+  wiringConfiguration as hostWiring,
+} from "../../deploy/examples/strands-box/host/control.ts";
+import {
+  githubCredentialEnvironment,
+  githubCredentials,
+  policy,
+} from "../../deploy/examples/strands-box/host/egress.ts";
 import type {
   AgentRevision,
   EgressInstallation,
@@ -33,7 +41,7 @@ import type {
   RepositoryGitInstallationFence,
   SandboxHarnessStatusContext,
 } from "../../packages/contracts/src/index.ts";
-import { signedLeaf } from "../helpers/certificates.ts";
+import { boxGitHubEgress } from "../helpers/strands-box-egress.ts";
 import { strandsRepositoryOriginFixture } from "../helpers/strands-rehearsal-repository.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
@@ -65,15 +73,21 @@ const relay = {
 const RELEASE_KEY_ENV = "OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY";
 const REVISION_ENV = "OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID";
 
-async function freePort(): Promise<number> {
-  const probe = createNetServer();
-  probe.listen(0, "127.0.0.1");
-  await once(probe, "listening");
-  const address = probe.address();
-  assert.ok(address && typeof address !== "string");
-  await new Promise<void>((resolve) => probe.close(() => resolve()));
-  return address.port;
+const execute = promisify(execFile);
+
+/** Stock `gh` from PATH, as the runtime image installs it; absent here means a typed skip. */
+function stockGh(): string | undefined {
+  for (const candidate of ["/usr/local/bin/gh", "/usr/bin/gh"]) {
+    try {
+      execFileSync(candidate, ["--version"], { stdio: "ignore", timeout: 5_000 });
+      return candidate;
+    } catch {
+      // Try the next location.
+    }
+  }
+  return undefined;
 }
+const gh = stockGh();
 
 async function publicCa(directory: string): Promise<string> {
   execFileSync(
@@ -133,7 +147,7 @@ async function installPackage(t: TestContext) {
 }
 
 test(
-  "only the paired loader admits a repositorySender registration, and only with both capabilities",
+  "only the paired loader admits a protectedRepository registration, and only with both capabilities",
   { timeout: 60_000 },
   async (t) => {
     const { directory, packageRoot } = await installPackage(t);
@@ -147,42 +161,19 @@ test(
       workspaceRoot: endpoint.workspaceRoot,
       relay,
     };
-    const repositorySender = {
-      url: "https://sender.pilot.example:9443/",
-      address: "10.0.0.9",
-      peerAddress: "10.0.0.7",
-      listenPort: 9443,
-      certificateFile: "/var/run/sender/tls.crt",
-      keyFile: "/var/run/sender/tls.key",
-      journalDir: "/var/lib/sender",
-      repository: {
-        repository: "example/review",
-        repositoryId: "1",
-        installationId: "2",
-        head: "review",
-        base: "main",
-      },
-    };
-    const paired = { ...ordinary, repositorySender };
+    // Nothing about the repository, branch or sender is configured: OCE's grant selects it.
+    const paired = { ...ordinary, protectedRepository: { provider: "github" } };
     assert.deepEqual(loaded.module.validateConfiguration?.(paired), []);
-    const refused = loaded.module.validateConfiguration?.({
-      ...ordinary,
-      repositorySender: {
-        ...repositorySender,
-        url: "https://sender.pilot.example:9443/path",
-        address: "8.8.8.8",
-        peerAddress: "127.0.0.1",
-        journalDir: "relative",
-        repository: { ...repositorySender.repository, head: "main" },
+    assert.deepEqual(
+      (loaded.module.configurationSchema as { properties: Record<string, unknown> }).properties
+        .protectedRepository,
+      {
+        type: "object",
+        additionalProperties: false,
+        required: ["provider"],
+        properties: { provider: { type: "string", enum: ["github"] } },
       },
-    });
-    assert.deepEqual(refused?.map(({ path }) => path).sort(), [
-      "/repositorySender/address",
-      "/repositorySender/journalDir",
-      "/repositorySender/peerAddress",
-      "/repositorySender/repository",
-      "/repositorySender/url",
-    ]);
+    );
     const selection = (configuration: object) => ({
       id,
       implementation,
@@ -228,43 +219,11 @@ async function pairedFixture(t: TestContext) {
   const origin = await strandsRepositoryOriginFixture(t);
   const { directory, dist } = await installPackage(t);
   await chmod(directory, 0o700);
-  // The installed build's own modules. The registration factory is the one createDriver calls;
-  // importing it directly adds only the test-origin agent, which configuration cannot select.
-  const { StrandsBoxDriver } = (await import(pathToFileURL(join(dist, "index.js")).href)) as {
-    StrandsBoxDriver: unknown;
-  };
-  const { createProtectedRegistration } = (await import(
-    pathToFileURL(join(dist, "protected.js")).href
-  )) as {
-    createProtectedRegistration: (
-      base: unknown,
-      id: string,
-      implementation: string,
-      options: unknown,
-      seams: { upstreamAgent?: unknown },
-    ) => unknown;
+  // The installed build's own module, loaded as the paired loader does.
+  const module = (await import(pathToFileURL(join(dist, "index.js")).href)) as {
+    createDriver: unknown;
   };
   const socket = join(directory, "control.sock");
-  const journalDir = join(directory, "journal");
-  await mkdir(journalDir, { mode: 0o700 });
-  const leaf = await signedLeaf(directory, origin.authority, {
-    name: "sender",
-    commonName: "Sender",
-    subjectAltName: "IP:127.0.0.1",
-    keyPem: undefined,
-  });
-  const port = await freePort();
-  const repositorySender = {
-    url: `https://127.0.0.1:${port}/`,
-    address: "127.0.0.1",
-    peerAddress: "127.0.0.1",
-    listenHost: "127.0.0.1",
-    listenPort: port,
-    certificateFile: leaf.certPath,
-    keyFile: leaf.keyPath,
-    journalDir,
-    repository: origin.repository,
-  };
   const configuration = {
     namespace: namespace.name,
     controlSocket: socket,
@@ -272,19 +231,7 @@ async function pairedFixture(t: TestContext) {
     nativeCaBundle: origin.caBundle.toString(),
     workspaceRoot: endpoint.workspaceRoot,
     relay,
-    repositorySender,
-  };
-  const module = {
-    createDriver: (input: { id: string; implementation: string; configuration: object }) =>
-      createProtectedRegistration(
-        StrandsBoxDriver,
-        input.id,
-        input.implementation,
-        input.configuration,
-        {
-          upstreamAgent: origin.upstreamAgent,
-        },
-      ),
+    protectedRepository: { provider: "github" },
   };
   const owner = createExternalProtectedDriver(module as never, {
     id,
@@ -339,10 +286,8 @@ async function pairedFixture(t: TestContext) {
     createdAt: namespace.createdAt,
   } as unknown as AgentRevision;
   const keys = generateKeyPairSync("ed25519");
-  const wiringConfiguration = {
-    version: 1,
-    repositorySender: { url: repositorySender.url, address: repositorySender.address },
-  };
+  // The Driver states exactly the host's own wiring; the host compares it canonically.
+  const wiringConfiguration = hostWiring("github");
   const requirements = {
     image: `registry.example/runtime@sha256:${"e".repeat(64)}`,
     command: ["node", "-e", "stock fixture command"],
@@ -372,7 +317,9 @@ async function pairedFixture(t: TestContext) {
     signal: AbortSignal.timeout(20_000),
   };
 
-  // The fake host serves the host-observed record and runs the real host release check.
+  // The fake host serves the host-observed record and runs the real host release and material
+  // checks. Its control process (this test process) is the recipient; delivering material
+  // restarts its `box run`, which this fake reports as a new process instance.
   const bearer = randomBytes(32).toString("base64url");
   const [boot, stat] = await Promise.all([
     readFile("/proc/sys/kernel/random/boot_id", "utf8"),
@@ -381,12 +328,19 @@ async function pairedFixture(t: TestContext) {
   const startTicks = stat.slice(stat.lastIndexOf(")") + 2).split(/\s+/)[19];
   const host = {
     present: true,
-    live: false,
+    state: "starting" as "starting" | "running",
     bearerSha256: sha(bearer),
     processInstanceId: `${boot.trim()}:${process.pid}:${startTicks}`,
     generationSha256: sha("reservation"),
     startup: undefined as { startupId: string; startupSha256: string } | undefined,
     releases: [] as Record<string, unknown>[],
+    deliveries: [] as ReturnType<typeof deliveredMaterial>[],
+    installed: undefined as
+      | { preparationAttemptId: string; materialVersion: string; boxProcessInstanceId: string }
+      | undefined,
+    /** Lose the reply to the next delivery after the host applied it. */
+    loseDeliveryReply: false,
+    deletes: 0,
   };
   const executionId = "box-execution";
   const record = () => ({
@@ -400,11 +354,12 @@ async function pairedFixture(t: TestContext) {
     },
     requirementsDigest: "a".repeat(64),
     executionId,
-    state: "starting",
+    state: host.state,
     endpoint,
-    repositorySender: {
+    repositoryRecipient: {
       bearerSha256: host.bearerSha256,
-      ...(host.live ? { processInstanceId: host.processInstanceId } : {}),
+      processInstanceId: host.processInstanceId,
+      ...(host.installed === undefined ? {} : { installed: host.installed }),
     },
     protectedStartup: {
       plan,
@@ -440,8 +395,40 @@ async function pairedFixture(t: TestContext) {
           reply(403);
           return;
         }
+        host.state = "running";
         reply(200, record());
         return;
+      }
+      if (req.method === "POST" && req.url === "/v1/repository-material" && host.present) {
+        const input = JSON.parse(bytes.toString()) as Record<string, unknown>;
+        const material = deliveredMaterial(input.material);
+        if (host.startup === undefined || input.executionId !== executionId) {
+          reply(409, { error: "material_outside_released_execution" });
+          return;
+        }
+        if (host.installed !== undefined) {
+          const same =
+            host.installed.preparationAttemptId === material.preparationAttemptId &&
+            host.installed.materialVersion === material.materialVersion;
+          reply(same ? 200 : 409, same ? record() : { error: "material_refresh_unsupported" });
+          return;
+        }
+        host.deliveries.push(material);
+        host.installed = {
+          preparationAttemptId: material.preparationAttemptId,
+          materialVersion: material.materialVersion,
+          boxProcessInstanceId: `${boot.trim()}:${process.pid + 1}:${startTicks}`,
+        };
+        if (host.loseDeliveryReply) {
+          host.loseDeliveryReply = false;
+          res.destroy();
+          return;
+        }
+        reply(200, record());
+        return;
+      }
+      if (req.method === "DELETE") {
+        host.deletes++;
       }
       reply(409);
     });
@@ -452,10 +439,17 @@ async function pairedFixture(t: TestContext) {
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
 
   // The OCC authority stand-in: observation, install intent and the online request check.
-  const state = { withdrawn: false, observed: 0, installs: 0, materialReads: 0 };
+  const state = {
+    withdrawn: false,
+    observed: 0,
+    installs: 0,
+    confirms: 0,
+    materialReads: 0,
+    authorizations: 0,
+  };
   let fence: RepositoryGitInstallationFence | undefined;
   const version = { preparationAttemptId: "attempt", materialVersion: "version" };
-  const material: ProtectedGitHubRepositoryMaterial = {
+  let material: ProtectedGitHubRepositoryMaterial = {
     scope: "github-repository",
     value: origin.credential,
     expiresAt: new Date(Date.now() + 600_000).toISOString(),
@@ -479,7 +473,8 @@ async function pairedFixture(t: TestContext) {
     recipients: {
       async observe(installation) {
         state.observed++;
-        if (committed === undefined) {
+        // As OCC: no fence for an unknown recipient or while an install intent is pending.
+        if (committed === undefined || pending !== undefined) {
           return undefined;
         }
         assert.deepEqual(installation, committed);
@@ -495,6 +490,7 @@ async function pairedFixture(t: TestContext) {
         return { ...route, ...installed };
       },
       async confirmInstall({ revisionId, fence: number, observed }) {
+        state.confirms++;
         installedVersion = pending;
         pending = undefined;
         return { revisionId, fence: number, observed };
@@ -509,6 +505,7 @@ async function pairedFixture(t: TestContext) {
           return state.withdrawn ? { absent: "withdrawn" } : material;
         },
         async authorize(q, installed) {
+          state.authorizations++;
           if (state.withdrawn) {
             return { kind: "denied", reason: "access_withdrawn" };
           }
@@ -542,51 +539,31 @@ async function pairedFixture(t: TestContext) {
     },
     currentEgressInstallation: async () => committed,
   };
-  const call = (
-    path: string,
-    input?: object,
-    credential: string = bearer,
-  ): Promise<{ status: number; body: Buffer }> =>
-    new Promise((resolve, reject) => {
-      const payload = input === undefined ? undefined : Buffer.from(JSON.stringify(input));
-      const req = request(
-        {
-          host: "127.0.0.1",
-          port,
-          path,
-          method: payload ? "POST" : "GET",
-          ca: origin.caBundle,
-          agent: false,
-          headers: {
-            authorization: `Bearer ${credential}`,
-            ...(payload
-              ? { "content-type": "application/json", "content-length": payload.length }
-              : {}),
-          },
-        },
-        (res) => {
-          void body(res).then(
-            (bytes) => resolve({ status: res.statusCode ?? 0, body: bytes }),
-            reject,
-          );
-        },
-      );
-      req.once("error", reject);
-      req.end(payload);
+  // Stock clients in a workspace checkout, with exactly the environment Box gives the workload.
+  const workspace = join(directory, "workspace");
+  await mkdir(workspace, { mode: 0o700 });
+  const home = join(directory, "home");
+  await mkdir(join(home, "gh"), { recursive: true, mode: 0o700 });
+  const client = async (
+    workload: Readonly<Record<string, string>>,
+    binary: string,
+    args: readonly string[],
+  ) =>
+    execute(binary, args, {
+      cwd: workspace,
+      timeout: 20_000,
+      env: {
+        PATH: "/usr/local/bin:/usr/bin:/bin",
+        HOME: home,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_TERMINAL_PROMPT: "0",
+        GH_CONFIG_DIR: join(home, "gh"),
+        GH_PROMPT_DISABLED: "1",
+        GH_NO_UPDATE_NOTIFIER: "1",
+        NO_COLOR: "1",
+        ...workload,
+      },
     });
-  const remoteGit = (args: readonly string[], cwd?: string) =>
-    origin.git(
-      [
-        "-c",
-        `http.extraHeader=Authorization: Bearer ${bearer}`,
-        "-c",
-        `http.sslCAInfo=${origin.rootCertificatePath}`,
-        "-c",
-        "http.version=HTTP/1.1",
-        ...args,
-      ],
-      cwd,
-    );
   return {
     origin,
     owner,
@@ -603,10 +580,18 @@ async function pairedFixture(t: TestContext) {
     authority,
     custody,
     committed: () => committed,
+    material: () => material,
+    /** OCE's renewal: a new attempt and version for the same session. */
+    renew() {
+      material = {
+        ...material,
+        preparationAttemptId: "renewed-attempt",
+        materialVersion: "renewed-version",
+      };
+    },
     wiringConfiguration,
-    call,
-    remoteGit,
-    remote: `https://127.0.0.1:${port}/repository.git`,
+    client,
+    workspace,
     root: directory,
   };
 }
@@ -630,7 +615,8 @@ test(
       undefined,
     );
 
-    // A held reservation without the live `box run` process is not an installation yet.
+    // The held reservation is the installation: its recipient is the host control process and
+    // the execution bearer, fixed before Box starts and unchanged when Box restarts to install.
     const endpoint = (
       f.sandbox as unknown as {
         protectedWorkspaceEndpoint(c: object): Promise<Record<string, unknown> | undefined>;
@@ -647,13 +633,11 @@ test(
       generationSha256: f.host.generationSha256,
       state: "reserved",
     });
-    assert.equal(await f.release.observe(f.context, wiring), undefined);
-    f.host.live = true;
     const installed = await f.release.observe(f.context, wiring);
     assert.ok(installed);
     assert.equal(installed.sandboxId, "box-execution");
     assert.deepEqual(installed.enforcement.repositoryGitRecipient, {
-      providerId: `${id}-repository-sender`,
+      providerId: `${id}-box-egress`,
       attachmentEpoch: "box-execution",
       processInstanceId: f.host.processInstanceId,
       networkInstanceId: `box-phantom-sha256:${f.host.bearerSha256}`,
@@ -726,13 +710,19 @@ test(
 );
 
 test(
-  "the Worker binding pushes the selected branch and opens one draft, and withdrawal stops new sends",
-  { timeout: 40_000 },
+  "after activation the Worker installs OCE's token in Box once; stock git and gh push and open one draft, and withdrawal refuses fresh requests while the execution runs",
+  { timeout: 90_000, skip: gh === undefined ? "stock gh is not installed on this host" : false },
   async (t) => {
     const f = await pairedFixture(t);
-    const signal = AbortSignal.timeout(30_000);
-    f.host.live = true;
+    const signal = AbortSignal.timeout(80_000);
     const wiring = await f.release.configure(f.context);
+    const bind = f.owner.requireRepositoryGitTransport();
+    let binding = await bind(f.authority);
+    assert.ok(binding.reconcile);
+    // Before the release and activation OCE has no committed recipient and prepares nothing.
+    await binding.reconcile(signal);
+    assert.equal(f.state.materialReads, 0);
+    assert.equal(f.host.deliveries.length, 0);
     assert.equal(
       await f.release.enroll(
         f.context,
@@ -744,67 +734,187 @@ test(
       ),
       true,
     );
-    const bind = f.owner.requireRepositoryGitTransport();
-    let binding = await bind(f.authority);
-    assert.ok(binding.reconcile);
-    // Before reconcile, the listener has no recipient and refuses before any provider use.
-    assert.equal((await f.call("/repository.git/info/refs?service=git-upload-pack")).status, 403);
-    assert.equal(f.state.materialReads, 0);
+    assert.equal(f.sandbox.repositoryAccess!.materialSettledAt(f.revision.id), undefined);
+    // A lost delivery reply leaves the OCC intent pending; the next pass reads the host back and
+    // confirms that exact version without a second intent or a second Box restart.
+    f.host.loseDeliveryReply = true;
+    await assert.rejects(binding.reconcile(signal), /did not confirm the repository material/);
+    assert.equal(f.state.installs, 1);
+    assert.equal(f.state.confirms, 0);
     await binding.reconcile(signal);
     assert.equal(f.state.installs, 1);
+    assert.equal(f.state.confirms, 1);
+    assert.equal(f.host.deliveries.length, 1);
     assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "ready");
     assert.equal(typeof f.sandbox.repositoryAccess!.materialSettledAt(f.revision.id), "number");
-    // A repeated pass with the same material version installs nothing new.
-    await binding.reconcile(signal);
-    assert.equal(f.state.installs, 1);
-    // A Worker restart loses the in-memory recipient. The new binding resumes the version OCC
-    // already holds for this recipient without a second install intent.
+    const delivered = f.host.deliveries[0]!;
+    assert.deepEqual(Object.keys(delivered).sort(), [
+      "expiresAt",
+      "installationId",
+      "materialVersion",
+      "preparationAttemptId",
+      "repositories",
+      "value",
+    ]);
+    // A Worker restart adopts the version the host shows in the live `box run`.
     await binding.close();
     binding = await bind(f.authority);
-    assert.equal((await f.call("/repository.git/info/refs?service=git-upload-pack")).status, 403);
     await binding.reconcile!(signal);
     assert.equal(f.state.installs, 1);
+    assert.equal(f.host.deliveries.length, 1);
     assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "ready");
-    await f.proxy.sourceControl.assertAvailable?.(signal, "github_repository");
+    // STAGE_A_PROTOTYPE: a renewed version is not installed; Box keeps the one it read.
+    f.renew();
+    await binding.reconcile!(signal);
+    assert.equal(f.state.installs, 1);
+    assert.equal(f.host.deliveries.length, 1);
 
-    assert.equal(
-      (await f.call("/repository.git/info/refs?service=git-upload-pack", undefined, "x".repeat(43)))
-        .status,
-      403,
-    );
-    const copy = join(f.root, "client");
-    await f.remoteGit(["clone", f.remote, copy]);
-    await writeFile(join(copy, "tracked.txt"), "review change\n");
-    await f.origin.commit("review change", copy);
-    const expected = (await f.origin.git(["rev-parse", "HEAD"], copy)).stdout.trim();
-    await assert.rejects(f.remoteGit(["push", "origin", "HEAD:refs/heads/main"], copy), /403/);
-    await f.remoteGit(["push", "origin", "HEAD:refs/heads/review"], copy);
+    // The host starts `box run` with exactly these routes, policy and environment.
+    const box = await boxGitHubEgress(t, {
+      config: githubCredentials(),
+      policy: policy([], true),
+      boxEnvironment: githubCredentialEnvironment(delivered.value),
+      upstream: f.origin.upstreamAgent,
+    });
+    const workload = box.workloadEnvironment;
+    for (const secret of box.secrets) {
+      assert.ok(!Object.values(workload).some((value) => value.includes(f.origin.credential)));
+      assert.ok(secret.includes(f.origin.credential));
+    }
+    const git = (args: readonly string[]) => f.client(workload, "/usr/bin/git", args);
+    const ghClient = (args: readonly string[]) => f.client(workload, gh!, args);
+    const remote = `https://github.com/${f.origin.repository.repository}.git`;
+    await git(["clone", remote, "."]);
+    await git(["switch", "-c", "review"]);
+    await writeFile(join(f.workspace, "tracked.txt"), "review change\n");
+    await git([
+      "-c",
+      "user.name=Agent",
+      "-c",
+      "user.email=agent@example.invalid",
+      "commit",
+      "-am",
+      "review change",
+    ]);
+    const head = (await git(["rev-parse", "HEAD"])).stdout.trim();
+    await git(["push", remote, "review"]);
     assert.equal(
       (
         await f.origin.git(["--git-dir", f.origin.repoPath, "rev-parse", "refs/heads/review"])
       ).stdout.trim(),
-      expected,
+      head,
     );
-    const pr = await f.call("/draft-pull", { title: "Review change" });
-    assert.equal(pr.status, 201);
-    assert.equal(JSON.parse(pr.body.toString()).draft, true);
+    const created = await ghClient([
+      "pr",
+      "create",
+      "--draft",
+      "--repo",
+      f.origin.repository.repository,
+      "--head",
+      "review",
+      "--base",
+      "main",
+      "--title",
+      "Review change",
+      "--body",
+      "From the Box workload",
+    ]);
+    assert.match(created.stdout, /https:\/\/github\.com\/example\/review\/pull\/7/);
+    assert.deepEqual(f.origin.pulls, [
+      {
+        number: 7,
+        id: "PR_7",
+        draft: true,
+        head: "review",
+        base: "main",
+        title: "Review change",
+        actor: "installation",
+      },
+    ]);
+    assert.ok(box.requests.every(({ outcome }) => outcome === "injected"));
+    assert.deepEqual([...new Set(box.requests.map(({ host }) => host))].sort(), [
+      "api.github.com",
+      "github.com",
+    ]);
+    // Box's egress, not OCE, decided each request: Stage A has no per-request authorization.
+    assert.equal(f.state.authorizations, 0);
 
-    // Withdrawal: the authority stops material; the execution keeps running.
+    // The wrong repository: the installation token does not cover it, so GitHub refuses it.
+    const refusedBefore = f.origin.refusals.length;
+    await assert.rejects(git(["push", "https://github.com/example/other.git", "review"]), {
+      code: 128,
+      stderr: /Repository not found|not found/,
+    });
+    await assert.rejects(
+      ghClient([
+        "pr",
+        "create",
+        "--draft",
+        "--repo",
+        "example/other",
+        "--head",
+        "review",
+        "--base",
+        "main",
+        "--title",
+        "Elsewhere",
+        "--body",
+        "x",
+      ]),
+      { code: 1, stderr: /Could not resolve to a Repository/ },
+    );
+    assert.ok(f.origin.refusals.length > refusedBefore);
+    // A host outside Box's policy is refused at CONNECT.
+    await assert.rejects(git(["ls-remote", "https://gitlab.com/example/review.git"]), {
+      code: 128,
+    });
+    assert.equal(box.requests.at(-1)?.outcome, "refused");
+    assert.equal(f.origin.pulls.length, 1);
+
+    // Withdrawal: OCC stops the material and its retirement revokes the token at GitHub. The
+    // Driver sends nothing to the host, so `box run` and the chat keep running.
     assert.equal(
       await f.sandbox.repositoryAccess!.retireExpired({ revision: f.revision, signal } as never),
       "withdrawn",
     );
     f.state.withdrawn = true;
+    f.origin.revoke();
+    await binding.reconcile!(signal);
+    assert.equal(f.host.deliveries.length, 1);
+    assert.equal(f.host.deletes, 0);
+    assert.equal(f.host.state, "running");
     const writes = f.origin.writes.length;
-    assert.equal((await f.call("/draft-pull", { title: "Again" })).status, 403);
+    const revokedBefore = f.origin.refusals.filter(({ status }) => status === 401).length;
+    // Git answers GitHub's 401 by asking for a credential, which the workload does not have.
+    await assert.rejects(git(["push", remote, "review:refs/heads/again"]), {
+      code: 128,
+      stderr: /could not read Username|Authentication failed/,
+    });
+    await assert.rejects(
+      ghClient([
+        "pr",
+        "create",
+        "--draft",
+        "--repo",
+        f.origin.repository.repository,
+        "--head",
+        "review",
+        "--base",
+        "main",
+        "--title",
+        "Again",
+        "--body",
+        "x",
+      ]),
+      { code: 1, stderr: /401|Bad credentials/ },
+    );
     assert.equal(f.origin.writes.length, writes);
+    assert.equal(f.origin.pulls.length, 1);
+    assert.ok(f.origin.refusals.filter(({ status }) => status === 401).length >= revokedBefore + 2);
     // The host no longer reports the execution: the next pass retires the recipient.
-    f.state.withdrawn = false;
     f.host.present = false;
     await binding.reconcile!(signal);
     assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "pending");
-    assert.equal((await f.call("/draft-pull", { title: "Again" })).status, 403);
-    assert.equal(f.origin.writes.length, writes);
     await binding.close();
   },
 );

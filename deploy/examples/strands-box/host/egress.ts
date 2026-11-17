@@ -307,7 +307,9 @@ export function policy(routes: readonly EgressRoute[], github = false): string {
  * interception. The listener is the real GitHub.
  */
 export function githubPolicy(): string {
-  const text = ["// STAGE_A_PROTOTYPE: GitHub, with the OCE-minted installation token Box injects."];
+  const text = [
+    "// STAGE_A_PROTOTYPE: GitHub, with the OCE-minted installation token Box injects.",
+  ];
   for (const host of GITHUB_HOSTS) {
     const condition = `context.input.host == ${JSON.stringify(host)} && context.input.port == 443`;
     const methods = GITHUB_METHODS[host].map((method) => `context.input.method == "${method}"`);

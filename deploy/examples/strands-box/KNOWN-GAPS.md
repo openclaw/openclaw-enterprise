@@ -32,12 +32,72 @@ entries use the same four fields.
   identifies the caller by its certificate refuses every request from Box.
 - **Cause:** Box intercepts every `CONNECT` and builds both TLS legs without
   client authentication.
-- **Workaround:** none for mutual TLS. Identify the Box execution with a
-  per-execution bearer token that Box injects as a credential for that one
-  destination. The [fixed-repository sender](git/README.md) still documents client
-  certificates and cannot be reached from inside Box until it changes to that
-  model. The example Driver refuses protected repository wiring.
+- **Workaround:** none for mutual TLS. The paired registration identifies the
+  execution by a per-execution bearer whose digest the host reports, together
+  with the host control process, as the committed recipient.
 - **Upstream status:** not yet reported to strands-agents/box.
+
+## GitHub access through Box (Stage A prototype)
+
+- **Symptom:** the paired registration gives stock `git` and `gh` GitHub access,
+  but OCE neither authorizes nor records individual requests. Any branch, base,
+  number of draft pull requests or API call the installation token permits
+  succeeds. `occ.credential_deliveries` records the install, but no request
+  exchange or draft receipt rows exist for the execution.
+- **Cause:** Box v0.2.2 has no request-phase hook that asks an external service
+  before it attaches a credential. Its `EffectInterceptor` is internal and sees
+  only method, path and body length. The host therefore delivers the installation
+  token to `box run`, and Box sends with it on its own. The Credential Proxy
+  contract permits material reads for receipt or installation only, not as
+  authorization to send, so this stage cannot land.
+- **Workaround:** use only on a dogfood host with a test repository. Keep
+  branch protection on the base branch. Grant the App only Contents, Pull
+  requests and Metadata on the selected repository.
+- **Upstream status:** a Box fork adds an `authorizer://` credential source
+  that asks an operator endpoint for each request and fails closed. Drafts for
+  strands-agents/box go to the owner first; nothing is filed yet.
+
+## Box reads env:// credentials once at start
+
+- **Symptom:** the Box host restarts the released `box run` once, right after
+  the revision activates, and Codex restarts with it. About an hour after the
+  token was minted, or as soon as OCE renews it, the execution's GitHub requests
+  fail with `401` until the Agent is redeployed.
+- **Cause:** OCE prepares installation tokens only for the Agent's active
+  revision, and activation needs the Harness serving, so the token cannot exist
+  before Box starts. Box v0.2.2 reads each `env://` secret once at start and has
+  no refreshable source. OCE's renewal retires, and revokes, the token Box holds.
+- **Workaround:** redeploy the Agent after access ends. The restart happens
+  before the revision serves traffic, and the Compute install check waits for
+  the node to reconnect after it.
+- **Upstream status:** the same fork's `authorizer://` source returns a fresh
+  credential per request. Not yet reported to strands-agents/box.
+
+## A phantom credential cannot carry Git's first request
+
+- **Symptom:** with a `phantom` route on `github.com`, every stock Git request
+  fails with `403`.
+- **Cause:** Git sends its first smart-HTTP request without a credential and
+  waits for a `401` challenge. A phantom route refuses a request to its
+  destination that lacks the placeholder. `http.proactiveAuth` needs Git 2.46
+  or later.
+- **Workaround:** the host uses `inject = "always"` with Basic authentication
+  for `github.com`, so Box attaches the credential to every request there.
+  `api.github.com` keeps a phantom `token` header that `gh` sends from
+  `GITHUB_TOKEN`.
+- **Upstream status:** expected Box behavior for phantom routes, not a defect.
+
+## Every process in a Box execution can use every route
+
+- **Symptom:** any process in the execution, including tools and MCP servers,
+  can send authenticated requests to GitHub through Box's routes.
+- **Cause:** Box routes are per execution, not per process. The host also
+  passes the token in the `box run` process environment, which processes of
+  the same host user can read from `/proc`.
+- **Workaround:** run one Agent per Box execution, and run the host as a
+  dedicated operator account with no other processes.
+- **Upstream status:** by design in Box v0.2.2. The `authorizer://` source
+  keeps the token out of the `box run` environment.
 
 ## Box refuses protocol upgrades on HTTP egress
 

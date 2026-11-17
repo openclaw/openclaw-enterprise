@@ -617,7 +617,9 @@ export function start(
         (input.releaseGate === true && github !== undefined) ||
         (input.reservationGeneration !== undefined &&
           !/^[a-f0-9]{64}$/.test(input.reservationGeneration)) ||
-        Object.keys(effectiveEnvironment).some((name) => /^(?:GITHUB_|GH_|GIT_|OCE_GITHUB_)/.test(name))
+        Object.keys(effectiveEnvironment).some((name) =>
+          /^(?:GITHUB_|GH_|GIT_|OCE_GITHUB_)/.test(name),
+        )
       ) {
         throw new Error("github_route_unadmitted");
       }

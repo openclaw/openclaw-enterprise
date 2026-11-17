@@ -59,9 +59,7 @@ export interface ProtectedRepositoryConfiguration {
   readonly provider: "github";
 }
 
-export const protectedRepositorySchema: NonNullable<
-  DriverImplementation["configurationSchema"]
-> = {
+export const protectedRepositorySchema: NonNullable<DriverImplementation["configurationSchema"]> = {
   type: "object",
   additionalProperties: false,
   required: ["provider"],
@@ -144,6 +142,8 @@ interface Recipient {
   route?: RepositoryGitInstallationFence;
   /** The intent OCC persisted; a lost install or confirmation is settled from it, never redone. */
   pending?: (RepositoryGitInstallationFence & RepositoryGitMaterialVersion) | undefined;
+  /** The material of `pending`, kept in Worker memory only until the host shows it installed. */
+  delivering?: DeliveredMaterial | undefined;
   confirmed?: RepositoryGitInstallationFence;
   version?: RepositoryGitMaterialVersion;
   settledAt?: number;
@@ -279,7 +279,10 @@ class Shared {
     };
     if (sameVersion(active.version, version)) return;
     const installed = execution.repositoryRecipient?.installed;
-    if (active.confirmed !== undefined || (installed !== undefined && !sameVersion(installed, version))) {
+    if (
+      active.confirmed !== undefined ||
+      (installed !== undefined && !sameVersion(installed, version))
+    ) {
       // STAGE_A_PROTOTYPE: stock Box reads its secret once; a renewed version is not installed.
       // OCE's renewal retires (and revokes) the version Box holds, which ends its access.
       active.refused = version;
@@ -296,19 +299,8 @@ class Shared {
       return;
     }
     active.pending = pending;
-    if (installed === undefined) {
-      await deliverMaterial(
-        this.options.controlSocket,
-        {
-          owner: execution.owner,
-          executionId: execution.executionId,
-          requirementsDigest: execution.requirementsDigest,
-          material: hostMaterial(material),
-        },
-        signal,
-      );
-    }
-    await this.settle(authority, active, await this.read(signal), signal);
+    active.delivering = hostMaterial(material);
+    await this.settle(authority, active, execution, signal);
   }
 
   /**
@@ -323,11 +315,29 @@ class Shared {
     signal: AbortSignal,
   ): Promise<void> {
     const pending = active.pending!;
-    const installed = execution?.repositoryRecipient?.installed;
+    let current = execution;
     if (
-      execution === undefined ||
-      execution.executionId !== active.executionId ||
-      !sameVersion(installed, pending)
+      current !== undefined &&
+      current.executionId === active.executionId &&
+      current.repositoryRecipient?.installed === undefined &&
+      active.delivering !== undefined
+    ) {
+      current = await deliverMaterial(
+        this.options.controlSocket,
+        {
+          owner: current.owner,
+          executionId: current.executionId,
+          requirementsDigest: current.requirementsDigest,
+          material: active.delivering,
+        },
+        signal,
+      );
+    }
+    if (
+      current === undefined ||
+      current.executionId !== active.executionId ||
+      !sameVersion(current.repositoryRecipient?.installed, pending) ||
+      this.active !== active
     ) {
       return;
     }
@@ -335,6 +345,7 @@ class Shared {
     signal.throwIfAborted();
     if (confirmed === undefined || this.active !== active) return;
     active.pending = undefined;
+    active.delivering = undefined;
     this.settled(active, confirmed, pending);
   }
 

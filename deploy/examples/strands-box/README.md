@@ -2,19 +2,24 @@
 
 Verify native startup on a dedicated Linux ARM64 host, then deploy an Agent
 through the ordinary OpenClaw Enterprise (OCE) workflow. By default the example
-Driver refuses protected repository delivery. Configuring `repositorySender`
+Driver refuses protected repository delivery. Configuring `protectedRepository`
 selects the [paired protected registration](driver/README.md#paired-protected-registration)
 instead: the same package then supplies the protected Sandbox Driver and its
-Credential Proxy, and the [fixed-repository sender](git/README.md) runs in the
-Worker. The pairing has component tests against controlled origins. It has yet
-to be verified on an installed Box Agent. The GitHub steps below are acceptance
+Credential Proxy. The Worker delivers the GitHub App installation token that
+OCE mints to the Box host, and Box injects it on its own `github.com` and
+`api.github.com` routes, so the Agent uses [stock `git` and `gh`](git/README.md).
+This is a prototype stage that cannot ship: Box does not ask OCE before each
+request. See the [known gaps](KNOWN-GAPS.md#github-access-through-box-stage-a-prototype).
+The pairing has component tests against controlled origins. It has yet to be
+verified on an installed Box Agent. The GitHub steps below are acceptance
 checks for that pairing on one execution.
 
 The [Worker integration test](../../../tests/integration/strands-box-deployment.test.ts)
 deploys an Agent through the API and checks the original request at the Driver.
-It stops at a held host response. The [Git sender tests](../../../tests/conformance/strands-box-git.test.ts)
-use a local Git server. These checks do not establish an installed Box chat
-or a pull request on GitHub.
+It stops at a held host response. The [paired Driver tests](../../../tests/conformance/strands-box-protected.test.ts)
+run stock `git` and `gh` against a controlled GitHub origin through a stand-in
+for Box egress. These checks do not establish an installed Box chat or a pull
+request on GitHub.
 
 Read the [known gaps](KNOWN-GAPS.md) before deploying.
 
@@ -226,37 +231,32 @@ before deploying the version under test. Repeat the chat and isolation checks
 on that execution, then run the GitHub checks below. See
 [repository access levels](../../../docs/reference/repository-credentials/access-levels.md)
 and [protected sender selection](../../../docs/reference/drivers/selection.md#select-a-protected-sender).
-The issuer keeps the App signing key. The trusted sender uses the installation
-token outside Box. Keep both and any host Git credentials out of the Agent's
+The Worker keeps the App signing key; OCE mints the installation token. The
+Box host holds that token only in memory and in the `box run` environment.
+Keep the App key, the token and any host Git credentials out of the Agent's
 environment, files and prompts.
 
-1. In the original chat, ask the Agent to change one file and use Git to push
-   one commit through the [configured remote](git/README.md#use-the-admitted-remote).
-   In the same chat, have the Agent send `POST /draft-pull` with the sender's
-   [draft command](git/README.md#use-the-admitted-remote).
+The Box host restarts the released `box run` once, right after the revision
+activates, to give Box the token. Start the checks after that restart: the
+host's `GET /v1/execution` reports `repositoryRecipient.installed`.
 
-   ```sh
-   curl --header "Authorization: Bearer $OCE_REPOSITORY_SENDER_BEARER" \
-     --header 'Content-Type: application/json' --data '{"title":"Review change"}' \
-     https://repository-sender.example.invalid:9443/draft-pull
-   ```
-
-   Use the configured sender URL. Inside Box the variable holds only a
-   placeholder; Box replaces it with the execution's bearer on the way out.
-   Independently verify the file, branch, commit and draft head on GitHub. The
-   example PR action uses its configured head and base. GitHub's token
-   permissions and repository rules govern provider access.
-
-2. Try a different repository path, and a push to any ref other than the
-   configured head, against the controlled sender. Verify that it refuses each
-   request before contacting the origin and leaves the attempted ref unchanged.
+1. In the original chat, ask the Agent to change one file, push one branch
+   with `git push https://github.com/<owner>/<repo>.git <branch>` and open a
+   draft with `gh pr create --draft --repo <owner>/<repo> --head <branch>
+   --base main --title <title> --body <body>`. Inside Box `GITHUB_TOKEN` holds
+   only a placeholder. Independently verify the file, branch, commit and draft
+   on GitHub, and that GitHub records the App's bot account as the author of
+   the pull request.
+2. Try a push and a draft against another repository in the same account.
+   GitHub refuses both because the installation token covers only the assigned
+   repository. Verify that the attempted ref stays unchanged.
 3. Withdraw the active Agent's repository assignment through OCE without
-   stopping the Agent. From that same execution, attempt a fresh authenticated
-   fetch and a fresh push. Verify that the sender refuses both before contacting
-   GitHub and that the attempted ref stays unchanged. Send an ordinary message
-   and verify that the same chat still replies. Withdrawal leaves any shared
-   installation token unchanged. Removing a repository from a saved draft does
-   not by itself prove withdrawal from the running Agent.
+   stopping the Agent. OCE revokes the installation token at GitHub. From the
+   same execution, attempt a fresh fetch, push and draft. Verify that GitHub
+   refuses each with `401` and that the attempted ref stays unchanged. Send an
+   ordinary message and verify that the same chat still replies. Removing a
+   repository from a saved draft does not by itself prove withdrawal from the
+   running Agent.
 
 Keep the observed host, chat and GitHub results separate. If a push or PR
 request loses its response, check the original ref or PR before retrying. When

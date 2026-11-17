@@ -50,11 +50,11 @@ import {
   profileDigest,
   protectedWiring,
   verifyRelease,
+  wiringConfiguration,
   parseOwner,
   reserveExecution,
   stockHarnessCommand,
   validateInstalledGrants,
-  withRepositorySender,
 } from "../../deploy/examples/strands-box/host/control.ts";
 import type { serveInstalledControl } from "../../deploy/examples/strands-box/host/control.ts";
 import {
@@ -70,8 +70,10 @@ import {
   BOX_UPSTREAM_CA_KEY,
   loadUpstreamCa,
   parseRoute,
+  githubCredentialEnvironment,
+  githubCredentials,
+  githubPolicy,
   policy,
-  repositorySenderCredential,
   routeView,
   sameRouteView,
   upstreamCaPem,
@@ -1191,83 +1193,60 @@ test(
   },
 );
 
-test("the repository sender route pins one private address and the sender's exact requests", () => {
-  const route = parseRoute(
-    { url: "https://sender.example.test:9443/", address: "10.4.5.6" },
-    "repository-sender",
-  );
-  const rules = policy([route]);
+test("Box's GitHub routes carry one OCE token as two env:// secrets on GitHub's hosts only", () => {
+  const rules = policy([], true);
+  for (const host of ["github.com", "api.github.com"]) {
+    assert.match(
+      rules,
+      new RegExp(
+        `action == Box::Action::"net:connect", resource\\)\\nwhen \\{ context.input.host == "${host.replaceAll(".", "\\.")}" && context.input.port == 443 \\};`,
+      ),
+    );
+  }
   assert.match(
     rules,
-    /context.input.host == "sender.example.test" && context.input.port == 9443 && !\(context.input has ip6\) && \(!\(context.input has ip4\) \|\| \(context.input has ip4 && context.input.ip4 == "10.4.5.6"\)\)/,
+    /context.input.host == "github.com" && context.input.port == 443 && \(context.input.method == "GET" \|\| context.input.method == "POST"\) && context.input.intercepted == true/,
   );
-  const requests = [
-    ...rules.matchAll(/context.input.method == "([A-Z]+)" && context.input.path == "([^"]+)"/g),
-  ].map(([, method, path]) => `${method} ${path}`);
-  assert.deepEqual(requests, [
-    "GET /repository.git/info/refs",
-    "POST /repository.git/git-upload-pack",
-    "POST /repository.git/git-receive-pack",
-    "POST /draft-pull",
-  ]);
-  assert.equal(rules.match(/net:connect/g)?.length, 1);
-  assert.equal(rules.match(/intercepted == true/g)?.length, 4);
-  const credential = repositorySenderCredential(route);
+  assert.equal(rules.match(/net:connect/g)?.length, 2);
+  assert.equal(rules.match(/intercepted == true/g)?.length, 2);
+  assert.doesNotMatch(policy([]), /github/);
   assert.equal(
-    credential,
+    githubCredentials(),
     [
-      "[egress.repository-sender]",
-      'destinations = ["sender.example.test:9443"]',
-      'secret.ref = "env://OCE_REPOSITORY_SENDER_BEARER"',
+      "[egress.github-git]",
+      'destinations = ["github.com"]',
+      'secret.ref = "env://OCE_GITHUB_GIT_CREDENTIAL"',
+      'secret.placement = "basic_auth"',
+      'secret.inject = "always"',
+      "",
+      "[egress.github-api]",
+      'destinations = ["api.github.com"]',
+      'secret.ref = "env://GITHUB_TOKEN"',
       'secret.placement = "header"',
       'secret.header = "Authorization"',
-      'secret.prefix = "Bearer "',
+      'secret.prefix = "token "',
       'secret.inject = "phantom"',
       "",
     ].join("\n"),
   );
-  for (const refused of [
-    { url: "https://sender.example.test:9443/repository.git", address: "10.4.5.6" },
-    { url: "http://sender.example.test:9443/", address: "10.4.5.6" },
-    { url: "https://sender.example.test:9443/", address: "8.8.8.8" },
-    { url: "https://10.4.5.7:9443/", address: "10.4.5.6" },
-    { url: "https://sender.example.test:9443/?x=1", address: "10.4.5.6" },
-    { url: "https://user@sender.example.test:9443/", address: "10.4.5.6" },
-  ]) {
-    assert.throws(() => parseRoute(refused, "repository-sender"), {
-      message: "invalid_fixed_egress",
+  const token = `ghs_${randomBytes(18).toString("hex")}`;
+  assert.deepEqual(githubCredentialEnvironment(token), {
+    GITHUB_TOKEN: token,
+    OCE_GITHUB_GIT_CREDENTIAL: `x-access-token:${token}`,
+  });
+  for (const refused of ["", "short", "ghs_ has space", `ghs_${"a".repeat(600)}`, "a\nb:c"]) {
+    assert.throws(() => githubCredentialEnvironment(refused), {
+      message: "invalid_github_material",
     });
   }
-  assert.throws(() => repositorySenderCredential({ ...route, kind: "controlled-inference" }), {
-    message: "invalid_fixed_egress",
-  });
 });
 
-test("a sender bearer is admitted only with its operator route and only once", () => {
-  const route = parseRoute(
-    { url: "https://sender.example.test:9443/", address: "10.4.5.6" },
-    "repository-sender",
-  );
+test("the host reports an installed material version only for the live box run holding it", () => {
   const bearer = randomBytes(32).toString("base64url");
-  const input = { command: [], environment: {}, readOnly: [], writable: [], egress: [] };
-  assert.equal(withRepositorySender(undefined, input, undefined), input);
-  assert.deepEqual(withRepositorySender(route, input, bearer), {
-    ...input,
-    egress: [route],
-    repositorySenderBearer: bearer,
-  });
-  for (const [selected, value, launch] of [
-    [undefined, bearer, input],
-    [route, undefined, input],
-    [route, `${bearer}=`, input],
-    [route, bearer.slice(1), input],
-    [route, 7, input],
-    [route, bearer, { ...input, egress: [route] }],
-  ] as const) {
-    assert.throws(() => withRepositorySender(selected, launch, value), {
-      message: "repository_sender_bearer_unexpected_or_missing",
-    });
-  }
+  const recipient = {
+    bearerSha256: createHash("sha256").update(bearer).digest("hex"),
+    processInstanceId: "boot:7:11",
+  };
   const view = {
     owner: parseOwner({
       driverId: "box",
@@ -1280,60 +1259,40 @@ test("a sender bearer is admitted only with its operator route and only once", (
     requirementsDigest: "0".repeat(64),
     executionId: "execution",
     endpoint: { url: "wss://box.example.invalid/", workspaceRoot: "/home/node/workspace" },
-    repositorySender: { bearerSha256: createHash("sha256").update(bearer).digest("hex") },
   };
   const box = { bootId: "boot", pid: 42, startTicks: "99" };
-  assert.deepEqual(
+  const installed = {
+    preparationAttemptId: randomUUID(),
+    materialVersion: randomUUID(),
+    boxProcessInstanceId: "boot:42:99",
+  };
+  const live = (state: "starting" | "running" | "failed", current: typeof box | undefined) =>
     observedView({
-      view: { ...view, state: "running" },
-      execution: { boxProcess: () => box, generation: () => undefined },
-    }),
-    {
-      ...view,
-      state: "running",
-      repositorySender: { ...view.repositorySender, processInstanceId: "boot:42:99" },
-    },
-  );
-  // A held (starting) run still reports its `box run`; a failed or exited run reports none.
-  assert.deepEqual(
-    observedView({
-      view: {
-        ...view,
-        state: "starting",
-        protectedStartup: { plan: {}, reservedAt: new Date(0).toISOString() },
-      },
-      execution: { boxProcess: () => box, generation: () => "c".repeat(64) },
-    }),
-    {
-      ...view,
-      state: "starting",
-      repositorySender: { ...view.repositorySender, processInstanceId: "boot:42:99" },
-      protectedStartup: {
-        plan: {},
-        reservedAt: new Date(0).toISOString(),
-        generationSha256: "c".repeat(64),
-      },
-    },
-  );
+      view: { ...view, state, repositoryRecipient: { ...recipient, installed } },
+      execution: { boxProcess: () => current, generation: () => "c".repeat(64) },
+    });
+  assert.deepEqual(live("running", box).repositoryRecipient, { ...recipient, installed });
+  // A replaced, exited or failed `box run` no longer holds it; the recipient itself remains.
   for (const [state, current] of [
-    ["failed", box],
+    ["running", { ...box, pid: 43 }],
     ["running", undefined],
+    ["failed", box],
   ] as const) {
-    assert.deepEqual(
-      observedView({
-        view: { ...view, state },
-        execution: { boxProcess: () => current, generation: () => "c".repeat(64) },
-      }),
-      { ...view, state },
-    );
+    assert.deepEqual(live(state, current).repositoryRecipient, recipient);
   }
-  assert.ok(
-    !JSON.stringify(observedView({ view: { ...view, state: "running" } })).includes(bearer),
+  assert.deepEqual(
+    observedView({ view: { ...view, state: "starting", repositoryRecipient: recipient } }),
+    { ...view, state: "starting", repositoryRecipient: recipient },
   );
+  assert.equal(
+    observedView({ view: { ...view, state: "running" } }).repositoryRecipient,
+    undefined,
+  );
+  assert.ok(!JSON.stringify(live("running", box)).includes(bearer));
 });
 
 test(
-  "the host gives the sender bearer only to box run and never writes it to disk",
+  "the GitHub material reaches only the box run environment and never the disk",
   { skip: unsupported },
   async () => {
     const directory = temporary();
@@ -1347,13 +1306,14 @@ test(
       writeFileSync(join(agentBuildDir, file), "", { mode: 0o600 });
     }
     const boxBin = join(directory, "fixture-box");
-    // The fixture records the config, its policy and only a digest of the bearer it received.
+    // The fixture records the config, its policy and only digests of the values it received.
     writeFileSync(
       boxBin,
       '#!/bin/sh\ncp -- "$3" ../generated-box.toml || exit 3\n' +
         'policy=$(sed -n \'s/^policy = "\\(.*\\)"$/\\1/p\' "$3")\n' +
         'cp -- "$policy" ../generated-policy.dw || exit 4\n' +
-        "printf '%s' \"$OCE_REPOSITORY_SENDER_BEARER\" | sha256sum > ../bearer.sha256\n" +
+        "printf '%s' \"$GITHUB_TOKEN\" | sha256sum > ../token.sha256\n" +
+        "printf '%s' \"$OCE_GITHUB_GIT_CREDENTIAL\" | sha256sum > ../git.sha256\n" +
         "env | cut -d= -f1 | sort > ../box-env\n" +
         "sleep 2\nexit 2\n",
       { mode: 0o700 },
@@ -1370,23 +1330,28 @@ test(
       exec: [],
       linuxPreview: true,
     });
-    const route = parseRoute(
-      { url: "https://sender.example.test:9443/", address: "10.4.5.6" },
-      "repository-sender",
-    );
-    const bearer = randomBytes(32).toString("base64url");
+    const token = `ghs_${randomBytes(18).toString("hex")}`;
+    const reservationGeneration = "a".repeat(64);
+    const github = { token };
     const { input } = smokeInput(config);
     try {
       for (const refused of [
-        { ...input, egress: [route] },
-        { ...input, repositorySenderBearer: bearer },
-        { ...input, egress: [route, route], repositorySenderBearer: bearer },
-        { ...input, egress: [route], repositorySenderBearer: "short" },
+        { ...input, github },
+        { ...input, reservationGeneration },
+        { ...input, github, reservationGeneration, releaseGate: true as const },
+        { ...input, github, reservationGeneration: "short" },
+        { ...input, github: { token: "short" }, reservationGeneration },
         {
           ...input,
-          environment: { ...input.environment, OCE_REPOSITORY_SENDER_BEARER: "x" },
-          egress: [route],
-          repositorySenderBearer: bearer,
+          environment: { ...input.environment, GITHUB_TOKEN: "x" },
+          github,
+          reservationGeneration,
+        },
+        {
+          ...input,
+          environment: { ...input.environment, GH_HOST: "x" },
+          releaseGate: true as const,
+          reservationGeneration,
         },
       ]) {
         const scratch = join(directory, `refused-${randomBytes(4).toString("hex")}`);
@@ -1396,47 +1361,44 @@ test(
         await refusedExecution.done.catch(() => undefined);
         assert.equal(refusedExecution.boxProcess(), undefined);
       }
-      const execution = start(config, {
-        ...input,
-        egress: [route],
-        repositorySenderBearer: bearer,
-      });
-      const deadline = Date.now() + 5_000;
-      let observed: ReturnType<typeof execution.boxProcess>;
-      while ((observed = execution.boxProcess()) === undefined && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      assert.ok(observed);
-      assert.equal(
-        observed.startTicks,
-        readFileSync(`/proc/${observed.pid}/stat`, "utf8")
-          .slice(readFileSync(`/proc/${observed.pid}/stat`, "utf8").lastIndexOf(") ") + 2)
-          .split(/\s+/)[19],
-      );
-      assert.equal(observed.bootId, readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim());
+      // The restarted, already released run: no release gate, its inputs under `installed/`.
+      const execution = start(config, { ...input, github, reservationGeneration });
+      await execution.spawned;
+      assert.ok(execution.boxProcess());
+      assert.equal(execution.generation(), reservationGeneration);
       await assert.rejects(execution.ready, { message: "startup_refused:wait-original-native" });
       assert.equal(await execution.done, 2);
-      assert.equal(execution.boxProcess(), undefined, "an exited box run is not a recipient");
       const generated = readFileSync(join(directory, "generated-box.toml"), "utf8");
-      assert.match(
+      assert.ok(generated.includes(`\n${githubCredentials()}`));
+      assert.match(generated, new RegExp(`box_dir = "${runtimeDir}/installed/box-state"`));
+      assert.doesNotMatch(
         generated,
-        /\n\[egress\.repository-sender\]\ndestinations = \["sender\.example\.test:9443"\]\nsecret\.ref = "env:\/\/OCE_REPOSITORY_SENDER_BEARER"\n/,
+        /\[agent\.env\][^[]*(?:GITHUB_TOKEN|OCE_GITHUB_GIT_CREDENTIAL)/,
       );
-      assert.doesNotMatch(generated, /\[agent\.env\][^[]*OCE_REPOSITORY_SENDER_BEARER/);
-      assert.match(
-        readFileSync(join(directory, "generated-policy.dw"), "utf8"),
-        /context.input.method == "POST" && context.input.path == "\/repository.git\/git-receive-pack"/,
+      assert.ok(
+        readFileSync(join(directory, "generated-policy.dw"), "utf8").includes(githubPolicy()),
       );
       assert.equal(
-        readFileSync(join(directory, "bearer.sha256"), "utf8").split(" ")[0],
-        createHash("sha256").update(bearer).digest("hex"),
+        readFileSync(join(directory, "token.sha256"), "utf8").split(" ")[0],
+        createHash("sha256").update(token).digest("hex"),
+      );
+      assert.equal(
+        readFileSync(join(directory, "git.sha256"), "utf8").split(" ")[0],
+        createHash("sha256").update(`x-access-token:${token}`).digest("hex"),
       );
       assert.deepEqual(
         readFileSync(join(directory, "box-env"), "utf8")
           .trim()
           .split("\n")
           .filter((name) => !["PWD", "SHLVL", "_", "OLDPWD"].includes(name)),
-        ["EXPERIMENTAL_LINUX_SUPPORT", "HOME", "LANG", "OCE_REPOSITORY_SENDER_BEARER", "PATH"],
+        [
+          "EXPERIMENTAL_LINUX_SUPPORT",
+          "GITHUB_TOKEN",
+          "HOME",
+          "LANG",
+          "OCE_GITHUB_GIT_CREDENTIAL",
+          "PATH",
+        ],
       );
       // Nothing the host wrote (runtime records, box.toml, policy, staged inputs) holds it.
       const files: string[] = [];
@@ -1453,7 +1415,7 @@ test(
       walk(directory);
       assert.ok(files.length > 3);
       for (const file of files) {
-        assert.ok(!readFileSync(file).includes(bearer), file);
+        assert.ok(!readFileSync(file).includes(token), file);
       }
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -1738,10 +1700,7 @@ function protectedFixture() {
     agentId: "agent",
     revisionId: "revision",
   });
-  const sender = parseRoute(
-    { url: "https://sender.example.test:9443/", address: "10.4.5.6" },
-    "repository-sender",
-  );
+  const configured = { provider: "github" as const };
   const execution = {
     installationId: "installation",
     namespaceId: owner.namespaceId,
@@ -1772,28 +1731,36 @@ function protectedFixture() {
     },
     routes: [],
   };
-  const wiring = {
-    plan,
-    configuration: { version: 1, repositorySender: { url: sender.url, address: sender.address } },
-  };
-  return { owner, sender, plan, wiring };
+  const wiring = { plan, configuration: wiringConfiguration("github") };
+  return { owner, configured, plan, wiring };
 }
 
-test("the host admits only the paired one-repository plan for its own sender route", () => {
-  const { owner, sender, plan, wiring } = protectedFixture();
-  assert.deepEqual(protectedWiring(sender, wiring, owner), plan);
+test("the host admits only the paired one-repository plan for its own GitHub routes", () => {
+  const { owner, configured, plan, wiring } = protectedFixture();
+  assert.deepEqual(wiring.configuration, {
+    version: 2,
+    protectedRepository: {
+      provider: "github",
+      hosts: ["github.com", "api.github.com"],
+      delivery: "box-env-v1",
+    },
+  });
+  assert.deepEqual(protectedWiring(configured, wiring, owner), plan);
   for (const refused of [
-    { ...wiring, configuration: { ...wiring.configuration, version: 2 } },
+    { ...wiring, configuration: { ...wiring.configuration, version: 1 } },
     {
       ...wiring,
       configuration: {
-        version: 1,
-        repositorySender: { url: "https://other.example.test:9443/", address: sender.address },
+        version: 2,
+        protectedRepository: { ...wiring.configuration.protectedRepository, hosts: ["github.com"] },
       },
     },
     {
       ...wiring,
-      configuration: { version: 1, repositorySender: { url: sender.url, address: "10.4.5.7" } },
+      configuration: {
+        version: 1,
+        repositorySender: { url: "https://sender.example.test:9443/", address: "10.4.5.6" },
+      },
     },
     { ...wiring, plan: { ...plan, repositoryGitAuthorization: "request-hook-observed" } },
     { ...wiring, plan: { ...plan, routes: [{}] } },
@@ -1812,7 +1779,7 @@ test("the host admits only the paired one-repository plan for its own sender rou
     },
     { ...wiring, extra: true },
   ]) {
-    assert.throws(() => protectedWiring(sender, refused, owner), {
+    assert.throws(() => protectedWiring(configured, refused, owner), {
       message: /^(?:unadmitted_protected_wiring|unknown_field)$/,
     });
   }
@@ -1936,21 +1903,13 @@ test(
       exec: [],
       linuxPreview: true,
     });
-    const { sender } = protectedFixture();
     const { input } = smokeInput(config);
+    const reservationGeneration = randomBytes(32).toString("hex");
     try {
-      const execution = start(config, {
-        ...input,
-        egress: [sender],
-        repositorySenderBearer: randomBytes(32).toString("base64url"),
-        releaseGate: true,
-      });
-      const deadline = Date.now() + 5_000;
-      while (execution.generation() === undefined && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
+      const execution = start(config, { ...input, releaseGate: true, reservationGeneration });
+      await execution.spawned;
       const generation = execution.generation();
-      assert.match(generation ?? "", /^[a-f0-9]{64}$/);
+      assert.equal(generation, reservationGeneration);
       await new Promise((resolve) => setTimeout(resolve, 300));
       assert.throws(() => lstatSync(join(directory, "released")), { code: "ENOENT" });
       assert.equal(execution.generation(), generation);

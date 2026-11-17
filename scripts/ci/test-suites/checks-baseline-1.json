@@ -31,7 +31,6 @@
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-protected-workspace-endpoint.test.ts",
     "tests/conformance/strands-box-driver.test.ts",
-    "tests/conformance/strands-box-git.test.ts",
     "tests/conformance/strands-box-harness-image.test.ts",
     "tests/conformance/strands-box-host.test.ts",
     "tests/conformance/strands-box-ingress.test.ts",
@@ -163,8 +162,7 @@
     "tests/integration/protected-source-refusals.test.ts",
     "tests/integration/refusal-answers.test.ts",
     "tests/integration/namespace-deletion-console-api.test.ts",
-    "tests/integration/github-selected-repositories.test.ts",
-    "tests/integration/strands-fast-runner.test.ts"
+    "tests/integration/github-selected-repositories.test.ts"
   ],
   "files": [
     {
@@ -277,9 +275,6 @@
     },
     {
       "path": "tests/conformance/strands-box-driver.test.ts"
-    },
-    {
-      "path": "tests/conformance/strands-box-git.test.ts"
     },
     {
       "path": "tests/conformance/strands-box-harness-image.test.ts"
@@ -1039,13 +1034,6 @@
       "path": "tests/conformance/topology-controller-manifests.test.ts",
       "expectedTests": [
         "controller topology keeps API-only fixture inputs separate from the worker"
-      ]
-    },
-    {
-      "path": "tests/integration/strands-fast-runner.test.ts",
-      "expectedTests": [
-        "the Strands fast runner refuses invalid prerequisites before creating results",
-        "the Strands fast runner explains its requirements without a native executable"
       ]
     }
   ]

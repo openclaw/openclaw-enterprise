@@ -139,7 +139,7 @@ export interface RecordView {
 
 interface LaunchPlan extends StartInput {
   readonly separateNode?: NodeLaunch;
-  /** Present only for a protected revision on a host configured with a repository sender. */
+  /** Present only for a protected revision on a host configured with `protectedRepository`. */
   readonly protectedStartup?: ProtectedStartup;
 }
 
@@ -255,7 +255,7 @@ export function deliveredMaterial(value: unknown): DeliveredMaterial {
     typeof material.expiresAt !== "string" ||
     !(Date.parse(material.expiresAt) > Date.now()) ||
     typeof material.installationId !== "string" ||
-    !/^[1-9][0-9]{0,15}$/.test(material.installationId) ||
+    !ID.test(material.installationId) ||
     typeof material.value !== "string" ||
     !GITHUB_TOKEN_VALUE.test(material.value) ||
     !Array.isArray(repositories) ||
@@ -273,7 +273,7 @@ export function deliveredMaterial(value: unknown): DeliveredMaterial {
       fields(repository, ["repositoryId", "repository"]);
       if (
         typeof repository.repositoryId !== "string" ||
-        !/^[1-9][0-9]{0,15}$/.test(repository.repositoryId) ||
+        !ID.test(repository.repositoryId) ||
         typeof repository.repository !== "string" ||
         !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(repository.repository)
       )
@@ -727,10 +727,7 @@ function installedConfig(value: unknown): InstalledConfig {
   );
   const protectedRepository = parseProtectedRepository(data.protectedRepository);
   // Box applies the bundle to its GitHub upstreams too, so those routes must opt in as well.
-  if (
-    protectedRepository !== undefined &&
-    protectedRepository.caSha256 !== upstreamCa?.sha256
-  )
+  if (protectedRepository !== undefined && protectedRepository.caSha256 !== upstreamCa?.sha256)
     throw new Error(
       upstreamCa === undefined ? "upstream_ca_not_configured" : "upstream_ca_route_not_declared",
     );

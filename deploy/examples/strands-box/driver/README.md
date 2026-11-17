@@ -7,11 +7,11 @@ transport verifier. The host matches those inputs to its independently admitted
 execution. A private relay carries the existing Harness WebSocket protocol.
 
 This example supports ordinary execution with a controlled, non-authorizing
-inference fixture. Without `repositorySender` it does not register a Credential
+inference fixture. Without `protectedRepository` it does not register a Credential
 Proxy or provide protected Git: the paired loader refuses it, and the Driver
 refuses protected revision inputs, credential attachments, a projected workload
 identity or initial workspace files before starting the Box. With
-`repositorySender` the package returns the
+`protectedRepository` the package returns the
 [paired protected registration](#paired-protected-registration) instead, which
 the ordinary `drivers.sandbox` loader refuses.
 
@@ -346,7 +346,13 @@ terminal and out of reports. Use the normal Worker's identity and mount flags.
 
 ## Paired protected registration
 
-Add `repositorySender` to the Driver configuration and select the same Driver
+> [!WARNING]
+> Prototype stage: Box injects the installation token on every GitHub request
+> without asking OCE, which the Credential Proxy contract does not allow. Do
+> not use this beyond a dogfood host. See the
+> [known gaps](../KNOWN-GAPS.md#github-access-through-box-stage-a-prototype).
+
+Add `protectedRepository` to the Driver configuration and select the same Driver
 as `drivers.credential_proxy` with an empty configuration:
 
 ```json
@@ -357,22 +363,7 @@ as `drivers.credential_proxy` with an empty configuration:
       "package": "@openclaw-enterprise/example-strands-box-driver",
       "configuration": {
         "...": "the ordinary settings above",
-        "repositorySender": {
-          "url": "https://repository-sender.example.invalid:9443/",
-          "address": "10.0.0.9",
-          "peerAddress": "10.0.0.7",
-          "listenPort": 9443,
-          "certificateFile": "/var/run/strands-sender/tls.crt",
-          "keyFile": "/var/run/strands-sender/tls.key",
-          "journalDir": "/var/lib/strands-sender",
-          "repository": {
-            "repository": "example/review",
-            "repositoryId": "123",
-            "installationId": "456",
-            "head": "agent-review",
-            "base": "main"
-          }
-        }
+        "protectedRepository": { "provider": "github" }
       }
     },
     "credential_proxy": { "id": "strands-box", "configuration": {} }
@@ -380,19 +371,10 @@ as `drivers.credential_proxy` with an empty configuration:
 }
 ```
 
-- `url` and `address` are what Box connects to. The host's own
-  `repositorySender` route must name the same URL and private IPv4. The host
-  refuses wiring that differs from its route.
-- The Worker listens on `listenPort` and drops every peer except
-  `peerAddress`, the Box host's source address. Keep the NetworkPolicy as the
-  outer fence. Box checks the listener certificate against public roots only,
-  so the certificate must chain to a root Box trusts.
-- `journalDir` is a Worker-local, owner-only directory. The sender keeps one
-  journal subdirectory per execution so a lost push or draft reply is never
-  replayed.
-- `repository` selects one GitHub repository and two distinct branches. The
-  sender accepts a push only to `head` and opens draft pull requests only from
-  `head` into `base`.
+The host configuration needs the same setting, `"protectedRepository":
+{ "provider": "github" }`. The repository, branch and base come from the
+Agent's repository assignment, not from configuration. The host refuses wiring
+that differs from its own GitHub routes.
 
 The registration provides:
 
@@ -400,26 +382,35 @@ The registration provides:
   `enrollHarness`, `repositoryAccess`). It admits only a protected v5 revision
   with one online-request GitHub repository plan, no other egress route, no
   credential attachments and a dedicated Codex Harness. It sends the host a
-  fresh 256-bit bearer in `PUT /v1/execution`. The host keeps the bearer in
-  memory, gives it only to `box run` as a phantom credential, and reports its
-  SHA-256 and the live `box run` process identity. `enrollHarness` relays
+  fresh 256-bit execution bearer in `PUT /v1/execution`. The host keeps only
+  its SHA-256 and reports it with the host control process identity: together
+  they are the recipient that Compute commits. `enrollHarness` relays
   Compute's signed startup release to `POST /v1/release`. The host verifies
   the signature and opens the startup gate only for that held execution.
 - the Credential Proxy (`sourceControl`, `configureRevision`, `wiringStatus`,
   `verifyInstallation`, `removeRevision`, `bindRepositoryGit`). The installation
-  that Compute commits is built only from what the host reports. The listener
-  and the sender run only in the Worker, after `bindRepositoryGit`. Each request
-  reads the current material version from OCC. Box never receives the
-  installation token.
+  that Compute commits is built only from what the host reports. After the
+  revision activates, OCE prepares the installation token. The Worker
+  persists the install intent, delivers the token with
+  `POST /v1/repository-material` on the owner-only control socket, and confirms
+  the install only after the host reports that exact version in the live
+  `box run`. A lost reply is settled from the host's record, never installed
+  twice.
 
-Withdrawing the repository assignment stops new sends before any provider
-connection. The Box execution and its chat keep running.
+The host restarts the released `box run` once with Box's two GitHub routes:
+`github.com` attaches `x-access-token:<token>` as Basic authentication to
+every request, and `api.github.com` replaces the `GITHUB_TOKEN` placeholder in
+`Authorization: token <placeholder>`. Box reads both values once at start, so
+a renewed token is not installed and access ends when OCE retires the
+installed one. Withdrawing the repository assignment revokes the token at
+GitHub; the Box execution and its chat keep running.
 
 The Agent Gateway sends a protected Box turn with the same
 `externalSandbox` policy and `networkAccess: "restricted"` as an ordinary Box
 turn. Under that policy Codex applies no network sandbox of its own; it only
-sets `CODEX_SANDBOX_NETWORK_DISABLED=1` for commands. Box egress, with the
-`repository-sender` route as the only Git destination, is the network fence.
+sets `CODEX_SANDBOX_NETWORK_DISABLED=1` for commands. Box egress, with
+`github.com` and `api.github.com` as the only GitHub destinations, is the
+network fence.
 
 ## Execution lifecycle
 
