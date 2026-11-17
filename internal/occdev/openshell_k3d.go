@@ -28,7 +28,7 @@ const (
 )
 
 // developmentCodexProfile matches the localhost seccomp profile name
-// `scripts/lib/codex-seccomp-k3d.mjs` builds for the dedicated Codex sandbox.
+// `scripts/lib/codex-seccomp-k3d.ts` builds for the dedicated Codex sandbox.
 //
 // The reviewed Codex version is deliberately not pinned here. That script owns
 // the list of reviewed versions and refuses to prepare a profile for any other,
@@ -57,7 +57,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	defer func() {
 		if result != nil {
 			stage, cleanupFailed := startupFailureDetails(result)
-			fmt.Fprintf(r.opts.Out, "\n[occ-dev-startup] primary_stage=%s cleanup_failed=%t parent_context_done=%t\n", stage, cleanupFailed, ctx.Err() != nil)
+			fmt.Fprintf(r.opts.Out, "\n[occ-dev-startup] primary_stage=%s cleanup_failed=%t parent_context_done=%t%s\n", stage, cleanupFailed, ctx.Err() != nil, routingFailureSuffix(result))
 		}
 	}()
 	if len(opts.ComposeArgs) != 0 {
@@ -139,7 +139,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err := validateClusterName(state.Cluster); err != nil {
 		return err
 	}
-	if sandboxDriver == "openshell" {
+	{
 		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
 		state.BrowserOrigin = developmentBrowserOrigin(consoleHost, browserPort)
 		state.NativeAdminDomain = agentDomain
@@ -173,6 +173,13 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		return err
 	}
 	if err := r.pinEndpoint(ctx); err != nil {
+		return err
+	}
+	if err := r.checkDevelopmentHostPorts(ctx, developmentStack{cluster: state.Cluster}, []developmentHostPort{
+		{apiPort, "OPENCLAW_DEV_PORT"},
+		{browserPort, "OCC_DEVELOPMENT_BROWSER_PORT"},
+		{kubernetesPort, "OCC_DEVELOPMENT_KUBERNETES_API_PORT"},
+	}); err != nil {
 		return err
 	}
 	if err := r.validateOpenShellImageRevisions(ctx, openShellImages); err != nil {
@@ -238,7 +245,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 			}
 		}
 		if cleanupErr != nil {
-			result = joinStartupCleanup(result, startupError("rollback", fmt.Errorf("rollback incomplete; preserving %s for occ dev down: %w", directory, cleanupErr)))
+			result = joinStartupCleanup(result, startupError("rollback", fmt.Errorf("rollback incomplete; preserving %s for occ dev down; clean up with %s: %w", directory, kubernetesDownCommand(directory, sandboxDriver, opts.Repository), cleanupErr)))
 		}
 	}()
 	if err := exclusiveWrite(filepath.Join(directory, ".openclaw-development"), []byte(stateMarker), 0600); err != nil {
@@ -270,7 +277,8 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	}
 	clusterAttempted = true
 	if err := r.createK3dCluster(ctx, clusterArgs...); err != nil {
-		clusterCreationFailed = true
+		// A create that k3d fully rolled back leaves nothing to clean up.
+		clusterCreationFailed = !r.k3dRolledBackCleanly(ctx, err, state.Cluster)
 		return err
 	}
 	if err := r.checkDevelopmentNodeDNS(ctx, state); err != nil {
@@ -332,7 +340,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		fmt.Fprintln(r.opts.Out, "Importing the controller and PostgreSQL images alongside the cluster checks...")
 		controllerImage, err = r.importDevelopmentController(ctx, state)
 		if err != nil {
-			return fmt.Errorf("import the development controller image: %w", err)
+			return startupError("controller-image-import", fmt.Errorf("import the development controller image: %w", err))
 		}
 		// The probe Pods run the controller image. The check creates its own
 		// Namespaces and policy and no routing resources, and its probes wait on
@@ -813,7 +821,6 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	values := map[string]any{
 		"images":         map[string]string{"controller": controllerImage},
 		"installation":   map[string]string{"name": "Kubernetes development"},
-		"auth":           map[string]string{"baseUrl": fmt.Sprintf("http://127.0.0.1:%d", state.APIPort)},
 		"bootstrap":      map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}},
 		"database":       map[string]any{"cidrs": []string{string(postgresIP) + "/32"}},
 		"cluster":        map[string]any{"cidrs": []string{string(clusterIP) + "/32"}, "port": clusterPort},
@@ -824,6 +831,26 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	if state.authenticatedOpenShell() {
 		values["backend"] = map[string]any{"openshell": map[string]string{"clientSecretName": "openshell-client-tls"}}
 	}
+	if state.BrowserPort != 0 {
+		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
+		if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
+			return err
+		}
+		cert, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.crt"))
+		if err != nil {
+			return err
+		}
+		key, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.key"))
+		if err != nil {
+			return err
+		}
+		browserSecret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-development-browser-tls", namespace, labels), "stringData": map[string]string{"tls.crt": string(cert), "tls.key": string(key)}}
+		if err := r.writeAndApply(ctx, state, "browser-tls", browserSecret); err != nil {
+			return err
+		}
+		values["auth"] = map[string]string{"baseUrl": developmentBrowserOrigin(consoleHost, state.BrowserPort)}
+		values["agentNativeAdmin"] = map[string]any{"enabled": routing, "domain": agentDomain}
+	}
 	if routing {
 		gatewayKey, err := randomDevelopmentSecret()
 		if err != nil {
@@ -833,26 +860,7 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		if err := r.writeAndApply(ctx, state, "gateway-api-key", gatewaySecret); err != nil {
 			return err
 		}
-		if state.BrowserPort != 0 {
-			consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
-			if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
-				return err
-			}
-			cert, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.crt"))
-			if err != nil {
-				return err
-			}
-			key, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.key"))
-			if err != nil {
-				return err
-			}
-			browserSecret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-development-browser-tls", namespace, labels), "stringData": map[string]string{"tls.crt": string(cert), "tls.key": string(key)}}
-			if err := r.writeAndApply(ctx, state, "browser-tls", browserSecret); err != nil {
-				return err
-			}
-			values["auth"] = map[string]string{"baseUrl": developmentBrowserOrigin(consoleHost, state.BrowserPort)}
-			values["agentNativeAdmin"] = map[string]any{"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain}
-		}
+
 		values["gatewayRouting"] = map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"}
 		if hostname := developmentRoutingHostname(state); hostname != "" {
 			values["gatewayRouting"].(map[string]any)["hostname"] = hostname
@@ -883,7 +891,10 @@ func (r *runner) helmUpgrade(ctx context.Context, state *developmentState, value
 // `k3d cluster stop` and `start` or a host reboot. The chart admits PostgreSQL
 // and the Kubernetes API only as explicit /32 hosts, and both addresses can
 // change on restart. This launcher-owned policy adds the same egress by
-// PostgreSQL Pod label and by the owned k3d network subnet.
+// PostgreSQL Pod label and by the owned k3d network subnet. The image upgrade
+// helper's startup preflight Pods (component upgrade-preflight) check the
+// candidate database and Compute as the API and worker do, so they get the
+// same egress; without it a moved PostgreSQL Pod refuses every upgrade.
 func (r *runner) applyDevelopmentRestartEgress(ctx context.Context, state *developmentState, clusterIP string, clusterPort int) error {
 	subnet, err := r.developmentNodeSubnet(ctx, state, clusterIP)
 	if err != nil {
@@ -902,7 +913,7 @@ func (r *runner) applyDevelopmentRestartEgress(ctx context.Context, state *devel
 			map[string]any{
 				"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": kubernetesMetadata("openclaw-development-postgres-egress", namespace, labels),
 				"spec": map[string]any{
-					"podSelector": components("api", "worker", "initialization"), "policyTypes": []string{"Egress"},
+					"podSelector": components("api", "worker", "initialization", "upgrade-preflight"), "policyTypes": []string{"Egress"},
 					"egress": []any{map[string]any{
 						"to":    []any{map[string]any{"podSelector": map[string]any{"matchLabels": map[string]string{"app": "postgres"}}}},
 						"ports": []any{map[string]any{"protocol": "TCP", "port": 5432}},
@@ -912,7 +923,7 @@ func (r *runner) applyDevelopmentRestartEgress(ctx context.Context, state *devel
 			map[string]any{
 				"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": kubernetesMetadata("openclaw-development-kubernetes-egress", namespace, labels),
 				"spec": map[string]any{
-					"podSelector": components("api", "worker", "initialization", "collector"), "policyTypes": []string{"Egress"},
+					"podSelector": components("api", "worker", "initialization", "upgrade-preflight", "collector"), "policyTypes": []string{"Egress"},
 					"egress": []any{map[string]any{
 						"to":    []any{map[string]any{"ipBlock": map[string]string{"cidr": subnet}}},
 						"ports": []any{map[string]any{"protocol": "TCP", "port": clusterPort}},

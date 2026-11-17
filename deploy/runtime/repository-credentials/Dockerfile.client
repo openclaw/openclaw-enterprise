@@ -22,4 +22,4 @@ COPY dist ./dist
 # Runtime code must stay readable when the build host uses a restrictive umask.
 RUN chmod -R a=rX /app
 USER node
-ENTRYPOINT ["node", "/app/dist/drivers/repo/github/credentials/client/launch.js"]
+ENTRYPOINT ["node", "/app/dist/drivers/repo/github/access/client/launch.js"]

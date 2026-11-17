@@ -1,3 +1,4 @@
+import type { NamespaceLifecycleHooks } from "@openclaw-enterprise/contracts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
@@ -8,16 +9,18 @@ import type {
   DriverCapability,
   DriverRegistration,
   DriverRegistrationRef,
+  EgressRef,
   ProxyPlan,
 } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { canonicalProvisioningJson } from "./agent-provisioning.ts";
 import {
   capability,
+  validNamespaceLifecycleHooks,
   driverHasCapabilityContract,
   driverHasValidLifecycleHooks,
 } from "./driver-contract.ts";
-import { DriverSelectionError } from "./errors.ts";
+import { DriverSelectionError, ResourceStateConflictError } from "./errors.ts";
 
 /** One process-local owner. Its reference, unlike object identity, survives an API/worker handoff. */
 export class InstalledDriver {
@@ -25,8 +28,11 @@ export class InstalledDriver {
   readonly credentialGatewayOwnerId: string | undefined;
   readonly capabilities: readonly DriverCapability[];
   readonly lifecycleDriver: Driver | undefined;
+  readonly namespaceLifecycleHooks: NamespaceLifecycleHooks | undefined;
   readonly #views = new Map<DriverCapability, { id: string; driver: Driver }>();
   readonly #close: (() => void | Promise<void>) | undefined;
+  readonly #retiredStaticProviderRefs: readonly EgressRef[];
+  readonly #repositoryOnly: boolean;
   #closing: Promise<void> | undefined;
 
   constructor(
@@ -34,6 +40,10 @@ export class InstalledDriver {
       readonly id: string;
       readonly implementation: string;
       readonly configuration: unknown;
+      /** @internal Process-local admission policy supplied only by bundled composition. */
+      readonly retiredStaticProviderRefs?: readonly EgressRef[];
+      /** @internal Set only after bundled repository transport validation. */
+      readonly repositoryOnly?: boolean;
     },
     registration: DriverRegistration,
     // Installation composition supplies the configured identity for each capability.
@@ -42,6 +52,12 @@ export class InstalledDriver {
     gatewayConfiguration: unknown = selection.configuration,
   ) {
     const { id, implementation, configuration } = selection;
+    this.#repositoryOnly = selection.repositoryOnly === true;
+    this.#retiredStaticProviderRefs = Object.freeze(
+      (selection.retiredStaticProviderRefs ?? []).map(({ id, generation }) =>
+        Object.freeze({ id, generation }),
+      ),
+    );
     if (!isNonEmptyString(id) || !isNonEmptyString(implementation)) {
       throw new DriverSelectionError(
         "A Driver registration requires an identity and implementation.",
@@ -59,6 +75,7 @@ export class InstalledDriver {
         driver.id !== (capabilityIds[key] ?? id) ||
         driver.implementation !== implementation ||
         driver.computeLifecycleHooks !== undefined ||
+        driver.namespaceLifecycleHooks !== undefined ||
         !driverHasCapabilityContract(driver)
       ) {
         throw new DriverSelectionError(
@@ -96,7 +113,19 @@ export class InstalledDriver {
       }
       this.lifecycleDriver = Object.freeze(lifecycle);
     }
+    if (
+      registration.namespaceLifecycleHooks !== undefined &&
+      !validNamespaceLifecycleHooks(registration.namespaceLifecycleHooks)
+    ) {
+      throw new DriverSelectionError(
+        "A Driver registration has invalid Namespace lifecycle hooks.",
+      );
+    }
+    this.namespaceLifecycleHooks = registration.namespaceLifecycleHooks;
     this.#close = registration.close?.bind(registration);
+    if (this.#repositoryOnly) {
+      this.requireRepositoryGitTransport();
+    }
     Object.freeze(this);
   }
 
@@ -115,6 +144,24 @@ export class InstalledDriver {
       );
     }
     return view.driver as DriverByCapability[K];
+  }
+
+  /** @internal The validated repository-only installation retains ordinary model delivery. */
+  allowsOrdinaryCredentialGateway(): boolean {
+    return this.#repositoryOnly;
+  }
+
+  /** @internal Refuse new static admissions without changing retained provider behavior. */
+  assertNewStaticProviderUse(ref: EgressRef): void {
+    if (
+      this.#retiredStaticProviderRefs.some(
+        (retired) => retired.id === ref.id && retired.generation === ref.generation,
+      )
+    ) {
+      throw new ResourceStateConflictError(
+        "The selected Driver has retired new uses of this protected static credential provider. Ask an Installation administrator to configure a supported model access path.",
+      );
+    }
   }
 
   /** Admission needs both operational views; release still requires the observed recipient. */

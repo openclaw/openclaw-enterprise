@@ -2,7 +2,7 @@ import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { createOpenShellOnlineHttpAuthority } from "../../apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts";
-import { harnessTlsFixture } from "./harness-tls.mjs";
+import { harnessTlsFixture } from "./harness-tls.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 export const grpc = require("@grpc/grpc-js");

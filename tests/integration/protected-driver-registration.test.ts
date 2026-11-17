@@ -1,10 +1,11 @@
+import { createReadyComputeDriver } from "../helpers/development.ts";
 import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
 import { takeUnloggedRuntimeFields } from "../helpers/openshell-git-runtime.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
-} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { createOpenShellCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-registration.ts";
 import type { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -15,6 +16,7 @@ import {
   type OpenShellSandboxDriverOptions,
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
@@ -73,11 +75,11 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
 import {
   createCredentialProxyInstallationConfiguration,
   createInstallationDriverConfiguration,
-} from "../helpers/installation-driver-configuration.mjs";
+} from "../helpers/installation-driver-configuration.ts";
 import { routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
-import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { createTlsMaterial } from "../fixtures/repository-credentials/process.ts";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
+import { listen } from "../helpers/listen.ts";
 import {
   backendDefinition,
   databaseUrl,
@@ -312,17 +314,16 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
     "no release on changed runtime, substituted wiring or unauthenticated peer",
   );
 
-  // Selection of the two capabilities installs one real Compute lifecycle owner.
-  let hooks: readonly Driver[] = [];
-  const seed: ComputeDriver = Object.assign(Object.create(api.computeDriver), {
-    setLifecycleDrivers(selected: readonly Driver[]) {
-      hooks = selected;
-    },
-  });
-  controller.registerDriver(seed);
-  controller.selectDriver("compute", seed.id);
-  assert.equal(hooks.length, 1);
-  await new ComputeLifecycleDispatcher(hooks).afterNamespacePrepared(context.namespace);
+  const compute = createReadyComputeDriver("namespace-contract-compute");
+  controller.registerDriver(compute);
+  controller.selectDriver("compute", compute.id);
+  // Both selected capabilities share one registration's Namespace effects.
+  await controller.observeNamespaceLifecycle(
+    context.namespace,
+    "ready",
+    new AbortController().signal,
+    () => {},
+  );
   assert.equal(calls.lifecycle, 1);
 
   // Two separate registrations cannot establish a protected Backend, even with the same IDs.
@@ -570,7 +571,7 @@ test("protected Git resolves repository and installation grants without granting
 });
 
 test("OpenShell registration pairs its capabilities using only a Repo delivery resolver", async (t) => {
-  const { registry } = repositoryDeliveryFixture();
+  const { registry, revision: seed, binding } = repositoryDeliveryFixture();
   const configuration: OpenShellSandboxDriverOptions = {
     gateway: { workspaceMode: "operator" },
     kubernetes: {
@@ -590,6 +591,12 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
       ],
     },
   };
+  const tls = await createTlsMaterial(t);
+  const directory = await temporaryDirectory(t, "oce-worker-binding-");
+  const certificatePath = join(directory, "listener.pem");
+  const issuerPublicKeyPath = join(directory, "issuer.pem");
+  const { publicKey } = generateKeyPairSync("ed25519");
+  await writeFile(issuerPublicKeyPath, publicKey.export({ type: "spki", format: "pem" }));
   let runtime: OpenShellGitRuntime | undefined;
   const input = {
     sandbox: {
@@ -623,7 +630,16 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
       resolveDelivery: createGitHubRepositoryDeliveryResolver(registry),
       configuration: {
         registrationName: "oce-prepared-git",
-        authority: {} as OpenShellGitRuntime["configuration"]["authority"],
+        authority: {
+          host: "127.0.0.1",
+          port: 0,
+          certificatePath,
+          privateKeyPath: tls.keyFile,
+          issuerPublicKeyPath,
+          issuer: "registration-fixture",
+          audience: "registration-fixture",
+          keyId: "fixture",
+        },
       },
     },
   } satisfies Parameters<typeof createOpenShellCapabilities>[0];
@@ -633,19 +649,8 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   assert.ok(capabilities.sandbox.repositoryAccess);
   assert.ok(capabilities.proxy?.bindRepositoryGit);
   assert.ok(capabilities.repositoryTransport);
-  const authority = {} as ProtectedRepositoryGitAuthority;
+  const authority = { online: {} } as ProtectedRepositoryGitAuthority;
   await assert.rejects(runtime.bindRepositoryGit(authority), /requires its selected route store/);
-  // Observe the actual bundled handoff without starting listeners or contacting PostgreSQL.
-  const connect = t.mock.method(runtime, "connectRouteStore");
-  const bind = t.mock.method(
-    capabilities.proxy as Required<Pick<CredentialProxyDriver, "bindRepositoryGit">>,
-    "bindRepositoryGit",
-    async (received: ProtectedRepositoryGitAuthority) => {
-      assert.equal(connect.mock.callCount(), 1);
-      assert.equal(received, authority);
-      return { async close() {} };
-    },
-  );
   const registration = {
     capabilities: { sandbox: capabilities.sandbox, credential_proxy: capabilities.proxy },
   };
@@ -655,7 +660,53 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
     repositoryGitDriver: selected,
     repositoryTransport: capabilities.repositoryTransport,
   } as InstallationRuntimeDrivers;
-  const pool = {} as PostgresPool;
+  const saved = (
+    signal: AbortSignal,
+    owner: InstalledDriver,
+    version: 5 | 6,
+    repositoryGit: NonNullable<AgentRevision["repositoryCredentials"]>,
+    authorization: "online-request" | "request-hook-observed",
+  ): ProxyRevisionContext => {
+    const plan = {
+      id: "saved-repository-plan",
+      generation: 1,
+      driver: owner.ref,
+      sandboxDriverId: input.sandbox.id,
+      egressDriverId: input.proxy.id,
+      execution: {
+        installationId: "installation",
+        namespaceId: seed.namespaceId,
+        agentId: seed.agentId,
+        revisionId: seed.id,
+        servicePrincipalId: seed.servicePrincipalId,
+        executionId: "a".repeat(32),
+      },
+      routes: [],
+      repositoryGit,
+      repositoryGitAuthorization: authorization,
+    };
+    const revision: AgentRevision = {
+      ...seed,
+      repositoryCredentials: repositoryGit,
+      executionAdmission: { version, mode: "protected" },
+      egressPlan: plan,
+    };
+    return {
+      revision,
+      plan,
+      namespace: { id: seed.namespaceId } as Namespace,
+      signal,
+    };
+  };
+  const emptyPool = () =>
+    ({
+      connect: t.mock.fn(async () => ({
+        query: async () => ({ rows: [], rowCount: 0 }),
+        release() {},
+      })),
+      end: async () => {},
+    }) satisfies PostgresPool;
+  const pool = emptyPool();
   const { repositoryGitDriver: _repositoryGitDriver, ...withoutDriver } = drivers;
   for (const [selection, availableAuthority] of [
     [{ ...drivers, protectedDriver: new InstalledDriver(input.sandbox, registration) }, authority],
@@ -672,10 +723,69 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
     capabilities.repositoryTransport.bind(undefined, pool),
     /selected Driver/,
   );
-  assert.equal(connect.mock.callCount(), 0);
-  assert.equal(bind.mock.callCount(), 0);
-  await bindRepositoryGitTransport(drivers, authority, pool);
-  assert.equal(bind.mock.callCount(), 1);
+  // Both callers use the same dependencies. Only the first reads the pending listener config.
+  const first = bindRepositoryGitTransport(drivers, authority, pool);
+  const second = bindRepositoryGitTransport(drivers, authority, pool);
+  await Promise.all([
+    assert.rejects(first, { code: "ENOENT" }),
+    assert.rejects(second, /already started or stopped/),
+  ]);
+
+  // Finishing setup allows a retry on this instance. Closing its binding is terminal.
+  await writeFile(certificatePath, tls.cert);
+  const firstEmit = t.mock.fn();
+  const secondEmit = t.mock.fn();
+  const secondPool = emptyPool();
+  const active = await bindRepositoryGitTransport(drivers, authority, pool, firstEmit);
+  assert.ok(active);
+  await assert.rejects(
+    bindRepositoryGitTransport(drivers, authority, secondPool, secondEmit),
+    /already started or stopped/,
+  );
+
+  // An unknown route still reports its denial to the worker that started the listener.
+  const identity = {
+    sandboxId: "fixture-sandbox",
+    bindingId: "fixture-binding",
+    requestId: "fixture-request",
+    workspace: "fixture-workspace",
+  };
+  assert.equal(await runtime.lookup(identity, t.signal), undefined);
+  assert.equal(firstEmit.mock.callCount(), 1);
+  assert.deepEqual(firstEmit.mock.calls[0]!.arguments[0], {
+    event: "worker.openshell-git-denied",
+    reason: "no_binding",
+    sandboxId: identity.sandboxId,
+    requestId: identity.requestId,
+  });
+  assert.equal(secondEmit.mock.callCount(), 0);
+
+  // With no persisted evidence, the original pool answers the standing restart check.
+  const standing = saved(
+    t.signal,
+    selected,
+    5,
+    {
+      ...seed.repositoryCredentials!,
+      standingApprovalId: "fixture-approval",
+    },
+    "online-request",
+  );
+  assert.equal(pool.connect.mock.callCount(), 0);
+  assert.equal(
+    await capabilities.sandbox.repositoryAccess.repositoryWorkerRestartDisposition!({
+      ...standing,
+      kubernetes: undefined,
+    }),
+    "unknown",
+  );
+  assert.equal(pool.connect.mock.callCount(), 1);
+  assert.equal(secondPool.connect.mock.callCount(), 0);
+  await active.close();
+  await assert.rejects(
+    bindRepositoryGitTransport(drivers, authority, pool),
+    /already started or stopped/,
+  );
 
   // Reject the unsupported helper path before constructing any Sandbox or Git runtime.
   const construct = t.mock.fn(input.createSandbox);
@@ -694,7 +804,6 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   await t.test(
     "bundled saved-plan startup/retry rechecks installation authorization before preparation",
     async (t) => {
-      const { revision: seed, binding } = repositoryDeliveryFixture();
       const installation = resolveGitHubRepositoryBinding(registry, {
         namespaceId: seed.namespaceId,
         repositoryRef: "installation",
@@ -742,44 +851,13 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
           const release = new ProtectedExecutionDriver(owner);
           // No replacement implementation: this spy calls the actual bundled preparer.
           const prepare = t.mock.method(bundled.proxy, "configureRevision");
-          const saved = (
-            version: 5 | 6,
-            selectedBinding: typeof binding,
-            authorization: "online-request" | "request-hook-observed",
-          ): ProxyRevisionContext => {
-            const repositoryGit = { ...seed.repositoryCredentials!, bindings: [selectedBinding] };
-            const plan = {
-              id: "saved-repository-plan",
-              generation: 1,
-              driver: owner.ref,
-              sandboxDriverId: bundled.sandbox.id,
-              egressDriverId: bundled.proxy!.id,
-              execution: {
-                installationId: "installation",
-                namespaceId: seed.namespaceId,
-                agentId: seed.agentId,
-                revisionId: seed.id,
-                servicePrincipalId: seed.servicePrincipalId,
-                executionId: "a".repeat(32),
-              },
-              routes: [],
-              repositoryGit,
-              repositoryGitAuthorization: authorization,
-            };
-            const revision: AgentRevision = {
-              ...seed,
-              repositoryCredentials: repositoryGit,
-              executionAdmission: { version, mode: "protected" },
-              egressPlan: plan,
-            };
-            return {
-              revision,
-              plan,
-              namespace: { id: seed.namespaceId } as Namespace,
-              signal: t.signal,
-            };
-          };
-          const legacy = saved(5, installation, "online-request");
+          const legacy = saved(
+            t.signal,
+            owner,
+            5,
+            { ...seed.repositoryCredentials!, bindings: [installation] },
+            "online-request",
+          );
           assert.equal(release.admits(legacy.revision, "stored"), true);
           // Kubernetes uses this same call for saved-plan startup and subsequent retries.
           // Repeating it does not model Worker persistence or migrate the saved revision.
@@ -802,9 +880,23 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
             assert.equal(legacy.revision.executionAdmission.version, 5);
             assert.equal(legacy.plan.repositoryGitAuthorization, "online-request");
           }
-          const controls = [saved(5, binding, "online-request")];
+          const controls = [
+            saved(
+              t.signal,
+              owner,
+              5,
+              { ...seed.repositoryCredentials!, bindings: [binding] },
+              "online-request",
+            ),
+          ];
           if (optIn) {
-            const current = saved(6, installation, "request-hook-observed");
+            const current = saved(
+              t.signal,
+              owner,
+              6,
+              { ...seed.repositoryCredentials!, bindings: [installation] },
+              "request-hook-observed",
+            );
             assert.deepEqual(current.plan.repositoryGit, legacy.plan.repositoryGit);
             assert.deepEqual(current.plan.execution, legacy.plan.execution);
             controls.push(current);
@@ -824,9 +916,8 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   );
 });
 
-test("repository scope changes invalidate the external Driver identity while a reload preserves it", async (t) => {
-  const id = "repository-delivery-fixture";
-  const { directory } = await protectedDriverPackage(t, id, "repository-git");
+/** A protected repository Installation whose Sandbox and Credential Proxy select the package `id`. */
+async function repositoryDeliveryInstallation(t: TestContext, directory: string, id: string) {
   const { cert } = await harnessTlsFixture(t);
   const certFile = join(directory, "peer.pem");
   await writeFile(certFile, cert);
@@ -869,6 +960,14 @@ test("repository scope changes invalidate the external Driver identity while a r
       credential_proxy: { id, configuration: {} },
     },
   };
+  return { base, certFile, configuration, registry, registryPath };
+}
+
+test("repository scope changes invalidate the external Driver identity while a reload preserves it", async (t) => {
+  const id = "repository-delivery-fixture";
+  const { directory } = await protectedDriverPackage(t, id, "repository-git");
+  const { base, certFile, configuration, registry, registryPath } =
+    await repositoryDeliveryInstallation(t, directory, id);
   const path = join(directory, "installation.json");
   await writeFile(path, JSON.stringify(configuration));
   const load = async () => {
@@ -986,15 +1085,17 @@ test("repository scope changes invalidate the external Driver identity while a r
       }
       const runtime = (await loadPolicy({ sessionDurationSeconds: 601 }))!;
       t.after(() => runtime.protectedDriver?.close());
-      assert.equal(
-        (
-          await runtime.repositoryPolicy!.resolve({
-            namespaceId: "namespace-a",
-            bindings: [{ repositoryRef: "application", profile: "git-write" }],
-          })
-        ).sessionDurationSeconds,
-        601,
-      );
+      const admission = runtime.repositoryAdmission;
+      assert.ok(admission);
+      assert.equal(admission.policyMode, "built-in");
+      assert.equal(admission.backendId, registry.backendId);
+      assert.equal(admission.policy.id, "repo");
+      assert.equal(Object.hasOwn(runtime, "repositoryPolicy"), false);
+      const binding = admission.policy.resolveBindings({
+        namespaceId: "namespace-a",
+        bindings: [{ repositoryRef: "application", profile: "git-write" }],
+      });
+      assert.equal(binding.sessionDurationSeconds, 601);
       assert.equal(runtime.repositoryOwner!.driverId, "repo");
       assert.equal(runtime.repositoryOwner!.backendId, registry.backendId);
       if (mode === "native") {
@@ -1014,7 +1115,7 @@ test("repository scope changes invalidate the external Driver identity while a r
     });
     assert.equal(child.status, 0, child.error?.message ?? child.stderr);
   }
-  const binding = await original.repositoryPolicy!.resolve({
+  const binding = original.repositoryAdmission!.policy.resolveBindings({
     namespaceId: "namespace-a",
     bindings: [{ repositoryRef: "application", profile: "git-write" }],
   });
@@ -1083,7 +1184,7 @@ test("repository scope changes invalidate the external Driver identity while a r
   const reordered = await load();
   assert.deepEqual(reordered.protectedDriver!.ref, original.protectedDriver!.ref);
   assert.deepEqual(
-    await reordered.repositoryPolicy!.resolve({
+    reordered.repositoryAdmission!.policy.resolveBindings({
       namespaceId: "namespace-a",
       bindings: [{ repositoryRef: "application", profile: "git-write" }],
     }),
@@ -2070,4 +2171,72 @@ test("an installed Sandbox can explicitly select its packaged Credential Gateway
       }
     },
   );
+});
+
+test("the loader closes an installed registration that later composition refuses", async (t) => {
+  const id = "refused-repository-fixture";
+  const { directory, entry } = await protectedDriverPackage(t, id, "repository-git");
+  // Each case drops one method from the complete sender and observes the registration's close.
+  await writeFile(
+    join(entry, "refusing.mjs"),
+    [
+      'import { createDriver as createRepositoryDriver } from "./repository-git.mjs";',
+      'export * from "./repository-git.mjs";',
+      'export const probe = { omit: "", failClose: false, closes: 0 };',
+      "export function createDriver(options) {",
+      "  const { sandbox, credential_proxy } = createRepositoryDriver(options).capabilities;",
+      "  const { [probe.omit]: _sandbox, ...kept } = sandbox;",
+      "  const { [probe.omit]: _proxy, ...proxy } = credential_proxy;",
+      "  return {",
+      "    capabilities: { sandbox: kept, credential_proxy: proxy },",
+      "    close() {",
+      "      probe.closes++;",
+      '      if (probe.failClose) throw new Error("close failed");',
+      "    },",
+      "  };",
+      "}",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(entry, "package.json"),
+    JSON.stringify({ name: id, version: "1.0.0", exports: "./refusing.mjs" }),
+  );
+  const { probe } = (await import(join(entry, "refusing.mjs"))) as {
+    probe: { omit: string; failClose: boolean; closes: number };
+  };
+  const { configuration } = await repositoryDeliveryInstallation(t, directory, id);
+  const path = join(directory, "installation.json");
+  await writeFile(path, JSON.stringify(configuration));
+  const load = () =>
+    loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: path },
+      packageRoot: directory,
+    });
+  const enrollment = {
+    name: "DependencyUnavailableError",
+    message: "Protected execution requires the Sandbox enrollment contract.",
+  };
+  // The package passes the factory; Kubernetes Compute then refuses a Sandbox without enrollment.
+  probe.omit = "enrollHarness";
+  await assert.rejects(load(), enrollment);
+  assert.equal(probe.closes, 1, "the refused registration is closed once");
+  probe.failClose = true;
+  await assert.rejects(load(), enrollment, "a failing close keeps the original refusal");
+  assert.equal(probe.closes, 2);
+  probe.failClose = false;
+  // The repository Git transport check after the factory closes it too.
+  probe.omit = "repositoryAccess";
+  await assert.rejects(load(), {
+    name: "DriverSelectionError",
+    message:
+      "Protected repository Git requires the selected Driver's Sandbox access and Credential Proxy transport.",
+  });
+  assert.equal(probe.closes, 3);
+  // A complete registration stays open for its caller, which closes it once.
+  probe.omit = "";
+  const runtime = (await load())!;
+  assert.equal(probe.closes, 3);
+  await Promise.all([runtime.protectedDriver!.close(), runtime.protectedDriver!.close()]);
+  assert.equal(probe.closes, 4);
 });

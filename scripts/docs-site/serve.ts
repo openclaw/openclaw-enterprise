@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
+import { stripTypeScriptTypes } from "node:module";
 import { extname, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -77,7 +78,8 @@ const server = createServer(async (request, response) => {
   }
   if (preview && pathname === "/__docs_preview/client.mjs") {
     try {
-      const client = await readFile(new URL("./preview-client.mjs", import.meta.url));
+      const source = await readFile(new URL("./preview-client.mts", import.meta.url), "utf8");
+      const client = stripTypeScriptTypes(source);
       response.writeHead(200, { "Content-Type": mime[".mjs"] });
       response.end(request.method === "HEAD" ? undefined : client);
     } catch {

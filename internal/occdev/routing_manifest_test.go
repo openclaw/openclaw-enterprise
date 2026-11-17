@@ -290,8 +290,8 @@ func TestVerifiedManifestRetriesBeforeWritingExclusiveFile(t *testing.T) {
 	)
 	destination := filepath.Join(t.TempDir(), "agent-sandbox.yaml")
 	var log bytes.Buffer
-	if err := downloadVerifiedManifest(t.Context(), &log, server.URL, destination, routingManifestTestDigest()); err != nil {
-		t.Fatalf("download failed: %v\n%s", err, log.String())
+	if reason, err := downloadVerifiedManifest(t.Context(), &log, server.URL, destination, routingManifestTestDigest()); err != nil || reason != "" {
+		t.Fatalf("download failure reason = %q, error = %v\n%s", reason, err, log.String())
 	}
 	data, err := os.ReadFile(destination)
 	if err != nil || !bytes.Equal(data, routingManifestTestBody) {
@@ -308,8 +308,8 @@ func TestVerifiedManifestRetriesBeforeWritingExclusiveFile(t *testing.T) {
 		t.Fatalf("requests = %d, want 2", hits.Load())
 	}
 	// An existing destination belongs to the caller and must not be replaced.
-	if err := downloadVerifiedManifest(t.Context(), &log, server.URL, destination, routingManifestTestDigest()); !errors.Is(err, os.ErrExist) {
-		t.Fatalf("existing destination: %v", err)
+	if reason, err := downloadVerifiedManifest(t.Context(), &log, server.URL, destination, routingManifestTestDigest()); !errors.Is(err, os.ErrExist) || reason != manifestLocalIO {
+		t.Fatalf("existing destination reason = %q, error = %v", reason, err)
 	}
 	data, err = os.ReadFile(destination)
 	if err != nil || !bytes.Equal(data, routingManifestTestBody) {
@@ -321,9 +321,9 @@ func TestVerifiedManifestRejectsWrongDigestWithoutWriting(t *testing.T) {
 	server, hits := routingManifestServer(t, serveRoutingManifest)
 	destination := filepath.Join(t.TempDir(), "agent-sandbox.yaml")
 	var log bytes.Buffer
-	err := downloadVerifiedManifest(t.Context(), &log, server.URL, destination, strings.Repeat("0", 64))
-	if err == nil || !strings.Contains(err.Error(), "checksum") {
-		t.Fatalf("wrong digest: %v", err)
+	reason, err := downloadVerifiedManifest(t.Context(), &log, server.URL, destination, strings.Repeat("0", 64))
+	if err == nil || !strings.Contains(err.Error(), "checksum") || reason != manifestIntegrity {
+		t.Fatalf("wrong digest reason = %q, error = %v", reason, err)
 	}
 	if hits.Load() != 1 || log.Len() != 0 {
 		t.Fatalf("wrong digest was retried: requests = %d, log = %s", hits.Load(), log.String())
@@ -341,9 +341,9 @@ func TestVerifiedManifestHonoursCancellationDuringBackoff(t *testing.T) {
 	// Cancel only after the real HTTP failure reaches the retry log, so this
 	// exercises cancellation while waiting rather than a pre-cancelled request.
 	log := &cancelManifestRetryLog{cancel: cancel}
-	err := downloadVerifiedManifest(ctx, log, server.URL, destination, routingManifestTestDigest())
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled download: %v", err)
+	reason, err := downloadVerifiedManifest(ctx, log, server.URL, destination, routingManifestTestDigest())
+	if !errors.Is(err, context.Canceled) || reason != manifestCanceled {
+		t.Fatalf("cancelled download reason = %q, error = %v", reason, err)
 	}
 	if hits.Load() != 1 {
 		t.Fatalf("requests after cancellation = %d, want 1", hits.Load())

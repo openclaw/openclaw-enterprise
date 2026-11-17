@@ -451,7 +451,8 @@ export function createExternalDriver(
   return created as unknown as ConfigurationDriver | IAMDriver | ComputeDriver | SandboxDriver;
 }
 
-/** The Sandbox selection configures the one registration shared by the selected views. */
+/** The Sandbox selection configures the one registration shared by the selected views.
+ * A registration this refuses is closed before the refusal returns, so a refused startup can exit. */
 export async function createExternalSandboxRegistration(
   implementation: ExternalDriverModule,
   selection: SelectedDriverConfiguration,
@@ -484,11 +485,12 @@ export async function createExternalSandboxRegistration(
     }
     return owner;
   } catch (error) {
-    const close = registration?.close;
-    if (typeof close === "function") {
-      await Promise.resolve()
-        .then(() => close.call(registration))
-        .catch(() => undefined);
+    try {
+      if (typeof registration?.close === "function") {
+        await registration.close();
+      }
+    } catch {
+      // The refusal above is the startup error; a failed close does not replace it.
     }
     throw error;
   }

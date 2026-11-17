@@ -42,7 +42,7 @@ were not audited.
 At the inspected baseline, Enterprise's [README](../../README.md) had no
 recognition wall, and its [contribution policy](../../CONTRIBUTING.md) had no
 dedicated attribution procedure. There was no root changelog or contributor generator.
-The [CLI release script](../../scripts/ci/cli-release.mjs) supplies a fixed binary
+The [CLI release script](../../scripts/ci/cli-release.ts) supplies a fixed binary
 release description, so upstream changelog enforcement has no equivalent owner
 to extend today.
 

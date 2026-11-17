@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts";
+import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/access/prepared-repository-git.ts";
 import test, { type TestContext } from "node:test";
 import {
   selectBundledRepositoryGitCustody,
@@ -17,10 +17,10 @@ import type {
   PreparedGitHubUseRequest,
   RepositoryGitSendDecision,
 } from "../../packages/contracts/src/index.ts";
-import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { fixture } from "../fixtures/prepared-repository-git.mjs";
 import { standingGitOrigin } from "../helpers/prepared-standing-git-peer.ts";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(
@@ -303,9 +303,7 @@ test(
     const prior = f.revision as AgentRevision;
     const { namespaceId, agentId } = prior;
     const providerWrites = () =>
-      f.gh.trace
-        .filter((r: { method: string }) => r.method === "POST" || r.method === "DELETE")
-        .map((r: { method: string }) => r.method);
+      f.gh.trace.filter((r) => r.method === "POST" || r.method === "DELETE").map((r) => r.method);
     await f.owner.maintain();
     assert.deepEqual(providerWrites(), ["POST"]);
     const repositoryRef = "team-install";
@@ -435,7 +433,7 @@ test(
       "only then may the narrow issuer mint again",
     );
     assert.deepEqual(
-      f.gh.issuesOfTokens.map((i: { repositoryIds: number[] | "installation" }) => i.repositoryIds),
+      f.gh.issuesOfTokens.map((i) => i.repositoryIds),
       [
         [Number(f.binding.grant.repositoryId)],
         "installation",

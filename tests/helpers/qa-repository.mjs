@@ -1,135 +1,34 @@
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
-import { cleanupRepositoryJourney } from "./repository-remote-cleanup.mjs";
+import { cleanupRepositoryJourney } from "./repository-remote-cleanup.ts";
 import { captureChild } from "./child-processes.mjs";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { BlockList, isIP } from "node:net";
+import { isIP } from "node:net";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { allowsPushRef } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
 import {
   PREPARED_REPOSITORY_DIRECTORY,
   REPOSITORY_CONTROL_SOCKET,
-  REPOSITORY_REGISTRY_PATH,
-  preparedRepositoryBackend,
-  preparedRepositoryInstallation,
-} from "../../scripts/lib/prepared-repository-installation.mjs";
+} from "../../scripts/lib/prepared-repository-installation.ts";
 import { verifyNativeRepositoryJourney } from "./repository-native-journey.mjs";
-import { createGitHubAppRepositoryObserver } from "./github-app-observer.mjs";
+import { createGitHubAppRepositoryObserver } from "./github-app-observer.ts";
 import {
   createRepositoryObserver,
   readInstalledCredentialSession,
 } from "./repository-credentials-installed.mjs";
-import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
-import { protectedText, redactedQaTail, registerQaSecret } from "./qa-secrets.mjs";
-
-/** The one run-owned branch that every repository scenario of a QA run may push. */
-export function qaRepositoryBranch(suffix) {
-  return `oce-qa-${suffix}`;
-}
-
-/**
- * Narrow the selected registry to what prepared native Git can serve. The worker
- * refuses any policy but git-write on exactly one branch with explicit Git
- * transport (PREPARED_REPOSITORY_REQUIRES_ONE_EXPLICIT_REVIEW_REF), and `occ dev up`
- * refuses it before touching the cluster. git-only grants no PR route, so the QA
- * journey pushes and stops there. Only narrowing is allowed: each policy must
- * already grant a write profile, and one that lists push refs must authorize the
- * run-owned branch.
- */
-export function grantQaRepositoryBranch(registry, suffix) {
-  assert.equal(registry.repositories.length, 1, "select exactly one authorized repository");
-  const ref = `refs/heads/${qaRepositoryBranch(suffix)}`;
-  for (const policy of registry.repositories[0].namespaces) {
-    // Narrow a write grant; never turn a read-only policy into one.
-    assert.ok(
-      policy.profiles?.some((profile) => profile === "git-write" || profile === "git-full"),
-      "selected registry must already grant git-write or git-full",
-    );
-    if (policy.pushRefAllowlist) {
-      assert.ok(
-        allowsPushRef(policy.pushRefAllowlist, ref),
-        "selected registry must authorize the run-owned branch name",
-      );
-    }
-    policy.profiles = ["git-write"];
-    policy.transport = "git-only";
-    policy.pushRefAllowlist = [ref];
-    delete policy.pullRequestBase;
-    delete policy.draftPullLimit;
-  }
-  return registry;
-}
-
-/** The repository service's own configuration: it sends native Git and holds no App key. */
-export function qaRepositoryServiceConfig(registry, host) {
-  return {
-    gateway: {
-      listen: "0.0.0.0:8443",
-      publicOrigin: `https://${host}`,
-      controlSocket: REPOSITORY_CONTROL_SOCKET,
-      tlsCertFile: "/etc/openclaw/repository-ca/ca.crt",
-      tlsKeyFile: "/etc/openclaw/repository-inputs/tls.key",
-    },
-    sessionPolicy: {
-      maximumDurationSeconds: registry.maximumDurationSeconds,
-      defaultProfile: "git-write",
-      allowedProfiles: ["git-write"],
-    },
-    backend: {
-      kind: "github-prepared-git-registry",
-      backendId: registry.backendId,
-      registryFile: REPOSITORY_REGISTRY_PATH,
-    },
-  };
-}
-
-/** Point the Installation at the Compose repository service through the relay. */
-export function applyQaRepositoryInstallation(configuration, registry, podLabels) {
-  configuration.backend = [preparedRepositoryBackend({ backendId: registry.backendId })];
-  delete configuration.drivers.repo;
-  configuration.repository = preparedRepositoryInstallation({
-    sessionDurationSeconds: registry.maximumDurationSeconds,
-  });
-  configuration.drivers.compute.configuration.network.repositoryCredentials = {
-    namespace: "oce-system",
-    podLabels,
-    port: 8443,
-  };
-  return configuration;
-}
-
-// The hosted selector and launcher validate the public GitHub source. Validate
-// this local input's shape before DNS/exec, and reuse one containment policy for
-// runner evidence and the worker's actual connection (not string equality /32).
-async function readQaRepositoryUpstreamPolicy(input) {
-  let value;
-  try {
-    value = JSON.parse(await readFile(join(input, "upstream-cidrs.json"), "utf8"));
-  } catch {
-    throw new Error("repository egress input must contain valid JSON");
-  }
-  const explicit = Array.isArray(value);
-  const cidrs = explicit ? value : value?.githubApiAndGit;
-  assert.ok(Array.isArray(cidrs) && cidrs.length > 0, "repository egress requires IPv4 CIDRs");
-  const approved = new BlockList();
-  for (const cidr of cidrs) {
-    assert.equal(typeof cidr, "string", "repository egress requires canonical IPv4 CIDRs");
-    const [address, prefix, extra] = cidr.split("/");
-    assert.ok(
-      isIP(address) === 4 && /^(?:[1-9]|[12][0-9]|3[0-2])$/.test(prefix) && extra === undefined,
-      "repository egress requires canonical IPv4 CIDRs",
-    );
-    const bits = Number(prefix);
-    const numeric = address.split(".").reduce((value, octet) => value * 256 + Number(octet), 0);
-    assert.equal(numeric % 2 ** (32 - bits), 0, "repository egress CIDR must be a network address");
-    assert.ok(!explicit || bits === 32, "explicit repository endpoints require IPv4 /32 addresses");
-    approved.addSubnet(address, bits, "ipv4");
-  }
-  return { cidrs, approved };
-}
+import {
+  applyQaRepositoryInstallation,
+  qaRepositoryBranch,
+  qaRepositoryServiceConfig,
+  readQaRepositoryRegistry,
+  readQaRepositoryUpstreamPolicy,
+  selectPreparedQaRepository,
+} from "./qa-repository-preparation.ts";
+import { dumpYaml, loadYaml, yamlMapping } from "./kubernetes-yaml.ts";
+import { waitFor } from "./qa-wait.ts";
+import { protectedText, redactedQaTail, registerQaSecret } from "./qa-secrets.ts";
 
 // Run where prepared GitHub issuance runs, before any QA Agent binds this repository.
 // Node HTTPS keeps production's DNS selection, agent:false and verified TLS. This
@@ -264,20 +163,8 @@ async function probeQaRepositoryWorker(f, { cidrs, approved }) {
 export async function prepareQaRepository(f) {
   const input = f.repositoryInput;
   assert.ok(input, "OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY is required");
-  const registry = JSON.parse(
-    await protectedText(join(input, "registry.json"), "repository registry"),
-  );
-  assert.equal(
-    registry.repositories.length,
-    1,
-    "select exactly one authorized disposable repository",
-  );
-  const entry = registry.repositories[0];
-  // createQaInstallation wrote the registry through grantQaRepositoryBranch.
-  assert.deepEqual(entry.namespaces[0].profiles, ["git-write"]);
-  assert.deepEqual(entry.namespaces[0].pushRefAllowlist, [
-    `refs/heads/${qaRepositoryBranch(f.suffix)}`,
-  ]);
+  const registry = await readQaRepositoryRegistry(input);
+  const entry = selectPreparedQaRepository(registry, f.suffix);
   f.repositoryEntry = entry;
   const upstreamPolicy = await readQaRepositoryUpstreamPolicy(input);
   // Record the runner's DNS view, not cluster reachability. Only these two fixed
@@ -370,7 +257,8 @@ export async function prepareQaRepository(f) {
   ]);
   await write("inputs/config.json", qaRepositoryServiceConfig(registry, host));
   const path = join(f.stateDirectory, "compose.yaml");
-  const compose = loadYaml(await readFile(path, "utf8"));
+  const compose = yamlMapping(loadYaml(await readFile(path, "utf8")));
+  const services = yamlMapping(compose, "services");
   const mount = (source, target, readOnly = true) => ({
     type: "volume",
     source: `qa-repository-${source}`,
@@ -448,7 +336,7 @@ export async function prepareQaRepository(f) {
       await f.run("docker", ["volume", "rm", name]);
     }
   };
-  compose.volumes ??= {};
+  const composeVolumes = yamlMapping((compose.volumes ??= {}));
   for (const [name, volume] of Object.entries(volumes)) {
     assert.equal(
       (
@@ -474,7 +362,7 @@ export async function prepareQaRepository(f) {
     const [result] = JSON.parse(await f.run("docker", ["volume", "inspect", volume]));
     assert.equal(result.Labels?.["openclaw.dev/qa-repository"], f.suffix);
     created.push(volume);
-    compose.volumes[`qa-repository-${name}`] = { external: true, name: volume };
+    composeVolumes[`qa-repository-${name}`] = { external: true, name: volume };
   }
   const files = {};
   for (const [name, names] of Object.entries(volumeFiles)) {
@@ -592,7 +480,7 @@ export async function prepareQaRepository(f) {
     storage: "run-owned Docker volumes",
     paths: inputOwnership,
   });
-  compose.services["repository-credentials"] = {
+  services["repository-credentials"] = {
     image,
     entrypoint: ["node", "/app/dist/repository-credentials.js"],
     command: ["--config", "/etc/openclaw/repository-inputs/config.json"],
@@ -608,12 +496,14 @@ export async function prepareQaRepository(f) {
     ],
   };
   for (const name of ["controller", "worker-kubernetes"]) {
-    compose.services[name].volumes.push(
+    const serviceVolumes = yamlMapping(services, name).volumes;
+    assert.ok(Array.isArray(serviceVolumes), `expected volumes for ${name}`);
+    serviceVolumes.push(
       mount("registry", "/etc/openclaw/repository-registry"),
       mount("ca", "/etc/openclaw/repository-ca"),
     );
     if (name === "worker-kubernetes") {
-      compose.services[name].volumes.push(
+      serviceVolumes.push(
         mount("control", "/run/openclaw/repository-control", false),
         mount("prepared", PREPARED_REPOSITORY_DIRECTORY),
       );

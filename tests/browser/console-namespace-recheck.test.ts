@@ -23,7 +23,6 @@ import {
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
-import { routeInstallationProvisioning } from "./console-agents-test-support.ts";
 import { refocus } from "./console-refocus-helpers.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
@@ -136,25 +135,10 @@ async function openGatedForm(
     };
   });
   const namespaces = await routeNamespace(page, namespace.id);
-  await routeInstallationProvisioning(page, fixture);
   if (keepable) {
-    // A return reuses the form only if every read it made succeeded and reads the same again:
-    // this fixture has no GitHub App, and the shared route stamps each answer anew.
+    // This fixture has no GitHub App. The form can only be kept if its repository options read succeeds.
     await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
       route.fulfill({ json: { data: [], meta: { requestId: "req_repository_choices" } } }),
-    );
-    await page.route(`${fixture.origin}/installation`, (route) =>
-      route.fulfill({
-        json: {
-          data: {
-            id: "ins_00000000-0000-4000-8000-000000000001",
-            name: "Console test installation",
-            createdAt: "2026-10-19T12:00:00.000Z",
-            capabilities: { agentProvisioning: { executionModes: ["dedicated"] } },
-          },
-          meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
-        },
-      }),
     );
   }
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -223,7 +207,7 @@ async function setHidden(page: Page, hidden: boolean) {
 // One console for every case; each case's page reads the Namespace as provisioning until it
 // changes the status.
 test("the open Create Agent form's Namespace recheck", async (t) => {
-  const team = await createReadyConsoleNamespace(t, "team");
+  const team = await createReadyConsoleNamespace(t, "team", { agentProvisioning: true });
 
   await t.test("a failed read keeps the recheck going at its 10 s cadence", async (t) => {
     const { view, create, name, namespaces, poll } = await openGatedForm(t, team);

@@ -201,7 +201,9 @@ async function assertNativeNodeRouteAuthentication({
       () => requestGatewayHello({ url: nodeUrl, extraHeaders, native }),
       (error) => {
         assert.ok(error instanceof GatewayClientRequestError);
-        assert.equal(error.details?.authReason, "trusted_proxy_user_missing");
+        // The node route strips the required scope header, which native auth
+        // checks before the user header, including when both were forged.
+        assert.equal(error.details?.authReason, "trusted_proxy_missing_header_x-openclaw-scopes");
         return true;
       },
     );

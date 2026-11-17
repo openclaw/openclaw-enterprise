@@ -43,7 +43,7 @@ no chart package access. Native image builds and smoke tests remain unchanged.
 
 A separate chart job depends on successful image publication and consumes that
 exact run/attempt's receipt. It installs Helm and invokes the existing
-[chart publisher](../../scripts/ci/chart-release.mjs). The publisher continues to
+[chart publisher](../../scripts/ci/chart-release.ts). The publisher continues to
 validate source, CI, environment, package access, receipt identity, version tags,
 and published chart contents. Image-only releases do not create OCE version tags;
 chart releases retain the existing shared-version policy.

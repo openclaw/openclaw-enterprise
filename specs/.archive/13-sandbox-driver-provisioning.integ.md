@@ -23,7 +23,7 @@ adapters establish production compatibility.
 
 **Existing runtime validation:**
 [harness-topology-k3d-real.test.mjs](../../tests/integration/harness-topology-k3d-real.test.mjs)
-and its [real-cluster helpers](../../tests/helpers/kubernetes-real.mjs).
+and its [real-cluster helpers](https://github.com/openclaw/openclaw-enterprise/blob/0a2f2bc81a9a09a7132972e62e47eb30fb9848b9/tests/helpers/kubernetes-real.mjs).
 
 ## Scope and prerequisites
 
@@ -187,7 +187,7 @@ deploy a dedicated Agent, then assert:
 
 Extend or reuse
 [harness-topology-k3d-real.test.mjs](../../tests/integration/harness-topology-k3d-real.test.mjs)
-and [kubernetes-real.mjs](../../tests/helpers/kubernetes-real.mjs). The final run
+and [kubernetes-real.mjs](https://github.com/openclaw/openclaw-enterprise/blob/0a2f2bc81a9a09a7132972e62e47eb30fb9848b9/tests/helpers/kubernetes-real.mjs). The final run
 must use a disposable enforcing k3d cluster, real OpenShell/OpenClaw/Codex
 images, an authorized existing model credential, and zero skipped requested
 cases. A mocked provider, readiness-only probe, fixture-generated model reply,

@@ -133,8 +133,8 @@ export function sorted<T extends { id: string; name?: string }>(items: readonly 
 }
 
 const backendTypes = {
-  chatgpt: "ChatGPT",
   github: "GitHub",
+  chatgpt: "ChatGPT",
   openshell: "OpenShell",
 } satisfies Record<BackendSummary["type"], string>;
 
@@ -456,28 +456,37 @@ export function createShell({
   // where the clipboard is unavailable (an http origin, say), so it can be copied by hand.
   function agentIdentity(agentId: string) {
     const id = element("span", { className: "resource-id", title: "Agent ID" }, agentId);
-    const copied = element("span", { className: "page-meta-copied", role: "status" });
-    let clearCopied: number | undefined;
+    const feedback = element("span", { className: "page-meta-copied" });
+    const status = element("span", { role: "status" }, feedback);
+    let clearFeedback: number | undefined;
+    let latestCopy = 0;
     const copy = button(
       "",
-      () => {
-        const done = () => {
-          copied.textContent = "Copied";
-          clearTimeout(clearCopied);
-          clearCopied = setTimeout(() => {
-            copied.textContent = "";
+      async () => {
+        const attempt = ++latestCopy;
+        clearTimeout(clearFeedback);
+        feedback.textContent = "";
+
+        let copied = false;
+        try {
+          if (typeof navigator.clipboard?.writeText === "function") {
+            await navigator.clipboard.writeText(agentId);
+            copied = true;
+          }
+        } catch {
+          // Fall back to manual copying when the browser rejects the write.
+        }
+        if (attempt !== latestCopy || !id.isConnected) {
+          return;
+        }
+        if (copied) {
+          feedback.textContent = "Copied";
+          clearFeedback = window.setTimeout(() => {
+            feedback.textContent = "";
           }, 2000);
-        };
-        const select = () => {
-          const range = document.createRange();
-          range.selectNodeContents(id);
-          document.getSelection()?.removeAllRanges();
-          document.getSelection()?.addRange(range);
-        };
-        if (typeof navigator.clipboard?.writeText === "function") {
-          navigator.clipboard.writeText(agentId).then(done, select);
         } else {
-          select();
+          document.getSelection()?.selectAllChildren(id);
+          feedback.textContent = "Copy selection";
         }
       },
       {
@@ -488,8 +497,9 @@ export function createShell({
         title: "Copy Agent ID",
       },
     );
+    copy.style.flexShrink = "0";
     copy.append(copyIcon());
-    return element("span", { className: "page-meta-id" }, id, copy, copied);
+    return element("span", { className: "page-meta-id" }, id, copy, status);
   }
 
   // ← Agents on an Agent's page and on Create Agent. A page that cannot be left yet (an open

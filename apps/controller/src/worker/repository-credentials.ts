@@ -1,4 +1,4 @@
-import { sameBinding } from "../drivers/repo/credentials/grant-identity.ts";
+import { sameBinding } from "../drivers/repo/access/grant-identity.ts";
 import { protectedRepositoryGitAdmission } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
@@ -16,6 +16,7 @@ import { isInstallationRepositoryProfile } from "@openclaw-enterprise/contracts"
 import {
   eligibleRepositoryApprovalScope,
   isRepositoryCleanupWork,
+  repositoryCleanupRevisionId,
   repositoryApprovalFingerprint,
   revisionAdmittedBeforeWork,
   WorkClaimLostError,
@@ -500,6 +501,13 @@ export class RepositoryCredentialLifecycle {
     const outcome = settleCleanup(attempts);
     for (const attempt of attempts.filter((candidate) => candidate.phase === "closing")) {
       try {
+        if (
+          isRepositoryCleanupWork(claim) &&
+          (attempt.brokerProtocol === 1 || attempt.brokerProtocol === 3) &&
+          (await this.consumeDisposedReceipt(claim, attempt))
+        ) {
+          continue;
+        }
         const closed = await this.closeAttempt(claim, attempt);
         outcome.settled = closed.settled && outcome.settled;
       } catch (error) {
@@ -511,6 +519,68 @@ export class RepositoryCredentialLifecycle {
       }
     }
     return outcome;
+  }
+
+  private async consumeDisposedReceipt(claim: ClaimedWork, attempt: Attempt): Promise<boolean> {
+    // Routing only: unresolved evidence (including a failed read) stays with its original owner.
+    const observed = await this.dependencies.state
+      .read((view) => view.repositorySessions.findBrokerReceipt(attempt.admissionId))
+      .catch(() => undefined);
+    if (observed?.state !== "disposed") {
+      return false;
+    }
+    return this.dependencies.state.transactWithQueue(async (unit, queue) => {
+      const checkClaim = async () => {
+        const current = await queue.heartbeat(claim);
+        if (
+          !current ||
+          current.actorId !== claim.actorId ||
+          current.namespaceId !== claim.namespaceId ||
+          current.agentId !== claim.agentId ||
+          current.revisionId !== claim.revisionId ||
+          !isRepositoryCleanupWork(current) ||
+          current.namespaceId !== attempt.namespaceId ||
+          repositoryCleanupRevisionId(current) !== attempt.revisionId ||
+          (current.agentId !== undefined
+            ? current.agentId !== attempt.agentId
+            : attempt.liveRevisionId !== null)
+        ) {
+          throw new WorkClaimLostError();
+        }
+      };
+      await checkClaim();
+      const current = await unit.repositorySessions.lockAttempt(attempt.admissionId);
+      if (!isDeepStrictEqual(current, attempt)) {
+        throw new WorkClaimLostError();
+      }
+      // The journal belongs to this immutable attempt. Read it under the same lock used by
+      // its original custodian. The advisory read cannot authorize a transition.
+      const receipt = await unit.repositorySessions.findBrokerReceipt(attempt.admissionId);
+      if (
+        receipt?.state !== "disposed" ||
+        !isDeepStrictEqual(receipt, observed) ||
+        receipt.admissionId !== attempt.admissionId ||
+        !receipt.sessionId ||
+        (attempt.sessionId !== undefined && receipt.sessionId !== attempt.sessionId) ||
+        receipt.deadlineWallMs === undefined ||
+        !Number.isSafeInteger(receipt.deadlineWallMs) ||
+        receipt.deadlineWallMs <= 0 ||
+        receipt.deadlineWallMs > attempt.deadlineWallMs ||
+        !receipt.generation ||
+        typeof receipt.revoked !== "number" ||
+        !Number.isSafeInteger(receipt.revoked) ||
+        receipt.revoked < 0 ||
+        typeof receipt.expired !== "number" ||
+        !Number.isSafeInteger(receipt.expired) ||
+        receipt.expired < 0 ||
+        attempt.cleanupContext.binding.repositoryRef !== attempt.repositoryRef
+      ) {
+        throw new RepositoryCredentialAuthorityError("INVALID_REPOSITORY_DRIVER_OBSERVATION");
+      }
+      await checkClaim();
+      await this.advanceIn(unit, attempt, "disposed", receipt.sessionId);
+      return true;
+    }, this.dependencies.queueOptions);
   }
 
   private driverFor(selected: CleanupContext["driver"] | undefined): NativeRepositorySender {

@@ -68,13 +68,28 @@ This preview uses the production form with a simulated GET for one older stored
 Preset; the current Controller refuses to save that numeric primary. Keep
 **Preset with an invalid field** as the separate execution-mode check.
 
-## Native admin at creation
+## Browser chat at creation
 
-Open **Pages / Create Agent / Native admin UI opt-in**. The checkbox starts off.
+Open **Pages / Create Agent / Browser chat opt-in**. The checkbox starts off.
 Use Space to select it, clear it, then select it again. Create the Agent and
 inspect the simulated provisioning request for `nativeAdmin: true`.
-**Native admin UI selected** shows the checked state; **Native admin UI unavailable**
-shows the disabled control and installation setup guidance. Also inspect the
+Open **Pages / Create Agent / Member browser chat setup** and repeat the choice.
+The ordinary create request includes `nativeAdmin: true` and the saved
+Configuration generation, without Installation administration.
+**Browser chat selected** shows the checked state; **Browser chat unavailable**
+shows the disabled control and installation setup guidance. In **Member with
+Agent create**, the successful Namespace capability response gives the same
+setup guidance, without a capability-retry instruction. Also inspect the
 existing capability-loading, permission-denied, missing-credential, and create
 failure stories. Capture the checkbox and its explanation at desktop and phone
 widths. These fixtures prove UI behavior, not deployment or native authentication.
+
+## Operator chat access
+
+Open **Components / Native admin / Operator chat**. Confirm **Open chat** appears
+and opens the simulated Agent page in another tab. Return and select **Refresh
+access**. The card describes shared conversations. Compare **Available**, which
+shows **Open Agent UI** and the administrative scope. Check the read-only,
+unsupported, loading and failure stories: no usable launch link appears before
+access succeeds. These previews use simulated responses; runtime authorization
+and session revocation require the integration tests.

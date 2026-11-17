@@ -15,7 +15,7 @@ before choosing an OpenShell installation path.
 | Try OCE on your machine                                  | [Local Setup](quickstart.md)                                         | [Deploy an Agent](quickstart.md#deploy-an-agent)                                                                    |
 | Try OpenShell locally                                    | [Local k3d setup](deploy/local-setup.md)                             | [Deploy your first Agent](deploy/deploy-first-agent.md)                                                             |
 | Install on an existing Kubernetes cluster with OpenShell | [Kubernetes setup](deploy/kubernetes-setup.md)                       | [Deploy your first Agent](deploy/deploy-first-agent.md)                                                             |
-| Install on Amazon EKS with OpenShell                     | [EKS setup](deploy/eks-openshell-setup.md)                           | [Deploy your first Agent](deploy/deploy-first-agent.md)                                                             |
+| Install on Amazon EKS with OpenShell                     | [EKS setup](deploy/eks-openshell-setup.md)                           | [Install OCE](deploy/eks-openshell-installation.md)                                                                 |
 | Configure a custom Helm installation                     | [Standard Kubernetes](deploy/kubernetes.md)                          | [Production installation](deploy/production-installation.md), then [production Agents](deploy/production-agents.md) |
 | Upgrade an existing Helm installation                    | [Upgrade checklist](deploy/upgrade-checklist.md)                     | [Production image upgrades](deploy/production-upgrade.md)                                                           |
 | Recover an interrupted image upgrade                     | [Production upgrade recovery](deploy/production-upgrade-recovery.md) | Reconcile the original run before any retry                                                                         |
@@ -84,7 +84,7 @@ window. For a persistent Helm installation on k3d, use
 
 For ongoing business operation, use [production handoff](deploy/production-handoff.md)
 to record owners, credential renewal, alert response, and recovery decisions.
-When GitHub sign-in needs recovery or must be turned back off, use
+When external sign-in needs recovery or must be turned back off, use
 [sign-in maintenance](deploy/auth-maintenance.md) with the API stopped.
 
 For private workspace-file administration, configure
