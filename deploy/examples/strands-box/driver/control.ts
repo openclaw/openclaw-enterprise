@@ -496,7 +496,9 @@ export async function harnessEnrollment(
     reply = await send(socketPath, "POST", ENROLLMENT_PATH, body, signal);
   } catch {
     signal.throwIfAborted();
-    throw new DependencyUnavailableError("The Strands Box host did not relay the Harness enrollment.");
+    throw new DependencyUnavailableError(
+      "The Strands Box host did not relay the Harness enrollment.",
+    );
   }
   let answer: Record<string, unknown> | undefined;
   try {

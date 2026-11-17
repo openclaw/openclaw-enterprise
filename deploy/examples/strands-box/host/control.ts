@@ -418,10 +418,7 @@ export async function relayEnrollment(
     !TRANSPORT_BEARER.test(bearer) ||
     expected === undefined ||
     !SHA256.test(expected) ||
-    !timingSafeEqual(
-      createHash("sha256").update(bearer).digest(),
-      Buffer.from(expected, "hex"),
-    )
+    !timingSafeEqual(createHash("sha256").update(bearer).digest(), Buffer.from(expected, "hex"))
   ) {
     throw new Error("transport_bearer_refused");
   }
@@ -1962,9 +1959,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         },
         harnessChallenge: held.harnessChallenge,
       };
-      const answer = await relayEnrollment(relay, data, (request) =>
-        execution.enrollment(request),
-      );
+      const answer = await relayEnrollment(relay, data, (request) => execution.enrollment(request));
       held.harnessChallenge = relay.harnessChallenge;
       if (answer === undefined) reply(response, 409, { error: "harness_enrollment_unavailable" });
       else reply(response, 200, answer);

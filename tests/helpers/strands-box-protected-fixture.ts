@@ -347,8 +347,7 @@ export async function pairedFixture(
     onRelease: undefined as (() => Promise<void>) | undefined,
     /** The real Box execution's enrollment bridge (`Execution.enrollment`); none by default. */
     enrollment: undefined as
-      | ((request: EnrollmentRequest) => Promise<EnrollmentAnswer | undefined>)
-      | undefined,
+      ((request: EnrollmentRequest) => Promise<EnrollmentAnswer | undefined>) | undefined,
     /** The program's challenge the host relayed last (`relayEnrollment`). */
     harnessChallenge: undefined as Record<string, unknown> | undefined,
     /** Every `POST /v1/enrollment` the Worker sent, and the host's refusal codes. */

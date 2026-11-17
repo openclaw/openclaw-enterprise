@@ -714,7 +714,8 @@ export function start(
       if (enrollIdentity === undefined) {
         const inner = enrollInner;
         const pinned = enrollPinned;
-        if (inner === undefined || pinned === undefined) throw new Error("release_gate_unavailable");
+        if (inner === undefined || pinned === undefined)
+          throw new Error("release_gate_unavailable");
         const identity = await waitFor(
           () => {
             try {
@@ -1119,8 +1120,13 @@ export function start(
       report("box", "listener", "observed");
       // Codex listens: the program was released, so the pre-ready enrollment path ends here.
       enrollClosed = true;
-      if (enrollIdentity !== undefined && sameSocket(enrollPinned!, enrollIdentity))
-        unlinkSync(enrollPinned!);
+      if (enrollIdentity !== undefined && sameSocket(enrollPinned!, enrollIdentity)) {
+        try {
+          unlinkSync(enrollPinned!);
+        } catch {
+          /* Removed again, and checked, at retirement. */
+        }
+      }
       // A host-only hardlink pins the kernel pathname inode before any caller can
       // use it. Replacing the sandbox-visible pathname cannot reroute host traffic.
       linkSync(inner, pinned);

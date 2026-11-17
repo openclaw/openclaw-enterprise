@@ -1515,7 +1515,10 @@ test(
         },
         {
           ...input,
-          environment: { ...input.environment, OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY: "A".repeat(59) },
+          environment: {
+            ...input.environment,
+            OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY: "A".repeat(59),
+          },
           credentialSource,
           releaseGate,
           reservationGeneration,

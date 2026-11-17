@@ -354,16 +354,21 @@ test(
     const committed = f.committed()!;
     const post = (release: unknown, bearer = token) =>
       held.execution.enrollment({ method: "POST", bearer, body: JSON.stringify(release) });
-    assert.equal((await held.execution.enrollment({ method: "GET", bearer: "wrong" }))?.status, 401);
     assert.equal(
-      (await post(signComputeExecutionRelease(f.keys.privateKey, randomUUID(), committed)))
-        ?.status,
+      (await held.execution.enrollment({ method: "GET", bearer: "wrong" }))?.status,
+      401,
+    );
+    assert.equal(
+      (await post(signComputeExecutionRelease(f.keys.privateKey, randomUUID(), committed)))?.status,
       409,
     );
     const other = generateKeyPairSync("ed25519");
     assert.equal(
-      (await post(signComputeExecutionRelease(other.privateKey, String(first.startupId), committed)))
-        ?.status,
+      (
+        await post(
+          signComputeExecutionRelease(other.privateKey, String(first.startupId), committed),
+        )
+      )?.status,
       409,
     );
     // Without a bearer it is refused too; the bridge reaches only the program's port.
@@ -608,7 +613,11 @@ test("the host relays a release only for the challenge it relayed, signed by Com
     repositoryGitAuthorization: "online-request",
     repositoryGit: { bindings: [{ profile: "github-repository" }] },
   } as unknown as ProxyPlan;
-  const expected = { executionId: "box-execution", processInstanceId: "boot:1:2", bearerSha256: "b".repeat(64) };
+  const expected = {
+    executionId: "box-execution",
+    processInstanceId: "boot:1:2",
+    bearerSha256: "b".repeat(64),
+  };
   const installation = {
     plan,
     sandboxId: expected.executionId,
