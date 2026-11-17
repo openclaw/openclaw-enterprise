@@ -12,7 +12,7 @@ import {
   realpathSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { fields, object, string } from "./launch.ts";
+import { boxHostArch, fields, object, string } from "./launch.ts";
 import { mountIdentity } from "./installed-workspace-node.ts";
 import type { MountIdentity } from "./installed-workspace-node.ts";
 
@@ -435,7 +435,7 @@ export function installHarnessImage(
 ): HarnessImageInstallation {
   if (
     process.platform !== "linux" ||
-    process.arch !== "arm64" ||
+    !boxHostArch() ||
     process.getuid?.() !== 1000 ||
     process.getgid?.() !== 1000
   ) {

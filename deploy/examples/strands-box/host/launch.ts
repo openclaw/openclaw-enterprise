@@ -66,6 +66,11 @@ export const PATH = "/usr/local/bin:/usr/bin:/bin";
 export const APP_SOCKET = "app-server.sock";
 export const READY_FILE = "ready.json";
 export const OWNER_STOP_MS = 10_000;
+// Box hosts: Linux ARM64 (released Box) or Linux x86-64 (Box main and fork builds, which the
+// launcher starts with EXPERIMENTAL_X86_SUPPORT=TRUE). Box itself refuses any other platform.
+export function boxHostArch(arch: string = process.arch): boolean {
+  return arch === "arm64" || arch === "x64";
+}
 const DIGEST = /^[a-f0-9]{64}$/;
 
 const startupMessages = new Set([
@@ -993,7 +998,7 @@ export function smokeInput(config: HostConfig): { input: StartInput; capability:
 function prepareStandalone(path: string): ReturnType<typeof smokeInput> & { config: HostConfig } {
   const data = checked("config-file", () => readConfig(path));
   const config = hostConfig(data);
-  if (process.arch !== "arm64") throw startupFailure("platform", new Error("linux_arm64_required"));
+  if (!boxHostArch()) throw startupFailure("platform", new Error("linux_arm64_required"));
   checked("runtime-claim", () => ensureEmpty(config.runtimeDir));
   process.umask(0o077);
   return { config, ...smokeInput(config) };

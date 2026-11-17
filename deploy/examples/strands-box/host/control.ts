@@ -19,6 +19,7 @@ import {
 } from "./egress.ts";
 import type { EgressRoute, RouteView, UpstreamCa } from "./egress.ts";
 import {
+  boxHostArch,
   ensureEmpty,
   fields,
   hostConfig,
@@ -1790,7 +1791,7 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
       );
       process.stdout.write("strands-box-control: exact held admission approved\n");
     } else {
-      if (path === undefined || process.argv.length !== 3 || process.arch !== "arm64")
+      if (path === undefined || process.argv.length !== 3 || !boxHostArch())
         throw new Error("linux_arm64_required");
       await serveInstalledControl(installedConfig(readConfig(path)));
     }

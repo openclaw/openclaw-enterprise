@@ -1,6 +1,13 @@
 import { lstatSync, realpathSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { ensureEmpty, hostConfig, readConfig, smokeInput, start } from "../host/launch.ts";
+import {
+  boxHostArch,
+  ensureEmpty,
+  hostConfig,
+  readConfig,
+  smokeInput,
+  start,
+} from "../host/launch.ts";
 import { seededNonce } from "./operator.ts";
 
 const modelConfig = `model = "gpt-5"
@@ -29,7 +36,7 @@ async function main() {
   const [configFile, fixture, run] = process.argv.slice(2);
   if (
     process.platform !== "linux" ||
-    process.arch !== "arm64" ||
+    !boxHostArch() ||
     process.getuid?.() === 0 ||
     process.argv.length !== 5 ||
     !canonical(configFile) ||
