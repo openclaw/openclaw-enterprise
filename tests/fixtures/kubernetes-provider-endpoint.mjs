@@ -87,9 +87,28 @@ export function tlsPinnedWorkspaceSetupCode(url, expiresAtMs) {
   ).toString("base64url");
 }
 
+/**
+ * @typedef {import("../../packages/contracts/src/index.ts").AgentRevision} AgentRevision
+ * @typedef {import("../../packages/contracts/src/index.ts").ComputeRevisionContext} ComputeRevisionContext
+ * @typedef {Omit<ComputeRevisionContext, "secretEnvironment"> & Partial<Pick<ComputeRevisionContext, "secretEnvironment">>} FixtureRevisionContext
+ * @typedef {{apiVersion: string, kind: string, metadata: {name: string, namespace?: string}, spec?: Record<string, unknown>}} WrittenObject
+ */
+
 // In-memory Kubernetes transport plus Sandbox/lifecycle responses. No cluster I/O.
 // Tests own readiness transitions and assertions; prepare/activate remain real Driver calls.
+/**
+ * @param {{
+ *   credentialGatewayDriver?: import("../../packages/contracts/src/index.ts").CredentialGatewayDriver,
+ *   harnessEndpoint?: (context: import("../../packages/contracts/src/index.ts").SandboxHarnessContext) => Promise<import("../../packages/contracts/src/index.ts").SandboxHarnessEndpoint | undefined>,
+ *   providerNetwork?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["network"]["providerHarness"],
+ *   revisionOverrides?: Partial<import("../../packages/contracts/src/index.ts").AgentRevision>,
+ *   servicePrincipalCredentials?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["servicePrincipalCredentials"],
+ *   gatewayRouting?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesGatewayRoutingOptions,
+ *   sandboxDriver?: import("../../packages/contracts/src/index.ts").SandboxDriver,
+ * }} [options]
+ */
 export function providerEndpointFixture({
+  credentialGatewayDriver,
   harnessEndpoint = async () => ({
     url: "ws://tenant--sandbox.openshell.localhost:8080/",
     workspaceRoot: "/sandbox/enterprise",
@@ -97,6 +116,8 @@ export function providerEndpointFixture({
   providerNetwork,
   revisionOverrides,
   servicePrincipalCredentials,
+  gatewayRouting,
+  sandboxDriver,
 } = {}) {
   const hooks = [];
   const provisions = [];
@@ -105,9 +126,12 @@ export function providerEndpointFixture({
   const peerLookups = [];
   const provisioningPolicies = [];
   const fixture = providerReadinessFixture({
+    credentialGatewayDriver,
     providerNetwork,
     revisionOverrides,
     servicePrincipalCredentials,
+    gatewayRouting,
+    sandboxDriver,
     // The Sandbox, and so its relay Pod's labels, exists only once provisioned.
     async workspaceNodePeerLabels({ revision: target }) {
       peerLookups.push(target.id);
@@ -167,6 +191,7 @@ export function providerEndpointFixture({
   const gatewayName = `gateway-${digest(revision.agentId)}`;
   const gatewayNamespace = kubernetesNamespaceName(tenant.id);
   const objects = new Map();
+  /** @type {WrittenObject[]} */
   const writes = [];
   const key = (kind, name, target = namespace) =>
     `${kind}:${kind === "Namespace" ? "" : target}:${name}`;
@@ -333,12 +358,21 @@ export function providerEndpointFixture({
     save,
     read,
     // These delegate to the production Driver without caching readiness between calls.
+    /**
+     * @param {AgentRevision} [targetRevision]
+     * @param {FixtureRevisionContext} [context]
+     */
     prepare(targetRevision = revision, context = authContext(targetRevision)) {
-      return driver.prepareRevision(targetRevision, context);
+      return driver.prepareRevision(targetRevision, { secretEnvironment: [], ...context });
     },
+    /**
+     * @param {AgentRevision} [targetRevision]
+     * @param {FixtureRevisionContext} [context]
+     */
     activate(targetRevision = revision, context = authContext(targetRevision)) {
-      return driver.activateRevision(targetRevision, context);
+      return driver.activateRevision(targetRevision, { secretEnvironment: [], ...context });
     },
+    /** @param {(ReturnType<typeof fixture.pod> | null)[]} pods */
     observePods(pods) {
       fixture.setObservation({ items: pods });
     },
@@ -363,6 +397,7 @@ export function providerEndpointFixture({
       gateway.status = { observedGeneration: 1, replicas: 1, updatedReplicas: 1, readyReplicas: 1 };
       save(gateway);
     },
+    /** @param {boolean} value */
     setSetupAvailable(value) {
       workspaceNodeSetupAvailable = value;
     },

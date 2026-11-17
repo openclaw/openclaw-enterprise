@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { exercisedLaneStatus } from "./full-integration-coverage.ts";
-import { loadTestSuites } from "./test-suites.mjs";
+import { loadTestSuites } from "./test-suites.ts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const repository = "openclaw/openclaw-enterprise";
@@ -295,7 +295,7 @@ export async function validateResults({
       const validation = spawnSync(
         process.execPath,
         [
-          "scripts/ci/run-tests.mjs",
+          "scripts/ci/run-tests.ts",
           "aggregate",
           lane,
           "--results-dir",

@@ -27,7 +27,7 @@ import {
   createConsoleAppFixture,
   fileConsoleApp,
 } from "../helpers/console-app.mjs";
-import { grantRole } from "../helpers/iam-grants.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import {
   LOG_TEXT_DENIED,
   RUNTIME_STATUS_DENIED,
@@ -64,6 +64,7 @@ import {
 } from "./console-fetch-accounting.ts";
 import { withholdPermissionSummary } from "./console-agents-test-support.ts";
 import { refocus } from "./console-refocus-helpers.ts";
+import { callbackGate, within } from "../helpers/wait-for.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type LogLine = AgentRuntimeLogChunk["lines"][number];
@@ -1227,7 +1228,7 @@ test("a rejected cursor starts one new view and later restarts wait for it", asy
     await route.continue();
   });
   await page.getByRole("button", { name: "Follow" }).click();
-  await held.promise;
+  await within(held.promise, "the replacement view's held log read");
   // A restart while the replacement read is in flight waits for it.
   computeDriver.state.lines = [line(1, "first view line"), line(2, "debug floor line")];
   const readsWhileHeld = logRequests(requests, revisionId).length;
@@ -1983,8 +1984,7 @@ test("a Logs reread answered after this page's Stop keeps the Stop", async (t) =
   // is answered only after this page's Stop.
   let release!: () => void;
   const released = new Promise<void>((resolve) => (release = resolve));
-  let markHeld!: () => void;
-  const held = new Promise<void>((resolve) => (markHeld = resolve));
+  const held = callbackGate("the held Agent read");
   let holding = true;
   await page.route(`${fixture.origin}${agentPath}`, async (route) => {
     if (!holding || route.request().method() !== "GET") {
@@ -1992,15 +1992,17 @@ test("a Logs reread answered after this page's Stop keeps the Stop", async (t) =
       return;
     }
     holding = false;
-    const response = await route.fetch();
-    markHeld();
-    await released;
-    await route.fulfill({ response });
+    await held.run(async () => {
+      const response = await route.fetch();
+      held.resolve();
+      await released;
+      await route.fulfill({ response });
+    });
   });
   const agentReads = await settledFetches(page, agentPath);
   await new Promise((resolve) => setTimeout(resolve, 500));
   await page.clock.runFor(10_000);
-  await held;
+  await held.reached();
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await stop.click();
   await page
@@ -2294,8 +2296,7 @@ test("a refocus recheck's older Agent answer leaves a newer poll's state", async
   // answered only after the poll below.
   let release!: () => void;
   const released = new Promise<void>((resolve) => (release = resolve));
-  let markHeld!: () => void;
-  const held = new Promise<void>((resolve) => (markHeld = resolve));
+  const held = callbackGate("the held Agent read");
   let holding = true;
   await page.route(`${logs.fixture.origin}${agentPath}`, async (route) => {
     if (!holding || route.request().method() !== "GET") {
@@ -2303,13 +2304,15 @@ test("a refocus recheck's older Agent answer leaves a newer poll's state", async
       return;
     }
     holding = false;
-    const response = await route.fetch();
-    markHeld();
-    await released;
-    await route.fulfill({ response });
+    await held.run(async () => {
+      const response = await route.fetch();
+      held.resolve();
+      await released;
+      await route.fulfill({ response });
+    });
   });
   await refocus(page);
-  await held;
+  await held.reached();
 
   // Another session stops the Agent, and the next poll shows it.
   await stopElsewhere();
@@ -2970,6 +2973,15 @@ test("Follow retains output and cursor after a malformed later record and recove
 test("a rate-limited Refresh logs keeps the loaded lines and says when to try again", async (t) => {
   const page = await logsBeforeRateLimit(t);
   const log = runtimeLogOutput(page);
+  const rows = log.locator(".log-row");
+  const refresh = page.getByRole("button", { name: "Refresh logs", exact: true });
+  const previousOutput = "output before the rate limit";
+  const currentOutput = "gateway connection restored";
+  async function expectOnlyRow(message: string) {
+    await rows.getByText(message, { exact: true }).waitFor();
+    assert.equal(await rows.count(), 1);
+    assert.deepEqual(await rows.locator(".log-message").allTextContents(), [message]);
+  }
   const logError = page.locator(".log-error");
   const outputStatus = page.locator(".log-output-status");
   const shownStatus = await outputStatus.textContent();
@@ -2979,14 +2991,13 @@ test("a rate-limited Refresh logs keeps the loaded lines and says when to try ag
     answer ? route.fulfill(answer) : route.fallback(),
   );
 
-  await page.getByRole("button", { name: "Refresh logs" }).click();
+  await refresh.click();
   await waitForIdleFetches(page);
   assert.equal(
     await logError.textContent(),
     `Too many requests. Try again in 7 seconds. Request ID: ${rateLimitRequestId}`,
   );
-  assert.equal(await log.locator(".log-row").count(), 1);
-  await log.getByText("output before the rate limit").waitFor();
+  await expectOnlyRow(previousOutput);
   assert.equal(await outputStatus.textContent(), shownStatus);
   await page.clock.runFor(6_999);
   assert.match((await logError.textContent()) ?? "", /Try again in 7 seconds\./u);
@@ -2997,12 +3008,15 @@ test("a rate-limited Refresh logs keeps the loaded lines and says when to try ag
   );
 
   // The next refresh replaces the kept lines with its own page.
+  computeDriver.state.lines = [line(2, currentOutput)];
   answer = null;
-  await page.getByRole("button", { name: "Refresh logs" }).click();
+  const successfulRead = page.waitForResponse(/\/runtime\/logs\?/u);
+  await refresh.click();
+  assert.equal((await successfulRead).status(), 200);
   await waitForIdleFetches(page);
   assert.equal(await logError.isHidden(), true);
-  assert.equal(await log.locator(".log-row").count(), 1);
-  await log.getByText("output before the rate limit").waitFor();
+  assert.equal(await log.getByText(previousOutput, { exact: true }).count(), 0);
+  await expectOnlyRow(currentOutput);
 
   // A second Refresh while one reads queues another. When that one is rate limited, the status
   // still names the lines shown, not "Reading output…".
@@ -3017,15 +3031,15 @@ test("a rate-limited Refresh logs keeps the loaded lines and says when to try ag
     return route.fulfill(rateLimitedResponse(2));
   };
   await page.route("**/runtime/logs?*", doubleRefresh);
-  await page.getByRole("button", { name: "Refresh logs" }).click();
+  await refresh.click();
   await waitForCondition(() => doubleReads === 1, "the first refresh is held");
-  await page.getByRole("button", { name: "Refresh logs" }).click();
+  await refresh.click();
   release();
   await waitForCondition(() => doubleReads === 2, "the queued refresh reads");
   await waitForIdleFetches(page);
   assert.match((await logError.textContent()) ?? "", /Try again in 2 seconds\./u);
   assert.equal(await outputStatus.textContent(), shownStatus);
-  assert.equal(await log.locator(".log-row").count(), 1);
+  await expectOnlyRow(currentOutput);
   await page.unroute("**/runtime/logs?*", doubleRefresh);
 
   // Following lines whose cursor was rejected cannot be read on from, so the new view clears them
@@ -3051,19 +3065,19 @@ test("a rate-limited Refresh logs keeps the loaded lines and says when to try ag
   await page.clock.runFor(2_000);
   await waitForCondition(() => followReads === 2, "the rejected cursor starts a new view");
   await waitForIdleFetches(page);
-  assert.equal(await log.locator(".log-row").count(), 0);
+  assert.equal(await rows.count(), 0);
   await page.getByRole("button", { name: "Following", exact: true }).click();
   await page.unroute("**/runtime/logs?*", rejectCursor);
 
   // A read for another selection still clears the lines first: they belong to the old one.
-  await page.getByRole("button", { name: "Refresh logs" }).click();
+  await refresh.click();
   await waitForIdleFetches(page);
-  await log.getByText("output before the rate limit").waitFor();
+  await expectOnlyRow(currentOutput);
   answer = rateLimitedResponse(3);
   await page.getByLabel("Include debug").check();
   await waitForIdleFetches(page);
   assert.match((await logError.textContent()) ?? "", /Try again in 3 seconds\./u);
-  assert.equal(await log.locator(".log-row").count(), 0);
+  assert.equal(await rows.count(), 0);
   assert.equal(await outputStatus.textContent(), "");
 });
 

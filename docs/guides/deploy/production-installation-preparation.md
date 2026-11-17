@@ -155,7 +155,7 @@ export OCC_PROFILE_INPUT="${OCC_PROFILE_INPUT:-$OCC_INPUT_DIRECTORY/profile-inpu
   test -s "$OCC_PROFILE_INPUT"
   yq -e '.controlPlane.releaseName == "oce" and .controlPlane.namespace == "openclaw-system"' \
     "$OCC_PROFILE_INPUT" >/dev/null
-  node scripts/render-installation-profile.mjs \
+  node scripts/render-installation-profile.ts \
     --profile "$OCC_PROFILE" \
     --input "$OCC_PROFILE_INPUT" \
     --out-dir "$OCC_INPUT_DIRECTORY"

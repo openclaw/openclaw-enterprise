@@ -41,6 +41,13 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	sandboxDriver, controlPlane := profile.SandboxDriver, profile.ControlPlane
+	verificationMode := r.setting("OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE", "workspace-write")
+	if verificationMode != "workspace-write" && verificationMode != "danger-full-access" {
+		return fmt.Errorf("invalid OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE")
+	}
+	if verificationMode == "danger-full-access" && sandboxDriver != "none" {
+		return fmt.Errorf("container-only Codex verification requires Sandbox Driver none")
+	}
 	if err := r.protectedEgressSelection(); err != nil {
 		return err
 	}
@@ -684,7 +691,7 @@ func (r *runner) waitReady(ctx context.Context, s *developmentState, url string,
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			return false, nil
 		}
-		_, err = r.composeOutput(ctx, s, "exec", "-T", "worker-kubernetes", "node", "scripts/production-healthcheck.mjs", "worker", "ready")
+		_, err = r.composeOutput(ctx, s, "exec", "-T", "worker-kubernetes", "node", "scripts/production-healthcheck.ts", "worker", "ready")
 		return err == nil, nil
 	})
 }

@@ -18,7 +18,7 @@ import {
   stoppedGatewaySummary,
   waitFor,
   watchCluster,
-} from "../../scripts/ci/first-agent-smoke.mjs";
+} from "../../scripts/ci/first-agent-smoke.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandPath } from "../helpers/fake-commands.ts";
 import { listen } from "../helpers/listen.ts";

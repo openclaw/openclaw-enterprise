@@ -1,53 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import type {
-  OpenShellProviderCreateRequest,
-  OpenShellProviderProfile,
-} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
   ConfigurationValidationError as SharedConfigurationValidationError,
-  type CredentialRevisionContext,
   type CredentialSource,
-  type CredentialSourceContext,
-  type CredentialSourceInput,
 } from "../../packages/contracts/src/index.ts";
 import {
   CredentialSourceRegistrationConfigError,
   CredentialSourceRevisionError,
 } from "../../packages/occ/src/index.ts";
-import { assertCredentialSourceReady } from "./sandbox-driver-credential-fixture.ts";
+import {
+  assertCredentialSourceReady,
+  type credentialGatewayOverProviders,
+  type CredentialProviderFixture,
+} from "./sandbox-driver-credential-fixture.ts";
 
-type StoredProfile = OpenShellProviderProfile & { resourceVersion: string };
-type GatewayFixture = {
-  calls: [string, string][];
-  client: {
-    getProviderProfile: (workspace: string, id: string) => Promise<StoredProfile | undefined>;
-  };
-  context: (id: string) => CredentialSourceContext;
-  deletedProfiles: string[];
-  driver: OpenShellCredentialGatewayDriver;
-  driverWith: (options?: {
-    binaries?: string[];
-    toolBinaries?: string[];
-  }) => OpenShellCredentialGatewayDriver;
-  input: () => CredentialSourceInput;
-  profileWrites: [string, string][];
-  profiles: Map<string, StoredProfile>;
-  providers: Map<string, OpenShellProviderCreateRequest>;
-  revisionContext: (sources: CredentialSource[]) => CredentialRevisionContext;
-  source: (id: string) => CredentialSource;
-};
 type FixtureDependencies = {
-  credentialGatewayOverProviders: (options?: { toolBinaries?: string[] }) => GatewayFixture;
-  structuralRefusal: (
-    path: string,
-    keyword: string,
-    code?: string,
-  ) => { path: string; code: string; message: string }[];
+  credentialGatewayOverProviders: typeof credentialGatewayOverProviders;
+  structuralRefusal: typeof import("./sandbox-driver-startup-orchestration.ts").structuralRefusal;
 };
 
-function requiredProfile(profiles: Map<string, StoredProfile>, id: string): StoredProfile {
+function requiredProfile(profiles: CredentialProviderFixture["profiles"], id: string) {
   const profile = profiles.get(id);
   assert.ok(profile, `expected provider profile ${id}`);
   return profile;
@@ -58,7 +31,7 @@ export function registerSandboxCredentialContractCases({
   structuralRefusal,
 }: FixtureDependencies): void {
   /** A bearer-token source of the recording store, registered under `driver`. */
-  function bearerTokenSources(gateway: GatewayFixture) {
+  function bearerTokenSources(gateway: CredentialProviderFixture) {
     const { context } = gateway;
     const endpoint = { host: "api.example.com", env_var: "EXAMPLE_TOKEN" };
     const bearer = (id: string, env_var = endpoint.env_var) => ({

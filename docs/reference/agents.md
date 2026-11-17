@@ -235,6 +235,13 @@ First deployment applies them once; pending inputs have no read/update API. See
 read (Agent `read`) or replace (Agent `operate`) one file in the live workspace.
 See [live file access](agents/workspace-files.md#live-file-access).
 
+## HTTP chat
+
+Human sessions and service API keys with exact-Agent `operate` can submit turns
+through `POST /agents/:agentId/chat` on Kubernetes Compute. See the
+[HTTP chat contract](agent-http-chat.md) for native JSON/SSE responses,
+conversation scope, availability and execution limits.
+
 ## Native admin UI
 
 Authorized users can open the selected Agent gateway's native browser UI

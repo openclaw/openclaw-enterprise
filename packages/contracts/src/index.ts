@@ -1146,6 +1146,8 @@ export interface AgentRevision extends Scope {
     readonly implementation: string;
     /** Private, immutable admission state owned by the selected Compute Driver. */
     readonly admission?: string;
+    /** Optional private runtime inputs; separate from authority admission for older readers. */
+    readonly runtimeInputs?: string;
   };
   readonly sandboxDriverId?: string;
   readonly sandboxPolicy?: SandboxPolicySnapshot;
@@ -1546,6 +1548,8 @@ export type {
 export type {
   RepositoryWorkerRestartDisposition,
   ComputeDriver,
+  AgentChatCompletionsEndpoint,
+  AgentChatCompletionsResolution,
   ComputeRevisionContext,
   WorkloadLaunchContext,
   ComputeLifecycleHooks,
@@ -1634,7 +1638,7 @@ export {
   WORKSPACE_SETUP_CHECK,
   WORKSPACE_SETUP_FAILED,
   WORKSPACE_SETUP_REFUSED,
-} from "./runtime-failure.mjs";
+} from "./runtime-failure.ts";
 
 export type { InitialWorkspaceFiles, WorkspaceSetup } from "./workspace-setup.ts";
 export { normalizeInitialWorkspaceFiles, normalizeWorkspaceDefaultsId } from "./workspace-setup.ts";
@@ -1642,7 +1646,7 @@ export {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
   WORKSPACE_DEFAULTS_VERSION,
-} from "./workspace-defaults.mjs";
+} from "./workspace-defaults.ts";
 
 export type {
   ProtectedRepositoryGitAuthority,

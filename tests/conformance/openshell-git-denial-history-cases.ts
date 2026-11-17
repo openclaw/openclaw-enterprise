@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { openShellGitDenialFailureStage } from "../helpers/openshell-git-denial.mjs";
+import { openShellGitDenialFailureStage } from "../helpers/openshell-git-denial.ts";
 import {
   denial,
   fixture,

@@ -1,0 +1,191 @@
+name: Trusted main lint cache trial
+
+on: workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  trial:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    env:
+      NODE_VERSION: "24.22.1"
+      CI: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - id: source
+        run: |
+          # Actions expression string comparisons ignore case. Require the exact Git ref.
+          [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REPOSITORY" == openclaw/openclaw-enterprise ]]
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          test "$(git rev-parse --verify 'HEAD^{commit}')" = "$GITHUB_SHA"
+      - id: node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - id: pnpm
+        uses: ./.github/actions/setup-pnpm-store-cache
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache-mode: "off"
+      - id: install
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Measure authoritative uncached lint
+        id: cold
+        run: |
+          start=$(date +%s%3N)
+          pnpm lint --concurrency 2 > /dev/null 2>&1
+          echo "ms=$(( $(date +%s%3N) - start ))" >> "$GITHUB_OUTPUT"
+
+      - name: Bind this trial to its checkout and toolchain
+        id: trial
+        run: |
+          # The commit binds every tracked input, including this workflow, all
+          # manifests, the lockfile, workspace settings and lint configuration.
+          node_version=$(node --version)
+          pnpm_version=$(pnpm --version)
+          echo "node=$node_version" >> "$GITHUB_OUTPUT"
+          echo "pnpm=$pnpm_version" >> "$GITHUB_OUTPUT"
+          fingerprint=$(printf '%s\0' "$GITHUB_SHA" "$GITHUB_WORKSPACE" "$RUNNER_TEMP" \
+            "$RUNNER_OS" "$RUNNER_ARCH" "$node_version" "$pnpm_version" | sha256sum | cut -d' ' -f1)
+          {
+            echo "fingerprint=$fingerprint"
+            echo "key=lint-trial-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$fingerprint-$(cat /proc/sys/kernel/random/uuid)"
+            echo "probe=lint-probe-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$(cat /proc/sys/kernel/random/uuid)"
+          } >> "$GITHUB_OUTPUT"
+          echo "CACHE_FILE=$RUNNER_TEMP/lint-trial.cache" >> "$GITHUB_ENV"
+          echo "start=$(date +%s%3N)" >> "$GITHUB_OUTPUT"
+      - name: Look up the new exact key without downloading
+        id: lookup
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ env.CACHE_FILE }}
+          key: ${{ steps.trial.outputs.key }}
+          lookup-only: true
+      - name: Measure empty-start lint and fingerprint the seed
+        id: fill
+        env:
+          LOOKUP_START: ${{ steps.trial.outputs.start }}
+          EXPECTED: ${{ steps.trial.outputs.key }}
+          PRIMARY: ${{ steps.lookup.outputs.cache-primary-key }}
+          MATCHED: ${{ steps.lookup.outputs.cache-matched-key }}
+          HIT: ${{ steps.lookup.outputs.cache-hit }}
+        run: |
+          [[ -n "$EXPECTED" && "$PRIMARY" == "$EXPECTED" && -z "$MATCHED" && -z "$HIT" ]]
+          [[ ! -e "$CACHE_FILE" && ! -L "$CACHE_FILE" ]]
+          start=$(date +%s%3N)
+          echo "lookup=$(( start - LOOKUP_START ))" >> "$GITHUB_OUTPUT"
+          pnpm lint --concurrency 2 --cache --cache-strategy content --cache-location "$CACHE_FILE" > /dev/null 2>&1
+          end=$(date +%s%3N)
+          echo "ms=$(( end - start ))" >> "$GITHUB_OUTPUT"
+          [[ -f "$CACHE_FILE" && ! -L "$CACHE_FILE" && -s "$CACHE_FILE" ]]
+          echo "bytes=$(stat -c %s "$CACHE_FILE")" >> "$GITHUB_OUTPUT"
+          digest=$(sha256sum "$CACHE_FILE" | cut -d' ' -f1)
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          verified=$(date +%s%3N)
+          echo "verify=$(( verified - end ))" >> "$GITHUB_OUTPUT"
+          echo "start=$verified" >> "$GITHUB_OUTPUT"
+      - name: Save the passing seed
+        id: save
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ env.CACHE_FILE }}
+          key: ${{ steps.trial.outputs.key }}
+      - name: Remove the local seed before restore
+        id: remove
+        env:
+          SAVE_START: ${{ steps.fill.outputs.start }}
+        run: |
+          saved=$(date +%s%3N)
+          echo "save=$(( saved - SAVE_START ))" >> "$GITHUB_OUTPUT"
+          rm -- "$CACHE_FILE"
+          [[ ! -e "$CACHE_FILE" && ! -L "$CACHE_FILE" ]]
+          removed=$(date +%s%3N)
+          echo "discard=$(( removed - saved ))" >> "$GITHUB_OUTPUT"
+          echo "start=$removed" >> "$GITHUB_OUTPUT"
+      - name: Look up an unused primary with the saved seed as its only witness
+        id: witness
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ env.CACHE_FILE }}
+          key: ${{ steps.trial.outputs.probe }}
+          restore-keys: ${{ steps.trial.outputs.key }}
+          lookup-only: true
+      - name: Require a positive match on the trusted seed without local bytes
+        id: witnessed
+        env:
+          START: ${{ steps.remove.outputs.start }}
+          PROBE: ${{ steps.trial.outputs.probe }}
+          SEED: ${{ steps.trial.outputs.key }}
+          PRIMARY: ${{ steps.witness.outputs.cache-primary-key }}
+          MATCHED: ${{ steps.witness.outputs.cache-matched-key }}
+          HIT: ${{ steps.witness.outputs.cache-hit }}
+        run: |
+          [[ -n "$PROBE" && -n "$SEED" && "$PROBE" != "$SEED" && "$PRIMARY" == "$PROBE" ]]
+          [[ "$HIT" == false && "$MATCHED" == "$SEED" ]]
+          [[ ! -e "$CACHE_FILE" && ! -L "$CACHE_FILE" ]]
+          end=$(date +%s%3N)
+          echo "ms=$(( end - START ))" >> "$GITHUB_OUTPUT"
+          echo "start=$end" >> "$GITHUB_OUTPUT"
+      - name: Restore the exact trial key
+        id: restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ env.CACHE_FILE }}
+          key: ${{ steps.trial.outputs.key }}
+          fail-on-cache-miss: true
+      - name: Verify the restored bytes and measure warm lint
+        id: warm
+        env:
+          RESTORE_START: ${{ steps.witnessed.outputs.start }}
+          PRIMARY: ${{ steps.restore.outputs.cache-primary-key }}
+          HIT: ${{ steps.restore.outputs.cache-hit }}
+          MATCHED: ${{ steps.restore.outputs.cache-matched-key }}
+          EXPECTED: ${{ steps.trial.outputs.key }}
+          DIGEST: ${{ steps.fill.outputs.digest }}
+          BYTES: ${{ steps.fill.outputs.bytes }}
+        run: |
+          [[ "$HIT" == true && -n "$EXPECTED" && "$PRIMARY" == "$EXPECTED" && "$MATCHED" == "$EXPECTED" ]]
+          [[ -f "$CACHE_FILE" && ! -L "$CACHE_FILE" && -s "$CACHE_FILE" ]]
+          [[ "$(stat -c %s "$CACHE_FILE")" == "$BYTES" ]]
+          [[ "$DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  %s\n' "$DIGEST" "$CACHE_FILE" | sha256sum --check --status
+          start=$(date +%s%3N)
+          echo "restore=$(( start - RESTORE_START ))" >> "$GITHUB_OUTPUT"
+          pnpm lint --concurrency 2 --cache --cache-strategy content --cache-location "$CACHE_FILE" > /dev/null 2>&1
+          echo "ms=$(( $(date +%s%3N) - start ))" >> "$GITHUB_OUTPUT"
+
+      - name: Record trial result
+        if: always()
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          # Action clocks include the surrounding step transitions. Restore also
+          # includes byte verification. Bytes count the uncompressed ESLint file.
+          result=$(jq -c '
+            def ms($s): [$s | tonumber?][0];
+            def total: if all(.[]; type == "number") then add else null end;
+            {source:env.GITHUB_SHA, run:env.GITHUB_RUN_ID, attempt:env.GITHUB_RUN_ATTEMPT,
+             node:.trial.outputs.node, pnpm:.trial.outputs.pnpm, fingerprint:.trial.outputs.fingerprint,
+             verifiedWarmLint:(.warm.outcome == "success"), coldVerdict:.cold.outcome,
+             failedPhase:([to_entries[] | select(.value.outcome == "failure" or .value.outcome == "cancelled") | .key][0]),
+             bytes:ms(.fill.outputs.bytes), coldMs:ms(.cold.outputs.ms), initialEmptyLookupUnqualifiedMs:ms(.fill.outputs.lookup),
+             fillMs:ms(.fill.outputs.ms), seedVerifyMs:ms(.fill.outputs.verify),
+             saveMs:ms(.remove.outputs.save), discardMs:ms(.remove.outputs.discard),
+             primaryMissWithSeedWitnessLookupMs:ms(.witnessed.outputs.ms),
+             restoreAndVerifyMs:ms(.warm.outputs.restore), warmMs:ms(.warm.outputs.ms)}
+            | .initialNoSupplyUnqualifiedMs=([.initialEmptyLookupUnqualifiedMs,.fillMs,.seedVerifyMs,.saveMs]|total)
+            | .hitMs=([.restoreAndVerifyMs,.warmMs]|total)
+            | .hitSavedMs=(if .hitMs and .coldMs then .coldMs-.hitMs else null end)' <<< "$STEPS")
+          echo "::notice title=Trusted main lint cache trial::$result"

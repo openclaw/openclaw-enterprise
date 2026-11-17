@@ -1,5 +1,4 @@
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
-import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { randomUUID, createHash } from "node:crypto";
 import {
@@ -8,7 +7,7 @@ import {
 } from "./postgres-worker-revision-fixture.mjs";
 import { databaseUrl } from "./postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "./postgres-agent-app.mjs";
-import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
+import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.ts";
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
@@ -87,14 +86,17 @@ export async function setupStandingWorkerAuthority(
     limits: { exchangeMs: 5_000, credentialMarginMs: 1_000 },
     gateway: { listen: "127.0.0.1:0" },
   });
-  assert.ok(credentials);
-  const registry = structuredClone(credentials.registry);
-  registry.allowStandingApprovals = true;
-  for (const r of registry.repositories) {
-    for (const p of r.namespaces) {
-      p.allowStandingApproval = true;
-    }
-  }
+  const registry = {
+    ...credentials.registry,
+    allowStandingApprovals: true as const,
+    repositories: credentials.registry.repositories.map((repository) => ({
+      ...repository,
+      namespaces: repository.namespaces.map((policy) => ({
+        ...policy,
+        allowStandingApproval: true as const,
+      })),
+    })),
+  };
   const backend = {
     id: credentials.backendId,
     client: new UnixRepositoryCredentialControlClient({

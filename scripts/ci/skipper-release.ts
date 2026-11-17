@@ -150,9 +150,18 @@ export function skipperOperationDiagnostic(value: unknown) {
   const gatewayChatPhase = skipperGatewayChatPhases.find(
     (phase) => phase === diagnostic.gatewayChatPhase,
   );
-  const { runtimeSignal, modelRequestObservation, gatewayTransportCause } = diagnostic;
+  const { runtimeSignal, modelRequestObservation, gatewayTransportCause, helperEntered } =
+    diagnostic;
   const attributed = operation === "gateway-chat" && gatewayChatPhase !== undefined;
   return {
+    ...(attributed &&
+    gatewayChatPhase === "native-git" &&
+    httpStatus === 0 &&
+    gatewayCategory === "transport" &&
+    modelRequestObservation === "observed" &&
+    diagnostic.modelFixtureSelectedTerminalSuccess === true
+      ? { modelFixtureSelectedTerminalSuccess: true as const }
+      : {}),
     ...(attributed &&
     typeof runtimeSignal === "string" &&
     [
@@ -167,6 +176,7 @@ export function skipperOperationDiagnostic(value: unknown) {
     ...(operation === "gateway-exec" && modelRequestObservation === "observed"
       ? { modelRequestObservation }
       : {}),
+    ...(operation === "gateway-exec" && helperEntered === true ? { helperEntered } : {}),
     ...(attributed &&
     httpStatus === 0 &&
     gatewayCategory === "transport" &&
