@@ -650,7 +650,7 @@ test(
 );
 
 test(
-  "the Worker answers a Box model request from the package's Secret: bearer, live attachment, route, 5 s; withdrawal, restart and rotation",
+  "the Worker answers a Box model request from the package's Secret: bearer, live attachment, route, 4 s send-by; withdrawal, restart and rotation",
   { timeout: 90_000 },
   async (t) => {
     const kube = await fakeKubernetesSecrets(t);
