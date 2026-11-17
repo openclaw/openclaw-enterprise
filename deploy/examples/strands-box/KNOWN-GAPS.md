@@ -64,8 +64,10 @@ entries use the same four fields.
   permits succeeds.
 - **Cause:** stock `gh pr create` uses GitHub GraphQL, so the Driver asks OCE
   with the `github_repository` profile. That profile checks the repository,
-  method and route, but it has no draft, ref or one-draft rule, the same as
-  OpenShell. Those rules exist only in the `repository_git` profile, and its
+  method and route, and the repository of Git and REST requests, but it has no
+  draft, ref or one-draft rule and does not read which repository a GraphQL
+  request names, the same as OpenShell. The installation token covers only the
+  assigned repositories, so GitHub refuses GraphQL requests for others. Those rules exist only in the `repository_git` profile, and its
   classifier refuses GitHub REST and GraphQL requests.
 - **Workaround:** keep branch protection on the base branch. Grant the App only
   Contents, Pull requests and Metadata on the selected repository.

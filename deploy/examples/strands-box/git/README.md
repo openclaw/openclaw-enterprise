@@ -48,8 +48,11 @@ requests. Keep branch protection on the base branch.
 
 ## Refusals
 
-- Another repository: OCE refuses the request before Box sends it, with
-  `request_not_allowed`.
+- Another repository: OCE refuses a Git or REST request for it before Box
+  sends it, with `request_not_allowed`. A GraphQL request, which `gh pr create`
+  uses, names its repository in the body, which OCE does not check. GitHub
+  refuses it because the installation token OCE mints covers only the
+  assigned repositories.
 - Any other host: Box refuses the connection. OCE is not asked.
 - After withdrawal: OCE refuses the next request before Box sends it, with
   `access_withdrawn`. The execution and its chat keep running.

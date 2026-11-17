@@ -249,8 +249,9 @@ Start the checks once the host's `GET /v1/execution` reports
    on GitHub, and that GitHub records the App's bot account as the author of
    the pull request.
 2. Try a push and a draft against another repository in the same account.
-   OCE refuses both with `request_not_allowed` before Box sends them. Verify
-   that the attempted ref stays unchanged.
+   OCE refuses the push with `request_not_allowed` before Box sends it. GitHub
+   refuses the draft, because the installation token covers only the assigned
+   repository. Verify that the attempted ref stays unchanged.
 3. Withdraw the active Agent's repository assignment through OCE without
    stopping the Agent. From the same execution, attempt a fresh fetch, push and
    draft. Verify that Box refuses each with the source's `access_withdrawn`
