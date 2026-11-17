@@ -61,9 +61,15 @@ test("the installed loader admits a provider-free external Sandbox and refuses e
       "workspaceNodePeerLabels",
       "observeHeldRepositoryGitPreview",
       "protectedWorkspaceEndpoint",
-    ].map((member): [string, Record<string, unknown>] => [`${member} not a function`, { [member]: {} }]),
+    ].map((member): [string, Record<string, unknown>] => [
+      `${member} not a function`,
+      { [member]: {} },
+    ]),
     // A protected workspace owns provision, enrollment and status; the fixture has no enroll.
-    ["protected workspace without enrollment", { protectedWorkspaceEndpoint: async () => undefined }],
+    [
+      "protected workspace without enrollment",
+      { protectedWorkspaceEndpoint: async () => undefined },
+    ],
   ];
   for (const [index, [name, malformed]] of cases.entries()) {
     const driver = create(`external-sandbox-${index}`, malformed);

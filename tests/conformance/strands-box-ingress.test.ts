@@ -249,7 +249,9 @@ test(
     );
     assert.match(response, /^HTTP\/1\.1 101 /);
     assert.deepEqual(
-      [...response.matchAll(/^x-openclaw-workspace-generation: ([^\r\n]+)\r?$/gim)].map((match) => match[1]),
+      [...response.matchAll(/^x-openclaw-workspace-generation: ([^\r\n]+)\r?$/gim)].map(
+        (match) => match[1],
+      ),
       [f.readySha256],
     );
     assert.match(response, /Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK\+xOo=/);

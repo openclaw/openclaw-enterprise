@@ -7143,7 +7143,12 @@ test("provider Harness public trust rejects invalid material and composes with e
     // The Gateway accepts only this exact canonical document.
     assert.equal(
       writes[1].data["binding.json"],
-      JSON.stringify({ format: "external-workspace-v1", url: endpoint.url, workspaceRoot, generationSha256 }),
+      JSON.stringify({
+        format: "external-workspace-v1",
+        url: endpoint.url,
+        workspaceRoot,
+        generationSha256,
+      }),
     );
     const ownerPod = render(owner).spec.template.spec;
     assert.deepEqual(
@@ -7172,7 +7177,11 @@ test("provider Harness public trust rejects invalid material and composes with e
       assert.equal(writes.length, before);
     }
     // The binding carries the validated endpoint's own root, not a fixed path.
-    await driver.reconcileHarnessTrust(revision, { ...owner, workspaceRoot: "/srv/workspace" }, target);
+    await driver.reconcileHarnessTrust(
+      revision,
+      { ...owner, workspaceRoot: "/srv/workspace" },
+      target,
+    );
     assert.equal(JSON.parse(writes.at(-1).data["binding.json"]).workspaceRoot, "/srv/workspace");
     const system = render({ url: endpoint.url }).spec.template.spec;
     assert.equal(

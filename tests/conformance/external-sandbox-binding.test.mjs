@@ -135,11 +135,18 @@ test("an external Sandbox's endpoint owner is one canonical read-only Gateway bi
   for (const [name, candidate, refusedRevision] of [
     ["missing TLS trust", { ...endpoint, tls: undefined }, revision],
     ["malformed generation", { ...endpoint, externalWorkspaceOwner: { generationSha256: "B" } }],
-    ["extra owner field", { ...endpoint, externalWorkspaceOwner: { ...endpoint.externalWorkspaceOwner, x: 1 } }],
+    [
+      "extra owner field",
+      { ...endpoint, externalWorkspaceOwner: { ...endpoint.externalWorkspaceOwner, x: 1 } },
+    ],
     ["non-normalized root", { ...endpoint, workspaceRoot: "/srv/./external-workspace" }],
     ["native permission profile", { ...endpoint, codexPermissionProfile: ":danger-full-access" }],
     ["egress plan", endpoint, { ...revision, egressPlan: {} }],
-    ["embedded Harness", endpoint, { ...revision, harness: { ...revision.harness, mode: "embedded" } }],
+    [
+      "embedded Harness",
+      endpoint,
+      { ...revision, harness: { ...revision.harness, mode: "embedded" } },
+    ],
   ]) {
     const before = writes.length;
     await assert.rejects(

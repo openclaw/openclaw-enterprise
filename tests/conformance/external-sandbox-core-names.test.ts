@@ -36,7 +36,11 @@ const PROVIDER_NAME = new RegExp(
 const providerTest = (path: string) =>
   PROVIDERS.some((name) =>
     /^tests\/(?:conformance|integration|helpers)\//.test(path)
-      ? path.split("/").at(-1)!.toLowerCase().startsWith(name.toLowerCase() + "-")
+      ? path
+          .split("/")
+          .at(-1)!
+          .toLowerCase()
+          .startsWith(name.toLowerCase() + "-")
       : false,
   );
 const TEXT = /\.(?:[cm]?[jt]s|json|ya?ml|tpl|md|patch|txt)$|Dockerfile$/;
