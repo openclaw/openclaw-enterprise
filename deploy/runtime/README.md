@@ -47,9 +47,9 @@ the native full-access Codex profile, and
 after the Control UI's access is refused. Remove each once upstream does the
 same.
 `openclaw-terminated-gateway-namespace.patch` lets a supervisor that verified a
-private Linux PID namespace stopped recover only Gateway records from that
-namespace. OC still compares its lock fingerprint before recovery. An
-unattributed owner requires operator confirmation.
+private Linux PID namespace stopped recover its Gateway records, or, inside it,
+any record whose PID is dead. OC compares its lock fingerprint first.
+Unattributed owners need operator confirmation.
 OpenClaw normalizes newly created owner-only Linux directories that inherit
 setgid and reports invalid plugin settings during startup. The build runs the
 upstream private-store regressions.
