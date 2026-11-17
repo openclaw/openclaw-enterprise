@@ -103,7 +103,7 @@ export async function probePackagedCodex(
         }
       : {
           "openclaw-codex-box-owner.patch":
-            "748e8cc2eb6b1a950b5fb90cecc823998d9162ef90ef6de97029c2d1aefaf287",
+            "cff60afa5c0d0441222b639e8763f730369ba6cb2fe8c5913ef74f57a9f6e238",
           "openclaw-native-hook-env-proxy.patch":
             "57c2b925521589f43c0db245a3ebbf34d9b68edb66a07ec55d6241b367130c43",
           "openclaw-control-ui-browser-reconnect.patch":
@@ -115,7 +115,7 @@ export async function probePackagedCodex(
           "openclaw-node-setup-renewal.patch":
             "197104f2792253127894eadcbb4dec350ce0b7da3df4e6d88facc649c700c1e8",
           "openclaw-node-only-setup.patch":
-            "279b270ad09f2ef7d5ea24e3de733b1856b7bc9150eb5e8854e2b0523aac42f2",
+            "effe00e734c01bae021ba4f6800ac00fbb0784bca1bcdc95099232c3450bebba",
           "openclaw-chat-absent-selected-agent.patch":
             "2c0b2da0a3234dcf1b7423289894cc8e0132eca23abbf9773da5a02794797899",
         }),

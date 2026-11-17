@@ -167,7 +167,7 @@ RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp
     && git apply /tmp/openclaw-codex-full-access-profile.patch
 # Bind external Codex turn policy to the Compute-owned Box generation and its WSS peer.
 COPY deploy/runtime/openclaw-codex-box-owner.patch /tmp/openclaw-codex-box-owner.patch
-RUN echo '748e8cc2eb6b1a950b5fb90cecc823998d9162ef90ef6de97029c2d1aefaf287  /tmp/openclaw-codex-box-owner.patch' | sha256sum --check --strict \
+RUN echo 'cff60afa5c0d0441222b639e8763f730369ba6cb2fe8c5913ef74f57a9f6e238  /tmp/openclaw-codex-box-owner.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-box-owner.patch
 # A dedicated native hook relay call honours Node's own env-proxy switch, which an
 # explicit-proxy Sandbox sets; without it the call still dials the Gateway directly.
@@ -257,7 +257,7 @@ RUN echo '197104f2792253127894eadcbb4dec350ce0b7da3df4e6d88facc649c700c1e8  /tmp
 
 # Issue first-install node setup from the Gateway's own pairing store before it starts.
 COPY deploy/runtime/openclaw-node-only-setup.patch /tmp/openclaw-node-only-setup.patch
-RUN echo '279b270ad09f2ef7d5ea24e3de733b1856b7bc9150eb5e8854e2b0523aac42f2  /tmp/openclaw-node-only-setup.patch' | sha256sum --check --strict \
+RUN echo 'effe00e734c01bae021ba4f6800ac00fbb0784bca1bcdc95099232c3450bebba  /tmp/openclaw-node-only-setup.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-only-setup.patch
 
 # Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.

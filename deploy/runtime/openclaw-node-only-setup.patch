@@ -9,7 +9,7 @@ index 89b19e6..e223ed8 100644
 +openclaw qr --node-only --json --url wss://gateway.example/node
  openclaw qr --url wss://gateway.example/ws
  ```
-
+ 
 @@ -42,6 +43,7 @@ The printed approval commands preserve the active profile or container context.
  - `--password <password>`: override the gateway password the bootstrap flow authenticates against
  - `--limited`: omit administrative Gateway access from the handed-off operator token
@@ -19,13 +19,13 @@ index 89b19e6..e223ed8 100644
  - `--no-ascii`: skip ASCII QR rendering
  - `--json`: emit JSON (`setupCode`, `gatewayUrl`, optional `gatewayUrls`, `auth`, `access`, optional `accessDowngraded`, `urlSource`)
 diff --git a/src/cli/qr-cli.test.ts b/src/cli/qr-cli.test.ts
-index b2a7094..441a6d2 100644
+index daab31a..a3a3cfe 100644
 --- a/src/cli/qr-cli.test.ts
 +++ b/src/cli/qr-cli.test.ts
 @@ -247,6 +247,15 @@ describe("registerQrCli", () => {
      },
    );
-
+ 
 +  it.each([
 +    { args: ["--node-only", "--url", "wss://gateway.example.test/node"] },
 +    { args: ["--node-only", "--json"] },
@@ -37,9 +37,9 @@ index b2a7094..441a6d2 100644
 +
    it("uses the bounded bootstrap profile with --limited", async () => {
      loadConfig.mockReturnValue(createTokenGatewayConfig());
-
+ 
 diff --git a/src/cli/qr-cli.ts b/src/cli/qr-cli.ts
-index b39b02d..b2cb951 100644
+index 4869c6a..5f076ae 100644
 --- a/src/cli/qr-cli.ts
 +++ b/src/cli/qr-cli.ts
 @@ -11,6 +11,7 @@ import { resolvePairingSetupFromConfig, encodePairingSetupCode } from "../pairin
@@ -50,15 +50,15 @@ index b39b02d..b2cb951 100644
    PAIRING_SETUP_BOOTSTRAP_PROFILE,
    VOICE_NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE,
  } from "../shared/device-bootstrap-profile.js";
-@@ -31,6 +32,7 @@ type QrCliOptions = {
+@@ -32,6 +33,7 @@ type QrCliOptions = {
    password?: string;
    limited?: boolean;
    voiceNode?: boolean;
 +  nodeOnly?: boolean;
  };
-
+ 
  const LIMITED_TRANSPORT_WARNING =
-@@ -75,6 +77,7 @@ export function registerQrCli(program: Command) {
+@@ -76,6 +78,7 @@ export function registerQrCli(program: Command) {
      .option("--password <password>", "Override gateway password for setup payload")
      .option("--limited", "Pair with limited operator access (omit operator.admin)", false)
      .option("--voice-node", "Pair a voice node with node, read, and Talk access only", false)
@@ -66,13 +66,13 @@ index b39b02d..b2cb951 100644
      .option("--setup-code-only", "Print only the setup code", false)
      .option("--no-ascii", "Skip ASCII QR rendering")
      .option("--json", "Output JSON", false)
-@@ -87,6 +90,23 @@ export function registerQrCli(program: Command) {
-           throw new Error("Use either --limited or --voice-node, not both.");
+@@ -88,6 +91,25 @@ export function registerQrCli(program: Command) {
+           throwExpectedCliError("Use either --limited or --voice-node, not both.");
          }
-
+ 
 +        if (opts.nodeOnly) {
 +          if (!opts.json || !trimToUndefined(opts.url)) {
-+            throw new Error("--node-only requires --json and --url.");
++            throwExpectedCliError("--node-only requires --json and --url.");
 +          }
 +          if (
 +            opts.remote ||
@@ -83,14 +83,16 @@ index b39b02d..b2cb951 100644
 +            opts.password ||
 +            opts.setupCodeOnly
 +          ) {
-+            throw new Error("--node-only cannot be combined with another pairing or authentication option.");
++            throwExpectedCliError(
++              "--node-only cannot be combined with another pairing or authentication option.",
++            );
 +          }
 +        }
 +
          const token = trimToUndefined(opts.token) ?? "";
          const password = trimToUndefined(opts.password) ?? "";
          const wantsRemote = opts.remote === true;
-@@ -167,11 +187,13 @@ export function registerQrCli(program: Command) {
+@@ -168,11 +190,13 @@ export function registerQrCli(program: Command) {
          const resolved = await resolvePairingSetupFromConfig(cfg, {
            publicUrl: explicitUrl,
            preferRemoteUrl: wantsRemote,
@@ -109,10 +111,10 @@ index b39b02d..b2cb951 100644
            runCommandWithTimeout: async (argv, runOpts) =>
              await runCommandWithTimeout(argv, {
                timeoutMs: runOpts.timeoutMs,
-@@ -188,6 +210,17 @@ export function registerQrCli(program: Command) {
-
+@@ -189,6 +213,17 @@ export function registerQrCli(program: Command) {
+ 
          const setupCode = encodePairingSetupCode(resolved.payload);
-
+ 
 +        if (opts.nodeOnly) {
 +          defaultRuntime.writeJson({
 +            access: resolved.access,
@@ -240,7 +242,7 @@ index 0000000..5ea6264
 +  expect(await readDevicePairSetupCompletion({ baseDir: foreign, setupId: value.setupId })).toBeNull();
 +});
 diff --git a/test/vitest/vitest.database-worker-core-paths.mjs b/test/vitest/vitest.database-worker-core-paths.mjs
-index 67b19f2..b4778f2 100644
+index ffbad39..0837e74 100644
 --- a/test/vitest/vitest.database-worker-core-paths.mjs
 +++ b/test/vitest/vitest.database-worker-core-paths.mjs
 @@ -7,6 +7,7 @@ export const databaseWorkerCoreTestFiles = [
