@@ -4409,11 +4409,10 @@ async function assertDedicatedAgentsInstructionsInFreshSession(topology) {
   assert.match(response.trimEnd(), /enterprise openclaw[.!?]*$/);
 }
 
-function matchesAgentPodRevision(pod, topology, getRevisionId) {
+function isTopologyAgentPod(pod, topology) {
   return (
     pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
-    pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id &&
-    pod.metadata.labels?.["openclaw.dev/revision"] === getRevisionId()
+    pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id
   );
 }
 
@@ -4422,7 +4421,8 @@ async function waitForReadyAgentPod(topology, revisionId, previousUid) {
     (await topologyPods(topology)).find(
       (pod) =>
         pod.metadata.uid !== previousUid &&
-        matchesAgentPodRevision(pod, topology, () => revisionId) &&
+        isTopologyAgentPod(pod, topology) &&
+        pod.metadata.labels?.["openclaw.dev/revision"] === revisionId &&
         hasReadyCondition(pod),
     ),
   );
@@ -4433,7 +4433,8 @@ async function kubectlInReadyAgentPod(topology, ...args) {
     const pod = (await topologyPods(topology)).find(
       (candidate) =>
         candidate.metadata.deletionTimestamp === undefined &&
-        matchesAgentPodRevision(candidate, topology, () => topology.revision.id) &&
+        isTopologyAgentPod(candidate, topology) &&
+        candidate.metadata.labels?.["openclaw.dev/revision"] === topology.revision.id &&
         candidate.status.phase === "Running" &&
         hasReadyCondition(candidate),
     );
