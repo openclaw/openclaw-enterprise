@@ -41,6 +41,7 @@ checksum-verified `openclaw-required-worker-authority-regression.patch`
 and runs the real Gateway public-RPC cases without network access. The cases
 cover placement before and after acknowledgement, disconnect, and committed
 role, scope, and profile revocation.
+[OpenClaw #196972](https://github.com/openclaw/openclaw/pull/196972) adds an opt-in wait for admitted work and final writes.
 The build also applies `openclaw-codex-full-access-profile.patch`, which selects
 the native full-access Codex profile, and
 `openclaw-control-ui-browser-reconnect.patch`, which offers a browser navigation
@@ -154,6 +155,8 @@ automatically. [Local checkout tests](../../docs/testing/openshell.md) use their
 ## Verify runtime source
 
 Local assembly omits broad suites. Run [source verification](../../docs/flows/container-publication.md#runtime-source-verification) for runtime changes.
+
+See the [JIT-free ARM64 Harness](code-mode/README.md).
 
 ## Build a local runtime image
 
