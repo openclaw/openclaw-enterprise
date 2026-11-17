@@ -938,12 +938,30 @@ test(
     assert.equal(gone.body?.credential, undefined);
     assert.deepEqual(secretReads(kube, reads), []);
     // The live Box, OCE's committed installation, the revision not active yet (no material, not
-    // confirmed): the start-up model ask gets this source's key.
+    // confirmed): the route is ready to activate (finding 3313) and the start-up model ask gets
+    // this source's key.
     f.host.sourceLive = true;
     await binding.reconcile!(signal);
     assert.equal(f.state.installs, 0);
-    assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "pending");
+    assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "ready");
+    assert.equal(f.sandbox.repositoryAccess!.materialSettledAt(f.revision.id), undefined);
     assert.ok((await ask()).body?.credential === key, "the start-up ask did not get its own key");
+    // Before the activation OCC finds no live session and answers `withdrawn`: the same, ready to
+    // activate with no material; Git asks still get nothing until a version is confirmed.
+    f.state.unprepared = false;
+    f.state.withdrawn = true;
+    await binding.reconcile!(signal);
+    assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "ready");
+    assert.equal(f.state.installs, 0);
+    // The Box gone: pending again.
+    f.host.sourceLive = false;
+    await binding.reconcile!(signal);
+    assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "pending");
+    f.host.sourceLive = true;
+    f.state.withdrawn = false;
+    f.state.unprepared = true;
+    await binding.reconcile!(signal);
+    assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "ready");
     // OCE's delivery row moves to another fence before any confirmation: refused, no Secret read.
     f.state.fence = 2;
     reads = kube.calls.length;

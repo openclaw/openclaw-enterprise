@@ -246,6 +246,12 @@ interface Recipient {
    * confirmation (finding 3312): a later model ask at another fence is refused.
    */
   modelFence?: RepositoryGitInstallationFence;
+  /**
+   * Set while OCE holds exactly this recipient's committed installation, the host shows the live
+   * Box asking, and the route never had material (OCE prepares it only for the active revision;
+   * finding 3313): ready to activate, as core's own `awaiting_material` routes (finding 2139).
+   */
+  awaitingMaterial?: true;
   version?: RepositoryGitMaterialVersion;
   /** When the first version became ready; renewals do not reset the workspace connection. */
   settledAt?: number;
@@ -450,9 +456,25 @@ class Shared {
       return;
     }
     const route = await authority.recipients.observe(installation);
-    if (route === undefined || this.active !== active) return;
+    if (this.active !== active) return;
+    if (route === undefined) {
+      active.awaitingMaterial = undefined;
+      return;
+    }
     const git = authority.online.githubRepository;
     const material = git === undefined ? undefined : await git.readMaterial(route, signal);
+    if (this.active !== active) return;
+    // OCE prepares material only for the active revision (before it, OCC finds no live session
+    // and answers `withdrawn`): a verified route that never had any waits for the activation,
+    // and Compute must be able to activate it, as core's own routes (finding 3313). Git asks
+    // still need a confirmed version; only the readiness changes.
+    active.awaitingMaterial =
+      material !== undefined &&
+      "absent" in material &&
+      active.version === undefined &&
+      execution.repositoryRecipient?.source !== undefined
+        ? true
+        : undefined;
     // Withdrawal: OCE refuses every ask from now on (`access_withdrawn`), before Box opens any
     // provider connection. Nothing is sent to the host; `box run` and the chat keep running.
     if (material === undefined || "absent" in material || this.active !== active) return;
@@ -772,7 +794,8 @@ export function createProtectedRegistration(
       // connection, and OCC retires and revokes the token. The Box execution and its chat run on.
       retireExpired: async () => "withdrawn",
       routeReadiness: (revisionId) =>
-        shared.active?.revisionId === revisionId && shared.active.confirmed !== undefined
+        shared.active?.revisionId === revisionId &&
+        (shared.active.confirmed !== undefined || shared.active.awaitingMaterial === true)
           ? "ready"
           : "pending",
       materialSettledAt: (revisionId) =>
