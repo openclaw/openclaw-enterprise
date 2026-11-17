@@ -14,6 +14,7 @@ function options(pool) {
     mode: "production",
     installationId: "ins_auth_binding",
     baseURL: "https://controller.example.test",
+    agentDomain: "agents.example.test",
     secret: "controller-auth-binding-test-secret-at-least-32-characters",
   };
 }

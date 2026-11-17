@@ -1,0 +1,198 @@
+{
+  "title": "What happens when the Agent runs git push?",
+  "width": 1180,
+  "height": 474,
+  "items": [
+    {
+      "kind": "text",
+      "text": "What happens when the Agent runs git push?",
+      "x": 20,
+      "y": 33,
+      "size": 28,
+      "role": "title"
+    },
+    {
+      "kind": "text",
+      "text": "Selected-repository profile (github-repository) · OpenShell reference implementation",
+      "x": 20,
+      "y": 55,
+      "size": 16,
+      "role": "subtitle"
+    },
+    { "kind": "box", "id": "openshell", "x": 20, "y": 80, "w": 725, "h": 152, "role": "runtime" },
+    { "kind": "text", "text": "OpenShell runtime", "x": 32, "y": 98, "size": 16, "role": "group" },
+    { "kind": "box", "id": "sandbox", "x": 38, "y": 113, "w": 248, "h": 104, "role": "boundary" },
+    { "kind": "text", "text": "Sandbox", "x": 50, "y": 131, "size": 16, "role": "group" },
+    { "kind": "box", "id": "worker", "x": 330, "y": 275, "w": 830, "h": 120, "role": "control" },
+    {
+      "kind": "text",
+      "text": "OpenClaw Enterprise worker",
+      "x": 342,
+      "y": 293,
+      "size": 16,
+      "role": "group"
+    },
+    { "kind": "box", "id": "internet", "x": 930, "y": 111, "w": 230, "h": 112, "role": "external" },
+    { "kind": "text", "text": "External service", "x": 942, "y": 129, "size": 16, "role": "group" },
+    {
+      "kind": "node",
+      "id": "agent",
+      "x": 52,
+      "y": 147,
+      "w": 220,
+      "h": 56,
+      "lines": ["Agent"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "boundary"
+    },
+    {
+      "kind": "node",
+      "id": "supervisor",
+      "x": 465,
+      "y": 147,
+      "w": 270,
+      "h": 56,
+      "lines": ["Credential Proxy", "Holds the outgoing GitHub request"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "runtime"
+    },
+    {
+      "kind": "node",
+      "id": "adapter",
+      "x": 450,
+      "y": 308,
+      "w": 300,
+      "h": 75,
+      "lines": [
+        "Git transport adapter",
+        "Authenticates caller. Checks request,",
+        "binding and loaded generation"
+      ],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "owner",
+      "x": 892,
+      "y": 308,
+      "w": 248,
+      "h": 75,
+      "lines": [
+        "Repository Git authority",
+        "Checks the Agent’s grant for this",
+        "repository and operation"
+      ],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "github",
+      "x": 942,
+      "y": 137,
+      "w": 206,
+      "h": 76,
+      "lines": ["GitHub", "Enforces token permissions", "and GitHub branch rules"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "external"
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "agent", "side": "right" },
+        { "node": "supervisor", "side": "left" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "git push",
+      "x": 327,
+      "y": 164,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "supervisor", "side": "right" },
+        { "node": "github", "side": "left" }
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "On allow, add the token\nand send the request",
+      "x": 763,
+      "y": 146,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "supervisor", "side": "bottom" },
+        { "node": "adapter", "side": "top" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "EvaluateHttpRequest\nAsk for allow or deny",
+      "x": 615,
+      "y": 250,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "adapter", "side": "right" },
+        { "node": "owner", "side": "left" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Check the grant",
+      "x": 765,
+      "y": 335,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "text",
+      "text": "github-repository restricts access to selected repositories. GitHub governs refs. Explicit git-write checks the pushed ref in OCE.",
+      "x": 20,
+      "y": 417,
+      "size": 14,
+      "role": "note"
+    },
+    {
+      "kind": "text",
+      "text": "An allow authorizes this request. Read back the ref at GitHub to confirm that the push succeeded.",
+      "x": 20,
+      "y": 439,
+      "size": 14,
+      "role": "note"
+    }
+  ]
+}

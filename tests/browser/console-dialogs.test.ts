@@ -1,3 +1,4 @@
+import { openCreateSecretDialog } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -16,9 +17,8 @@ import {
   nativeValues,
   newPage,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
-import { openCreateSecretDialog } from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();

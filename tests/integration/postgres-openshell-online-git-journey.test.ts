@@ -5,6 +5,9 @@ import { narrowOnlineGitJourney } from "../helpers/postgres-repository-set-journ
 import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
 import { gitCommandBodies } from "../helpers/openshell-online-git-journey.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
+import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
+import type { DriverRegistrationRef } from "../../packages/contracts/src/index.ts";
 
 type GitUseReceipt = {
   exchange_id: string;
@@ -30,12 +33,13 @@ for (const { name, action, expectedDenial } of [
   {
     name: "OCE signed TLS Git authorization: removing the repository binding denies a fresh signed Git request",
     action: "removeBinding",
-    expectedDenial: "route_not_ready",
+    expectedDenial: "access_withdrawn",
   },
 ]) {
   test(name, { ...requiresPostgres, timeout: 90_000 }, async (t) => {
     await narrowOnlineGitJourney(
       t,
+      import.meta.url,
       async ({
         pool,
         peer,
@@ -223,6 +227,39 @@ for (const { name, action, expectedDenial } of [
         );
 
         await checkWithdrawal();
+        // A stopped Agent leaves a real retirement obligation. Another fixture must
+        // not try to decrypt it with that fixture's independently generated custody key.
+        const familyId = "repository-git:" + admissionId;
+        const { rows: families } = await pool.query<{ driver: DriverRegistrationRef }>(
+          `SELECT source #> '{session,credentialProxyExecution,driver}' AS driver
+           FROM occ.prepared_github_families WHERE source_id=$1`,
+          [familyId],
+        );
+        assert.equal(families.length, 1);
+        await t.test("another fixture cannot inherit a stopped Agent's custody", async (later) => {
+          const next = await standingExecutionPlatform(later, import.meta.url);
+          const other = await preparedStandingGitPeer(later, next.observerPool, next.namespace.id, {
+            driver: families[0]!.driver,
+          });
+          await other.prepared.maintain();
+          assert.equal(
+            (await next.observerPool.query("SELECT count(*) FROM occ.prepared_github_families"))
+              .rows[0].count,
+            "0",
+          );
+        });
+        // The original owner still retires its token through the provider; isolation
+        // must not replace retirement with deletion or weaken its custody checks.
+        await peer.prepared.maintain();
+        assert.deepEqual(
+          (
+            await pool.query(
+              "SELECT custody, sealed IS NULL AS erased FROM occ.prepared_github_attempts WHERE source_id=$1",
+              [familyId],
+            )
+          ).rows,
+          [{ custody: "revoked", erased: true }],
+        );
         t.diagnostic(
           "OCE authority and durable state only; no installed sender or provider dispatch claimed.",
         );
@@ -230,3 +267,66 @@ for (const { name, action, expectedDenial } of [
     );
   });
 }
+
+test(
+  "OCE signed TLS Git authorization admits a Git-only branch pattern and refuses other destinations",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (t) => {
+    await narrowOnlineGitJourney(
+      t,
+      import.meta.url,
+      async ({ pool, admissionId, evaluate, pushRef }) => {
+        assert.equal(pushRef, "refs/heads/review/*");
+        const receipts = async () =>
+          (
+            await pool.query<{ operation: string }>(
+              "SELECT operation FROM occ.prepared_repository_git_uses WHERE admission_id=$1 ORDER BY operation",
+              [admissionId],
+            )
+          ).rows;
+        const target = (method: string, suffix: string, query = "") => ({
+          scheme: "https",
+          host: "github.com",
+          port: 443,
+          method,
+          path: `/${fixtureRepository}.git/${suffix}`,
+          query,
+        });
+        // Real admission and runtime lookup deliver the registry's pattern unchanged to
+        // the TLS authorizer. A pattern is policy; each pushed destination is a concrete ref.
+        const allowed = await gitCommandBodies(t, "refs/heads/review/change");
+        const main = await gitCommandBodies(t, "refs/heads/main");
+        const command = (service: string, body: Buffer) => ({
+          target: target("POST", `git-${service}`),
+          headers: [{ name: "content-type", value: `application/x-git-${service}-request` }],
+          body,
+        });
+        assert.deepEqual(await receipts(), []);
+        assert.deepEqual(
+          await evaluate({ target: target("GET", "info/refs", "service=git-upload-pack") }),
+          { decision: 1 },
+        );
+        assert.deepEqual(await evaluate(command("upload-pack", allowed.fetch)), { decision: 1 });
+        assert.deepEqual(await evaluate(command("receive-pack", allowed.push)), { decision: 1 });
+        const approved = await receipts();
+        assert.deepEqual(approved, [
+          { operation: "advertise-upload-pack" },
+          { operation: "receive-pack" },
+          { operation: "upload-pack" },
+        ]);
+        // Denied pushes never spend a possible-use receipt, even when one update is allowed.
+        for (const body of [main.push, allowed.mixed]) {
+          assert.deepEqual(await evaluate(command("receive-pack", body)), {
+            decision: 2,
+            reason_code: "request_not_allowed",
+          });
+          assert.deepEqual(await receipts(), approved);
+        }
+        t.diagnostic(
+          "Real runtime lookup, signed TLS authorization and PostgreSQL receipts; no provider dispatch.",
+        );
+      },
+      { draftPull: false, pushRef: "refs/heads/review/*" },
+    );
+  },
+);

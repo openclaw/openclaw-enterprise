@@ -5,7 +5,7 @@ import { readdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import type { SessionStatus } from "../../apps/controller/src/drivers/repo/credentials/service-contracts.ts";
+import type { SessionStatus } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 
@@ -77,7 +77,7 @@ for (const outcome of ["lost reply", "recovered status"] as const) {
     const { code, stdout, stderr } = await run(
       process.execPath,
       [
-        resolve("apps/controller/src/drivers/repo/github/credentials/client/operator.ts"),
+        resolve("apps/controller/src/drivers/repo/github/access/client/operator.ts"),
         "open",
         "--socket",
         socket,

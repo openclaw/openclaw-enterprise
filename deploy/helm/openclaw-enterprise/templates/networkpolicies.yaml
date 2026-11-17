@@ -194,28 +194,6 @@ spec:
         - protocol: TCP
           port: 443
 {{- end }}
-{{- if and .Values.auth.github .Values.auth.github.enabled }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: openclaw-enterprise-api-github-login-egress
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name | quote }}
-      app.kubernetes.io/component: api
-  policyTypes: [Egress]
-  egress:
-    # Empty egressCidrs permits HTTPS for github.com and api.github.com to any address
-    # except link-local (cloud metadata) 169.254.0.0/16.
-    - to:
-        {{- include "openclaw.networkPolicy.signInEgressPeers" .Values.auth.github.egressCidrs | nindent 8 }}
-      ports:
-        - protocol: TCP
-          port: 443
-{{- end }}
 {{- if and .Values.auth.google .Values.auth.google.enabled }}
 ---
 apiVersion: networking.k8s.io/v1

@@ -1,29 +1,46 @@
 import { V1NetworkPolicyIngressRule, type V1NetworkPolicySpec } from "@kubernetes/client-node";
 import { asRecord } from "@openclaw-enterprise/utils";
 
-/** Restore the SDK ingress alias without dropping fields from the equality check. */
+/** Restore SDK aliases and Kubernetes empty-rule serialization for spec comparison. */
 export function networkPolicySpecToJson(spec: V1NetworkPolicySpec | undefined): unknown {
-  return JSON.parse(
-    JSON.stringify({
-      ...spec,
-      ...(spec?.ingress === undefined
-        ? {}
-        : {
-            ingress: spec.ingress.map((rule) => {
-              // Preserve ambiguous input so a wire field cannot hide a changed SDK field.
-              if (
-                !(rule instanceof V1NetworkPolicyIngressRule) ||
-                rule._from === undefined ||
-                Object.hasOwn(rule, "from")
-              ) {
-                return rule;
-              }
-              const { _from, ...rest } = rule;
-              return { ...rest, from: _from };
-            }),
+  const ingress = spec?.ingress;
+  const projected = {
+    ...spec,
+    // JSON null is a nil list, not a list of rules. Only arrays have rules to map.
+    ...(Array.isArray(ingress)
+      ? {
+          ingress: ingress.map((rule) => {
+            // Preserve ambiguous input so a wire field cannot hide a changed SDK field.
+            if (
+              !(rule instanceof V1NetworkPolicyIngressRule) ||
+              rule._from === undefined ||
+              Object.hasOwn(rule, "from")
+            ) {
+              return rule;
+            }
+            const { _from, ...rest } = rule;
+            return { ...rest, from: _from };
           }),
-    }),
-  );
+        }
+      : {}),
+  };
+  // Kubernetes omits empty lists and stores JSON null as that nil list. Only equate
+  // them when the direction is explicit; never infer policyTypes or erase a nonempty
+  // (possibly allow-all) rule. A non-list stays, so it cannot match an omitted field.
+  const directions = spec?.policyTypes;
+  const selects = (direction: string) =>
+    Array.isArray(directions) && directions.includes(direction);
+  if (
+    selects("Ingress") &&
+    (ingress === null || (Array.isArray(ingress) && ingress.length === 0))
+  ) {
+    delete projected.ingress;
+  }
+  const egress = spec?.egress;
+  if (selects("Egress") && (egress === null || (Array.isArray(egress) && egress.length === 0))) {
+    delete projected.egress;
+  }
+  return JSON.parse(JSON.stringify(projected));
 }
 
 /** True for the only NetworkPolicy type the SDK serializer models; custom resources pass through. */

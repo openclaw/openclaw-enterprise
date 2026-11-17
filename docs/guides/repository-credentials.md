@@ -56,15 +56,17 @@ token, change its repository or permissions, or grant access to a model.
 Enable `allowStandingApprovals` in the Installation's repository registry and
 `allowStandingApproval` for that repository in the Agent's Namespace. Upgrade the API, worker,
 receipt owner and credential service together before enabling this policy. A deployment admitted
-with a finite grant keeps its original deadline.
+with a finite grant keeps its original deadline. This includes `github-repository`:
+select one repository and review its explicit permission map before approving.
+Standing approval is unavailable when the Agent selects multiple repositories.
 
 1. Read `GET …/agents/{agentId}/repository-approval-scopes`. Review the resolved repository,
    permissions and allowed operations, and retain its `scopeFingerprint`.
 2. Update the Agent with its current `configurationId` and a `repositoryStandingApproval`
    containing `repositoryRef`, a new `approvalId`, `approved: true`, `duration: "until-removed"`,
    and `expectedScopeFingerprint`. If the scope changed, review it again. Deploy the Agent once.
-3. To withdraw, read `GET …/agents/{agentId}/repository-approvals`, then send the approval's
-   `expectedGeneration` to `POST …/agents/{agentId}/repository-approvals/{approvalId}/remove`.
+3. To withdraw, read `GET …/agents/{agentId}/repository-approvals`, then pass the approval's
+   returned `generation` as `expectedGeneration` to `POST …/agents/{agentId}/repository-approvals/{approvalId}/remove`.
    Fresh Git requests are denied even while cleanup is pending. A request with an issued one-use
    permit can still start before its original send deadline, even after removal is acknowledged.
    Do not replay a request whose outcome is unknown. See [prepared Git authorization](../reference/repository-credentials/prepared-native-git.md#what-a-request-authorizes).
@@ -73,8 +75,14 @@ with a finite grant keeps its original deadline.
 
 A refusal answers `409 RESOURCE_CONFLICT` and names the step: review the scope again, keep one
 binding, remove the approval before you change the binding, or ask an Installation administrator
-to allow standing approval. Deploy refuses an approval that no longer matches policy until you
-remove and approve it again.
+to allow standing approval. Redeploying a saved binding that no longer matches Namespace policy also returns `409`.
+
+On the same Agent and repository, switching from `git-write` on one exact ref to
+`github-repository` can allow pushes to more branches even when GitHub permissions match.
+Remove the old approval using its current generation, then save the new binding. You can
+deploy with a finite grant. To approve until removed, reread and review the scope, then
+use a fresh `approvalId` and the new fingerprint. Reverting registry policy does not
+restore the removed approval or change a previously admitted revision.
 
 The worker must recognize the same execution and account for its previous session and credential.
 If it returns after a known provider expiry, it waits out the clock allowance and records

@@ -3,17 +3,17 @@ import { createPrivateKey } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isIP } from "node:net";
 import { request } from "node:https";
-import { createGitHubKeyOwner } from "/app/apps/controller/src/drivers/repo/github/credentials/material.ts";
-import { createSystemClock } from "/app/apps/controller/src/drivers/repo/credentials/clock.ts";
+import { createGitHubKeyOwner } from "/app/apps/controller/src/drivers/repo/github/access/material.ts";
+import { createSystemClock } from "/app/apps/controller/src/drivers/repo/access/clock.ts";
 import {
   validateGitHubRepositoryRegistry,
   resolveGitHubRepositoryBinding,
   resolveSelectedRepositoryGrant,
-} from "/app/apps/controller/src/drivers/repo/github/credentials/registry.ts";
+} from "/app/apps/controller/src/drivers/repo/github/access/registry.ts";
 import {
   prepareProviderScope,
   providerRequestOptions,
-} from "/app/apps/controller/src/drivers/repo/github/credentials/provider-transport/request-options.ts";
+} from "/app/apps/controller/src/drivers/repo/github/access/provider-transport/request-options.ts";
 
 const connection = {
   lookup: [],

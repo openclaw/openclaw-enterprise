@@ -7,6 +7,44 @@ over a Kubernetes port-forward bound to your machine's loopback address. For
 an interactive check with the same loopback password, use the
 [OpenClaw TUI](../deploy/production-tui.md).
 
+## Choose a model for dedicated Codex
+
+Use the same credential that the Agent will use. If you use an existing credential source and only have its registered name, ask its owner for a Codex model ID that works with it.
+
+**ChatGPT service account token.** From the operator’s Bash shell, use the private token file to look up its workspace account, then list the model IDs in that account’s Codex catalog. Set `credential_file` to the token file you selected in the quickstart.
+
+```bash
+(
+  set +x
+  set -euo pipefail
+  token_header() {
+    jq -nr --rawfile token "$credential_file" '"Authorization: Bearer " + ($token | rtrimstr("\n"))'
+  }
+  identity=$(token_header | curl -fsS --header @- \
+    https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami)
+  account=$(jq -er '.chatgpt_account_id | select(test("^[a-zA-Z0-9_-]+$"))' <<<"$identity")
+  headers=(--header "ChatGPT-Account-ID: $account")
+  if jq -e '.chatgpt_account_is_fedramp' <<<"$identity" >/dev/null; then
+    headers+=(--header 'X-OpenAI-Fedramp: true')
+  fi
+  token_header | curl -fsS --header @- "${headers[@]}" \
+    'https://chatgpt.com/backend-api/codex/models?client_version=0.156.0' |
+    jq -r '.models[] | select(.visibility == "list") | .slug'
+)
+```
+
+The [OCE model discovery API](../../reference/api.md#post-namespacesnamespaceidagentsmodels) can also look up the catalog when the API Pods have [model discovery egress](../../reference/console/create-and-deploy.md#create-an-agent).
+
+**OpenAI API key.** Query the [OpenAI Models API](https://developers.openai.com/api/reference/resources/models/methods/list) with the same private key file. Pass the authorization header through standard input so the key stays out of the command arguments.
+
+```bash
+jq -nr --rawfile key "$credential_file" '"Authorization: Bearer " + ($key|rtrimstr("\n"))' |
+  curl --fail --silent --show-error --header @- https://api.openai.com/v1/models |
+  jq -r '.data[].id' | sort
+```
+
+Choose a text model that supports Codex. The API-key catalog can also include models for images, audio, and embeddings. The deployment’s startup probe checks inference with the selected ID and credential.
+
 ## What each check establishes
 
 | Check                                                      | Evidence                                                                                                |

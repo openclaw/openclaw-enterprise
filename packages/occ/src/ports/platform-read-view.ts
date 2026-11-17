@@ -13,6 +13,7 @@ export function createPlatformReadView(
       "list",
       "findWork",
       "findWorkAttempt",
+      "hasRepositoryExecutionRedeployRequired",
       "hasOutstandingCredentialWithdrawalWork",
     ]),
     installations: bindRepository(repositories.installations, lifetime, [
@@ -28,6 +29,24 @@ export function createPlatformReadView(
       "findPreset",
       "listPresets",
       "listPresetSummaries",
+    ]),
+    connectionTemplates: bindRepository(repositories.connectionTemplates, lifetime, [
+      "findConnectionTemplate",
+      "listConnectionTemplates",
+      "hasOtherConnectionIssuer",
+      "countNamespaceConnectionTemplates",
+      "findOAuthConnectionTemplateVersion",
+      "listOAuthClientCleanups",
+      "listOAuthClients",
+      "countNamespaceOAuthClients",
+      "findOAuthClient",
+    ]),
+    savedConnections: bindRepository(repositories.savedConnections, lifetime, [
+      "findTokenCustody",
+      "listDueConnectionTokens",
+      "findSavedConnection",
+      "listNamespaceConnections",
+      "listRevokingConnections",
     ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",
@@ -75,6 +94,7 @@ export function createPlatformReadView(
       "listRestrictionsTargeting",
       "listServicePrincipals",
       "getServicePrincipal",
+      "listConfiguredPolicy",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
       "findStandingExecution",

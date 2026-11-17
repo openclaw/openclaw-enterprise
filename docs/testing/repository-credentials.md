@@ -1,5 +1,8 @@
 ---
 doc-schema-version: 1
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
 ---
 
 # Repository credential tests
@@ -14,12 +17,12 @@ The controlled tests use disposable fixtures and do not use ambient GitHub crede
 ## Run controlled tests
 
 ```sh
-node scripts/verify-repository-credentials-boundary.mjs
-node --test tests/conformance/repository-credentials-fixture-ownership.test.mjs \
-  tests/conformance/repository-credentials-backend-conformance.test.mjs
-node --test tests/integration/repository-credentials-git.test.mjs \
-  tests/integration/repository-credentials-native-paths.test.mjs \
-  tests/integration/repository-credentials-service-loss.test.mjs
+node scripts/verify-repository-credentials-boundary.ts
+node --test tests/conformance/repository-credentials-fixture-ownership.test.ts \
+  tests/conformance/repository-credentials-backend-conformance.test.ts
+node --test tests/integration/repository-credentials-git.test.ts \
+  tests/integration/repository-credentials-native-paths.test.ts \
+  tests/integration/repository-credentials-service-loss.test.ts
 ```
 
 The source Git tests require a `node:24-bookworm` image and `gh` **2.103.2**
@@ -52,8 +55,8 @@ authorized equivalent environment.
 For native selection and routing, run:
 
 ```sh
-node --test tests/integration/repository-credentials-client-config.test.mjs \
-  tests/integration/repository-credentials-router.test.mjs
+node --test tests/integration/repository-credentials-client-config.test.ts \
+  tests/integration/repository-credentials-router.test.ts
 ```
 
 ### Protected repository metadata reads
@@ -77,17 +80,24 @@ Build before running the source and materialization checks:
 ```sh
 pnpm build
 node --test tests/integration/repository-credentials-admission.test.mjs \
-  tests/integration/repository-credentials-driver.test.mjs \
-  tests/integration/repository-runtime-materialization.test.mjs \
-  tests/integration/repository-credentials-router.test.mjs
+  tests/integration/repository-credentials-driver.test.ts \
+  tests/integration/repository-runtime-materialization.test.ts \
+  tests/integration/repository-credentials-router.test.ts
 ```
 
 For durable session and recovery checks, prepare a migrated disposable database
 with an application role as described in [PostgreSQL testing](postgresql.md).
-Run `postgres-repository-sessions.test.mjs`,
+Run `postgres-repository-sessions.test.ts`,
 `postgres-repository-broker-receipts.test.mjs`, and the relevant restart and
-worker version tests with `OCC_TEST_DATABASE_URL` set. These checks do not prove
-a running Kubernetes Pod or model turn.
+worker version tests with `OCC_TEST_DATABASE_URL` set. The
+`postgres-openshell-standing-selected-repository.test.ts` case follows one
+`github-repository` binding through approval, deployment, its original session
+deadline, changed-recipient refusal, successor issuance, and withdrawal. A separate
+issuer with standing permission removed must refuse issuance. It uses the real PostgreSQL worker
+and credential owner with controlled OpenShell and GitHub protocol peers.
+These checks do not prove a running Kubernetes Pod or model turn.
+The final custody check moves only stored provider timestamps past verified expiry
+and clock skew; it asserts material erasure without a revocation request.
 
 ## Qualify emitted artifacts
 
@@ -95,7 +105,7 @@ a running Kubernetes Pod or model turn.
 pnpm credentials:build
 node --test tests/integration/repository-credentials-package.test.ts
 REPOSITORY_CREDENTIALS_APP_ROOT="$PWD/.build/repository-credentials/client/dist" \
-  node --test tests/integration/repository-credentials-router.test.mjs
+  node --test tests/integration/repository-credentials-router.test.ts
 ```
 
 This verifies the emitted service and client without workspace source or runtime
@@ -112,8 +122,8 @@ docker build --builder default --load --pull=false \
   -f tests/fixtures/repository-credentials/Dockerfile.qualification \
   -t repository-credentials-qualification:test .
 REPOSITORY_CREDENTIALS_TEST_IMAGE=repository-credentials-qualification:test \
-  node --test tests/integration/repository-credentials-container.test.mjs \
-    tests/integration/repository-credentials-gh.test.mjs
+  node --test tests/integration/repository-credentials-container.test.ts \
+    tests/integration/repository-credentials-gh.test.ts
 ```
 
 The combined suite runs the emitted service/client cases, native Git paths, pinned
@@ -130,7 +140,7 @@ Build the runtime image from the candidate source and follow the
 
 ```sh
 OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime:test \
-  node --test tests/integration/repository-runtime-volume.test.mjs
+  node --test tests/integration/repository-runtime-volume.test.ts
 ```
 
 This tests the image-installed client and Docker mounts. An unset selector skips
@@ -143,7 +153,7 @@ With both delivered images built, run:
 ```sh
 REPOSITORY_CREDENTIALS_SERVICE_IMAGE=repository-credentials:local \
 REPOSITORY_CREDENTIALS_CLIENT_IMAGE=repository-credentials-client:local \
-  node --test tests/integration/repository-credentials-isolation.test.mjs
+  node --test tests/integration/repository-credentials-isolation.test.ts
 ```
 
 The test checks credential custody and Git/`gh` access through separate running
@@ -165,6 +175,25 @@ Its authorized run proves the packaged sender in a real cluster; it is separate 
 The PostgreSQL tests cover receipt recovery and no-replay behavior, while the runtime image tests
 cover stock Codex and generated client material. These checks do not replace the installed lane.
 
+On a native-command chat completion mismatch, the lane attempts to report matching
+synthetic model request/result counts and whether any result contained the completion
+marker, or state that model observations are unavailable. A separate message confirms
+binding withdrawal and discovery release when that checkpoint was recorded. Without
+that message, the stage is unknown. These diagnostics do not expose chat or command
+output and do not replace the Git assertions or qualify the release.
+The failure summary prefers the runner's failed-case or file-failure record over
+generic lane issues. It publishes only known source coordinates and fixed error
+categories; absent or malformed records retain the bounded fallback summary.
+
+Receiver failures distinguish transport, interrupted response bodies, and invalid
+JSON without printing response content. A failed `kubectl exec` reports
+`gateway-exec` with its available exit code or signal. Model observations are
+best-effort: unavailable or replaced log history appears as `unknown`, and each
+optional model or Pod log read has a ten-second timeout. Diagnostic failures do
+not replace the failed request. The receiver category and HTTP status remain in
+the runner summary even when the optional journey log cannot be written or parsed. These categories identify where the check failed;
+they do not establish why the Gateway or native command failed.
+
 To bind its receipt to a [selected OCE release](../guides/deploy/production-upgrade.md#prepare-the-release),
 prepare an independent JSON control file with `sourceSha` (the full OCE checkout SHA)
 and `images.controller`, `images.runtime`, and `images.repository` (the broker), each
@@ -173,7 +202,7 @@ these expected values from the release selection, not from the receipt being che
 From that release checkout, run:
 
 ```sh
-node scripts/ci/run-tests.mjs aggregate skipper-prepared-git-installed \
+node scripts/ci/run-tests.ts aggregate skipper-prepared-git-installed \
   --results-dir /path/to/results --release-selection /path/to/release.json
 ```
 
@@ -190,8 +219,85 @@ runtime image. Qualification applies only to the exact selected digest set under
 `checkout-images-with-synthetic-model-trust-layer`; it cannot establish qualification
 of a different published image set, even at the same OCE commit.
 
+The controlled model waits for a yielded native command with `write_stdin` on the
+same session, within the existing 170-second chat deadline. It never replays the
+command. Acceptance still requires terminal success, the exact completion marker,
+and the independent native and Git observations. A completion mismatch reports
+only status, exit code, session presence and poll count; raw command output stays
+private. Offline model-adapter cases in `skipper-private-git-origin.test.mjs` check
+the pinned Codex function-tool envelopes; they do not prove installed execution.
+
 Run `node --test tests/integration/skipper-release.test.ts` for positive and adverse
 offline checks through the actual aggregate CLI. They do not execute an installed journey.
+
+## Verify OpenShell Git expiry and restart
+
+The [installed retention case](../../tests/integration/openshell-git-retention-real.test.ts)
+uses the ordinary authenticated OpenShell installation, a dedicated Codex Agent,
+and an `openai` CredentialSource. Its native startup probe uses the authorized
+`OPENAI_API_KEY` and `OCC_TEST_OPENAI_MODEL`; model responses are not simulated.
+Git and App issuance use a private HTTPS fixture with real `git-http-backend`.
+No live GitHub repository or ambient GitHub credential is used.
+
+The case selects a finite 600-second repository grant and requires successful
+authenticated Git and a real model response before the API's returned deadline.
+After the grant expires and the worker withdraws access, the same
+revision, Sandbox and runtime containers must complete a file operation and
+another model response while a fresh Git request fails without reaching the
+origin. The case restarts the installed worker with persisted PostgreSQL state
+and custody material, then repeats those observations. It does not adjust clocks
+or queue schedules.
+
+The fixture owns its loopback Kubernetes installation and cleanup. Its supervisor
+trust image adds only the private origin's public CA; the executable must match
+the pinned stock image. Record the tested source, image digests and each
+observation. The lane's result artifact retains these receipts under
+`files[].measurements`, bound to its `sourceSha` and the selected test file.
+Receipts contain digests, Kubernetes UIDs, counters and fixed outcomes; opaque
+runtime identifiers use SHA-256 fingerprints. The final `cleanup` receipt is
+emitted only after all owned resources are removed. This proves the selected installation and controlled Git boundary,
+not live GitHub access or a different published image set.
+An unsuccessful expiry wait retains bounded worker outcomes and polling counters;
+these diagnostics do not establish successful withdrawal or runtime retention.
+
+A failed retained-execution check records before/after origin counters and whether
+the origin snapshot changed. Its managed-Exec exit code identifies the failed
+check without retaining Git output:
+
+| Code | Failed check                        |
+| ---- | ----------------------------------- |
+| 41   | Original identity file contents     |
+| 42   | File write                          |
+| 43   | File readback                       |
+| 44   | Git executable availability         |
+| 45   | Git unexpectedly succeeded          |
+| 46   | Git could not execute (126 or 127)  |
+| 47   | Failed Git returned nonempty stdout |
+
+Stock mediates workload connections before HTTP. The test requires a supervisor
+`transparent_tcp_policy_denied` event for `github.com:443` and the measured Git
+executable, immediately preceded by the warning that the endpoint is not allowed
+by any policy. After Git exits, a normal filtered DNS lookup of a fresh absolute
+`.invalid.` name supplies an ordered end marker; lookup status is not proof.
+The reader waits through that exact marker, checks log continuity through every
+poll, and rejects observed competing or unpaired staged denials in the Git window.
+Unchanged supervisor identity excludes foreign events. No other client calls
+`github.com:443` during the isolated attempt.
+
+These observations accompany failed Git, successful file operations and unchanged
+origin counters. The event has no Exec request ID or process ID. Missing markers,
+pairs or retained history fail qualification, but stock producer drops are
+undetectable: this is bounded observed evidence, not a lossless record of every
+connection’s cause. Raw logs and Git output are not retained in result receipts.
+
+The diagnostic receipts do not replace successful shell operations, the explicit
+policy denial and unchanged-origin assertions.
+
+The case is registered in the `openshell` lane. For a reviewed same-repository PR,
+a maintainer selects [QA Matrix Advisory](ci/qa-advisory.md#trigger) with `full-qa`.
+The existing environment supplies credentials inside the job. The narrower
+`qa-openshell-compose` label does not run this case. A complete, non-skipped pass
+and successful cleanup are required; registration alone is not qualification.
 
 ## Controller and broker image compatibility probe
 
@@ -200,7 +306,7 @@ Run the `image-pair-qualification` lane using the
 current and incompatible older controller and broker images against disposable
 fixtures, checks the admission protocol, and rejects incompatible pairs. It does
 not prove credential disposal or a live Agent workflow. See the
-[qualification test](../../tests/integration/production-image-real-qualification.test.mjs)
+[qualification test](../../tests/integration/production-image-real-qualification.test.ts)
 for fixture setup and expected probe exchanges.
 
 ## Run an authorized live smoke
@@ -228,15 +334,21 @@ required authorization or inputs fails.
 
 ## Qualify an installed Agent against GitHub
 
-The dedicated installed qualification is **disabled**. Its old automatic cleanup
-could race with changes to a branch or pull request. Preparation and selected
-tests fail before creating resources. Do not use that lane for qualification.
+The former direct `repository-credentials-installed` lane has been removed.
 
-Use the [QA matrix](ci.md#qa-matrix) for an installed Agent's real Git journey. It
-requires an authorized disposable repository and independent provider readback;
-check the commit, the refused push outside the granted branch, credential disposal,
-and cleanup results. Its `git-only` grant opens no pull request. A direct
-container command or ready Pod does not prove an Agent model turn.
+Use the maintained [QA matrix](ci/qa-advisory.md) for an authorized installed
+Agent's real Git exact-ref journey. It requires an authorized disposable repository
+and independent provider readback. Verify that the granted branch points to the
+expected commit, that the push outside the granted branch was refused, and that
+credential disposal and cleanup succeeded. Its
+`git-only` grant opens no pull request. A direct container command or ready Pod
+does not prove an Agent model turn.
+
+Separately, use the [installed prepared Git qualification](#verify-prepared-native-git)
+for the real installation with controlled Git and model peers, bound to the selected
+source and image digests. That qualification does not prove live GitHub access;
+QA evidence does not replace its release qualification. Removing the old lane adds
+no new live proof.
 
 ## Record each evidence boundary
 

@@ -13,12 +13,12 @@ import type {
   DriverCustody,
   RepositoryBackend,
   RepositoryBackendFactory,
-} from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
-import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
-import { startListeners } from "../../apps/controller/src/drivers/repo/credentials/server.ts";
-import type { DispatchGate } from "../../apps/controller/src/drivers/repo/credentials/internal-contracts.ts";
+} from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
+import { startListeners } from "../../apps/controller/src/drivers/repo/access/server.ts";
+import type { DispatchGate } from "../../apps/controller/src/drivers/repo/access/internal-contracts.ts";
 import { within } from "../helpers/wait-for.mjs";
-import type { GitHubStaticTokenOwner } from "../../apps/controller/src/drivers/repo/github/credentials/types.ts";
+import type { GitHubStaticTokenOwner } from "../../apps/controller/src/drivers/repo/github/access/types.ts";
 import { githubTokenConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
@@ -63,8 +63,8 @@ test(
       }),
     );
     const [{ createGitHubDriverFactory }, { createGitHubStaticTokenOwner }] = await Promise.all([
-      appModule("drivers/repo/github/credentials/factory"),
-      appModule("drivers/repo/github/credentials/static-token"),
+      appModule("drivers/repo/github/access/factory"),
+      appModule("drivers/repo/github/access/static-token"),
     ]);
     const owners: GitHubStaticTokenOwner[] = tokens.map((token) =>
       createGitHubStaticTokenOwner({ token: Buffer.from(token) }),
@@ -126,7 +126,6 @@ test(
       clock,
       tls,
       upstreamOrigins: [origin],
-      providerQueue: undefined,
       log: undefined,
     });
     resources.after(() => {
@@ -149,7 +148,7 @@ test(
     await within(replacementEntered.promise, "replacementEntered");
     assert.equal(refs.length, 2);
     assert.notEqual(refs[0], refs[1]);
-    assert.equal(service.status(opened.session.sessionId).activeUses, 2);
+    assert.equal(service.status(opened.session.sessionId)?.activeUses, 2);
 
     // A detached caller holding either live ref has no authentication reader, and
     // a fabricated retirement attempt cannot turn the ref into access bytes.

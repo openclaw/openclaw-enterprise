@@ -1,4 +1,4 @@
-# Stage these files before switching to the release checkout.
+# Stage these files from the selected release checkout.
 install -m 600 docs/snippets/openshell-quickstart/operator-session.sh "$RUN_DIR/operator-session.sh"
 install -m 600 docs/snippets/openshell-quickstart/request.mjs "$RUN_DIR/request.mjs"
 install -m 600 docs/snippets/openshell-quickstart/codex-configuration.jq "$RUN_DIR/codex-configuration.jq"

@@ -1,8 +1,43 @@
 # Troubleshoot Agents
 
-Start with the symptom you can observe. When asking an operator for help, give
-them the Namespace, Agent ID, version ID, approximate time, and any request ID
-the console shows. Never include API keys, tokens, or Secret values.
+Give operators the Namespace, Agent/version IDs, time and request ID. Never include
+API keys, tokens, or Secret values.
+
+## Codex refuses the required permission profile
+
+For `RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE`, find the revision's
+`worker.completed` event. Its `failure` field (`occ.failure` in the Collector) lists
+`sandbox-mode-denied`, `named-profile-denied`, or `reviewer-denied`, separated by
+underscores. Ask the policy owner to check
+[OpenShell's requirements](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
+For `RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE`, ask the policy owner to reduce the reply
+to at most 1 MiB, then redeploy.
+
+If a dedicated Codex Agent on OpenShell reports `Codex did not grant the requested :danger-full-access profile`, inspect the error's `comparison` category:
+
+- `sandbox-readOnly` or `sandbox-workspaceWrite`: Codex returned a restricted sandbox. Ask the account administrator to check its managed permission requirements against the [OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
+- `sandbox-externalSandbox`: Codex returned a different sandbox mode. Ask the operator to check the selected native profile and runtime compatibility.
+- `nonobject-result`, `field-absent`, `field-null`, `field-not-object`, `type-not-string`, or `type-unrecognized`: the response did not provide a recognized sandbox. Check the packaged runtime version and response contract before attributing the failure to account policy.
+
+Without this category, the error cannot distinguish a restricted grant from an incompatible response.
+
+Login, source readiness, and a model reply under another profile cannot prove compatibility. Use an approved compatible credential or policy change. [Update copied API-key or PAT sources](../../reference/credential-sources.md#update-a-source). For device login, sign in again and replace the Agent binding. Redeploy, then [verify a model response from the Agent](../operate/model-verification.md). Keep the Gateway permission check and OpenShell isolation in place.
+
+## Deploy requires a Sandbox Driver that supports protected Codex artifact admission
+
+OCE stops before creating an Agent version when the selected Sandbox Driver cannot validate artifact access for protected Codex repository execution. Ask your Installation administrator to check the `drivers.sandbox` selection and whether the installed Driver version provides [protected Codex artifact admission](../../reference/drivers/sandbox.md#methods). For OpenShell, see [how to configure the artifact rules](../../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
+
+## The configured model is unavailable
+
+Open the failed version in the Agent’s **Deployment** tab. If the startup model check reports an unavailable model, [choose a model ID for the same credential](../operate/model-verification.md#choose-a-model-for-dedicated-codex).
+
+For the dedicated Codex quickstart, open **Configuration** → **Edit current Configuration**. In the draft, replace the old model ID in these three places:
+
+- Set `agents.defaults.model` to `codex/<new-id>`.
+- Rename its entry in `agents.defaults.models` to the same prefixed ID. Keep the entry’s Codex runtime settings.
+- Set the corresponding `models.providers.codex.models` entry’s `id` and `name` to the new ID without the prefix.
+
+Save the Configuration and select **Deploy new version** on the same Agent. When deployment succeeds, open **Open Agent UI** and send a prompt to confirm the model replies.
 
 ## The Agent or Namespace is missing
 
@@ -16,6 +51,19 @@ Once access is fixed, refresh and confirm the Namespace is `ready`.
 <span id="deployment-is-blocked-or-has-no-selected-revision" class="anchor-alias"></span>
 
 ## Deployment is blocked or has no selected version
+
+`active` is the Agent lifecycle, not workload health. An Agent can be
+`active` without a selected version. If you did not retain the version ID,
+inspect the latest deployment you can read:
+
+```bash
+occ --namespace NAMESPACE_ID agent deployment-status AGENT_ID --output json
+```
+
+Without a deployment ID, this command returns the status of the latest readable
+Agent revision. Inspect the deployment error before changing credentials. If it
+failed, follow the next step in `error.message`. See the
+[deployment status reference](../../reference/agents.md#deployment-status).
 
 On Kubernetes, open the Agent's **Open draft** draft, then
 **Credentials**. Select **Reload authentication source**, then confirm under
@@ -49,6 +97,22 @@ driver refused an object it does not own, such as a Deployment with the Agent's
 workload name but no OCE ownership labels. The driver never adopts such an
 object. Delete it, then deploy again.
 
+For a dedicated Agent, a connected workspace node alone does not establish
+enrollment: OCC must record its device through the setup handoff. If deployment
+stays pending, give the operator the version ID and worker's reason code. Keep
+the node's retained identity and workspace intact; repeated restarts do not prove
+that handoff completed. Unconfirmed credential possession after setup expiry requires the
+[scoped node-Secret recovery](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage);
+do not delete the node identity or workspace. See [workspace-node enrollment](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage).
+
+A second node runner using the same local profile fails immediately. Keep one
+runner per profile. Its lock remains held until clients, runtime shutdown and
+pending endpoint writes finish. Recovery requires a definitely dead owner or a
+process-start identity mismatch; age alone never permits reclaiming a live or
+ambiguous owner. Different profiles remain independent. This local runner lock
+does not coordinate other hosts or arbitrary credential writers; workload
+exclusion remains the execution provider's responsibility.
+
 For an OpenShell `workspace-baseline` failure with `created directory admission
 failed` and `insecure-permissions`, ask the operator to check the node-state
 directory's owner and mode. Its private root must be `0700`; OCE prepares it at
@@ -60,17 +124,23 @@ workspace intact. See [writable runtime state](../../reference/drivers/openshell
 
 ## Verify runtime health after deployment
 
-The console's **Deployment** tab shows persisted status; it has no live
-gateway-health or chat view. **Current version** means the control plane selected
-that version. It can be a version whose deployment failed, for example when an
-embedded replacement's model check rejected its key after it replaced the
-previous version; see
-[the selected version after a failed deployment](../../reference/agents/deployment.md#the-active-revision-after-a-failed-deployment).
-That selection cannot tell you whether the model still accepts
-the credential or can answer. [Verify the Agent’s model response](../operate/model-verification.md)
-or ask an operator to [verify the workload](../deploy/production-agents.md#verify-production-workloads).
-Check for an actual answer from the configured model, not just a selected
-version or successful file read.
+The console's **Deployment** tab shows persisted status, with no live gateway-health
+or chat view. **Current version** identifies the control plane's selection, even
+[after a failed deployment](../../reference/agents/deployment.md#the-active-revision-after-a-failed-deployment):
+an embedded replacement can reject its key during the model check after replacing
+its predecessor. Selection does not establish credential validity or model responses.
+[Verify the Agent's model response](../operate/model-verification.md) or ask an
+operator to [verify the workload](../deploy/production-agents.md#verify-production-workloads).
+Require an answer from the configured model; a successful file read is insufficient.
+
+## Check workload capacity
+
+For Kubernetes, compare configured requests/limits, admitted Agent Pod limits
+and enclosing cgroup constraints with the infrastructure owner. Sandbox-visible host totals
+do not establish usable CPU/memory; an unlimited visible cgroup does not rule
+out hidden limits. Unreadable outer limits remain unknown until verified through
+authorized infrastructure tooling. OCE runtime descriptions and diagnostics do
+not measure effective capacity.
 
 ## An embedded Gateway reports an unverifiable state owner
 
@@ -146,18 +216,17 @@ Deployment. Use the same procedure, with these changes:
 
 ## A save or deployment lost its response
 
-The operation may have succeeded. Before retrying:
+In the original Namespace, check before retrying.
 
-- For model and channel credentials, reload the Agent's Credentials tab and check
-  its saved bindings. An operator can inspect generated transport storage through
-  the exact Agent runtime-credentials API.
-- For deployment, inspect the Agent's **Viewing version** picker and the status for the
-  saved version; a second deployment creates another version.
-- For a workspace file, reload that file and compare its content with your
-  intended edit before saving again.
+- **Draft edit.** Compare the edited fields in `occ agent get AGENT_ID --output json`.
+  For concurrent edits, check the [audit evidence](audit-log.md#investigate-an-uncertain-agent-edit).
+- **Credentials.** Reload **Credentials** and check the saved bindings. Operators
+  can inspect generated transport storage through the Agent's runtime-credentials API.
+- **Deployment.** Check **Viewing version** and its status. Deploying again creates
+  another version. For `deploy-first`, use the printed [read-only recovery command](agent-revisions.md#guarded-first-deployment-and-receipt-recovery).
+- **[Workspace file](workspace-files.md).** Reload and compare its contents with your edit.
 
-See [console recovery](../../reference/console/create-and-deploy.md) for partial
-Agent creation and [workspace files](workspace-files.md) for editing limits.
+For partial Agent creation, see [Console recovery](../../reference/console/create-and-deploy.md).
 
 ## A plugin does not work after deployment
 
@@ -168,6 +237,15 @@ succeed while the affected plugin is disabled for that startup. Inspect the
 a successful deployment does not confirm that a third-party connector is usable.
 
 ## An OpenShell Agent stops answering
+
+For a dedicated Codex Agent on OpenShell, if the Sandbox is running but replies
+time out, ask the operator to check the Agent Gateway's route to OpenShell:
+Gateway egress, matching OpenShell ingress
+and, for secure WebSocket (WSS) connections, the served certificate's coverage
+of the advertised service hostname. A successful control-endpoint check does
+not establish that the certificate covers the advertised hostname. Keep
+hostname verification enabled; correct the owning network or certificate
+configuration, then [verify a model response](../operate/model-verification.md).
 
 On OpenShell, OCE asks the gateway to restart the Harness whenever its process
 exits. `occ agent runtime AGENT_ID` shows
@@ -190,6 +268,10 @@ version whose Harness exited), the Console's **Live serving** shows
 failed `agent` `sandbox` check carrying the same code. Deploy the Agent again
 (`occ agent deploy AGENT_ID`): the new version gets a new Sandbox and the old one
 is removed. `unknown (UNAVAILABLE)` means OCC could not read the Sandbox record.
+
+An older development Sandbox can also fail exact-content adoption after a
+controller upgrade changes its immutable command. Deploy a new Agent revision
+with `occ agent deploy AGENT_ID`; OCE does not rewrite the existing Sandbox command.
 
 ## Read OpenShell sandbox and supervisor logs
 

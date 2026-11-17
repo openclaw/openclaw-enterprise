@@ -12,13 +12,13 @@ import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createDevelopmentComputeDriver } from "./development.mjs";
 import { createDevelopmentIAMState } from "./development-iam-state.mjs";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { stopProcess } from "./stop-process.mjs";
 import { waitFor } from "./wait-for.mjs";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
-import { reservedPortArgs } from "./available-port.mjs";
+import { reservedPortArgs } from "./available-port.ts";
 import { databaseUrl, requiresPostgres } from "./postgres-database.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
@@ -33,6 +33,7 @@ export const serviceAccountDriverId = "chatgpt-service-accounts";
 export const workspaceId = "11111111-1111-4111-8111-111111111111";
 export const alternateWorkspaceId = "22222222-2222-4222-8222-222222222222";
 export const apiKeyPath = "/etc/openclaw/chatgpt/admin-key";
+/** @returns {import("../../packages/contracts/src/index.ts").ChatGPTBackendDefinition} */
 export function backendDefinition(options = {}) {
   return {
     id: backendId,
@@ -259,6 +260,7 @@ export function createBackendWorkerDrivers(
   return {
     installation,
     computeDriver,
+    ...(options.tokenService && { tokenService: options.tokenService }),
     configurationDriver: createTestConfigurationDriver({
       id: installation.drivers.configuration.id,
     }),
@@ -364,7 +366,8 @@ export async function createBootstrappedBackendState(context, options) {
     email: options.email,
     password: options.password,
     authSecret: options.authSecret,
-    authBaseURL: options.origin,
+    authBaseURL: options.authBaseURL,
+    agentDomain: "agents.oce.localhost",
     installationName: options.installationName,
     environment: { PATH: process.env.PATH },
   });
@@ -422,7 +425,8 @@ export async function startBackendlessDevelopmentServer(context, options) {
         OCC_HOST: "127.0.0.1",
         OCC_PORT: String(options.reservation.port),
         OCC_DATABASE_URL: databaseUrl,
-        OCC_AUTH_BASE_URL: options.origin,
+        OCC_AUTH_BASE_URL: options.authBaseURL,
+        OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
         OCC_AUTH_SECRET: options.authSecret,
         OCC_DEVELOPMENT_CONFIGURATION_ROOT: configurationRoot,
         OCC_DOCKER_RUNTIME_IMAGE: "openclaw-enterprise-runtime:not-used-by-backend-repair",

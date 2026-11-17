@@ -2,6 +2,8 @@ package occcli
 
 import (
 	"bytes"
+	"encoding/json/v2"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -36,6 +38,42 @@ func TestAgentRuntimeTableShowsCurrentContainerReason(t *testing.T) {
 				t.Errorf("pod row = %q, want suffix %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestAgentRuntimeTableRejectsNonStringContainerIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name, role, containerName string
+	}{
+		{"objects", `{}`, `{}`},
+		{"arrays", `[]`, `[]`},
+		{"numbers", `1`, `1`},
+		{"booleans", `true`, `true`},
+		{"nulls", `null`, `null`},
+		{"invalid container name", `"gateway"`, `{}`},
+		{"invalid pod role", `[]`, `"gateway"`},
+	} {
+		for _, count := range []string{"multiple", "sole"} {
+			t.Run(tc.name+"/"+count, func(t *testing.T) {
+				sidecar := ""
+				if count == "multiple" {
+					sidecar = `,{"name":"sidecar","state":"running","restartCount":0}`
+				}
+				// Decode actual JSON types: object and array identities used to panic
+				// during selection, even before the sole-container fallback.
+				fixture := fmt.Sprintf(`{"pods":[{"name":"gw-0","role":%s,"containers":[{"name":%s,"state":"waiting","restartCount":0}%s]}]}`, tc.role, tc.containerName, sidecar)
+				var description any
+				if err := json.Unmarshal([]byte(fixture), &description); err != nil {
+					t.Fatal(err)
+				}
+				var out bytes.Buffer
+				app := &application{out: &out}
+				err := app.printRuntime(description, "ns_00000000-0000-4000-8000-000000000001", "agt_00000000-0000-4000-8000-000000000001", "rev_00000000-0000-4000-8000-000000000001")
+				if err == nil || err.Error() != "OCC returned an invalid runtime description" || out.Len() != 0 {
+					t.Errorf("malformed identity: error = %v, output = %q", err, out.String())
+				}
+			})
+		}
 	}
 }
 

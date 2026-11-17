@@ -21,7 +21,7 @@ import { waitUntil } from "../helpers/wait-for.mjs";
 
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
 const options = { ...requiresPostgres, timeout: 30_000 };
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, sourceCount = 2) {
   await ensurePostgresAgentBootstrap(t, {
     label: "revision-owner",
     authSecret: "revision-owner-fixture-signing-secret",
@@ -50,18 +50,22 @@ async function fixture(t: TestContext) {
     },
     createdAt,
   };
-  const sources: CredentialSource[] = ["first", "second"].map((label) => ({
-    id: id("cs"),
-    namespaceId: ns.id,
-    name: label,
-    type: "openai",
-    driverId: "gateway-original",
-    ownerCapability: "credential_gateway",
-    config: {},
-    secrets: { api_key: { kind: "secret", namespaceId: ns.id, id: secret.id } },
-    state: "ready",
-    createdAt,
-  }));
+  const sources = Array.from(
+    { length: sourceCount },
+    (_, index) =>
+      ({
+        id: id("cs"),
+        namespaceId: ns.id,
+        name: `source-${index}`,
+        type: "openai",
+        driverId: "gateway-original",
+        ownerCapability: "credential_gateway",
+        config: {},
+        secrets: { api_key: { kind: "secret", namespaceId: ns.id, id: secret.id } },
+        state: "ready",
+        createdAt,
+      }) satisfies CredentialSource,
+  );
   const listed = sources.map((source) => ({
     sourceId: source.id,
     sourceType: source.type,
@@ -95,7 +99,13 @@ async function fixture(t: TestContext) {
     gatewayManagedMode: true,
     harnessAuth: { method: "credential_source", ...listed[0]!, loginMode: "api_key" },
     credentialSources: listed,
-    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    harness: {
+      id: "openclaw",
+      version: "1.0.0",
+      mode: "embedded",
+      overrides: {},
+      configuration: {},
+    },
     compute: { id: "fixture-compute", implementation: "fixture" },
     executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: agent.servicePrincipalId,
@@ -144,6 +154,47 @@ async function waitForLock(pool: pg.Pool, name: string): Promise<void> {
     { timeoutMs: 5000, intervalMs: 10 },
   );
 }
+
+test(
+  "PostgreSQL accepts 64 credential sources per draft and revision and rejects a 65th",
+  options,
+  async (t) => {
+    const { pool, store, ns, agent, sources, input, listed } = await fixture(t, 64);
+    await store.transact((unit) => unit.revisions.createRevision(input));
+    assert.deepEqual(
+      (await store.read((view) => view.agents.findAgent(ns.id, agent.id)))?.credentialSources,
+      agent.credentialSources,
+    );
+    assert.deepEqual(
+      (await store.read((view) => view.revisions.findRevision(ns.id, agent.id, input.id)))
+        ?.credentialSources,
+      listed,
+    );
+
+    // Write as the application role without API validation. The database must reject
+    // an otherwise valid additional source on both the draft and the immutable revision.
+    const extra = { ...sources[0]!, id: id("cs"), name: "extra" };
+    await store.transact((unit) => unit.credentialSources.createCredentialSource(extra));
+    await assert.rejects(
+      pool.query("UPDATE occ.agents SET credential_sources = $1::jsonb WHERE id = $2", [
+        JSON.stringify([...agent.credentialSources!, { sourceId: extra.id }]),
+        agent.id,
+      ]),
+      { code: "23514", constraint: "agents_credential_sources_valid" },
+    );
+    await assert.rejects(
+      pool.query(
+        `INSERT INTO occ.agent_revisions
+         (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+       SELECT $1, namespace_id, agent_id, revision_number + 1, backend_id,
+         jsonb_set(admitted_spec, '{credential_sources}', $2::jsonb), admitted_at
+       FROM occ.agent_revisions WHERE id = $3`,
+        [id("rev"), JSON.stringify([...listed, { ...listed[0]!, sourceId: extra.id }]), input.id],
+      ),
+      { code: "23514", constraint: "agent_revisions_admitted_snapshot" },
+    );
+  },
+);
 
 test("revision insertion owns its snapshot before a source lock wait", options, async (t) => {
   const { pool, store, ns, agent, sources, listed, input, writer } = await fixture(t);

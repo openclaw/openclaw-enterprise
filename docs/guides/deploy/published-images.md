@@ -11,6 +11,26 @@ GHCR packages are public. The deployment tools use immutable image references
 internally; the commands below resolve the selected tags so you do not need to
 find or copy a SHA manually.
 
+## Rehearse a fresh installation
+
+For an independent release check, have an operator who did not build the images follow
+the [custom Helm guide](production-installation.md). Keep a short record of the run:
+
+1. Before pulling, record the guide revision, installation profile and prerequisites.
+   Use a fresh workstation image store and fresh nodes for the controller and Agent.
+   Record whether either release image was present before its first pull.
+2. Keep the GHCR pull results and compare both image references with the
+   [publication record](#check-publication-and-source). For each multi-platform image,
+   record the node OS and architecture. Match the manifest digest from the node’s
+   pull record to that platform in the published index. If the runtime exposes
+   only an image ID with no manifest mapping, record the platform check as unverified.
+3. Record the Installation ID from [API authentication](production-installation.md#authenticate-to-the-production-api)
+   and the [Namespace ID](production-agents.md#use-a-driver-managed-kubernetes-namespace).
+   Verify that the Agent returns the fresh nonce from the [model-response check](../operate/model-verification.md).
+4. Record any help the operator needed and the step where they needed it. If the
+   run stops early, record the first blocked step, who can resolve it and which
+   checks remain.
+
 <a id="pull-the-latest-pair"></a>
 
 ## Pull a matching pair
@@ -47,8 +67,12 @@ else
 fi
 ```
 
-Stop if selection fails. If an anonymous pull fails with `unauthorized` or
-`denied`, the packages have not been published publicly yet:
+Stop if selection fails. If an anonymous pull returns `unauthorized` or
+`denied`, ask the publisher for the publication record for the requested channel
+and both image names and tags, and ask them to confirm package visibility and
+pull access. The error alone does not establish publication status. After image
+selection succeeds, [compare both resolved references with the publication record](#check-publication-and-source).
+If no approved pair is available,
 [build images from your checkout](production-installation.md#build-and-publish-production-images)
 instead, or [start the local stack](../quickstart.md#start-the-local-stack)
 without image selections, which builds this checkout. The two aliases are not
@@ -117,9 +141,49 @@ For production, public GHCR pulls need no pull Secret. See
 to a private mirror. For local setup, export the resolved pair as
 [development image selections](../quickstart.md#optional-use-matching-published-images).
 
+## Read runtime download client identities
+
+Use Node.js 24.22.1 or newer, Python 3, and Docker with the containerd image
+store and `--platform` support for `docker image inspect` and `docker image save`.
+Download the `container-publication-<run-id>-<attempt>` artifact from the
+successful protected [Enterprise Containers run](#check-publication-and-source).
+It contains `publication.json`. From the matching release checkout, pull the
+receipt's runtime index by digest for the target platform with
+`docker pull --platform`.
+
+Export `SOURCE_SHA` (the full OCE source commit), `PUBLICATION_RUN_ID`,
+`PUBLICATION_ATTEMPT`, `NODE_BASE_IMAGE` (the approved build base with digest),
+and `GHCR_RUNTIME_IMAGE` (the runtime repository without a tag or digest) from
+that publication. Run this for the architecture where the Agent will run.
+
+```bash
+node scripts/ci/runtime-download-client-projection.ts publication.json linux/amd64
+```
+
+Use `linux/arm64` for ARM64. The command checks the local runtime index,
+platform manifest, config digest, and source against the receipt. It reads
+`/opt/oce/runtime/provenance.json` from a stopped container and prints JSON
+with `sourceImage`, `platformImage`, `platform`, and `downloadClients`. Each
+client entry contains its absolute `resolvedBinary` path and `binarySha256`.
+The stock inventory contains curl, both APT transport methods, and Node.js.
+Both APT methods resolve to the same executable.
+
+The command checks additional clients against the list at `SOURCE_SHA`. For a
+custom image that adds a native download client, record the executable that
+opens network connections in the same source change that installs it. Use its
+actual path on both architectures. See the
+[optional native tool paths](../../../deploy/runtime/README.md#select-optional-native-tools).
+
 ## Verify after installation
 
 The publication's startup checks do not establish a working Agent on your
 cluster. Complete [Agent model verification](../operate/model-verification.md).
 Keep the resolved image references with your deployment record so a later move
 of the selected alias does not change which images were selected for this installation.
+
+For an OpenShell deployment that uses optional native tools, the sandbox
+filesystem policy must let the Agent read and execute files under
+`/opt/devtools`. Verify each required tool through the deployed Agent with
+the exact image digest and policy. Exercise a real allowed download and a
+connection the policy must deny. Follow the
+[OpenShell verification procedures](../../testing/openshell.md#openshell-sandbox).

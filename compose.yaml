@@ -33,7 +33,8 @@ services:
       OCC_PORT: 3000
       OCC_DATABASE_URL: postgresql://occ_app:occ-app-local@postgres:5432/openclaw_enterprise
       OCC_AUTH_SECRET: ${OCC_AUTH_SECRET:-openclaw-development-auth-secret-minimum-32-bytes}
-      OCC_AUTH_BASE_URL: http://127.0.0.1:${OPENCLAW_DEV_PORT:-3000}
+      OCC_AUTH_BASE_URL: ${OCC_DEVELOPMENT_BROWSER_ORIGIN:?HTTPS browser origin is required; use occ dev up}
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: ${OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN:?Agent DNS domain is required; use occ dev up}
       OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR: ${OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR:-172.30.41.0/24}
       OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR: ${OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR:-}
       OCC_DEVELOPMENT_CONFIGURATION_ROOT: /app/.development/configurations
@@ -66,7 +67,8 @@ services:
       NODE_ENV: development
       OCC_DATABASE_URL: postgresql://occ_app:occ-app-local@postgres:5432/openclaw_enterprise
       OCC_AUTH_SECRET: ${OCC_AUTH_SECRET:-openclaw-development-auth-secret-minimum-32-bytes}
-      OCC_AUTH_BASE_URL: http://127.0.0.1:${OPENCLAW_DEV_PORT:-3000}
+      OCC_AUTH_BASE_URL: ${OCC_DEVELOPMENT_BROWSER_ORIGIN:?HTTPS browser origin is required; use occ dev up}
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: ${OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN:?Agent DNS domain is required; use occ dev up}
       OPENCLAW_DEV_EMAIL: ${OPENCLAW_DEV_EMAIL:-admin@openclaw.local}
       OPENCLAW_DEV_PASSWORD: ${OPENCLAW_DEV_PASSWORD:-openclaw-development-password}
       OPENCLAW_DEV_INSTALLATION_NAME: ${OPENCLAW_DEV_INSTALLATION_NAME:-OpenClaw Local Development}

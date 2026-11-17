@@ -1,5 +1,12 @@
 /// <reference lib="es2024.promise" />
 
+import {
+  focusedDescription,
+  focusedText,
+  openAdvancedSettings,
+  LIVE_BUTTON,
+  watchForReload,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
@@ -40,23 +47,15 @@ import {
   setSlackSelection,
   stopFocusTrail,
   takeLayoutShifts,
-  trackSettledFetches,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
   waitForShownInputValue,
   secretOptionLabel,
-} from "./console-agents-browser-helpers.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
-import {
-  LIVE_BUTTON,
-  createRepositoryLaunchFixture,
-  focusedDescription,
-  focusedText,
-  openAdvancedSettings,
-  watchForReload,
-} from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
+import { createRepositoryLaunchFixture } from "./console-agents-test-support.ts";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   CHANNEL_BINDING_CONSOLE_REMEDY,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
@@ -1710,7 +1709,7 @@ for (const c of declinedCarryCases) {
 // it for another browser's save and offered a Reload draft that met the same refusal forever
 // (finding 1511). Only the stale-generation refusal, marked by its /expectedGeneration detail,
 // offers Reload draft now. The API answer is replayed here in the exact shape the controller
-// returns for a reservation (proved in postgres-agent-provisioning.test.mjs).
+// returns for a reservation (proved in postgres-agent-provisioning.test.ts).
 // A Kubernetes resourceVersion conflict answers the catch-all "already exists" sentence instead,
 // which names nothing to fix, so each save shows its own conflict text (finding 1639).
 const SAVED_STATE_CONFLICT =
@@ -1969,7 +1968,9 @@ test("a Configuration conflict merges the JSON edits over the reread document", 
     })
     .waitFor();
   assert.equal(await focusedText(page), "Save Configuration");
-  assert.match(await focusedDescription(page), /^Draft reloaded\. Your edits are applied/);
+  const description = await focusedDescription(page);
+  assert.ok(typeof description === "string", "Expected the focused control's description");
+  assert.match(description, /^Draft reloaded\. Your edits are applied/);
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
   const saved = (await fixture.request("GET", configurationPath(context))).data;

@@ -1,6 +1,6 @@
 // The startup model probe scenario shared by runtime-image-startup-probe.test.mjs,
-// runtime-image-startup-termination.test.mjs and the Gateway restart cases
-// (runtime-image-gateway-restart.mjs), which CI runs side by side in Image Runtime
+// runtime-image-startup-termination.test.ts and the Gateway restart cases
+// (runtime-image-gateway-restart.ts), which CI runs side by side in Image Runtime
 // Startup 2 and 1: one runtime wrapper started with the container command the
 // Compute driver renders, beside a stand-in model provider sidecar.
 import assert from "node:assert/strict";
@@ -13,15 +13,15 @@ import {
   embeddedGatewayRecoveryPreamble,
 } from "../../apps/controller/src/drivers/compute/embedded-gateway-owner.ts";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
-import { changeSignal, followContainer } from "./docker-follow.mjs";
+import { changeSignal, followContainer } from "./docker-follow.ts";
 import {
-  AGENT_RUNTIME_ENTRYPOINT,
+  COMPUTE_AGENT_RUNTIME_ENTRYPOINT as AGENT_RUNTIME_ENTRYPOINT,
   gatewayRuntimeEntrypoint,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
-import { modelProbeDiagnostic } from "./runtime-model-probe-observation.mjs";
+import { modelProbeDiagnostic } from "./runtime-model-probe-observation.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import {
   execute,

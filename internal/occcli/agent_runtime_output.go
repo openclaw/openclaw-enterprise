@@ -42,8 +42,9 @@ func visibleText(text string) string {
 
 // noticef prints one notice line to out with visibleText applied, since
 // notices carry server-provided revision IDs, reasons and error messages.
-func noticef(out io.Writer, format string, args ...any) {
-	fmt.Fprintln(out, visibleText(fmt.Sprintf(format, args...)))
+func noticef(out io.Writer, format string, args ...any) error {
+	_, err := fmt.Fprintln(out, visibleText(fmt.Sprintf(format, args...)))
+	return err
 }
 
 type runtimeLogRecord struct {
@@ -69,11 +70,12 @@ func (app *application) printRuntimeLogPage(page *occclient.RuntimeLogPage, noti
 		if record.Time != nil {
 			at = *record.Time
 		}
+		var noticeErr error
 		switch record.Type {
 		case "gap":
-			noticef(notices, "notice: %s gap %s: %s", at, record.Reason, record.Remedy)
+			noticeErr = noticef(notices, "notice: %s gap %s: %s", at, record.Reason, record.Remedy)
 		case "withheld":
-			noticef(notices, "notice: %s %d lines withheld (%s)", at, record.Count, record.Reason)
+			noticeErr = noticef(notices, "notice: %s %d lines withheld (%s)", at, record.Count, record.Reason)
 		}
 		if app.output == "json" {
 			// NDJSON: one record per line, exactly as OCC returned it.
@@ -81,6 +83,10 @@ func (app *application) printRuntimeLogPage(page *occclient.RuntimeLogPage, noti
 				return err
 			}
 			continue
+		}
+		// Text mode has no stdout record for these notices.
+		if noticeErr != nil {
+			return noticeErr
 		}
 		if record.Type != "line" {
 			continue
@@ -248,7 +254,12 @@ func (app *application) printRuntime(description any, namespace, agentID, revisi
 		containers, _ := pod["containers"].([]any)
 		for _, entry := range containers {
 			container, _ := entry.(map[string]any)
-			if container["name"] != pod["role"] && len(containers) > 1 {
+			name, nameOK := container["name"].(string)
+			role, roleOK := pod["role"].(string)
+			if !nameOK || !roleOK {
+				return fmt.Errorf("OCC returned an invalid runtime description")
+			}
+			if name != role && len(containers) > 1 {
 				continue
 			}
 			row["restarts"] = container["restartCount"]

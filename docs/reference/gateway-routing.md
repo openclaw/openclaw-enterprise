@@ -273,7 +273,7 @@ Agent native admin UI access reuses the same private Envoy routing primitive as
 workspace files. The public browser hosts are operator-owned wildcard names
 served by the OCC API process, using `agentNativeAdmin.domain`; Envoy and Agent
 gateway Services remain private ClusterIP resources. The Agent hosts share the
-ordinary OCE session cookie through the configured `agentNativeAdmin.sharedCookieDomain`,
+ordinary OCE session cookie through the automatically derived common Console and Agent DNS suffix,
 so every matching console and Agent subdomain must be a trusted OCE ingress
 endpoint. OCC authenticates and authorizes the human session before proxying,
 then strips browser cookies and credentials before forwarding to Envoy.

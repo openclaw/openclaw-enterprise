@@ -7,7 +7,7 @@ import { createServer as httpsServer } from "node:https";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { listen } from "../helpers/listen.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";

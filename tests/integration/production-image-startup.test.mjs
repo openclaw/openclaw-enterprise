@@ -208,6 +208,9 @@ async function productionFixture(t) {
     `${JSON.stringify(productionInstallation(adminKeyPath), undefined, 2)}\n`,
     { encoding: "utf8", mode: 0o644 },
   );
+  // The nonroot container must read these synthetic files under any host umask.
+  await chmod(join(fixture, "admin-key"), 0o644);
+  await chmod(join(fixture, "installation.json"), 0o644);
   return fixture;
 }
 
@@ -233,6 +236,8 @@ test(
         "OCC_AUTH_SECRET=openclaw-production-image-smoke-secret",
         "-e",
         "OCC_AUTH_BASE_URL=https://occ.example.invalid",
+        "-e",
+        "OCC_AGENT_NATIVE_ADMIN_DOMAIN=agents.example.invalid",
         "-e",
         "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
         image,
@@ -272,6 +277,8 @@ test(
       "OCC_AUTH_SECRET=openclaw-production-image-smoke-secret",
       "-e",
       "OCC_AUTH_BASE_URL=https://occ.example.invalid",
+      "-e",
+      "OCC_AGENT_NATIVE_ADMIN_DOMAIN=agents.example.invalid",
       "-e",
       "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
       image,

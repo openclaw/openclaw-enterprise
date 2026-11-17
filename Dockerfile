@@ -2,7 +2,7 @@
 ARG NODE_BASE_IMAGE
 ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
 FROM ${NODE_BASE_IMAGE} AS dependencies
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+RUN apt-get update --error-on=any && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
@@ -13,7 +13,16 @@ COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/iam/package.json packages/iam/package.json
 COPY packages/occ/package.json packages/occ/package.json
 COPY packages/utils/package.json packages/utils/package.json
+RUN --mount=type=secret,id=corepack-env,required=false \
+    --mount=type=secret,id=build-ca,required=false \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
+    COREPACK_ENV_FILE=/run/secrets/corepack-env corepack pnpm --version
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
+    --mount=type=secret,id=build-ca,required=false \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
+    COREPACK_ENABLE_NETWORK=0 \
     corepack pnpm install --frozen-lockfile --prod --ignore-scripts
 
 # The stamp needs only Node, so it starts from the runtime base image the runtime stage already
@@ -30,7 +39,7 @@ FROM dependencies AS development
 ENV NODE_ENV=development
 WORKDIR /app
 
-COPY --chown=node:node package.json pnpm-workspace.yaml ./
+COPY --chown=node:node package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY --chown=node:node packages packages
 COPY --chown=node:node apps/controller apps/controller
 COPY --from=console-build --chown=node:node /app/apps/controller/src/console/index.html apps/controller/src/console/index.html
@@ -44,7 +53,7 @@ RUN mkdir -p /app/.development/configurations /var/lib/openclaw/bootstrap \
 # The route validators and serializers, precompiled with this image's Node and dependencies
 # so the server loads them instead of compiling every schema at start
 # (apps/controller/src/http/route-compilers.ts).
-RUN node apps/controller/src/precompile-route-schemas.mjs
+RUN node apps/controller/src/precompile-route-schemas.ts
 
 USER node
 ENTRYPOINT ["node"]
@@ -52,7 +61,7 @@ CMD ["apps/controller/src/server.mjs"]
 
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS runtime
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+RUN apt-get update --error-on=any && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
 WORKDIR /app
 
@@ -76,17 +85,15 @@ COPY --chown=node:node migrations/meta/_journal.json migrations/meta/_journal.js
 COPY --chown=node:node migrations/meta/_canonical-history.json migrations/meta/_canonical-history.json
 COPY --chown=node:node scripts/migrate-production.mjs scripts/migrate-production.mjs
 COPY --chown=node:node scripts/migration-history.mjs scripts/migration-history.mjs
-COPY --chown=node:node scripts/migration-catalog.mjs scripts/migration-catalog.mjs
+COPY --chown=node:node scripts/migration-catalog.ts scripts/migration-catalog.ts
 COPY --chown=node:node scripts/bootstrap-installation.mjs scripts/bootstrap-installation.mjs
-COPY --chown=node:node scripts/lib/bootstrap-configuration.mjs scripts/lib/bootstrap-configuration.mjs
-COPY --chown=node:node scripts/auth-maintain.mjs scripts/auth-maintain.mjs
+COPY --chown=node:node scripts/lib/bootstrap-configuration.ts scripts/lib/bootstrap-configuration.ts
 COPY --chown=node:node scripts/auth-maintain.ts scripts/auth-maintain.ts
-COPY --chown=node:node scripts/lib/auth-maintain-arguments.mjs scripts/lib/auth-maintain-arguments.mjs
 COPY --chown=node:node scripts/lib/auth-maintain-arguments.ts scripts/lib/auth-maintain-arguments.ts
 COPY --chown=node:node deploy/presets deploy/presets
-COPY --chown=node:node scripts/production-healthcheck.mjs scripts/production-healthcheck.mjs
+COPY --chown=node:node scripts/production-healthcheck.ts scripts/production-healthcheck.ts
 # As in the development stage: precompiled route validators and serializers for this image.
-RUN node apps/controller/src/precompile-route-schemas.mjs
+RUN node apps/controller/src/precompile-route-schemas.ts
 
 USER node
 ENTRYPOINT ["node"]

@@ -19,7 +19,8 @@ interface DeletionContext extends NamespacePageContext {
   /** `refocus`: a requested check found it removed while its Refresh held focus. */
   onRemoved(namespace: Namespace, refocus: boolean): void;
   onResume?(handler: () => void): void;
-  statusChanged(status: Namespace["status"]): void;
+  /** `undefined` clears the confirmed badge status for display only. */
+  statusChanged(status: Namespace["status"] | undefined): void;
 }
 
 const POLL_MS = 3000;
@@ -52,6 +53,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
   let removed = false;
   let poll: ReturnType<typeof setTimeout> | undefined;
   let confirmation: HTMLDialogElement | undefined;
+  let invalidateConfirmation: (() => void) | undefined;
   let message = "";
   let requestId: string | undefined;
   const remove = button(resourceActionIcon("delete"), () => openConfirmation(), {
@@ -158,7 +160,10 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       }
       if (
         result.id !== namespace.id ||
-        !["ready", "provisioning", "failed", "deleting"].includes(String(result.status))
+        (result.status !== "ready" &&
+          result.status !== "provisioning" &&
+          result.status !== "failed" &&
+          result.status !== "deleting")
       ) {
         throw new Error("Invalid Namespace status response");
       }
@@ -174,7 +179,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         ? ""
         : "This Namespace still exists. You can review it before deciding to delete again.";
       requestId = undefined;
-      context.statusChanged(result.status as Namespace["status"]);
+      context.statusChanged(result.status);
       await readPermissions();
     } catch (cause) {
       if (!current() || sent !== generation) {
@@ -182,6 +187,8 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       }
       const error = requestFailure(cause);
       if (error.status === 401) {
+        accessEnded = true;
+        invalidateConfirmation?.();
         context.onExpired();
         return;
       }
@@ -194,6 +201,8 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       }
       accessEnded = error.status === 403;
       unknown = true;
+      context.statusChanged(undefined);
+      invalidateConfirmation?.();
       message = accessEnded
         ? "This Namespace is no longer readable. It may have been deleted or your access changed. Refresh Namespaces to check your access."
         : "Could not check deletion status. Select Refresh status to check again.";
@@ -332,6 +341,17 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       "aria-describedby": "namespace-delete-description",
     });
     confirmation = dialog;
+    let invalidated = false;
+    let recoverFocus = false;
+    invalidateConfirmation = () => {
+      if (!dialog.open || pending) {
+        return;
+      }
+      invalidated = true;
+      recoverFocus = dialog.contains(document.activeElement);
+      confirm.disabled = true;
+      dialog.close();
+    };
     const cancel = button("Cancel", () => dialog.close());
     const confirm = button(
       repeating ? "Request deletion again" : "Delete Namespace",
@@ -387,8 +407,21 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
     dialog.addEventListener(
       "close",
       () => {
-        confirmation = undefined;
+        if (confirmation === dialog) {
+          confirmation = undefined;
+          invalidateConfirmation = undefined;
+        }
         dialog.remove();
+        // close() can restore the opener before its queued close event. The hidden retry
+        // is no longer a recovery action; preserve any focus moved elsewhere meanwhile.
+        if (
+          recoverFocus &&
+          current() &&
+          (mayReturnFocus(dialog) || document.activeElement === opener)
+        ) {
+          refresh.focus();
+          return;
+        }
         if (
           current() &&
           !pending &&
@@ -421,7 +454,15 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
     cancel.focus();
 
     async function send() {
-      if (pending || denied || !current()) {
+      if (
+        pending ||
+        denied ||
+        unknown ||
+        accessEnded ||
+        invalidated ||
+        !dialog.open ||
+        !current()
+      ) {
         return;
       }
       pending = true;
@@ -458,6 +499,8 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
           return;
         }
         if (error.code === "NAMESPACE_NOT_EMPTY") {
+          invalidated = true;
+          invalidateConfirmation = undefined;
           showBlockers(dialog, cause);
           return;
         }
@@ -470,6 +513,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
           message = describeFailure(cause, { mutation: true });
         } else {
           unknown = true;
+          context.statusChanged(undefined);
           message =
             "Outcome unknown. Deletion may have started. Select Refresh status before deciding to try again.";
         }

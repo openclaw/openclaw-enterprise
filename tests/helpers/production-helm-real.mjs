@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { failureSecrets } from "../../scripts/ci/failure-redaction.mjs";
-import { podFailureDiagnostic } from "./k3d-failure-diagnostics.mjs";
+import { failureSecrets } from "../../scripts/ci/failure-redaction.ts";
+import { podFailureDiagnostic } from "./k3d-failure-diagnostics.ts";
 import {
   createKubernetesClient,
   diagnosticDeadlineMs,
   withinDiagnosticDeadline,
-} from "./kubernetes-real.mjs";
+} from "./kubernetes-real.ts";
 
 // The caller owns the disposable namespace and registers its cleanup before installation.
-export async function installProductionHelmControlPlane({
+export async function prepareProductionHelmControlPlane({
   selection,
   images,
   namespace: system,
@@ -19,14 +19,19 @@ export async function installProductionHelmControlPlane({
   suffix,
   configuration,
   authBaseURL,
+  agentNativeAdminDomain,
   installationName,
   apiClients,
+  channelDirectoryProxyUrl = undefined,
   repositoryCredentials,
   gatewayRouting,
   controlPlane,
   executionCluster,
   metrics,
   databaseName = "openclaw_enterprise",
+  databaseTLS = /** @type {{caSecretName: string, serverSecretName: string, imagePullPolicy?: "Never" | "IfNotPresent"} | undefined} */ (
+    undefined
+  ),
   run,
   kubernetes,
   createSecretValue,
@@ -40,6 +45,11 @@ export async function installProductionHelmControlPlane({
     return value;
   };
   assert.match(databaseName, /^[a-z][a-z0-9_]+$/);
+  if (databaseTLS) {
+    assert.match(databaseTLS.caSecretName, /^[a-z0-9-]+$/);
+    assert.match(databaseTLS.serverSecretName, /^[a-z0-9-]+$/);
+    assert.notEqual(databaseTLS.caSecretName, databaseTLS.serverSecretName);
+  }
   const { kubectl, waitFor } = kubernetes;
   const apply = (object) =>
     run("kubectl", kubernetes.kubectlArguments(["apply", "-f", "-"]), {
@@ -144,12 +154,48 @@ export async function installProductionHelmControlPlane({
       ...(controlPlane?.nodeSelector === undefined
         ? {}
         : { nodeSelector: controlPlane.nodeSelector }),
-      securityContext: { ...podSecurity, runAsUser: 999, runAsGroup: 999, fsGroup: 999 },
+      securityContext: {
+        ...podSecurity,
+        runAsUser: 999,
+        runAsGroup: 999,
+        fsGroup: 999,
+      },
+      ...(databaseTLS && {
+        initContainers: [
+          {
+            name: "prepare-database-tls",
+            image: images.postgres,
+            imagePullPolicy: databaseTLS.imagePullPolicy ?? "IfNotPresent",
+            securityContext,
+            resources,
+            command: [
+              "sh",
+              "-ec",
+              "umask 077; cp /tls-source/server.pem /tls/server.pem; cp /tls-source/server.key /tls/server.key; chmod 600 /tls/server.key",
+            ],
+            volumeMounts: [
+              { name: "tls-source", mountPath: "/tls-source", readOnly: true },
+              { name: "tls", mountPath: "/tls" },
+            ],
+          },
+        ],
+      }),
       containers: [
         {
           name: "postgres",
           image: images.postgres,
-          imagePullPolicy: "IfNotPresent",
+          ...(databaseTLS && {
+            args: [
+              "postgres",
+              "-c",
+              "ssl=on",
+              "-c",
+              "ssl_cert_file=/etc/postgresql/tls/server.pem",
+              "-c",
+              "ssl_key_file=/etc/postgresql/tls/server.key",
+            ],
+          }),
+          imagePullPolicy: databaseTLS?.imagePullPolicy ?? "IfNotPresent",
           securityContext,
           resources,
           env: [
@@ -161,7 +207,20 @@ export async function installProductionHelmControlPlane({
           ],
           volumeMounts: [
             { name: "data", mountPath: "/var/lib/postgresql" },
-            { name: "init", mountPath: "/docker-entrypoint-initdb.d", readOnly: true },
+            {
+              name: "init",
+              mountPath: "/docker-entrypoint-initdb.d",
+              readOnly: true,
+            },
+            ...(databaseTLS
+              ? [
+                  {
+                    name: "tls",
+                    mountPath: "/etc/postgresql/tls",
+                    readOnly: true,
+                  },
+                ]
+              : []),
           ],
           readinessProbe: {
             exec: {
@@ -174,6 +233,18 @@ export async function installProductionHelmControlPlane({
       ],
       volumes: [
         { name: "data", persistentVolumeClaim: { claimName: "postgres-data" } },
+        ...(databaseTLS
+          ? [
+              {
+                name: "tls-source",
+                secret: {
+                  secretName: databaseTLS.serverSecretName,
+                  defaultMode: 0o440,
+                },
+              },
+              { name: "tls", emptyDir: { medium: "Memory", sizeLimit: "1Mi" } },
+            ]
+          : []),
         {
           name: "init",
           secret: {
@@ -195,9 +266,16 @@ export async function installProductionHelmControlPlane({
   await createSecret("occ-installation-startup", {
     "installation.yaml": JSON.stringify(configuration),
   });
+  const databaseQuery = databaseTLS
+    ? "?" +
+      new URLSearchParams({
+        sslmode: "verify-full",
+        sslrootcert: "/etc/openclaw/database-ca/ca.pem",
+      })
+    : "";
   await createSecret("occ-database", {
-    "application-url": `postgresql://occ_app:${appPassword}@postgres.${system}.svc.cluster.local:5432/${databaseName}`,
-    "migration-url": `postgresql://occ_migrator:${migrationPassword}@postgres.${system}.svc.cluster.local:5432/${databaseName}`,
+    "application-url": `postgresql://occ_app:${appPassword}@postgres.${system}.svc.cluster.local:5432/${databaseName}${databaseQuery}`,
+    "migration-url": `postgresql://occ_migrator:${migrationPassword}@postgres.${system}.svc.cluster.local:5432/${databaseName}${databaseQuery}`,
   });
   await createSecret("occ-auth", { secret: secret() });
   const endpoint = (await get("endpoints", "kubernetes", "default")).subsets[0];
@@ -206,10 +284,24 @@ export async function installProductionHelmControlPlane({
     images: { controller: images.controller },
     installation: { name: installationName },
     auth: { baseUrl: authBaseURL },
+    agentNativeAdmin: { domain: agentNativeAdminDomain },
     bootstrap: { adminEmail, password: { claimName: "bootstrap-password" } },
-    database: { cidrs: [`${postgresIP}/32`] },
-    cluster: { cidrs: [`${endpoint.addresses[0].ip}/32`], port: endpoint.ports[0].port },
-    api: { clients: apiClients },
+    database: {
+      cidrs: [`${postgresIP}/32`],
+      ...(databaseTLS && {
+        caSecretName: databaseTLS.caSecretName,
+        caKey: "ca.pem",
+        caMountPath: "/etc/openclaw/database-ca",
+      }),
+    },
+    cluster: {
+      cidrs: [`${endpoint.addresses[0].ip}/32`],
+      port: endpoint.ports[0].port,
+    },
+    api: {
+      clients: apiClients,
+      ...(channelDirectoryProxyUrl !== undefined && { channelDirectoryProxyUrl }),
+    },
     resources,
     // Callers without prepared routing exercise the supported direct-access installation.
     gatewayRouting: { enabled: false },
@@ -230,13 +322,41 @@ export async function installProductionHelmControlPlane({
     values.metrics = metrics;
   }
   await writeFile(join(directory, "values.json"), JSON.stringify(values), { mode: 0o600 });
+  return {
+    adminEmail,
+    valuesPath: join(directory, "values.json"),
+    diagnose: (error) =>
+      withHelmInstallDiagnostic(error, {
+        selection,
+        namespace: system,
+        release,
+        secrets: failureSecrets([
+          process.env,
+          Object.fromEntries(
+            secretValues.map((value, index) => [`INSTALL_SECRET_${index}`, value]),
+          ),
+        ]),
+      }),
+  };
+}
+
+export async function installProductionHelmControlPlane(options) {
+  const {
+    selection,
+    namespace: system,
+    release,
+    chartDirectory = "deploy/helm/openclaw-enterprise",
+    run,
+    record,
+  } = options;
+  const prepared = await prepareProductionHelmControlPlane(options);
   await run(
     "helm",
     [
       "upgrade",
       "--install",
       release,
-      "deploy/helm/openclaw-enterprise",
+      chartDirectory,
       "-n",
       system,
       "--kubeconfig",
@@ -244,25 +364,17 @@ export async function installProductionHelmControlPlane({
       "--kube-context",
       selection.kubernetesContext,
       "-f",
-      join(directory, "values.json"),
+      prepared.valuesPath,
       "--wait",
       "--timeout",
       "300s",
     ],
     { timeout: 330_000 },
   ).catch(async (error) => {
-    throw await withHelmInstallDiagnostic(error, {
-      selection,
-      namespace: system,
-      release,
-      secrets: failureSecrets([
-        process.env,
-        Object.fromEntries(secretValues.map((value, index) => [`INSTALL_SECRET_${index}`, value])),
-      ]),
-    });
+    throw await prepared.diagnose(error);
   });
   await record("Helm initialization, API and worker ready", { namespace: system });
-  return { adminEmail };
+  return { adminEmail: prepared.adminEmail };
 }
 
 // A failed install says only which hook or resource failed (finding 1574: the initialization

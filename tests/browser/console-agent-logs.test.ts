@@ -7,7 +7,11 @@ import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page, Route } from "playwright";
 
-import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
+import type {
+  AgentRevisionWire,
+  AgentWire,
+  NamespaceWire,
+} from "../../packages/contracts/src/api/resources.ts";
 import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import type {
   AgentRuntimeEvent,
@@ -36,8 +40,9 @@ import {
   createRuntimeLogComputeDriver,
 } from "../helpers/runtime-logs.mjs";
 import {
-  apiRequests,
   deploymentStatusResponse,
+  routeFailedDeployment,
+  apiRequests,
   detailUrl,
   expectReachableReason,
   fileBrowser,
@@ -45,18 +50,20 @@ import {
   login,
   nativeValues,
   newPage,
-  routeFailedDeployment,
-  settledFetches,
   settlePageRequests,
   settledView,
-  trackSettledFetches,
   waitForCondition,
   waitForEnabled,
+} from "./console-agents-browser-helpers.ts";
+
+import {
+  settledFetches,
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
-import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
-import { refocus } from "./console-refocus-helpers.mjs";
+} from "./console-fetch-accounting.ts";
+import { withholdPermissionSummary } from "./console-agents-test-support.ts";
+import { refocus } from "./console-refocus-helpers.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type LogLine = AgentRuntimeLogChunk["lines"][number];
@@ -1842,6 +1849,22 @@ async function openStoppedLogs(
   return { agentPath, page, shows, poll };
 }
 
+async function routeQueuedDeployment(
+  page: Page,
+  { fixture, namespace, agent }: Awaited<ReturnType<typeof logsFixture>>,
+  { id, createdAt }: Pick<AgentRevisionWire, "id" | "createdAt">,
+) {
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  await page.route(`${fixture.origin}${agentPath}/deployments/${id}`, (route) =>
+    route.fulfill(
+      deploymentStatusResponse(
+        { id, namespaceId: namespace.id, agentId: agent.id, createdAt },
+        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
+      ),
+    ),
+  );
+}
+
 // Finding 2978 (dogfood r60, D818). The Agent was stopped and redeployed from elsewhere while its
 // Logs stayed open, and the new version's deployment failed. A failed deployment selects no
 // version, so the Agent read each poll makes showed only that the Agent runs again: the page kept
@@ -1853,24 +1876,12 @@ async function openStoppedLogs(
 test("Logs of a stopped version show a redeploy from elsewhere that failed", async (t) => {
   const logs = await logsFixture(t);
   const { fixture, namespace, agent } = logs;
-  const { agentPath, page, shows, poll } = await openStoppedLogs(t, logs);
+  const { page, shows, poll } = await openStoppedLogs(t, logs);
 
   // It deploys a new version, which runs with no version selected while its deployment is queued.
   // The in-memory app has no worker records, so the record is the API's shape, fulfilled.
   const deployed = await fixture.deployAgent(namespace.id, agent.id);
-  await page.route(`${fixture.origin}${agentPath}/deployments/${deployed.id}`, (route) =>
-    route.fulfill(
-      deploymentStatusResponse(
-        {
-          id: deployed.id,
-          namespaceId: namespace.id,
-          agentId: agent.id,
-          createdAt: deployed.createdAt,
-        },
-        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
-      ),
-    ),
-  );
+  await routeQueuedDeployment(page, logs, deployed);
   const queued = await poll();
   await shows(/Latest visible deployment\s+v2\s+·\s+Queued/);
   assert.equal(await poll(), queued);
@@ -1915,14 +1926,7 @@ test("Logs show a second redeploy from elsewhere after a failed one, then its ow
     [after.desiredRuntimeState, after.activeRevisionId, after.status],
     [before.desiredRuntimeState, before.activeRevisionId, before.status],
   );
-  await page.route(`${fixture.origin}${agentPath}/deployments/${third.id}`, (route) =>
-    route.fulfill(
-      deploymentStatusResponse(
-        { id: third.id, namespaceId: namespace.id, agentId: agent.id, createdAt: third.createdAt },
-        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
-      ),
-    ),
-  );
+  await routeQueuedDeployment(page, logs, third);
   // Polls soon after the last list read do not read it again; one within the minute after does.
   for (let index = 0; index < 3; index += 1) {
     assert.equal(await poll(), listed, `poll ${index + 1} lists the versions`);
@@ -1954,19 +1958,7 @@ test("Logs show a second redeploy from elsewhere after a failed one, then its ow
   assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
   const beforeFourth = await poll();
   const fourth = await fixture.deployAgent(namespace.id, agent.id);
-  await page.route(`${fixture.origin}${agentPath}/deployments/${fourth.id}`, (route) =>
-    route.fulfill(
-      deploymentStatusResponse(
-        {
-          id: fourth.id,
-          namespaceId: namespace.id,
-          agentId: agent.id,
-          createdAt: fourth.createdAt,
-        },
-        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
-      ),
-    ),
-  );
+  await routeQueuedDeployment(page, logs, fourth);
   assert.equal(await poll(), beforeFourth + 1, "the poll after the redeploy lists the versions");
   await shows(/Latest visible deployment\s+v4\s+·\s+Queued/);
 });
@@ -1981,19 +1973,7 @@ test("a Logs reread answered after this page's Stop keeps the Stop", async (t) =
   const { agentPath, page, shows, poll } = await openStoppedLogs(t, logs);
   // Another session deploys v2, which stays queued: the Agent runs with no version selected.
   const deployed = await fixture.deployAgent(namespace.id, agent.id);
-  await page.route(`${fixture.origin}${agentPath}/deployments/${deployed.id}`, (route) =>
-    route.fulfill(
-      deploymentStatusResponse(
-        {
-          id: deployed.id,
-          namespaceId: namespace.id,
-          agentId: agent.id,
-          createdAt: deployed.createdAt,
-        },
-        { status: "queued", attempt: undefined, nextAttemptAt: undefined },
-      ),
-    ),
-  );
+  await routeQueuedDeployment(page, logs, deployed);
   await poll();
   await shows(/Latest visible deployment\s+v2\s+·\s+Queued/);
   const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
@@ -2619,6 +2599,27 @@ function rateLimitedResponse(retryAfter?: number) {
   };
 }
 
+type LogsFixture = Awaited<ReturnType<typeof logsFixture>>;
+
+function runtimeLogOutput(page: Page) {
+  return page.getByRole("log", { name: "Runtime log output" });
+}
+
+function revisionLogsPath({ namespace, agent, revisionId }: LogsFixture) {
+  return `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}/runtime/logs`;
+}
+
+async function openLogsWithClock(
+  t: TestContext,
+  { fixture, namespace, agent, revisionId }: LogsFixture,
+) {
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  return page;
+}
+
 async function logsBeforeRateLimit(t: TestContext) {
   const logs = await logsFixture(t);
   logs.computeDriver.state.lines = [line(1, "output before the rate limit")];
@@ -2708,11 +2709,267 @@ test("rate limits keep Follow and status automatic, but not a download made whil
   assert.equal(counts.download, 1);
 });
 
+// Each journey gets a fresh Agent/member rate-limit bucket. Browser clock advances in
+// Follow tests do not replenish the real Controller's status/log read budget.
+async function malformedLogsJourney(t: TestContext, following: boolean) {
+  const logs = await logsFixture(t);
+  const { fixture, computeDriver, namespace, agent, revisionId } = logs;
+  const { account, role } = await logsMember(
+    fixture,
+    namespace,
+    following ? "malformed-follow" : "malformed-refresh",
+    ["read", "operate", "read_logs"],
+  );
+  const beforeText = "synthetic output already displayed";
+  computeDriver.state.lines = [line(1, beforeText)];
+  const { page } = await newPage(t, fixture);
+  if (following) {
+    await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  }
+  await trackSettledFetches(page);
+  const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`;
+  await page.route(`${fixture.origin}${deploymentPath}`, (route) =>
+    route.fulfill(succeededDeployment(namespace, agent, revisionId)),
+  );
+  const logPath = revisionLogsPath(logs);
+  const originAndPath = (url: URL) =>
+    url.origin === fixture.origin && url.pathname === logPath && !url.searchParams.has("download");
+  const next = () =>
+    page.waitForResponse(
+      (response) => response.request().method() === "GET" && originAndPath(new URL(response.url())),
+    );
+  const first = next();
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"),
+    account.credentials,
+  );
+  const pane = runtimeLogOutput(page);
+  const row = (text: string) => pane.getByText(text, { exact: true });
+  const error = page.locator(".log-error");
+  const refresh = page.getByRole("button", {
+    name: "Refresh logs",
+    exact: true,
+  });
+  const outputStatus = page.locator(".log-output-status");
+  function dataIn(body: unknown) {
+    assert.ok(body && typeof body === "object" && "data" in body);
+    assert.ok(body.data && typeof body.data === "object");
+    return body.data;
+  }
+  function validPage(body: unknown) {
+    const data = dataIn(body);
+    assert.ok("records" in data && Array.isArray(data.records));
+    assert.ok("cursor" in data && typeof data.cursor === "string" && data.cursor.length > 0);
+    assert.ok("revisionId" in data && data.revisionId === revisionId);
+    const records: readonly unknown[] = data.records;
+    return { ...data, records, cursor: data.cursor };
+  }
+  const baseline = await first;
+  assert.equal(baseline.status(), 200);
+  const baselineData = validPage(await baseline.json());
+  const exactURL = baseline.url();
+  await row(beforeText).waitFor();
+  await waitForIdleFetches(page);
+  const oldStatus = await outputStatus.textContent();
+  assert.match(oldStatus ?? "", /^Showing /);
+  async function refreshAndObserve(status: number) {
+    const answer = next();
+    await refresh.click();
+    const received = await answer;
+    assert.equal(received.url(), exactURL, "only a same-selection refresh is in scope");
+    assert.equal(received.status(), status);
+    await waitForIdleFetches(page);
+    return received;
+  }
+
+  type LogPageCorruption = Partial<Record<"records" | "cursor" | "stream", unknown>>;
+
+  async function corruptNextPage(
+    expectedURL: string,
+    change: (data: ReturnType<typeof validPage>) => LogPageCorruption,
+  ) {
+    let altered = 0;
+    await page.route(
+      originAndPath,
+      async (route) => {
+        assert.equal(route.request().method(), "GET");
+        assert.equal(route.request().url(), expectedURL);
+        const response = await route.fetch();
+        assert.equal(response.status(), 200);
+        const original: unknown = await response.json();
+        const data = validPage(original);
+        assert.ok(original && typeof original === "object");
+        altered += 1;
+        await route.fulfill({
+          response,
+          json: { ...original, data: { ...data, ...change(data) } },
+        });
+      },
+      { times: 1 },
+    );
+    return () => altered;
+  }
+  return {
+    computeDriver,
+    role,
+    page,
+    beforeText,
+    pane,
+    row,
+    error,
+    outputStatus,
+    oldStatus,
+    baselineData,
+    exactURL,
+    next,
+    validPage,
+    refreshAndObserve,
+    corruptNextPage,
+  };
+}
+
+function malformedLaterRecord(data: { records: readonly unknown[] }) {
+  const first = data.records[0];
+  assert.equal(data.records.length, 2);
+  assert.ok(first && typeof first === "object" && "type" in first && first.type === "line");
+  assert.ok("message" in first && first.message === "replacement first row");
+  return { records: [first, null] };
+}
+
+test("same-selection logs refresh retains output on malformed pages and recovers", async (t) => {
+  const {
+    computeDriver,
+    role,
+    page,
+    beforeText,
+    pane,
+    row,
+    error,
+    outputStatus,
+    oldStatus,
+    exactURL,
+    validPage,
+    refreshAndObserve,
+    corruptNextPage,
+  } = await malformedLogsJourney(t, false);
+  const recoveryText = "synthetic output after retry";
+  computeDriver.state.readError = new Error("synthetic dependency unavailable");
+  await refreshAndObserve(503);
+  assert.match((await error.textContent()) ?? "", /Runtime status or logs are unavailable/);
+  assert.equal(await row(beforeText).isVisible(), true);
+  assert.equal(await pane.locator(".log-row").count(), 1);
+  assert.equal(await outputStatus.textContent(), oldStatus);
+
+  computeDriver.state.readError = undefined;
+  // Mutate only a checked real response. A valid first entry followed by a broken one
+  // must not replace the old output with a partially rendered page.
+  computeDriver.state.lines = [line(2, "replacement first row"), line(3, "replacement last row")];
+  const corruptions: {
+    name: string;
+    change: Parameters<typeof corruptNextPage>[1];
+  }[] = [
+    { name: "null records", change: () => ({ records: null }) },
+    {
+      name: "malformed later record",
+      change: malformedLaterRecord,
+    },
+    { name: "object cursor", change: () => ({ cursor: {} }) },
+    { name: "missing stream", change: () => ({ stream: undefined }) },
+    {
+      name: "nonnumeric restart count",
+      change(data) {
+        assert.ok("stream" in data && data.stream && typeof data.stream === "object");
+        return { stream: { ...data.stream, restartCount: "one" } };
+      },
+    },
+  ];
+  for (const corruption of corruptions) {
+    const altered = await corruptNextPage(exactURL, corruption.change);
+    await refreshAndObserve(200);
+    assert.equal(altered(), 1, corruption.name);
+    assert.match((await error.textContent()) ?? "", /Runtime status or logs are unavailable/);
+    assert.equal(await pane.locator(".log-row").count(), 1, corruption.name);
+    assert.equal(await row(beforeText).isVisible(), true, corruption.name);
+    assert.equal(await outputStatus.textContent(), oldStatus, corruption.name);
+  }
+
+  computeDriver.state.lines = [line(4, recoveryText)];
+  const repaired = await refreshAndObserve(200);
+  validPage(await repaired.json());
+  await row(recoveryText).waitFor();
+  assert.equal(await error.textContent(), "");
+  assert.equal(await pane.locator(".log-row").count(), 1);
+  assert.equal(await row(beforeText).isVisible(), false);
+
+  changeGrant(role, "read_logs", false);
+  await refreshAndObserve(403);
+  await page.getByText(LOGS_CHANGED).waitFor();
+  assert.equal(await pane.locator(".log-row").count(), 0);
+  assert.equal(await row(recoveryText).isVisible(), false);
+});
+
+test("Follow retains output and cursor after a malformed later record and recovers", async (t) => {
+  const {
+    computeDriver,
+    page,
+    beforeText,
+    pane,
+    row,
+    error,
+    outputStatus,
+    oldStatus,
+    baselineData,
+    exactURL,
+    next,
+    validPage,
+    corruptNextPage,
+  } = await malformedLogsJourney(t, true);
+  computeDriver.state.lines = [line(2, "replacement first row"), line(3, "replacement last row")];
+  const followURL = new URL(exactURL);
+  followURL.searchParams.delete("tailLines");
+  followURL.searchParams.set("cursor", baselineData.cursor);
+  const altered = await corruptNextPage(followURL.href, (data) => ({
+    ...malformedLaterRecord(data),
+    cursor: "must-not-be-committed",
+  }));
+  const follow = page.getByRole("button", { name: "Follow", exact: true });
+  const answer = next();
+  await follow.click();
+  await page.clock.runFor(2_000);
+  assert.equal((await answer).status(), 200);
+  await waitForIdleFetches(page);
+  assert.equal(altered(), 1);
+  assert.match((await error.textContent()) ?? "", /Runtime status or logs are unavailable/);
+  assert.equal(await pane.locator(".log-row").count(), 1);
+  assert.equal(await row(beforeText).isVisible(), true);
+  assert.equal(await outputStatus.textContent(), oldStatus);
+
+  // The failed Follow page must not consume its cursor or append its valid first row.
+  const resumed = next();
+  await page.clock.runFor(10_000);
+  const resumedResponse = await resumed;
+  assert.equal(resumedResponse.status(), 200);
+  assert.equal(resumedResponse.url(), followURL.href);
+  assert.equal(new URL(resumedResponse.url()).searchParams.get("cursor"), baselineData.cursor);
+  validPage(await resumedResponse.json());
+  await row("replacement last row").waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await pane.locator(".log-row").count(), 3);
+  assert.equal(await row("replacement first row").isVisible(), true);
+  assert.equal(await row(beforeText).isVisible(), true);
+  assert.equal(await error.textContent(), "");
+  await page.getByRole("button", { name: "Following", exact: true }).click();
+  assert.equal(await follow.isVisible(), true);
+  assert.equal(await follow.getAttribute("aria-pressed"), "false");
+});
+
 // A rate-limited Refresh logs emptied the pane before its read, so only the error remained, and
 // "Try again in 1 second" stayed long after that second had passed (finding 1715).
 test("a rate-limited Refresh logs keeps the loaded lines and says when to try again", async (t) => {
   const page = await logsBeforeRateLimit(t);
-  const log = page.getByRole("log", { name: "Runtime log output" });
+  const log = runtimeLogOutput(page);
   const logError = page.locator(".log-error");
   const outputStatus = page.locator(".log-output-status");
   const shownStatus = await outputStatus.textContent();
@@ -2813,13 +3070,11 @@ test("a rate-limited Refresh logs keeps the loaded lines and says when to try ag
 // Follow polls every two seconds. One that brings nothing new must not write to the rows or the
 // live statuses: a write would clear text the reader selected and re-announce the same status.
 test("Follow leaves filtered rows and status lines untouched on an idle poll", async (t) => {
-  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  const logs = await logsFixture(t);
+  const { computeDriver } = logs;
   computeDriver.state.lines = [line(1, "keep first"), line(2, "hide first")];
-  const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
-  const pane = page.getByRole("log", { name: "Runtime log output" });
+  const page = await openLogsWithClock(t, logs);
+  const pane = runtimeLogOutput(page);
   await pane.getByText("hide first").waitFor();
   await page.locator("#runtime-log-filter").fill("keep");
   await pane.getByText("hide first").waitFor({ state: "hidden" });
@@ -2833,7 +3088,7 @@ test("Follow leaves filtered rows and status lines untouched on an idle poll", a
     [".log-filter-status", content],
     [".log-output-status", content],
   ]);
-  const path = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}/runtime/logs`;
+  const path = revisionLogsPath(logs);
   const before = await settledFetches(page, path);
   const idle = page.waitForResponse((response) => {
     const url = new URL(response.url());
@@ -2880,12 +3135,10 @@ test("Follow leaves filtered rows and status lines untouched on an idle poll", a
 });
 
 test("Follow reports the first output after an empty tail, and a failed refresh keeps it", async (t) => {
-  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  const logs = await logsFixture(t);
+  const { computeDriver } = logs;
   computeDriver.state.lines = [];
-  const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  const page = await openLogsWithClock(t, logs);
   const status = page.locator(".log-output-status");
   await status.filter({ hasText: "No info-or-higher output in the last 200 lines." }).waitFor();
 
@@ -2893,7 +3146,7 @@ test("Follow reports the first output after an empty tail, and a failed refresh 
   computeDriver.state.lines.push(line(1, "first followed output"));
   await page.getByRole("button", { name: "Follow", exact: true }).click();
   await page.clock.runFor(2_000);
-  const pane = page.getByRole("log", { name: "Runtime log output" });
+  const pane = runtimeLogOutput(page);
   await pane.getByText("first followed output").waitFor();
   await waitForIdleFetches(page);
   const shown = await status.textContent();
@@ -2918,7 +3171,7 @@ test("a source picked while a refresh reads clears the kept lines at once", asyn
   logs.computeDriver.state.harnessPod = { ready: true };
   logs.computeDriver.state.harnessLines = [line(1, "agent output")];
   const { page } = await openRetainedLogs(t, logs);
-  const log = page.getByRole("log", { name: "Runtime log output" });
+  const log = runtimeLogOutput(page);
   const outputStatus = page.locator(".log-output-status");
   await log.getByText("gateway output").waitFor();
   await page.locator("#runtime-log-source").selectOption("agent");
@@ -2944,11 +3197,75 @@ test("a source picked while a refresh reads clears the kept lines at once", asyn
   assert.match((await outputStatus.textContent()) ?? "", /^Showing gateway in /u);
 });
 
+test("switching log sources clears settled rate-limit feedback while the next source reads", async (t) => {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, "gateway output before switching")];
+  logs.computeDriver.state.harnessPod = { ready: true };
+  logs.computeDriver.state.harnessLines = [line(1, "agent output before the rate limit")];
+  const { page } = await openRetainedLogs(t, logs);
+  const log = runtimeLogOutput(page);
+  const source = page.locator("#runtime-log-source");
+  const logError = page.locator(".log-error");
+  const outputStatus = page.locator(".log-output-status");
+  const logPath = revisionLogsPath(logs);
+  const matchesLogRead = (url: URL) =>
+    url.origin === logs.fixture.origin && url.pathname === logPath;
+  await log.getByText("gateway output before switching").waitFor();
+  await source.selectOption("agent");
+  await log.getByText("agent output before the rate limit").waitFor();
+  await waitForIdleFetches(page);
+
+  await page.route(matchesLogRead, (route) => route.fulfill(rateLimitedResponse(5)), {
+    times: 1,
+  });
+  const [rateLimited] = await Promise.all([
+    page.waitForResponse((response) => matchesLogRead(new URL(response.url()))),
+    page.getByRole("button", { name: "Refresh logs" }).click(),
+  ]);
+  assert.equal(rateLimited.status(), 429);
+  assert.equal(new URL(rateLimited.url()).searchParams.get("source"), "agent");
+  await waitForIdleFetches(page);
+  assert.equal(
+    await logError.textContent(),
+    `Too many requests. Try again in 5 seconds. Request ID: ${rateLimitRequestId}`,
+  );
+
+  logs.computeDriver.state.lines = [line(2, "new gateway output")];
+  const gateway = await holdRequests(t, page, matchesLogRead, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  let gatewayResponse: Awaited<typeof gateway.requested>;
+  try {
+    await source.selectOption("gateway");
+    gatewayResponse = await gateway.requested;
+    assert.ok(gatewayResponse, "the Gateway read reached the controller");
+    assert.equal(new URL(gatewayResponse.url()).searchParams.get("source"), "gateway");
+    assert.equal(await source.inputValue(), "gateway");
+    assert.equal(await outputStatus.textContent(), "Reading output…");
+    assert.equal(
+      await logError.isHidden(),
+      true,
+      "the Agent error is hidden during the Gateway read",
+    );
+
+    await page.clock.runFor(5_000);
+    assert.equal(await outputStatus.textContent(), "Reading output…");
+    assert.equal(await logError.isHidden(), true, "the Agent retry hint stays hidden after expiry");
+  } finally {
+    gateway.release();
+  }
+  assert.equal(gatewayResponse.status(), 200);
+  await log.getByText("new gateway output").waitFor();
+  await waitForIdleFetches(page);
+});
+
 test("a status refresh keeps Download disabled while a download is pending", async (t) => {
   const logs = await logsFixture(t);
   logs.computeDriver.state.lines = [line(1, "download stays pending")];
   const { page, requests } = await openRetainedLogs(t, logs);
-  const log = page.getByRole("log", { name: "Runtime log output" });
+  const log = runtimeLogOutput(page);
   await log.getByText("download stays pending").waitFor();
   await waitForIdleFetches(page);
   const download = page.getByRole("button", { name: "Download", exact: true });
@@ -2983,7 +3300,9 @@ test("a status refresh keeps Download disabled while a download is pending", asy
 });
 
 test("the Sandbox source shows redacted policy decisions without a Pod picker", async (t) => {
-  const computeDriver = createRuntimeLogComputeDriver({ sandboxNamespace: "tenant-console" });
+  const computeDriver = createRuntimeLogComputeDriver({
+    sandboxNamespaceName: () => "tenant-console",
+  });
   const secret = `Zq9${randomUUID().replaceAll("-", "")}`;
   const sandbox = createProviderSandboxDriver();
   const sandboxState: { lines: SandboxLogLine[]; error: Error | undefined } = sandbox.state;
@@ -3775,6 +4094,22 @@ async function openRetainedLogs(
   return { page, requests, deployment, leave };
 }
 
+async function openAuthorizedRuntimeLogs(t: TestContext, memberName: string, initialText: string) {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, initialText)];
+  const { account, role } = await logsMember(logs.fixture, logs.namespace, memberName, [
+    "read",
+    "operate",
+    "read_logs",
+  ]);
+  const { page, requests, leave } = await openRetainedLogs(t, logs, account.credentials);
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText(initialText).waitFor();
+  const pods = page.locator(".runtime-pod");
+  await pods.first().waitFor();
+  return { logs, role, page, requests, leave, pane, pods };
+}
+
 // Record if the text or element appears at any point after this call. Checking only the final
 // DOM would miss the Console briefly restoring revoked output from a cached view.
 async function watchPainted(page: Page, target: { text: string } | { selector: string }) {
@@ -3947,19 +4282,11 @@ for (const delayed of ["follow", "download"]) {
 // refused since, with that answer unchanged, keeps the cached Pod cards off screen. The answer
 // still allows operate, so the refusal is not a lost grant: nothing asks again.
 test("Back rebuilds a Logs view whose status read alone is refused since", async (t) => {
-  const logs = await logsFixture(t);
-  logs.computeDriver.state.lines = [line(1, "operator output")];
-  const { account } = await logsMember(logs.fixture, logs.namespace, "status-refused", [
-    "read",
-    "operate",
-    "read_logs",
-  ]);
-  const { page, leave } = await openRetainedLogs(t, logs, account.credentials);
-  await page
-    .getByRole("log", { name: "Runtime log output" })
-    .getByText("operator output")
-    .waitFor();
-  await page.locator(".runtime-pod").first().waitFor();
+  const { logs, page, leave } = await openAuthorizedRuntimeLogs(
+    t,
+    "status-refused",
+    "operator output",
+  );
   await leave();
   let refusals = 0;
   await page.route(
@@ -3991,18 +4318,11 @@ test("Back rebuilds a Logs view whose status read alone is refused since", async
 // (finding 1597). The log refusal now asks for status once at once, on no new timer; a first
 // log read refused (log text never allowed) asks nothing more.
 test("a follow poll refused with operate revoked too clears the Pod cards at once", async (t) => {
-  const logs = await logsFixture(t);
-  logs.computeDriver.state.lines = [line(1, "read before the revoke")];
-  const { account, role } = await logsMember(logs.fixture, logs.namespace, "one-revoke", [
-    "read",
-    "operate",
-    "read_logs",
-  ]);
-  const { page, requests } = await openRetainedLogs(t, logs, account.credentials);
-  const pane = page.getByRole("log", { name: "Runtime log output" });
-  await pane.getByText("read before the revoke").waitFor();
-  const pods = page.locator(".runtime-pod");
-  await pods.first().waitFor();
+  const { logs, role, page, requests, pane, pods } = await openAuthorizedRuntimeLogs(
+    t,
+    "one-revoke",
+    "read before the revoke",
+  );
   await page.getByRole("button", { name: "Follow" }).click();
   const statusReads = () =>
     requests.filter(({ path }) => path.endsWith(`/deployments/${logs.revisionId}/runtime`)).length;
@@ -4033,17 +4353,11 @@ test("a follow poll refused with operate revoked too clears the Pod cards at onc
 // Configuration read before the revoke (finding 2550). A refusal after the same read succeeded
 // now says the access changed, and the next tab reads the page again, as Refresh does.
 test("a revoke seen by Logs says access changed, and a tab change reads the page again", async (t) => {
-  const logs = await logsFixture(t);
-  logs.computeDriver.state.lines = [line(1, "read before the revoke")];
-  const { account, role } = await logsMember(logs.fixture, logs.namespace, "revoked-agent", [
-    "read",
-    "operate",
-    "read_logs",
-  ]);
-  const { page } = await openRetainedLogs(t, logs, account.credentials);
-  const pane = page.getByRole("log", { name: "Runtime log output" });
-  await pane.getByText("read before the revoke").waitFor();
-  await page.locator(".runtime-pod").first().waitFor();
+  const { role, page, pane } = await openAuthorizedRuntimeLogs(
+    t,
+    "revoked-agent",
+    "read before the revoke",
+  );
   await page.getByRole("button", { name: "Follow" }).click();
 
   for (const permission of ["read", "operate", "read_logs"] satisfies PermissionAction[]) {
@@ -4084,18 +4398,11 @@ for (const { name, revoked, podsKept, staleFails = false } of [
   staleFails?: boolean;
 }[]) {
   test(`a status read in flight at a log refusal yields to a fresh one: ${name}`, async (t) => {
-    const logs = await logsFixture(t);
-    logs.computeDriver.state.lines = [line(1, "read before the revoke")];
-    const { account, role } = await logsMember(logs.fixture, logs.namespace, "stale-status", [
-      "read",
-      "operate",
-      "read_logs",
-    ]);
-    const { page, requests } = await openRetainedLogs(t, logs, account.credentials);
-    const pane = page.getByRole("log", { name: "Runtime log output" });
-    await pane.getByText("read before the revoke").waitFor();
-    const pods = page.locator(".runtime-pod");
-    await pods.first().waitFor();
+    const { logs, role, page, requests, pane, pods } = await openAuthorizedRuntimeLogs(
+      t,
+      "stale-status",
+      "read before the revoke",
+    );
     await page.getByRole("button", { name: "Follow" }).click();
     const statusPath = `/deployments/${logs.revisionId}/runtime`;
     const statusReads = () => requests.filter(({ path }) => path.endsWith(statusPath)).length;
@@ -4169,18 +4476,11 @@ for (const { name, revoked, podsKept, staleFails = false } of [
 
 // Losing operate hides the last status, not log text the member still has permission to read.
 test("a refused status poll clears the Pod details and keeps authorized log reads", async (t) => {
-  const logs = await logsFixture(t);
-  logs.computeDriver.state.lines = [line(1, "before losing operate")];
-  const { account, role } = await logsMember(logs.fixture, logs.namespace, "lose-operate", [
-    "read",
-    "operate",
-    "read_logs",
-  ]);
-  const { page, requests } = await openRetainedLogs(t, logs, account.credentials);
-  const pane = page.getByRole("log", { name: "Runtime log output" });
-  await pane.getByText("before losing operate").waitFor();
-  const pods = page.locator(".runtime-pod");
-  await pods.first().waitFor();
+  const { logs, role, page, requests, pane, pods } = await openAuthorizedRuntimeLogs(
+    t,
+    "lose-operate",
+    "before losing operate",
+  );
   const reads = () => logRequests(requests, logs.revisionId);
   const initialReads = reads().length;
 

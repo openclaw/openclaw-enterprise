@@ -133,14 +133,25 @@ layer, and use bounded by deadline and expiry. Zero means read again, not expire
 
 ### Dynamic material
 
-`WarmCredentialReader.readWarm` reads only eligible committed material for
-`WarmKey = (SourceKey, exact normalized grant, grant hash, isolation ID)`. Add family generation,
-owner epoch, preparation attempt, actual grant and provider expiry to the evidence. Cold, expired
-or insufficient validity returns `not_ready` without starting work. The reader owns a detached copy
-until it confirms the read and sufficient remaining validity, then transfers that copy to custody.
-If it cannot confirm either, it erases its copy and returns `not_ready` with no material.
-Eligible material can outlast an issuer outage. An unavailable resolver permits no proxy cache,
-token push or fallback.
+After authorizing the captured operation, OCC resolves the registered credential for
+`WarmKey = (SourceKey, exact normalized grant, grant hash, isolation ID)`.
+The Token Service also renews eligible grants in the background. If committed material
+meets the required validity, use it immediately. An approaching renewal time can wake
+the owner while this request continues with the eligible token.
+
+If no committed version meets the validity requirement, start or join the owner's
+preparation for this exact grant. Concurrent requests and the scheduler share one
+attempt. Wait outside authorization transactions, bounded by the original request
+deadline and cancellation. Before releasing material after that wait, recheck
+authority for the same execution, source, grant and destination. If authority has
+changed or the deadline has passed, refuse the request.
+
+The reader selects only a committed version and binds its family generation, owner
+epoch, preparation attempt, grant and provider expiry to the evidence. It erases
+its temporary copy if it cannot confirm that version and its remaining validity.
+The final send check verifies that the selected version is still eligible and
+commits the permit before dispatch. The sender cannot substitute a cached token
+or extend the deadline when renewal fails.
 
 ## Prepare and renew credentials
 

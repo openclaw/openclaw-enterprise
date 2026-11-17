@@ -13,22 +13,22 @@ import {
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { RepositoryReceiptStore } from "../../apps/controller/src/backends/repository-credentials/receipt-store.ts";
-import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
+import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import {
   createControlAdmission,
   handleControl,
-} from "../../apps/controller/src/drivers/repo/credentials/control.ts";
-import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
+} from "../../apps/controller/src/drivers/repo/access/control.ts";
+import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
-import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts";
-import { validateGitHubConfiguration } from "../../apps/controller/src/drivers/repo/github/credentials/config.ts";
-import { createGitHubDriverFactory } from "../../apps/controller/src/drivers/repo/github/credentials/factory.ts";
-import { createGitHubStaticTokenOwner } from "../../apps/controller/src/drivers/repo/github/credentials/static-token.ts";
-import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
-import type { RepositoryServiceFactory } from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
-import type { RepositoryCredentialBoundSessionInput } from "../../apps/controller/src/drivers/repo/credentials/service-contracts.ts";
+import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/access/warm-registry-factory.ts";
+import { validateGitHubConfiguration } from "../../apps/controller/src/drivers/repo/github/access/config.ts";
+import { createGitHubDriverFactory } from "../../apps/controller/src/drivers/repo/github/access/factory.ts";
+import { createGitHubStaticTokenOwner } from "../../apps/controller/src/drivers/repo/github/access/static-token.ts";
+import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import type { RepositoryServiceFactory } from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import type { RepositoryCredentialBoundSessionInput } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import {
   seedSessionRevision,
@@ -128,19 +128,22 @@ async function fixture(t: TestContext) {
   async function serve(factory: RepositoryServiceFactory) {
     const service = createCredentialService({ config, factory, clock });
     let preparedOpens = 0;
+    let opens = 0;
     const admissions = createControlAdmission(
       {
         prepareOpen(input) {
           preparedOpens++;
           return service.prepareOpen(input);
         },
-        open: service.open,
+        open(input) {
+          opens++;
+          return service.open(input);
+        },
         status: service.status,
         close: service.close,
       },
       config,
       clock,
-      factory.resolveBound !== undefined,
       "createPrepared" in factory,
     );
     const stop = service.observeDisposal(admissions.observe);
@@ -166,7 +169,7 @@ async function fixture(t: TestContext) {
       admissions.dispose();
     };
     t.after(close);
-    return { close, service, preparedOpens: () => preparedOpens };
+    return { close, service, admissions, preparedOpens: () => preparedOpens, opens: () => opens };
   }
   async function attempt(protocol: 1 | 3 = 3) {
     const admissionId = `${Date.now()}-${randomUUID()}`;
@@ -375,6 +378,30 @@ test("a development-token peer swapped after readiness cannot serve prepared OPE
     await f.state.read((view) => view.repositorySessions.findBrokerReceipt(input.admissionId)),
     undefined,
   );
+  const admissionId = `${Date.now()}-${randomUUID()}`;
+  const unboundInput: Parameters<typeof current.admissions.open>[1] = {
+    durationSeconds: 60,
+    profile: "git-read",
+  };
+  const recoveryInput: Parameters<typeof current.admissions.open>[1] = { ...unboundInput };
+  Object.setPrototypeOf(recoveryInput, { recoverOnly: true });
+  assert.equal(Object.hasOwn(recoveryInput, "recoverOnly"), false);
+  assert.equal(recoveryInput.recoverOnly, true);
+  await assert.rejects(current.admissions.open(admissionId, recoveryInput), {
+    message: "INVALID_ADMISSION",
+  });
+  assert.equal(current.opens(), 0);
+  assert.equal(current.preparedOpens(), 0);
+  assert.equal(
+    await f.state.read((view) => view.repositorySessions.findBrokerReceipt(admissionId)),
+    undefined,
+  );
+  // Refusing inherited unbound recovery must not leave a tombstone for this id.
+  const admitted = await current.admissions.open(admissionId, unboundInput);
+  assert.equal(admitted.created, true);
+  assert.equal(current.opens(), 1);
+  assert.equal((await current.admissions.status(admitted.sessionId))?.state, "OPEN");
+  await current.admissions.close(admitted.sessionId);
   // The independently selected direct development tool remains supported.
   const direct = current.service.open({ durationSeconds: 60, profile: "git-read" });
   assert.equal(direct.session.state, "OPEN");
