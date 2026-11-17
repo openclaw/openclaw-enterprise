@@ -1068,6 +1068,11 @@ test("the agent's exec list never covers git or gh (finding 3325)", { skip: unsu
     symlinkSync(join(writable, "later"), join(namedIntoWritable, "git"));
     assert.equal(execCoversGit([node], [...fine, namedIntoWritable], [writable]), true);
     assert.equal(execCoversGit([node], [...fine, namedIntoWritable]), false);
+    // Also when it only passes there on its way somewhere else.
+    const namedThroughWritable = join(root, "named-through-writable");
+    mkdirSync(namedThroughWritable, { mode: 0o700 });
+    symlinkSync(join(writable, "hop"), join(namedThroughWritable, "gh"));
+    assert.equal(execCoversGit([node], [...fine, namedThroughWritable], [writable]), true);
     // The stock search paths still start, with the writable state given.
     const stock = ["/app/node_modules/.bin", ...AGENT_SEARCH_PATH];
     assert.equal(execCoversGit([node], stock, [writable]), false);
