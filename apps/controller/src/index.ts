@@ -1831,12 +1831,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       audit.denialObserved = true;
     }
     try {
+      // Chat has no Namespace path input, so it needs the stored Agent target.
+      // Other operations keep the requested audit target, separate from enforcement.
       await options.auditSink.append(
         event(
           operation,
           request,
-          authorization?.resource ??
-            operationTarget(operation, installationId, request.params as Record<string, unknown>),
+          operation.operationId === "chatWithAgent" && authorization !== undefined
+            ? authorization.resource
+            : operationTarget(operation, installationId, request.params as Record<string, unknown>),
           kind,
           context,
           evidence,

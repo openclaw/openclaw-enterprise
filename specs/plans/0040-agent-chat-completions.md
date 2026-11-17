@@ -283,6 +283,18 @@ model input are removed. Default kubeconfig and unrelated resources are preserve
 Final cumulative diff against `f2359730f`: +3,499/−112; authored: +3,005/−110.
 Generated API reference remains +105/−2; the corrected relay is 327 lines.
 
+### Denial target correction
+
+At `973c8fb54`, PostgreSQL reproduced M2's regression (one failure, zero skips):
+a requested Namespace was audited as the Installation. Only `chatWithAgent`
+now selects the error's stored resource; other operations use `operationTarget`.
+Enforcement metadata and the sole Controller lookup are unchanged.
+
+The entire PostgreSQL service-key file passed 2/2; chat admission passed 4/4,
+with zero skips. Fresh disposable databases used migrator/`occ_app` roles;
+fixtures and temporary environment files were removed. Relay proof at
+`93bfd4c8` remains unchanged; no model QA or blocked review was repeated.
+
 ## Manual Notes
 
 ## Changelog
