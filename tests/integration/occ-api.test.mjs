@@ -10070,7 +10070,10 @@ test("occ agent apply deploys an existing Agent only when its file changes", asy
     // the command that finishes the job, and nothing is deployed.
     const refused = withValues({ agents: { defaults: { model: "codex/gpt-6-astra" } } });
     await assert.rejects(apply(refused), (error) => {
-      assert.match(error.stderr, /saved the changes but could not deploy; run "occ --url .* agent deploy /);
+      assert.match(
+        error.stderr,
+        /saved the changes but could not deploy; run "occ .* agent deploy /,
+      );
       return true;
     });
     assert.equal((await controller.request("GET", configurationPath)).data.generation, 2);
