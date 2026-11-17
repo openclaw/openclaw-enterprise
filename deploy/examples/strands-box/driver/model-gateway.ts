@@ -131,6 +131,7 @@ interface KubeReply {
 interface StoredKey {
   readonly value: string;
   readonly resourceVersion: string;
+  readonly uid: string;
 }
 
 /**
@@ -260,11 +261,17 @@ export class ModelKeyStore {
     }
     const data = record(reply.body?.data);
     const encoded = data?.[SECRET_KEY];
-    const resourceVersion = record(reply.body?.metadata)?.resourceVersion;
-    if (typeof encoded !== "string" || typeof resourceVersion !== "string") {
+    const metadata = record(reply.body?.metadata);
+    const resourceVersion = metadata?.resourceVersion;
+    const uid = metadata?.uid;
+    if (
+      typeof encoded !== "string" ||
+      typeof resourceVersion !== "string" ||
+      typeof uid !== "string"
+    ) {
       throw new DependencyUnavailableError("The model key Secret has no value.");
     }
-    return { value: Buffer.from(encoded, "base64").toString("utf8"), resourceVersion };
+    return { value: Buffer.from(encoded, "base64").toString("utf8"), resourceVersion, uid };
   }
 
   private manifest(namespaceId: string, sourceId: string, value: string, version?: string) {
@@ -322,17 +329,37 @@ export class ModelKeyStore {
     return true;
   }
 
-  /** Idempotent: an absent Secret is removed; another owner's Secret is never touched. */
+  /**
+   * Idempotent: an absent Secret is removed; another owner's Secret is never touched. The DELETE
+   * carries the read's `uid` and `resourceVersion` as preconditions (finding 3302), so a Secret
+   * replaced or changed after the ownership check is never deleted on that check: a conflict
+   * reads again, checks ownership again, and retries a bounded number of times.
+   */
   async remove(namespaceId: string, sourceId: string, signal: AbortSignal): Promise<void> {
-    const current = await this.read(namespaceId, sourceId, signal);
-    if (current === undefined) return;
-    const reply = await this.call("DELETE", modelSecretName(namespaceId, sourceId), undefined, signal);
-    if (reply.status !== 200 && reply.status !== 202 && reply.status !== 404) {
-      throw new DependencyUnavailableError("The Kubernetes API refused the model key removal.");
+    const name = modelSecretName(namespaceId, sourceId);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const current = await this.read(namespaceId, sourceId, signal);
+      if (current === undefined) return;
+      const reply = await this.call(
+        "DELETE",
+        name,
+        {
+          apiVersion: "v1",
+          kind: "DeleteOptions",
+          preconditions: { uid: current.uid, resourceVersion: current.resourceVersion },
+        },
+        signal,
+      );
+      if (reply.status === 409) continue;
+      if (reply.status !== 200 && reply.status !== 202 && reply.status !== 404) {
+        throw new DependencyUnavailableError("The Kubernetes API refused the model key removal.");
+      }
+      if ((await this.read(namespaceId, sourceId, signal)) !== undefined) {
+        throw new DependencyUnavailableError("The model key Secret was not removed.");
+      }
+      return;
     }
-    if ((await this.read(namespaceId, sourceId, signal)) !== undefined) {
-      throw new DependencyUnavailableError("The model key Secret was not removed.");
-    }
+    throw new DependencyUnavailableError("The model key Secret kept changing during removal.");
   }
 }
 
@@ -353,9 +380,12 @@ export interface ModelHost {
     revisionId: string,
     signal: AbortSignal,
   ): Promise<{ readonly sourceId: string; readonly revoked: boolean } | undefined>;
-  /** Record a revoke on the host for the live execution; `undefined` without one. */
+  /**
+   * Record the host's durable revoke receipt for this revision's source, with or without a live
+   * execution of it (finding 3301); `undefined` when the revision is not this host's.
+   */
   revoke(
-    revisionId: string,
+    withdrawal: Pick<CredentialWithdrawalContext, "namespace" | "revision">,
     sourceId: string,
     signal: AbortSignal,
   ): Promise<{ readonly receiptId: string } | undefined>;
@@ -423,6 +453,9 @@ export function createModelGateway(
     /** Rotation: the next Box model request reads the new value; nothing restarts. */
     async updateSource(context, input) {
       validate(input);
+      if (!own(context.source, context.namespace.id)) {
+        throw new ScopeViolationError("The credential source is not owned by this gateway.");
+      }
       const replaced = await store.replace(
         context.namespace.id,
         context.source.id,
@@ -482,16 +515,17 @@ export function createModelGateway(
       return Object.freeze(statuses);
     },
     /**
-     * `revoked` only on the host's receipt: from then on the host refuses this execution's model
+     * `revoked` only on the host's receipt: from then on the host refuses this revision's model
      * requests before any byte reaches the provider, and keeps the receipt across its restart.
+     * The receipt is written even when no execution of the revision runs now (failed, or the host
+     * restarted without one; finding 3301), so a later start of that revision is refused too.
      */
     async withdraw(context: CredentialWithdrawalContext): Promise<CredentialAttachmentStatus> {
       const live = await host.attachment(context.revision.id, context.signal);
-      if (live === undefined || live.sourceId !== context.sourceId) {
-        return Object.freeze({ sourceId: context.sourceId, state: "absent" });
+      if (live?.sourceId === context.sourceId && live.revoked) {
+        return Object.freeze({ sourceId: context.sourceId, state: "revoked" });
       }
-      if (live.revoked) return Object.freeze({ sourceId: context.sourceId, state: "revoked" });
-      const receipt = await host.revoke(context.revision.id, context.sourceId, context.signal);
+      const receipt = await host.revoke(context, context.sourceId, context.signal);
       return Object.freeze({
         sourceId: context.sourceId,
         state: receipt === undefined ? "pending" : "revoked",

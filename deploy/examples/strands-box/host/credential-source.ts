@@ -35,7 +35,15 @@ export const SOURCE_MAX_BODY_BYTES = 4 * 1024 * 1024;
  */
 export const MODEL_MAX_BODY_BYTES = 16 * 1024 * 1024;
 /** A model ask's JSON: the base64 body, the target and the headers. */
-const MAX_MODEL_ASK_BYTES = Math.ceil(MODEL_MAX_BODY_BYTES / 3) * 4 + 128 * 1024;
+export const MAX_MODEL_ASK_BYTES = Math.ceil(MODEL_MAX_BODY_BYTES / 3) * 4 + 128 * 1024;
+/**
+ * The model ask bytes the host buffers at once, across all of this execution's model asks
+ * (finding 3302): two of Box's largest. An ask is reserved by its declared length before any byte
+ * is read and released once it is parsed and zeroed; an ask that does not fit is refused with a
+ * 503 (Box answers the workload with a 403) and its body is drained unread. Before, up to 64 asks
+ * of 22.5 MiB each (about 1.4 GB) could be held at once.
+ */
+export const MODEL_BUFFER_BYTES = 2 * MAX_MODEL_ASK_BYTES;
 /** A released model key is sent within 5 s, as the Worker's answer states. */
 const MODEL_SEND_BY_AHEAD_MS = 5_000;
 /** How long the host waits for the Worker's answer: Box's timeout less a margin for the reply. */
@@ -318,6 +326,8 @@ export class CredentialSourceRelay {
   private closed = false;
   /** Model asks this relay saw, by outcome, for the host's evidence: counts, never content. */
   readonly modelCounts = { asked: 0, released: 0, refusedByHost: 0, refusedByWorker: 0 };
+  /** Model ask bytes buffered now, the most at once, and asks refused for the budget. */
+  readonly modelBuffer = { held: 0, peak: 0, refused: 0 };
 
   constructor(bearerSha256: string, active: () => boolean) {
     this.bearerSha256 = Buffer.from(bearerSha256, "hex");
@@ -455,29 +465,48 @@ export class CredentialSourceRelay {
       reply(response, 401);
       return;
     }
-    let bytes: Buffer;
-    try {
-      bytes = await readBounded(request, MAX_MODEL_ASK_BYTES);
-    } catch {
+    const declared = Number(request.headers["content-length"] ?? Number.NaN);
+    if (!Number.isSafeInteger(declared) || declared < 0 || declared > MAX_MODEL_ASK_BYTES) {
+      request.resume();
       reply(response, 413);
       return;
     }
+    // The host-wide budget: reserved before any byte is read, never queued.
+    if (this.modelBuffer.held + declared > MODEL_BUFFER_BYTES) {
+      this.modelBuffer.refused++;
+      request.resume();
+      reply(response, 503);
+      return;
+    }
+    this.modelBuffer.held += declared;
+    this.modelBuffer.peak = Math.max(this.modelBuffer.peak, this.modelBuffer.held);
     let parsed: ReturnType<typeof parseModelRequest>;
     try {
-      parsed = parseModelRequest(bytes, route);
-    } catch (error) {
-      const id = /"request_id":"([0-9a-f]{32})"/.exec(bytes.subarray(0, 256).toString("latin1"));
-      if (id === null) reply(response, 400);
-      else
-        reply(response, 200, {
-          version: 1,
-          request_id: id[1],
-          refusal: error instanceof Error ? error.message : "request_invalid",
-        });
-      return;
+      let bytes: Buffer;
+      try {
+        bytes = await readBounded(request, MAX_MODEL_ASK_BYTES);
+      } catch {
+        reply(response, 413);
+        return;
+      }
+      try {
+        parsed = parseModelRequest(bytes, route);
+      } catch (error) {
+        const id = /"request_id":"([0-9a-f]{32})"/.exec(bytes.subarray(0, 256).toString("latin1"));
+        if (id === null) reply(response, 400);
+        else
+          reply(response, 200, {
+            version: 1,
+            request_id: id[1],
+            refusal: error instanceof Error ? error.message : "request_invalid",
+          });
+        return;
+      } finally {
+        // The prompt is never kept or relayed: only the target leaves this function.
+        bytes.fill(0);
+      }
     } finally {
-      // The prompt is never kept or relayed: only the target leaves this function.
-      bytes.fill(0);
+      this.modelBuffer.held -= declared;
     }
     this.modelCounts.asked++;
     const refuse = (refusal: string) => {

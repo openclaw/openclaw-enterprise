@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { createConnection } from "node:net";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -10,7 +12,10 @@ import { wiringConfiguration as hostWiring } from "../../deploy/examples/strands
 import {
   checkedAnswer,
   CredentialSourceRelay,
+  MAX_MODEL_ASK_BYTES,
+  MODEL_BUFFER_BYTES,
   MODEL_MAX_BODY_BYTES,
+  type ModelAsk,
   parseModelRequest,
 } from "../../deploy/examples/strands-box/host/credential-source.ts";
 import { modelCredentials } from "../../deploy/examples/strands-box/host/egress.ts";
@@ -98,12 +103,11 @@ async function gatewayFixture(t: TestContext) {
     async attachment() {
       return live.attachment;
     },
-    async revoke(_revisionId, sourceId) {
+    async revoke(_withdrawal, sourceId) {
       live.revokes++;
-      if (live.attachment?.sourceId !== sourceId || live.receipt === undefined) {
-        return undefined;
-      }
-      live.attachment = { sourceId, revoked: true };
+      if (live.receipt === undefined) return undefined;
+      // The host's receipt is for the revision and source, live execution or not (finding 3301).
+      if (live.attachment?.sourceId === sourceId) live.attachment = { sourceId, revoked: true };
       return { receiptId: live.receipt };
     },
   };
@@ -329,7 +333,7 @@ test("the model Gateway attaches exactly the dedicated Codex source for its rout
   live.attachment = { sourceId: MODEL_SOURCE_ID, revoked: false };
   assert.deepEqual(await statuses(), [{ sourceId: MODEL_SOURCE_ID, state: "ready" }]);
 
-  // Withdraw: absent without the execution; revoked only with the host's receipt.
+  // Withdraw: revoked only with the host's receipt.
   const withdrawal = {
     namespace,
     revision: modelRevision(),
@@ -354,10 +358,18 @@ test("the model Gateway attaches exactly the dedicated Codex source for its rout
     state: "revoked",
   });
   assert.equal(live.revokes, revokes, "an already revoked attachment is not revoked again");
+  // No live execution (failed, or a restarted host without one): the host still writes the
+  // receipt for the revision and source, so a later start is refused (finding 3301).
   live.attachment = undefined;
   assert.deepEqual(await gateway.withdraw(withdrawal), {
     sourceId: MODEL_SOURCE_ID,
-    state: "absent",
+    state: "revoked",
+  });
+  assert.equal(live.revokes, revokes + 1);
+  live.receipt = undefined;
+  assert.deepEqual(await gateway.withdraw(withdrawal), {
+    sourceId: MODEL_SOURCE_ID,
+    state: "pending",
   });
   await gateway.removeSource(context());
   assert.deepEqual(await statuses(), [{ sourceId: MODEL_SOURCE_ID, state: "absent" }]);
@@ -673,10 +685,18 @@ test(
       return reply.body;
     };
 
-    // Allowed: the stored key, with a send-by within 5 s.
+    // Allowed: the stored key, with a send-by within 4 s: 1 s below the host's 5 s ceiling, so
+    // a Worker clock up to 1 s ahead of the Box node is still accepted (finding 3302).
     const first = await credential();
     assert.equal(first?.credential, key);
-    assert.ok(Number(first?.send_by_unix_ms) - Date.now() <= 5_000);
+    assert.ok(Number(first?.send_by_unix_ms) - Date.now() <= 4_000);
+    assert.ok(
+      checkedAnswer(
+        { host: "10.0.0.9", model: true },
+        { credential: key, send_by_unix_ms: Number(first?.send_by_unix_ms) },
+        Number(first?.send_by_unix_ms) - 4_000 - 999,
+      ),
+    );
     assert.equal(f.host.answered.at(-1), "credential");
     assert.equal((await ask(randomBytes(32).toString("base64url"))).status, 401);
 
@@ -708,6 +728,7 @@ test(
       { sourceId: MODEL_SOURCE_ID, state: "revoked" },
     );
     assert.equal(f.host.modelRevokes, 1);
+    assert.ok(f.host.modelRevoked, "the live view shows the host's receipt");
     const [receiptFile] = readdirSync(f.revocationDir);
     assert.match(receiptFile!, /^model-revoked-[0-9a-f]{64}\.json$/);
     const receipt = JSON.parse(readFileSync(join(f.revocationDir, receiptFile!), "utf8")) as Record<
@@ -742,3 +763,390 @@ test(
     );
   },
 );
+
+/** The Secret reads (`GET`) the store made since `from`: the key-read evidence. */
+const secretReads = (kube: { calls: readonly string[] }, from: number) =>
+  kube.calls.slice(from).filter((call) => call.startsWith("GET "));
+
+/** Register one model source's key through the package's Gateway, as the API process does. */
+async function registerModelKey(
+  gateway: NonNullable<Awaited<ReturnType<typeof pairedFixture>>["gateway"]>,
+  namespaceId: string,
+  sourceId: string,
+  signal: AbortSignal,
+) {
+  const key = testModelKey();
+  await gateway.registerSource(
+    {
+      namespace: { ...namespace, id: namespaceId },
+      source: source({ id: sourceId, namespaceId }),
+      signal,
+    },
+    { type: MODEL_SOURCE_TYPE, config: { authorized_base_url: MODEL_ROUTE }, secrets: { api_key: key } },
+  );
+  return key;
+}
+
+test(
+  "a host that lies about its Namespace or source gets a refusal and no Secret read; only OCE's confirmed installation selects the key",
+  { timeout: 90_000 },
+  async (t) => {
+    // Finding 3298: the Worker's control socket is served by the host account. Whatever serves it
+    // can report any owner, plan and model view; the key must come only from OCE's own state.
+    const kube = await fakeKubernetesSecrets(t);
+    const f = await pairedFixture(t, { model: { gateway: kube.configuration } });
+    const gateway = f.gateway!;
+    const signal = AbortSignal.timeout(80_000);
+    const { binding } = await activateStageB(f, signal);
+    t.after(() => binding.close());
+    const own = await registerModelKey(gateway, namespace.id, MODEL_SOURCE_ID, signal);
+    const victim = await registerModelKey(gateway, "ns_victim", "cs_victim", signal);
+    const sibling = await registerModelKey(gateway, namespace.id, "cs_sibling", signal);
+    const ask = () => askSource(f.modelSocket, f.bearer, boxModelRequest(requestId()));
+    const outcome = (reply: Awaited<ReturnType<typeof ask>>) => {
+      const value = reply.body?.credential;
+      // Never the value itself in an assertion message: name which key it was.
+      return value === undefined
+        ? String(reply.body?.refusal)
+        : value === own
+          ? "own key"
+          : value === victim
+            ? "VICTIM KEY"
+            : value === sibling
+              ? "SIBLING KEY"
+              : "unknown key";
+    };
+    assert.equal(outcome(await ask()), "own key");
+
+    for (const lie of [
+      { namespaceId: "ns_victim", sourceId: "cs_victim" },
+      { namespaceId: namespace.id, sourceId: "cs_sibling" },
+    ]) {
+      // The lie before the Worker's next pass: the confirmed recipient's host view no longer
+      // matches, refused before any Secret read.
+      f.host.lie = lie;
+      let reads = kube.calls.length;
+      assert.equal(outcome(await ask()), "execution_mismatch");
+      assert.deepEqual(secretReads(kube, reads), []);
+      // After the pass the lying installation is the Worker's recipient, but OCE never committed
+      // it: never confirmed, never observed, so every ask is refused and no Secret is read.
+      await binding.reconcile!(signal);
+      assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "pending");
+      reads = kube.calls.length;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        assert.equal(outcome(await ask()), "route_not_ready");
+      }
+      assert.deepEqual(secretReads(kube, reads), []);
+      // The honest host again: OCE's committed installation, confirmed again, own key only.
+      f.host.lie = undefined;
+      await binding.reconcile!(signal);
+      assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "ready");
+      assert.equal(outcome(await ask()), "own key");
+    }
+
+    // Confirmed, then OCE's committed installation for the revision is replaced (a new release):
+    // refused at answer time, before the Worker's next pass and before any Secret read.
+    const committed = f.committed()!;
+    await f.custody.recordEgressInstallation({ ...committed, installedAt: "2026-11-17T00:00:00.000Z" });
+    let reads = kube.calls.length;
+    assert.equal(outcome(await ask()), "route_not_ready");
+    assert.deepEqual(secretReads(kube, reads), []);
+    await f.custody.recordEgressInstallation(committed);
+    assert.equal(outcome(await ask()), "own key");
+    // OCE's delivery row moved to another fence (a replaced lease): refused the same way.
+    f.state.fence = 2;
+    reads = kube.calls.length;
+    assert.equal(outcome(await ask()), "route_not_ready");
+    assert.deepEqual(secretReads(kube, reads), []);
+    f.state.fence = 1;
+    assert.equal(outcome(await ask()), "own key");
+    // The Worker's own records hold only which outcome each ask had; never a value.
+    t.diagnostic(`host model asks ${JSON.stringify(f.source.modelCounts)}`);
+  },
+);
+
+test(
+  "the Worker refuses a model ask OCE has not confirmed, whatever the host shows",
+  { timeout: 90_000 },
+  async (t) => {
+    const kube = await fakeKubernetesSecrets(t);
+    const f = await pairedFixture(t, { model: { gateway: kube.configuration } });
+    const signal = AbortSignal.timeout(80_000);
+    const wiring = await f.release.configure(f.context);
+    const binding = await f.owner.requireRepositoryGitTransport()(f.authority, f.requests);
+    t.after(() => binding.close());
+    await registerModelKey(f.gateway!, namespace.id, MODEL_SOURCE_ID, signal);
+    assert.equal(
+      await f.release.enroll(
+        f.context,
+        wiring,
+        f.custody,
+        async () => true,
+        async () => f.harness,
+        (startupId, current) => signComputeExecutionRelease(f.keys.privateKey, startupId, current),
+      ),
+      true,
+    );
+    // Released and the Worker's recipient, but not confirmed: the host shows no live source.
+    f.host.sourceLive = false;
+    await binding.reconcile!(signal);
+    assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "pending");
+    const reads = kube.calls.length;
+    const reply = await askSource(f.modelSocket, f.bearer, boxModelRequest(requestId()));
+    assert.equal(reply.body?.refusal, "route_not_ready");
+    assert.equal(reply.body?.credential, undefined);
+    assert.deepEqual(secretReads(kube, reads), []);
+    // Confirmed: the same ask is answered.
+    f.host.sourceLive = true;
+    await binding.reconcile!(signal);
+    assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "ready");
+    assert.equal(
+      typeof (await askSource(f.modelSocket, f.bearer, boxModelRequest(requestId()))).body
+        ?.credential,
+      "string",
+    );
+  },
+);
+
+test(
+  "the Worker's own model rules refuse each ask a relay passes: bearer, route, deadline, revoke, source, retired recipient",
+  { timeout: 90_000 },
+  async (t) => {
+    // Finding 3299: a relay stand-in hands the Worker asks the real relay would have refused, so
+    // each of the Worker's checks is proven alone. Each refusal reads no Secret.
+    const kube = await fakeKubernetesSecrets(t);
+    const f = await pairedFixture(t, { model: { gateway: kube.configuration } });
+    const signal = AbortSignal.timeout(80_000);
+    const { binding } = await activateStageB(f, signal);
+    t.after(() => binding.close());
+    const key = await registerModelKey(f.gateway!, namespace.id, MODEL_SOURCE_ID, signal);
+    const forged = (change: Partial<ModelAsk> = {}, target: Partial<ModelAsk["target"]> = {}) =>
+      ({
+        kind: "model",
+        askId: randomUUID(),
+        requestId: requestId(),
+        bearerSha256: sha(f.bearer),
+        deadlineUnixMs: Date.now() + 4_000,
+        ...change,
+        target: {
+          host: "10.0.0.9",
+          port: 8444,
+          method: "POST",
+          path: "/v1/responses",
+          query: "",
+          ...target,
+        },
+      }) as ModelAsk;
+    const refused = async (ask: ModelAsk, refusal: string) => {
+      const reads = kube.calls.length;
+      const answer = await f.forge(ask);
+      assert.deepEqual(answer, { refusal }, `${ask.target.path} ${ask.target.host}`);
+      assert.deepEqual(secretReads(kube, reads), []);
+    };
+    // The stand-in itself: an exact ask is answered with the key and a 4 s send-by.
+    const allowed = await f.forge(forged());
+    assert.equal(allowed.credential, key);
+    assert.ok(Number(allowed.send_by_unix_ms) - Date.now() <= 4_000);
+
+    await refused(forged({ bearerSha256: sha("another bearer") }), "execution_mismatch");
+    await refused(forged({ bearerSha256: "0".repeat(64) }), "execution_mismatch");
+    await refused(forged({}, { path: "/v1/chat/completions" }), "request_not_allowed");
+    await refused(forged({}, { path: "/v1/responses/compact" }), "request_not_allowed");
+    await refused(forged({}, { host: "10.0.0.8" }), "request_not_allowed");
+    await refused(forged({}, { port: 443 }), "request_not_allowed");
+    await refused(forged({}, { method: "GET" as "POST" }), "request_not_allowed");
+    await refused(forged({}, { query: "x=1" as "" }), "request_not_allowed");
+    await refused(forged({ deadlineUnixMs: Date.now() - 1 }), "route_not_ready");
+    // The host's view shows the revoke (the relay that would refuse first is bypassed).
+    f.host.modelRevoked = { receiptId: "receipt-forged", revokedAt: new Date().toISOString() };
+    await refused(forged(), "access_withdrawn");
+    f.host.modelRevoked = undefined;
+    // The host's view names another source than OCE's plan.
+    f.host.viewSourceId = "cs_sibling";
+    await refused(forged(), "execution_mismatch");
+    f.host.viewSourceId = undefined;
+    // The recipient retired (OCE removed the revision) while the ask was in flight.
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => (release = resolve));
+    const reads = kube.calls.length;
+    const answered = f.forge(forged(), hold);
+    const deadline = Date.now() + 10_000;
+    while (!f.host.forgedHeld) {
+      assert.ok(Date.now() < deadline, "the forged ask did not reach the collect");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(await f.proxy.removeRevision!({ ...f.context, revision: f.revision } as never), true);
+    release();
+    assert.deepEqual(await answered, { refusal: "execution_mismatch" });
+    assert.deepEqual(secretReads(kube, reads), []);
+  },
+);
+
+test(
+  "a withdrawal without a live execution still leaves the host's receipt, and a restarted execution is refused",
+  { timeout: 90_000 },
+  async (t) => {
+    // Finding 3301: a failed execution, or a host that restarted without one, used to get
+    // `absent` and no receipt; a later start of that revision then got keys until OCC's recheck.
+    const kube = await fakeKubernetesSecrets(t);
+    const f = await pairedFixture(t, { model: { gateway: kube.configuration } });
+    const gateway = f.gateway!;
+    const signal = AbortSignal.timeout(80_000);
+    const { binding } = await activateStageB(f, signal);
+    t.after(() => binding.close());
+    await registerModelKey(gateway, namespace.id, MODEL_SOURCE_ID, signal);
+    const withdrawal = {
+      namespace,
+      revision: f.revision,
+      sandbox: { id: "box-execution" } as never,
+      sourceId: MODEL_SOURCE_ID,
+      signal,
+    };
+    // The host answers 404: no current execution.
+    f.host.present = false;
+    assert.deepEqual(await gateway.withdraw(withdrawal), {
+      sourceId: MODEL_SOURCE_ID,
+      state: "revoked",
+    });
+    assert.equal(f.host.modelRevokes, 1);
+    assert.equal(readdirSync(f.revocationDir).length, 1);
+    // A Namespace this registration does not serve: nothing is sent to the host, nothing written.
+    assert.deepEqual(
+      await gateway.withdraw({ ...withdrawal, namespace: { ...namespace, name: "another" } }),
+      { sourceId: MODEL_SOURCE_ID, state: "pending" },
+    );
+    assert.equal(f.host.modelRevokes, 1);
+    assert.equal(readdirSync(f.revocationDir).length, 1);
+    // The same revision runs again on the host: its start reloads the receipt, and the host
+    // refuses every model request before the Worker is asked.
+    f.host.present = true;
+    f.restartHostModelView();
+    assert.ok(f.host.modelRevoked);
+    const answers = f.host.answers;
+    const reply = await askSource(f.modelSocket, f.bearer, boxModelRequest(requestId()));
+    assert.equal(reply.body?.refusal, "access_withdrawn");
+    assert.equal(reply.body?.credential, undefined);
+    assert.equal(f.host.answers, answers, "the Worker was not asked");
+    // Withdrawing again is answered from the live view: no second receipt.
+    assert.deepEqual(await gateway.withdraw(withdrawal), {
+      sourceId: MODEL_SOURCE_ID,
+      state: "revoked",
+    });
+    assert.equal(f.host.modelRevokes, 1);
+  },
+);
+
+test("the model key store deletes only the Secret it checked, and updates only its own sources", async (t) => {
+  // Finding 3302: DELETE carries the read's uid and resourceVersion; updateSource checks own().
+  const { kube, gateway, context, store, signal } = await gatewayFixture(t);
+  const config = { authorized_base_url: MODEL_ROUTE };
+  const key = testModelKey();
+  await gateway.registerSource(context(), { type: MODEL_SOURCE_TYPE, config, secrets: { api_key: key } });
+  const name = modelSecretName(namespace.id, MODEL_SOURCE_ID);
+  // updateSource for a source another Gateway owns is refused and changes nothing.
+  await assert.rejects(
+    gateway.updateSource(context({ driverId: "openshell" } as never), {
+      type: MODEL_SOURCE_TYPE,
+      config,
+      secrets: { api_key: testModelKey() },
+    }),
+    /not owned by this gateway/,
+  );
+  await assert.rejects(
+    gateway.updateSource(context({ namespaceId: "ns_other" }), {
+      type: MODEL_SOURCE_TYPE,
+      config,
+      secrets: { api_key: testModelKey() },
+    }),
+    /not owned by this gateway/,
+  );
+  assert.equal(kube.value(name), key);
+  // A write between the store's read and its DELETE: the precondition fails, the store reads
+  // again (ownership checked again) and deletes the version it checked.
+  const uid = kube.secrets.get(name)!.metadata.uid;
+  kube.beforeNextDelete((secret) => kube.touch(secret));
+  await store.remove(namespace.id, MODEL_SOURCE_ID, signal);
+  assert.equal(kube.secrets.has(name), false);
+  assert.equal(kube.deletes.length, 2);
+  for (const preconditions of kube.deletes) {
+    assert.deepEqual(Object.keys(preconditions as object).sort(), ["resourceVersion", "uid"]);
+    assert.equal((preconditions as { uid: string }).uid, uid);
+  }
+  // Replaced by another owner's Secret under the same name between read and DELETE: the DELETE
+  // fails its uid precondition and the new read refuses it as another owner's; nothing deleted.
+  await gateway.registerSource(context(), { type: MODEL_SOURCE_TYPE, config, secrets: { api_key: key } });
+  kube.beforeNextDelete((secret) => {
+    kube.secrets.set(secret, {
+      metadata: {
+        name: secret,
+        uid: randomUUID(),
+        resourceVersion: "999",
+        annotations: {
+          "openclaw.dev/credential-source-id": "cs_someone",
+          "openclaw.dev/namespace-id": namespace.id,
+        },
+      },
+      data: { api_key: Buffer.from("foreign").toString("base64") },
+    });
+  });
+  await assert.rejects(store.remove(namespace.id, MODEL_SOURCE_ID, signal), /not owned by this source/);
+  assert.equal(kube.value(name), "foreign");
+});
+
+test("the host buffers at most two of Box's largest model asks at once; more are refused unread", async (t) => {
+  // Finding 3302: before, 64 parallel 16 MiB model requests held about 1.4 GB in the host.
+  const directory = await temporaryDirectory(t, "strands-model-budget-");
+  const socket = join(directory, "model.sock");
+  const bearer = randomBytes(32).toString("base64url");
+  const relay = new CredentialSourceRelay(sha(bearer), () => true);
+  await relay.listenModel(socket, { host: "10.0.0.9", port: 8444, path: "/v1/responses" }, () => false);
+  t.after(() => relay.close());
+  assert.equal(MODEL_BUFFER_BYTES, 2 * MAX_MODEL_ASK_BYTES);
+  // Two uploads of the largest declared size, held open mid-body: they hold the whole budget.
+  const held = await Promise.all(
+    [0, 1].map(async () => {
+      const connection = createConnection(socket);
+      await once(connection, "connect");
+      connection.write(
+        `POST / HTTP/1.1\r\nHost: source\r\nAuthorization: Bearer ${bearer}\r\n` +
+          `Content-Type: application/json\r\nContent-Length: ${MAX_MODEL_ASK_BYTES}\r\n\r\n{"version":1`,
+      );
+      return connection;
+    }),
+  );
+  t.after(() => held.forEach((connection) => connection.destroy()));
+  const deadline = Date.now() + 5_000;
+  while (relay.modelBuffer.held < MODEL_BUFFER_BYTES) {
+    assert.ok(Date.now() < deadline, "the held uploads were not reserved");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  // A third ask, even a small one, is refused before its body is read.
+  const third = await askSource(socket, bearer, boxModelRequest(requestId()));
+  assert.equal(third.status, 503);
+  assert.equal(relay.modelBuffer.refused, 1);
+  assert.equal(relay.modelBuffer.peak, MODEL_BUFFER_BYTES);
+  // A declared length over Box's cap is refused without reading.
+  const over = await new Promise<string>((resolve, reject) => {
+    const connection = createConnection(socket);
+    let reply = "";
+    connection.on("data", (chunk) => (reply += chunk.toString("latin1")));
+    connection.on("end", () => resolve(reply));
+    connection.on("error", reject);
+    connection.write(
+      `POST / HTTP/1.1\r\nHost: source\r\nAuthorization: Bearer ${bearer}\r\n` +
+        `Content-Type: application/json\r\nContent-Length: ${MAX_MODEL_ASK_BYTES + 1}\r\n\r\n`,
+    );
+  });
+  assert.match(over, /^HTTP\/1\.1 413 /);
+  // The held uploads end: the budget is released, and the next ask is relayed to the Worker.
+  held.forEach((connection) => connection.destroy());
+  while (relay.modelBuffer.held > 0) {
+    assert.ok(Date.now() < deadline + 5_000, "the budget was not released");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const pending = askSource(socket, bearer, boxModelRequest(requestId()));
+  const [ask] = await relay.collect(4_000, AbortSignal.timeout(5_000));
+  assert.ok(ask);
+  relay.answer(ask.askId, { refusal: "access_withdrawn" });
+  assert.equal((await pending).body?.refusal, "access_withdrawn");
+});

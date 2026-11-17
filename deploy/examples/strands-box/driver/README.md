@@ -243,10 +243,14 @@ its own Secret and attaches it as `strands-box-model:<sourceId>`. The wiring
 (16 MiB body cap), and one route on the model host and port, path
 `<base>/responses`, header `Authorization: Bearer`, placeholder
 `OPENAI_API_KEY`. The host checks the target, drops headers and body, and
-queues only the target. The Driver answers from the Secret, read per request,
-after checking the bearer and the host's live, unrevoked attachment, with a 5 s
-send-by. `withdraw` posts `POST /v1/model-revoke`; the host writes a receipt in
-`protectedModel.revocationDir` and refuses later model requests itself.
+queues only the target. The Driver answers only for the execution OCE confirmed,
+re-observed per request, and reads the Secret of the Namespace and source in
+OCE's committed plan, never those the host reports. It also checks the bearer
+and the host's live, unrevoked attachment, and sends a 4 s send-by (the host
+allows 5 s). `withdraw` posts `POST /v1/model-revoke`; the host writes a receipt
+for the revision and source in `protectedModel.revocationDir`, with or without
+a running execution, and refuses that revision's model requests itself from then
+on. The host buffers at most two of Box's largest model requests at once.
 
 The Agent Gateway sends a protected Box turn with the same
 `externalSandbox` policy and `networkAccess: "restricted"` as an ordinary Box

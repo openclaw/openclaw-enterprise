@@ -43,6 +43,7 @@ import type {
   SandboxHarnessStatus,
   SandboxHarnessStatusContext,
   SandboxHarnessWithdrawalContext,
+  CredentialWithdrawalContext,
   SandboxProtectedWorkspaceStatusContext,
   SandboxRepositoryAccess,
   SandboxResourceRef,
@@ -90,8 +91,12 @@ export const protectedRepositorySchema: NonNullable<DriverImplementation["config
 const WIRING_VERSION = 4;
 /** The only model request Box may carry a released key on, below the route's base path. */
 const MODEL_PATH = "/responses";
-/** A released model key is valid for sending this long after the answer. */
-const MODEL_SEND_BY_MS = 5_000;
+/**
+ * A released model key is valid for sending this long after the answer. The host accepts at most
+ * 5 s on its own clock (host/credential-source.ts), so 4 s leaves the Worker 1 s of clock skew
+ * ahead of the Box node; the host's own 5 s ceiling, the one Box sees, is unchanged.
+ */
+const MODEL_SEND_BY_MS = 4_000;
 const GITHUB_HOSTS = ["github.com", "api.github.com"] as const;
 const BOX_SOURCE_IDENTITY = "box-source-sha256:";
 const RELEASE_PUBLIC_KEY_ENV = "OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY";
@@ -541,10 +546,23 @@ class Shared {
   }
 
   /**
-   * One Box model request: answered from the package's own Secret only when the per-execution
-   * bearer matches, the host still shows this execution with the plan's model attachment and no
-   * revoke, and the request is `POST` to the admitted route's `/responses`. The value is read
-   * for this request, sent with a 5 s send-by, and not kept. Every other case is a refusal.
+   * One Box model request (finding 3298). The Namespace, the source and so the Secret come only
+   * from OCE's own state, never from what the host reports:
+   *
+   * - `active.confirmed`: OCE confirmed this exact recipient (`recipients.confirmInstall`, or
+   *   the version its delivery row already holds) for the live session's material, as the GitHub
+   *   path requires before any ask;
+   * - `recipients.observe(active.installation)`, read again for this request: OCE still holds
+   *   exactly this installation committed for the revision, at the confirmed fence. The
+   *   installation's plan is the one OCE rendered and committed at release: its
+   *   `execution` (Namespace, Agent, revision, execution) and its `harnessCredentialSource`
+   *   (the source OCE admitted for the Agent and attached through this Gateway).
+   *
+   * A host that reports another Namespace, source or plan builds an installation OCE never
+   * committed, so it is never confirmed and `observe` finds nothing: a refusal, and no Secret is
+   * read. Then, as before: the per-execution bearer, `POST` to the admitted route's
+   * `/responses`, the deadline, and the host's live view (this execution, this source, no
+   * revoke). The value is read for this request, sent with a 4 s send-by, and not kept.
    */
   private async decideModel(active: Recipient, ask: ModelAsk, signal: AbortSignal): Promise<void> {
     let answer: Parameters<typeof sendAnswer>[1]["answer"] = { refusal: "route_not_ready" };
@@ -569,8 +587,17 @@ class Shared {
     signal: AbortSignal,
   ): Promise<Parameters<typeof sendAnswer>[1]["answer"]> {
     const route = this.options.controlledInference?.modelBaseUrl;
-    const source = active.installation.plan.harnessCredentialSource;
-    if (this.store === undefined || route === undefined || source === undefined) {
+    const authority = this.authority;
+    // OCE's plan as committed (checked against OCE's state below), never the host's report.
+    const plan = active.installation.plan;
+    const source = plan.harnessCredentialSource;
+    if (
+      this.store === undefined ||
+      route === undefined ||
+      authority === undefined ||
+      source === undefined ||
+      source.credentialGatewayId !== this.id
+    ) {
       return { refusal: "model_not_admitted" };
     }
     if (this.active !== active || !sameDigest(ask.bearerSha256, active.bearerSha256)) {
@@ -587,6 +614,20 @@ class Shared {
       return { refusal: "request_not_allowed" };
     }
     if (!(ask.deadlineUnixMs > Date.now())) return { refusal: "route_not_ready" };
+    // OCE confirmed this recipient, and still holds exactly its installation at that fence now.
+    const confirmed = active.confirmed;
+    if (confirmed === undefined) return { refusal: "route_not_ready" };
+    const current = await authority.recipients.observe(active.installation);
+    if (
+      current === undefined ||
+      this.active !== active ||
+      current.revisionId !== plan.execution.revisionId ||
+      current.revisionId !== confirmed.revisionId ||
+      current.fence !== active.confirmed?.fence ||
+      !isDeepStrictEqual(current.observed, active.installation)
+    ) {
+      return { refusal: "route_not_ready" };
+    }
     // The live attachment as the host shows it now: this execution, this source, no revoke.
     const execution = await this.read(signal);
     const model = execution?.harnessModel;
@@ -595,13 +636,15 @@ class Shared {
       execution.executionId !== active.executionId ||
       execution.state === "failed" ||
       !sameOwner(execution.owner, active.owner) ||
+      execution.owner.namespaceId !== plan.execution.namespaceId ||
       model?.sourceId !== source.sourceId
     ) {
       return { refusal: "execution_mismatch" };
     }
     if (model.revoked !== undefined) return { refusal: "access_withdrawn" };
-    // Read for this request only: a rotation reaches the next request, a removal refuses it.
-    const stored = await this.store.read(active.owner.namespaceId, source.sourceId, signal);
+    // Read for this request only: a rotation reaches the next request, a removal refuses it. The
+    // Namespace and source are OCE's (the committed plan), never the host's owner record.
+    const stored = await this.store.read(plan.execution.namespaceId, source.sourceId, signal);
     if (stored === undefined) return { refusal: "access_withdrawn" };
     return { credential: stored.value, send_by_unix_ms: Date.now() + MODEL_SEND_BY_MS };
   }
@@ -979,32 +1022,38 @@ export function createProtectedRegistration(
         revoked: execution.harnessModel.revoked !== undefined,
       };
     },
-    async revoke(revisionId: string, sourceId: string, signal: AbortSignal) {
-      const execution = await shared.read(signal);
+    /**
+     * The receipt is keyed by the revision's owner (built from OCE's withdrawal context, as the
+     * Sandbox's own `owner()`), not by a live execution: a failed execution, or a host that
+     * restarted without one, still gets it (finding 3301). The host's PUT reloads it.
+     */
+    async revoke(
+      { namespace, revision }: Pick<CredentialWithdrawalContext, "namespace" | "revision">,
+      sourceId: string,
+      signal: AbortSignal,
+    ) {
       if (
-        execution === undefined ||
-        execution.owner.revisionId !== revisionId ||
-        execution.owner.driverId !== id ||
-        execution.harnessModel?.sourceId !== sourceId
+        namespace.name !== options.namespace ||
+        namespace.id !== revision.namespaceId ||
+        revision.sandboxDriverId !== id
       ) {
         return undefined;
       }
-      const revoked = await revokeHarnessModel(
+      return revokeHarnessModel(
         options.controlSocket,
         {
-          owner: execution.owner,
-          executionId: execution.executionId,
-          requirementsDigest: execution.requirementsDigest,
+          owner: {
+            driverId: id,
+            implementation,
+            namespaceId: namespace.id,
+            namespaceName: namespace.name,
+            agentId: revision.agentId,
+            revisionId: revision.id,
+          },
           sourceId,
         },
         signal,
       );
-      const receipt = revoked.harnessModel?.revoked;
-      return revoked.executionId === execution.executionId &&
-        revoked.harnessModel?.sourceId === sourceId &&
-        receipt !== undefined
-        ? { receiptId: receipt.receiptId }
-        : undefined;
     },
   };
   const gateway =

@@ -192,9 +192,10 @@ entries use the same four fields.
   can use it through the loopback gateway above. Code that obtains the token
   has the App installation's permissions on the assigned repositories from any
   network location, until OCE revokes it at withdrawal or retires it at
-  renewal: at most the token's one-hour lifetime. The execution bearer gives it
-  nothing; the host keeps only its digest. Keep the host dedicated and its
-  kernel patched.
+  renewal: at most the token's one-hour lifetime. With a protected model source,
+  the execution bearer at `<runtimeDir>/source/model.sock` also yields the static
+  model key, one request at a time. Keep the host dedicated and its kernel
+  patched.
 - **Upstream status:** open upstream as
   [strands-agents/box#24](https://github.com/strands-agents/box/issues/24)
   (host-side gateway and credential vault outside the workload's kernel) and
@@ -208,22 +209,39 @@ entries use the same four fields.
   the package owns, beside OCE's own copy.
 - **Cause:** the package's Credential Gateway view gets the value only at
   `registerSource` and `updateSource`, in the API, and the Worker answers each
-  Box model request later. It keeps one Secret per source in
-  `modelGateway.secretNamespace`; the [Role](model-gateway-rbac.yaml) grants the
-  API and Worker only what that needs.
+  Box model request later. It keeps one Secret per source, for every Namespace,
+  in `modelGateway.secretNamespace`. The [Role](model-gateway-rbac.yaml) grants
+  `get`, so the API and the Worker can each read every stored key: RBAC has no
+  metadata-only read, and updates, removal preconditions and the ownership
+  check need `get`.
 - **Workaround:** use a namespace that holds nothing else, and grant no one else
   `get` on Secrets there. Removing the source deletes its Secret.
 - **Upstream status:** an OCE question: a Worker-side read of OCE's own Secret
   would remove the copy.
 
-## Code that escapes Box can use the model key too
+## Code that escapes Box can obtain the model key
 
 - **Symptom:** the [shared-kernel gap](#boxs-trusted-process-shares-a-kernel-with-the-workload)
-  now covers the model key as well as the GitHub token.
-- **Cause:** `box run` holds each released key in memory while it sends that
-  request, on the workload's kernel.
-- **Workaround:** as above. Use a model key you can revoke, scoped to this Agent.
+  covers the model key too, and that key does not expire.
+- **Cause:** `box run` holds each released key while it sends that request.
+  Host-account code can also present the execution bearer at `model.sock`, or
+  serve the Worker's control socket, and receive the key. The Worker answers
+  only for the source and execution OCE confirmed: this Agent's key, never
+  another Namespace's.
+- **Workaround:** keep the host dedicated. Give each Agent a revocable,
+  rate-limited key from a model proxy, not a provider account key.
 - **Upstream status:** as above.
+
+## A model revoke is permanent for its revision
+
+- **Symptom:** a revision whose model source was withdrawn never gets model
+  access on this host again, also after a host restart.
+- **Cause:** the host writes a receipt for the revision and source in
+  `protectedModel.revocationDir`, with or without a running execution, and
+  every start of that revision loads it.
+- **Workaround:** deploy a new revision. To undo a mistaken withdrawal, stop the
+  host and move the `model-revoked-*.json` file out of that directory.
+- **Upstream status:** by design in this example.
 
 ## Protected model requests are limited to 16 MiB
 

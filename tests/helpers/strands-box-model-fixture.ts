@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { createServer } from "node:https";
@@ -35,6 +35,10 @@ export async function fakeKubernetesSecrets(t: TestContext) {
   const calls: string[] = [];
   let version = 0;
   let failNext: number | undefined;
+  /** Each DELETE's preconditions, as the store sent them. */
+  const deletes: unknown[] = [];
+  /** Runs once before the next DELETE is decided: a concurrent change stand-in. */
+  let beforeDelete: ((name: string) => void) | undefined;
   const prefix = `/api/v1/namespaces/`;
   const server = createServer(tls, (req, res) => {
     void (async () => {
@@ -71,6 +75,7 @@ export async function fakeKubernetesSecrets(t: TestContext) {
           return;
         }
         body.metadata.resourceVersion = String(++version);
+        body.metadata.uid = randomUUID();
         secrets.set(key, body);
         reply(201, body);
         return;
@@ -95,13 +100,31 @@ export async function fakeKubernetesSecrets(t: TestContext) {
           return;
         }
         body.metadata.resourceVersion = String(++version);
+        body.metadata.uid = current.metadata.uid;
         secrets.set(name, body);
         reply(200, body);
         return;
       }
       if (verb === "DELETE") {
-        if (current === undefined) {
+        const hook = beforeDelete;
+        beforeDelete = undefined;
+        hook?.(name);
+        const options = raw === "" ? undefined : (JSON.parse(raw) as Record<string, unknown>);
+        const preconditions = options?.preconditions as Record<string, unknown> | undefined;
+        deletes.push(preconditions);
+        const stored = secrets.get(name);
+        if (stored === undefined) {
           reply(404);
+          return;
+        }
+        // As the API server: a precondition that no longer holds is a 409, nothing deleted.
+        if (
+          preconditions !== undefined &&
+          ((preconditions.uid !== undefined && preconditions.uid !== stored.metadata.uid) ||
+            (preconditions.resourceVersion !== undefined &&
+              preconditions.resourceVersion !== stored.metadata.resourceVersion))
+        ) {
+          reply(409, { kind: "Status", code: 409, reason: "Conflict" });
           return;
         }
         secrets.delete(name);
@@ -129,9 +152,19 @@ export async function fakeKubernetesSecrets(t: TestContext) {
     configuration,
     secrets,
     calls,
+    deletes,
     /** The next Secret call gets this status (an API failure stand-in). */
     failNext(status: number) {
       failNext = status;
+    },
+    /** Change a Secret between the store's read and its DELETE, once. */
+    beforeNextDelete(change: (name: string) => void) {
+      beforeDelete = change;
+    },
+    /** Bump a Secret's resourceVersion, as any write would. */
+    touch(name: string) {
+      const stored = secrets.get(name);
+      if (stored !== undefined) stored.metadata.resourceVersion = String(++version);
     },
     /** The stored value of one Secret, for the test's own comparison; never printed. */
     value(name: string): string | undefined {

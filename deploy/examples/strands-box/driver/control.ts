@@ -605,15 +605,31 @@ export async function sendAnswer(
  * Record the Gateway's withdrawal of the Harness model attachment on the host. The host writes a
  * durable receipt first, then refuses every later model request of the execution itself.
  */
+/**
+ * Record the host's durable revoke receipt for one revision's model source (finding 3301): the
+ * host writes it for the owner, revision and source whether or not an execution of that revision
+ * runs now, and refuses that revision's model requests from then on, also after a restart.
+ */
 export async function revokeHarnessModel(
   socketPath: string,
-  body: ExecutionKey & { readonly sourceId: string },
+  body: { readonly owner: Owner; readonly sourceId: string },
   signal: AbortSignal,
-): Promise<Execution> {
+): Promise<{ readonly receiptId: string }> {
   try {
     const reply = await send(socketPath, "POST", MODEL_REVOKE_PATH, body, signal);
     if (reply.status !== 200) throw new Error("Refused revoke");
-    return parseExecution(JSON.parse(reply.body));
+    const value = record(JSON.parse(reply.body));
+    const owner = parseOwner(value?.owner);
+    if (
+      owner === undefined ||
+      !sameOwner(owner, body.owner) ||
+      value?.sourceId !== body.sourceId ||
+      typeof value.receiptId !== "string" ||
+      value.receiptId.length === 0
+    ) {
+      throw new Error("Unexpected revoke receipt");
+    }
+    return { receiptId: value.receiptId };
   } catch {
     signal.throwIfAborted();
     throw new DependencyUnavailableError("The Strands Box host did not confirm the model revoke.");

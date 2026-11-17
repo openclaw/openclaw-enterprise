@@ -18,12 +18,14 @@ import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/comp
 import { createRepositoryGitRequests } from "../../apps/controller/src/drivers/repo/github/access/protected-requests.ts";
 import type { ModelGatewayConfiguration } from "../../deploy/examples/strands-box/driver/model-gateway.ts";
 import {
-  readModelRevocation,
-  recordModelRevocation,
+  applyModelRevocation,
+  harnessModelView,
+  parseOwner,
   verifyRelease,
   wiringConfiguration as hostWiring,
 } from "../../deploy/examples/strands-box/host/control.ts";
 import {
+  type ModelAsk,
   CredentialSourceRelay,
   MODEL_MAX_BODY_BYTES,
   SOURCE_BEARER_ENV,
@@ -341,6 +343,23 @@ export async function pairedFixture(
     /** The host's revoke receipt for the model attachment, loaded as after a host restart. */
     modelRevoked: undefined as { receiptId: string; revokedAt: string } | undefined,
     modelRevokes: 0,
+    /**
+     * A host that lies (finding 3298): it reports this Namespace and model source in its owner,
+     * its plan and its model view, as whatever serves the Worker's control socket could.
+     */
+    lie: undefined as undefined | { namespaceId: string; sourceId: string },
+    /** The source the host's model view names, when it differs from the plan's (a stale view). */
+    viewSourceId: undefined as string | undefined,
+    /**
+     * A relay stand-in: asks handed to the Worker as they are, past the real relay's own checks,
+     * so the Worker's rules are tested alone. Their answers are kept here, never relayed.
+     */
+    forged: [] as ModelAsk[],
+    forgedAnswers: new Map<string, Record<string, unknown>>(),
+    /** While set, a collect that carries forged asks waits for it before replying. */
+    holdForged: undefined as Promise<void> | undefined,
+    forgedHeld: false,
+    wakeCollect: undefined as (() => void) | undefined,
   };
   const executionId = "box-execution";
   const sourceDirectory = join(directory, "source");
@@ -371,7 +390,7 @@ export async function pairedFixture(
     owner: {
       driverId: id,
       implementation,
-      namespaceId: namespace.id,
+      namespaceId: host.lie?.namespaceId ?? namespace.id,
       namespaceName: namespace.name,
       agentId: revision.agentId,
       revisionId: revision.id,
@@ -388,7 +407,17 @@ export async function pairedFixture(
         : {}),
     },
     protectedStartup: {
-      plan,
+      plan:
+        host.lie === undefined || plan.harnessCredentialSource === undefined
+          ? plan
+          : {
+              ...plan,
+              execution: { ...plan.execution, namespaceId: host.lie.namespaceId },
+              harnessCredentialSource: {
+                ...plan.harnessCredentialSource,
+                sourceId: host.lie.sourceId,
+              },
+            },
       reservedAt: "2026-11-16T00:00:00.000Z",
       generationSha256: host.generationSha256,
       ...host.startup,
@@ -397,12 +426,21 @@ export async function pairedFixture(
       ? {}
       : {
           harnessModel: {
-            sourceId: MODEL_SOURCE_ID,
+            sourceId: host.viewSourceId ?? host.lie?.sourceId ?? MODEL_SOURCE_ID,
             ...(host.modelRevoked === undefined ? {} : { revoked: host.modelRevoked }),
           },
         }),
   });
-  const hostOwner = () => record().owner;
+  /** The host's own owner (its configured pin), whatever it reports. */
+  const hostOwner = () => ({
+    driverId: id,
+    implementation,
+    namespaceId: namespace.id,
+    namespaceName: namespace.name,
+    agentId: revision.agentId,
+    revisionId: revision.id,
+  });
+  const forgedIds = new Set<string>();
   const server = createHttpServer((req, res) => {
     void body(req).then(async (bytes) => {
       const reply = (status: number, value?: unknown) =>
@@ -447,35 +485,57 @@ export async function pairedFixture(
           host.collects++;
           const stop = new AbortController();
           res.once("close", () => stop.abort());
-          reply(200, { asks: await source.collect(Number(input.waitMs), stop.signal) });
+          host.wakeCollect = () => stop.abort();
+          const asks =
+            host.forged.length > 0 ? [] : await source.collect(Number(input.waitMs), stop.signal);
+          host.wakeCollect = undefined;
+          const forged = host.forged.splice(0);
+          if (forged.length > 0 && host.holdForged !== undefined) {
+            host.forgedHeld = true;
+            await host.holdForged;
+          }
+          reply(200, { asks: [...asks, ...forged] });
         } else {
           host.answers++;
           const answer = input.answer as Record<string, unknown> | undefined;
           host.answered.push(typeof answer?.refusal === "string" ? answer.refusal : "credential");
-          reply(source.answer(String(input.askId), input.answer) ? 204 : 409);
+          if (answer !== undefined && forgedIds.has(String(input.askId))) {
+            host.forgedAnswers.set(String(input.askId), answer);
+            reply(204);
+          } else {
+            reply(source.answer(String(input.askId), input.answer) ? 204 : 409);
+          }
         }
         return;
       }
       if (req.method === "POST" && req.url === "/v1/model-revoke" && model !== undefined) {
-        // As host/control.ts: the receipt is written durably first, then the view shows it.
+        // The host's own revoke (host/control.ts applyModelRevocation): the receipt for this
+        // owner, revision and source, written durably first, with or without a live execution;
+        // the live view shows it only for that revision's execution of that source.
         const input = JSON.parse(bytes.toString()) as Record<string, unknown>;
+        const supplied = parseOwner(input.owner);
         if (
-          !host.present ||
-          input.executionId !== executionId ||
-          input.sourceId !== MODEL_SOURCE_ID
+          Object.keys(input).sort().join(",") !== "owner,sourceId" ||
+          JSON.stringify(supplied) !== JSON.stringify(hostOwner())
         ) {
-          reply(409, { error: "revoke_outside_execution" });
+          reply(409, { error: "owner_mismatch" });
           return;
         }
         host.modelRevokes++;
-        const receipt = recordModelRevocation(
+        const live = host.present ? record() : undefined;
+        const receipt = applyModelRevocation(
           hostConfig,
-          hostOwner(),
-          executionId,
-          MODEL_SOURCE_ID,
+          supplied,
+          String(input.sourceId),
+          live as never,
         );
-        host.modelRevoked = { receiptId: receipt.receiptId, revokedAt: receipt.revokedAt };
-        reply(200, record());
+        if (live?.harnessModel?.revoked !== undefined) host.modelRevoked = live.harnessModel.revoked;
+        reply(200, {
+          owner: receipt.owner,
+          sourceId: receipt.sourceId,
+          receiptId: receipt.receiptId,
+          revokedAt: receipt.revokedAt,
+        });
         return;
       }
       if (req.method === "DELETE") {
@@ -499,6 +559,8 @@ export async function pairedFixture(
   // allowed or denied owner decision is one row in `uses`, as prepared_repository_git_uses.
   const state = {
     withdrawn: false,
+    /** OCC's delivery-row fence: a new lease or a replaced delivery moves it. */
+    fence: 1,
     observed: 0,
     installs: 0,
     confirms: 0,
@@ -532,12 +594,16 @@ export async function pairedFixture(
     recipients: {
       async observe(installation) {
         state.observed++;
-        // As OCC: no fence for an unknown recipient or while an install intent is pending.
-        if (committed === undefined || pending !== undefined) {
+        // As OCC: no fence for an unknown recipient, for an installation other than the one it
+        // committed for the revision, or while an install intent is pending.
+        if (
+          committed === undefined ||
+          pending !== undefined ||
+          !isDeepStrictEqual(installation, committed)
+        ) {
           return undefined;
         }
-        assert.deepEqual(installation, committed);
-        return (fence = { revisionId: revision.id, fence: 1, observed: installation });
+        return (fence = { revisionId: revision.id, fence: state.fence, observed: installation });
       },
       // As OCC's delivery row: an identical installed version or a pending intent is refused.
       async beginInstall(route, installed) {
@@ -674,13 +740,27 @@ export async function pairedFixture(
         },
       ),
     gateway: model === undefined ? undefined : owner.require("credential_gateway"),
-    /** A host restart: the view reloads the receipt from the revocation directory. */
+    /** A host restart: the started view reloads the receipt as the host's PUT does. */
     restartHostModelView() {
-      const receipt = readModelRevocation(hostConfig, hostOwner(), MODEL_SOURCE_ID);
-      host.modelRevoked =
-        receipt === undefined
-          ? undefined
-          : { receiptId: receipt.receiptId, revokedAt: receipt.revokedAt };
+      host.modelRevoked = harnessModelView(hostConfig, hostOwner(), MODEL_SOURCE_ID).revoked;
+    },
+    /**
+     * Hand one ask to the Worker past the real relay (the relay stand-in) and wait, bounded, for
+     * the Worker's answer. With `hold`, the collect reply waits for it (see `holdForged`).
+     */
+    async forge(ask: ModelAsk, hold?: Promise<void>): Promise<Record<string, unknown>> {
+      forgedIds.add(ask.askId);
+      host.holdForged = hold;
+      host.forged.push(ask);
+      host.wakeCollect?.();
+      const deadline = Date.now() + 10_000;
+      while (!host.forgedAnswers.has(ask.askId)) {
+        if (Date.now() > deadline) throw new Error("the Worker did not answer the forged ask");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      host.holdForged = undefined;
+      host.forgedHeld = false;
+      return host.forgedAnswers.get(ask.askId)!;
     },
     revocationDir,
     /** OCE's renewal: a new attempt, version and token for the same session. */

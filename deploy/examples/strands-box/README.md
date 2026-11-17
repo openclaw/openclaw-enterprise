@@ -245,9 +245,11 @@ workload's `OPENAI_API_KEY` holds only Box's placeholder.
 
 Each model request is answered only for this execution's Box, while the
 attachment is live. Withdrawing the source refuses the next request before any
-byte reaches the provider; the host keeps the receipt. `updateSource` reaches
-the next request without a restart. Withdrawing the repository leaves the
-model working, and the reverse. See the [known gaps](KNOWN-GAPS.md#the-package-keeps-the-protected-model-key-at-rest).
+byte reaches the provider; the host keeps the receipt, and that revision stays
+refused ([permanent](KNOWN-GAPS.md#a-model-revoke-is-permanent-for-its-revision)).
+`updateSource` reaches the next request without a restart. Withdrawing the
+repository leaves the model working, and the reverse. See the
+[known gaps](KNOWN-GAPS.md#the-package-keeps-the-protected-model-key-at-rest).
 
 ## Verify chat and repository access
 

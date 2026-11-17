@@ -142,7 +142,8 @@ export interface ModelRevocation {
   readonly receiptId: string;
   readonly revokedAt: string;
   readonly owner: Owner;
-  readonly executionId: string;
+  /** The execution that ran when the receipt was written; absent when none did. */
+  readonly executionId?: string;
   readonly sourceId: string;
 }
 
@@ -1528,7 +1529,7 @@ export function readModelRevocation(
 export function recordModelRevocation(
   config: InstalledConfig,
   owner: Owner,
-  executionId: string,
+  executionId: string | undefined,
   sourceId: string,
 ): ModelRevocation {
   const existing = readModelRevocation(config, owner, sourceId);
@@ -1538,7 +1539,7 @@ export function recordModelRevocation(
     receiptId: randomUUID(),
     revokedAt: new Date().toISOString(),
     owner,
-    executionId,
+    ...(executionId === undefined ? {} : { executionId }),
     sourceId,
   };
   const directory = config.protectedModel!.revocationDir;
@@ -1548,6 +1549,43 @@ export function recordModelRevocation(
     receipt,
   );
   return receipt;
+}
+
+/**
+ * The host's `/v1/model-revoke` (finding 3301): write the durable receipt for this owner,
+ * revision and source, and mark the live execution's view revoked when it is that revision's
+ * execution of that source. Without a live execution the receipt still refuses a later start.
+ */
+export function applyModelRevocation(
+  config: InstalledConfig,
+  owner: Owner,
+  sourceId: string,
+  live: RecordView | undefined,
+): ModelRevocation {
+  const model =
+    live !== undefined && sameOwner(live.owner, owner) && live.harnessModel?.sourceId === sourceId
+      ? live.harnessModel
+      : undefined;
+  const receipt = recordModelRevocation(config, owner, model && live?.executionId, sourceId);
+  if (model !== undefined) {
+    model.revoked ??= { receiptId: receipt.receiptId, revokedAt: receipt.revokedAt };
+  }
+  return receipt;
+}
+
+/** A started execution's model view: the admitted source and any receipt already written. */
+export function harnessModelView(
+  config: InstalledConfig,
+  owner: Owner,
+  sourceId: string,
+): NonNullable<RecordView["harnessModel"]> {
+  const revoked = readModelRevocation(config, owner, sourceId);
+  return {
+    sourceId,
+    ...(revoked === undefined
+      ? {}
+      : { revoked: { receiptId: revoked.receiptId, revokedAt: revoked.revokedAt } }),
+  };
 }
 
 /** The model route's target as Box sends it to the source: host, port and the one POST path. */
@@ -1726,6 +1764,36 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       return;
     }
     const supplied = parseOwner(data.owner);
+    if (revoking) {
+      // The Gateway withdrew one revision's model attachment. The receipt is keyed by this host's
+      // owner, the revision and the source, and is written first, durably and outside the
+      // runtime directory, whether or not an execution of that revision runs now (finding 3301):
+      // from then on the host refuses that revision's model requests itself, before the Worker is
+      // asked, also for a later start and across a host restart.
+      fields(data, ["owner", "sourceId"]);
+      if (!sameOwner(config.owner, supplied)) {
+        reply(response, 409, { error: "owner_mismatch" });
+        return;
+      }
+      if (config.protectedModel === undefined) {
+        reply(response, 409, { error: "model_not_configured" });
+        return;
+      }
+      const receipt = applyModelRevocation(
+        config,
+        supplied,
+        string(data.sourceId, 128),
+        current?.view,
+      );
+      process.stdout.write(`strands-box-control: model attachment revoked ${receipt.receiptId}\n`);
+      reply(response, 200, {
+        owner: receipt.owner,
+        sourceId: receipt.sourceId,
+        receiptId: receipt.receiptId,
+        revokedAt: receipt.revokedAt,
+      });
+      return;
+    }
     const requirementsDigest = string(data.requirementsDigest, 64);
     if (!sameOwner(config.owner, supplied) || !SHA256.test(requirementsDigest)) {
       reply(response, 409, { error: "owner_mismatch" });
@@ -1769,38 +1837,6 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
         await held.execution.release();
         if (prior === undefined) throw new Error("release_outside_held_execution");
         held.view.protectedStartup = { ...prior, ...verified };
-      }
-      reply(response, 200, observedView(held));
-      return;
-    }
-    if (revoking) {
-      // The Gateway withdrew this execution's model attachment. The receipt is written first,
-      // durably and outside the runtime directory; from then on the host refuses every model
-      // request of this revision itself, before the Worker is asked, across a host restart.
-      fields(data, ["owner", "requirementsDigest", "executionId", "sourceId"]);
-      const held = current;
-      const model = held?.view.harnessModel;
-      if (
-        held === undefined ||
-        model === undefined ||
-        config.protectedModel === undefined ||
-        !sameOwner(held.view.owner, supplied) ||
-        held.view.executionId !== data.executionId ||
-        held.view.requirementsDigest !== requirementsDigest ||
-        model.sourceId !== data.sourceId
-      ) {
-        reply(response, 409, { error: "revoke_outside_execution" });
-        return;
-      }
-      if (model.revoked === undefined) {
-        const receipt = recordModelRevocation(
-          config,
-          held.view.owner,
-          held.view.executionId,
-          model.sourceId,
-        );
-        model.revoked = { receiptId: receipt.receiptId, revokedAt: receipt.revokedAt };
-        process.stdout.write(`strands-box-control: model attachment revoked ${receipt.receiptId}\n`);
       }
       reply(response, 200, observedView(held));
       return;
@@ -2037,13 +2073,7 @@ export async function serveInstalledControl(config: InstalledConfig): Promise<vo
       }
       if (input.harnessModel !== undefined) {
         // A receipt from before a host restart keeps this revision's model refused.
-        const revoked = readModelRevocation(config, supplied, input.harnessModel.sourceId);
-        view.harnessModel = {
-          sourceId: input.harnessModel.sourceId,
-          ...(revoked === undefined
-            ? {}
-            : { revoked: { receiptId: revoked.receiptId, revokedAt: revoked.revokedAt } }),
-        };
+        view.harnessModel = harnessModelView(config, supplied, input.harnessModel.sourceId);
       }
       attempted = true;
       reserveExecution(config.runtimeDir, view);

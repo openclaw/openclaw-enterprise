@@ -44,8 +44,11 @@ import {
   splitStockCommand,
 } from "../../deploy/examples/strands-box/host/installed-workspace-node.ts";
 import {
+  applyModelRevocation,
   boxDialedRoutes,
   canonical,
+  harnessModelView,
+  readModelRevocation,
   confirmControlledInference,
   digest,
   observedView,
@@ -279,6 +282,141 @@ test(
     }
   },
 );
+
+test(
+  "the installed host's model revoke writes its own revision's durable receipt, with or without an execution",
+  { skip: unsupported },
+  async () => {
+    // Findings 3299 and 3301: the real serveInstalledControl handler, not a stand-in.
+    const root = temporary();
+    const revocationDir = join(root, "model-revocations");
+    mkdirSync(revocationDir, { mode: 0o700 });
+    const config = { ...installedControlFixture(root), protectedModel: { revocationDir } };
+    const socket = join(config.runtimeDir, "control.sock");
+    const child = spawn(process.execPath, installedControlCommand(config), {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const exited = once(child, "exit");
+    let stdout = "";
+    try {
+      const output = createInterface({ input: child.stdout });
+      assert.deepEqual(await once(output, "line", { signal: AbortSignal.timeout(5_000) }), [
+        "strands-box-control: ready",
+      ]);
+      output.on("line", (line) => (stdout += `${line}\n`));
+      const owner = parseOwner(config.owner);
+      const revoke = (body: unknown) => controlRequest(socket, "/v1/model-revoke", body);
+      // Another Agent, or another revision of the pinned one, is not this host's: nothing written.
+      for (const other of [
+        { ...owner, agentId: "agt_other" },
+        { ...owner, revisionId: "rev_other" },
+        { ...owner, namespaceId: "ns_other" },
+      ]) {
+        assert.deepEqual(await revoke({ owner: other, sourceId: "cs_model" }), {
+          status: 409,
+          body: { error: "owner_mismatch" },
+        });
+      }
+      assert.deepEqual(readdirSync(revocationDir), []);
+      // No execution on the host (failed, gone, or a host restarted without one): written anyway.
+      const first = await revoke({ owner, sourceId: "cs_model" });
+      assert.equal(first.status, 200);
+      const receipt = first.body as Record<string, unknown>;
+      assert.deepEqual(Object.keys(receipt).sort(), ["owner", "receiptId", "revokedAt", "sourceId"]);
+      assert.deepEqual(receipt.owner, owner);
+      assert.equal(receipt.sourceId, "cs_model");
+      const files = readdirSync(revocationDir);
+      assert.equal(files.length, 1);
+      assert.match(files[0]!, /^model-revoked-[0-9a-f]{64}\.json$/);
+      assert.equal(lstatSync(join(revocationDir, files[0]!)).mode & 0o777, 0o600);
+      const stored = readModelRevocation(config as never, owner, "cs_model");
+      assert.equal(stored?.receiptId, receipt.receiptId);
+      assert.equal(stored?.executionId, undefined);
+      // Idempotent: the same receipt again. Another source of the revision gets its own.
+      assert.equal((await revoke({ owner, sourceId: "cs_model" })).body?.receiptId, receipt.receiptId);
+      const second = await revoke({ owner, sourceId: "cs_other" });
+      assert.notEqual(second.body?.receiptId, receipt.receiptId);
+      assert.equal(readdirSync(revocationDir).length, 2);
+      // What the next start (PUT) of this revision loads into its view: refused from the start.
+      assert.deepEqual(harnessModelView(config as never, owner, "cs_model").revoked, {
+        receiptId: receipt.receiptId,
+        revokedAt: receipt.revokedAt,
+      });
+      assert.deepEqual(harnessModelView(config as never, { ...owner, revisionId: "rev_next" }, "cs_model"), {
+        sourceId: "cs_model",
+      });
+      // The log names the receipt ID only.
+      const deadline = Date.now() + 2_000;
+      while (!stdout.includes(String(second.body?.receiptId)) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.ok(stdout.includes(`model attachment revoked ${String(receipt.receiptId)}`));
+      assert.ok(!stdout.includes("cs_model") && !stdout.includes(owner.agentId));
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+      await exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+    // A host without protectedModel refuses the revoke.
+    const plain = temporary();
+    const plainConfig = installedControlFixture(plain);
+    const plainChild = spawn(process.execPath, installedControlCommand(plainConfig), {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const plainExited = once(plainChild, "exit");
+    try {
+      const output = createInterface({ input: plainChild.stdout });
+      await once(output, "line", { signal: AbortSignal.timeout(5_000) });
+      assert.deepEqual(
+        await controlRequest(join(plainConfig.runtimeDir, "control.sock"), "/v1/model-revoke", {
+          owner: parseOwner(plainConfig.owner),
+          sourceId: "cs_model",
+        }),
+        { status: 409, body: { error: "model_not_configured" } },
+      );
+    } finally {
+      if (plainChild.exitCode === null && plainChild.signalCode === null) plainChild.kill("SIGTERM");
+      await plainExited;
+      rmSync(plain, { recursive: true, force: true });
+    }
+  },
+);
+
+test("a model revoke marks only that revision's live execution of that source", () => {
+  const root = temporary();
+  try {
+    const revocationDir = join(root, "model-revocations");
+    mkdirSync(revocationDir, { mode: 0o700 });
+    const config = { protectedModel: { revocationDir } } as never;
+    const owner = parseOwner(installedControlFixture(root).owner);
+    const live = () =>
+      ({
+        owner,
+        executionId: "execution-1",
+        harnessModel: { sourceId: "cs_model" },
+      }) as never as Parameters<typeof applyModelRevocation>[3] & {
+        harnessModel: { sourceId: string; revoked?: unknown };
+      };
+    // Another source of the revision: its receipt is written, the live view stays answerable.
+    const view = live();
+    applyModelRevocation(config, owner, "cs_other", view);
+    assert.equal(view.harnessModel.revoked, undefined);
+    // Another revision's live execution: not marked.
+    const elsewhere = live();
+    applyModelRevocation(config, { ...owner, revisionId: "rev_two" }, "cs_model", elsewhere);
+    assert.equal(elsewhere.harnessModel.revoked, undefined);
+    // This revision's execution of this source: marked, and the receipt names the execution.
+    const receipt = applyModelRevocation(config, owner, "cs_model", view);
+    assert.deepEqual(view.harnessModel.revoked, {
+      receiptId: receipt.receiptId,
+      revokedAt: receipt.revokedAt,
+    });
+    assert.equal(receipt.executionId, "execution-1");
+    assert.equal(readdirSync(revocationDir).length, 3);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test(
   "worker socket export refuses a hostile directory, dirty runtime, or overlapping authority",

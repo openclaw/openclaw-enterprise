@@ -59,12 +59,14 @@ while (!existsSync(join(queue, "stop"))) {
  * size, digest, chunk count and timing, and the request body's digest; never a header value.
  */
 const CLIENT = `import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { request } from "node:https";
 // node:https, not fetch: fetch's parser needs WebAssembly, which --jitless Node lacks. Box sets
 // NODE_USE_ENV_PROXY and the CA variables, so the global agent goes through Box's proxy.
-const [url, method, size] = process.argv.slice(2);
+// With saveTo the response goes to that file only (the echo case), never to stdout.
+const [url, method, size, saveTo] = process.argv.slice(2);
 const n = Number(size);
-const prefix = '{"model":"fixture-model","stream":true,"input":"';
+const prefix = saveTo ? '{"model":"fixture-model","echo":true,"input":"' : '{"model":"fixture-model","stream":true,"input":"';
 const body = n > 0 ? Buffer.concat([Buffer.from(prefix), Buffer.alloc(Math.max(0, n - prefix.length - 2), 0x61), Buffer.from('"}')]) : undefined;
 const started = Date.now();
 const out = { bodyBytes: body?.length ?? 0, bodySha256: body ? createHash("sha256").update(body).digest("hex") : undefined };
@@ -79,7 +81,7 @@ try {
         chunks++; bytes += chunk.length; hash.update(chunk);
         if (text.length < 4096) text += chunk.toString("utf8");
       });
-      response.on("end", () => { Object.assign(out, { bytes, chunks, firstChunkMs: first, totalMs: Date.now() - started, sha256: hash.digest("hex"), events: (text.match(/^data: /gm) ?? []).length, head: text.slice(0, 160) }); resolve(); });
+      response.on("end", () => { if (saveTo) writeFileSync(saveTo, text); Object.assign(out, { bytes, chunks, firstChunkMs: first, totalMs: Date.now() - started, sha256: hash.digest("hex"), events: (text.match(/^data: /gm) ?? []).length, ...(saveTo ? {} : { head: text.slice(0, 160) }) }); resolve(); });
       response.on("error", reject);
     });
     outgoing.on("timeout", () => outgoing.destroy(new Error("timeout")));
@@ -180,7 +182,15 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
         bodyBytes: body.length,
         bodySha256: sha(body),
       });
+      const echo = body.includes('"echo":true');
       body.fill(0);
+      if (echo) {
+        // A provider that echoes the credential (finding 3299): Box's response redaction must
+        // keep the key from the workload. The test reads only what reached the workload.
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ echo: String(req.headers.authorization ?? "") }));
+        return;
+      }
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
       let sent = 0;
       const tick = () => {
@@ -387,7 +397,12 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
           : undefined;
       });
     };
-    const call = async (url: string, method = "POST", size = 64): Promise<ClientResult> => {
+    const call = async (
+      url: string,
+      method = "POST",
+      size = 64,
+      saveTo?: string,
+    ): Promise<ClientResult> => {
       // Box denies writable+executable memory: Node runs without its JIT, as the runner does.
       const result = await run([
         node,
@@ -396,9 +411,38 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
         url,
         method,
         String(size),
+        ...(saveTo === undefined ? [] : [saveTo]),
       ]);
       assert.equal(result.code, 0, `${result.stderr}${result.error ?? ""}`);
       return JSON.parse(result.stdout) as ClientResult;
+    };
+    /**
+     * After a key was released: a fresh workload process's environment and every file the
+     * workload can write (its queue with each command's output, the workspace, its HOME) hold
+     * no key (finding 3299: before, the checks ran only before any release). Counts only.
+     */
+    const scanWorkload = async (label: string) => {
+      const dumped = await run([
+        node,
+        "--jitless",
+        "-e",
+        "process.stdout.write(JSON.stringify(process.env))",
+      ]);
+      assert.equal(dumped.code, 0, dumped.stderr);
+      const envMatches = keys.filter((value) => dumped.stdout.includes(value)).length;
+      let fileMatches = 0;
+      const files = [
+        ...(await listFiles(queue)),
+        ...(await listFiles(f.workspace)),
+        ...(await listFiles(home)),
+      ];
+      for (const file of files) {
+        const content = await readFile(file).catch(() => Buffer.alloc(0));
+        fileMatches += keys.filter((value) => content.includes(value)).length;
+      }
+      assert.equal(envMatches, 0, `${label}: a key in the workload environment`);
+      assert.equal(fileMatches, 0, `${label}: a key in a workload file`);
+      return { envMatches, files: files.length, fileMatches };
     };
     const git = (args: readonly string[]) => run(["/usr/bin/git", ...args]);
     const remote = `https://github.com/${f.origin.repository.repository}.git`;
@@ -453,6 +497,23 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
     );
     evidence.allowed = allowed;
     assert.equal(f.host.answered.at(-1), "credential");
+    evidence.scanAfterRelease = await scanWorkload("after the first release");
+
+    // 1b. A provider that echoes the Authorization header: what reaches the workload holds no
+    // key (Box's response redaction), and the provider did receive the key.
+    const echoFile = join(queue, "echo.response");
+    const echoed = await call(`${route}/responses`, "POST", 64, echoFile);
+    assert.equal(echoed.status, 200, JSON.stringify(echoed));
+    assert.equal(provider.requests.at(-1)!.authSha256, sha(key));
+    const echoText = await readFile(echoFile, "utf8");
+    const echoKeyMatches = keys.filter((value) => echoText.includes(value)).length;
+    assert.equal(echoKeyMatches, 0, "the echoed key reached the workload");
+    evidence.echo = {
+      status: echoed.status,
+      bytes: echoed.bytes,
+      keyMatches: echoKeyMatches,
+      placeholderMatches: echoText.split(placeholder).length - 1,
+    };
 
     // 2. Wrong path, method or host: Box refuses before any OCE ask and before the provider.
     const asked = counts().asked;
@@ -570,6 +631,7 @@ export async function modelRealBox(t: TestContext, inputs: NativeModelInputs) {
     }
     evidence.boxStateFiles = files.length;
     evidence.boxStateKeyMatches = stateMatches;
+    evidence.scanAtEnd = await scanWorkload("after rotation and withdrawal");
     evidence.boxOutputKeyMatches = keys.filter((value) => boxOutput.includes(value)).length;
     assert.equal(stateMatches, 0);
     assert.equal(evidence.boxOutputKeyMatches, 0);
