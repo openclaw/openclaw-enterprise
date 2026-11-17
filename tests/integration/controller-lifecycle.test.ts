@@ -447,6 +447,67 @@ test("the controller selects explicitly registered Sandbox Drivers with closed f
       DriverSelectionError,
     );
   }
+  // A provider-owned Harness may request verifier-only transport delivery and nothing else.
+  controller.registerDriver(
+    Object.assign(createSandboxDriver({ id: "verifier-transport" }), {
+      harnessTransportCredential: "verifier",
+    }),
+  );
+  for (const harnessTransportCredential of ["secret", "", 1]) {
+    assert.throws(
+      () =>
+        controller.registerDriver(
+          Object.assign(
+            createSandboxDriver({ id: `invalid-transport-${String(harnessTransportCredential)}` }),
+            { harnessTransportCredential },
+          ),
+        ),
+      DriverSelectionError,
+    );
+  }
+  // Every optional provider-owned Harness member is refused at registration when malformed.
+  for (const member of [
+    "harnessEndpoint",
+    "harnessStatus",
+    "enrollHarness",
+    "withdrawHarnessExposure",
+    "harnessResource",
+    "workspaceNodePeerLabels",
+    "observeHeldRepositoryGitPreview",
+    "protectedWorkspaceEndpoint",
+  ]) {
+    assert.throws(
+      () =>
+        controller.registerDriver({
+          ...createSandboxDriver({ id: `invalid-${member}` }),
+          [member]: "invalid",
+        }),
+      DriverSelectionError,
+      member,
+    );
+  }
+  // A protected workspace endpoint requires the whole provider-owned Harness lifecycle.
+  const lifecycle = {
+    provisionHarness: async () => ({}),
+    enrollHarness: async () => ({}),
+    harnessStatus: async () => ({ state: "starting" }),
+    protectedWorkspaceEndpoint: async () => undefined,
+  };
+  controller.registerDriver(
+    Object.assign(createSandboxDriver({ id: "protected-workspace" }), lifecycle),
+  );
+  for (const missing of ["provisionHarness", "enrollHarness", "harnessStatus"]) {
+    assert.throws(
+      () =>
+        controller.registerDriver({
+          ...createSandboxDriver({ id: `protected-without-${missing}` }),
+          ...lifecycle,
+          [missing]: undefined,
+        }),
+      DriverSelectionError,
+      missing,
+    );
+  }
   for (const hook of ["validateWorkspaceSetup", "ensureNamespace", "provisionHarness", "cleanup"]) {
     assert.throws(
       () =>
