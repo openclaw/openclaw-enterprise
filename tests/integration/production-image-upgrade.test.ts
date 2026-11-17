@@ -5,6 +5,7 @@ import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/p
 import { createServer } from "node:https";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -408,13 +409,14 @@ esac
     { interpreter: "bash" },
   );
 
-  // The deadline runner launches OCC. Let real Python enforce its process
+  // The deadline runner launches OCC and kubectl. Let real Python enforce its process
   // timeout. Resolve its path separately so Python's children still use the fixture tools.
   await writeCommand(
     bin,
     "python3",
     `real_python=$(PATH="$(getconf PATH)" command -v python3)
-if [[ "$1" == - && "$2" =~ ^[1-9][0-9]*$ && "$4" == "$(dirname "$0")/occ" ]]; then
+if [[ "$1" == - && "$2" =~ ^[1-9][0-9]*$ &&
+      ( "$4" == "$(dirname "$0")/occ" || "$4" == kubectl ) ]]; then
   if [[ " $* " == *" agent deployment-status "* ]]; then
     printf 'replacement-status-budget %s\\n' "$2" >>"$COMMAND_LOG"
   fi
@@ -695,6 +697,24 @@ fi
     `${dispatchJson}if [[ "$*" == *'resourceAttributes'* ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
+if [[ -n "\${POD_READ_FIXTURE:-}" && "\${!#}" == */status/*.pods*.json ]]; then
+  if [[ "$POD_READ_MODE" == late-ready && "$1" == -e && "$2" == *'.status.phase == "Running"'* ]]; then
+    PATH="$ORIGINAL_TOOL_PATH" jq "$@" || exit $?
+    : >"$POD_READ_FIXTURE/ready-predicate-succeeded"
+    PATH="$ORIGINAL_TOOL_PATH" exec sleep "$((POD_TIMEOUT_SECONDS + 1))"
+  fi
+  PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
+fi
+if [[ -n "\${POD_READ_FIXTURE:-}" ]]; then
+  case "$*" in
+    *'gatewayNamespace: $gatewayNamespace'*|*'was replaced by a new Pod'*)
+      PATH="$ORIGINAL_TOOL_PATH" exec jq "$@" ;;
+  esac
+  case "\${2:-$1}" in
+    .namespace|.name|.uid|.restarts|'.namespace, .name, .role'|'.agentId, .namespaceId, .deploymentId'|'.namespaceId, .agentId, .deploymentId, .gatewayNamespace, .gatewayName'|'.revisionPods | arrays | select(length > 0) | .[]')
+      PATH="$ORIGINAL_TOOL_PATH" exec jq "$@" ;;
+  esac
+fi
 if [[ "$1" == -c && ( "$2" == .namespaceId,* || "$2" == *'baselineRevisionId: .activeRevisionId'* ) ]]; then
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
@@ -839,8 +859,32 @@ case "$*" in
     done
     printf '{"metadata":{"uid":"fixture-%s","resourceVersion":"1","labels":{"app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"%s"}},"spec":{"replicas":1}}\\n' "$component" "$component"
     ;;
+  *'get pods --all-namespaces --selector openclaw.dev/revision=rev_candidate'*)
+    if [[ "\${POD_READ_MODE:-}" == hung-kubectl ]]; then
+      (
+        : >"$POD_READ_FIXTURE/child-started"
+        PATH="$ORIGINAL_TOOL_PATH" sleep 5
+        : >"$POD_READ_FIXTURE/child-finished"
+        cat "$POD_READ_FIXTURE/ready.json"
+      ) &
+      wait "$!"
+    elif [[ -n "\${POD_READ_FIXTURE:-}" ]]; then
+      cat "$POD_READ_FIXTURE/ready.json"
+    else
+      printf '%s\\n' '{"items":[]}'
+    fi
+    ;;
   *'get pods'*) printf '%s\\n' '{"items":[]}' ;;
-  *' get pod/'*) printf '%s\\n' '{"status":{"phase":"Succeeded"}}' ;;
+  *' get pod/'*)
+    if [[ -n "\${POD_READ_FIXTURE:-}" ]]; then
+      for arg in "$@"; do
+        case "$arg" in
+          pod/*) PATH="$ORIGINAL_TOOL_PATH" exec jq -e --arg name "\${arg#pod/}" '.items[] | select(.metadata.name == $name)' "$POD_READ_FIXTURE/ready.json" ;;
+        esac
+      done
+    fi
+    printf '%s\\n' '{"status":{"phase":"Succeeded"}}'
+    ;;
   *' logs pod/'*) printf 'agent-drafts-accepted\\ninstallation-startup-ready\\n' ;;
 esac
 `,
@@ -1069,6 +1113,114 @@ esac
   const journal = await readFile(readyEvidence + ".dispatch-state");
   await assertCompletedRunCannotResume(readyEvidence, ["runtime"], runtimeOptions);
   assert.deepEqual(await readFile(readyEvidence + ".dispatch-state"), journal);
+
+  const podReadFixture = join(directory, "replacement-pod-read");
+  await mkdir(podReadFixture);
+  const revisionPods = [
+    {
+      role: "gateway",
+      namespace: "tenant-test",
+      name: "gateway-test",
+      uid: "gateway-test-uid",
+      restarts: 1,
+    },
+    {
+      role: "agent",
+      namespace: "tenant-test",
+      name: "agent-test",
+      uid: "agent-test-uid",
+      restarts: 2,
+    },
+  ];
+  const readyPods = revisionPods.map(({ role, namespace, name, uid, restarts }) => ({
+    metadata: { name, namespace, uid, labels: { "openclaw.dev/revision": "rev_candidate" } },
+    spec: { containers: [{ name: role, image: runtimeImage }] },
+    status: {
+      phase: "Running",
+      conditions: [{ type: "Ready", status: "True" }],
+      containerStatuses: [{ name: role, restartCount: restarts }],
+    },
+  }));
+  await writeFile(join(podReadFixture, "ready.json"), JSON.stringify({ items: readyPods }));
+  const podTimeoutSeconds = "3";
+  const runPodRead = (
+    evidence: string,
+    log: string,
+    mode: "prompt" | "hung-kubectl" | "late-ready",
+  ) =>
+    execute(
+      upgradeScript,
+      [...upgradeArguments(evidence, ["runtime"]), "--timeout-seconds", podTimeoutSeconds],
+      {
+        ...runtimeOptions,
+        env: {
+          ...runtimeOptions.env,
+          COMMAND_LOG: log,
+          POD_READ_FIXTURE: podReadFixture,
+          POD_READ_MODE: mode,
+          POD_TIMEOUT_SECONDS: podTimeoutSeconds,
+        },
+      },
+    );
+  async function assertPodReadRefused(evidence: string, log: string) {
+    assert.equal(await readFile(join(evidence, "doctor-targets.jsonl"), "utf8"), "");
+    assert.doesNotMatch(await readFile(log, "utf8"), /openclaw\.mjs doctor/u);
+    await assert.rejects(stat(join(evidence, "completed")), { code: "ENOENT" });
+  }
+
+  // The same two Ready Pods must still be serving with the same identities and
+  // restart counts when the script checks them after Doctor.
+  await t.test("a prompt Ready Pod read reaches Doctor", async () => {
+    const evidence = join(directory, "prompt-pod-evidence");
+    const log = join(directory, "prompt-pod-commands.log");
+    await runPodRead(evidence, log, "prompt");
+    assert.match(await readFile(log, "utf8"), /openclaw\.mjs doctor/u);
+    assert.deepEqual(parseJson(await readFile(join(evidence, "doctor-targets.jsonl"), "utf8")), {
+      namespaceId: "ns_test",
+      agentId: "agt_test",
+      deploymentId: "rev_candidate",
+      gatewayNamespace: "tenant-test",
+      gatewayName: "gateway-test",
+      gatewayUid: "gateway-test-uid",
+      gatewayRestarts: 1,
+      revisionPods,
+    });
+    for (const pod of readyPods) {
+      const name = `ns_test--agt_test--rev_candidate--${pod.metadata.name}.after-doctor.json`;
+      assert.deepEqual(parseJson(await readFile(join(evidence, "status", name), "utf8")), pod);
+    }
+    await stat(join(evidence, "completed"));
+  });
+
+  // kubectl returned promptly and jq validated both Pods. Admission must still
+  // stop if the successful Ready predicate finishes after the deadline.
+  await t.test("a Ready predicate that finishes late stops before Doctor", async () => {
+    const evidence = join(directory, "late-ready-evidence");
+    const log = join(directory, "late-ready-commands.log");
+    await assert.rejects(
+      runPodRead(evidence, log, "late-ready"),
+      /Agent agt_test revision Pods did not become ready before the upgrade timeout/u,
+    );
+    await stat(join(podReadFixture, "ready-predicate-succeeded"));
+    await assertPodReadRefused(evidence, log);
+  });
+
+  await t.test(
+    "a delayed Ready Pod read stops before Doctor and kills the read's child",
+    async () => {
+      const evidence = join(directory, "late-pod-evidence");
+      const log = join(directory, "late-pod-commands.log");
+      await assert.rejects(
+        runPodRead(evidence, log, "hung-kubectl"),
+        /Agent agt_test revision Pods did not become ready before the upgrade timeout/u,
+      );
+      await stat(join(podReadFixture, "child-started"));
+      await assertPodReadRefused(evidence, log);
+      // Give the fixture child time to write its marker if only kubectl was killed.
+      await delay(5000);
+      await assert.rejects(stat(join(podReadFixture, "child-finished")), { code: "ENOENT" });
+    },
+  );
 
   await t.test(
     "a stalled optional Agent read preserves terminal deployment observations",

@@ -2450,13 +2450,12 @@ else
   : >"$deployments"
 fi
 
-replacement_occ_read() {
-  local timeout_message=$1 remaining_seconds=$((deadline - SECONDS))
-  shift
-  ((remaining_seconds > 0)) || die "$timeout_message"
-  # Keep OCC's per-request timeout. A deployment status read may make several
-  # requests, so the remaining replacement window bounds the whole process.
-  python3 - "$remaining_seconds" "$timeout_message" "${occ_json[@]}" "$@" <<'PYTHON'
+replacement_read() {
+  local remaining_seconds=$1 timeout_message=$2
+  shift 2
+  # A read can make multiple requests. Bound the whole process as well as
+  # retaining each client's request timeout.
+  python3 - "$remaining_seconds" "$timeout_message" "$@" <<'PYTHON'
 import os
 import signal
 import subprocess
@@ -2486,6 +2485,13 @@ finally:
         process.wait()
 sys.exit(status if status >= 0 else 128 - status)
 PYTHON
+}
+
+replacement_occ_read() {
+  local timeout_message=$1 remaining_seconds=$((deadline - SECONDS))
+  shift
+  ((remaining_seconds > 0)) || die "$timeout_message"
+  replacement_read "$remaining_seconds" "$timeout_message" "${occ_json[@]}" "$@"
 }
 
 # A failing CLI can still print a complete status. Publish the snapshot only
@@ -2545,11 +2551,12 @@ while IFS= read -r deployment; do
     die "Agent $agent_id selected $selected instead of deployment $deployment_id."
   pods="$evidence_dir/status/$(json_file_name "$namespace_id--$agent_id--$deployment_id").pods.json"
   live_pods="${pods%.json}.live.json"
+  pod_timeout="Agent $agent_id revision Pods did not become ready before the upgrade timeout."
   while true; do
     remaining_seconds=$((deadline - SECONDS))
-    ((remaining_seconds > 0)) ||
-      die "Agent $agent_id revision Pods did not become ready before the upgrade timeout."
-    "${kube[@]}" --request-timeout="${remaining_seconds}s" get pods --all-namespaces \
+    ((remaining_seconds > 0)) || die "$pod_timeout"
+    replacement_read "$remaining_seconds" "$pod_timeout" \
+      "${kube[@]}" --request-timeout="${remaining_seconds}s" get pods --all-namespaces \
       --selector "openclaw.dev/revision=$deployment_id" \
       --output json >"$pods"
     # During replacement, a deleting Pod can still report Running and Ready.
@@ -2569,12 +2576,12 @@ while IFS= read -r deployment; do
           any(.status.conditions[]?; .type == "Ready" and .status == "True")
         )
       ' "$live_pods" >/dev/null; then
+        ((SECONDS < deadline)) || die "$pod_timeout"
         break
       fi
     fi
     remaining_seconds=$((deadline - SECONDS))
-    ((remaining_seconds > 0)) ||
-      die "Agent $agent_id revision Pods did not become ready before the upgrade timeout."
+    ((remaining_seconds > 0)) || die "$pod_timeout"
     sleep "$((remaining_seconds < 2 ? remaining_seconds : 2))"
   done
 
