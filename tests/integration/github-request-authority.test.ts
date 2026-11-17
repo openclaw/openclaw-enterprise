@@ -202,7 +202,14 @@ const journeys: Record<Profile, [string, Request, string][]> = {
     ["gh api repository read", api("GET", "/repos/example/other"), "allow"],
     [
       "runner registration token",
-      api("POST", "/repos/example/project/actions/runners/registration-token", {}),
+      // Without time-zone, so the runner rule (not the header rule) refuses it.
+      {
+        ...api("POST", "/repos/example/project/actions/runners/registration-token", {}),
+        headers: [
+          ...gh.filter(([name]) => name !== "time-zone"),
+          ["content-type", "application/json; charset=utf-8"],
+        ],
+      },
       "request_not_allowed",
     ],
   ],

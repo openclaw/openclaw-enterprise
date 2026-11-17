@@ -190,7 +190,8 @@ Use `requests` (`RepositoryGitRequests`) instead of GitHub rules of your own.
 `requests.authorize({ route, profile, authorization, request, signal })` reads the
 installed material, classifies the request with the bundled OpenShell route's code
 (smart HTTP and its pushed refs, GitHub REST and GraphQL, the draft pull request
-create), records one use and returns `allow` or `refused`. `request` is what the bundled
+create), records one use and returns `allow` or `refused`. `route` must name a confirmed
+installation (`recipients.confirmInstall`) of that material version, or OCE refuses. `request` is what the bundled
 supervisor sends OCE before injection: the target, lowercase headers without credential,
 routing or framing headers, and the buffered body up to 4 MiB. On `allow`, add `inject`
 to exactly that request before `sendBy`; an injector need not forward it. Show the Agent
