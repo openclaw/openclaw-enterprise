@@ -95,6 +95,10 @@ Other work changed the remaining slices by 2026-11-16, after slice 1 merged:
    bindings, and holds the requester's account before the worker writes.
 3. **Member grant guidance.** The console Credentials tab stops telling a
    member to ask an administrator for a grant that the member's deploy writes.
+   In review in
+   [#6388](https://github.com/openclaw/openclaw-enterprise/pull/6388), which
+   also changes the administrator path: grant warnings say that deploying
+   grants the Agent access, and no grant outcome or grant read holds Deploy.
 4. **Bindings without a resource.** Optional `resourceKind` and `resourceId`
    and Group subjects in the Namespace IAM API for any Role.
 5. **Agent grant removal.** Deploy grants move to the binding ID
@@ -136,9 +140,12 @@ SCIM through `@better-auth/scim` is a later plan.
   access to the member's own Secrets. A second member cannot read the request, a
   member who turns off `gatewayManagedMode` is refused, and the worker refuses
   queued work after the member's account is disabled.
-- Slice 3: `tests/browser/console-agent-detail.test.ts` shows a member's
-  Credentials tab without the administrator step, with matching Storybook
-  states.
+- Slice 3: `tests/browser/console-agent-detail.test.ts` and
+  `tests/browser/console-agent-channels.test.ts` show that a member's Slack and
+  authentication source saves name no administrator step, send no grant, and
+  say that the deploy grants access. The administrator's missing, refused and
+  unconfirmed grant cases leave Deploy available. Matching Storybook states
+  show both.
 - Slice 4: a custom Role bound without a resource applies across its Namespace
   and not in another one.
 - Slice 1 also: an owner's deploy writes and audits the Secret grant; a custom
