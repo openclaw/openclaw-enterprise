@@ -56,6 +56,7 @@ import { createExternalSandboxRegistration } from "../../apps/controller/src/com
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import {
+  installationControllerOptions,
   installPackagedGatewayRegistration,
   loadInstallationConfiguration,
   type InstallationRuntimeDrivers,
@@ -1923,6 +1924,165 @@ test("an installed Sandbox can explicitly select its packaged Credential Gateway
         assert.equal(poolClose.mock.callCount(), 1);
         assert.equal(fixture.calls.close, closed + 1);
       }
+    },
+  );
+
+  await t.test(
+    "Worker starts beside a GitHub repository Backend in both admission modes and refuses a missing or foreign repository Driver",
+    async (scenario) => {
+      const createWorker = prepareWorkerStartup(scenario);
+      // A protected repository Git package that also supplies its own Credential Gateway view.
+      const repositoryId = "repository-gateway-fixture";
+      const { directory: repositoryRoot, entry: repositoryEntry } = await protectedDriverPackage(
+        scenario,
+        repositoryId,
+        "repository-git",
+      );
+      for (const name of ["model-gateway", "repository-model-gateway"]) {
+        const fixtureSource = await readFile(
+          new URL(
+            `../fixtures/driver-packages/protected-execution-driver/${name}.ts`,
+            import.meta.url,
+          ),
+          "utf8",
+        );
+        await writeFile(
+          join(repositoryEntry, `${name}.mjs`),
+          stripTypeScriptTypes(fixtureSource).replaceAll(/"\.\/([a-z-]+)\.ts"/g, '"./$1.mjs"'),
+        );
+      }
+      await writeFile(
+        join(repositoryEntry, "package.json"),
+        JSON.stringify({
+          name: repositoryId,
+          version: "1.0.0",
+          exports: "./repository-model-gateway.mjs",
+        }),
+      );
+      const { configuration, registryPath } = await repositoryDeliveryInstallation(
+        scenario,
+        repositoryRoot,
+        repositoryId,
+      );
+      const path = join(repositoryRoot, "installation.json");
+      await writeFile(
+        path,
+        JSON.stringify({
+          ...configuration,
+          drivers: {
+            ...configuration.drivers,
+            credential_gateway: { id: repositoryId, configuration: {} },
+          },
+        }),
+      );
+      // Each start closes the registration it was given, so every case loads its own.
+      const loadRepository = async () => {
+        const drivers = (await loadInstallationConfiguration({
+          mode: "production",
+          environment: { OCC_CONFIG_PATH: path },
+          packageRoot: repositoryRoot,
+        }))!;
+        assert.ok(drivers.packagedGatewayRegistration);
+        assert.equal(drivers.protectedDriver, drivers.packagedGatewayRegistration);
+        assert.ok(drivers.computeDriver instanceof KubernetesComputeDriver);
+        scenario.mock.method(drivers.computeDriver, "preflight", async () => ({ warnings: [] }));
+        return drivers;
+      };
+      const start = async (drivers: InstallationRuntimeDrivers) => {
+        const { worker, events, poolClose } = createWorker(drivers);
+        let error: unknown;
+        try {
+          await startWorkerComposition({ worker, closeMetrics: async () => {} });
+        } catch (caught) {
+          error = caught;
+        } finally {
+          await worker.stop();
+        }
+        assert.equal(poolClose.mock.callCount(), 1);
+        return { error, events };
+      };
+      const refusal = (message: RegExp) => (error: unknown) =>
+        error instanceof Error &&
+        error.name === "DriverSelectionError" &&
+        message.test(error.message);
+
+      // Built-in admission: the loader binds the repository Driver only as the admission policy.
+      const builtIn = await loadRepository();
+      const admission = builtIn.repositoryAdmission;
+      assert.ok(admission);
+      assert.equal(admission.policyMode, "built-in");
+      assert.equal(admission.policy.id, "repo");
+      assert.equal(Object.hasOwn(builtIn, "repositoryPolicy"), false);
+      // The API's production composition accepts the same selection.
+      const api = OpenClawController.forInstallation(
+        { id: "worker-startup", name: "worker-startup", createdAt: "2026-10-01T00:00:00Z" },
+        {
+          ...installationControllerOptions(builtIn.installation),
+          backends: builtIn.installation.backend,
+        },
+        admission,
+      );
+      installPackagedGatewayRegistration(api, builtIn.packagedGatewayRegistration!, {
+        sandbox: builtIn.sandboxDriver,
+        gateway: builtIn.credentialGatewayDriver,
+        protectedOwner: builtIn.protectedDriver,
+        proxy: builtIn.proxyDriver,
+      });
+      await api.validateBackendConfiguration();
+      const started = await start(builtIn);
+      assert.equal(started.error, undefined);
+      assert.deepEqual(started.events, ["worker.started", "worker.stopped"]);
+
+      // Without the built-in mode the Worker holds the same bound policy as its repository Driver.
+      const external = await loadRepository();
+      const { policyMode: _builtIn, ...bound } = external.repositoryAdmission!;
+      const externallyBound = await start({
+        ...external,
+        repositoryPolicy: bound.policy,
+        repositoryAdmission: bound,
+      });
+      assert.equal(externallyBound.error, undefined);
+      assert.deepEqual(externallyBound.events, ["worker.started", "worker.stopped"]);
+
+      // No repository Driver at all still refuses the GitHub Backend.
+      const { repositoryAdmission: _missing, ...unbound } = await loadRepository();
+      const missing = await start(unbound);
+      assert.ok(
+        refusal(/requires its repository credential Driver/)(missing.error),
+        String(missing.error),
+      );
+      assert.deepEqual(missing.events, ["worker.stopped"]);
+
+      // A repository Driver that is not the Backend's own is refused in either slot.
+      const otherPolicy = (
+        await loadRepositoryPolicy({
+          backend: {
+            id: configuration.backend[0]!.id,
+            type: "github",
+            configuration: { registryPath },
+            drivers: { repo: "other-repo" },
+          },
+          selection: {
+            id: "other-repo",
+            implementation: "github",
+            configuration: { sessionDurationSeconds: 600 },
+          },
+        })
+      ).repositoryPolicy;
+      const { repositoryAdmission: foreignAdmission, ...foreign } = await loadRepository();
+      const registered = await start({ ...foreign, repositoryPolicy: otherPolicy });
+      assert.ok(
+        refusal(/requires its repository credential Driver/)(registered.error),
+        String(registered.error),
+      );
+      const rebound = await start({
+        ...(await loadRepository()),
+        repositoryAdmission: { ...foreignAdmission!, policy: otherPolicy },
+      });
+      assert.ok(
+        refusal(/must bind its exact owning Backend/)(rebound.error),
+        String(rebound.error),
+      );
     },
   );
 

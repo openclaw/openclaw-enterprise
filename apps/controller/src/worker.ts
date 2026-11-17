@@ -1628,8 +1628,15 @@ export class ControllerWorker {
     if (chatgpt?.drivers.service_account !== this.configuredServiceAccountDriverId) {
       throw new DriverSelectionError("The configured Backend requires its ServiceAccount Driver.");
     }
+    // Under built-in repository admission the Installation loader hands the Worker its
+    // repository Driver only as the bound admission policy (never as repositoryPolicy), so
+    // the GitHub Backend is checked against that policy, as OCC's own Backend validation does.
+    const repository =
+      this.repositoryAdmission?.policyMode === "built-in"
+        ? this.repositoryAdmission.policy
+        : this.repositoryPolicy;
     const selected = [
-      this.repositoryPolicy,
+      repository,
       this.sandbox,
       this.credentialGateway,
       this.credentialRefresh,
