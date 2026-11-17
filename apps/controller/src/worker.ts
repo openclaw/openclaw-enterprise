@@ -245,6 +245,12 @@ const REVISION_KEPT_WITHOUT_GIT_CODES: ReadonlySet<string> = new Set([
   "REPOSITORY_GIT_TOKEN_PENDING",
 ]);
 
+function requireClaimRenewal(renewed: ClaimedWork | undefined): void {
+  if (renewed === undefined) {
+    throw new WorkClaimLostError();
+  }
+}
+
 // A candidate revision's own deployment work: the only work that observes its OAuth bootstrap.
 // An active revision's source is already consumed.
 function isCandidateDeployment(claim: ClaimedWork): boolean {
@@ -2428,9 +2434,7 @@ export class ControllerWorker {
       cause = repositoryCleanupFailureCode(error);
     }
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       if (denial !== undefined) {
         await this.appendRevisionDenial(unit, claim, denial);
       }
@@ -3350,9 +3354,7 @@ export class ControllerWorker {
     result: AgentStopDispatchResult,
   ): Promise<void> {
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       if (result.outcome === "success" && result.agent !== undefined) {
         const agent = await this.lockClaimAgent(unit, claim);
         if (agent === undefined || agent.servicePrincipalId !== result.agent.servicePrincipalId) {
@@ -3681,9 +3683,7 @@ export class ControllerWorker {
     const terminal = ({ outcome }: CredentialWithdrawalDispatchResult) =>
       outcome === "permanent" || (outcome === "retry" && claim.attemptCount >= this.maxAttempts);
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       result = dispatched;
       let terminalFailure = terminal(result);
       // A terminal failure's queue transition locks the Namespace and Agent for cleanup. Take
@@ -4217,9 +4217,7 @@ export class ControllerWorker {
       // Namespace first, as every transaction that may also lock it (the work insert's
       // foreign key) must.
       await unit.namespaces.lockNamespace(revision.namespaceId, { includeDeleted: true });
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const pending = await this.pendingCredentialWithdrawals(unit, revision);
       await this.requeueCredentialWithdrawals(unit, pending);
       await queue.complete(claim, { code: "CREDENTIAL_WITHDRAWN" });
@@ -4322,9 +4320,7 @@ export class ControllerWorker {
     }
     await this.state.transactWithQueue(async (unit, queue) => {
       await unit.namespaces.lockNamespace(revision.namespaceId, { includeDeleted: true });
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       await this.requeueCredentialWithdrawals(
         unit,
         await this.pendingCredentialWithdrawals(unit, revision, sourceIds),
@@ -5146,9 +5142,7 @@ export class ControllerWorker {
     }
     const deferred = await this.state.transactWithQueue(async (unit, queue) => {
       const agent = await this.lockClaimAgent(unit, claim);
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       if (!isCurrent(agent)) {
         await queue.complete(claim, { code: "REVISION_MAINTENANCE_SUPERSEDED" });
         return false;
@@ -5197,9 +5191,7 @@ export class ControllerWorker {
     const completed = await this.state.transactWithQueue(async (unit, queue) => {
       const agent = await this.lockClaimAgent(unit, claim);
       const namespace = await unit.namespaces.findNamespace(claim.namespaceId);
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const revision = await unit.revisions.findRevision(
         claim.namespaceId,
         claim.agentId!,
@@ -6324,9 +6316,7 @@ export class ControllerWorker {
       };
     }
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       if (resolved.supersededBy !== undefined && resolved.outcome === "success") {
         const revision = await unit.revisions.findRevision(
           claim.namespaceId,
@@ -6849,9 +6839,7 @@ export class ControllerWorker {
       return false;
     }
     const outcome = await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const agent = await this.lockClaimAgent(unit, claim);
       if (
         agent?.status !== "active" ||
@@ -6906,9 +6894,7 @@ export class ControllerWorker {
   ): Promise<void> {
     await this.closeRevisionCredentials(claim, revision);
     await this.state.transactWithQueue(async (_unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       await queue.complete(claim, { code });
     }, this.queueOptions);
     this.passOutcome = "success";
@@ -6950,9 +6936,7 @@ export class ControllerWorker {
     let completed = false;
     let withdrawalPending = false;
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const agent = await this.lockClaimAgent(unit, claim);
       if (
         agent === undefined ||
@@ -7100,9 +7084,7 @@ export class ControllerWorker {
       }
     }
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const agent = await this.lockClaimAgent(unit, claim);
       if (
         agent === undefined ||
@@ -7226,9 +7208,7 @@ export class ControllerWorker {
   ): Promise<
     { readonly agent: Readonly<Agent>; readonly revision: Readonly<AgentRevision> } | undefined
   > {
-    if ((await queue.heartbeat(claim)) === undefined) {
-      throw new WorkClaimLostError();
-    }
+    requireClaimRenewal(await queue.heartbeat(claim));
     const agent = await this.lockClaimAgent(unit, claim);
     if (
       agent === undefined ||
@@ -7551,9 +7531,7 @@ export class ControllerWorker {
         : undefined;
     let auditedPending = false;
     await this.state.transactWithQueue(async (unit, queue) => {
-      if ((await queue.heartbeat(claim)) === undefined) {
-        throw new WorkClaimLostError();
-      }
+      requireClaimRenewal(await queue.heartbeat(claim));
       const current =
         namespace === undefined
           ? undefined
