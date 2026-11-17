@@ -115,6 +115,7 @@
     "tests/conformance/model-discovery.test.ts",
     "tests/conformance/utils.test.ts",
     "tests/conformance/workspace-node-setup.test.ts",
+    "tests/conformance/workspace-node-launch.test.ts",
     "tests/conformance/console-api-client.test.ts",
     "tests/conformance/console-carry.test.ts",
     "tests/conformance/console-namespace-name.test.ts",
@@ -406,6 +407,9 @@
     },
     {
       "path": "tests/conformance/workspace-node-setup.test.ts"
+    },
+    {
+      "path": "tests/conformance/workspace-node-launch.test.ts"
     },
     {
       "path": "tests/conformance/workspace-files-configuration.test.ts"

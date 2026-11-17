@@ -105,7 +105,8 @@ provider does not answer, Compute reports a transient dependency failure.
 
 For Codex, when the Driver supplies a provider endpoint and `harnessStatus`,
 Compute checks status while the workspace node is pending and waits for
-`serving` before it activates the revision.
+`serving` before it activates the revision. To run its file-only node separately, a
+host uses `@openclaw-enterprise/controller/workspace-node-launch`.
 For a dedicated OpenClaw worker, Compute checks status only before its node
 enrolls. After enrollment, `withdrawHarnessExposure(context)` removes the
 temporary status endpoint. The method resolves only after a read under the

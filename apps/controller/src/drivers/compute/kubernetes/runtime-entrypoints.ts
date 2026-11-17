@@ -4875,6 +4875,18 @@ function completeSetupCode(payload) {
 }
 `;
 
+/** The exact commands of a dedicated Codex file-only workspace node. */
+export const CODEX_WORKSPACE_NODE_COMMANDS =
+  "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills";
+
+/**
+ * Stock Codex program when a provider runs the file-only node separately. It is the
+ * same bytes as the nested child of AGENT_WITH_NODE_ENTRYPOINT, which existing provider
+ * Sandboxes compare on every retry, so it keeps that child's unused installer-only
+ * references and is not one of the standalone `*_ENTRYPOINT` launch programs.
+ */
+export const PROVIDER_CODEX_ONLY_PROGRAM = agentRuntimeEntrypoint({ withNode: true });
+
 // Kubernetes Codex implementation: this file-only node is not an OpenClaw
 // execution worker; its explicit command allowlist disables worker hosting.
 // It serves files while Codex restarts. Reuse Codex login/plugin initialization
@@ -5115,7 +5127,7 @@ delete codexEnv.OPENCLAW_NODE_DISPLAY_NAME;
 const nodeDisplayName = process.env.OPENCLAW_NODE_DISPLAY_NAME;
 const nodeCommands = [
   ...(nodeDisplayName ? ["--display-name", nodeDisplayName] : []),
-  "--commands", "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills",
+  "--commands", ${JSON.stringify(CODEX_WORKSPACE_NODE_COMMANDS)},
 ];
 // The kubelet swaps Secret volume contents atomically, but an empty, truncated
 // or otherwise undecodable code is treated as absent and never started.
@@ -5337,7 +5349,8 @@ for (const slot of [...processes].reverse()) start(slot);
 `;
 }
 
-const providerCodexChild = agentRuntimeEntrypoint({ withNode: true });
+// The provider-owned child omits the native installer; the stock program is the same child.
+const providerCodexChild = PROVIDER_CODEX_ONLY_PROGRAM;
 const protectedProviderCodexChild = agentRuntimeEntrypoint({ withNode: true, protected: true });
 export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   nodeProgramArguments(providerCodexChild),
