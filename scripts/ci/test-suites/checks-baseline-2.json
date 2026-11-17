@@ -312,7 +312,9 @@
       "expectedTests": [
         "CI streams safe OpenShell failures before cleanup and retains the original error",
         "run reports bounded OpenShell progress before the test file finishes",
-        "CI retains the unfinished upstream stage without changing the failed case"
+        "CI retains the unfinished upstream stage without changing the failed case",
+        "CI records only observed upstream replacement checkpoints on failure",
+        "CI binds upstream replacement progress to the case cutoff"
       ]
     },
     {

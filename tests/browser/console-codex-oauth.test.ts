@@ -19,6 +19,7 @@ import {
   MEMBER_WRITE,
   apiRequests,
   expectNoText,
+  holdRequests,
   login,
   nativeValues,
   newPage,
@@ -32,6 +33,7 @@ import {
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { within } from "../helpers/wait-for.ts";
 import {
   AGENT_DEVICE_LOGIN_CANCEL_DENIED,
   AGENT_DEVICE_LOGIN_POLL_DENIED,
@@ -218,7 +220,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const checking = "Checking Codex login…";
   async function answerPoll(intervalSeconds: number) {
     await page.getByText(checking, { exact: true }).waitFor();
-    const route = await nextPoll.promise;
+    const route = await within(nextPoll.promise, "the Console's next poll");
     nextPoll = Promise.withResolvers<Route>();
     const response = await route.fetch();
     const body: unknown = await response.json();
@@ -463,7 +465,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
   assert.equal((await racedSave).status(), 200);
   releaseDiscard.resolve();
-  assert.equal(await slowDiscard.promise, 204);
+  assert.equal(await within(slowDiscard.promise, "the server's answer to the held discard"), 204);
   const retainedAgent = jsonObject((await fixture.request("GET", agentPath)).data);
   assert.deepEqual(retainedAgent.harnessAuth, replaced);
   assert.deepEqual(retainedAgent.credentialSources, replacedAgent.credentialSources);
@@ -718,19 +720,17 @@ for (const savedAgent of [false, true]) {
     }
     const methodLabel = agent ? "Authentication source" : "Authentication method";
     await page.getByLabel(methodLabel).selectOption("credential_source");
-    const committed = Promise.withResolvers<string>();
-    const release = Promise.withResolvers<void>();
-    t.after(() => release.resolve());
     const beginPath = `/namespaces/${namespace.id}/agents${agent ? `/${agent.id}` : ""}/device-authorizations`;
-    await page.route(`**${beginPath}`, async (route) => {
-      const response = await route.fetch();
-      assert.equal(response.status(), 200);
-      committed.resolve(jsonString(jsonObject(responseData(await response.json()).session).id));
-      await release.promise;
-      await route.fulfill({ response }).catch(() => {});
+    const held = await holdRequests(t, page, `**${beginPath}`, {
+      once: true,
+      method: "POST",
+      afterServer: true,
     });
     await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
-    const sessionId = await committed.promise;
+    const committed = await held.requested;
+    assert.ok(committed, "the held start has its server answer");
+    assert.equal(committed.status(), 200);
+    const sessionId = jsonString(jsonObject(responseData(await committed.json()).session).id);
     assert.equal(gateway.sources.size, 1);
     assert.equal(
       (await fixture.request("GET", `/namespaces/${namespace.id}/secrets/${sessionId}`)).status,
@@ -738,7 +738,7 @@ for (const savedAgent of [false, true]) {
     );
     await page.getByRole("link", { name: "Credentials", exact: true }).click();
     await page.waitForURL("**/console/secrets?**");
-    release.resolve();
+    held.release();
     await waitForSettledFetches(page, beginPath, 1);
     await page.goBack();
     await page.getByLabel(methodLabel).waitFor();
@@ -808,25 +808,28 @@ async function openAgentOAuth(t: TestContext, name: string) {
   };
 }
 
-// Holds the next start's real API answer at the browser boundary until `release()`.
+// Holds the next start's real API answer at the browser boundary until `release()`. Awaiting
+// `answered` fails within 10 s if no start is held, and at once if its server answer is lost,
+// instead of waiting for the file timeout.
 async function holdNextStart(
   t: TestContext,
   { page, beginPath }: { page: Page; beginPath: string },
 ) {
-  const answered = Promise.withResolvers<{ status: number; body: unknown }>();
-  const release = Promise.withResolvers<void>();
-  t.after(() => release.resolve());
-  await page.route(
-    `**${beginPath}`,
-    async (route) => {
-      const response = await route.fetch();
-      answered.resolve({ status: response.status(), body: await response.json() });
-      await release.promise;
-      await route.fulfill({ response }).catch(() => {});
+  const held = await holdRequests(t, page, `**${beginPath}`, {
+    once: true,
+    method: "POST",
+    afterServer: true,
+  });
+  return {
+    get answered(): Promise<{ status: number; body: unknown }> {
+      return held.requested.then(async (response) => {
+        assert.ok(response, "the held start has its server answer");
+        const body: unknown = await response.json();
+        return { status: response.status(), body };
+      });
     },
-    { times: 1 },
-  );
-  return { answered: answered.promise, release: () => release.resolve() };
+    release: held.release,
+  };
 }
 
 async function showTab(page: Page, name: string) {
