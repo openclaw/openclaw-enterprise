@@ -240,19 +240,20 @@ by its source: route_not_ready`. The chat keeps running.
 - **Workaround:** keep conversations under the cap; compact long ones.
 - **Upstream status:** Box's own limit; not reported.
 
-## A chat session from before a redeploy fails every turn
+## Optional history injection into a Codex thread fails in Box
 
-- **Symptom:** every turn of an older chat session, for example one started
-  before a redeploy, fails within a second with `Codex session policy handoff
-failed: The provider Box refused a Codex request before dispatch
-(rpc-thread-inject-items)`. New sessions work.
-- **Cause** (shown after a redeploy; the same failure within one revision is
-  unexplained): when the Gateway resumes a session's Codex thread instead of
-  reusing a live one, it re-sends its instructions with `thread/inject_items`,
-  which the runtime image's provider-Box fence refuses before dispatch.
-- **Workaround:** start a new chat session.
-- **Upstream status:** a runtime image change: admit `thread/inject_items`
-  carrying developer messages only.
+- **Symptom:** a feature that injects history into a Codex thread fails with
+  `The provider Box refused a Codex request before dispatch
+(rpc-thread-inject-items)`. Ordinary chat, including sessions from before a
+  redeploy, works.
+- **Cause:** the runtime image's provider-Box fence admits `thread/inject_items`
+  only for the Gateway's session policy handoff: one developer-role text message
+  into a thread the same connection opened. History seeding, settled-turn
+  finalization, conversation binding transfer and the progress-card restore
+  after compaction stay refused.
+- **Workaround:** leave these features off; a failed progress-card restore is
+  only logged.
+- **Upstream status:** by design in OCE's runtime image.
 
 ## Codex Code Mode cannot run in Box
 
