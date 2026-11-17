@@ -947,7 +947,8 @@
       "expectedTests": [
         "one installed Driver owns both protected capabilities, lifecycle and verified release",
         "OpenShell registration pairs its capabilities using only a Repo delivery resolver",
-        "repository scope changes invalidate the external Driver identity while a reload preserves it"
+        "repository scope changes invalidate the external Driver identity while a reload preserves it",
+        "the loader closes an installed registration that later composition refuses"
       ]
     },
     {

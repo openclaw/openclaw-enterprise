@@ -246,6 +246,8 @@ listener, metrics, and prepared GitHub owner in order, continuing after a close
 fails, then stops its loop and database. A listener left open would keep the Pod
 running until its grace ends. Any failure logs `worker.error` `SHUTDOWN_FAILED`
 (exit 1). See `apps/controller/src/worker/shutdown.ts:closeWorkerComposition`.
+Failed startup closes an installed Driver package, refused or loaded, before the
+worker loop owns it, keeping the original error.
 
 When set, `controlPlane.nodeSelector` places the API, worker, migration,
 bootstrap, and private proxy on reviewed control-plane nodes. The
