@@ -147,12 +147,12 @@ verify a killed Pod's owner. An older image may also lack a record of the
 original PID 1 start time. If the replacement reports an unverifiable owner,
 follow this procedure.
 
-A dedicated Gateway does not recover a killed container's locks. Its container
-exits and restarts: `occ agent runtime AGENT_ID` shows `Error exit 1`, the
-deployment status stays `running` (`REVISION_INCOMPLETE`), and only `occ agent
-logs AGENT_ID --source gateway` quotes the holder. If the configuration check
-meets the lock first, the check `gateway-state-lock` fails instead. Use the same
-procedure.
+A dedicated Gateway does not recover a killed container's locks. On
+Kubernetes it stays unready with the failed check `gateway-state-lock`, a
+deployment in progress fails with `RUNTIME_STARTUP_FAILED`, and `occ agent logs
+AGENT_ID --source gateway` quotes the holder. If the holder stops cleanly, the
+Gateway restarts within 5 minutes; otherwise use the same procedure, which stops
+the Agent first.
 
 A dedicated Harness Pod that stops without a clean shutdown during native setup,
 for example on a node failure, can leave the lock in its workspace node state. Each

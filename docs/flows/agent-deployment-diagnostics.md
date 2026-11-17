@@ -159,10 +159,18 @@ state after admission.
   OpenClaw's own hints to run `openclaw doctor` are dropped, since the
   Harness runs Doctor itself. A pending marker in the retained `state` directory preserves the repair requirement
   across container replacements; fix the cause, then deploy again.
-- A `gateway` `gateway-state-lock` check with code `UNAVAILABLE` is a dedicated
-  Gateway that OpenClaw refused to configure: an earlier Gateway process did not
-  stop cleanly, and the restarted container cannot verify that the lock holder
-  stopped. The log line quotes OpenClaw's holder description. Follow
+- A `gateway` `gateway-state-lock` check with code `UNAVAILABLE` is a Gateway
+  that OpenClaw refused to configure or to start: an earlier Gateway process did
+  not stop cleanly, and the restarted container cannot verify that the lock
+  holder stopped. The log line quotes each holder OpenClaw lists. OpenClaw's own
+  start can refuse after `config validate` passed, for example for the owner
+  lease of a force-deleted Pod; it exits 1. A Kubernetes Gateway, dedicated or
+  embedded, that never served and exits 1 then runs the read-only
+  `openclaw gateway recover-lock --json` (never `--confirm`) and holds this
+  check when holders remain (`runtime-entrypoints.ts:holdGatewayStateLock`).
+  Every 5 minutes it retries a failed release of its own child's records,
+  inspects again, and restarts on purpose (exit 75) once no holder remains. A
+  failed inspection, or one with no holder, exits 1 as before. Follow
   [unverifiable state owner recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
 - A dedicated Gateway held at `gateway-tool-policy` with code
   `INCOMPATIBLE_RESPONSE` can have a runtime image provenance failure.
@@ -241,6 +249,8 @@ state after admission.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-17 12:30: Hold a Kubernetes Gateway whose own start refused an unverifiable state lock owner as check `gateway-state-lock`, after a read-only lock inspection; the recheck retries a failed release of its own child's records. (fix-gateway-lock-check, finding 3288)
 
 - 2026-11-14 11:06: Reject missing positions in the lists embedded in generated runtime programs. (authoring-run/927cdccf-0c9c-45b7-9e7c-4e5e39a43260 - 08f8640d5503df1c98e9939ea5cce2763e9c4085)
 
