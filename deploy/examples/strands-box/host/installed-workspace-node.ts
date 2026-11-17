@@ -171,7 +171,14 @@ function mountedDirectories(mountinfo?: string) {
     .split("\n")
     .map((line) => {
       const [, , device, root, path] = line.split(" ");
-      if (!device || !root?.startsWith("/") || !path?.startsWith("/")) {
+      // A namespace file bind (a node's CNI netns under /run/netns) has a root such as
+      // `net:[4026532620]`. It is kept, so nesting is still checked, but never matches a subpath.
+      if (
+        !device ||
+        !root ||
+        !(root.startsWith("/") || /^[a-z]+:\[[0-9]+\]$/u.test(root)) ||
+        !path?.startsWith("/")
+      ) {
         throw new Error("invalid_file_node_mount_inventory");
       }
       return { device, root: unescape(root), path: unescape(path) };

@@ -37,6 +37,7 @@ import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/
 import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { inflateRawSync } from "node:zlib";
 import {
+  assertNodeInputs,
   assertPinnedDirectory,
   fileIdentity,
   splitStockCommand,
@@ -1900,3 +1901,60 @@ test(
     }
   },
 );
+
+test("the file node mount inventory admits a host's namespace file binds", () => {
+  const root = mkdtempSync(join(tmpdir(), "box-node-inventory-"));
+  try {
+    const [rootfs, workspace, node] = ["rootfs", "workspace", "node"].map((name) => {
+      const path = join(root, name);
+      mkdirSync(path, { mode: 0o700 });
+      return path;
+    });
+    const line = (id: number, device: string, source: string, path: string) =>
+      `${id} 1 ${device} ${source} ${path} rw,relatime - ext4 /dev/vda1 rw`;
+    const input = (extra: string) => ({
+      installation: {
+        mode: "file-only-v1" as const,
+        rootfs,
+        rootfsIdentity: fileIdentity(rootfs),
+        runtimeSha256: "0".repeat(64),
+        workspaceVolume: { claimUid: "claim", volumeName: "volume" },
+      },
+      workspace,
+      workspaceIdentity: fileIdentity(workspace),
+      stateIdentity: fileIdentity(node),
+      volumeMounts: [
+        { path: workspace, subPath: "workspace", identity: fileIdentity(workspace) },
+        { path: node, subPath: "workspace-node-a-h", identity: fileIdentity(node) },
+      ],
+      runtime: join(root, "unused"),
+      route: {
+        kind: "workspace-node" as const,
+        url: "wss://gateway.example.test:10443/agents/a/node",
+        address: "10.0.0.1",
+      },
+      displayName: "node",
+      mountinfo: () =>
+        [
+          line(30, "252:1", "/", "/"),
+          line(31, "252:1", "/pv/workspace", workspace),
+          line(32, "252:1", "/pv/workspace-node-a-h", node),
+          extra,
+        ].join("\n"),
+    });
+    // A Kubernetes node's CNI network namespaces are nsfs binds whose root is not a path.
+    assert.doesNotThrow(() =>
+      assertNodeInputs(input(line(40, "0:4", "net:[4026532620]", "/run/netns/cni-1"))),
+    );
+    assert.throws(
+      () => assertNodeInputs(input(line(41, "0:4", "relative", "/run/other"))),
+      /invalid_file_node_mount_inventory/,
+    );
+    assert.throws(
+      () => assertNodeInputs(input(line(42, "0:4", "net:[4026532621]", join(workspace, "ns")))),
+      /file_node_nested_mount/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
