@@ -1,17 +1,13 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmod, cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { chmod, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { connect, createServer as createNetServer } from "node:net";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Duplex } from "node:stream";
 import { json } from "node:stream/consumers";
 import test, { type TestContext } from "node:test";
-import { createServer as createTlsServer } from "node:tls";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { Agent, MessageEvent, WebSocket } from "../../apps/controller/node_modules/undici/index.js";
+import { fileURLToPath } from "node:url";
 import {
   createExternalProtectedDriver,
   loadDriverPackage,
@@ -27,7 +23,10 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { listen } from "../helpers/listen.ts";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import {
+  installStrandsBoxDriverPackage,
+  strandsBoxReadinessProbe,
+} from "../helpers/strands-box-driver-package.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 
@@ -184,47 +183,9 @@ async function fixture(
   options: { readonly controlledInference?: Record<string, unknown> } = {},
 ) {
   const directory = await temporaryDirectory(t, "strands-driver-");
-  const packageRoot = join(directory, "controller");
-  const scope = join(packageRoot, "node_modules/@openclaw-enterprise");
-  const installed = join(scope, "example-strands-box-driver");
   const socket = join(directory, "control.sock");
-  await mkdir(installed, { recursive: true });
-  await cp(join(driverSource, "package.json"), join(installed, "package.json"));
-  await writeFile(
-    join(packageRoot, "package.json"),
-    JSON.stringify({ dependencies: { [packageName]: packageVersion } }),
-  );
-  for (const peer of ["occ", "utils", "contracts"]) {
-    await symlink(join(root, "packages", peer), join(scope, peer), "dir");
-  }
-  execFileSync(process.execPath, [join(driverSource, "build.ts"), join(installed, "dist")], {
-    cwd: root,
-  });
-  execFileSync(
-    "openssl",
-    [
-      "req",
-      "-new",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-subj",
-      "/CN=Strands Box conformance CA",
-      "-days",
-      "1",
-      "-addext",
-      "basicConstraints=critical,CA:TRUE",
-      "-addext",
-      "subjectAltName=IP:127.0.0.1",
-      "-keyout",
-      join(directory, "ca.key"),
-      "-out",
-      join(directory, "ca.pem"),
-    ],
-    { stdio: "ignore" },
-  );
-  const ca = await readFile(join(directory, "ca.pem"), "utf8");
+  const { packageRoot, ca, certKey, nativeModule } =
+    await installStrandsBoxDriverPackage(directory);
   const configuration = {
     namespace: namespace.name,
     controlSocket: socket,
@@ -452,8 +413,8 @@ async function fixture(
     requests,
     setupCode,
     stageModel,
-    certKey: join(directory, "ca.key"),
-    nativeModule: pathToFileURL(join(installed, "dist/native.js")).href,
+    certKey,
+    nativeModule,
     holdApproval() {
       approved = false;
     },
@@ -962,18 +923,7 @@ test(
 );
 
 async function readinessFixture(t: TestContext) {
-  const x = await fixture(t);
-  const module: unknown = await import(x.nativeModule);
-  const exported = object(module).nativeStatus;
-  assert.equal(typeof exported, "function");
-  const probe = exported as (
-    url: string,
-    ca: string,
-    token: string,
-    signal: AbortSignal,
-    generationSha256?: string,
-  ) => Promise<unknown>;
-  return { probe, ca: x.ca, tls: { key: await readFile(x.certKey), cert: x.ca } };
+  return strandsBoxReadinessProbe(await temporaryDirectory(t, "strands-readiness-"));
 }
 
 function firstClientFrame(socket: Duplex, receive: (value: Record<string, unknown>) => void) {
@@ -1175,157 +1125,6 @@ test(
       "status",
       "silent",
     ]);
-  },
-);
-
-const realNative = process.env.OCC_TEST_STRANDS_NATIVE_CODEX;
-
-function bridge(from: Duplex, to: Duplex) {
-  from.on("error", () => to.destroy());
-  to.on("error", () => from.destroy());
-  from.once("close", () => to.destroy());
-  to.once("close", () => from.destroy());
-  from.pipe(to);
-  to.pipe(from);
-}
-
-test(
-  "the pinned TLS readiness probe initializes the original native Codex through a Unix relay",
-  {
-    timeout: 20_000,
-    skip:
-      realNative === undefined &&
-      "Set OCC_TEST_STRANDS_NATIVE_CODEX to a verified native Codex executable.",
-  },
-  async (t) => {
-    assert.ok(realNative && isAbsolute(realNative));
-    const { probe, ca, tls } = await readinessFixture(t);
-    const directory = await temporaryDirectory(t, "strands-real-native-");
-    const path = join(directory, "app-server.sock");
-    const capability = randomBytes(32).toString("base64url");
-    const digest = createHash("sha256").update(capability).digest("hex");
-    const native = spawn(
-      realNative,
-      [
-        "app-server",
-        "--listen",
-        "ws://127.0.0.1:0",
-        "--ws-auth",
-        "capability-token",
-        "--ws-token-sha256",
-        digest,
-      ],
-      {
-        cwd: directory,
-        env: {
-          HOME: directory,
-          CODEX_HOME: directory,
-          PATH: "/usr/bin:/bin",
-          LANG: "C.UTF-8",
-          OTEL_SDK_DISABLED: "true",
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
-    let startupError: Error | undefined;
-    let listener: number | undefined;
-    native.once("error", (error) => {
-      startupError = error;
-    });
-    t.after(() => stopProcess(native));
-    for (const output of [native.stdout, native.stderr]) {
-      let tail = "";
-      output.setEncoding("utf8").on("data", (text: string) => {
-        tail = (tail + text).slice(-4_096);
-        const port = /(?:^|\n) {2}listening on: ws:\/\/127\.0\.0\.1:(\d{1,5})(?:\r?\n|$)/.exec(
-          tail,
-        )?.[1];
-        if (port !== undefined && Number(port) > 0 && Number(port) <= 65535) {
-          listener = Number(port);
-        }
-      });
-    }
-    const nativePort: number = await waitFor(
-      "the native process to announce its owned listener",
-      () => {
-        if (startupError) {
-          throw startupError;
-        }
-        assert.equal(
-          native.exitCode,
-          null,
-          "the selected Codex must support native WebSocket capability auth",
-        );
-        return listener;
-      },
-      5_000,
-    );
-
-    // Match the installed route's transport shape. Both bridges pass bytes;
-    // only the actual native app-server authenticates and answers initialize.
-    const unix = createNetServer((socket) => bridge(socket, connect(nativePort, "127.0.0.1")));
-    await new Promise<void>((resolve, reject) => {
-      unix.once("error", reject);
-      unix.listen(path, resolve);
-    });
-    await chmod(path, 0o600);
-    t.after(
-      () =>
-        new Promise<void>((resolve) => {
-          unix.close(() => resolve());
-        }),
-    );
-    const dispatcher = new Agent({ connect: { socketPath: path } });
-    const verifier = new WebSocket("ws://localhost/", {
-      dispatcher,
-      headers: { authorization: `Bearer ${capability}` },
-    });
-    try {
-      await new Promise<void>((resolve, reject) => {
-        verifier.addEventListener("open", () => resolve(), { once: true });
-        verifier.addEventListener("error", reject, { once: true });
-      });
-      await initializeNativeVerifier(async (method, params) => {
-        const id = 1;
-        const reply = await new Promise<Record<string, unknown>>((resolve, reject) => {
-          verifier.addEventListener("error", reject, { once: true });
-          verifier.addEventListener("message", (event) => {
-            try {
-              assert.ok(event instanceof MessageEvent && typeof event.data === "string");
-              const response = object(JSON.parse(event.data));
-              if (response.id === id) {
-                resolve(response);
-              }
-            } catch (error) {
-              reject(error);
-            }
-          });
-          verifier.send(JSON.stringify({ id, method, params }));
-        });
-        const result = object(reply.result);
-        assert.equal(result.codexHome, directory);
-        const { userAgent } = result;
-        assert.ok(typeof userAgent === "string");
-        assert.equal(userAgent.includes("codex"), false);
-        const nativeVersion = execFileSync(realNative, ["--version"], { encoding: "utf8" })
-          .trim()
-          .split(" ")[1];
-        assert.ok(nativeVersion);
-        assert.equal(userAgent.split(" ")[0], `strands-box-verify-native/${nativeVersion}`);
-        return reply;
-      });
-    } finally {
-      verifier.close();
-      await dispatcher.destroy();
-    }
-    const server = createTlsServer(tls, (socket) => bridge(socket, connect(path)));
-    const port: number = await listen(t, server);
-    const url = `wss://127.0.0.1:${port}/`;
-    const signal = new AbortController().signal;
-    assert.deepEqual(await probe(url, ca, "incorrect-capability", signal), { state: "starting" });
-    assert.deepEqual(await probe(url, ca, capability, signal), { state: "serving" });
-    assert.equal(native.exitCode, null);
-    await stopProcess(native);
   },
 );
 

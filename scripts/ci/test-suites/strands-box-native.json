@@ -1,0 +1,26 @@
+{
+  "env": { "OCC_TEST_STRANDS_BOX_NATIVE": "1" },
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/conformance/strands-box-native-codex.test.ts",
+      "requiredEnv": [
+        "OCC_TEST_STRANDS_NATIVE_CODEX",
+        "STRANDS_HOST_TEST_CODEX",
+        "STRANDS_HOST_TEST_AGENT_BUILD"
+      ],
+      "expectedTests": [
+        "the pinned TLS readiness probe initializes the original native Codex through a Unix relay",
+        "owned launcher reaches actual native Codex and retires it without carrying auth material"
+      ]
+    },
+    {
+      "path": "tests/conformance/strands-box-shell-calls.test.ts",
+      "requiredEnv": [
+        "OCC_TEST_STRANDS_BOX_SHELL_BOX",
+        "OCC_TEST_STRANDS_BOX_SHELL_VERIFIER_SHA256"
+      ],
+      "expectedTests": ["stock Box Shell Calls admit only the fixed read-only workspace verifier"]
+    }
+  ]
+}

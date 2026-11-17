@@ -6,7 +6,7 @@ last_verified: "2026-11-04"
 
 # Manual tests
 
-These 11 lanes have no configured recurring GitHub runs and are excluded from
+These 12 lanes have no configured recurring GitHub runs and are excluded from
 `ci`, `full`, and Full Integration dispatch. Select a lane explicitly after
 completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#results-and-cleanup).
 
@@ -15,6 +15,7 @@ completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#re
 - [`repository-credentials-live`](../../scripts/ci/test-suites/repository-credentials-live.json): requires an authorized disposable repository and cleanup. See [repository credentials](repository-credentials.md).
 - [`postgres-azure-workload-identity`](../../scripts/ci/test-suites/postgres-azure-workload-identity.json): see [Azure PostgreSQL tests](postgresql.md#azure-workload-identity-connections).
 - [`strands-sender`](../../scripts/ci/test-suites/strands-sender.json) ([setup](strands-box.md)): run native Codex and the real Strands repository sender against controlled services, without Box or a cluster.
+- [`strands-box-native`](../../scripts/ci/test-suites/strands-box-native.json) ([setup](strands-box.md#run-the-box-host-checks-with-native-inputs)): run the example Strands Box Driver's readiness probe and owned launcher against native Codex, and the stock ARM64 Box Shell Calls check.
 - [`ssh-host`](../../scripts/ci/test-suites/ssh-host.json): requires a disposable Linux/systemd host. Its optional model selector adds provider execution. See [SSH tests](ssh.md).
 - [`plugin-model`](../../scripts/ci/test-suites/plugin-model.json): requires a disposable cluster with Envoy Gateway and cert-manager, its Gateway CA certificate and key, an authorized Codex account, an immutable Agent image and three distinct scenario databases. See [plugin tests](plugins.md#native-runtime-prerequisites).
 - [`openshell-linear`](../../scripts/ci/test-suites/openshell-linear.json): starts a shipped OpenShell installation and verifies a Linear read through a normal Agent turn. It requires the connected-account file, model and read fixture from [Linear qualification](openshell.md#linear-tool-use-qualification).

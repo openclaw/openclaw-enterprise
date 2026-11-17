@@ -48,11 +48,14 @@ Linux ARM64 host, stage the verified helper as above and point the test at the
 v0.2.2 release executable with its two original helpers beside it:
 
 ```sh
+OCC_TEST_STRANDS_BOX_NATIVE=1 \
 OCC_TEST_STRANDS_BOX_SHELL_BOX=/absolute/verified-box/box \
 OCC_TEST_STRANDS_BOX_SHELL_VERIFIER_SHA256="$VERIFIER_SHA256" \
-  node --test --test-name-pattern 'stock Box Shell Calls admit' \
-  tests/conformance/strands-box-host.test.ts
+  node --test tests/conformance/strands-box-shell-calls.test.ts
 ```
+
+It is the second file of the manual `strands-box-native` lane; see
+[Strands Box tests](../../../../docs/testing/strands-box.md#run-the-box-host-checks-with-native-inputs).
 
 The test starts a fresh credential-free Box with a temporary marker and no
 permitted network destinations. It checks one successful Shell Calls receipt,

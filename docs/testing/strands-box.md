@@ -131,3 +131,29 @@ uncertain turn. A model-origin rejection identifies a fixture contract failure.
 If withdrawal fails, inspect the sender's terminal receipt, provider counters,
 and object lookup before changing production behavior. Run the focused sender
 controls with `node --test tests/conformance/strands-box-git.test.ts`.
+
+## Run the Box host checks with native inputs
+
+The manual `strands-box-native` lane holds the Box host checks that need
+material CI does not stage. Run them as a nonroot Linux user. The lane sets
+`OCC_TEST_STRANDS_BOX_NATIVE=1`. Without it, the ordinary test sweep skips
+these cases. Once selected, a missing input fails the case.
+
+- `tests/conformance/strands-box-native-codex.test.ts` sends the installed
+  Driver's pinned TLS readiness probe through a Unix relay to native Codex. It
+  also starts the owned launcher against native Codex and the compiled agent.
+  Set `OCC_TEST_STRANDS_NATIVE_CODEX` and `STRANDS_HOST_TEST_CODEX` to the
+  native Codex executable, and `STRANDS_HOST_TEST_AGENT_BUILD` to the compiled
+  agent directory.
+- `tests/conformance/strands-box-shell-calls.test.ts` needs ARM64 and the
+  stock Box. Set `OCC_TEST_STRANDS_BOX_SHELL_BOX` and
+  `OCC_TEST_STRANDS_BOX_SHELL_VERIFIER_SHA256` as described in the
+  [workspace verifier](../../deploy/examples/strands-box/workspace-verifier/README.md).
+
+Select one file with `--file` when the host has only one set of inputs:
+
+```sh
+node scripts/ci/run-tests.ts run strands-box-native \
+  --file tests/conformance/strands-box-native-codex.test.ts \
+  --state "$RUN/state.json" --results "$RUN/results.json"
+```
