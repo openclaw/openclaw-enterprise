@@ -122,6 +122,47 @@ entries use the same four fields.
   repositories and permissions the Agent needs.
 - **Upstream status:** by design in Box v0.2.2.
 
+## The whole execution can read the native hook credential and forge its own callbacks
+
+- **Symptom:** every process in the Box execution, including the agent's own
+  shell and any tool it runs, can read `/home/node/.oce-native-hooks` (the native
+  PreToolUse hook relay credential `{url, token}`), overwrite or delete entries in
+  it, and POST hook callbacks to the Gateway with the token. On OpenShell the
+  commands Codex sandboxes cannot reach this directory.
+- **Cause:** Box has one filesystem grant set per execution, not per process. The
+  example host adds `/home/node/.oce-native-hooks` to the box.toml
+  `[agent.filesystem]` write list so the Gateway can deliver the credential; Box
+  derives read access from the write list, so the workload reads and writes it
+  too. Codex runs under the `externalSandbox` policy, so it applies no filesystem
+  sandbox of its own and `apply_patch` can reach the directory as well; only Box's
+  grants bound it.
+- **What the token allows** (from the independent fence review; the live
+  confirmation was **not run**): POST callbacks for **this relay and generation
+  only**, for any allowed event, with any payload —
+  - a forged `pre_tool_use` returns a decision to the caller only; it does not
+    change what Codex's own hook receives;
+  - a forged `permission_request` raises an operator prompt with forged tool
+    input, and an allow-always grant is content-bound and still needs the
+    operator's decision;
+  - a forged `post_tool_use` reaches Gateway subagent-submission bookkeeping when
+    `onNativeSubagentSubmission` is set (impact not verified).
+
+  The token does **not** grant another relay's callbacks, nor node or operator
+  routes. A symlink planted at the credential's predictable name can redirect the
+  Gateway's write onto any Box-writable file with `{url, token}` content, with no
+  privilege gain (Codex already holds the workload's Box grants); `/home/node`
+  itself is not writable, so the directory cannot be swapped.
+- **Impact:** with start-time admission self-check in place the hook fails closed,
+  so tampering can at most deny the workload's own tools (the hook CLI renders a
+  PreToolUse block on any failure). It cannot approve a call the Gateway would
+  refuse or reach another Agent.
+- **Workaround:** run one Agent per Box execution; treat the credential directory
+  as reachable by the workload. Closing it needs the trusted credential-handling
+  process to run apart from the workload (see the shared-kernel gap below), which
+  Box v0.2.2 cannot do.
+- **Upstream status:** by design in Box v0.2.2 (per-execution filesystem grants).
+  The ask is a per-process or trusted-process-only grant for the hook directory.
+
 ## Any local process on the Box host can use Box's egress gateway
 
 - **Symptom:** a process on the Box host outside the execution, including code

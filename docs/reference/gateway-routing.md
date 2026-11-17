@@ -110,7 +110,13 @@ HOME (a SandboxDriver's `harnessHome`, else `/home/node`), outside the workspace
 and file-transfer roots. This directory is Harness runtime state (on OpenShell, the
 version's runtime PVC subpath). Each Codex start replaces it with an empty private
 directory. It is not an isolation boundary against compromised Harness code running as
-the same user. Gateway checks bind each
+the same user. On a Sandbox whose filesystem grants are per execution rather than
+per process (for example an external Sandbox that grants the credential directory
+to the whole execution), the workload can read the capability and POST callbacks
+to this route for its own relay and generation; because every check binds the
+callback to this Agent's live relay and generation, such a callback can at most
+influence or deny this Agent's own tool admission, never another Agent's, and the
+start-time qualification refuses to report ready when admission cannot run. Gateway checks bind each
 capability to this Agent's live provider/relay and exact generation; it grants
 neither another Agent's callbacks nor node or operator access. Native hooks use the installation's public CA bundle
 (the node's CA) with normal HTTPS certificate verification.
