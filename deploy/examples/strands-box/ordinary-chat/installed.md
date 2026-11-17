@@ -17,7 +17,7 @@ zero before the first Box rollout below.
 
 Keep the Worker at zero replicas with its control claim disabled. Use
 `controlSocketMode: worker-directory` for the host. Follow the
-[control claim checks](../driver/README.md#before-enabling-the-worker-control-claim)
+[control claim checks](../driver/worker-control.md)
 to verify the original Namespace, Node, bound control PVC and local PV, and
 the empty owner-only export directory on that Node. This control claim
 carries the Unix socket. The Worker will create a separate workspace claim
@@ -98,7 +98,7 @@ Box host, and the Gateway volume must match Gateway placement. Keep both
 volumes separate from the existing Worker control and bootstrap output claims
 that Helm references.
 
-After the empty export checks pass, [mount it read-only in one Worker](../driver/README.md#mount-the-empty-control-directory).
+After the empty export checks pass, [mount it read-only in one Worker](../driver/worker-control.md#mount-the-empty-control-directory).
 Verify the actual Worker mount, then submit the stopped Agent's first
 deployment once through [the guarded OCE workflow](../../../../docs/guides/deploy/production-agents.md#prepare-transport-credentials-and-deploy). The Worker creates the
 Harness claim before it calls the Box host. A copy of the workspace volume
@@ -200,7 +200,7 @@ does not approve or start Box. If the deadline passes, the revision fails,
 or any identity or outcome is uncertain, stop and reconcile the original
 revision without another deploy.
 
-Before approval, [verify the live Worker control mount](../driver/README.md#verify-the-live-worker-control-mount).
+Before approval, [verify the live Worker control mount](../driver/worker-control.md#verify-the-live-worker-control-mount).
 Privately match the pending owner, revision and requirements to the original
 OCE deployment. Confirm the file-only mode, volume UID and name, launch
 plan digest, and the `controlledInference` URL, address and CA digest. Do not dump host config, state files, credentials, or socket
