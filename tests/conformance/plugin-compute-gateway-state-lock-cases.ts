@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { dirname } from "node:path";
 import test from "node:test";
 import { invalidGatewayConfiguration } from "../helpers/openclaw-config-validation.ts";
 import { property, record, required, text } from "./plugin-compute-fixtures.ts";
@@ -67,10 +68,10 @@ function lockHoldLine(reported = leaseHolder) {
 }
 const RECHECK_MS = 300_000;
 
-// The configuration directory is writable here, so only the wrapper's own setting can make the
-// inspection read-only.
+// The directory of the configuration the Gateway runs with is writable here, so only the
+// wrapper's own setting can make the inspection read-only.
 function writableConfiguration(gateway: GatewaySupervisor) {
-  gateway.writableDirectories.add("/etc/openclaw");
+  gateway.writableDirectories.add(dirname(text(gateway.sandbox.process.env.OPENCLAW_CONFIG_PATH)));
 }
 
 // The files the exited-state release's namespace probe reads. Without them the probe fails and
