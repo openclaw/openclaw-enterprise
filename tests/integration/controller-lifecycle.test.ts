@@ -508,6 +508,22 @@ test("the controller selects explicitly registered Sandbox Drivers with closed f
       missing,
     );
   }
+  // A maintenance interval is a positive integer and requires provider-owned Harnesses.
+  controller.registerDriver(
+    Object.assign(createSandboxDriver({ id: "maintained" }), { maintenanceIntervalMs: 60_000 }),
+  );
+  for (const [id, extra] of [
+    ["maintenance-zero", { maintenanceIntervalMs: 0 }],
+    ["maintenance-fraction", { maintenanceIntervalMs: 1.5 }],
+    ["maintenance-text", { maintenanceIntervalMs: "60000" }],
+    ["maintenance-without-provision", { maintenanceIntervalMs: 60_000, provisionHarness: undefined }],
+  ] as const) {
+    assert.throws(
+      () => controller.registerDriver({ ...createSandboxDriver({ id }), ...extra }),
+      DriverSelectionError,
+      id,
+    );
+  }
   for (const hook of ["validateWorkspaceSetup", "ensureNamespace", "provisionHarness", "cleanup"]) {
     assert.throws(
       () =>

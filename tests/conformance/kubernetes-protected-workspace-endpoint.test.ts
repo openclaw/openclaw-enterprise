@@ -528,8 +528,11 @@ test("Compute binds the reserved original before enrollment and activates only a
   const provision = sandbox.provisionHarness;
   Reflect.deleteProperty(sandbox, "provisionHarness");
   events.length = 0;
-  await assert.rejects(prepare(), /protected workspace Driver is unavailable/);
-  await assert.rejects(activate(), /protected workspace Driver is unavailable/);
+  // The installed Driver's contract recheck refuses first where Compute requires the view.
+  const lifecycleMissing =
+    /protected workspace Driver is unavailable|no longer supplies the selected capability/;
+  await assert.rejects(prepare(), lifecycleMissing);
+  await assert.rejects(activate(), lifecycleMissing);
   assert.equal(events.length, 0);
   assert.equal(fixture.endpoints.length, 0);
   assert.deepEqual(fixture.read("ConfigMap", configMap, fixture.gatewayNamespace), pin);

@@ -10,7 +10,7 @@ import {
   HARNESS_EXECUTION_MODES,
   SANDBOX_FACETS,
 } from "@openclaw-enterprise/contracts";
-import { asRecord } from "@openclaw-enterprise/utils";
+import { asRecord, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 
 const COMPUTE_LIFECYCLE_PHASES = [
   "beforeWorkloadStart",
@@ -238,7 +238,11 @@ function sandboxHarnessContract(candidate: Record<string, unknown>): boolean {
     (candidate.protectedWorkspaceEndpoint === undefined ||
       (typeof candidate.provisionHarness === "function" &&
         typeof candidate.enrollHarness === "function" &&
-        typeof candidate.harnessStatus === "function"))
+        typeof candidate.harnessStatus === "function")) &&
+    // Only a provider can keep a maintenance pass from recreating a missing Harness.
+    (candidate.maintenanceIntervalMs === undefined ||
+      (isPositiveSafeInteger(candidate.maintenanceIntervalMs) &&
+        typeof candidate.provisionHarness === "function"))
   );
 }
 

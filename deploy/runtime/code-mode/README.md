@@ -1,8 +1,8 @@
 # ARM64 Codex Harness for sandboxes that forbid JIT
 
-Strands Box can start the stock Codex 0.164.0 Code Mode host and open a
-session, but JavaScript evaluation can terminate the host before it returns a
-result. The optional Harness image runs the same Codex CLI and V8 sandbox with
+A Sandbox that forbids JIT can start the stock Codex 0.164.0 Code Mode host
+and open a session, but JavaScript evaluation can terminate the host before it
+returns a result. The optional Harness image runs the same Codex CLI and V8 sandbox with
 the interpreter enabled. Supply the OCE runtime image already selected for
 your installation, pinned by its manifest digest.
 
