@@ -6,16 +6,19 @@ import { isAbsolute, normalize } from "node:path";
 
 export const CONTROLLED_INFERENCE_MARKER = "openclaw-strands-controlled-inference-v1";
 
-/** The top-level box.toml key a Box build with an operator route CA reads. Stock Box refuses it. */
-export const BOX_UPSTREAM_CA_KEY = "upstream_ca_files";
+/**
+ * The top-level box.toml key that names one PEM file of extra upstream roots, as proposed in
+ * strands-agents/box#147. Stock Box v0.2.2 refuses it. Box applies those roots gateway-wide.
+ */
+export const BOX_UPSTREAM_CA_KEY = "upstream-ca-file";
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const MAX_CA_BYTES = 65_536;
 const MAX_CA_CERTIFICATES = 8;
 const CERTIFICATE = /-----BEGIN CERTIFICATE-----[\sA-Za-z0-9+/=]+-----END CERTIFICATE-----/g;
 
-/** An extra upstream trust anchor for one route, verified and held in memory at config load. */
-export interface RouteCa {
+/** The one extra upstream CA bundle for a Box execution, verified and held in memory at load. */
+export interface UpstreamCa {
   readonly sha256: string;
   readonly pem: string;
 }
@@ -24,7 +27,8 @@ export interface EgressRoute {
   readonly kind: "workspace-node" | "controlled-inference";
   readonly url: string;
   readonly address: string;
-  readonly ca?: RouteCa;
+  /** The route opts in to the execution's upstream CA bundle by naming its digest. */
+  readonly caSha256?: string;
 }
 
 /** The nonsecret route identity that the Driver, the operator approval and the host compare. */
@@ -71,7 +75,7 @@ function exactRoute(url: string, address: string, kind: EgressRoute["kind"]): UR
   return parsed;
 }
 
-function routeCa(value: unknown): RouteCa {
+export function loadUpstreamCa(value: unknown): UpstreamCa {
   if (
     value === null ||
     typeof value !== "object" ||
@@ -85,11 +89,11 @@ function routeCa(value: unknown): RouteCa {
     !isAbsolute(value.file) ||
     normalize(value.file) !== value.file
   )
-    throw new Error("invalid_route_ca");
+    throw new Error("invalid_upstream_ca");
   const file = value.file;
   const expected = value.sha256;
   const link = lstatSync(file);
-  if (!link.isFile()) throw new Error("invalid_route_ca");
+  if (!link.isFile()) throw new Error("invalid_upstream_ca");
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   let bytes: Buffer;
   try {
@@ -102,15 +106,15 @@ function routeCa(value: unknown): RouteCa {
       (stat.mode & 0o022) !== 0 ||
       (stat.uid !== 0 && stat.uid !== process.getuid?.())
     )
-      throw new Error("invalid_route_ca");
+      throw new Error("invalid_upstream_ca");
     bytes = readFileSync(fd);
   } finally {
     closeSync(fd);
   }
-  if (bytes.length > MAX_CA_BYTES) throw new Error("invalid_route_ca");
+  if (bytes.length > MAX_CA_BYTES) throw new Error("invalid_upstream_ca");
   // The digest names the exact operator-reviewed bytes; any other file is a mismatch.
   if (createHash("sha256").update(bytes).digest("hex") !== expected)
-    throw new Error("route_ca_mismatch");
+    throw new Error("upstream_ca_mismatch");
   const pem = bytes.toString("utf8");
   const certificates = pem.match(CERTIFICATE);
   if (
@@ -125,7 +129,7 @@ function routeCa(value: unknown): RouteCa {
       }
     })
   )
-    throw new Error("invalid_route_ca");
+    throw new Error("invalid_upstream_ca");
   return { sha256: expected, pem };
 }
 
@@ -138,23 +142,29 @@ export function parseRoute(value: unknown, kind: EgressRoute["kind"]): EgressRou
     value === null ||
     typeof value !== "object" ||
     Array.isArray(value) ||
-    (keys !== "address,url" && !(kind === "controlled-inference" && keys === "address,ca,url")) ||
+    (keys !== "address,url" && keys !== "address,caSha256,url") ||
     !("url" in value) ||
     !("address" in value) ||
     typeof value.url !== "string" ||
-    typeof value.address !== "string"
+    typeof value.address !== "string" ||
+    ("caSha256" in value && (typeof value.caSha256 !== "string" || !SHA256.test(value.caSha256)))
   )
     throw new Error("invalid_fixed_egress");
   const url = exactRoute(value.url, value.address, kind);
-  const ca = "ca" in value ? routeCa(value.ca) : undefined;
-  return { kind, url: url.toString(), address: value.address, ...(ca === undefined ? {} : { ca }) };
+  const caSha256 = "caSha256" in value ? (value.caSha256 as string) : undefined;
+  return {
+    kind,
+    url: url.toString(),
+    address: value.address,
+    ...(caSha256 === undefined ? {} : { caSha256 }),
+  };
 }
 
 export function routeView(route: EgressRoute): RouteView {
   return {
     url: route.url,
     address: route.address,
-    ...(route.ca === undefined ? {} : { caSha256: route.ca.sha256 }),
+    ...(route.caSha256 === undefined ? {} : { caSha256: route.caSha256 }),
   };
 }
 
@@ -210,10 +220,34 @@ export async function assertPinnedResolution(
     throw new Error("egress_name_not_pinned");
 }
 
-/** The verified PEM bytes that a route-CA Box build adds to its upstream trust, if any. */
-export function upstreamCaPem(routes: readonly EgressRoute[]): string | undefined {
-  const pems = routes.flatMap((route) => (route.ca === undefined ? [] : [route.ca.pem.trim()]));
-  return pems.length === 0 ? undefined : `${[...new Set(pems)].join("\n")}\n`;
+/**
+ * Box adds the extra roots to its trust for every upstream it dials, not per route. So the host
+ * holds one bundle per Box execution, and every route Box will dial must opt in by naming that
+ * bundle's digest: one route that does not (such as an inline workspace node carrying the pairing
+ * code) refuses the whole bundle. A route kind opts in by declaring `caSha256` in its route.
+ */
+export function assertUpstreamCaScope(
+  ca: UpstreamCa | undefined,
+  routes: readonly EgressRoute[],
+): void {
+  for (const route of routes) {
+    if (ca === undefined) {
+      if (route.caSha256 !== undefined) throw new Error("upstream_ca_not_configured");
+    } else if (route.caSha256 === undefined) {
+      throw new Error("upstream_ca_route_not_declared");
+    } else if (route.caSha256 !== ca.sha256) {
+      throw new Error("upstream_ca_digest_mismatch");
+    }
+  }
+}
+
+/** The verified PEM bytes for the Box build's upstream CA key, after the scope check. */
+export function upstreamCaPem(
+  ca: UpstreamCa | undefined,
+  routes: readonly EgressRoute[],
+): string | undefined {
+  assertUpstreamCaScope(ca, routes);
+  return ca === undefined || routes.length === 0 ? undefined : `${ca.pem.trim()}\n`;
 }
 
 // Box's own egress policy checks hostname+port before DNS and the exact IP

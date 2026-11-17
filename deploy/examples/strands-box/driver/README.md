@@ -98,39 +98,37 @@ to Box. Without the fixture selection it refuses model Secret projections.
 
 ### Controlled inference route
 
-Box dials the model endpoint and verifies its certificate against public roots
-compiled into it, so a private IPv4 or `.svc.cluster.local` name cannot
-complete TLS. Name the endpoint with an operator DNS name and pin the one
-private address Box may dial:
+Box verifies the model endpoint's certificate against its built-in public
+roots, so a private IPv4 or `.svc.cluster.local` name cannot complete TLS.
+Name the endpoint with an operator DNS name and pin one private address:
 
 | Field | Value |
 |---|---|
 | `modelBaseUrl` | `https://<name or private IPv4>[:<port>]/v1`, as Compute normalizes it: lowercase, no trailing slash, no `:443` |
-| `address` | The one private IPv4 address that the name resolves to on the Box host. Required for a name; equal to an IPv4 origin |
-| `caSha256` | Only with a host route CA: the SHA-256 of its file |
+| `address` | The private IPv4 address the name resolves to on the Box host. Required for a name |
+| `caSha256` | Only with a host upstream CA bundle: its SHA-256 |
 
-Set the same route in this configuration, Compute's model provider
-`baseUrl`, and the host's `controlledInference` (`url`, `address`,
-`ca.sha256`). The host records the route in `pending.json`, so approval admits
-it. The Driver refuses a different host route before approval, Secret reads or
-relay creation, and on every later read. The host refuses a different Driver
-route before Box starts. It also refuses unless the system resolver returns only
-the pinned address. Box resolves again and its policy permits only the name and
-port, then only the pinned `ip4`, never IPv6.
+Set the same route here, in Compute's model provider `baseUrl`, and in the
+host's `controlledInference` (`url`, `address`, `caSha256`). Approval of
+`pending.json` admits that route. The Driver refuses a different host route
+before approval, Secret reads or relay creation, and on every later read; the
+host refuses a different Driver route before Box starts, and a name its
+resolver maps anywhere but the pinned address. Box's policy then permits only
+the name and port, then only the pinned `ip4`, never IPv6.
 
 For the certificate, use one of:
 
-- **A publicly trusted certificate** for the name, for example through DNS-01.
-  Resolve the name to the pinned address on the Box host through a private zone
-  or a root-owned `/etc/hosts` entry. The name appears in Certificate
-  Transparency logs.
-- **A route CA**: host `controlledInference.ca` is `{ "file", "sha256" }`, with
-  only CA certificates, owned by the host owner or root and not group- or
-  world-writable. The host loads it once and names a copy in Box's private
-  configuration directory with the top-level `upstream_ca_files` key. Stock Box
-  v0.2.2 refuses that key, so this needs a Box build that adds those files to its
-  public roots. Box trusts the CA for every permitted destination, so use a
-  dedicated CA.
+- **A publicly trusted certificate** for the name. Resolve the name to the
+  pinned address on the Box host through a private zone or a root-owned
+  `/etc/hosts` entry. The name appears in Certificate Transparency logs.
+- **An upstream CA bundle**: host `upstreamCa` is `{ "file", "sha256" }`, CA
+  certificates only, owned by the host owner or root, not group- or
+  world-writable. The host names a verified copy in Box's private configuration
+  directory with the `upstream-ca-file` key of strands-agents/box#147, which
+  stock Box v0.2.2 refuses. Box trusts the bundle for every upstream it dials,
+  so every route Box dials must set `caSha256` to its digest or the host refuses
+  to start. An inline workspace node must opt in; a separate file node is
+  unaffected. Use a dedicated CA.
 
 ### Before enabling the Worker control claim
 

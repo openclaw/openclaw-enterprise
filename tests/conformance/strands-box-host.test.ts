@@ -41,6 +41,7 @@ import {
   splitStockCommand,
 } from "../../deploy/examples/strands-box/host/installed-workspace-node.ts";
 import {
+  boxDialedRoutes,
   canonical,
   confirmControlledInference,
   digest,
@@ -60,7 +61,9 @@ import {
 import type { Pending } from "../../deploy/examples/strands-box/host/admission.ts";
 import {
   assertPinnedResolution,
+  assertUpstreamCaScope,
   BOX_UPSTREAM_CA_KEY,
+  loadUpstreamCa,
   parseRoute,
   policy,
   routeView,
@@ -1242,8 +1245,9 @@ test("a controlled inference DNS name is accepted only with its one pinned priva
     // Compute never produces these spellings, so the host refuses them at load.
     [{ url: "https://model.pilot.example/v1/", address: "10.0.0.9" }, "controlled-inference"],
     [{ url: "https://model.pilot.example/openai/v1", address: "10.0.0.9" }, "controlled-inference"],
-    // A route CA belongs only to the controlled inference route.
+    // A route opts in to the upstream CA bundle by digest only; the bundle is execution-wide.
     [{ url: "wss://gateway.pilot.example/pair", address: "10.0.0.1", ca: {} }, "workspace-node"],
+    [{ url, address: "10.0.0.9", caSha256: "A".repeat(64) }, "controlled-inference"],
     [{ url, address: "10.0.0.9", extra: true }, "controlled-inference"],
   ] as const) {
     assert.throws(() => parseRoute(value, kind), { message: /invalid_fixed_egress/ });
@@ -1329,7 +1333,7 @@ test("the host refuses a name that resolves anywhere but the pinned address", as
 });
 
 test(
-  "a route CA is loaded once by digest, must be CA certificates, and reaches only Box's authority files",
+  "an upstream CA bundle is loaded once by digest, must be CA certificates, and reaches only Box's authority files",
   { skip: unsupported },
   async () => {
     const directory = temporary();
@@ -1337,43 +1341,40 @@ test(
       const url = "https://model.pilot.example:8444/v1";
       const caFile = certificate(directory, "route-ca", true);
       const sha256 = sha256File(caFile);
+      const ca = loadUpstreamCa({ file: caFile, sha256 });
+      assert.equal(ca.sha256, sha256);
       const route = parseRoute(
-        { url, address: "10.0.0.9", ca: { file: caFile, sha256 } },
+        { url, address: "10.0.0.9", caSha256: sha256 },
         "controlled-inference",
       );
       assert.deepEqual(routeView(route), { url, address: "10.0.0.9", caSha256: sha256 });
-      assert.equal(upstreamCaPem([route]), readFileSync(caFile, "utf8").trim() + "\n");
-      assert.equal(
-        upstreamCaPem([parseRoute({ url, address: "10.0.0.9" }, "controlled-inference")]),
-        undefined,
-      );
-      // The CA digest does not change the network pin.
+      assert.equal(upstreamCaPem(ca, [route]), readFileSync(caFile, "utf8").trim() + "\n");
+      assert.equal(upstreamCaPem(undefined, []), undefined);
+      // The opt-in digest does not change the network pin.
       assert.equal(
         policy([route]),
         policy([parseRoute({ url, address: "10.0.0.9" }, "controlled-inference")]),
       );
-      const refused = (ca: unknown, message: string) =>
-        assert.throws(() => parseRoute({ url, address: "10.0.0.9", ca }, "controlled-inference"), {
-          message,
-        });
-      refused({ file: caFile, sha256: "0".repeat(64) }, "route_ca_mismatch");
+      const refused = (value: unknown, message: string) =>
+        assert.throws(() => loadUpstreamCa(value), { message });
+      refused({ file: caFile, sha256: "0".repeat(64) }, "upstream_ca_mismatch");
       const leaf = certificate(directory, "leaf", false);
-      refused({ file: leaf, sha256: sha256File(leaf) }, "invalid_route_ca");
+      refused({ file: leaf, sha256: sha256File(leaf) }, "invalid_upstream_ca");
       const linked = join(directory, "linked.pem");
       symlinkSync(caFile, linked);
-      refused({ file: linked, sha256 }, "invalid_route_ca");
+      refused({ file: linked, sha256 }, "invalid_upstream_ca");
       const padded = join(directory, "padded.pem");
       writeFileSync(padded, `${readFileSync(caFile, "utf8")}\nnot a certificate\n`, {
         mode: 0o600,
       });
-      refused({ file: padded, sha256: sha256File(padded) }, "invalid_route_ca");
+      refused({ file: padded, sha256: sha256File(padded) }, "invalid_upstream_ca");
       const writable = join(directory, "writable.pem");
       writeFileSync(writable, readFileSync(caFile));
       chmodSync(writable, 0o666);
-      refused({ file: writable, sha256 }, "invalid_route_ca");
-      refused({ file: "relative.pem", sha256 }, "invalid_route_ca");
-      refused({ file: caFile, sha256: sha256.toUpperCase() }, "invalid_route_ca");
-      refused({ file: caFile, sha256, extra: true }, "invalid_route_ca");
+      refused({ file: writable, sha256 }, "invalid_upstream_ca");
+      refused({ file: "relative.pem", sha256 }, "invalid_upstream_ca");
+      refused({ file: caFile, sha256: sha256.toUpperCase() }, "invalid_upstream_ca");
+      refused({ file: caFile, sha256, extra: true }, "invalid_upstream_ca");
 
       // Launch writes the verified bytes into the authority directory and names them in
       // box.toml; the operator file can change afterwards without reaching Box.
@@ -1392,7 +1393,7 @@ test(
       writeFileSync(
         boxBin,
         '#!/bin/sh\ncp -- "$3" ../generated-box.toml || exit 3\n' +
-          `ca=$(sed -n 's/^${BOX_UPSTREAM_CA_KEY} = \\["\\(.*\\)"\\]$/\\1/p' "$3")\n` +
+          `ca=$(sed -n 's/^${BOX_UPSTREAM_CA_KEY} = "\\(.*\\)"$/\\1/p' "$3")\n` +
           'cp -- "$ca" ../generated-ca.pem || exit 4\n' +
           'cp -- "$(dirname "$3")/policy.dw" ../generated-policy.dw || exit 5\nexit 2\n',
         { mode: 0o700 },
@@ -1410,15 +1411,25 @@ test(
         linuxPreview: true,
       });
       const { input } = smokeInput(config);
-      const execution = start(config, { ...input, egress: [route] });
+      // An undeclared route refuses the bundle before Box starts.
+      const undeclared = parseRoute({ url, address: "10.0.0.9" }, "controlled-inference");
+      const refusedRuntime = join(directory, "refused-run");
+      mkdirSync(refusedRuntime, { mode: 0o700 });
+      const refusedStart = start(
+        { ...config, runtimeDir: refusedRuntime },
+        { ...input, egress: [undeclared], upstreamCa: ca },
+      );
+      await assert.rejects(refusedStart.ready, { message: "startup_refused:stage-inputs" });
+      await refusedStart.done;
+      assert.throws(() => readFileSync(join(directory, "generated-box.toml")), { code: "ENOENT" });
+      const execution = start(config, { ...input, egress: [route], upstreamCa: ca });
       await assert.rejects(execution.ready, { message: /^startup_refused:/ });
       assert.equal(await execution.done, 2);
       const generated = readFileSync(join(directory, "generated-box.toml"), "utf8");
       const line = generated.split("\n").find((row) => row.startsWith(`${BOX_UPSTREAM_CA_KEY} = `));
       assert.ok(line, generated);
-      const paths = JSON.parse(line.slice(line.indexOf("["))) as string[];
-      assert.equal(paths.length, 1);
-      const path = paths[0]!;
+      // One scalar path, as strands-agents/box#147 reads it.
+      const path = JSON.parse(line.slice(line.indexOf("=") + 1).trim()) as string;
       const policyLine = generated.match(/^policy = (".*")$/m);
       assert.ok(policyLine);
       // Box excludes its own configuration directory from every grant.
@@ -1508,21 +1519,20 @@ async function handshake(port: number, servername: string, ca?: string): Promise
 }
 
 test(
-  "the trust bundle the host hands Box validates the route CA's leaf for the pinned name only",
+  "the bundle the host hands Box completes TLS to a leaf it issued for the pinned name",
   { skip: unsupported },
   async (t) => {
     const directory = temporary();
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const caFile = certificate(directory, "route-ca", true);
+    const ca = loadUpstreamCa({ file: caFile, sha256: sha256File(caFile) });
     const route = parseRoute(
-      {
-        url: "https://model.pilot.example:8444/v1",
-        address: "10.0.0.9",
-        ca: { file: caFile, sha256: sha256File(caFile) },
-      },
+      { url: "https://model.pilot.example:8444/v1", address: "10.0.0.9", caSha256: ca.sha256 },
       "controlled-inference",
     );
-    const bundle = upstreamCaPem([route]);
+    // Hostname verification only: Box would trust this CA for any name its policy permits,
+    // which is why every route Box dials must opt in to the bundle.
+    const bundle = upstreamCaPem(ca, [route]);
     assert.ok(bundle);
     const leaves = {
       named: signedLeaf(directory, caFile, "model", "DNS:model.pilot.example"),
@@ -1558,6 +1568,83 @@ test(
       } finally {
         server.close();
       }
+    }
+  },
+);
+
+test(
+  "an upstream CA bundle needs every route Box dials to declare its digest",
+  { skip: unsupported },
+  () => {
+    const directory = temporary();
+    try {
+      const caFile = certificate(directory, "route-ca", true);
+      const ca = loadUpstreamCa({ file: caFile, sha256: sha256File(caFile) });
+      const otherFile = certificate(directory, "other-ca", true);
+      const other = sha256File(otherFile);
+      const model = (caSha256?: string) =>
+        parseRoute(
+          {
+            url: "https://model.pilot.example:8444/v1",
+            address: "10.0.0.9",
+            ...(caSha256 === undefined ? {} : { caSha256 }),
+          },
+          "controlled-inference",
+        );
+      const node = (caSha256?: string) =>
+        parseRoute(
+          {
+            url: "wss://gateway.pilot.example:8443/pair",
+            address: "10.0.0.1",
+            ...(caSha256 === undefined ? {} : { caSha256 }),
+          },
+          "workspace-node",
+        );
+      // One route declaring.
+      assertUpstreamCaScope(ca, [model(ca.sha256)]);
+      // Two routes, both declaring.
+      assertUpstreamCaScope(ca, [node(ca.sha256), model(ca.sha256)]);
+      assert.equal(upstreamCaPem(ca, [node(ca.sha256), model(ca.sha256)]), `${ca.pem.trim()}\n`);
+      // One of two not declaring: the inline node would carry the pairing code under this trust.
+      for (const routes of [
+        [node(), model(ca.sha256)],
+        [model(ca.sha256), node()],
+      ]) {
+        assert.throws(() => assertUpstreamCaScope(ca, routes), {
+          message: "upstream_ca_route_not_declared",
+        });
+        assert.throws(() => upstreamCaPem(ca, routes), {
+          message: "upstream_ca_route_not_declared",
+        });
+      }
+      // Mismatched digests.
+      assert.throws(() => assertUpstreamCaScope(ca, [node(ca.sha256), model(other)]), {
+        message: "upstream_ca_digest_mismatch",
+      });
+      // A declared digest with no bundle configured.
+      assert.throws(() => assertUpstreamCaScope(undefined, [model(ca.sha256)]), {
+        message: "upstream_ca_not_configured",
+      });
+      assertUpstreamCaScope(undefined, [node(), model()]);
+      // Config load counts the workspace node only when it runs inside Box.
+      assert.deepEqual(
+        boxDialedRoutes({ workspaceNode: node(), controlledInference: model(ca.sha256) }).map(
+          ({ kind }) => kind,
+        ),
+        ["workspace-node", "controlled-inference"],
+      );
+      const separate = boxDialedRoutes({
+        workspaceNode: node(),
+        separateWorkspaceNode: {},
+        controlledInference: model(ca.sha256),
+      });
+      assert.deepEqual(
+        separate.map(({ kind }) => kind),
+        ["controlled-inference"],
+      );
+      assertUpstreamCaScope(ca, separate);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   },
 );
