@@ -463,7 +463,6 @@ async function installedInjector(t: TestContext, profile: Profile) {
             keyFile: tls.keyFile,
             upstreamOrigin,
             profile,
-            authorization: "online-request",
           },
         },
         credential_proxy: { id, configuration: {} },
@@ -815,7 +814,6 @@ test("the requests port refuses at each of its own guards", async (t) => {
         ["a route without a numeric fence", { route: { ...route, fence: "3" } }],
         ["no route", { route: null }],
         ["an unknown profile", { profile: "git_read" }],
-        ["an unknown authorization mode", { authorization: "observed" }],
         ["an unparsable deadline", { deadlineAt: "soon" }],
         ["a past deadline", { deadlineAt: past }],
         [
@@ -930,16 +928,17 @@ test("the requests port refuses at each of its own guards", async (t) => {
       const input = {
         route,
         profile: row.profile ?? "repository_git",
-        authorization: "online-request",
         request: viewOf(row.request ?? granted),
         signal: row.signal?.signal ?? AbortSignal.timeout(5000),
       };
       const decision = await requests.authorize(
         (row.input ? row.input(input) : input) as Parameters<typeof requests.authorize>[0],
       );
-      const { inject, sendBy, ...rest } = decision as Record<string, unknown>;
+      const { credential, sendBy, exchangeId, ...rest } = decision as Record<string, unknown>;
       assert.deepEqual(rest, row.expected);
-      assert.equal(inject !== undefined, decision.kind === "allow");
+      assert.equal(credential !== undefined, decision.kind === "allow");
+      // The decision names the use OCE asked its owner to record, if it asked.
+      assert.equal(exchangeId, calls.uses.at(-1)?.exchangeId);
       assert.equal(sendBy !== undefined, decision.kind === "allow");
       assert.deepEqual([calls.reads, calls.uses.length], [row.reads, row.uses]);
     });
@@ -953,7 +952,6 @@ test("the requests port digests the whole classified view and nothing else", asy
     const decision = await requests.authorize({
       route,
       profile: "repository_git",
-      authorization: "online-request",
       request,
       signal: AbortSignal.timeout(5000),
     });

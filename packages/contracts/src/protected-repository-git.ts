@@ -233,13 +233,17 @@ export type GitHubRequestDecision =
   | {
       readonly kind: "allow";
       readonly operation: GitHubRequestOperation;
+      /** OCE's use record for this request: join sender receipts and outcome reports to it. */
+      readonly exchangeId: string;
       /** Start sending before this instant on the Worker's clock, or drop the request. */
       readonly sendBy: string;
-      /** The one header to add to exactly the request OCE classified, nothing else: send
-       * those bytes once. An injector adds it to the held request; a forwarding sender sends
-       * the received request with it. Never log, store, reuse or resend it; a retry is a new
-       * request with its own decision. */
-      readonly inject: { readonly name: "authorization"; readonly value: string };
+      /** The credential for exactly the request OCE classified, nothing else: send those bytes
+       * once. Git takes it as HTTP Basic `username:token`, the API as `Bearer token`; the
+       * caller places it as its route requires. Never log, store, reuse or resend it; a retry
+       * is a new request with its own decision. */
+      readonly credential:
+        | { readonly scheme: "basic"; readonly username: "x-access-token"; readonly token: string }
+        | { readonly scheme: "bearer"; readonly token: string };
     }
   | {
       readonly kind: "refused";
@@ -247,6 +251,8 @@ export type GitHubRequestDecision =
       /** Absent when OCE cannot attribute the request to this grant: show a generic refusal. */
       readonly reasonCode?: GitHubRequestReasonCode;
       readonly operation?: GitHubRequestOperation;
+      /** Present once OCE asked its owner, which may have recorded a possible use. */
+      readonly exchangeId?: string;
     };
 
 /**
@@ -254,7 +260,7 @@ export type GitHubRequestDecision =
  * same authority as `bindRepositoryGit`. Each call reads the current material for `route`,
  * classifies the request for that grant (Git smart HTTP and its pushed refs, GitHub REST and
  * GraphQL, the draft pull request create), records one possible use and answers allow (with
- * the credential header) or refuse. Callers need no GitHub ref, draft or repository rules of
+ * the credential) or refuse. Callers need no GitHub ref, draft or repository rules of
  * their own; malformed input is refused, never thrown.
  *
  * Precondition (current rule; a release-per-request evidence mode may replace it, RFC-0040):
@@ -277,9 +283,9 @@ export interface RepositoryGitRequests {
   authorize(input: {
     /** The recipient's confirmed route for the installed material version (see above). */
     readonly route: RepositoryGitInstallationFence;
-    /** The profile and authorization mode admitted for this recipient. */
+    /** The profile admitted for this recipient; the recipient is admitted for online
+     * authorization of every request. */
     readonly profile: RepositoryGitDeliveryProfile;
-    readonly authorization: "exact-dispatch" | "online-request";
     readonly request: GitHubRequestView;
     /** In the future and at most 30 seconds ahead, or refused; defaults to 10 seconds. */
     readonly deadlineAt?: string;

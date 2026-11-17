@@ -22,17 +22,8 @@ type Config = {
   keyFile: string;
   upstreamOrigin: string;
   profile: "repository_git" | "github_repository" | "github_installation";
-  authorization: "exact-dispatch" | "online-request";
 };
-const keys = [
-  "endpoint",
-  "ca",
-  "certFile",
-  "keyFile",
-  "upstreamOrigin",
-  "profile",
-  "authorization",
-];
+const keys = ["endpoint", "ca", "certFile", "keyFile", "upstreamOrigin", "profile"];
 export const configurationSchema = {
   type: "object",
   additionalProperties: false,
@@ -40,7 +31,6 @@ export const configurationSchema = {
   properties: {
     ...Object.fromEntries(keys.map((key) => [key, { type: "string" }])),
     profile: { enum: ["repository_git", "github_repository", "github_installation"] },
-    authorization: { enum: ["exact-dispatch", "online-request"] },
   },
 };
 
@@ -133,7 +123,6 @@ export function createDriver(options: {
     const decision = await requests.authorize({
       route,
       profile: config.profile,
-      authorization: config.authorization,
       request: held,
       signal: AbortSignal.timeout(5000),
     });
@@ -144,7 +133,12 @@ export function createDriver(options: {
         .end(JSON.stringify({ reason_code: decision.reasonCode ?? "denied" }));
       return;
     }
-    injector.decisions.push({ kind: "allow", operation: decision.operation });
+    const { credential } = decision;
+    injector.decisions.push({
+      kind: "allow",
+      operation: decision.operation,
+      exchangeId: decision.exchangeId,
+    });
     if (!(Date.now() < Date.parse(decision.sendBy))) {
       res.writeHead(403).end();
       return;
@@ -162,7 +156,12 @@ export function createDriver(options: {
           ...Object.fromEntries(held.headers),
           host: held.target.host,
           "content-length": String(body.length),
-          [decision.inject.name]: decision.inject.value,
+          // This route places the credential as an authorization header.
+          authorization:
+            credential.scheme === "basic"
+              ? "Basic " +
+                Buffer.from(credential.username + ":" + credential.token).toString("base64")
+              : "Bearer " + credential.token,
         },
       },
       (response) => {

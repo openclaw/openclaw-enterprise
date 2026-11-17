@@ -403,7 +403,7 @@ const maximumDeadlineMs = 30_000;
 
 /**
  * OCE's request authorization for an installed sender or injector, bound to the Worker's
- * authority. The token appears only in the returned header value. Whether the material was
+ * authority. The token appears only in the returned credential. Whether the material was
  * prepared ahead or is minted for this request stays behind `readMaterial`. Input comes from
  * a package OCE does not control: anything malformed is refused, never thrown.
  */
@@ -414,6 +414,8 @@ export function createRepositoryGitRequests(
     async authorize(
       input: Parameters<RepositoryGitRequests["authorize"]>[0],
     ): Promise<GitHubRequestDecision> {
+      // Set once OCE asks its owner, which may record a possible use under this ID.
+      let exchangeId: string | undefined;
       const refuse = (
         refusal: Refusal,
         operation?: GitHubRequestOperation,
@@ -424,6 +426,7 @@ export function createRepositoryGitRequests(
           refusal,
           ...(reasonCode === undefined ? {} : { reasonCode }),
           ...(operation === undefined ? {} : { operation }),
+          ...(exchangeId === undefined ? {} : { exchangeId }),
         };
       };
       if (
@@ -435,7 +438,7 @@ export function createRepositoryGitRequests(
       ) {
         return refuse("request_invalid");
       }
-      const { route, profile, authorization, request, signal } = input;
+      const { route, profile, request, signal } = input;
       const now = Date.now();
       const deadlineAt = input.deadlineAt ?? new Date(now + 10_000).toISOString();
       const deadline = typeof deadlineAt === "string" ? Date.parse(deadlineAt) : NaN;
@@ -447,12 +450,8 @@ export function createRepositoryGitRequests(
             : profile === "repository_git"
               ? undefined
               : null;
-      const mode =
-        authorization === "online-request"
-          ? authority.online
-          : authorization === "exact-dispatch"
-            ? authority
-            : undefined;
+      // Every request is decided online; exact dispatch waits for a consumer that needs it.
+      const mode = authority.online;
       if (
         scope === null ||
         !mode ||
@@ -505,7 +504,7 @@ export function createRepositoryGitRequests(
         binding,
         deadlineAt,
         signal,
-        expect: authorization === "online-request" ? "allow" : "permit",
+        expect: "allow",
         requestDigest: () =>
           createHash("sha256")
             .update(
@@ -533,6 +532,7 @@ export function createRepositoryGitRequests(
             .update(request.body)
             .digest("hex"),
         authorize: async (q, installed, signal) => {
+          exchangeId = q.exchangeId;
           const result = await port.authorize(q, { ...installed, route }, signal);
           // An installation-scope answer names its scope, operation and recipient fence.
           if (
@@ -555,20 +555,19 @@ export function createRepositoryGitRequests(
         return refuse(outcome.refusal, outcome.operation);
       }
       const { decision, operation } = outcome;
-      const sendBy = decision.kind === "allow" ? decision.replyBy : decision.sendStartBy;
+      // decideGitHubRequest already refused anything but the online kind it expects.
+      const sendBy = decision.kind === "allow" ? decision.replyBy : "";
       if (!(Date.now() < Date.parse(sendBy))) {
         return refuse("approval_denied", operation);
       }
       return {
         kind: "allow",
         operation,
+        exchangeId: decision.exchangeId,
         sendBy,
-        inject: {
-          name: "authorization",
-          value: gitOperations.has(operation)
-            ? "Basic " + Buffer.from("x-access-token:" + material.value).toString("base64")
-            : "Bearer " + material.value,
-        },
+        credential: gitOperations.has(operation)
+          ? { scheme: "basic", username: "x-access-token", token: material.value }
+          : { scheme: "bearer", token: material.value },
       };
     },
   });

@@ -187,7 +187,7 @@ Neither decision proves delivery or the provider outcome.
 ### GitHub request decisions
 
 Use `requests` (`RepositoryGitRequests`) instead of GitHub rules of your own.
-`requests.authorize({ route, profile, authorization, request, signal })` reads the
+`requests.authorize({ route, profile, request, signal })` reads the
 material for `route`, classifies the request with the bundled route's code (smart HTTP
 and its pushed refs, GitHub REST and GraphQL, the draft pull request create), records
 one use and returns `allow` or `refused`. Malformed input is refused.
@@ -201,11 +201,12 @@ one use and returns `allow` or `refused`. Malformed input is refused.
   target (never the `Host` header), lowercase headers without credential, routing or
   framing headers, and the buffered body up to 4 MiB. Give each execution credential its
   own `route`. The caller owns the time budget and bounds its calls in flight.
-- **Allow.** Add `inject` to exactly the classified bytes and send them once before
-  `sendBy` (Worker clock); an injector need not forward. Never resend with that header: a
-  client may retry a `route_not_ready` refusal as a new request. Show the Agent
-  `reasonCode`.
-- **Accepted gap.** `inject` carries the grant's installation token, which GitHub accepts
+- **Allow.** Place `credential` on exactly the classified bytes (Git: Basic
+  `username:token`; API: `Bearer token`) and send them once before `sendBy` (Worker
+  clock); an injector need not forward. `exchangeId` names OCE's use record. Never resend
+  with that credential: a client may retry a `route_not_ready` refusal as a new request.
+  Show the Agent `reasonCode`.
+- **Accepted gap.** `credential` is the grant's installation token, which GitHub accepts
   for anything its permissions cover until it expires. The ref and draft rules bind only a
   caller that keeps this contract. Do not assume the same credential across calls.
 
