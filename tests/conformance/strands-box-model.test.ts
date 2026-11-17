@@ -18,7 +18,6 @@ import {
   type ModelAsk,
   parseModelRequest,
 } from "../../deploy/examples/strands-box/host/credential-source.ts";
-import { inferenceRoute } from "../../deploy/examples/strands-box/driver/index.ts";
 import {
   modelCredentials,
   parseRoute,
@@ -1232,14 +1231,12 @@ test(
       "https://10.0.0.9:8444/openai/v1/responses",
       "https://10.0.0.9:8444/./v1",
     ]) {
-      // The Driver and the host refuse the same spellings (the URL parser's own normalisation
-      // of dot segments makes the spelling differ, which both refuse too).
-      assert.equal(inferenceRoute({ modelBaseUrl: spelling, address: "10.0.0.9" }), undefined, spelling);
+      // The host refuses them at load (the Driver's same refusals: strands-box-driver.test.ts).
+      // The URL parser's own normalisation of dot segments changes the spelling, refused too.
       assert.throws(() => parseRoute({ url: spelling, address: "10.0.0.9" }, "controlled-inference"), {
         message: "invalid_fixed_egress",
       });
     }
-    assert.deepEqual(inferenceRoute({ modelBaseUrl: route }), { url: route, address: "10.0.0.9" });
     const parsed = parseRoute({ url: route, address: "10.0.0.9" }, "controlled-inference");
     // Box's policy: exactly one request rule for the route, POST and the exact full path.
     const rules = policy([parsed])
