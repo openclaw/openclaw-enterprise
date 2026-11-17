@@ -398,10 +398,14 @@ const gitOperations: ReadonlySet<GitHubRequestOperation> = new Set([
   "receive-pack",
 ]);
 
+/** The longest `deadlineAt` a caller may ask for, as the contract states. */
+const maximumDeadlineMs = 30_000;
+
 /**
  * OCE's request authorization for an installed sender or injector, bound to the Worker's
  * authority. The token appears only in the returned header value. Whether the material was
- * prepared ahead or is minted for this request stays behind `readMaterial`.
+ * prepared ahead or is minted for this request stays behind `readMaterial`. Input comes from
+ * a package OCE does not control: anything malformed is refused, never thrown.
  */
 export function createRepositoryGitRequests(
   authority: ProtectedRepositoryGitAuthority,
@@ -410,7 +414,6 @@ export function createRepositoryGitRequests(
     async authorize(
       input: Parameters<RepositoryGitRequests["authorize"]>[0],
     ): Promise<GitHubRequestDecision> {
-      const { route, profile, authorization, request, signal } = input;
       const refuse = (
         refusal: Refusal,
         operation?: GitHubRequestOperation,
@@ -423,7 +426,19 @@ export function createRepositoryGitRequests(
           ...(operation === undefined ? {} : { operation }),
         };
       };
-      const deadlineAt = input.deadlineAt ?? new Date(Date.now() + 10_000).toISOString();
+      if (
+        typeof input !== "object" ||
+        input === null ||
+        !(input.signal instanceof AbortSignal) ||
+        typeof input.request !== "object" ||
+        input.request === null
+      ) {
+        return refuse("request_invalid");
+      }
+      const { route, profile, authorization, request, signal } = input;
+      const now = Date.now();
+      const deadlineAt = input.deadlineAt ?? new Date(now + 10_000).toISOString();
+      const deadline = typeof deadlineAt === "string" ? Date.parse(deadlineAt) : NaN;
       const scope =
         profile === "github_repository"
           ? "github-repository"
@@ -441,10 +456,12 @@ export function createRepositoryGitRequests(
       if (
         scope === null ||
         !mode ||
-        !route ||
+        typeof route !== "object" ||
+        route === null ||
         typeof route.revisionId !== "string" ||
         !Number.isSafeInteger(route.fence) ||
-        !Number.isFinite(Date.parse(deadlineAt)) ||
+        // A deadline the owner would refuse is refused here, not reported as "retry shortly".
+        !(deadline > now && deadline <= now + maximumDeadlineMs) ||
         !boundedView(request)
       ) {
         return refuse("request_invalid");
@@ -501,7 +518,14 @@ export function createRepositoryGitRequests(
                 binding.grantId,
                 binding.scope ? [binding.scope, binding.installationId] : binding.repositoryId,
                 binding.scope ? route.fence : binding.pushRef,
-                request.target,
+                // The target's own fields, so extra or reordered keys cannot change the digest.
+                [
+                  request.target.host,
+                  request.target.port,
+                  request.target.method,
+                  request.target.path,
+                  request.target.query,
+                ],
                 request.headers,
               ]),
             )
