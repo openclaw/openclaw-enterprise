@@ -89,7 +89,10 @@ Other work changed the remaining slices by 2026-11-16, after slice 1 merged:
    requester can `operate`, and audits them. Turning off `gatewayManagedMode`
    stays administrator-only. The Namespace Agent capabilities report
    `agentProvisioning` to members, and a member's console offers guided
-   provisioning.
+   provisioning. In review in
+   [#6364](https://github.com/openclaw/openclaw-enterprise/pull/6364), which
+   also gives the worker the `iam` configuration so provisioning writes Owner
+   bindings, and holds the requester's account before the worker writes.
 3. **Member grant guidance.** The console Credentials tab stops telling a
    member to ask an administrator for a grant that the member's deploy writes.
 4. **Bindings without a resource.** Optional `resourceKind` and `resourceId`
@@ -127,11 +130,12 @@ SCIM through `@better-auth/scim` is a later plan.
   the revision and deployment status of its deploy and its Agent's sandbox
   policy; another member is refused. On k3d, a Default user deploys in `default`
   and gets a real model turn.
-- Slice 2: in `tests/integration/postgres-agent-provisioning.test.ts`, a member
-  provisions an Agent in `default` through the real worker, owns the Agent and
-  Configuration, and the worker grants the Agent only the member's own Secret.
-  A second member cannot read the request, and a member who turns off
-  `gatewayManagedMode` is refused.
+- Slice 2: in `tests/integration/postgres-agent-provisioning-member.test.ts`, a
+  member provisions an Agent in a configured Namespace through the real worker,
+  owns the Agent and Configuration, and the worker grants and audits the Agent's
+  access to the member's own Secrets. A second member cannot read the request, a
+  member who turns off `gatewayManagedMode` is refused, and the worker refuses
+  queued work after the member's account is disabled.
 - Slice 3: `tests/browser/console-agent-detail.test.ts` shows a member's
   Credentials tab without the administrator step, with matching Storybook
   states.
