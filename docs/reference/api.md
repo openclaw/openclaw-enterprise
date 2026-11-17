@@ -4371,7 +4371,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
 **`201` response body:** `application/json`
@@ -5132,7 +5131,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
 **`202` response body:** `application/json`
@@ -5573,7 +5571,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
 #### `DELETE /namespaces/{namespaceId}/agents/{agentId}`
@@ -5835,7 +5832,6 @@ Example request
 | `413` | The request body exceeds the permitted size. |
 | `415` | The request content type is not supported. |
 | `500` | The platform request could not be completed. |
-| `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
 **`200` response body:** `application/json`

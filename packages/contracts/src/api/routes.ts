@@ -1642,7 +1642,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: ProvisionAgentBody,
-      response: { 202: AgentProvisioningResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 202: AgentProvisioningResponse, ...createErrors },
     },
   },
   {
@@ -1704,7 +1704,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: CreateAgentBody,
-      response: { 201: AgentResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 201: AgentResponse, ...createErrors },
     },
   },
   {
@@ -1722,7 +1722,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: ValidateAgentCreateBody,
-      response: { 204: Type.Null(), ...createErrors, 501: ErrorResponseRef },
+      response: { 204: Type.Null(), ...createErrors },
     },
   },
   {
@@ -1831,7 +1831,7 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       body: UpdateAgentBody,
-      response: { 200: AgentResponse, ...createErrors, 501: ErrorResponseRef },
+      response: { 200: AgentResponse, ...createErrors },
     },
   },
   {

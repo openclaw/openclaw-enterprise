@@ -17300,15 +17300,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The selected Driver does not support this operation."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -19562,15 +19553,6 @@
             },
             "description": "The platform request could not be completed."
           },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The selected Driver does not support this operation."
-          },
           "503": {
             "content": {
               "application/json": {
@@ -20755,15 +20737,6 @@
               }
             },
             "description": "The platform request could not be completed."
-          },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The selected Driver does not support this operation."
           },
           "503": {
             "content": {
@@ -22515,15 +22488,6 @@
               }
             },
             "description": "The platform request could not be completed."
-          },
-          "501": {
-            "content": {
-              "application/json": {
-                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
-                "schema": { "$ref": "#/components/schemas/def-7" }
-              }
-            },
-            "description": "The selected Driver does not support this operation."
           },
           "503": {
             "content": {
