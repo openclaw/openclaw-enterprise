@@ -172,10 +172,12 @@ export interface RepositoryGitBinding extends CredentialProxyBinding {
 }
 
 /**
- * One HTTPS request a recipient sent to GitHub, before any credential is added: what an
- * OpenShell supervisor's request hook sends today. The caller authenticates the execution
- * first and omits credential, `host`, connection and framing headers. Header names are
- * lowercase and in received order; a repeated name is refused.
+ * One HTTPS request a recipient is about to send to GitHub, before any credential is added:
+ * what a supervisor-style request hook can send. The caller authenticates the execution first,
+ * takes `target` from the TLS-verified destination (never from the `Host` header) and omits
+ * credential, `host`, connection and framing headers. Header names are lowercase and in
+ * received order; a repeated name is refused. OCE matches the target only against the grant's
+ * own origins; it does not resolve or pin hosts.
  */
 export interface GitHubRequestView {
   readonly target: {
@@ -188,7 +190,7 @@ export interface GitHubRequestView {
     readonly query: string;
   };
   readonly headers: readonly (readonly [string, string])[];
-  /** The whole buffered body, at most 4 MiB. Git push packs count toward it, as on OpenShell. */
+  /** The whole buffered body, at most 4 MiB. Git push packs count toward it, as on the bundled route. */
   readonly body: Uint8Array;
 }
 
@@ -202,7 +204,8 @@ export type GitHubRequestOperation =
  * - `draft_already_opened`: the grant's draft-create allowance was spent; this does not
  *   confirm that a draft exists.
  * - `access_withdrawn`: this Agent version's repository access ended. Do not retry.
- * - `route_not_ready`: no usable material yet, or OCE did not answer. Retry shortly.
+ * - `route_not_ready`: no usable material yet, or OCE did not answer. The client may retry
+ *   the request shortly, as a new request.
  */
 export type GitHubRequestReasonCode =
   "request_not_allowed" | "draft_already_opened" | "access_withdrawn" | "route_not_ready";
@@ -230,11 +233,12 @@ export type GitHubRequestDecision =
   | {
       readonly kind: "allow";
       readonly operation: GitHubRequestOperation;
-      /** Start sending before this instant, or refuse the request. Never retry a send. */
+      /** Start sending before this instant on the Worker's clock, or drop the request. */
       readonly sendBy: string;
-      /** The one header to add to exactly the request OCE classified, nothing else. An
-       * injector adds it to the held request; a forwarding sender sends the received request
-       * with it. Never log, store or reuse it. */
+      /** The one header to add to exactly the request OCE classified, nothing else: send
+       * those bytes once. An injector adds it to the held request; a forwarding sender sends
+       * the received request with it. Never log, store, reuse or resend it; a retry is a new
+       * request with its own decision. */
       readonly inject: { readonly name: "authorization"; readonly value: string };
     }
   | {
@@ -247,20 +251,37 @@ export type GitHubRequestDecision =
 
 /**
  * Worker-supplied: OCE's own GitHub request classification and authorization, bound to the
- * same authority as `bindRepositoryGit`. Each call reads the installed material, classifies
- * the request for that grant (Git smart HTTP, GitHub REST and GraphQL, the draft pull request
- * create), records one possible use and answers allow (with the credential header) or refuse.
- * Senders and injectors keep no policy, token or ref rules of their own.
+ * same authority as `bindRepositoryGit`. Each call reads the current material for `route`,
+ * classifies the request for that grant (Git smart HTTP and its pushed refs, GitHub REST and
+ * GraphQL, the draft pull request create), records one possible use and answers allow (with
+ * the credential header) or refuse. Callers need no GitHub ref, draft or repository rules of
+ * their own; malformed input is refused, never thrown.
+ *
+ * Precondition (current rule; a release-per-request evidence mode may replace it, RFC-0040):
+ * OCE allows a use only for a recipient whose installation of that exact material version is
+ * confirmed with `recipients.beginInstall` and `confirmInstall`, once per material version,
+ * again after every renewal; pass the route `confirmInstall` returned. For a request-time
+ * recipient, which asks per request and keeps no value, confirming means: ready to ask per
+ * request, holding no value.
+ *
+ * Accepted gap: the allowed credential is the grant's installation token, which GitHub
+ * accepts for anything its permissions cover until it expires or is retired. The ref, draft
+ * and repository rules and `sendBy` bind a caller that keeps this contract; OCE cannot
+ * enforce them on one that keeps the token. Never assume the credential is the same across
+ * calls: OCE may return one minted or narrowed for the request's operation.
+ *
+ * The caller owns the time budget (pass a `signal` that aborts at it) and bounds how many
+ * calls it has in flight.
  */
 export interface RepositoryGitRequests {
   authorize(input: {
-    /** This sender's observation of the recipient, from `recipients.observe`. */
+    /** The recipient's confirmed route for the installed material version (see above). */
     readonly route: RepositoryGitInstallationFence;
-    /** The profile and authorization mode this sender confirmed in `assertAvailable`. */
+    /** The profile and authorization mode admitted for this recipient. */
     readonly profile: RepositoryGitDeliveryProfile;
     readonly authorization: "exact-dispatch" | "online-request";
     readonly request: GitHubRequestView;
-    /** At most 30 seconds ahead; defaults to 10 seconds. */
+    /** In the future and at most 30 seconds ahead, or refused; defaults to 10 seconds. */
     readonly deadlineAt?: string;
     readonly signal: AbortSignal;
   }): Promise<GitHubRequestDecision>;

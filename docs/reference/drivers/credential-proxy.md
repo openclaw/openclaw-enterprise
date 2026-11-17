@@ -188,14 +188,26 @@ Neither decision proves delivery or the provider outcome.
 
 Use `requests` (`RepositoryGitRequests`) instead of GitHub rules of your own.
 `requests.authorize({ route, profile, authorization, request, signal })` reads the
-installed material, classifies the request with the bundled OpenShell route's code
-(smart HTTP and its pushed refs, GitHub REST and GraphQL, the draft pull request
-create), records one use and returns `allow` or `refused`. `route` must name a confirmed
-installation (`recipients.confirmInstall`) of that material version, or OCE refuses. `request` is what the bundled
-supervisor sends OCE before injection: the target, lowercase headers without credential,
-routing or framing headers, and the buffered body up to 4 MiB. On `allow`, add `inject`
-to exactly that request before `sendBy`; an injector need not forward it. Show the Agent
-`reasonCode`. Never retry.
+material for `route`, classifies the request with the bundled route's code (smart HTTP
+and its pushed refs, GitHub REST and GraphQL, the draft pull request create), records
+one use and returns `allow` or `refused`. Malformed input is refused.
+
+- **Precondition (current rule).** OCE allows a use only after `recipients.beginInstall`
+  and `confirmInstall` for that exact material version, once per version and again after
+  each renewal. Pass the route `confirmInstall` returned. An injector that asks per
+  request holds no value, so its confirmation means "ready to ask per request". A
+  per-request release mode may replace this rule (RFC-0040).
+- **Request.** What a supervisor-style hook sends before injection: the TLS-verified
+  target (never the `Host` header), lowercase headers without credential, routing or
+  framing headers, and the buffered body up to 4 MiB. Give each execution credential its
+  own `route`. The caller owns the time budget and bounds its calls in flight.
+- **Allow.** Add `inject` to exactly the classified bytes and send them once before
+  `sendBy` (Worker clock); an injector need not forward. Never resend with that header: a
+  client may retry a `route_not_ready` refusal as a new request. Show the Agent
+  `reasonCode`.
+- **Accepted gap.** `inject` carries the grant's installation token, which GitHub accepts
+  for anything its permissions cover until it expires. The ref and draft rules bind only a
+  caller that keeps this contract. Do not assume the same credential across calls.
 
 ### Cancellation, retries and uncertainty
 
