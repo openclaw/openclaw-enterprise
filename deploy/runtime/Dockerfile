@@ -168,7 +168,7 @@ RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp
 # TODO: Remove when the pinned OpenClaw enforces the external workspace binding itself.
 # Bind external Codex turn policy to the Compute-pinned workspace generation and its WSS peer.
 COPY deploy/runtime/openclaw-codex-external-workspace.patch /tmp/openclaw-codex-external-workspace.patch
-RUN echo '22c4205f80814ac5ed6a363facb3c79384672abbe1145e43947ca45b775415fa  /tmp/openclaw-codex-external-workspace.patch' | sha256sum --check --strict \
+RUN echo '67ef8be714d636e494faf35e7b1c183245cd2edb26b83676ed92da3113cd05fe  /tmp/openclaw-codex-external-workspace.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-external-workspace.patch
 COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 RUN node /tmp/build-runtime-assets.ts inputs /source /inputs \

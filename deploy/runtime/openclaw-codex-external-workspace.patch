@@ -473,7 +473,7 @@ index 0000000..8d2735f
 +      blocked.stdin.write(JSON.stringify({ id: 3, ...frame }) + "\n");
 +      await expect(refused).resolves.toEqual(
 +        expect.objectContaining({
-+          message: expect.stringContaining("request was refused"),
++          message: expect.stringContaining("external workspace refused a Codex request"),
 +        }),
 +      );
 +      expect(frames).toHaveLength(1);
@@ -488,7 +488,7 @@ index 0000000..8d2735f
 +    original.stdin.write('{"id":4,"method":"thread/read","params":{}}\n');
 +    await expect(revoked).resolves.toEqual(
 +      expect.objectContaining({
-+        message: expect.stringContaining("request was refused"),
++        message: expect.stringContaining("external workspace refused a Codex request"),
 +      }),
 +    );
 +    expect(frames).toHaveLength(1);

@@ -40,7 +40,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-codex-external-workspace.patch",
-    sha256: "22c4205f80814ac5ed6a363facb3c79384672abbe1145e43947ca45b775415fa",
+    sha256: "67ef8be714d636e494faf35e7b1c183245cd2edb26b83676ed92da3113cd05fe",
   },
   {
     file: "openclaw-required-worker-authority-regression.patch",
