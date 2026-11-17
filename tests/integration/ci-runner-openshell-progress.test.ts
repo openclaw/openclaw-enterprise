@@ -12,6 +12,7 @@ import {
   openShellProgressPrefix,
   upstreamOutageCase,
 } from "../../scripts/ci/openshell-progress.mjs";
+import { isRecord } from "../../scripts/ci/reporter-diagnostics.ts";
 import reporter from "../../scripts/ci/reporter.ts";
 import { readFileEvidence, type FileEvidence } from "../../scripts/ci/runner-reporter-output.ts";
 import {
@@ -344,6 +345,57 @@ test("CI retains the unfinished upstream stage without changing the failed case"
   }
 });
 
+async function runnerDeadlineDiagnostics(state: string, title: string) {
+  let diagnostic: unknown;
+  try {
+    diagnostic = JSON.parse(await readFile(`${state}.diagnostics.json`, "utf8"));
+  } catch (error) {
+    return { status: isRecord(error) && error.code === "ENOENT" ? "missing" : "rejected" };
+  }
+  if (!isRecord(diagnostic) || !Array.isArray(diagnostic.failures)) {
+    return { status: "rejected" };
+  }
+  if (diagnostic.failures.length === 0) {
+    return { status: "empty" };
+  }
+  const [failure] = diagnostic.failures;
+  if (diagnostic.failures.length !== 1 || !isRecord(failure)) {
+    return { status: "rejected" };
+  }
+
+  const { reason, timeoutMs, interruptedTests } = failure;
+  let interruptedStatus = "missing";
+  let interruptedCount: number | undefined;
+  let interruptedExpectedOnly: boolean | undefined;
+  if (interruptedTests !== undefined) {
+    if (
+      Array.isArray(interruptedTests) &&
+      interruptedTests.every((test) => isRecord(test) && typeof test.name === "string")
+    ) {
+      interruptedStatus = interruptedTests.length === 0 ? "empty" : "present";
+      interruptedCount = interruptedTests.length;
+      interruptedExpectedOnly =
+        interruptedTests.length === 1 && interruptedTests[0]?.name === title;
+    } else {
+      interruptedStatus = "rejected";
+    }
+  }
+  return {
+    status: "present",
+    reason: reason === "timeout" || reason === "failed" ? reason : null,
+    timeoutMs:
+      typeof timeoutMs === "number" &&
+      Number.isSafeInteger(timeoutMs) &&
+      timeoutMs > 0 &&
+      timeoutMs <= 30_000
+        ? timeoutMs
+        : null,
+    interruptedStatus,
+    interruptedCount,
+    interruptedExpectedOnly,
+  };
+}
+
 test("CI records only observed upstream replacement checkpoints on failure", async (t) => {
   const upstreamFile = "tests/integration/openshell-upstream-real.test.ts";
   const title = "OpenShell model and tool upstream outages fail closed";
@@ -593,10 +645,29 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
       if (pendingActivation) {
         assert.equal(await readFile(activationPoll, "utf8"), "polling");
       }
-      assert.deepEqual(
-        result.openShellReplacement,
-        checkpoint ? { checkpoint, outcome } : undefined,
-      );
+      const expectedReplacement = checkpoint ? { checkpoint, outcome } : undefined;
+      if (
+        runnerDeadline &&
+        (result.openShellReplacement?.checkpoint !== checkpoint ||
+          result.openShellReplacement?.outcome !== outcome)
+      ) {
+        const diagnostics = await runnerDeadlineDiagnostics(state, title);
+        const deadlineContext = `OpenShell replacement checkpoint at runner deadline: ${JSON.stringify(
+          {
+            runnerTimedOut: result.issues.some(({ code }) => code === "test-timeout"),
+            diagnostics,
+            terminalCaseCount: result.tests.length,
+            unfinishedStage:
+              result.openShellUnfinishedStage === "replacement" ||
+              result.openShellUnfinishedStage === "installation"
+                ? result.openShellUnfinishedStage
+                : null,
+          },
+        )}`;
+        assert.deepEqual(result.openShellReplacement, expectedReplacement, deadlineContext);
+      } else {
+        assert.deepEqual(result.openShellReplacement, expectedReplacement);
+      }
       assert.equal(result.openShellUnfinishedStage, pendingActivation ? "replacement" : undefined);
       assert.equal(
         result.issues.some(({ code }) => code === "test-timeout"),

@@ -193,6 +193,11 @@ export interface ControllerWorkerOptions {
   readonly emit?: (event: Readonly<Record<string, unknown>>) => void;
   readonly onHealthy?: () => Promise<void>;
   /**
+   * Monotonic milliseconds for the health check's startup warning window. Tests only; the
+   * default is `performance.now`.
+   */
+  readonly healthClock?: () => number;
+  /**
    * Called, at most once per health interval, when the run loop starts a pass or a claim
    * heartbeat renews. It goes quiet only while the loop is stuck, so a liveness probe can tell
    * a wedged worker from one waiting out a database outage (each pass then fails fast).
@@ -925,6 +930,11 @@ function agentWorkLogFields(claim: ClaimedWork) {
 // broker's admission readiness, and the readiness report (the readiness file).
 type HealthDependency = "work-queue" | "repository-credential-broker" | "readiness-report";
 
+// How long after start a failed health check only warns about a dependency that has not
+// passed once in this process (finding 3297). On Kubernetes the broker is the Worker Pod's
+// main container, so it always starts after the worker's native sidecar.
+const HEALTH_STARTUP_WARNING_MS = 30_000;
+
 function workerPassErrorCode(error: unknown): string {
   if (error instanceof WorkClaimLostError) {
     return "CLAIM_LOST";
@@ -1259,9 +1269,13 @@ export class ControllerWorker {
   private closing = false;
   private lastHealthAt = 0;
   private pendingHealth: Promise<void> | undefined;
-  // Set once the first health check after start has ended: only that check may meet a
-  // dependency that is still starting, such as the broker sidecar's control socket.
+  // Set once the first health check after start has ended. That check always only warns.
   private firstHealthCheckEnded = false;
+  private readonly healthClock: () => number;
+  // When this process started, on `healthClock`: the startup warning window's origin.
+  private startedAt = 0;
+  // The health dependencies that have passed at least once in this process.
+  private readonly healthyDependencies = new Set<HealthDependency>();
   private lastProgressAt = 0;
   private pendingProgress = false;
   /**
@@ -1416,6 +1430,7 @@ export class ControllerWorker {
         process.stdout.write(`${JSON.stringify(event)}\n`);
       });
     this.onHealthy = options.onHealthy;
+    this.healthClock = options.healthClock ?? (() => performance.now());
     this.onProgress = options.onProgress;
     this.repositoryGitMaterial = options.repositoryGitMaterial;
     this.repositoryPolicy = drivers?.repositoryPolicy;
@@ -1481,6 +1496,7 @@ export class ControllerWorker {
       throw new Error("The platform Installation must be bootstrapped before starting the worker.");
     }
     this.installation = installation;
+    this.startedAt = this.healthClock();
     validatePersistedNativeIAMState(await this.loadIAMState());
     this.attachLifecycleDrivers(this.iam);
     const provisioningOptions = {
@@ -1842,18 +1858,26 @@ export class ControllerWorker {
       let dependency: HealthDependency = "work-queue";
       try {
         const pending = await this.queue.pending();
+        this.healthyDependencies.add(dependency);
         dependency = "repository-credential-broker";
         await this.nativeRepositorySender?.checkAdmissionReady?.(AbortSignal.timeout(2000));
+        this.healthyDependencies.add(dependency);
         dependency = "readiness-report";
         await this.onHealthy?.();
+        this.healthyDependencies.add(dependency);
         this.emit({ event: "worker.health", status: "ready", pending });
       } catch (error) {
         // Name the step that failed and the error's class, never its message, which can carry
-        // hosts or connection details (finding 3259). The first check after start only warns:
-        // a sidecar can still be starting. Every later failure is an error, so an outage that
-        // persists is reported as one by the next check.
+        // hosts or connection details (finding 3259). A dependency that has not passed once
+        // yet may still be starting, such as the broker sidecar's control socket: it only
+        // warns on the first check and during the startup window (finding 3297). Any other
+        // failure is an error, so an outage that persists or returns is reported as one.
+        const starting =
+          !this.healthyDependencies.has(dependency) &&
+          (!this.firstHealthCheckEnded ||
+            this.healthClock() - this.startedAt < HEALTH_STARTUP_WARNING_MS);
         this.emit({
-          event: this.firstHealthCheckEnded ? "worker.error" : "worker.health-warning",
+          event: starting ? "worker.health-warning" : "worker.error",
           code: "HEALTH_UNAVAILABLE",
           dependency,
           cause: loggedErrorClass(error),
