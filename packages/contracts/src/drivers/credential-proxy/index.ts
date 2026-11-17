@@ -9,6 +9,7 @@ export { repositoryGitDeliveryProfile } from "../repo/index.ts";
 import type {
   ProtectedRepositoryGitAuthority,
   RepositoryGitBinding,
+  RepositoryGitRequests,
 } from "../../protected-repository-git.ts";
 import type {
   CredentialFreeEgressSource,
@@ -452,8 +453,12 @@ export interface CredentialProxyDriver extends Driver {
   bindExchange?(
     createCredentialProxy: (owner: EgressExchangeOwner) => CredentialProxyExchange,
   ): Promise<CredentialProxyBinding>;
-  /** Worker process: bind this sender to the installation's checked Git delivery authority. */
-  bindRepositoryGit?(authority: ProtectedRepositoryGitAuthority): Promise<RepositoryGitBinding>;
+  /** Worker process: bind this sender to the installation's checked Git delivery authority.
+   * `requests` runs OCE's GitHub request decision against that same authority. */
+  bindRepositoryGit?(
+    authority: ProtectedRepositoryGitAuthority,
+    requests: RepositoryGitRequests,
+  ): Promise<RepositoryGitBinding>;
   configureRevision(context: ProxyRevisionContext): Promise<ProxyWiring>;
   wiringStatus(
     context: ProxyRevisionContext,

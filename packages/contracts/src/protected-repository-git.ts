@@ -1,5 +1,6 @@
 import type { CredentialProxyBinding } from "./credential-proxy-exchange.ts";
 import type { EgressInstallation } from "./drivers/credential-proxy/index.ts";
+import type { RepositoryGitDeliveryProfile } from "./drivers/credential-proxy/index.ts";
 import type {
   PreparedGitHubInstallationUseRequest,
   PreparedGitHubRepositoryUseRequest,
@@ -168,4 +169,103 @@ export interface RepositoryGitBinding extends CredentialProxyBinding {
   /** Reconcile eligible material and independently observe unresolved operations.
    * A lost response must never cause a second installation. No request may invoke this. */
   reconcile?(signal: AbortSignal): Promise<void>;
+}
+
+/**
+ * One complete HTTPS request a recipient sent to GitHub, as the sender received it. The sender
+ * authenticates the execution first, then removes its own credential, `host`, connection and
+ * framing headers. Header names are lowercase, in received order, and appear once each.
+ */
+export interface GitHubRequestView {
+  readonly target: {
+    readonly host: string;
+    readonly port: number;
+    readonly method: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
+    /** Exactly as received, without the query and without normalization. */
+    readonly path: string;
+    /** Exactly as received, without the leading `?`; empty when absent. */
+    readonly query: string;
+  };
+  readonly headers: readonly (readonly [string, string])[];
+  /** The whole body (at most 4 MiB), never a stream. */
+  readonly body: Uint8Array;
+}
+
+export type GitHubRequestOperation =
+  | PreparedGitHubUseRequest["operation"]
+  | PreparedGitHubInstallationUseRequest["operation"];
+
+/**
+ * What the Agent may be told, never a token, installation or host:
+ * - `request_not_allowed`: this grant does not admit the request (another ref, repository,
+ *   base or route). Do not retry it.
+ * - `draft_already_opened`: the grant's draft-create allowance was spent; this does not
+ *   confirm that a draft exists.
+ * - `access_withdrawn`: this Agent version's repository access ended. Do not retry.
+ * - `route_not_ready`: no usable material yet, or OCE did not answer. Retry shortly.
+ */
+export type GitHubRequestReasonCode =
+  "request_not_allowed" | "draft_already_opened" | "access_withdrawn" | "route_not_ready";
+
+/** Why OCE refused a request. Stable names for sender logs and receipts; never for the Agent. */
+export type GitHubRequestRefusal =
+  | "request_invalid"
+  | "encoding_unsupported"
+  | "draft_rejected"
+  | "origin_mismatch"
+  | "route_unsupported"
+  | "discovery_body"
+  | "body_empty"
+  | "body_too_large"
+  | "ref_not_allowed"
+  | "binding_mismatch"
+  | "material_unavailable"
+  | "approval_denied"
+  | "approval_failed"
+  | "draft_already_opened"
+  | "session_closed"
+  | "aborted";
+
+export type GitHubRequestDecision =
+  | {
+      readonly kind: "send";
+      readonly operation: GitHubRequestOperation;
+      /** Start sending before this instant, or refuse the request. Never retry a send. */
+      readonly sendBy: string;
+      /** Exactly this request: the received target and headers plus OCE's `authorization`. */
+      readonly upstream: {
+        readonly origin: string;
+        readonly method: GitHubRequestView["target"]["method"];
+        readonly path: string;
+        readonly headers: readonly (readonly [string, string])[];
+        readonly body: Uint8Array;
+      };
+    }
+  | {
+      readonly kind: "refused";
+      readonly refusal: GitHubRequestRefusal;
+      /** Absent when OCE cannot attribute the request to this grant: show a generic refusal. */
+      readonly reasonCode?: GitHubRequestReasonCode;
+      readonly operation?: GitHubRequestOperation;
+    };
+
+/**
+ * Worker-supplied: OCE's own GitHub request classification and authorization, bound to the
+ * same authority as `bindRepositoryGit`. Each call reads the installed material, classifies
+ * the request for that grant (Git smart HTTP, GitHub REST and GraphQL, the draft pull request
+ * create), records one possible use and returns the request to send. Senders keep no policy,
+ * token or ref rules of their own.
+ */
+export interface RepositoryGitRequests {
+  authorize(input: {
+    /** This sender's observation of the recipient, from `recipients.observe`. */
+    readonly route: RepositoryGitInstallationFence;
+    /** The profile and authorization mode this sender confirmed in `assertAvailable`. */
+    readonly profile: RepositoryGitDeliveryProfile;
+    readonly authorization: "exact-dispatch" | "online-request";
+    readonly request: GitHubRequestView;
+    /** At most 30 seconds ahead; defaults to 10 seconds. */
+    readonly deadlineAt?: string;
+    readonly signal: AbortSignal;
+  }): Promise<GitHubRequestDecision>;
 }

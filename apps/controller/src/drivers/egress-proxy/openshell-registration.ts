@@ -9,6 +9,7 @@ import type { EgressAuthorityConfiguration } from "../../composition/egress-auth
 import type { RepositoryTransportBinding } from "../../composition/repository-credentials/contracts.ts";
 import type { RepositoryGitDeliveryResolver } from "../repo/access/delivery.ts";
 import type { OpenShellSandboxDriverSelection } from "../sandbox/openshell.ts";
+import { createRepositoryGitRequests } from "../repo/github/access/protected-requests.ts";
 import { PostgresOpenShellGitRouteStore } from "./openshell-git-route-store.ts";
 import { OpenShellCredentialProxyDriver, type OpenShellProxyOptions } from "./openshell.ts";
 import {
@@ -85,7 +86,7 @@ export function createOpenShellCapabilities(input: {
         throw new Error("Missing the selected Driver's protected repository Git authority.");
       }
       git.connectRouteStore(pool, emit);
-      return proxy.bindRepositoryGit(authority);
+      return proxy.bindRepositoryGit(authority, createRepositoryGitRequests(authority));
     },
   };
   return {
