@@ -1933,8 +1933,5 @@ test("a packaged Credential Gateway attaches the protected Harness model source 
   );
   assert.deepEqual(attachments, [[sourceId]], "no attachment without an inference enrollment");
   assert.deepEqual(enrolled.requirements.credentialAttachments, []);
-  assert.equal(
-    environmentOf(enrolled.requirements).CODEX_LOGIN_MODE,
-    "protected-no-inference",
-  );
+  assert.equal(environmentOf(enrolled.requirements).CODEX_LOGIN_MODE, "protected-no-inference");
 });

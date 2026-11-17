@@ -33,12 +33,9 @@ import test, { afterEach, type TestContext } from "node:test";
 import { Pool } from "pg";
 import type {
   AgentRevision,
-  ComputeDriver,
   CredentialGatewayContext,
-  CredentialProxyDriver,
   CredentialSource,
   CredentialSourceSnapshot,
-  Driver,
   EgressInstallation,
   Namespace,
   ProtectedRepositoryGitAuthority,
@@ -71,7 +68,6 @@ import {
 } from "../../apps/controller/src/worker/shutdown.ts";
 import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
-import { ComputeLifecycleDispatcher } from "../../apps/controller/src/drivers/compute/lifecycle-hooks.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   createCredentialProxyInstallationConfiguration,
@@ -1561,10 +1557,11 @@ test("an installed Sandbox can explicitly select its packaged Credential Gateway
       // The same pinned owner without the Proxy still owns it; a Sandbox configuration change does not.
       const firstView = firstOwner.require("credential_gateway");
       const listed = firstView.listSourceTypes.bind(firstView);
-      scenario.mock.method(firstView, "listSourceTypes", async (options: CredentialGatewayContext) => [
-        ...(await listed(options)),
-        modelType,
-      ]);
+      scenario.mock.method(
+        firstView,
+        "listSourceTypes",
+        async (options: CredentialGatewayContext) => [...(await listed(options)), modelType],
+      );
       assert.equal((await update(controller(firstOwner), modelSource.id)).state, "ready");
       await refuse(controller(changedOwner), modelSource.id);
     },
