@@ -135,9 +135,9 @@ conversation access to view that input. The audit response does not contain the
 message body.
 
 The Gateway can record decisions from the OpenClaw command reviewer and the
-Codex Guardian. The decision can include the classifier reason. A tool denial
-can occur during a turn that continues. The turn record names a blocking
-policy only when the turn owner confirms that the decision ended the turn.
+Codex Guardian. The decision can include the classifier reason. These
+reviewers decide whether to permit a tool action. A turn can continue after
+the reviewer denies the action.
 
 The OpenClaw Gateway records turns and model calls that use its provider
 connection. The in-process runtime can also record tool calls and workspace
@@ -146,6 +146,11 @@ requests and runs tools locally. Those operations still need a trusted audit
 source. The Codex Gateway records its dynamic tool calls and the command,
 file-change, and MCP items from the native server. The stock Codex server
 does not supply a record for each provider request.
+
+If the Gateway stops before it sends a result, the ledger can keep the start
+record alone. The outcome of that attempt is unknown. If OpenClaw resumes
+the work after restart, it records a new turn ID. That turn can have no
+message ID because restart recovery can supply its own input.
 
 #### OpenShell network denials
 

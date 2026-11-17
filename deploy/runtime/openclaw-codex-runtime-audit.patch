@@ -1,5 +1,5 @@
 diff --git a/extensions/codex/src/app-server/run-attempt-notification-controller.ts b/extensions/codex/src/app-server/run-attempt-notification-controller.ts
-index 3369c94..b761855 100644
+index 3369c94..ddeffd1 100644
 --- a/extensions/codex/src/app-server/run-attempt-notification-controller.ts
 +++ b/extensions/codex/src/app-server/run-attempt-notification-controller.ts
 @@ -3,6 +3,7 @@ import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
@@ -19,7 +19,7 @@ index 3369c94..b761855 100644
  import type { CodexAttemptLifecycleController } from "./run-attempt-lifecycle-controller.js";
  import type { StartedCodexAttemptResources } from "./run-attempt-start.js";
  import type { CodexAttemptTurnState } from "./run-attempt-turn-state.js";
-@@ -20,6 +21,80 @@ import { waitForPromiseOrAbort } from "./timeout.js";
+@@ -20,6 +21,84 @@ import { waitForPromiseOrAbort } from "./timeout.js";
  import { CODEX_APP_SERVER_NATIVE_TURN_WAIT_TIMEOUT_MS } from "./turn-router.js";
  import type { CodexThreadRouteScope } from "./turn-router.js";
  
@@ -75,6 +75,8 @@ index 3369c94..b761855 100644
 +    case "declined":
 +      // The MCP item status schema never uses declined.
 +      return item.type === "mcpToolCall" ? undefined : "denied";
++    default:
++      return undefined;
 +  }
 +}
 +
@@ -94,13 +96,15 @@ index 3369c94..b761855 100644
 +      const tool = readString(item, "tool");
 +      return server && tool ? `${server}/${tool}` : undefined;
 +    }
++    default:
++      return undefined;
 +  }
 +}
 +
  export function createCodexAttemptNotificationController(
    resources: StartedCodexAttemptResources,
    turnRuntime: CodexAttemptTurnState,
-@@ -48,6 +123,86 @@ export function createCodexAttemptNotificationController(
+@@ -48,6 +127,86 @@ export function createCodexAttemptNotificationController(
      maybeAnnounceFastModeAutoOff,
    } = lifecycle;
    const pendingNativeCommandItems = new Set<string>();
@@ -187,7 +191,7 @@ index 3369c94..b761855 100644
    let nativeItemsCompletion: ReturnType<typeof createDeferred<void>> | undefined;
    const waitForNativeTerminalItems = async (signal: AbortSignal) => {
      // Exited commands disappear from native inventory before their final item arrives.
-@@ -75,6 +230,10 @@ export function createCodexAttemptNotificationController(
+@@ -75,6 +234,10 @@ export function createCodexAttemptNotificationController(
      const isCurrentTurn =
        notification.threadId === resourceState.thread.threadId && notification.turnId === turnId;
      const completedTurn = isCurrentTurn ? notification.completedTurn : undefined;
@@ -198,7 +202,7 @@ index 3369c94..b761855 100644
      if (
        (state.timeout || state.localCompletionRequested) &&
        completedTurn?.status === "interrupted"
-@@ -222,6 +381,7 @@ export function createCodexAttemptNotificationController(
+@@ -222,6 +385,7 @@ export function createCodexAttemptNotificationController(
      scope: CodexThreadRouteScope,
      receivedAtMs: number,
    ) => {

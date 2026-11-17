@@ -263,7 +263,7 @@ RUN echo 'a7a4274b85acbcfe86bd7ffb32a45c5c99090c3f14588e5fd0b42a77e87dad76  /tmp
     && git apply /tmp/openclaw-runtime-audit.patch
 
 COPY deploy/runtime/openclaw-codex-runtime-audit.patch /tmp/openclaw-codex-runtime-audit.patch
-RUN echo '7d985b53125f1a7e1b0bbb6c6cba2ed3f1500d1dac5fcfb9c12132c8ea9bd853  /tmp/openclaw-codex-runtime-audit.patch' | sha256sum --check --strict \
+RUN echo 'aca6d77e46be4c382c79f9b950aae5da88c9a323c38d359531d8fc1d1afd0370  /tmp/openclaw-codex-runtime-audit.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-runtime-audit.patch
 
 # Broad source verification is an explicit target, separate from image assembly.
