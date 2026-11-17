@@ -137,7 +137,8 @@ message body.
 The Gateway can record decisions from the OpenClaw command reviewer and the
 Codex Guardian. The decision can include the classifier reason. These
 reviewers decide whether to permit a tool action. A turn can continue after
-the reviewer denies the action.
+the reviewer denies the action. If an OpenClaw plugin blocks a turn before
+the Agent starts, the result can show `blocked` with reason `before-agent-run`.
 
 The OpenClaw Gateway records turns and model calls that use its provider
 connection. The in-process runtime can also record tool calls and workspace

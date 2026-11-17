@@ -956,10 +956,10 @@ index 94a8232..32792c3 100644
      if (recorder) {
 diff --git a/src/infra/openclaw-runtime-audit.test.ts b/src/infra/openclaw-runtime-audit.test.ts
 new file mode 100644
-index 0000000..6b1e8a4
+index 0000000..c5dd94d
 --- /dev/null
 +++ b/src/infra/openclaw-runtime-audit.test.ts
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,161 @@
 +import { once } from "node:events";
 +import { createServer } from "node:http";
 +import { expect, it, vi } from "vitest";
@@ -1047,11 +1047,12 @@ index 0000000..6b1e8a4
 +      () => "failed",
 +    );
 +    expect(requests).toHaveLength(5);
-+    expect(JSON.parse(requests[4].payload)).toMatchObject({
++    const [blocked] = requests.slice(4).map(({ payload }) => JSON.parse(payload));
++    expect(blocked).toMatchObject({
 +      action: "openclaw.runtime.turn.completed",
 +      outcome: "blocked",
 +    });
-+    expect(JSON.parse(requests[4].payload)).not.toHaveProperty("messageId");
++    expect(blocked).not.toHaveProperty("messageId");
 +
 +    rejectAdmission = true;
 +    const effect = vi.fn();
