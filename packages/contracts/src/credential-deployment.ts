@@ -1,3 +1,4 @@
+import type { RepositoryGitDeliveryProfile } from "./drivers/credential-proxy/index.ts";
 import type { CredentialSourceReference } from "./index.ts";
 import type { RegisteredTokenServiceSource } from "./drivers/token-service/index.ts";
 import type { SandboxNetworkGrant } from "./sandbox-policy.ts";
@@ -56,19 +57,35 @@ export interface CredentialDeploymentConfiguration {
 export type CredentialDeploymentReadiness =
   { readonly state: "ready" | "pending" } | { readonly state: "failed"; readonly code: string };
 
-export interface DeploymentCredentialBinding extends RegisteredTokenServiceSource<CredentialSourceReference> {
-  readonly bindingRef: string;
-  readonly consumer:
-    | {
-        readonly kind: "plugin";
-        readonly pluginId: string;
-        readonly requirement: string;
-        readonly connection: string;
-      }
-    | { readonly kind: "model"; readonly providerId: string }
-    | { readonly kind: "repository"; readonly repositoryId: string };
-  readonly projection: { readonly environment: string };
+/** The reviewed slot/profile permits substitution only in Authorization: Bearer <placeholder>. */
+export interface BearerCredentialProjection {
+  readonly environment: string;
+  readonly presentation: "bearer";
 }
+
+export type DeploymentCredentialBinding =
+  RegisteredTokenServiceSource<CredentialSourceReference> & {
+    readonly bindingRef: string;
+  } & (
+      | {
+          readonly consumer:
+            | {
+                readonly kind: "plugin";
+                readonly pluginId: string;
+                readonly requirement: string;
+                readonly connection: string;
+              }
+            | { readonly kind: "model"; readonly providerId: string };
+          readonly projection: BearerCredentialProjection;
+        }
+      | {
+          readonly consumer: { readonly kind: "repository"; readonly repositoryId: string };
+          readonly projection: {
+            readonly environment: string;
+            readonly presentation: RepositoryGitDeliveryProfile;
+          };
+        }
+    );
 
 /** Nonsecret issuance information. The Sandbox/runtime installs the placeholder on a fresh launch. */
 export interface CredentialProjection {

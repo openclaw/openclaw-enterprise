@@ -1,5 +1,4 @@
 import type { CredentialSourceReference } from "../../index.ts";
-import type { CredentialRefreshStatus } from "../credential-refresh/index.ts";
 import type { Driver } from "../index.ts";
 
 export type TokenServiceSourceRef = CredentialSourceReference | InstallationClientSecretRef;
@@ -52,6 +51,16 @@ export interface UsableCredential {
 
 export interface VersionedCredential extends UsableCredential {
   readonly version: string;
+}
+
+export interface CredentialRefreshStatus {
+  readonly state: "pending" | "ready" | "failed";
+  readonly expiresAt?: string;
+  readonly nextRefreshAt?: string;
+  readonly lastRefreshAt?: string;
+  /** Implementation-owned identifier, never provider-controlled text. */
+  readonly failureCode?: string;
+  readonly recoveryAction?: "retry" | "reauthorize" | "fix_configuration" | "investigate";
 }
 
 export interface SourceRefreshOperation {

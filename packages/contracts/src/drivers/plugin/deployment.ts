@@ -1,5 +1,6 @@
 import type { CredentialSourceReference, PluginDesiredState } from "../../index.ts";
 import type {
+  BearerCredentialProjection,
   DeploymentRequestMatch,
   DeploymentWorkloadRequirement,
 } from "../../credential-deployment.ts";
@@ -7,15 +8,27 @@ import type {
 type ConsumerRole = "gateway" | "harness";
 
 type ToolInstallation =
-  | { readonly kind: "image"; readonly artifactPath: string }
+  | { readonly kind: "image-skill"; readonly path: string; readonly sha256: string }
+  | {
+      readonly kind: "image-executable";
+      readonly path: string;
+      /** Hash the installed binary for the actual platform (e.g. linux-arm64). Reject missing pins. */
+      readonly binarySha256ByPlatform: Readonly<Record<string, string>>;
+    }
   | { readonly kind: "openclaw-package"; readonly package: string; readonly integrity: string }
   | {
-      readonly kind: "codex-marketplace";
-      readonly marketplace: string;
-      readonly plugin: string;
-      readonly revision: string;
-    }
-  | { readonly kind: "hosted-mcp"; readonly endpoint: string };
+      readonly kind: "hosted-mcp";
+      readonly endpoint: string;
+      /** Required when installation loads a server entry from a bundled configuration file. */
+      readonly configuration:
+        | { readonly kind: "inline" }
+        | {
+            readonly kind: "image-manifest";
+            readonly path: string;
+            readonly sha256: string;
+            readonly server: string;
+          };
+    };
 
 export interface PluginDeploymentTool {
   readonly id: string;
@@ -33,7 +46,7 @@ export interface PluginDeploymentNetworkRequirement {
 
 export interface PluginCredentialConnection {
   readonly sourceRef: CredentialSourceReference;
-  readonly environment: string;
+  readonly projection: BearerCredentialProjection;
   readonly toolIds: readonly string[];
   readonly networkRequirementIds: readonly string[];
 }

@@ -1509,7 +1509,6 @@ export type {
 export type {
   CredentialRefreshDriver,
   CredentialRefreshInput,
-  CredentialRefreshStatus,
   CredentialSourceDeviceAuthorization,
   CredentialSourceDeviceAuthorizationResult,
 } from "./drivers/credential-refresh/index.ts";
@@ -1685,11 +1684,13 @@ export type {
   SourceUpdate,
   UsableCredential,
   VersionedCredential,
+  CredentialRefreshStatus,
   SourceRefreshOperation,
   TokenServiceDriver,
 } from "./drivers/token-service/index.ts";
 
 export type {
+  BearerCredentialProjection,
   CredentialProjection,
   DeploymentWorkloadRequirement,
   DeploymentRequestPolicy,
@@ -1712,6 +1713,10 @@ export type {
   PluginDeploymentContract,
 } from "./drivers/plugin/deployment.ts";
 
-export type { SandboxDeploymentContract } from "./drivers/sandbox/deployment.ts";
+export type {
+  HarnessStartupObservation,
+  HarnessStartupRef,
+  SandboxDeploymentContract,
+} from "./drivers/sandbox/deployment.ts";
 
 export type { CredentialProxyDeploymentContract } from "./drivers/credential-proxy/deployment.ts";
