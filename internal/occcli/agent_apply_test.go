@@ -1,6 +1,7 @@
 package occcli
 
 import (
+	"cmp"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -59,6 +60,10 @@ type applyServer struct {
 	// rebound is the Configuration the Agent reads as bound to.
 	rebound string
 	deploy  func(http.ResponseWriter)
+	// secretBindings is the saved Configuration's JSON binding map.
+	secretBindings string
+	// agentPatchStatus replaces the Agent update's success reply when set.
+	agentPatchStatus int
 }
 
 func (s *applyServer) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -88,10 +93,16 @@ func (s *applyServer) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		}
 		reply(200, agent(configurationID))
 	case "GET /namespaces/" + testNamespaceID + "/configurations/" + applyConfigurationID:
-		reply(200, `{"id":"`+applyConfigurationID+`","kind":"agent","generation":1,"values":{}}`)
+		bindings := cmp.Or(s.secretBindings, "{}")
+		reply(200, `{"id":"`+applyConfigurationID+`","kind":"agent","generation":1,"values":{},"secretBindings":`+bindings+`}`)
 	case "PATCH /namespaces/" + testNamespaceID + "/configurations/" + applyConfigurationID:
 		reply(200, `{}`)
 	case "PATCH " + agentPath + "/" + testAgentID:
+		if s.agentPatchStatus != 0 {
+			writer.WriteHeader(s.agentPatchStatus)
+			_, _ = writer.Write([]byte(`{"error":{"code":"VALIDATION_FAILED","message":"no"},"meta":{"requestId":"req_test"}}`))
+			return
+		}
 		reply(200, agent(applyConfigurationID))
 	case "POST " + agentPath + "/" + testAgentID + "/deploy":
 		if s.deploy != nil {
@@ -223,7 +234,30 @@ func TestAgentApplyDeployAdviceDependsOnWhetherOCCRefused(t *testing.T) {
 		writer.WriteHeader(http.StatusConflict)
 		_, _ = writer.Write([]byte(`{"error":{"code":"CONFLICT","message":"no"},"meta":{"requestId":"req_test"}}`))
 	}}
-	if message, err := runApply(t, refused, changed); err == nil || !strings.Contains(message, `run "occ agent deploy `) {
+	want := "--namespace " + testNamespaceID + " agent deploy " + testAgentID
+	if message, err := runApply(t, refused, changed); err == nil || !strings.Contains(message, `run "occ --url `) || !strings.Contains(message, want) {
 		t.Fatalf("refusal: message = %q, err = %v", message, err)
+	}
+}
+
+func TestAgentApplyTreatsAnOmittedSecretDeliveryAsTheSavedDefault(t *testing.T) {
+	source := `{"kind":"secret","namespaceId":"` + testNamespaceID + `","id":"sec_66666666-6666-4666-8666-666666666666"}`
+	saved := `{"SLACK_BOT_TOKEN":{"source":` + source + `,"delivery":{"type":"env"}}}`
+	server := &applyServer{secretBindings: saved}
+	document := `{"name":"existing","configuration":{"kind":"agent","values":{},"secretBindings":{"SLACK_BOT_TOKEN":{"source":` + source + `}}}}`
+	if message, err := runApply(t, server, document); err != nil {
+		t.Fatal(message)
+	}
+	if writes := server.writes(); len(writes) != 0 {
+		t.Fatalf("writes = %v, want none", writes)
+	}
+}
+
+func TestAgentApplyPartialSaveNamesTheDeployCommand(t *testing.T) {
+	server := &applyServer{agentPatchStatus: http.StatusUnprocessableEntity}
+	message, err := runApply(t, server, `{"name":"existing","executionMode":"dedicatd","configuration":{"kind":"agent","values":{"a":1}}}`)
+	want := "--namespace " + testNamespaceID + " agent deploy " + testAgentID
+	if err == nil || !strings.Contains(message, "saved the Configuration but not the Agent fields") || !strings.Contains(message, want) {
+		t.Fatalf("message = %q, err = %v", message, err)
 	}
 }

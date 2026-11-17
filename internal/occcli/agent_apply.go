@@ -40,7 +40,7 @@ func (app *application) agentApplyCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			result, err := applyAgent(client, namespace, body)
+			result, err := app.applyAgent(client, namespace, body)
 			if err != nil {
 				return err
 			}
@@ -57,7 +57,7 @@ func (app *application) agentApplyCommand() *cobra.Command {
 	return command
 }
 
-func applyAgent(client *occclient.Client, namespace string, body jsontext.Value) (map[string]any, error) {
+func (app *application) applyAgent(client *occclient.Client, namespace string, body jsontext.Value) (map[string]any, error) {
 	var desired map[string]any
 	if err := json.Unmarshal(body, &desired); err != nil || desired == nil {
 		return nil, fmt.Errorf("the file must hold one JSON object")
@@ -89,7 +89,7 @@ func applyAgent(client *occclient.Client, namespace string, body jsontext.Value)
 	if agent == nil {
 		return provisionAgent(client, namespace, desired)
 	}
-	return updateAgent(client, namespace, agent, desired)
+	return app.updateAgent(client, namespace, agent, desired)
 }
 
 func findAgentByName(client *occclient.Client, namespace, name string) (map[string]any, error) {
@@ -142,7 +142,7 @@ func provisionAgent(client *occclient.Client, namespace string, desired map[stri
 	}, nil
 }
 
-func updateAgent(client *occclient.Client, namespace string, agent, desired map[string]any) (map[string]any, error) {
+func (app *application) updateAgent(client *occclient.Client, namespace string, agent, desired map[string]any) (map[string]any, error) {
 	if fields := presentFields(desired, applyCreateOnlyFields); len(fields) > 0 {
 		return nil, fmt.Errorf("apply cannot change %s on an existing Agent; remove them from the file or use occ agent update", strings.Join(fields, ", "))
 	}
@@ -166,7 +166,7 @@ func updateAgent(client *occclient.Client, namespace string, agent, desired map[
 	update := map[string]any{"values": wanted["values"], "expectedGeneration": savedConfiguration["generation"]}
 	if bindings, ok := wanted["secretBindings"]; ok {
 		update["secretBindings"] = bindings
-		configurationChanged = configurationChanged || !sameSetting(bindings, savedConfiguration["secretBindings"])
+		configurationChanged = configurationChanged || !sameSetting(withDefaultDelivery(bindings), savedConfiguration["secretBindings"])
 	}
 	patch := map[string]any{"configurationId": configurationID}
 	agentChanged := false
@@ -183,6 +183,10 @@ func updateAgent(client *occclient.Client, namespace string, agent, desired map[
 	}
 	if !configurationChanged && !agentChanged {
 		return map[string]any{"result": "unchanged", "agentId": agentID, "revisionId": agent["activeRevisionId"]}, nil
+	}
+
+	agentCommand := func(subcommand string) string {
+		return app.targetCommand(namespace, "agent "+subcommand+" "+agentID)
 	}
 
 	// The Agent could be rebound between lookup and each write; the saved values are guarded by generation only.
@@ -217,7 +221,7 @@ func updateAgent(client *occclient.Client, namespace string, agent, desired map[
 			return nil, err
 		}
 		if _, err := client.UpdateAgent(namespace, agentID, body); err != nil {
-			return nil, fmt.Errorf("saved the Configuration but could not update the Agent; run apply again: %w", err)
+			return nil, fmt.Errorf("saved the Configuration but not the Agent fields; fix the file and run apply again, and if it reports unchanged run \"%s\": %w", agentCommand("deploy"), err)
 		}
 	}
 	if err := stillBound(); err != nil {
@@ -226,13 +230,31 @@ func updateAgent(client *occclient.Client, namespace string, agent, desired map[
 	revision, err := client.DeployAgent(namespace, agentID, nil)
 	var refusal *occclient.APIError
 	if errors.As(err, &refusal) && refusal.Status < http.StatusInternalServerError {
-		return nil, fmt.Errorf("saved the changes but could not deploy; run \"occ agent deploy %s\": %w", agentID, err)
+		return nil, fmt.Errorf("saved the changes but could not deploy; run \"%s\": %w", agentCommand("deploy"), err)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("saved the changes; the deploy result is unknown. Run \"occ agent revisions %s\" and deploy only if no revision has the saved generation: %w", agentID, err)
+		return nil, fmt.Errorf("saved the changes; the deploy result is unknown. Run \"%s\" and deploy only if no revision has the saved generation: %w", agentCommand("revisions"), err)
 	}
 	deployed, _ := revision.(map[string]any)
 	return map[string]any{"result": "updated", "agentId": agentID, "revisionId": deployed["id"]}, nil
+}
+
+// withDefaultDelivery adds the env delivery that OCC saves for a binding that omits it.
+func withDefaultDelivery(bindings any) any {
+	declared, ok := bindings.(map[string]any)
+	if !ok {
+		return bindings
+	}
+	canonical := make(map[string]any, len(declared))
+	for name, value := range declared {
+		if binding, ok := value.(map[string]any); ok {
+			if _, has := binding["delivery"]; !has {
+				value = map[string]any{"source": binding["source"], "delivery": map[string]any{"type": "env"}}
+			}
+		}
+		canonical[name] = value
+	}
+	return canonical
 }
 
 func unknownFields(values map[string]any, allowed []string) []string {

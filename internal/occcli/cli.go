@@ -1186,17 +1186,24 @@ func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespa
 	// A lost or unreadable reply, timeout, or server failure does not establish
 	// whether admission committed. Never turn this diagnostic into a retry.
 	fmt.Fprintln(notices, "First-deployment outcome is unconfirmed. Before another deployment, read the original receipt with the same caller (the service-key file must still identify that caller):")
-	quote := func(value string) string {
-		return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
-	}
-	// Connection settings can contain shell metacharacters; the intent and IDs
-	// have already passed their restricted-ASCII validation. No key value is read.
+	// The intent and IDs have already passed their restricted-ASCII validation. No key value is read.
 	overridesOption := ""
 	if overridesFile != "" {
-		overridesOption = " --harness-overrides " + quote(overridesFile)
+		overridesOption = " --harness-overrides " + shellQuote(overridesFile)
 	}
-	fmt.Fprintf(notices, "  occ --url %s --service-key-file %s --ca-bundle %s --timeout-seconds %s --namespace %s agent recover-first-deployment %s --key %s --configuration %s --generation %d%s\n",
-		quote(app.url), quote(app.serviceKeyFile), quote(app.caBundle), quote(app.timeoutSeconds), namespace, agentID, intent.Key, intent.ExpectedConfigurationID, intent.ExpectedGeneration, overridesOption)
+	fmt.Fprintf(notices, "  %s\n", app.targetCommand(namespace, fmt.Sprintf("agent recover-first-deployment %s --key %s --configuration %s --generation %d%s",
+		agentID, intent.Key, intent.ExpectedConfigurationID, intent.ExpectedGeneration, overridesOption)))
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+// targetCommand renders an occ command line that keeps the selected connection
+// settings and Namespace. They can contain shell metacharacters, so they are quoted.
+func (app *application) targetCommand(namespace, subcommand string) string {
+	return fmt.Sprintf("occ --url %s --service-key-file %s --ca-bundle %s --timeout-seconds %s --namespace %s %s",
+		shellQuote(app.url), shellQuote(app.serviceKeyFile), shellQuote(app.caBundle), shellQuote(app.timeoutSeconds), namespace, subcommand)
 }
 
 // defaultDeploymentNotice says which revision deployment-status chose without
