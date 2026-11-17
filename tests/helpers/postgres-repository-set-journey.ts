@@ -35,6 +35,7 @@ import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-pr
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import { createRepositoryGitRequests } from "../../apps/controller/src/drivers/repo/github/access/protected-requests.ts";
 import { standingExecutionPlatform } from "./postgres-standing-execution.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -428,7 +429,10 @@ async function repositoryGitJourney(
   const events: NarrowJourney["maintenance"]["events"] = [];
   const stopped: string[] = [];
   runtime.connectRouteStore(f.observerPool, recordTransport);
-  let bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
+  let bound = await owner.requireRepositoryGitTransport()!(
+    peer.prepared.protectedGit!,
+    createRepositoryGitRequests(peer.prepared.protectedGit!),
+  );
   const replaceRuntime = async (retained?: { replacementPort: number }) => {
     if (!retained) {
       await bound.close();
@@ -436,7 +440,10 @@ async function repositoryGitJourney(
     const listenPort = retained?.replacementPort ?? port;
     ({ runtime, sandbox, proxy, owner } = createRuntimeOwner(listenPort));
     runtime.connectRouteStore(f.observerPool, recordTransport);
-    bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
+    bound = await owner.requireRepositoryGitTransport()!(
+      peer.prepared.protectedGit!,
+      createRepositoryGitRequests(peer.prepared.protectedGit!),
+    );
     await runtime["running"];
     middleware = openShellMiddlewareClient(t, listenPort, tls.caBundle);
   };

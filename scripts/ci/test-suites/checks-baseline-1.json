@@ -144,6 +144,7 @@
     "tests/integration/egress-stock-online-authority.test.ts",
     "tests/integration/managed-plugin-request-authority.test.ts",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
+    "tests/integration/github-request-authority.test.ts",
     "tests/integration/harness-egress-probe-diagnostics.test.ts",
     "tests/integration/openshell-permission-diagnostic.test.ts",
     "tests/conformance/openshell-prepared-git-provider.test.ts",
@@ -803,12 +804,24 @@
       "path": "tests/integration/managed-plugin-request-authority.test.ts"
     },
     {
+      "path": "tests/integration/github-request-authority.test.ts",
+      "expectedTests": [
+        "repository_git: the installed injector and the bundled OpenShell route decide alike",
+        "github_repository: the installed injector and the bundled OpenShell route decide alike",
+        "github_installation: the installed injector and the bundled OpenShell route decide alike",
+        "the requests port refuses a request an injector must not forward",
+        "the requests port refuses at each of its own guards",
+        "the requests port digests the whole classified view and nothing else"
+      ]
+    },
+    {
       "path": "tests/integration/egress-stock-online-git-authority.test.mjs",
       "expectedTests": [
         "signed stock Git RPC admits discovery, fetch and push, then honors live denial",
         "held Git startup observes a denial inside its provider endpoint without credential access",
         "stock Git admits gzip only on the upload-pack negotiation, which it never inspects",
         "protected Git replies to this online decision before its authority deadline",
+        "an allow or denial that settles after the call ends is not acted on",
         "shipped gh metadata stays within selected-repository authority",
         "bounded selected REST bodies retain transport and authority limits"
       ]

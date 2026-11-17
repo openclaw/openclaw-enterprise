@@ -14,9 +14,13 @@ import type {
   AdmittedRepositoryBinding,
   AgentRevision,
   DriverRegistrationRef,
+  GitHubRequestDecision,
+  GitHubRequestView,
   PreparedGitHubUseRequest,
+  RepositoryGitInstallationFence,
   RepositoryGitSendDecision,
 } from "../../packages/contracts/src/index.ts";
+import { createRepositoryGitRequests } from "../../apps/controller/src/drivers/repo/github/access/protected-requests.ts";
 import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { fixture } from "../fixtures/prepared-repository-git.mjs";
 import { standingGitOrigin } from "../helpers/prepared-standing-git-peer.ts";
@@ -965,7 +969,11 @@ async function assertTerminalRetirement(
 }
 
 // These cases use the released registered recipient and its independently confirmed fence.
-async function installedFixture(t: TestContext, options: Parameters<typeof fixture>[1] = {}) {
+async function installedFixture(
+  t: TestContext,
+  options: Parameters<typeof fixture>[1] = {},
+  mode?: 5,
+) {
   const f = await fixture(t, options);
   await disposeNativeSession(f);
   const driver = {
@@ -975,12 +983,20 @@ async function installedFixture(t: TestContext, options: Parameters<typeof fixtu
   };
   const repositoryGitCustody = selectRegisteredRepositoryGitCustody(driver);
   const owner = await f.startOwner({ controlSocket: undefined, repositoryGitCustody });
-  const admission = await admitProtectedSession(f, driver, f.binding);
+  const admission = await admitProtectedSession(
+    f,
+    driver,
+    f.binding,
+    undefined,
+    undefined,
+    undefined,
+    mode,
+  );
   const mine = owner.protectedGit!;
   const route = await mine.recipients.observe(admission.installation);
   assert.ok(route);
   await owner.maintain();
-  const material = await mine.readMaterial(route, t.signal);
+  const material = await (mode === 5 ? mine.online : mine).readMaterial(route, t.signal);
   assert.ok(material && "value" in material);
   const version = {
     preparationAttemptId: material.preparationAttemptId,
@@ -1216,6 +1232,157 @@ test(
     assert.deepEqual(await installedRows(f, admissionId), beforeExpiry);
     assert.deepEqual(f.gh.trace, beforeB);
     assert.equal(await f.providerStatus(materialB.value), 200);
+  },
+);
+
+test(
+  "the requests port allows only a confirmed material version and one draft against the real store",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    // An installed injector's view of the custody steps: it asks per request and keeps no
+    // value, yet the store allows a use only once that material version is confirmed.
+    const {
+      f,
+      owner,
+      mine,
+      admissionId,
+      installation,
+      installed: a,
+      material: first,
+    } = await installedFixture(t, { draftPull: true }, 5);
+    const requests = createRepositoryGitRequests(mine);
+    const ask = async (route: RepositoryGitInstallationFence, request: GitHubRequestView) =>
+      outcome(
+        await requests.authorize({
+          route,
+          profile: "repository_git",
+          authorization: "online-request",
+          request,
+          signal: t.signal,
+        }),
+      );
+    // Name each material's header, so no assertion message prints a token.
+    const headers = new Map<string, string>();
+    const nameHeader = (name: string, value: string) =>
+      headers.set("Basic " + Buffer.from("x-access-token:" + value).toString("base64"), name);
+    const outcome = (decision: GitHubRequestDecision) =>
+      decision.kind === "allow"
+        ? { allow: decision.operation, header: headers.get(decision.inject.value) ?? "unknown" }
+        : { reasonCode: decision.reasonCode, refusal: decision.refusal };
+    const fetch: GitHubRequestView = {
+      target: {
+        host: "github.com",
+        port: 443,
+        method: "GET",
+        path: `/${first.repository}.git/info/refs`,
+        query: "service=git-upload-pack",
+      },
+      headers: [["user-agent", "git/2.55.0"]],
+      body: new Uint8Array(),
+    };
+    const apiOrigin = new URL(first.apiOrigin!);
+    const draft = (): GitHubRequestView => ({
+      target: {
+        host: apiOrigin.hostname,
+        port: Number(apiOrigin.port || 443),
+        method: "POST",
+        path: `/repos/${first.repository}/pulls`,
+        query: "",
+      },
+      headers: [
+        ["user-agent", "GitHub CLI 2.103.2"],
+        ["content-type", "application/json"],
+      ],
+      body: Buffer.from(
+        JSON.stringify({
+          title: "Review",
+          head: first.pushRef.slice("refs/heads/".length),
+          base: first.pullRequestBase,
+          body: "Ready for review.",
+          draft: true,
+          maintainer_can_modify: false,
+        }),
+      ),
+    });
+    const used = async () =>
+      (await installedRows(f, admissionId)).uses.map(({ operation }) => operation).sort();
+
+    // The confirmed first version: allowed with its token, one use recorded.
+    nameHeader("first", first.value);
+    assert.deepEqual(await ask(a.route, fetch), {
+      allow: "advertise-upload-pack",
+      header: "first",
+    });
+    assert.deepEqual(await used(), ["advertise-upload-pack"]);
+
+    // Renewal prepares a second version. Until the recipient confirms it, OCE refuses.
+    await f.pool.query(
+      "UPDATE occ.prepared_github_attempts SET usable_until=clock_timestamp()+interval '5 minutes' WHERE id=$1",
+      [a.preparationAttemptId],
+    );
+    await f.pool.query(
+      "UPDATE occ.prepared_github_families SET next_check_at=clock_timestamp() WHERE source_id=$1",
+      ["repository-git:" + admissionId],
+    );
+    await owner.maintain();
+    const second = await mine.online.readMaterial(a.route, t.signal);
+    assert.ok(second && "value" in second);
+    assert.notEqual(second.materialVersion, first.materialVersion);
+    nameHeader("second", second.value);
+    assert.deepEqual(await ask(a.route, fetch), {
+      reasonCode: "route_not_ready",
+      refusal: "approval_denied",
+    });
+    assert.deepEqual(await used(), ["advertise-upload-pack"], "a refusal records no use");
+
+    // Confirming the second version gives a new route; that route is allowed, the old one not.
+    const pending = await mine.recipients.beginInstall(a.route, second);
+    assert.ok(pending);
+    const b = await mine.recipients.confirmInstall(pending);
+    assert.ok(b);
+    assert.deepEqual(await mine.recipients.observe(installation), b);
+    const trace = [...f.gh.trace];
+    assert.deepEqual(await ask(b, fetch), {
+      allow: "advertise-upload-pack",
+      header: "second",
+    });
+    assert.equal((await ask(a.route, fetch)).reasonCode, "route_not_ready");
+
+    // Two drafts at once: the store's one-draft allowance admits exactly one.
+    const drafts = await Promise.all([ask(b, draft()), ask(b, draft())]);
+    assert.deepEqual(drafts.map((d) => ("allow" in d ? d.allow : d.refusal)).sort(), [
+      "create-draft-pull",
+      "draft_already_opened",
+    ]);
+    assert.deepEqual(
+      drafts.find((d) => !("allow" in d)),
+      { reasonCode: "draft_already_opened", refusal: "draft_already_opened" },
+    );
+    assert.deepEqual(await ask(b, draft()), {
+      reasonCode: "draft_already_opened",
+      refusal: "draft_already_opened",
+    });
+    assert.equal((await installedRows(f, admissionId)).claims.length, 1);
+
+    // Withdrawal: the session closes and the next request is refused.
+    await f.state.transact((u) =>
+      u.repositorySessions.advanceAttempt({
+        admissionId,
+        expectedPhase: "open",
+        phase: "closing",
+        updatedAt: new Date().toISOString(),
+      }),
+    );
+    assert.deepEqual(await ask(b, fetch), {
+      reasonCode: "access_withdrawn",
+      refusal: "session_closed",
+    });
+    assert.deepEqual(await used(), [
+      "advertise-upload-pack",
+      "advertise-upload-pack",
+      "create-draft-pull",
+    ]);
+    assert.deepEqual(f.gh.trace, trace, "decisions send nothing to GitHub");
   },
 );
 

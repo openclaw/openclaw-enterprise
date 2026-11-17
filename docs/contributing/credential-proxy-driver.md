@@ -85,6 +85,12 @@ response-custody profile. Do not copy its test controls or treat it as productio
 qualification. Use its public authority calls as the example, not its simulated
 placement or provider behavior.
 
+For GitHub, let the second `bindRepositoryGit` argument decide each request:
+[`requests.authorize`](../reference/drivers/credential-proxy.md#github-request-decisions)
+classifies it, checks the ref and draft rules and returns the header to inject. The
+[request injector fixture](../../tests/fixtures/driver-packages/protected-execution-driver/request-sender.ts)
+keeps no GitHub rules of its own.
+
 ## 5. Exercise the normal Agent path
 
 Configure the selected pair through Installation composition. Create an Agent
