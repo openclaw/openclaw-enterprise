@@ -1041,8 +1041,9 @@ test("the agent's exec list never covers git or gh (finding 3325)", { skip: unsu
     // Linux follows at most 40 links in one lookup; one more is a loop to the host as well.
     const chain = join(root, "chain");
     mkdirSync(chain, { mode: 0o700 });
-    for (let index = 0; index < 41; index += 1)
+    for (let index = 0; index < 41; index += 1) {
       symlinkSync(index === 40 ? outside : join(chain, `${index + 1}`), join(chain, `${index}`));
+    }
     assert.equal(execCoversGit([node], [join(chain, "1")]), false);
     assert.equal(execCoversGit([node], [join(chain, "0")]), true);
     const locked = join(root, "locked");
@@ -1060,6 +1061,13 @@ test("the agent's exec list never covers git or gh (finding 3325)", { skip: unsu
     mkdirSync(loopingGit, { mode: 0o700 });
     symlinkSync(join(loopingGit, "git"), join(loopingGit, "git"));
     assert.equal(execCoversGit([node], [...fine, loopingGit]), true);
+    // A `git` on an admitted entry that leads through a writable directory could be changed to
+    // name the loader directory's git.
+    const namedIntoWritable = join(root, "named-into-writable");
+    mkdirSync(namedIntoWritable, { mode: 0o700 });
+    symlinkSync(join(writable, "later"), join(namedIntoWritable, "git"));
+    assert.equal(execCoversGit([node], [...fine, namedIntoWritable], [writable]), true);
+    assert.equal(execCoversGit([node], [...fine, namedIntoWritable]), false);
     // The stock search paths still start, with the writable state given.
     const stock = ["/app/node_modules/.bin", ...AGENT_SEARCH_PATH];
     assert.equal(execCoversGit([node], stock, [writable]), false);
@@ -1083,7 +1091,9 @@ test("the agent's exec list never covers git or gh (finding 3325)", { skip: unsu
     ]);
     // Absent or empty, inside the writable state: the combined layout still starts.
     assert.equal(execCoversGit([node], fine, [home], added), false);
-    for (const directory of added) mkdirSync(directory, { recursive: true, mode: 0o700 });
+    for (const directory of added) {
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+    }
     assert.equal(execCoversGit([node], fine, [home], added), false);
     // A git or gh of any kind there is refused: file, link, dangling link.
     for (const [name, make] of [
@@ -1108,6 +1118,15 @@ test("the agent's exec list never covers git or gh (finding 3325)", { skip: unsu
       "/usr/lib",
     ]) {
       assert.equal(execCoversGit([node], fine, [home], [directory]), true, directory);
+    }
+    // One the host cannot read is never judged empty.
+    const lockedHome = join(home, "locked");
+    mkdirSync(join(lockedHome, "bin"), { recursive: true, mode: 0o700 });
+    chmodSync(lockedHome, 0o000);
+    try {
+      assert.equal(execCoversGit([node], fine, [home], [join(lockedHome, "bin")]), true);
+    } finally {
+      chmodSync(lockedHome, 0o700);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -1946,12 +1965,16 @@ test(
           join(input.environment.CODEX_HOME!, "tmp/arg0"),
         ];
         // As a run leaves them: the two Skill directories exist (empty), Codex's arg0 parent not.
-        for (const path of [appended[0]!, appended[1]!, dirname(appended[2]!)])
+        for (const path of [appended[0]!, appended[1]!, dirname(appended[2]!)]) {
           mkdirSync(path, { recursive: true, mode: 0o700 });
+        }
         // Each refused case plants (and then removes) exactly one entry.
         const plant = (path: string, target?: string) => () => {
-          if (target === undefined) writeFileSync(path, "", { mode: 0o700 });
-          else symlinkSync(target, path);
+          if (target === undefined) {
+            writeFileSync(path, "", { mode: 0o700 });
+          } else {
+            symlinkSync(target, path);
+          }
           return () => unlinkSync(path);
         };
         const fine = "/usr/bin:/bin";
