@@ -4889,9 +4889,53 @@ function completeSetupCode(payload) {
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
 
-function agentWithNodeEntrypoint(childArguments: readonly string[]): string {
+// The legacy launcher is part of the immutable requirements for existing revisions.
+function nativeHookDirectorySetup(mounted: boolean): string {
+  if (mounted) {
+    return String.raw`function prepareHookDirectory() {
+  // A provider may mount just this directory while keeping HOME read-only.
+  mkdirSync(hookDirectory, { recursive: true, mode: 0o700 });
+  const flags = hookStorageFs.constants;
+  const fd = openSync(hookDirectory, flags.O_RDONLY | flags.O_DIRECTORY | flags.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    if (stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o700) {
+      throw new Error("Native hook storage must be private and owned by the Harness.");
+    }
+    const held = "/proc/self/fd/" + fd;
+    for (const entry of hookStorageFs.readdirSync(held)) {
+      rmSync(join(held, entry), { recursive: true, force: true });
+    }
+    if (hookCa) {
+      writeFileSync(join(held, "gateway-ca.pem"), hookCa, { mode: 0o600, flag: "wx" });
+    }
+  } finally {
+    closeSync(fd);
+  }
+}`;
+  }
+  return String.raw`function prepareHookDirectory() {
+  rmSync(hookDirectory, { recursive: true, force: true });
+  mkdirSync(hookDirectory, { mode: 0o700 });
+  chmodSync(hookDirectory, 0o700);
+  if (hookCa) {
+    writeFileSync(join(hookDirectory, "gateway-ca.pem"), hookCa, { mode: 0o600, flag: "wx" });
+  }
+}`;
+}
+
+function agentWithNodeEntrypoint(
+  childArguments: readonly string[],
+  mountedHookDirectory = false,
+  role: "combined" | "file-node" | "codex" = "combined",
+): string {
+  const hookStorageImport = mountedHookDirectory
+    ? '\nconst hookStorageFs = require("node:fs");'
+    : "";
+  const includeNode = role !== "codex";
+  const includeCodex = role !== "file-node";
   return String.raw`
-const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");
+const { chmodSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, rmSync } = require("node:fs");${hookStorageImport}
 const { join } = require("node:path");
 const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
@@ -4902,7 +4946,9 @@ ${openClawStateMigrationHelper("Harness", "deploy the Agent again")}
 // node state is current and the workspace is initialized. A failure before then is held
 // here with the named step in the log and its check served in Codex's place.
 ${SUPERVISOR_HELD_FAILURE_HELPER}
-const state = process.env.OPENCLAW_NODE_STATE_DIR;
+${
+  includeNode
+    ? String.raw`const state = process.env.OPENCLAW_NODE_STATE_DIR;
 const setupEnvironment = process.env.OPENCLAW_NODE_SETUP_CODE;
 const setupPath = process.env.OPENCLAW_NODE_SETUP_PATH;
 const setupEnvelopePath = process.env.OPENCLAW_NODE_SETUP_ENVELOPE;
@@ -4920,9 +4966,13 @@ mkdirSync(state, { recursive: true, mode: 0o700 });
 // PVC parents can propagate setgid even with mkdir's 0700 mode. Keep the
 // process-owned node state private before OpenClaw creates its child directories.
 chmodSync(state, 0o700);
-initializeRuntimeAssets();
+`
+    : ""
+}initializeRuntimeAssets();
 publishAgentPluginSkillPath();
-const configPath = join(state, "openclaw.json");
+${
+  includeNode
+    ? String.raw`const configPath = join(state, "openclaw.json");
 writeFileSync(configPath, JSON.stringify({
   agents: { defaults: JSON.parse(process.env.OPENCLAW_WORKSPACE_BOOTSTRAP || "{}") },
   plugins: {
@@ -4931,13 +4981,17 @@ writeFileSync(configPath, JSON.stringify({
     entries: { "file-transfer": { enabled: true } },
   },
 }), { mode: 0o600 });
-// Both the node file worker and Codex execute installed Skill dependencies.
+`
+    : ""
+}// Both the node file worker and Codex execute installed Skill dependencies.
 const harnessPath = [
   process.env.PATH,
   runtimeHomeDirectory + "/.local/bin",
   runtimeOpenClawDirectory + "/tools/node/npm/bin",
 ].filter(Boolean).join(":");
-const nodeEnv = {
+${
+  includeNode
+    ? String.raw`const nodeEnv = {
   HOME: process.env.HOME,
   // Persistent mount ancestors can be root-owned and group-writable. Keep
   // SQLite staging beneath the container's sticky /tmp; OpenClaw owns its private children.
@@ -5063,7 +5117,11 @@ if (baseline.error || baseline.status !== 0) {
   return;
 }
 logStartupPhase("workspace-baseline", baselineStartedAt);
-const codexEnv = { ...process.env, PATH: harnessPath };
+`
+    : "(async () => {\n"
+}${
+    includeCodex
+      ? String.raw`const codexEnv = { ...process.env, PATH: harnessPath };
 // Per-run hook capabilities are delivered by the authenticated app-server connection.
 // Keep them outside the model workspace and the file-transfer plugin's roots.
 const hookDirectory = join(process.env.HOME, ${JSON.stringify(NATIVE_HOOK_CREDENTIAL_DIRECTORY)});
@@ -5094,14 +5152,7 @@ if (gatewayCa) {
 // directory; the CA copy is created exclusively, so it never follows a link. Credentials
 // left there belong to the previous Codex process's relays; the Gateway writes a new one
 // for each new or resumed run.
-function prepareHookDirectory() {
-  rmSync(hookDirectory, { recursive: true, force: true });
-  mkdirSync(hookDirectory, { mode: 0o700 });
-  chmodSync(hookDirectory, 0o700);
-  if (hookCa) {
-    writeFileSync(join(hookDirectory, "gateway-ca.pem"), hookCa, { mode: 0o600, flag: "wx" });
-  }
-}
+${nativeHookDirectorySetup(mountedHookDirectory)}
 delete codexEnv.OPENCLAW_NODE_SETUP_CODE;
 delete codexEnv.OPENCLAW_NODE_SETUP_PATH;
 delete codexEnv.OPENCLAW_NODE_SETUP_ENVELOPE;
@@ -5110,7 +5161,11 @@ delete codexEnv.OPENCLAW_NODE_CA_PATH;
 delete codexEnv.OPENCLAW_NODE_STATE_DIR;
 delete codexEnv.OPENCLAW_WORKSPACE_BOOTSTRAP;
 delete codexEnv.OPENCLAW_NODE_DISPLAY_NAME;
-// The node saves its first display name (the first Pod's host name) and reuses
+`
+      : ""
+  }${
+    includeNode
+      ? String.raw`// The node saves its first display name (the first Pod's host name) and reuses
 // it across revisions unless told otherwise; the controller names it after the Agent.
 const nodeDisplayName = process.env.OPENCLAW_NODE_DISPLAY_NAME;
 const nodeCommands = [
@@ -5188,27 +5243,37 @@ let pendingSetupCode;
 function nodeArguments() {
   // A cached provider setup bridges launch-time gaps, but cannot initiate renewal.
   const code = readSetupCode({ allowCachedProviderSetup: true }) ?? pendingSetupCode;
-  pendingSetupCode = undefined;
+  ${role === "file-node" ? 'const pairingMode = pendingSetupCode === undefined ? "--pair-if-needed" : "--pair-or-reconnect";\n  ' : ""}pendingSetupCode = undefined;
   runningSetupCode = code;
   if (code !== undefined) {
     savedIdentity = "unknown";
     identityRetryAt = 0;
     identityBackoff = 2_000;
-    return ["/app/openclaw.mjs", "node", "run", "--pair-or-reconnect", code, ...nodeCommands];
+    return ["/app/openclaw.mjs", "node", "run", ${role === "file-node" ? "pairingMode" : '"--pair-or-reconnect"'}, code, ...nodeCommands];
   }
   if (savedIdentity === "present") return ["/app/openclaw.mjs", "node", "run", ...nodeCommands];
   if (savedIdentity === "unknown" && Date.now() >= identityRetryAt) checkSavedIdentity();
   return undefined;
 }
-const processes = [
-  { name: "workspace node", args: nodeArguments, env: nodeEnv },
-  {
+`
+      : ""
+  }const processes = [
+${
+  includeNode
+    ? String.raw`  { name: "workspace node", args: nodeArguments, env: nodeEnv },
+`
+    : ""
+}${
+    includeCodex
+      ? String.raw`  {
     name: "Codex",
     args: ${JSON.stringify(["-e", ...childArguments])},
     env: codexEnv,
     prepare: prepareHookDirectory,
   },
-];
+`
+      : ""
+  }];
 let stopping = false;
 // An OpenShell Sandbox reports EPERM for a group left with only zombies, as Darwin
 // does. Signal the child itself then; a supervisor crash would end node retries.
@@ -5293,7 +5358,9 @@ function start(slot) {
 // A refreshed Secret or provider projection must reach an already-connected node.
 // Retire only its owned process group; Codex keeps running and the replacement reads
 // the latest complete setup. Missing projections and code removal do not interrupt it.
-const workspaceNode = processes[0];
+${
+  includeNode
+    ? String.raw`const workspaceNode = processes[0];
 const setupRefreshTimer = setupEnvironment ? undefined : setInterval(() => {
   if (stopping || !workspaceNode.child) return;
   const code = readSetupCode();
@@ -5309,7 +5376,9 @@ const setupRefreshTimer = setupEnvironment ? undefined : setInterval(() => {
   workspaceNode.retirementTimer = setTimeout(() => killGroup(child, "SIGKILL"), 5_000);
 }, 1_000);
 setupRefreshTimer?.unref();
-function stop(signal) {
+`
+    : "const setupRefreshTimer = undefined;"
+}function stop(signal) {
   if (stopping) return;
   stopping = true;
   clearInterval(setupRefreshTimer);
@@ -5327,9 +5396,9 @@ function stop(signal) {
 process.on("SIGTERM", () => stop("SIGTERM"));
 process.on("SIGINT", () => stop("SIGINT"));
 logStartupPhase("supervisor-spawn", startupPhaseOrigin);
-nodeSetupWait = Date.now();
+${includeNode ? "nodeSetupWait = Date.now();" : ""}
 // Codex first: it does not wait for the node setup.
-for (const slot of [...processes].reverse()) start(slot);
+for (const slot of [...processes].reverse()) start(slot);${role === "file-node" ? '\nrmSync("/tmp/oce-file-baseline.sock", {force:true}); require("node:net").createServer(socket => socket.end()).listen("/tmp/oce-file-baseline.sock");' : ""}
 })().catch((error) => {
   console.error(error);
   process.exit(1);
@@ -5339,11 +5408,36 @@ for (const slot of [...processes].reverse()) start(slot);
 
 const providerCodexChild = agentRuntimeEntrypoint({ withNode: true });
 const protectedProviderCodexChild = agentRuntimeEntrypoint({ withNode: true, protected: true });
-export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  nodeProgramArguments(providerCodexChild),
-);
+const providerCodexArguments = nodeProgramArguments(providerCodexChild);
+const protectedProviderCodexArguments = nodeProgramArguments(protectedProviderCodexChild);
+// Only split the exact provider launcher Compute rendered. An unknown or customized
+// command must never silently lose its initialization or gain a companion process.
+export function splitBoxWorkspaceLaunch(command: readonly string[], setupVerifier: string) {
+  const expected = [
+    ...RUNTIME_WRAPPER_COMMAND,
+    ...nodeProgramArguments(setupVerifier + agentWithNodeEntrypoint(providerCodexArguments, true)),
+  ];
+  if (command.length !== expected.length || expected.some((part, i) => part !== command[i])) {
+    return undefined;
+  }
+  return {
+    codex: [
+      "node",
+      "-e",
+      ...nodeProgramArguments(
+        setupVerifier + agentWithNodeEntrypoint(providerCodexArguments, true, "codex"),
+      ),
+    ],
+    fileNode: [
+      ...RUNTIME_WRAPPER_COMMAND,
+      ...nodeProgramArguments(setupVerifier + agentWithNodeEntrypoint([], false, "file-node")),
+    ],
+  };
+}
+
+export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(providerCodexArguments);
 export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  nodeProgramArguments(protectedProviderCodexChild),
+  protectedProviderCodexArguments,
 );
 export const COMPUTE_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   nodeProgramArguments(agentRuntimeEntrypoint({ withNode: true, computeOwned: true })),
@@ -5369,6 +5463,7 @@ export interface CodexLaunch {
   readonly openShellProgram?: "pat" | "ordinary";
   readonly withNode?: boolean;
   readonly workspaceSetup?: boolean;
+  readonly mountedHookDirectory?: boolean;
 }
 
 export function codexLaunchEntrypoint(
@@ -5378,6 +5473,7 @@ export function codexLaunchEntrypoint(
     openShellProgram,
     withNode,
     workspaceSetup,
+    mountedHookDirectory,
   }: CodexLaunch = { providerOwned: false, protected: false },
 ): string {
   if (!providerOwned) {
@@ -5404,6 +5500,10 @@ export function codexLaunchEntrypoint(
       return (compactProtectedLaunch ??= compactWorkspaceNodeLaunch(protectedProviderCodexChild));
     }
     return (compactProviderLaunch ??= compactWorkspaceNodeLaunch(providerCodexChild));
+  }
+  if (mountedHookDirectory) {
+    const args = protectedLaunch ? protectedProviderCodexArguments : providerCodexArguments;
+    return agentWithNodeEntrypoint(args, true);
   }
   return protectedLaunch ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT : AGENT_WITH_NODE_ENTRYPOINT;
 }

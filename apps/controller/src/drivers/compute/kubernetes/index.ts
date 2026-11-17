@@ -586,10 +586,13 @@ export interface KubernetesComputeDriverOptions {
     /** Private ClusterIP of the credential-free reader in this execution cluster. */
     readonly publicGithubRead?: KubernetesWorkloadPeer & { readonly address: string };
     /** Exact provider ingress used only when the selected Sandbox owns Harness transport. */
-    readonly providerHarness?: KubernetesWorkloadPeer & {
-      readonly address: string;
-      readonly port: number;
-    };
+    readonly providerHarness?:
+      | (KubernetesWorkloadPeer & {
+          readonly mode?: "fixed";
+          readonly address: string;
+          readonly port: number;
+        })
+      | { readonly mode: "namespace"; readonly port: number };
   };
   readonly servicePrincipalCredentials:
     | { readonly mode: "disabled" }
@@ -1882,6 +1885,7 @@ function providerHarnessUrl(
   endpoint: SandboxHarnessEndpoint,
   network: NonNullable<KubernetesComputeDriverOptions["network"]["providerHarness"]>,
   harnessHome: string,
+  namespaceName?: string,
 ): URL {
   let url: URL;
   try {
@@ -1902,6 +1906,18 @@ function providerHarnessUrl(
     throw new ConfigurationFailure(
       "SandboxDriver Harness endpoint must be an exact WebSocket origin on the configured provider port.",
     );
+  }
+  if (network.mode === "namespace") {
+    const suffix = `.${required(namespaceName, "Harness namespace")}.svc`;
+    const host = url.hostname.endsWith(".cluster.local")
+      ? url.hostname.slice(0, -14)
+      : url.hostname;
+    const serviceName = host.endsWith(suffix) ? host.slice(0, -suffix.length) : "";
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u.test(serviceName)) {
+      throw new ConfigurationFailure(
+        "Namespace provider endpoint must name a Service in the prepared Namespace.",
+      );
+    }
   }
   if (
     endpoint.workspaceRoot !== undefined &&
@@ -3520,14 +3536,27 @@ export class KubernetesComputeDriver implements ComputeDriver {
             },
           },
           providerHarness: {
-            type: "object",
-            required: ["namespace", "podLabels", "address", "port"],
-            additionalProperties: false,
-            properties: {
-              ...WORKLOAD_PEER_SCHEMA.properties,
-              address: { type: "string", minLength: 1 },
-              port: { type: "integer", minimum: 1, maximum: 65535 },
-            },
+            oneOf: [
+              {
+                type: "object",
+                required: ["mode", "port"],
+                additionalProperties: false,
+                properties: {
+                  mode: { const: "namespace" },
+                  port: { type: "integer", minimum: 1, maximum: 65535 },
+                },
+              },
+              {
+                type: "object",
+                required: ["namespace", "podLabels", "address", "port"],
+                additionalProperties: false,
+                properties: {
+                  ...WORKLOAD_PEER_SCHEMA.properties,
+                  address: { type: "string", minLength: 1 },
+                  port: { type: "integer", minimum: 1, maximum: 65535 },
+                },
+              },
+            ],
           },
         },
       },
@@ -3839,19 +3868,25 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
       }
       if (options.network.providerHarness !== undefined) {
-        validatePeer(
-          options.network.providerHarness,
-          "Provider Harness gateway",
-          "/network/providerHarness",
-        );
-        if (isIP(options.network.providerHarness.address) === 0) {
-          throw configurationConstraintFailure(
-            "Provider Harness gateway address must be an IP address.",
-            "/network/providerHarness/address",
-          );
+        const provider = options.network.providerHarness;
+        if (provider.mode === "namespace") {
+          if (options.executionCluster !== undefined) {
+            throw configurationConstraintFailure(
+              "Namespace provider routing requires same-cluster execution.",
+              "/network/providerHarness",
+            );
+          }
+        } else {
+          validatePeer(provider, "Provider Harness gateway", "/network/providerHarness");
+          if (isIP(provider.address) === 0) {
+            throw configurationConstraintFailure(
+              "Provider Harness gateway address must be an IP address.",
+              "/network/providerHarness/address",
+            );
+          }
         }
         validatePort(
-          options.network.providerHarness.port,
+          provider.port,
           "Provider Harness gateway port",
           "/network/providerHarness/port",
         );
@@ -7075,7 +7110,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         providerEndpoint?: SandboxHarnessEndpoint,
       ) => {
         await this.prepareRevisionStage("gateway_config_map", () =>
-          this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace),
+          this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace, namespace.name),
         );
         await this.prepareRevisionStage("gateway_channel_network_policy", () =>
           this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace),
@@ -8245,7 +8280,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayNamespace,
       gatewayOwnership,
     );
-    await this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace);
+    await this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace, namespace.name);
     await this.reconcile(
       this.deployment(
         gatewayName,
@@ -14826,6 +14861,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return {
       providerOwned: sandbox?.provisionHarness !== undefined,
       protected: this.hasProtectedCodexAdmission(revision),
+      mountedHookDirectory: sandbox?.implementation === "strands-box",
       ...(updated && {
         openShellProgram:
           revision.executionAdmission.mode === "unprotected" &&
@@ -15744,8 +15780,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
     preparation: AgentPolicyPreparation = {},
+    purpose: "workspaceNodePeerLabels" | "harnessPeerLabels" = "workspaceNodePeerLabels",
   ): Promise<readonly Readonly<Record<string, string>>[]> {
-    const sandboxDriver = this.workspaceNodeRelay(revision);
+    const sandboxDriver =
+      purpose === "workspaceNodePeerLabels"
+        ? this.workspaceNodeRelay(revision)
+        : this.sandboxDriverForRevision(revision);
     if (sandboxDriver === undefined) {
       return [];
     }
@@ -15762,14 +15802,34 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     ];
     const peers: Readonly<Record<string, string>>[] = [];
     for (const candidate of revisions) {
-      const labels = await sandboxDriver.workspaceNodePeerLabels!({
+      const method = sandboxDriver[purpose];
+      if (!method) {
+        throw new ConfigurationFailure(
+          "Namespace provider routing requires exact Harness peer labels.",
+        );
+      }
+      const labels = await method.call(sandboxDriver, {
         ...context,
         revision: candidate,
       });
       if (labels === undefined) {
         continue;
       }
-      validatePeer({ namespace: namespace.name, podLabels: labels }, "Workspace-node peer");
+      validatePeer(
+        { namespace: namespace.name, podLabels: labels },
+        purpose === "workspaceNodePeerLabels" ? "Workspace-node peer" : "Harness peer",
+      );
+      if (
+        purpose === "harnessPeerLabels" &&
+        (labels["openclaw.dev/namespace"] !== candidate.namespaceId ||
+          labels["openclaw.dev/agent"] !== candidate.agentId ||
+          labels["openclaw.dev/revision"] !== candidate.id ||
+          labels["openclaw.dev/workload-role"] !== "agent")
+      ) {
+        throw new ConfigurationFailure(
+          "Harness peer labels must select the exact revision's Agent workload.",
+        );
+      }
       peers.push(Object.freeze({ ...labels }));
     }
     return peers;
@@ -15785,6 +15845,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       namespace,
       preparation,
       await this.workspaceNodePeers(revision, namespace, preparation),
+      this.options.network.providerHarness?.mode === "namespace"
+        ? await this.workspaceNodePeers(revision, namespace, preparation, "harnessPeerLabels")
+        : [],
     );
   }
 
@@ -15794,13 +15857,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     preparation: AgentPolicyPreparation,
     ownership: Ownership,
   ): Promise<void> {
-    const name = `allow-gateway-workspace-node-${sha256Hex(revision.agentId, 12)}`;
+    const names = new Set([`allow-gateway-workspace-node-${sha256Hex(revision.agentId, 12)}`]);
+    if (this.options.network.providerHarness?.mode === "namespace") {
+      names.add(`allow-gateway-agent-${sha256Hex(revision.agentId, 12)}`);
+    }
     for (const policy of await this.agentNetworkPoliciesWithPeers(
       revision,
       namespace,
       preparation,
     )) {
-      if (policy.resource.metadata.name === name) {
+      if (names.has(policy.resource.metadata.name!)) {
         await this.reconcile(policy.resource, ownership, policy.namespace);
       }
     }
@@ -15813,6 +15879,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     namespace: KubernetesNamespaceAddress,
     preparation: AgentPolicyPreparation = {},
     workspaceNodePeers: readonly Readonly<Record<string, string>>[] = [],
+    harnessPeers: readonly Readonly<Record<string, string>>[] = [],
   ): TargetedKubernetesResource[] {
     const { unprofiledGateway = false } = preparation;
     const gatewayNamespace = this.gatewayNamespace(revision, namespace);
@@ -15924,12 +15991,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         policy("allow-gateway-agent", {
           podSelector: gateway,
           policyTypes: ["Egress"],
-          egress: [
-            {
-              to: [this.peer(provider)],
-              ports: [{ protocol: "TCP", port: provider.port }],
-            },
-          ],
+          egress:
+            provider.mode === "namespace"
+              ? harnessPeers.map((podLabels) => ({
+                  to: [this.peer({ namespace: namespace.name, podLabels })],
+                  ports: [{ protocol: "TCP", port: provider.port }],
+                }))
+              : [{ to: [this.peer(provider)], ports: [{ protocol: "TCP", port: provider.port }] }],
         }),
         ...workspaceNodePolicies,
         ...statusPolicies,
@@ -16550,6 +16618,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     endpoint: SandboxHarnessEndpoint | undefined,
     namespace: KubernetesNamespaceAddress,
+    harnessNamespaceName: string,
   ): Promise<void> {
     if (endpoint?.tls === undefined) {
       return;
@@ -16560,7 +16629,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         "SandboxDriver Harness endpoint requires an exact provider network route.",
       );
     }
-    providerHarnessUrl(endpoint, network, this.sandboxDriver?.harnessHome ?? HARNESS_HOME);
+    providerHarnessUrl(endpoint, network, this.sandboxDriver?.harnessHome ?? HARNESS_HOME, harnessNamespaceName);
     // The endpoint arrives after the configuration snapshot. Keep its public
     // trust separately revision-owned and immutable; drift requires a new revision.
     const ownership = this.pluginRuntimeOwnership(revision);
@@ -16687,6 +16756,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             providerEndpoint,
             providerNetwork!,
             this.sandboxDriver?.harnessHome ?? HARNESS_HOME,
+            configuration?.harnessNamespace?.name,
           );
     const publicGithubRead =
       pluginRuntime?.runtime.kind === "codex" && !embedded
@@ -17368,7 +17438,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
               ? { terminationGracePeriodSeconds: GATEWAY_STOP_TIMEOUT_MS / 1000 }
               : {}),
             ...runtimeNodeSelector,
-            ...(providerUrl === undefined
+            ...(providerUrl === undefined || providerNetwork?.mode === "namespace"
               ? {}
               : {
                   hostAliases: [

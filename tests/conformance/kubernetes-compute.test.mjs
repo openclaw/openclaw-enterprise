@@ -9017,3 +9017,70 @@ test(
   "an active embedded revision whose stored Gateway tool policy predates the rule keeps its maintenance passes",
   checkStoredGatewayToolPolicyMaintenance,
 );
+test("Namespace provider routing grants exact revision ingress peers and retires predecessor grants", async () => {
+  let available = true;
+  let wrongOwner = false;
+  const driver = new KubernetesComputeDriver(
+    options({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      network: { ...options().network, providerHarness: { mode: "namespace", port: 8080 } },
+    }),
+    {
+      sandboxDriver: {
+        id: "namespace-provider",
+        implementation: "example-provider",
+        async harnessEndpoint() {
+          throw new Error("Policy rendering must not discover an endpoint");
+        },
+        async harnessPeerLabels({ revision }) {
+          if (!available) {
+            return undefined;
+          }
+          return {
+            "openclaw.dev/namespace": revision.namespaceId,
+            "openclaw.dev/agent": wrongOwner ? "another-agent" : revision.agentId,
+            "openclaw.dev/revision": revision.id,
+            "openclaw.dev/workload-role": "agent",
+          };
+        },
+        async cleanup() {},
+      },
+    },
+  );
+  driver.apiClients = Promise.resolve({ objects: {} });
+  const revision = routedRevision(driver, {
+    id: "new-revision",
+    agentId: "namespace-agent",
+    sandboxDriverId: "namespace-provider",
+  });
+  const namespace = { name: kubernetesNamespaceName(revision.namespaceId), plane: "control" };
+  const render = async (preparation) =>
+    (await driver.agentNetworkPoliciesWithPeers(revision, namespace, preparation)).find(
+      ({ resource }) =>
+        resource.metadata.name === `allow-gateway-agent-${digest(revision.agentId)}`,
+    ).resource.spec.egress;
+  const grants = await render({ predecessorRevisionId: "old-revision" });
+  assert.equal(grants.length, 2);
+  assert.deepEqual(
+    new Set(grants.map((rule) => rule.to[0].podSelector.matchLabels["openclaw.dev/revision"])),
+    new Set(["new-revision", "old-revision"]),
+  );
+  for (const rule of grants) {
+    assert.equal(
+      rule.to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"],
+      namespace.name,
+    );
+    assert.equal(rule.to[0].podSelector.matchLabels["openclaw.dev/agent"], revision.agentId);
+    assert.deepEqual(rule.ports, [{ protocol: "TCP", port: 8080 }]);
+  }
+  assert.equal((await render()).length, 1, "activation removes the predecessor grant");
+  available = false;
+  assert.deepEqual(
+    await render(),
+    [],
+    "missing workloads must never emit an unrestricted empty peer",
+  );
+  available = true;
+  wrongOwner = true;
+  await assert.rejects(render(), /exact revision/);
+});
