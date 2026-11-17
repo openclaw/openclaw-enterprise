@@ -1971,7 +1971,8 @@ test("an installed Sandbox can explicitly select its packaged Credential Gateway
             databaseUrl,
             drivers: apiDrivers,
             authSecret: "packaged-gateway-startup-fixture-secret",
-            authBaseURL: "http://127.0.0.1:3000",
+            authBaseURL: "https://console.oce.localhost",
+            nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
           });
           assert.equal((await app.inject("/healthz")).statusCode, 200);
           await worker.start();
@@ -2039,8 +2040,9 @@ test("an installed Sandbox can explicitly select its packaged Credential Gateway
               host: "127.0.0.1",
               databaseUrl,
               drivers: api,
-              authSecret: "gateway-failure-fixture-secret",
-              authBaseURL: "http://127.0.0.1:3000",
+              authSecret: "packaged-gateway-failure-fixture-secret",
+              authBaseURL: "https://console.oce.localhost",
+              nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
               onStartupPhase(phase) {
                 if (phase === "database") {
                   throw earlyFailure;
