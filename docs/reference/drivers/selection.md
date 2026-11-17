@@ -77,19 +77,16 @@ contract still requires the Secret selection.
 
 ## Select a protected sender
 
-Implementers start with the [Credential Proxy contract](credential-proxy.md), which
-distinguishes request-time exchange, recipient installation and sender guarantees,
-and the [Driver walkthrough](../../contributing/credential-proxy-driver.md).
+Implementers start with the [Credential Proxy contract](credential-proxy.md) and the
+[Driver walkthrough](../../contributing/credential-proxy-driver.md#4-bind-the-selected-transport).
 
 With bundled Kubernetes Compute, select the trusted package under
 `drivers.sandbox.package`, then set `drivers.credential_proxy.id` to the
 same Driver ID and its `configuration` to `{}`. Configure the package once,
 under `drivers.sandbox.configuration`. The API and worker each load one
 registration and check its identity against the Agent revision.
-The package runs with the worker authority described above, in the process that holds
-the GitHub App key and custody key ([Helm](#supply-protected-git-credentials-with-helm)),
-so your review of it is the boundary for those keys. OCC still keeps the token out of
-the Agent and its Sandbox, authorizes each request and enforces withdrawal.
+The package runs in the worker beside the GitHub App and custody keys
+([Helm](#supply-protected-git-credentials-with-helm)); reviewing it is their boundary.
 
 For protected Git, match `repository.id` to the GitHub Backend's `drivers.repo`
 policy member. Set `repository.configuration.sessionDurationSeconds` and
@@ -99,13 +96,6 @@ No native control socket or broker CA is required. The Driver supplies Sandbox
 repository access and `bindRepositoryGit`. Compute verifies the installed
 recipient before release.
 
-Protected Git material is prepared: the worker mints a repository-scoped installation
-token through the Token Service before any request and stores it encrypted. The sender
-reads that material and asks OCC to authorize each request, so the registry grant
-decides the push ref, pull request base and draft allowance. Keep no token cache, ref
-rule or draft record in the sender. Request-time exchange through `bindExchange`
-resolves material per request and does not cover repository Git.
-
 | Admission | Required behavior                                                                                                                                                                                                                             |
 | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | v3        | Protected request-time routes and response custody; not repository delivery.                                                                                                                                                                  |
@@ -114,9 +104,8 @@ resolves material per request and does not cover repository Git.
 | v6        | Bundled OpenShell preview: observe the request hook per start; this does not prove the hook cannot later be disabled.                                                                                                                         |
 | v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.                                                                                                        |
 
-Observed OpenShell Git routes keep the original launch acknowledgment during credential
-rotation. They reopen only after the model provider observation matches the new
-shared provider environment; stale or incomplete observations leave the route pending.
+Observed OpenShell Git routes keep their launch acknowledgment through rotation and
+reopen only when the model provider observation matches the new shared environment.
 
 A lost authorization reply records possible use. Do not retry the exchange.
 Stock OpenShell lacks v7 qualification. For isolation and release requirements,
