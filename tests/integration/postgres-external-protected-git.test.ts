@@ -647,7 +647,7 @@ function externalGitJourney(
     const lostRotation = scope === "lost-rotation";
     const reducible = scope === "reducible-installation" || lostRotation;
     const broad =
-      !lostRotation && scope !== "repository"
+      !lostRotation && !writes && scope !== "repository"
         ? await installationOrigin(
             t,
             namespaceId,
