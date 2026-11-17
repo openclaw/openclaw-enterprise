@@ -690,6 +690,7 @@ export async function createQaInstallation(
     };
   }
   registerQaSecret(f.credentials.password);
+  assertQaConsoleReady(f);
   if (disableNativeAdmin) {
     if (controlPlane === "compose") {
       f.nativeAdminComposeFile = await f.write("http-chat.compose.json", {
@@ -949,3 +950,32 @@ export async function createQaAgent(
 }
 
 export { repository };
+
+/**
+ * @typedef {{
+ *   consoleUrl: string,
+ *   credentials: import("./auth-session.mjs").SignInCredentials,
+ * }} QaConsoleBindings
+ */
+
+/**
+ * @template {object} Fixture
+ * @param {Fixture} fixture
+ * @returns {asserts fixture is Fixture & QaConsoleBindings}
+ */
+function assertQaConsoleReady(fixture) {
+  assert.ok(
+    "consoleUrl" in fixture && typeof fixture.consoleUrl === "string",
+    "expected the QA Console URL",
+  );
+  const credentials = "credentials" in fixture ? fixture.credentials : undefined;
+  assert.ok(
+    credentials !== null &&
+      typeof credentials === "object" &&
+      "email" in credentials &&
+      typeof credentials.email === "string" &&
+      "password" in credentials &&
+      typeof credentials.password === "string",
+    "expected the QA sign-in credentials",
+  );
+}
