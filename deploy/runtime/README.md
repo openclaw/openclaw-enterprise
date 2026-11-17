@@ -66,9 +66,13 @@ provider-Box generation and its WSS peer, and fences the app-server RPCs a provi
 Box may make: the chat control set is allowed, the native hook relay credential file
 (`fs/writeFile`/`fs/remove` of one `<relayId>.<generation>.json` under the fixed
 `$HOME/.oce-native-hooks`, whose URL is pinned to the Gateway's own configured
-`appServer.nativeHookRelay` value, never the request) is admitted, and every other
-`fs/*` call and unbound RPC stays refused. The client takes one JSON snapshot of the
-request params before the fence so the value decided on is exactly the value sent.
+`appServer.nativeHookRelay` value, never the request) is admitted, the session policy
+handoff (`thread/inject_items` of one developer-role text message opened by one of the
+pinned revision's two policy notices, at most 1 MiB, into a thread this client started,
+resumed or forked; a pin bump that changes the notices needs a fence follow-up) is
+admitted, and every other `thread/inject_items`, `fs/*` call and unbound RPC stays
+refused. The client takes one JSON snapshot of the request params before the fence so
+the value decided on is exactly the value sent.
 `openclaw-native-hook-env-proxy.patch` makes a dedicated native-hook-relay call honour
 Node's own env-proxy switch, which an explicit-proxy Sandbox sets.
 
