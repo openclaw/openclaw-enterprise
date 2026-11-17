@@ -22,7 +22,7 @@ const execute = promisify(execFile);
 
 // Runs inside Box as the workload: executes each queued argv directly (no shell) and writes
 // its result. Box gives it exactly the workload environment, which it reports once.
-const RUNNER = `import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+export const RUNNER = `import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 const queue = process.argv[2];
@@ -41,14 +41,14 @@ while (!existsSync(join(queue, "stop"))) {
 }
 `;
 
-interface Result {
+export interface Result {
   readonly code: number | null;
   readonly stdout: string;
   readonly stderr: string;
   readonly error?: string;
 }
 
-async function until<T>(what: string, deadline: number, probe: () => Promise<T | undefined>) {
+export async function until<T>(what: string, deadline: number, probe: () => Promise<T | undefined>) {
   for (;;) {
     const value = await probe();
     if (value !== undefined) {
