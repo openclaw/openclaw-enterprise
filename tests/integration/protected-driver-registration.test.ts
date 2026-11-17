@@ -34,6 +34,7 @@ import { Pool } from "pg";
 import type {
   AgentRevision,
   ComputeDriver,
+  CredentialGatewayContext,
   CredentialProxyDriver,
   CredentialSource,
   CredentialSourceSnapshot,
@@ -1557,6 +1558,13 @@ test("an installed Sandbox can explicitly select its packaged Credential Gateway
       );
       now += 71_000;
       assert.equal((await update(controller(repositoryOnly, true), modelSource.id)).state, "ready");
+      // The same pinned owner without the Proxy still owns it; a Sandbox configuration change does not.
+      const firstView = firstOwner.require("credential_gateway");
+      const listed = firstView.listSourceTypes.bind(firstView);
+      scenario.mock.method(firstView, "listSourceTypes", async (options: CredentialGatewayContext) => [
+        ...(await listed(options)),
+        modelType,
+      ]);
       assert.equal((await update(controller(firstOwner), modelSource.id)).state, "ready");
       await refuse(controller(changedOwner), modelSource.id);
     },

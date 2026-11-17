@@ -1717,10 +1717,12 @@ test("a packaged Credential Gateway attaches the protected Harness model source 
       materialSettledAt: assert.fail,
       isRouteBlockedError: assert.fail,
     },
-    async enrollHarness(context) {
+    // The provider-owned Harness receives its rendered requirements in this request.
+    async provisionHarness(context) {
       enrolled = context;
       throw released;
     },
+    enrollHarness: assert.fail,
   };
   const owner = await createExternalSandboxRegistration(
     {
@@ -1852,6 +1854,15 @@ test("a packaged Credential Gateway attaches the protected Harness model source 
         name: driver.workspaceNodeName(target),
         labels: { ...setup.metadata.labels, "openclaw.dev/revision": target.id },
       },
+      data: {
+        ...setup.data,
+        setupCode: Buffer.from(
+          tlsPinnedWorkspaceSetupCode(
+            `wss://agents.example.internal/namespaces/${target.namespaceId}/agents/${target.agentId}/node`,
+            Date.now() + 600_000,
+          ),
+        ).toString("base64"),
+      },
     });
   let committed;
   const custody = {
@@ -1893,6 +1904,9 @@ test("a packaged Credential Gateway attaches the protected Harness model source 
     id: "ar_00000000-0000-4000-8000-000000000664",
     revision: protectedRevision.revision + 1,
     harnessAuth: { method: "runtime" },
+    // A runtime revision saves no model provider.
+    harness: { ...protectedRevision.harness, configuration: {} },
+    compute: { id: driver.id, implementation: driver.implementation },
     credentialSources: [],
     egressPlan: {
       ...runtimePlan,
