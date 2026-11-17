@@ -435,7 +435,10 @@ test("the installed host relays enrollment only into a held, gate-released execu
     ],
     [
       "no recipient",
-      enrollmentRefusal({ ...held, view: { ...view, repositoryRecipient: undefined } as never }, supplied),
+      enrollmentRefusal(
+        { ...held, view: { ...view, repositoryRecipient: undefined } as never },
+        supplied,
+      ),
     ],
     [
       "gate not released",

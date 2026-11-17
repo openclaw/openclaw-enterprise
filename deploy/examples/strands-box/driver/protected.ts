@@ -202,11 +202,7 @@ function admittedModelSource(plan: ProxyPlan, id: string, gateway: boolean): boo
  * Exactly one online-request, one-repository Git plan with no other route, owned by this Driver,
  * and at most this registration's own Harness model source.
  */
-function admittedPlan(
-  plan: ProxyPlan | undefined,
-  id: string,
-  gateway = false,
-): plan is ProxyPlan {
+function admittedPlan(plan: ProxyPlan | undefined, id: string, gateway = false): plan is ProxyPlan {
   const bindings = plan?.repositoryGit?.bindings;
   return (
     plan !== undefined &&
