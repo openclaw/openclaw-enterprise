@@ -894,16 +894,29 @@ test(
 );
 
 test(
-  "the Worker refuses a model ask OCE has not confirmed, whatever the host shows",
+  "the Worker answers the starting Harness's model asks from OCE's committed installation, before the revision is active, and never before the release or without the live Box",
   { timeout: 90_000 },
   async (t) => {
+    // Finding 3312: Compute's Harness checks its model while it starts, before OCE activates the
+    // revision. OCE prepares repository material only for the active revision, so the recipient
+    // cannot be confirmed yet; requiring that confirmation refused every start-up model ask.
     const kube = await fakeKubernetesSecrets(t);
     const f = await pairedFixture(t, { model: { gateway: kube.configuration } });
     const signal = AbortSignal.timeout(80_000);
     const wiring = await f.release.configure(f.context);
     const binding = await f.owner.requireRepositoryGitTransport()(f.authority, f.requests);
     t.after(() => binding.close());
-    await registerModelKey(f.gateway!, namespace.id, MODEL_SOURCE_ID, signal);
+    const key = await registerModelKey(f.gateway!, namespace.id, MODEL_SOURCE_ID, signal);
+    const ask = () => askSource(f.modelSocket, f.bearer, boxModelRequest(requestId()));
+    // Before the release OCE has committed no installation (and the host has no released run):
+    // refused, no Secret read.
+    f.state.unprepared = true;
+    await binding.reconcile!(signal);
+    let reads = kube.calls.length;
+    const early = await ask();
+    assert.ok(["access_withdrawn", "route_not_ready"].includes(String(early.body?.refusal)));
+    assert.equal(early.body?.credential, undefined);
+    assert.deepEqual(secretReads(kube, reads), []);
     assert.equal(
       await f.release.enroll(
         f.context,
@@ -915,24 +928,43 @@ test(
       ),
       true,
     );
-    // Released and the Worker's recipient, but not confirmed: the host shows no live source.
+    // Released and the Worker's recipient, but the host shows no live source (Box gone): refused.
     f.host.sourceLive = false;
     await binding.reconcile!(signal);
     assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "pending");
-    const reads = kube.calls.length;
-    const reply = await askSource(f.modelSocket, f.bearer, boxModelRequest(requestId()));
-    assert.equal(reply.body?.refusal, "route_not_ready");
-    assert.equal(reply.body?.credential, undefined);
+    reads = kube.calls.length;
+    const gone = await ask();
+    assert.equal(typeof gone.body?.refusal, "string");
+    assert.equal(gone.body?.credential, undefined);
     assert.deepEqual(secretReads(kube, reads), []);
-    // Confirmed: the same ask is answered.
+    // The live Box, OCE's committed installation, the revision not active yet (no material, not
+    // confirmed): the start-up model ask gets this source's key.
     f.host.sourceLive = true;
     await binding.reconcile!(signal);
+    assert.equal(f.state.installs, 0);
+    assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "pending");
+    assert.ok((await ask()).body?.credential === key, "the start-up ask did not get its own key");
+    // OCE's delivery row moves to another fence before any confirmation: refused, no Secret read.
+    f.state.fence = 2;
+    reads = kube.calls.length;
+    assert.equal((await ask()).body?.refusal, "route_not_ready");
+    assert.deepEqual(secretReads(kube, reads), []);
+    f.state.fence = 1;
+    // OCE's committed installation for the revision is replaced (a new release): refused.
+    const committed = f.committed()!;
+    await f.custody.recordEgressInstallation({
+      ...committed,
+      installedAt: "2026-11-17T00:00:00.000Z",
+    });
+    reads = kube.calls.length;
+    assert.equal((await ask()).body?.refusal, "route_not_ready");
+    assert.deepEqual(secretReads(kube, reads), []);
+    await f.custody.recordEgressInstallation(committed);
+    // Activated and confirmed: the same ask is answered against the confirmed fence.
+    f.state.unprepared = false;
+    await binding.reconcile!(signal);
     assert.equal(f.sandbox.repositoryAccess!.routeReadiness(f.revision.id), "ready");
-    assert.equal(
-      typeof (await askSource(f.modelSocket, f.bearer, boxModelRequest(requestId()))).body
-        ?.credential,
-      "string",
-    );
+    assert.ok((await ask()).body?.credential === key, "the confirmed ask did not get its own key");
   },
 );
 

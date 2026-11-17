@@ -624,6 +624,8 @@ export async function pairedFixture(
   // allowed or denied owner decision is one row in `uses`, as prepared_repository_git_uses.
   const state = {
     withdrawn: false,
+    /** As OCC before it activates the revision: no live session, so no material yet. */
+    unprepared: false,
     /** OCC's delivery-row fence: a new lease or a replaced delivery moves it. */
     fence: 1,
     /** While set, `observe` waits for it: a slow OCE read the Worker must not outlive. */
@@ -699,6 +701,9 @@ export async function pairedFixture(
         async readMaterial(route) {
           state.materialReads++;
           assert.deepEqual(route, fence);
+          if (state.unprepared) {
+            return { absent: "unprepared" };
+          }
           return state.withdrawn ? { absent: "withdrawn" } : material;
         },
         async authorize(q, installed) {

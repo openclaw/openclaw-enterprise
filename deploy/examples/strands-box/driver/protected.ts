@@ -241,6 +241,11 @@ interface Recipient {
   pending?: (RepositoryGitInstallationFence & RepositoryGitMaterialVersion) | undefined;
   /** The route OCE confirmed for `version`: every ask is decided against it. */
   confirmed?: RepositoryGitInstallationFence;
+  /**
+   * The fence of OCE's committed installation at this recipient's first model ask, before any
+   * confirmation (finding 3312): a later model ask at another fence is refused.
+   */
+  modelFence?: RepositoryGitInstallationFence;
   version?: RepositoryGitMaterialVersion;
   /** When the first version became ready; renewals do not reset the workspace connection. */
   settledAt?: number;
@@ -645,16 +650,17 @@ class Shared {
       return { refusal: "request_not_allowed" };
     }
     if (!(ask.deadlineUnixMs > Date.now())) return { refusal: "route_not_ready" };
-    // OCE confirmed this recipient, and still holds exactly its installation at that fence now.
-    const confirmed = active.confirmed;
-    if (confirmed === undefined) return { refusal: "route_not_ready" };
+    // OCE committed exactly this installation at the release and still holds it now. The Harness
+    // checks its model while it starts, before OCE activates the revision, so before the
+    // repository recipient can be confirmed (finding 3312): until then the fence is the one OCE
+    // showed at this recipient's first model ask; once confirmed, the confirmed fence.
     const current = await authority.recipients.observe(active.installation);
+    if (current === undefined || this.active !== active) return { refusal: "route_not_ready" };
+    const fence = active.confirmed ?? (active.modelFence ??= current);
     if (
-      current === undefined ||
-      this.active !== active ||
       current.revisionId !== plan.execution.revisionId ||
-      current.revisionId !== confirmed.revisionId ||
-      current.fence !== active.confirmed?.fence ||
+      current.revisionId !== fence.revisionId ||
+      current.fence !== fence.fence ||
       !isDeepStrictEqual(current.observed, active.installation)
     ) {
       return { refusal: "route_not_ready" };
@@ -668,6 +674,8 @@ class Shared {
       execution.state === "failed" ||
       !sameOwner(execution.owner, active.owner) ||
       execution.owner.namespaceId !== plan.execution.namespaceId ||
+      // The live `box run` that asks (as a confirmation requires): an exited Box gets nothing.
+      execution.repositoryRecipient?.source === undefined ||
       model?.sourceId !== source.sourceId
     ) {
       return { refusal: "execution_mismatch" };
